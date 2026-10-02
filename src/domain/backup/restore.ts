@@ -11,6 +11,7 @@ import { currentSchemaVersion, migrate, NewerSchemaError } from '../../db/migrat
 import { SCHEMA_VERSION } from '../../db/schema';
 import type { DB } from '../../db/adapter';
 import { tableCounts, makeSafetyBackup, ensureFreeSpace } from './create';
+import { semanticIssues } from './semantic';
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
 
 const dec = new TextDecoder();
@@ -125,6 +126,9 @@ export async function prepareRestore(
         const ic = probe.get<Record<string, string>>(`PRAGMA integrity_check`);
         if (!ic || String(Object.values(ic)[0]) !== 'ok')
           throw new RestoreError('قاعدة النسخة تالفة (integrity_check)');
+        // الفحص الدلالي: قيد مرحّل غير متوازن أو قسط يتجاوزه مسدَّده مع خصمه يرفض الاستعادة كاملة
+        const issues = semanticIssues(probe);
+        if (issues.length) throw new RestoreError('النسخة مرفوضة · ' + issues.join(' · '));
         // قراءة من كل جدول أساسي + مطابقة الأعداد بالبيان
         incoming = tableCounts(probe);
         // حزام: فتحٌ أنشأ قاعدة فارغة بدل المجهَّزة يُرفض ولا يمرّ صامتاً

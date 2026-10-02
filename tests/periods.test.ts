@@ -12,10 +12,16 @@ const addPurchase = (db: DB, id: string, date: string) =>
     `INSERT INTO purchases (id, no, supplier_name, date, subtotal_halalas, tax_halalas, total_halalas, created_at)
      VALUES (?, ?, 'مورد', ?, 10000, 1500, 11500, datetime('now'))`, [id, 'PC-' + id, date]);
 
-const addEntry = (db: DB, id: string, date: string, status = 'مرحّل') =>
+// القيد المرحّل يُرفض بلا سطور منذ الهجرة ١٧ · فيُنشأ مسودةً بسطرين متوازنين ثم يُرقّى كما في التطبيق
+const addEntry = (db: DB, id: string, date: string, status = 'مرحّل') => {
   db.run(
-    `INSERT INTO journal_entries (id, no, date, status, created_at) VALUES (?, ?, ?, ?, datetime('now'))`,
-    [id, 'JE-' + id, date, status]);
+    `INSERT INTO journal_entries (id, no, date, status, created_at) VALUES (?, ?, ?, 'قيد الإنشاء', datetime('now'))`,
+    [id, 'JE-' + id, date]);
+  db.run(
+    `INSERT INTO journal_lines (id, entry_id, account_code, debit_halalas, credit_halalas)
+     VALUES (?, ?, '1100', 100, 0), (?, ?, '4200', 0, 100)`, [id + 'a', id, id + 'b', id]);
+  if (status !== 'قيد الإنشاء') db.run(`UPDATE journal_entries SET status = ? WHERE id = ?`, [status, id]);
+};
 
 describe('الفترات من البيانات لا من الكود', () => {
   test('بيانات في ٢٠٢٦ فقط: القائمة ٢٠٢٦ وحدها', () => {

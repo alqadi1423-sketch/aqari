@@ -153,8 +153,52 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string): Posted
 
 /** حذف قيد آلي (بمصدره) حذفاً ناعماً · لإعادة الترحيل عند تعديل فاتورة ونحوه */
 export function voidEntryById(db: DB, entryId: string): void {
+  // القيد المرحّل لا يُخفى ولا يُحذف · إلغاؤه بقيد عكسي فقط، والمعكوس من قبل أثره صفر فلا يُمسّ ·
+  // فما يدخل السلة هنا هو المسودة وحدها
   db.transaction(() => {
-    db.run(`UPDATE journal_entries SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), entryId]);
+    db.run(`UPDATE journal_entries SET deleted_at = ? WHERE id = ? AND status != 'مرحّل'`,
+      [new Date().toISOString(), entryId]);
+  });
+}
+
+/**
+ * عكس كل قيد مرحّل قائم أثره · لمسح كل البيانات: الدفتر لا يُمحى ولا يدخل السلة،
+ * بل يُلغى كل قيد بمرآته فتصير الأرصدة صفراً ويبقى التاريخ كاملاً.
+ * القيد المعكوس من قبل ومرآته يُتركان (أثرهما صفر)، والمرآة نفسها لا تُعكس.
+ * تُرقَّم المرايا دفعة واحدة لا باستعلام لكل قيد · فآلاف القيود في ثوانٍ.
+ */
+export function reverseAllPostedEntries(db: DB, reason: string, date: string = today()): number {
+  return db.transaction(() => {
+    const targets = db.all<{ id: string; no: string; src_type: string | null; src_id: string | null }>(
+      `SELECT e.id, e.no, e.src_type, e.src_id FROM journal_entries e
+       WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.reversed_by IS NULL
+         AND NOT EXISTS (SELECT 1 FROM journal_entries o WHERE o.reversed_by = e.id)
+       ORDER BY e.created_at, e.id`
+    );
+    let n = Number(db.get<{ mx: number }>(
+      `SELECT COALESCE(MAX(CAST(substr(no, 4) AS INTEGER)), 0) AS mx FROM journal_entries WHERE no LIKE 'JE-%'`
+    )?.mx ?? 0);
+    const now = new Date().toISOString();
+    for (const t of targets) {
+      const id = uid();
+      n += 1;
+      db.run(
+        `INSERT INTO journal_entries (id, no, date, memo, status, auto, src_type, src_id, created_at)
+         VALUES (?,?,?,?,'قيد الإنشاء',1,?,?,?)`,
+        [id, 'JE-' + String(n).padStart(4, '0'), date, 'عكس قيد ' + t.no + ' · ' + reason,
+         (t.src_type ?? 'manual') + '_rev', t.src_id ?? t.id, now]
+      );
+      db.run(
+        `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas)
+         SELECT lower(hex(randomblob(10))), ?, account_code, descr, credit_halalas, debit_halalas
+         FROM journal_lines WHERE entry_id = ?`,
+        [id, t.id]
+      );
+      // الترقية تمرّ بمحفّز التوازن كأي قيد
+      db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [id]);
+      db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [id, t.id]);
+    }
+    return targets.length;
   });
 }
 

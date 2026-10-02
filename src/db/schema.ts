@@ -3,7 +3,7 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -786,5 +786,105 @@ export const MIGRATION_16 = `
 INSERT OR IGNORE INTO company (id) VALUES (1);
 `;
 
+/**
+ * إقفال الدفتر والأقساط في القاعدة نفسها · فلا يمرّ خلل من أي مسار كتابة:
+ * الخدمات والإدراج المباشر والمزامنة والاستيراد سواء.
+ *
+ * ١) القيد المرحّل غير المتوازن يُرفض حتى لو أُدرج بحالة «مرحّل» مباشرة (INSERT لا UPDATE وحده).
+ * ٢) القيد المرحّل لا يدخل السلة ولا يُحذف ولا تتغيّر حالته · الإلغاء بقيد عكسي فقط،
+ *    وسطوره لا تُحذف ولو كان في السلة من إصدار سابق.
+ * ٣) المسدَّد على القسط مع مجموع خصومه لا يتجاوز مبلغه، ولا مسدَّد ولا خصم ولا صافي سالب:
+ *    على إدراج الدفعة وتعديلها، وعلى إدراج القسط وتعديل مسدَّده أو مبلغه ·
+ *    ومعها فهرس الدفعات بالقسط الذي تقرأ به المحفّزات.
+ */
+export const MIGRATION_17 = `
+CREATE TRIGGER IF NOT EXISTS trg_je_insert_balanced
+BEFORE INSERT ON journal_entries
+WHEN NEW.status = 'مرحّل'
+BEGIN
+  SELECT CASE
+    WHEN (SELECT COUNT(*) FROM journal_lines WHERE entry_id = NEW.id) = 0
+      THEN RAISE(ABORT, 'قيد بلا سطور')
+    WHEN (SELECT COALESCE(SUM(debit_halalas - credit_halalas),0)
+          FROM journal_lines WHERE entry_id = NEW.id) != 0
+      THEN RAISE(ABORT, 'قيد غير متوازن')
+  END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_je_posted_no_trash
+BEFORE UPDATE OF deleted_at ON journal_entries
+WHEN OLD.status = 'مرحّل' AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يدخل السلة · يُلغى بقيد عكسي'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_je_posted_status
+BEFORE UPDATE OF status ON journal_entries
+WHEN OLD.status = 'مرحّل' AND NEW.status != 'مرحّل'
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا تتغيّر حالته · يُلغى بقيد عكسي'); END;
+
+DROP TRIGGER IF EXISTS trg_je_frozen_del;
+CREATE TRIGGER trg_je_frozen_del
+BEFORE DELETE ON journal_entries
+WHEN OLD.status = 'مرحّل'
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُحذف · يُلغى بقيد عكسي'); END;
+
+DROP TRIGGER IF EXISTS trg_jl_frozen_del;
+CREATE TRIGGER trg_jl_frozen_del
+BEFORE DELETE ON journal_lines
+WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) = 'مرحّل'
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُعدَّل'); END;
+
+-- المحفّزات أدناه تجمع خصوم القسط في كل كتابة · والفهرس يجعل الجمع قفزةً لا مسحاً للدفعات كلها
+CREATE INDEX IF NOT EXISTS ix_pay_installment ON contract_payments(installment_id);
+
+CREATE TRIGGER IF NOT EXISTS trg_pay_insert_cap
+BEFORE INSERT ON contract_payments
+WHEN NEW.installment_id IS NOT NULL
+BEGIN
+  SELECT CASE
+    WHEN NEW.discount_halalas < 0 OR NEW.net_halalas < 0
+      THEN RAISE(ABORT, 'دفعة بصافٍ أو خصم سالب')
+    WHEN (SELECT i.paid_halalas + NEW.net_halalas + NEW.discount_halalas
+                 + COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p
+                             WHERE p.installment_id = i.id), 0)
+          FROM contract_installments i WHERE i.id = NEW.installment_id)
+         > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
+      THEN RAISE(ABORT, 'الدفعة مع الخصم تتجاوز المتبقي على القسط')
+  END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_pay_update_cap
+BEFORE UPDATE OF discount_halalas, net_halalas, installment_id ON contract_payments
+WHEN NEW.installment_id IS NOT NULL
+BEGIN
+  SELECT CASE
+    WHEN NEW.discount_halalas < 0 OR NEW.net_halalas < 0
+      THEN RAISE(ABORT, 'دفعة بصافٍ أو خصم سالب')
+    WHEN (SELECT i.paid_halalas + NEW.discount_halalas
+                 + COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p
+                             WHERE p.installment_id = i.id AND p.id != NEW.id), 0)
+          FROM contract_installments i WHERE i.id = NEW.installment_id)
+         > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
+      THEN RAISE(ABORT, 'الخصم يتجاوز المتبقي على القسط')
+  END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_inst_insert_cap
+BEFORE INSERT ON contract_installments
+WHEN NEW.paid_halalas < 0 OR NEW.paid_halalas > NEW.amount_halalas
+BEGIN SELECT RAISE(ABORT, 'المسدَّد يتجاوز مبلغ القسط أو سالب'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_inst_update_cap
+BEFORE UPDATE OF paid_halalas, amount_halalas ON contract_installments
+BEGIN
+  SELECT CASE
+    WHEN NEW.paid_halalas < 0
+      THEN RAISE(ABORT, 'مسدَّد سالب على القسط')
+    WHEN NEW.paid_halalas + COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p
+                                      WHERE p.installment_id = NEW.id), 0) > NEW.amount_halalas
+      THEN RAISE(ABORT, 'المسدَّد مع الخصم يتجاوز مبلغ القسط')
+  END;
+END;
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17];

@@ -53,9 +53,11 @@ export function trashItems(db: DB, now: Date = new Date()): TrashItem[] {
   const out: TrashItem[] = [];
   for (const t of TRASH_TABLES) {
     const pk = t.table === 'accounts' ? 'code' : 'id';
+    // القيد المرحّل لا يُحذف ولا يُستعاد من السلة · ما بقي فيها من إصدار سابق لا يُعرض فلا يُعرض له زر
+    const onlyDrafts = t.table === 'journal_entries' ? ` AND status != 'مرحّل'` : '';
     const rows = db.all<{ id: string; label: string; deleted_at: string }>(
       `SELECT ${pk} AS id, COALESCE(${t.labelExpr}, '') AS label, deleted_at
-       FROM "${t.table}" WHERE deleted_at IS NOT NULL`
+       FROM "${t.table}" WHERE deleted_at IS NOT NULL${onlyDrafts}`
     );
     for (const r of rows) {
       const elapsed = now.getTime() - new Date(r.deleted_at).getTime();
@@ -101,8 +103,13 @@ export function purgeManyFromTrash(db: DB, items: Array<{ table: string; id: str
   db.transaction(() => {
     db.exec('PRAGMA defer_foreign_keys = ON');
 
-    // ١ · سطور القيود المحذوفة (المحفّز يتنحّى للقيود التي في السلة)
-    const je = ids.get('journal_entries') ?? [];
+    // ١ · سطور القيود المحذوفة · المسودات وحدها: القيد المرحّل لا يُحذف أبداً ولو بقي في السلة من إصدار سابق
+    const jeAll = ids.get('journal_entries') ?? [];
+    const je = jeAll.length
+      ? db.all<{ id: string }>(
+          `SELECT id FROM journal_entries WHERE id IN (${qs(jeAll.length)}) AND status != 'مرحّل'`, jeAll
+        ).map((r) => r.id)
+      : [];
     del(`DELETE FROM journal_lines WHERE entry_id IN (${qs(je.length)})`, je);
 
     // ٢ · الأوراق البسيطة بلا مُعالين

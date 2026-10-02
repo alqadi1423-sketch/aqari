@@ -420,9 +420,27 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
     if (l.method !== 'cash' && !l.bankId)
       throw new RuleViolation('اختر الحساب البنكي الذي يستقر فيه المبلغ (' + PAY_METHOD_LABEL[l.method] + ')، أو بدِّل الطريقة لنقداً');
   }
+  // لا دفعة ولا خصم يتجاوز المتبقي على القسط · المدفوع يستهلك صافيه وخصمه معاً من المتبقي
+  const grossIn = rawLines.reduce((s, l) => s + l.amountHalalas, 0);
+  const discountIn = input.discountHalalas || 0;
+  if (discountIn < 0) throw new RuleViolation('الخصم لا يكون سالباً');
+  if (discountIn > grossIn)
+    throw new RuleViolation(`الخصم (${fmt(discountIn)}) أكبر من المبلغ المدخل (${fmt(grossIn)})`);
+  if (input.installmentId) {
+    const cur = db.get<{ amount_halalas: number; paid_halalas: number; discount: number }>(
+      `SELECT i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount
+       FROM contract_installments i WHERE i.id = ? AND i.contract_id = ?`,
+      [input.installmentId, contractId]
+    );
+    if (!cur) throw new RuleViolation('القسط غير موجود على هذا العقد');
+    const remaining = installmentRemaining(Number(cur.amount_halalas), Number(cur.paid_halalas), Number(cur.discount));
+    if (remaining <= 0) throw new RuleViolation('القسط مسدَّد بالكامل · لا متبقّي عليه');
+    if (grossIn > remaining)
+      throw new RuleViolation(`المبلغ مع الخصم (${fmt(grossIn)}) يتجاوز المتبقي على القسط (${fmt(remaining)})`);
+  }
   return db.transaction(() => {
-    const gross = rawLines.reduce((s, l) => s + l.amountHalalas, 0);
-    const discount = input.discountHalalas || 0;
+    const gross = grossIn;
+    const discount = discountIn;
     const net = gross - discount;
     const date = input.date || today();
     const bankNames = db.all<{ id: string; name: string }>(

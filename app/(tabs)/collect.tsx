@@ -317,8 +317,13 @@ export default function Collect() {
    * التسجيل لا يقبل بلا مبلغ، ولا بطريقة غير نقدية بلا حساب يستقر فيه المبلغ ·
    * فما دام لا يصح التسجيل لا يُعرض زره أصلاً.
    */
+  // ولا يتجاوز المدفوعُ مع الخصم المتبقيَ على القسط، ولا يزيد الخصم على المدفوع · كما تشترط الخدمة والقاعدة
+  const payGross = payLines.reduce((s, l) => s + Math.max(0, toHalalas(l.amount)), 0);
+  const payDiscount = toHalalas(discount);
+  const payOver = !!paying && (payGross > paying.remaining || payDiscount < 0 || payDiscount > payGross);
   const payReady = payLines.some((l) => toHalalas(l.amount) > 0)
-    && payLines.every((l) => toHalalas(l.amount) <= 0 || l.method === 'cash' || !!l.bankId);
+    && payLines.every((l) => toHalalas(l.amount) <= 0 || l.method === 'cash' || !!l.bankId)
+    && !payOver;
 
   // كل نص يُرسل قالبٌ من الإعدادات · لا نص مكتوباً في الكود
   const [waFor, setWaFor] = useState<{ x: (typeof data.rows)[number]; via: 'wa' | 'sms' } | null>(null);
@@ -551,6 +556,14 @@ export default function Collect() {
               {fmt(payLines.reduce((s, l) => s + toHalalas(l.amount), 0) - toHalalas(discount))}
             </Num>
           </Row>
+          {/* سبب غياب زر التحصيل حين يتجاوز المدخل المتبقي · فلا يُترك المستخدم بلا تفسير */}
+          {payOver && paying ? (
+            <T size={11.5} color={C.rose} style={{ marginTop: 6 }}>
+              {payDiscount > payGross
+                ? 'الخصم أكبر من المبلغ المدخل'
+                : 'المبلغ مع الخصم يتجاوز المتبقي على القسط (' + fmt(paying.remaining) + ')'}
+            </T>
+          ) : null}
         </View>
         <Field label="ملاحظات" value={payNotes} onChange={setPayNotes} />
       </Sheet>
