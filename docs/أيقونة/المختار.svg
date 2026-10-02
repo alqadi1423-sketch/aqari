@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 100 100">
+<title>أيقونة عقاري · ص٣ الأصل بلوحة «٥ الخطّ الفحمي»</title>
+<desc>بيت من طوب على خلفية جصّ فاتحة بخطّ فحمي، وباب مستقيم تعلوه قمرية مضاءة بزجاج كهرماني وثلاث ورقات خضراء.</desc>
+<defs>
+<clipPath id="house"><path d="M24 84 V46 L50 24 L76 46 V84 Z"/></clipPath>
+</defs>
+<rect width="100" height="100" fill="#EDE7D9"/>
+<g clip-path="url(#house)">
+<rect width="100" height="100" fill="#E1D9C6"/>
+<g stroke="#232A36" fill="none" opacity="0.32" stroke-width="1.8">
+<path d="M0 18 H100 M0 32 H100 M0 46 H100 M0 60 H100 M0 74 H100 M0 88 H100"/>
+<path d="M22 18 V32 M58 18 V32 M40 32 V46 M76 32 V46 M22 46 V60 M58 46 V60 M40 60 V74 M76 60 V74 M22 74 V88 M58 74 V88"/>
+</g>
+</g>
+<path d="M41 84 V64 H59 V84 Z" fill="#232A36"/>
+<path d="M41 84 V64 H59 V84" fill="none" stroke="#8C6C24" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M37 62 A13 13 0 0 1 63 62 Z" fill="#C99C3E"/>
+<g fill="#1E6E5C">
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(-40 50 62)"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(40 50 62)"/>
+</g>
+<g fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-linejoin="round">
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(-40 50 62)"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(40 50 62)"/>
+</g>
+<path d="M37 62 A13 13 0 0 1 63 62" fill="none" stroke="#8C6C24" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<g fill="none" stroke="#232A36" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="M24 84 V46 L50 24 L76 46 V84"/>
+<path d="M12 84 H88"/>
+</g>
+</svg>

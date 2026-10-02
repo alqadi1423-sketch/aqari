@@ -1,0 +1,7 @@
+تقرير خطأ · عقاري
+الموضع: تجهيز استعادة
+الوقت: 2026-09-02T17:21:56.213Z
+المنصّة: android
+────────────────
+Error: java.io.IOException: sendfile failed: ENOSPC (No space left on device)
+    at CodedError (address at index.android.bundle:1:743647)

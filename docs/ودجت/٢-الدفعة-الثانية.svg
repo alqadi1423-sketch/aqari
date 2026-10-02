@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="1132" viewBox="0 0 680 1132" font-family="'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif">
+<rect width="680" height="1132" fill="#F6F4EE"/>
+<text x="640" y="42" text-anchor="end" font-size="19" font-weight="700" fill="#10192E">الدفعة الثانية · ٧ إلى ١٣</text>
+<rect x="60" y="70" width="300" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="344" y="94" text-anchor="end" font-size="13" font-weight="500" fill="#10192E">سبتمبر · دفعات الشهر</text>
+<g>
+<circle cx="280" cy="118" r="5.5" fill="#1E6E5C"/><circle cx="250" cy="118" r="5.5" fill="#EFEADF"/><circle cx="220" cy="118" r="5.5" fill="#1E6E5C"/><circle cx="190" cy="118" r="5.5" fill="#EFEADF"/><circle cx="160" cy="118" r="5.5" fill="#AE4438"/><circle cx="130" cy="118" r="5.5" fill="#EFEADF"/><circle cx="100" cy="118" r="5.5" fill="#1E6E5C"/>
+<circle cx="280" cy="138" r="5.5" fill="#EFEADF"/><circle cx="250" cy="138" r="5.5" fill="#AE4438"/><circle cx="220" cy="138" r="5.5" fill="#1E6E5C"/><circle cx="190" cy="138" r="5.5" fill="#1E6E5C"/><circle cx="160" cy="138" r="5.5" fill="#EFEADF"/><circle cx="130" cy="138" r="5.5" fill="#B08D3D"/><circle cx="100" cy="138" r="5.5" fill="#EFEADF"/>
+<circle cx="280" cy="158" r="5.5" fill="#1E6E5C"/><circle cx="250" cy="158" r="5.5" fill="#EFEADF"/><circle cx="220" cy="158" r="5.5" fill="#AE4438"/><circle cx="190" cy="158" r="5.5" fill="#EFEADF"/><circle cx="160" cy="158" r="5.5" fill="#1E6E5C"/><circle cx="130" cy="158" r="5.5" fill="#EFEADF"/><circle cx="100" cy="158" r="5.5" fill="#B08D3D"/>
+<circle cx="280" cy="178" r="5.5" fill="#EFEADF"/><circle cx="250" cy="178" r="5.5" fill="#1E6E5C"/><circle cx="220" cy="178" r="5.5" fill="#EFEADF"/><circle cx="190" cy="178" r="5.5" fill="#B08D3D"/><circle cx="160" cy="178" r="5.5" fill="#EFEADF"/><circle cx="130" cy="178" r="5.5" fill="#EFEADF"/><circle cx="100" cy="178" r="5.5" fill="#EFEADF"/>
+<circle cx="280" cy="196" r="5.5" fill="#B08D3D"/><circle cx="250" cy="196" r="5.5" fill="#EFEADF"/>
+</g>
+<circle cx="336" cy="210" r="4" fill="#1E6E5C"/><text x="326" y="214" text-anchor="end" font-size="10.5" fill="#6B7280">محصَّل</text>
+<circle cx="272" cy="210" r="4" fill="#B08D3D"/><text x="262" y="214" text-anchor="end" font-size="10.5" fill="#6B7280">مستحق</text>
+<circle cx="212" cy="210" r="4" fill="#AE4438"/><text x="202" y="214" text-anchor="end" font-size="10.5" fill="#6B7280">متأخر</text>
+<text x="640" y="96" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">٧ · تقويم الدفعات · 4×2</text>
+<text x="640" y="118" text-anchor="end" font-size="12.5" fill="#6B7280">كل نقطة يوم · لونها حالة دفعاته · بلا أسماء</text>
+<rect x="60" y="260" width="300" height="72" rx="18" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<rect x="272" y="282" width="72" height="30" rx="15" fill="#E4F0EC"/><text x="308" y="302" text-anchor="middle" font-size="12.5" font-weight="500" fill="#1E6E5C">تحصيل</text>
+<rect x="192" y="282" width="72" height="30" rx="15" fill="#F3EFE4"/><text x="228" y="302" text-anchor="middle" font-size="12.5" font-weight="500" fill="#8C6C24">فاتورة</text>
+<rect x="112" y="282" width="72" height="30" rx="15" fill="#F3EFE4"/><text x="148" y="302" text-anchor="middle" font-size="12.5" font-weight="500" fill="#8C6C24">مطالبة</text>
+<text x="640" y="286" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">٨ · أزرار سريعة · 4×1</text>
+<text x="640" y="308" text-anchor="end" font-size="12.5" fill="#6B7280">بلا بيانات · لا تُحدَّث ولا تكشف شيئاً</text>
+<rect x="60" y="372" width="300" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="344" y="396" text-anchor="end" font-size="13" font-weight="500" fill="#10192E">31 وحدة شاغرة</text>
+<text x="76" y="396" font-size="11.5" fill="#AE4438">دخل ضائع 52,700</text>
+<path d="M76 406 H344" stroke="#EFEADF" stroke-width="1.5"/>
+<text x="344" y="428" text-anchor="end" font-size="12.5" fill="#10192E">برج الفهد · وحدة 12</text>
+<text x="76" y="428" font-size="12.5" font-weight="500" fill="#10192E">1,700</text>
+<path d="M76 458 H344" stroke="#EFEADF" stroke-width="1.5"/>
+<text x="344" y="480" text-anchor="end" font-size="12.5" fill="#10192E">برج الفهد · وحدة 31</text>
+<text x="76" y="480" font-size="12.5" font-weight="500" fill="#10192E">1,900</text>
+<text x="640" y="398" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">٩ · الوحدات الشاغرة · 4×2</text>
+<text x="640" y="420" text-anchor="end" font-size="12.5" fill="#6B7280">لا ما لك عند الناس بل ما يفوتك</text>
+<rect x="60" y="562" width="300" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="344" y="586" text-anchor="end" font-size="13" font-weight="500" fill="#10192E">عقود تنتهي خلال 60 يوماً</text>
+<path d="M76 596 H344" stroke="#EFEADF" stroke-width="1.5"/>
+<text x="344" y="618" text-anchor="end" font-size="12.5" fill="#10192E">سلطان الزهراني · وحدة 148</text>
+<rect x="76" y="606" width="54" height="17" rx="8.5" fill="#F3EFE4"/><text x="103" y="619" text-anchor="middle" font-size="10.5" fill="#8C6C24">18 يوماً</text>
+<path d="M76 648 H344" stroke="#EFEADF" stroke-width="1.5"/>
+<text x="344" y="670" text-anchor="end" font-size="12.5" fill="#10192E">نورة القحطاني · وحدة 63</text>
+<rect x="76" y="658" width="54" height="17" rx="8.5" fill="#F3EFE4"/><text x="103" y="671" text-anchor="middle" font-size="10.5" fill="#8C6C24">41 يوماً</text>
+<text x="640" y="588" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١٠ · عقود تنتهي قريباً · 4×2</text>
+<text x="640" y="610" text-anchor="end" font-size="12.5" fill="#6B7280">التجديد إيراد يضيع بالنسيان لا بالعجز</text>
+<rect x="60" y="752" width="300" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="344" y="776" text-anchor="end" font-size="13" font-weight="500" fill="#10192E">إيراد ومصروف · 6 أشهر</text>
+<g>
+<rect x="308" y="800" width="12" height="62" rx="3" fill="#1E6E5C"/><rect x="294" y="856" width="12" height="6" rx="3" fill="#AE4438"/>
+<rect x="264" y="806" width="12" height="56" rx="3" fill="#1E6E5C"/><rect x="250" y="858" width="12" height="4" rx="3" fill="#AE4438"/>
+<rect x="220" y="810" width="12" height="52" rx="3" fill="#1E6E5C"/><rect x="206" y="860" width="12" height="2" rx="1" fill="#AE4438"/>
+<rect x="176" y="810" width="12" height="52" rx="3" fill="#1E6E5C"/><rect x="162" y="860" width="12" height="2" rx="1" fill="#AE4438"/>
+<rect x="132" y="806" width="12" height="56" rx="3" fill="#1E6E5C"/><rect x="118" y="860" width="12" height="2" rx="1" fill="#AE4438"/>
+<rect x="88" y="804" width="12" height="58" rx="3" fill="#1E6E5C"/><rect x="74" y="854" width="12" height="8" rx="3" fill="#AE4438"/>
+</g>
+<path d="M70 864 H348" stroke="#EFEADF" stroke-width="1.5"/>
+<text x="640" y="778" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١١ · نبض ستة أشهر · 4×2</text>
+<text x="640" y="800" text-anchor="end" font-size="12.5" fill="#6B7280">اتجاهٌ لا لقطة · يحتاج رسم صورة نقطية</text>
+<rect x="60" y="942" width="145" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="189" y="966" text-anchor="end" font-size="12.5" font-weight="500" fill="#10192E">برج الفهد</text>
+<text x="189" y="1002" text-anchor="end" font-size="28" font-weight="500" fill="#10192E">78٪</text>
+<text x="189" y="1022" text-anchor="end" font-size="11" fill="#6B7280">18 من 23 وحدة</text>
+<path d="M76 1034 H189" stroke="#EFEADF" stroke-width="1.5"/>
+<text x="189" y="1054" text-anchor="end" font-size="11" fill="#6B7280">دخل الشهر</text>
+<text x="189" y="1078" text-anchor="end" font-size="17" font-weight="500" fill="#1E6E5C">31,400</text>
+<rect x="215" y="942" width="145" height="72" rx="18" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="306" y="972" text-anchor="end" font-size="11" fill="#6B7280">آخر تصدير</text>
+<text x="306" y="994" text-anchor="end" font-size="14" font-weight="500" fill="#AE4438">منذ 23 يوماً</text>
+<text x="640" y="968" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١٢ · بطاقة عقار مختار · 2×2</text>
+<text x="640" y="990" text-anchor="end" font-size="12.5" fill="#6B7280">تختار العقار عند إضافتها</text>
+<text x="640" y="1024" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١٣ · حالة الحماية · 2×1</text>
+<text x="640" y="1046" text-anchor="end" font-size="12.5" fill="#6B7280">تُلحّ بالتصدير حين يطول الغياب</text>
+</svg>

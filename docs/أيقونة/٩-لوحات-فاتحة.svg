@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="1210" viewBox="0 0 680 1210" font-family="'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif">
+<rect width="680" height="1210" fill="#F6F4EE"/>
+<text x="640" y="44" text-anchor="end" font-size="20" font-weight="700" fill="#10192E">درجات فاتحة للشكل «ص٣ الأصل» · الشكل ثابت واللون يتغيّر</text>
+<style>
+.bg{fill:var(--bg)}.wall{fill:var(--wall)}.mor{stroke:var(--mor);fill:none}.gl{fill:var(--gl)}.lf{fill:var(--lf)}.rb{stroke:var(--rb);fill:none}.ot{stroke:var(--ot);fill:none}.dr{fill:var(--dr)}.gd{stroke:var(--gd);fill:none}
+</style>
+<defs>
+<clipPath id="lsq"><rect width="100" height="100" rx="23"/></clipPath>
+<clipPath id="lci"><circle cx="50" cy="50" r="50"/></clipPath>
+<clipPath id="lh"><path d="M24 84 V46 L50 24 L76 46 V84 Z"/></clipPath>
+<g id="lico">
+<rect class="bg" width="100" height="100"/>
+<g clip-path="url(#lh)">
+<rect class="wall" width="100" height="100"/>
+<g class="mor" opacity="0.32" stroke-width="1.8">
+<path d="M0 18 H100 M0 32 H100 M0 46 H100 M0 60 H100 M0 74 H100 M0 88 H100"/>
+<path d="M22 18 V32 M58 18 V32 M40 32 V46 M76 32 V46 M22 46 V60 M58 46 V60 M40 60 V74 M76 60 V74 M22 74 V88 M58 74 V88"/>
+</g>
+</g>
+<path class="dr" d="M41 84 V64 H59 V84 Z"/>
+<path class="gd" d="M41 84 V64 H59 V84" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<path class="gl" d="M37 62 A13 13 0 0 1 63 62 Z"/>
+<g class="lf">
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(-40 50 62)"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(40 50 62)"/>
+</g>
+<g class="rb" stroke-width="1.5" stroke-linejoin="round">
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(-40 50 62)"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(40 50 62)"/>
+</g>
+<path class="gd" d="M37 62 A13 13 0 0 1 63 62" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<path class="ot" d="M24 84 V46 L50 24 L76 46 V84" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path class="ot" d="M12 84 H88" stroke-width="4.6" stroke-linecap="round"/>
+</g>
+</defs>
+<g style="--bg:#EDE7D9;--wall:#E1D9C6;--mor:#144639;--gl:#C99C3E;--lf:#1E6E5C;--rb:#FFFFFF;--ot:#144639;--dr:#144639;--gd:#8C6C24">
+<g transform="translate(56,80) scale(1.08)"><g clip-path="url(#lsq)"><use href="#lico"/></g></g>
+<g transform="translate(184,112) scale(0.44)"><g clip-path="url(#lci)"><use href="#lico"/></g></g>
+</g>
+<text x="640" y="122" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">١ · هـ الأصلية</text>
+<text x="640" y="148" text-anchor="end" font-size="13" fill="#6B7280">جصّ فاتح · خطّ أخضر · زجاج كهرماني</text>
+<g style="--bg:#F8F5ED;--wall:#EEE9DB;--mor:#144639;--gl:#C99C3E;--lf:#1E6E5C;--rb:#FFFFFF;--ot:#144639;--dr:#144639;--gd:#8C6C24">
+<g transform="translate(56,220) scale(1.08)"><g clip-path="url(#lsq)"><use href="#lico"/></g></g>
+<g transform="translate(184,252) scale(0.44)"><g clip-path="url(#lci)"><use href="#lico"/></g></g>
+</g>
+<text x="640" y="262" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٢ · جصّ ناصع</text>
+<text x="640" y="288" text-anchor="end" font-size="13" fill="#6B7280">درجتان أفتح · أقربها لجدار الصورة المطليّ</text>
+<g style="--bg:#EADCC0;--wall:#DDCBA6;--mor:#8C6C24;--gl:#C99C3E;--lf:#1E6E5C;--rb:#FFFFFF;--ot:#144639;--dr:#144639;--gd:#8C6C24">
+<g transform="translate(56,360) scale(1.08)"><g clip-path="url(#lsq)"><use href="#lico"/></g></g>
+<g transform="translate(184,392) scale(0.44)"><g clip-path="url(#lci)"><use href="#lico"/></g></g>
+</g>
+<text x="640" y="402" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٣ · رملي دافئ</text>
+<text x="640" y="428" text-anchor="end" font-size="13" fill="#6B7280">جصّ يميل للرمل ولحامات ذهبية</text>
+<g style="--bg:#F0E2D5;--wall:#E5D1BD;--mor:#9A6B4A;--gl:#C99C3E;--lf:#1E6E5C;--rb:#FFFFFF;--ot:#144639;--dr:#144639;--gd:#8C6C24">
+<g transform="translate(56,500) scale(1.08)"><g clip-path="url(#lsq)"><use href="#lico"/></g></g>
+<g transform="translate(184,532) scale(0.44)"><g clip-path="url(#lci)"><use href="#lico"/></g></g>
+</g>
+<text x="640" y="542" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٤ · طين فاتح</text>
+<text x="640" y="568" text-anchor="end" font-size="13" fill="#6B7280">وردة الطين النجدي ولحامات بنّية</text>
+<g style="--bg:#EDE7D9;--wall:#E1D9C6;--mor:#232A36;--gl:#C99C3E;--lf:#1E6E5C;--rb:#FFFFFF;--ot:#232A36;--dr:#232A36;--gd:#8C6C24">
+<g transform="translate(56,640) scale(1.08)"><g clip-path="url(#lsq)"><use href="#lico"/></g></g>
+<g transform="translate(184,672) scale(0.44)"><g clip-path="url(#lci)"><use href="#lico"/></g></g>
+</g>
+<text x="640" y="682" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٥ · خطّ فحمي · المختار</text>
+<text x="640" y="708" text-anchor="end" font-size="13" fill="#6B7280">خطّ البيت فحمي لا أخضر · أعلى تباين على الفاتح</text>
+<g style="--bg:#EDE7D9;--wall:#E1D9C6;--mor:#8C6C24;--gl:#C99C3E;--lf:#1E6E5C;--rb:#FFFFFF;--ot:#8C6C24;--dr:#144639;--gd:#8C6C24">
+<g transform="translate(56,780) scale(1.08)"><g clip-path="url(#lsq)"><use href="#lico"/></g></g>
+<g transform="translate(184,812) scale(0.44)"><g clip-path="url(#lci)"><use href="#lico"/></g></g>
+</g>
+<text x="640" y="822" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٦ · خطّ ذهبي داكن</text>
+<text x="640" y="848" text-anchor="end" font-size="13" fill="#6B7280">البيت والقمرية بلون واحد</text>
+<g style="--bg:#EDE7D9;--wall:#E1D9C6;--mor:#144639;--gl:#2F62AE;--lf:#1E6E5C;--rb:#FFFFFF;--ot:#144639;--dr:#144639;--gd:#8C6C24">
+<g transform="translate(56,920) scale(1.08)"><g clip-path="url(#lsq)"><use href="#lico"/></g></g>
+<g transform="translate(184,952) scale(0.44)"><g clip-path="url(#lci)"><use href="#lico"/></g></g>
+</g>
+<text x="640" y="962" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٧ · زجاج أزرق</text>
+<text x="640" y="988" text-anchor="end" font-size="13" fill="#6B7280">أزرق الصورة بدل الكهرمان</text>
+<g style="--bg:#EDE7D9;--wall:#E1D9C6;--mor:#144639;--gl:#1E6E5C;--lf:#C99C3E;--rb:#FFFFFF;--ot:#144639;--dr:#144639;--gd:#8C6C24">
+<g transform="translate(56,1060) scale(1.08)"><g clip-path="url(#lsq)"><use href="#lico"/></g></g>
+<g transform="translate(184,1092) scale(0.44)"><g clip-path="url(#lci)"><use href="#lico"/></g></g>
+</g>
+<text x="640" y="1102" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٨ · زجاج أخضر وورقات ذهبية</text>
+<text x="640" y="1128" text-anchor="end" font-size="13" fill="#6B7280">عكس الطبقتين · الأخضر يتصدّر</text>
+</svg>

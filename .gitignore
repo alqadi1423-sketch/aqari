@@ -1,0 +1,50 @@
+# الاعتمادات ومخرجات الأدوات
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+coverage/
+tmp/
+
+# أندرويد: المجلد يدخل المستودع لأنه يحمل شيفرة أصلية مكتوبة يدوياً (الودجتات وحفظ السجل)
+# ويُستثنى منه البناء والمخازن المؤقتة والإعدادات المحلية وحدها
+android/build/
+android/app/build/
+android/.gradle/
+android/.cxx/
+android/app/.cxx/
+android/.kotlin/
+android/local.properties
+ios/build/
+
+# مفاتيح وأسرار · تُقرأ من متغيرات البيئة أو EAS Secrets فقط
+*.keystore
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+google-services.json
+GoogleService-Info.plist
+.env*
+
+# بيانات المستخدم: النسخ الاحتياطية وقواعد البيانات
+*.aqbk
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# الحزم المبنية
+*.apk
+*.aab
+
+# متفرقات
+*.orig.*
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store

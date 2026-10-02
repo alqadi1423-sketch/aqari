@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="1054" viewBox="0 0 680 1054" font-family="'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif">
+<rect width="680" height="1054" fill="#F6F4EE"/>
+<text x="640" y="42" text-anchor="end" font-size="19" font-weight="700" fill="#10192E">الدفعة الثالثة · ١٤ إلى ٢٠</text>
+<rect x="60" y="70" width="300" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<rect x="76" y="86" width="268" height="102" rx="12" fill="#F1EFE8"/>
+<g stroke="#E4E1D8" stroke-width="1"><path d="M76 120 H344 M76 154 H344 M144 86 V188 M212 86 V188 M280 86 V188"/></g>
+<circle cx="120" cy="110" r="9" fill="#1E6E5C"/><text x="120" y="114" text-anchor="middle" font-size="9" fill="#FFFFFF">92</text>
+<circle cx="196" cy="142" r="11" fill="#1E6E5C"/><text x="196" y="146" text-anchor="middle" font-size="9" fill="#FFFFFF">78</text>
+<circle cx="252" cy="104" r="8" fill="#B08D3D"/><text x="252" y="108" text-anchor="middle" font-size="8.5" fill="#FFFFFF">55</text>
+<circle cx="300" cy="164" r="7" fill="#AE4438"/><text x="300" y="168" text-anchor="middle" font-size="8" fill="#FFFFFF">21</text>
+<circle cx="152" cy="172" r="6" fill="#B08D3D"/>
+<text x="344" y="208" text-anchor="end" font-size="11.5" fill="#6B7280">12 عقاراً · حجم الدائرة عدد وحداتها</text>
+<text x="640" y="96" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١٤ · خريطة العقارات · 4×2</text>
+<text x="640" y="118" text-anchor="end" font-size="12.5" fill="#6B7280">أين المشكلة لا كم هي · والضغط يفتح العقار</text>
+<rect x="60" y="260" width="300" height="72" rx="18" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="344" y="282" text-anchor="end" font-size="12" font-weight="500" fill="#10192E">أعمار الذمم</text>
+<text x="76" y="282" font-size="11" fill="#6B7280">327,500 إجمالاً</text>
+<rect x="76" y="290" width="268" height="12" rx="6" fill="#EFEADF"/>
+<rect x="180" y="290" width="72" height="12" fill="#B08D3D"/>
+<rect x="120" y="290" width="60" height="12" fill="#C4694F"/>
+<rect x="76" y="290" width="44" height="12" fill="#AE4438"/>
+<text x="330" y="322" text-anchor="middle" font-size="10" fill="#6B7280">لم يحن</text>
+<text x="216" y="322" text-anchor="middle" font-size="10" fill="#8C6C24">1-30</text>
+<text x="150" y="322" text-anchor="middle" font-size="10" fill="#A0522D">31-60</text>
+<text x="98" y="322" text-anchor="middle" font-size="10" fill="#AE4438">+60</text>
+<text x="640" y="284" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١٥ · أعمار الذمم · 4×1</text>
+<text x="640" y="306" text-anchor="end" font-size="12.5" fill="#6B7280">اتّساع الأحمر إنذارٌ لا يحتاج قراءة رقم</text>
+<rect x="60" y="372" width="300" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="344" y="396" text-anchor="end" font-size="12.5" fill="#6B7280">الإقرار الضريبي · 2026-Q3</text>
+<text x="344" y="436" text-anchor="end" font-size="30" font-weight="500" fill="#B08D3D">22</text>
+<text x="286" y="436" text-anchor="end" font-size="13" fill="#6B7280">يوماً على آخر موعد</text>
+<path d="M76 452 H344" stroke="#EFEADF" stroke-width="1.5"/>
+<text x="344" y="476" text-anchor="end" font-size="12" fill="#6B7280">ضريبة مخرجات</text>
+<text x="76" y="476" font-size="13" font-weight="500" fill="#10192E">20,470</text>
+<text x="344" y="500" text-anchor="end" font-size="12" fill="#6B7280">مدخلات قابلة للخصم</text>
+<text x="76" y="500" font-size="13" font-weight="500" fill="#1E6E5C">3,120</text>
+<text x="640" y="398" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١٦ · عدّاد الإقرار · 4×2</text>
+<text x="640" y="420" text-anchor="end" font-size="12.5" fill="#6B7280">الموعد النظامي وحده لا يُنسى ولا يُؤجَّل</text>
+<rect x="60" y="562" width="300" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="344" y="586" text-anchor="end" font-size="12" fill="#AE4438">أقدم متأخّرة</text>
+<text x="344" y="616" text-anchor="end" font-size="16" font-weight="500" fill="#10192E">عبدالله العنزي</text>
+<text x="344" y="638" text-anchor="end" font-size="12" fill="#6B7280">برج الفهد · وحدة 9 · قسط يناير</text>
+<text x="344" y="672" text-anchor="end" font-size="24" font-weight="500" fill="#10192E">1,700</text>
+<text x="248" y="672" text-anchor="end" font-size="12" fill="#AE4438">متأخر 238 يوماً</text>
+<rect x="76" y="652" width="86" height="34" rx="17" fill="#1E6E5C"/>
+<text x="119" y="674" text-anchor="middle" font-size="13" font-weight="500" fill="#FFFFFF">حصّل الآن</text>
+<text x="640" y="588" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١٧ · تحصيل بضغطة · 4×2</text>
+<text x="640" y="610" text-anchor="end" font-size="12.5" fill="#6B7280">لا تُخبرك بالمشكلة بل تبدأ حلّها</text>
+<rect x="60" y="752" width="300" height="72" rx="18" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="300" y="782" text-anchor="end" font-size="13" font-weight="500" fill="#10192E">3 دفعات تستحق اليوم</text>
+<text x="300" y="804" text-anchor="end" font-size="12" fill="#6B7280">وعقد ينتهي بعد 5 أيام · ومستند منتهٍ</text>
+<text x="640" y="778" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١٨ · ماذا أفعل اليوم · 4×1</text>
+<text x="640" y="800" text-anchor="end" font-size="12.5" fill="#6B7280">جملة واحدة من محرّك التنبيهات القائم</text>
+<rect x="60" y="864" width="145" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<rect x="76" y="880" width="113" height="62" rx="10" fill="#F1EEE4"/>
+<path d="M113 936 A19.5 19.5 0 0 1 152 936 Z" fill="#C99C3E"/>
+<g fill="#1E6E5C">
+<path d="M132.5 934.5 C129 927 129.5 921 132.5 915 C135.5 921 136 927 132.5 934.5 Z"/>
+<path d="M132.5 934.5 C129 927 129.5 921 132.5 915 C135.5 921 136 927 132.5 934.5 Z" transform="rotate(-40 132.5 936)"/>
+<path d="M132.5 934.5 C129 927 129.5 921 132.5 915 C135.5 921 136 927 132.5 934.5 Z" transform="rotate(40 132.5 936)"/>
+</g>
+<path d="M113 936 A19.5 19.5 0 0 1 152 936" fill="none" stroke="#8C6C24" stroke-width="2.4"/>
+<text x="189" y="972" text-anchor="end" font-size="11.5" fill="#6B7280">إشغال محفظتك</text>
+<text x="189" y="1000" text-anchor="end" font-size="26" font-weight="500" fill="#10192E">61٪</text>
+<rect x="215" y="864" width="145" height="150" rx="20" fill="#FFFFFF" stroke="#E4E1D8" stroke-width="1.5"/>
+<text x="344" y="888" text-anchor="end" font-size="11.5" fill="#1E6E5C">أعلى دخلاً</text>
+<text x="344" y="910" text-anchor="end" font-size="13.5" font-weight="500" fill="#10192E">برج الفهد</text>
+<text x="344" y="930" text-anchor="end" font-size="15" font-weight="500" fill="#1E6E5C">64,200</text>
+<path d="M231 944 H344" stroke="#EFEADF" stroke-width="1.5"/>
+<text x="344" y="966" text-anchor="end" font-size="11.5" fill="#AE4438">أعلى مصروفاً</text>
+<text x="344" y="988" text-anchor="end" font-size="13.5" font-weight="500" fill="#10192E">مجمّع الياسمين</text>
+<text x="344" y="1006" text-anchor="end" font-size="15" font-weight="500" fill="#AE4438">12,850</text>
+<text x="640" y="890" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">١٩ · القمرية والرقم · 2×2</text>
+<text x="640" y="912" text-anchor="end" font-size="12.5" fill="#6B7280">هوية الأيقونة نفسها ودجتاً</text>
+<text x="640" y="946" text-anchor="end" font-size="16" font-weight="700" fill="#10192E">٢٠ · أعلى وأدنى · 2×2</text>
+<text x="640" y="968" text-anchor="end" font-size="12.5" fill="#6B7280">من يربح ومن يأكل · مقارنة لا مجموع</text>
+</svg>

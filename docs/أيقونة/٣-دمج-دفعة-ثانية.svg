@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="820" viewBox="0 0 680 820" font-family="'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif">
+<rect width="680" height="820" fill="#F6F4EE"/>
+<text x="640" y="44" text-anchor="end" font-size="20" font-weight="700" fill="#10192E">دفعة ثانية · و ز ح ط ي</text>
+<defs>
+<clipPath id="sq"><rect width="100" height="100" rx="23"/></clipPath>
+<clipPath id="ci"><circle cx="50" cy="50" r="50"/></clipPath>
+<g id="o1">
+<rect width="100" height="100" fill="#144639"/>
+<path d="M30 84 C34 56 40 36 50 20 C60 36 66 56 70 84 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 82 C44 68 45 54 50 42 C55 54 56 68 50 82 Z"/>
+<path d="M50 82 C46 72 46.5 63 50 55 C53.5 63 54 72 50 82 Z" transform="rotate(-30 50 84)"/>
+<path d="M50 82 C46 72 46.5 63 50 55 C53.5 63 54 72 50 82 Z" transform="rotate(30 50 84)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-linejoin="round" stroke-linecap="round">
+<path d="M50 82 C44 68 45 54 50 42 C55 54 56 68 50 82 Z" stroke-width="2.6"/>
+<path d="M50 82 C46 72 46.5 63 50 55 C53.5 63 54 72 50 82 Z" stroke-width="2.6" transform="rotate(-30 50 84)"/>
+<path d="M50 82 C46 72 46.5 63 50 55 C53.5 63 54 72 50 82 Z" stroke-width="2.6" transform="rotate(30 50 84)"/>
+<path d="M30 84 C34 56 40 36 50 20 C60 36 66 56 70 84 Z" stroke-width="4.6"/>
+<path d="M14 84 H86" stroke-width="4.6"/>
+</g>
+</g>
+<g id="o2">
+<rect width="100" height="100" fill="#144639"/>
+<path d="M38 84 V58 A12 12 0 0 1 62 58 V84 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 83 C46.5 76 47 70 50 65 C53 70 53.5 76 50 83 Z"/>
+<path d="M50 83 C46.5 76 47 70 50 65 C53 70 53.5 76 50 83 Z" transform="rotate(-40 50 84)"/>
+<path d="M50 83 C46.5 76 47 70 50 65 C53 70 53.5 76 50 83 Z" transform="rotate(40 50 84)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round">
+<path d="M50 83 C46.5 76 47 70 50 65 C53 70 53.5 76 50 83 Z" stroke-width="1.8"/>
+<path d="M50 83 C46.5 76 47 70 50 65 C53 70 53.5 76 50 83 Z" stroke-width="1.8" transform="rotate(-40 50 84)"/>
+<path d="M50 83 C46.5 76 47 70 50 65 C53 70 53.5 76 50 83 Z" stroke-width="1.8" transform="rotate(40 50 84)"/>
+<path d="M38 84 V58 A12 12 0 0 1 62 58 V84" stroke-width="3"/>
+<path d="M28 84 V56 A22 22 0 0 1 72 56 V84" stroke-width="3.6"/>
+<path d="M18 84 V54 A32 32 0 0 1 82 54 V84" stroke-width="4.4"/>
+<path d="M10 84 H90" stroke-width="4.6"/>
+</g>
+</g>
+<g id="o3">
+<rect width="100" height="100" fill="#144639"/>
+<path d="M28 56 V82 L50 100 L72 82 V56 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 58 C44 70 45 82 50 94 C55 82 56 70 50 58 Z"/>
+<path d="M50 58 C46 68 46.5 76 50 84 C53.5 76 54 68 50 58 Z" transform="rotate(-32 50 56)"/>
+<path d="M50 58 C46 68 46.5 76 50 84 C53.5 76 54 68 50 58 Z" transform="rotate(32 50 56)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round" opacity="0.75">
+<path d="M50 58 C44 70 45 82 50 94 C55 82 56 70 50 58 Z" stroke-width="2.4"/>
+<path d="M50 58 C46 68 46.5 76 50 84 C53.5 76 54 68 50 58 Z" stroke-width="2.4" transform="rotate(-32 50 56)"/>
+<path d="M50 58 C46 68 46.5 76 50 84 C53.5 76 54 68 50 58 Z" stroke-width="2.4" transform="rotate(32 50 56)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round">
+<path d="M28 56 V30 L50 12 L72 30 V56" stroke-width="4.6"/>
+<path d="M12 56 H88" stroke-width="4.6"/>
+</g>
+</g>
+<g id="o4">
+<rect width="100" height="100" fill="#144639"/>
+<path d="M24 84 V46 L50 24 L76 46 V84 Z" fill="#C99C3E"/>
+<path d="M24 46 L50 24 L76 46 Z" fill="#E7BA61"/>
+<path d="M24 60 H50 V84 H24 Z" fill="#2E7D63"/>
+<path d="M50 60 H76 V84 H50 Z" fill="#10192E"/>
+<path d="M50 82 C44 70 45 58 50 50 C55 58 56 70 50 82 Z" fill="#C99C3E"/>
+<g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round">
+<path d="M50 82 C44 70 45 58 50 50 C55 58 56 70 50 82 Z" stroke-width="2.6"/>
+<path d="M24 46 H76" stroke-width="2.6"/>
+<path d="M24 60 H76" stroke-width="2.6"/>
+<path d="M24 84 V46 L50 24 L76 46 V84" stroke-width="4.6"/>
+<path d="M12 84 H88" stroke-width="4.6"/>
+</g>
+</g>
+<g id="o5">
+<rect width="100" height="100" fill="#144639"/>
+<path d="M16 84 A34 34 0 0 1 50 50 L50 84 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 82 C45 70 46 58 50 49 C54 58 55 70 50 82 Z" transform="rotate(-24 50 84)"/>
+<path d="M50 82 C46 73 46.5 65 50 57 C53.5 65 54 73 50 82 Z" transform="rotate(-58 50 84)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round">
+<path d="M50 82 C45 70 46 58 50 49 C54 58 55 70 50 82 Z" stroke-width="2.6" transform="rotate(-24 50 84)"/>
+<path d="M50 82 C46 73 46.5 65 50 57 C53.5 65 54 73 50 82 Z" stroke-width="2.6" transform="rotate(-58 50 84)"/>
+<path d="M18 84 A32 32 0 0 1 50 52" stroke-width="3.4"/>
+<path d="M50 26 L76 48 V84" stroke-width="4.6"/>
+<path d="M50 84 V26" stroke-width="4.6"/>
+<path d="M12 84 H88" stroke-width="4.6"/>
+</g>
+</g>
+</defs>
+<g transform="translate(56,80) scale(1.08)"><g clip-path="url(#sq)"><use href="#o1"/></g></g>
+<g transform="translate(184,112) scale(0.44)"><g clip-path="url(#ci)"><use href="#o1"/></g></g>
+<text x="640" y="122" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">و · البيت المقوَّس</text>
+<text x="640" y="148" text-anchor="end" font-size="13" fill="#6B7280">هيكل البيت نفسه صار قوس قمرية مدبَّباً</text>
+<g transform="translate(56,220) scale(1.08)"><g clip-path="url(#sq)"><use href="#o2"/></g></g>
+<g transform="translate(184,252) scale(0.44)"><g clip-path="url(#ci)"><use href="#o2"/></g></g>
+<text x="640" y="262" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ز · إيوان بأقواس متداخلة</text>
+<text x="640" y="288" text-anchor="end" font-size="13" fill="#6B7280">ثلاثة أقواس تتلقّى بعضها، وأصغرها زجاج مضاء</text>
+<g transform="translate(56,360) scale(1.08)"><g clip-path="url(#sq)"><use href="#o3"/></g></g>
+<g transform="translate(184,392) scale(0.44)"><g clip-path="url(#ci)"><use href="#o3"/></g></g>
+<text x="640" y="402" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ح · البيت وانعكاسه الملوَّن</text>
+<text x="640" y="428" text-anchor="end" font-size="13" fill="#6B7280">الخطّ فوق الأرض، وزجاج القمرية انعكاسه تحتها</text>
+<g transform="translate(56,500) scale(1.08)"><g clip-path="url(#sq)"><use href="#o4"/></g></g>
+<g transform="translate(184,532) scale(0.44)"><g clip-path="url(#ci)"><use href="#o4"/></g></g>
+<text x="640" y="542" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ط · بيت من فُصوص زجاجية</text>
+<text x="640" y="568" text-anchor="end" font-size="13" fill="#6B7280">السقف والجدران فُصوص ملوّنة يفصلها الجصّ</text>
+<g transform="translate(56,640) scale(1.08)"><g clip-path="url(#sq)"><use href="#o5"/></g></g>
+<g transform="translate(184,672) scale(0.44)"><g clip-path="url(#ci)"><use href="#o5"/></g></g>
+<text x="640" y="682" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ي · نصفٌ بيت ونصفٌ قمرية</text>
+<text x="640" y="708" text-anchor="end" font-size="13" fill="#6B7280">تناظرٌ رأسي يجعل الشكلين شكلاً واحداً</text>
+</svg>

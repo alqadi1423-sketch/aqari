@@ -1,0 +1,50 @@
+/**
+ * تفاصيل الخطأ كاملةً في ملف يقرؤه صاحب الجهاز.
+ *
+ * ولمَ ملف: السجل الداخلي يحفظ ثلاثمئة حرف من الرسالة، وأثر الاستثناء وحده يتجاوزها
+ * أضعافاً · فيضيع الموضع الذي وقع فيه العطل وهو أنفع ما في التقرير كلّه. فيُكتب
+ * الأثر كاملاً في مجلد التنزيلات باسمٍ يحمل تاريخه، ويبقى نصّه في الحافظة بزرّ.
+ */
+import { Linking, Platform } from 'react-native';
+import { appDataRoot, expoFs } from '../files/expoFs';
+import { joinPath } from '../files/fsAdapter';
+
+const enc = new TextEncoder();
+
+/** بادئة الاسم وشكله · تطابقهما الشاشة الأصلية حرفاً بحرف قبل أن تنقل الملف */
+function reportName(at: Date): string {
+  const stamp = at.toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  return `عقاري · خطأ · ${stamp}.txt`;
+}
+
+/** نصّ التقرير · عناوينه عربية ومتنه أثر الاستثناء كما هو */
+export function errorReportText(where: string, e: unknown, at: Date = new Date()): string {
+  const stack = e instanceof Error ? (e.stack ?? e.message) : String(e);
+  return [
+    'تقرير خطأ · عقاري',
+    'الموضع: ' + where,
+    'الوقت: ' + at.toISOString(),
+    'المنصّة: ' + Platform.OS,
+    '────────────────',
+    stack,
+  ].join('\n');
+}
+
+/**
+ * يكتب التقرير في المؤقت ثم ينادي الشاشة الأصلية لتنقله إلى التنزيلات.
+ * يعيد اسم الملف إن تمّ، وفارغاً إن تعذّر · ولا يرمي أبداً فهو مسار خطأ أصلاً.
+ */
+export async function saveErrorReport(where: string, e: unknown): Promise<string> {
+  if (Platform.OS !== 'android') return '';
+  try {
+    const at = new Date();
+    const name = reportName(at);
+    const dir = joinPath(appDataRoot(), 'tmp');
+    expoFs.mkdirp(dir);
+    expoFs.write(joinPath(dir, name), enc.encode(errorReportText(where, e, at)));
+    await Linking.openURL('aqarilog://save/' + encodeURIComponent(name));
+    return name;
+  } catch {
+    return '';
+  }
+}

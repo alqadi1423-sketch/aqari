@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/strip_root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:background="@drawable/widget_bg"
+  android:orientation="horizontal"
+  android:gravity="center_vertical"
+  android:layoutDirection="rtl"
+  android:paddingStart="16dp"
+  android:paddingEnd="12dp">
+
+  <LinearLayout
+    android:layout_width="0dp"
+    android:layout_height="wrap_content"
+    android:layout_weight="1"
+    android:orientation="vertical">
+    <TextView
+      android:id="@+id/strip_title"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:textSize="14sp"
+      android:textColor="#FFAE4438"
+      android:maxLines="1"
+      android:ellipsize="end"
+      android:textAlignment="viewStart"/>
+    <TextView
+      android:id="@+id/strip_amount"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:textSize="19sp"
+      android:textStyle="bold"
+      android:textColor="#FF10192E"
+      android:maxLines="1"
+      android:textAlignment="viewStart"/>
+  </LinearLayout>
+
+  <TextView
+    android:id="@+id/strip_button"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/widget_pill_green"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="7dp"
+    android:paddingBottom="7dp"
+    android:text="@string/widget_action_collect"
+    android:textSize="13sp"
+    android:textColor="#FF1E6E5C"/>
+</LinearLayout>

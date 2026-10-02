@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="960" viewBox="0 0 680 960" font-family="'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif">
+<rect width="680" height="960" fill="#F6F4EE"/>
+<text x="640" y="44" text-anchor="end" font-size="20" font-weight="700" fill="#10192E">صور «ص٣» · قمرية فوق باب مستقيم</text>
+<defs>
+<clipPath id="t3sq"><rect width="100" height="100" rx="23"/></clipPath>
+<clipPath id="t3ci"><circle cx="50" cy="50" r="50"/></clipPath>
+<clipPath id="hF"><path d="M24 84 V46 L50 24 L76 46 V84 Z"/></clipPath>
+<clipPath id="hW"><path d="M24 84 V46 H76 V84 Z"/></clipPath>
+<g id="bkFull">
+<path d="M0 18 H100 M0 32 H100 M0 46 H100 M0 60 H100 M0 74 H100 M0 88 H100" stroke="#F6F4EE" stroke-width="1.8"/>
+<path d="M22 18 V32 M58 18 V32 M40 32 V46 M76 32 V46 M22 46 V60 M58 46 V60 M40 60 V74 M76 60 V74 M22 74 V88 M58 74 V88" stroke="#F6F4EE" stroke-width="1.8"/>
+</g>
+<g id="bkRows">
+<path d="M0 32 H100 M0 46 H100 M0 60 H100 M0 74 H100 M0 88 H100" stroke="#F6F4EE" stroke-width="2.2"/>
+</g>
+<g id="hOut3">
+<path d="M24 84 V46 L50 24 L76 46 V84" fill="none" stroke="#F6F4EE" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12 84 H88" fill="none" stroke="#F6F4EE" stroke-width="4.6" stroke-linecap="round"/>
+</g>
+<g id="opnA">
+<path d="M41 84 V64 H59 V84 Z" fill="#0E3830"/>
+<path d="M41 84 V64 H59 V84" fill="none" stroke="#D9A441" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M37 62 A13 13 0 0 1 63 62 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(-40 50 62)"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(40 50 62)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-width="1.5" stroke-linejoin="round">
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(-40 50 62)"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(40 50 62)"/>
+</g>
+<path d="M37 62 A13 13 0 0 1 63 62" fill="none" stroke="#D9A441" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g id="opnB">
+<path d="M43 84 V66 H57 V84 Z" fill="#0E3830"/>
+<path d="M43 84 V66 H57 V84" fill="none" stroke="#D9A441" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M33 64 A17 17 0 0 1 67 64 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 62 C46.5 56 47 50 50 45 C53 50 53.5 56 50 62 Z"/>
+<path d="M50 62 C46.5 56 47 50 50 45 C53 50 53.5 56 50 62 Z" transform="rotate(-42 50 64)"/>
+<path d="M50 62 C46.5 56 47 50 50 45 C53 50 53.5 56 50 62 Z" transform="rotate(42 50 64)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-width="1.7" stroke-linejoin="round">
+<path d="M50 62 C46.5 56 47 50 50 45 C53 50 53.5 56 50 62 Z"/>
+<path d="M50 62 C46.5 56 47 50 50 45 C53 50 53.5 56 50 62 Z" transform="rotate(-42 50 64)"/>
+<path d="M50 62 C46.5 56 47 50 50 45 C53 50 53.5 56 50 62 Z" transform="rotate(42 50 64)"/>
+</g>
+<path d="M33 64 A17 17 0 0 1 67 64" fill="none" stroke="#D9A441" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M31 64 H69" stroke="#F6F4EE" stroke-width="3" stroke-linecap="round"/>
+</g>
+<g id="opnC">
+<path d="M42 84 V70 H58 V84 Z" fill="#0E3830"/>
+<path d="M42 84 V70 H58 V84" fill="none" stroke="#D9A441" stroke-width="2.8" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M35 68 A15 15 0 0 1 65 68 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 66 C47 61 47.5 56 50 51 C52.5 56 53 61 50 66 Z"/>
+<path d="M50 66 C47 61 47.5 56 50 51 C52.5 56 53 61 50 66 Z" transform="rotate(-42 50 68)"/>
+<path d="M50 66 C47 61 47.5 56 50 51 C52.5 56 53 61 50 66 Z" transform="rotate(42 50 68)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-width="1.6" stroke-linejoin="round">
+<path d="M50 66 C47 61 47.5 56 50 51 C52.5 56 53 61 50 66 Z"/>
+<path d="M50 66 C47 61 47.5 56 50 51 C52.5 56 53 61 50 66 Z" transform="rotate(-42 50 68)"/>
+<path d="M50 66 C47 61 47.5 56 50 51 C52.5 56 53 61 50 66 Z" transform="rotate(42 50 68)"/>
+</g>
+<path d="M35 68 A15 15 0 0 1 65 68" fill="none" stroke="#D9A441" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g id="w1"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hF)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.3"><use href="#bkFull"/></g></g><use href="#opnA"/><use href="#hOut3"/></g>
+<g id="w2"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hF)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.3"><use href="#bkFull"/></g></g><use href="#opnB"/><use href="#hOut3"/></g>
+<g id="w3"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hF)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.32"><use href="#bkRows"/></g></g><use href="#opnA"/><use href="#hOut3"/></g>
+<g id="w4"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hW)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.32"><use href="#bkFull"/></g></g><use href="#opnA"/><use href="#hOut3"/></g>
+<g id="w5"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hF)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.3"><use href="#bkFull"/></g></g><use href="#opnC"/><use href="#hOut3"/></g>
+<g id="w6"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hW)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.34"><use href="#bkRows"/></g></g><use href="#opnB"/><use href="#hOut3"/></g>
+</defs>
+<g transform="translate(56,80) scale(1.08)"><g clip-path="url(#t3sq)"><use href="#w1"/></g></g>
+<g transform="translate(184,112) scale(0.44)"><g clip-path="url(#t3ci)"><use href="#w1"/></g></g>
+<text x="640" y="122" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">١ · الأصل · المختار</text>
+<text x="640" y="148" text-anchor="end" font-size="13" fill="#6B7280">قمرية بعرض الباب · طوب كامل بمداميك ولحامات</text>
+<g transform="translate(56,220) scale(1.08)"><g clip-path="url(#t3sq)"><use href="#w2"/></g></g>
+<g transform="translate(184,252) scale(0.44)"><g clip-path="url(#t3ci)"><use href="#w2"/></g></g>
+<text x="640" y="262" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٢ · قمرية أعرض على عَتَب</text>
+<text x="640" y="288" text-anchor="end" font-size="13" fill="#6B7280">القوس يتجاوز الباب ويستند على عتبة</text>
+<g transform="translate(56,360) scale(1.08)"><g clip-path="url(#t3sq)"><use href="#w3"/></g></g>
+<g transform="translate(184,392) scale(0.44)"><g clip-path="url(#t3ci)"><use href="#w3"/></g></g>
+<text x="640" y="402" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٣ · مداميك أفقية فقط</text>
+<text x="640" y="428" text-anchor="end" font-size="13" fill="#6B7280">نصف الخطوط · لا يختنق النسيج عند التصغير</text>
+<g transform="translate(56,500) scale(1.08)"><g clip-path="url(#t3sq)"><use href="#w4"/></g></g>
+<g transform="translate(184,532) scale(0.44)"><g clip-path="url(#t3ci)"><use href="#w4"/></g></g>
+<text x="640" y="542" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٤ · الجدران طوب والجملون نظيف</text>
+<text x="640" y="568" text-anchor="end" font-size="13" fill="#6B7280">المثلّث خالٍ فيُقرأ شكل البيت أسرع</text>
+<g transform="translate(56,640) scale(1.08)"><g clip-path="url(#t3sq)"><use href="#w5"/></g></g>
+<g transform="translate(184,672) scale(0.44)"><g clip-path="url(#t3ci)"><use href="#w5"/></g></g>
+<text x="640" y="682" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٥ · قمرية أكبر وباب أقصر</text>
+<text x="640" y="708" text-anchor="end" font-size="13" fill="#6B7280">الوزن للضوء لا للفتحة</text>
+<g transform="translate(56,780) scale(1.08)"><g clip-path="url(#t3sq)"><use href="#w6"/></g></g>
+<g transform="translate(184,812) scale(0.44)"><g clip-path="url(#t3ci)"><use href="#w6"/></g></g>
+<text x="640" y="822" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">٦ · المركَّبة · ٢ مع ٣ مع ٤</text>
+<text x="640" y="848" text-anchor="end" font-size="13" fill="#6B7280">قوس عريض على عتب · مداميك أفقية · جملون نظيف</text>
+</svg>

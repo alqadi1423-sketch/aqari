@@ -1,0 +1,159 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 1000" width="1100" height="1000" font-family="'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0E3830"/><stop offset="1" stop-color="#8C6C24"/>
+  </linearGradient>
+  <radialGradient id="amber" cx="50%" cy="95%" r="75%">
+    <stop offset="0" stop-color="#E7BA61"/><stop offset="1" stop-color="#B08D3D"/>
+  </radialGradient>
+  <clipPath id="squircle"><rect x="0" y="0" width="100" height="100" rx="23"/></clipPath>
+  <clipPath id="circle"><circle cx="50" cy="50" r="50"/></clipPath>
+
+  <!-- أ · قمرية كاملة بزجاجها -->
+  <g id="icA">
+    <rect width="100" height="100" fill="#144639"/>
+    <path d="M18 68 A32 32 0 0 1 82 68 Z" fill="url(#amber)"/>
+    <path d="M18 68 A32 32 0 0 1 22.3 51.9 L34 68 Z" fill="#10192E"/>
+    <path d="M82 68 A32 32 0 0 0 77.7 51.9 L66 68 Z" fill="#10192E"/>
+    <g fill="#2E7D63">
+      <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z"/>
+      <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" transform="rotate(-38 50 68)"/>
+      <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" transform="rotate(38 50 68)"/>
+    </g>
+    <g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" stroke-width="2.8"/>
+      <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" stroke-width="2.8" transform="rotate(-38 50 68)"/>
+      <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" stroke-width="2.8" transform="rotate(38 50 68)"/>
+      <path d="M37 68 A13 13 0 0 1 63 68" stroke-width="2.8"/>
+      <path d="M20 68 A30 30 0 0 1 80 68" stroke-width="3.4"/>
+      <path d="M14 68 H86" stroke-width="4"/>
+    </g>
+  </g>
+
+  <!-- ب · قمرية فوق باب · تطوير الأيقونة الحالية -->
+  <g id="icB">
+    <rect width="100" height="100" fill="url(#bg)"/>
+    <path d="M28 60 A22 22 0 0 1 72 60 Z" fill="url(#amber)"/>
+    <g fill="#2E7D63">
+      <path d="M50 59 C45.5 50 46 43 50 37 C54 43 54.5 50 50 59 Z"/>
+      <path d="M50 59 C45.5 50 46 43 50 37 C54 43 54.5 50 50 59 Z" transform="rotate(-42 50 60)"/>
+      <path d="M50 59 C45.5 50 46 43 50 37 C54 43 54.5 50 50 59 Z" transform="rotate(42 50 60)"/>
+    </g>
+    <g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M50 59 C45.5 50 46 43 50 37 C54 43 54.5 50 50 59 Z" stroke-width="2.4"/>
+      <path d="M50 59 C45.5 50 46 43 50 37 C54 43 54.5 50 50 59 Z" stroke-width="2.4" transform="rotate(-42 50 60)"/>
+      <path d="M50 59 C45.5 50 46 43 50 37 C54 43 54.5 50 50 59 Z" stroke-width="2.4" transform="rotate(42 50 60)"/>
+      <path d="M40 60 A10 10 0 0 1 60 60" stroke-width="2.4"/>
+    </g>
+    <path d="M24 86 V60 A26 26 0 0 1 76 60 V86" fill="none" stroke="#F6F4EE" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M28 86 V64 H72 V86 Z" fill="#0E3830"/>
+    <path d="M28 64 H72" stroke="#F6F4EE" stroke-width="4.4" stroke-linecap="round"/>
+    <path d="M18 86 H82" stroke="#F6F4EE" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="37" cy="76" r="2.6" fill="#D9A441"/>
+  </g>
+
+  <!-- ج · شمسية دائرية · تملأ القناع الدائري -->
+  <g id="icC">
+    <rect width="100" height="100" fill="#144639"/>
+    <circle cx="50" cy="50" r="31" fill="url(#amber)"/>
+    <g fill="#2E7D63">
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(45 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(90 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(135 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(180 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(225 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(270 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(315 50 50)"/>
+    </g>
+    <g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.6">
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(45 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(90 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(135 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(180 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(225 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(270 50 50)"/>
+      <path d="M50 50 C44 39 45 29 50 21 C55 29 56 39 50 50 Z" transform="rotate(315 50 50)"/>
+      <circle cx="50" cy="50" r="10.5"/>
+      <circle cx="50" cy="50" r="31" stroke-width="3.4"/>
+    </g>
+  </g>
+
+  <!-- د · قمرية خطّية · جصّ بلا زجاج -->
+  <g id="icD">
+    <rect width="100" height="100" fill="#144639"/>
+    <g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" stroke-width="3.2"/>
+      <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" stroke-width="3.2" transform="rotate(-38 50 68)"/>
+      <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" stroke-width="3.2" transform="rotate(38 50 68)"/>
+      <path d="M37 68 A13 13 0 0 1 63 68" stroke-width="3.2"/>
+      <path d="M20 68 A30 30 0 0 1 80 68" stroke-width="3.8"/>
+      <path d="M14 68 H86" stroke-width="4.4"/>
+    </g>
+    <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" fill="#D9A441" opacity="0.9"/>
+    <path d="M50 66 C44 54 45 45 50 38 C55 45 56 54 50 66 Z" fill="none" stroke="#F6F4EE" stroke-width="3.2" stroke-linejoin="round"/>
+  </g>
+</defs>
+
+<rect width="1100" height="1000" fill="#F6F4EE"/>
+<text x="1060" y="50" text-anchor="end" font-size="26" font-weight="700" fill="#10192E">أيقونة التطبيق · أربعة اتجاهات من القمرية</text>
+<text x="1060" y="80" text-anchor="end" font-size="15" fill="#6B7280">اليمين: الشكل الكبير · اليسار: مقاسه الحقيقي على الشاشة (٤٨ نقطة) بقناع دائري</text>
+
+<!-- الحالي -->
+<g transform="translate(880,110)">
+  <g clip-path="url(#squircle)" transform="scale(1.6)">
+    <rect width="100" height="100" fill="url(#bg)"/>
+    <g fill="none" stroke="#F6F4EE" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M25 84 V46 L50 24 L75 46 V84"/><path d="M12 84 H30"/><path d="M70 84 H88"/>
+    </g>
+    <path d="M40 84 V64 A10 10 0 0 1 60 64 V84" fill="none" stroke="#D9A441" stroke-width="6" stroke-linecap="round"/>
+  </g>
+</g>
+<text x="860" y="200" text-anchor="end" font-size="18" font-weight="700" fill="#10192E">الحالي</text>
+<text x="860" y="226" text-anchor="end" font-size="14" fill="#6B7280">بيت بقوس باب ذهبي</text>
+
+<g transform="translate(700,110)"><g clip-path="url(#circle)" transform="scale(0.48)">
+  <rect width="100" height="100" fill="url(#bg)"/>
+  <g fill="none" stroke="#F6F4EE" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M25 84 V46 L50 24 L75 46 V84"/><path d="M12 84 H30"/><path d="M70 84 H88"/>
+  </g>
+  <path d="M40 84 V64 A10 10 0 0 1 60 64 V84" fill="none" stroke="#D9A441" stroke-width="6" stroke-linecap="round"/>
+</g></g>
+
+<line x1="60" y1="300" x2="1040" y2="300" stroke="#E4E1D8" stroke-width="2"/>
+
+<!-- أ -->
+<g transform="translate(880,330)"><g clip-path="url(#squircle)" transform="scale(1.6)"><use href="#icA"/></g></g>
+<g transform="translate(700,330)"><g clip-path="url(#circle)" transform="scale(0.48)"><use href="#icA"/></g></g>
+<text x="640" y="366" text-anchor="end" font-size="20" font-weight="700" fill="#1E6E5C">أ · القمرية وحدها</text>
+<text x="640" y="396" text-anchor="end" font-size="15" fill="#374151">نصف قوس بزجاجه: كهرمان وأخضر وأزرق وجصّ. أقرب شيء للصورة.</text>
+<text x="640" y="422" text-anchor="end" font-size="15" fill="#AE4438">القاعدة المستقيمة تحت المنتصف · القناع الدائري يقصّ أطرافها.</text>
+
+<line x1="60" y1="480" x2="1040" y2="480" stroke="#E4E1D8" stroke-width="2"/>
+
+<!-- ب -->
+<g transform="translate(880,505)"><g clip-path="url(#squircle)" transform="scale(1.6)"><use href="#icB"/></g></g>
+<g transform="translate(700,505)"><g clip-path="url(#circle)" transform="scale(0.48)"><use href="#icB"/></g></g>
+<text x="640" y="541" text-anchor="end" font-size="20" font-weight="700" fill="#1E6E5C">ب · قمرية فوق باب</text>
+<text x="640" y="571" text-anchor="end" font-size="15" fill="#374151">تطوير الحالي لا قطيعة معه: القوس الذهبي صار قمرية حقيقية فوق باب.</text>
+<text x="640" y="597" text-anchor="end" font-size="15" fill="#374151">يبقى «عقار» في المعنى، ويكسب الزخرفة. أعلى تفاصيل فأقلّها وضوحاً صغيراً.</text>
+
+<line x1="60" y1="655" x2="1040" y2="655" stroke="#E4E1D8" stroke-width="2"/>
+
+<!-- ج -->
+<g transform="translate(880,680)"><g clip-path="url(#squircle)" transform="scale(1.6)"><use href="#icC"/></g></g>
+<g transform="translate(700,680)"><g clip-path="url(#circle)" transform="scale(0.48)"><use href="#icC"/></g></g>
+<text x="640" y="716" text-anchor="end" font-size="20" font-weight="700" fill="#1E6E5C">ج · شمسية دائرية</text>
+<text x="640" y="746" text-anchor="end" font-size="15" fill="#374151">القمرية مستديرة بثماني ورقات · تملأ القناع الدائري بلا زاوية ضائعة.</text>
+<text x="640" y="772" text-anchor="end" font-size="15" fill="#374151">أوضحها في المقاس الصغير · وأبعدها عن معنى «العقار».</text>
+
+<line x1="60" y1="830" x2="1040" y2="830" stroke="#E4E1D8" stroke-width="2"/>
+
+<!-- د -->
+<g transform="translate(880,855)"><g clip-path="url(#squircle)" transform="scale(1.6)"><use href="#icD"/></g></g>
+<g transform="translate(700,855)"><g clip-path="url(#circle)" transform="scale(0.48)"><use href="#icD"/></g></g>
+<text x="640" y="891" text-anchor="end" font-size="20" font-weight="700" fill="#1E6E5C">د · قمرية خطّية</text>
+<text x="640" y="921" text-anchor="end" font-size="15" fill="#374151">جصّ مفرَّغ بلا زجاج، وورقة واحدة مضاءة في القلب.</text>
+<text x="640" y="947" text-anchor="end" font-size="15" fill="#374151">أهدؤها وأشبهها بأيقونات التطبيق العارية · تُقرأ في كل المقاسات.</text>
+</svg>

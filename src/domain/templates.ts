@@ -1,0 +1,94 @@
+/**
+ * قوالب الرسائل · الرموز الخمسة عشر وسياقها وحلّها، منقولة من النموذج.
+ */
+import type { DB } from '../db/adapter';
+import { today, dfmt } from './dates';
+import { fmt } from './money';
+import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
+
+export const TEMPLATE_TOKENS: Array<{ k: string; d: string }> = [
+  { k: '{المستأجر}', d: 'اسم المستأجر' },
+  { k: '{الجوال}', d: 'جوال المستأجر' },
+  { k: '{العقار}', d: 'اسم العقار' },
+  { k: '{الوحدة}', d: 'رقم الوحدة' },
+  { k: '{رقم_العقد}', d: 'رقم العقد' },
+  { k: '{بداية_العقد}', d: 'تاريخ بداية العقد' },
+  { k: '{نهاية_العقد}', d: 'تاريخ نهاية العقد' },
+  { k: '{قيمة_العقد}', d: 'القيمة السنوية للعقد' },
+  { k: '{التأمين}', d: 'مبلغ التأمين' },
+  { k: '{المبلغ}', d: 'مبلغ الدفعة المستحقة' },
+  { k: '{المتبقي}', d: 'المتبقي غير المسدَّد' },
+  { k: '{التاريخ}', d: 'تاريخ استحقاق الدفعة' },
+  { k: '{أيام_التأخير}', d: 'عدد أيام التأخير' },
+  { k: '{المنشأة}', d: 'اسم المنشأة' },
+  { k: '{اليوم}', d: 'تاريخ اليوم' },
+];
+
+export const SCRIPT_CATEGORIES = ['تذكير بالسداد', 'تأخر السداد', 'تجديد العقد', 'إخلاء', 'صيانة', 'عام'];
+export const SCRIPT_AUDIENCES = ['مستأجرون', 'عملاء', 'موظفون'];
+
+export function templateContext(db: DB, contractId: string | null, name?: string): Record<string, string> {
+  const company = db.get<{ name: string }>(`SELECT name FROM company WHERE id = 1`);
+  const ctx: Record<string, string> = {
+    '{المنشأة}': company?.name || 'إدارة العقارات',
+    '{اليوم}': dfmt(today()),
+    '{المستأجر}': name || '',
+  };
+  if (!contractId) return ctx;
+  const c = db.get<{
+    id: string; contract_no: string | null; tenant_name: string; phone: string;
+    unit_id: string; unit_label: string; start: string | null; end: string | null;
+    value_halalas: number; deposit_halalas: number;
+  }>(`SELECT id, contract_no, tenant_name, phone, unit_id, unit_label, start, end, value_halalas, deposit_halalas
+      FROM contracts WHERE id = ?`, [contractId]);
+  if (!c) return ctx;
+  const u = db.get<{ unit_no: string; property_id: string }>(
+    `SELECT unit_no, property_id FROM units WHERE id = ?`, [c.unit_id]
+  );
+  const p = u ? db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [u.property_id]) : undefined;
+  // القسط التالي هو أول قسط بقي عليه شيء بعد المسدَّد والخصم · لا ما حالته المخزَّنة تقول
+  const due = db.get<{ due_date: string; amount_halalas: number; paid_halalas: number }>(
+    `SELECT i.due_date, i.amount_halalas, i.paid_halalas FROM contract_installments i
+     WHERE i.contract_id = ? AND i.status != 'ملغية'
+       AND i.amount_halalas - i.paid_halalas - ${INSTALLMENT_DISCOUNT_SQL} > 0
+     ORDER BY i.due_date LIMIT 1`,
+    [contractId]
+  );
+  const remain = db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(MAX(0, i.amount_halalas - i.paid_halalas - ${INSTALLMENT_DISCOUNT_SQL})),0) AS s
+     FROM contract_installments i WHERE i.contract_id = ? AND i.status != 'ملغية'`,
+    [contractId]
+  );
+  const T = today();
+  Object.assign(ctx, {
+    '{المستأجر}': c.tenant_name || name || '',
+    '{الجوال}': c.phone || '',
+    '{العقار}': p?.name || '',
+    '{الوحدة}': u?.unit_no || c.unit_label || '',
+    '{رقم_العقد}': c.contract_no || '',
+    '{بداية_العقد}': c.start ? dfmt(c.start) : '',
+    '{نهاية_العقد}': c.end ? dfmt(c.end) : '',
+    '{قيمة_العقد}': fmt(Number(c.value_halalas)),
+    '{التأمين}': fmt(Number(c.deposit_halalas)),
+    '{المبلغ}': due
+      ? fmt(Math.max(0, Number(due.amount_halalas) - Number(due.paid_halalas)))
+      : fmt(Number(c.value_halalas)),
+    '{المتبقي}': fmt(remain ? Number(remain.s) : Number(c.value_halalas)),
+    '{التاريخ}': due ? dfmt(due.due_date) : c.end ? dfmt(c.end) : 'لا يوجد',
+    '{أيام_التأخير}':
+      due && due.due_date < T
+        ? String(Math.floor((new Date(T).getTime() - new Date(due.due_date).getTime()) / 864e5))
+        : '0',
+  });
+  return ctx;
+}
+
+export function resolveTemplateTokens(text: string, ctx: Record<string, string>): string {
+  let out = String(text || '');
+  for (const k of Object.keys(ctx)) {
+    const v = ctx[k] == null || ctx[k] === '' ? 'لا يوجد' : ctx[k];
+    out = out.split(k).join(v);
+    out = out.split(k.replace('{', '[').replace('}', ']')).join(v);
+  }
+  return out.replace(/\{الاسم\}|\[الاسم\]/g, ctx['{المستأجر}'] || '');
+}

@@ -1,0 +1,22 @@
+<resources>
+  <string name="app_name">عقاري</string>
+  <string name="expo_system_ui_user_interface_style" translatable="false">light</string>
+  <string name="expo_splash_screen_resize_mode" translatable="false">contain</string>
+
+  <string name="widget_action_collect">تحصيل</string>
+  <string name="widget_action_invoice">فاتورة</string>
+  <string name="widget_action_claim">مطالبة</string>
+  <string name="widget_action_more">المزيد</string>
+
+  <string name="widget_month_title">التحصيل هذا الشهر</string>
+  <string name="widget_late_count">%1$d دفعة متأخرة</string>
+  <string name="widget_no_late">لا دفعات متأخرة</string>
+  <string name="widget_collected_of">محصَّل من %1$s مستحق</string>
+  <string name="widget_month_pct">%1$d٪ من مستحق الشهر</string>
+  <string name="widget_empty_title">لا بيانات بعد</string>
+  <string name="widget_empty_hint">افتح التطبيق وأضف أول عقار</string>
+
+  <string name="widget_desc_strip">كم دفعة متأخرة وبكم · بضغطة تفتح التحصيل</string>
+  <string name="widget_desc_actions">اختصارات التحصيل والفاتورة والمطالبة · بلا بيانات</string>
+  <string name="widget_desc_panel">المحصَّل مقابل المستحق هذا الشهر بشريط تقدّم</string>
+</resources>

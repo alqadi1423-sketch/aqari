@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 1310" width="1120" height="1310" font-family="'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0E3830"/><stop offset="1" stop-color="#8C6C24"/>
+  </linearGradient>
+  <radialGradient id="amber" cx="50%" cy="96%" r="78%">
+    <stop offset="0" stop-color="#EFC46B"/>
+    <stop offset="0.55" stop-color="#C99C3E"/><stop offset="1" stop-color="#9A7728"/>
+  </radialGradient>
+  <clipPath id="sq"><rect width="100" height="100" rx="23"/></clipPath>
+  <clipPath id="ci"><circle cx="50" cy="50" r="50"/></clipPath>
+  <clipPath id="houseClip"><path d="M23 83 V47 L50 25 L77 47 V83 Z"/></clipPath>
+  <clipPath id="roofArch"><path d="M24 57 A26 26 0 0 1 76 57 Z"/></clipPath>
+
+  <!-- أ · جسد البيت زجاج قمرية -->
+  <g id="mA">
+    <rect width="100" height="100" fill="#144639"/>
+    <g clip-path="url(#houseClip)">
+      <rect x="20" y="20" width="60" height="66" fill="url(#amber)"/>
+      <g fill="#2E7D63">
+        <path d="M50 81 C43 67 44 55 50 46 C56 55 57 67 50 81 Z"/>
+        <path d="M50 81 C43 67 44 55 50 46 C56 55 57 67 50 81 Z" transform="rotate(-40 50 83)"/>
+        <path d="M50 81 C43 67 44 55 50 46 C56 55 57 67 50 81 Z" transform="rotate(40 50 83)"/>
+      </g>
+      <g fill="none" stroke="#F6F4EE" stroke-width="2.6" stroke-linejoin="round">
+        <path d="M50 81 C43 67 44 55 50 46 C56 55 57 67 50 81 Z"/>
+        <path d="M50 81 C43 67 44 55 50 46 C56 55 57 67 50 81 Z" transform="rotate(-40 50 83)"/>
+        <path d="M50 81 C43 67 44 55 50 46 C56 55 57 67 50 81 Z" transform="rotate(40 50 83)"/>
+        <path d="M38 83 A12 12 0 0 1 62 83"/>
+      </g>
+    </g>
+    <g fill="none" stroke="#F6F4EE" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M23 83 V47 L50 25 L77 47 V83"/><path d="M13 83 H87"/>
+    </g>
+  </g>
+
+  <!-- ب · الباب قمرية والضوء يخرج منه -->
+  <g id="mB">
+    <rect width="100" height="100" fill="url(#bg)"/>
+    <path d="M33 83 L67 83 L80 100 H20 Z" fill="#EFC46B" opacity="0.22"/>
+    <path d="M38 83 V70 A12 12 0 0 1 62 70 V83 Z" fill="url(#amber)"/>
+    <g fill="#2E7D63">
+      <path d="M50 82 C46 75 46.5 70 50 65 C53.5 70 54 75 50 82 Z"/>
+      <path d="M50 82 C46 75 46.5 70 50 65 C53.5 70 54 75 50 82 Z" transform="rotate(-44 50 83)"/>
+      <path d="M50 82 C46 75 46.5 70 50 65 C53.5 70 54 75 50 82 Z" transform="rotate(44 50 83)"/>
+    </g>
+    <g fill="none" stroke="#F6F4EE" stroke-width="1.9" stroke-linejoin="round">
+      <path d="M50 82 C46 75 46.5 70 50 65 C53.5 70 54 75 50 82 Z"/>
+      <path d="M50 82 C46 75 46.5 70 50 65 C53.5 70 54 75 50 82 Z" transform="rotate(-44 50 83)"/>
+      <path d="M50 82 C46 75 46.5 70 50 65 C53.5 70 54 75 50 82 Z" transform="rotate(44 50 83)"/>
+    </g>
+    <path d="M38 83 V70 A12 12 0 0 1 62 70 V83" fill="none" stroke="#F6F4EE" stroke-width="3.4" stroke-linejoin="round"/>
+    <g fill="none" stroke="#F6F4EE" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M23 83 V47 L50 25 L77 47 V83"/><path d="M13 83 H87"/>
+    </g>
+  </g>
+
+  <!-- ج · سقف مقوّس · القمرية هي السقف -->
+  <g id="mC">
+    <rect width="100" height="100" fill="#144639"/>
+    <g clip-path="url(#roofArch)">
+      <rect x="20" y="26" width="60" height="34" fill="url(#amber)"/>
+      <g fill="#2E7D63">
+        <path d="M50 56 C44.5 47 45 39 50 32 C55 39 55.5 47 50 56 Z"/>
+        <path d="M50 56 C44.5 47 45 39 50 32 C55 39 55.5 47 50 56 Z" transform="rotate(-42 50 57)"/>
+        <path d="M50 56 C44.5 47 45 39 50 32 C55 39 55.5 47 50 56 Z" transform="rotate(42 50 57)"/>
+      </g>
+      <g fill="none" stroke="#F6F4EE" stroke-width="2.4" stroke-linejoin="round">
+        <path d="M50 56 C44.5 47 45 39 50 32 C55 39 55.5 47 50 56 Z"/>
+        <path d="M50 56 C44.5 47 45 39 50 32 C55 39 55.5 47 50 56 Z" transform="rotate(-42 50 57)"/>
+        <path d="M50 56 C44.5 47 45 39 50 32 C55 39 55.5 47 50 56 Z" transform="rotate(42 50 57)"/>
+        <path d="M40 57 A10 10 0 0 1 60 57"/>
+      </g>
+    </g>
+    <g fill="none" stroke="#F6F4EE" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M24 57 A26 26 0 0 1 76 57"/>
+      <path d="M24 57 V84"/><path d="M76 57 V84"/><path d="M13 84 H87"/>
+    </g>
+    <path d="M43 84 V72 A7 7 0 0 1 57 72 V84" fill="none" stroke="#D9A441" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <!-- د · البيت في الفراغ · القمرية خلفه تضيئه -->
+  <g id="mD">
+    <rect width="100" height="100" fill="#144639"/>
+    <path d="M17 78 A33 33 0 0 1 83 78 Z" fill="url(#amber)"/>
+    <g fill="#2E7D63">
+      <path d="M50 76 C43 62 44 51 50 43 C56 51 57 62 50 76 Z" transform="rotate(-52 50 78)"/>
+      <path d="M50 76 C43 62 44 51 50 43 C56 51 57 62 50 76 Z" transform="rotate(52 50 78)"/>
+      <path d="M50 76 C45 66 45.5 58 50 51 C54.5 58 55 66 50 76 Z" transform="rotate(-26 50 78)"/>
+      <path d="M50 76 C45 66 45.5 58 50 51 C54.5 58 55 66 50 76 Z" transform="rotate(26 50 78)"/>
+    </g>
+    <g fill="none" stroke="#F6F4EE" stroke-width="2.4" stroke-linejoin="round">
+      <path d="M50 76 C43 62 44 51 50 43 C56 51 57 62 50 76 Z" transform="rotate(-52 50 78)"/>
+      <path d="M50 76 C43 62 44 51 50 43 C56 51 57 62 50 76 Z" transform="rotate(52 50 78)"/>
+      <path d="M50 76 C45 66 45.5 58 50 51 C54.5 58 55 66 50 76 Z" transform="rotate(-26 50 78)"/>
+      <path d="M50 76 C45 66 45.5 58 50 51 C54.5 58 55 66 50 76 Z" transform="rotate(26 50 78)"/>
+      <path d="M19 78 A31 31 0 0 1 81 78" stroke-width="3.2"/>
+    </g>
+    <path d="M31 78 V57 L50 41 L69 57 V78 Z" fill="#144639"/>
+    <g fill="none" stroke="#F6F4EE" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M31 78 V57 L50 41 L69 57 V78"/>
+    </g>
+    <path d="M13 78 H87" stroke="#F6F4EE" stroke-width="4.6" stroke-linecap="round"/>
+  </g>
+
+  <!-- هـ · ورقة القمرية سقفاً -->
+  <g id="mE">
+    <rect width="100" height="100" fill="#144639"/>
+    <path d="M50 62 C34 44 36 30 50 16 C64 30 66 44 50 62 Z" fill="url(#amber)"/>
+    <path d="M50 58 C40 45 41 34 50 24 C59 34 60 45 50 58 Z" fill="#2E7D63" opacity="0.55"/>
+    <g fill="none" stroke="#F6F4EE" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M50 62 C34 44 36 30 50 16 C64 30 66 44 50 62 Z" stroke-width="4.4"/>
+      <path d="M50 58 C40 45 41 34 50 24 C59 34 60 45 50 58 Z" stroke-width="2.6"/>
+      <path d="M28 84 V62" stroke-width="5"/><path d="M72 84 V62" stroke-width="5"/>
+      <path d="M13 84 H87" stroke-width="5"/>
+      <path d="M28 62 H72" stroke-width="4"/>
+    </g>
+  </g>
+</defs>
+
+<rect width="1120" height="1310" fill="#F6F4EE"/>
+<text x="1080" y="48" text-anchor="end" font-size="26" font-weight="700" fill="#10192E">دمج القمرية في أيقونة «عقاري» · خمسة اتجاهات</text>
+<text x="1080" y="78" text-anchor="end" font-size="15" fill="#6B7280">اليمين: الشكل الكبير · اليسار: مقاسه الحقيقي على الشاشة بقناع دائري</text>
+
+<g transform="translate(900,105)"><g clip-path="url(#sq)" transform="scale(1.5)">
+  <rect width="100" height="100" fill="url(#bg)"/>
+  <g fill="none" stroke="#F6F4EE" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M25 84 V46 L50 24 L75 46 V84"/><path d="M12 84 H30"/><path d="M70 84 H88"/>
+  </g>
+  <path d="M40 84 V64 A10 10 0 0 1 60 64 V84" fill="none" stroke="#D9A441" stroke-width="6" stroke-linecap="round"/>
+</g></g>
+<text x="860" y="150" text-anchor="end" font-size="19" font-weight="700" fill="#10192E">الحالي · للمقارنة</text>
+<text x="860" y="178" text-anchor="end" font-size="14" fill="#6B7280">بيت أبيض بقوس باب ذهبي على تدرّج</text>
+
+<line x1="60" y1="272" x2="1060" y2="272" stroke="#E4E1D8" stroke-width="2"/>
+
+<g transform="translate(900,296)"><g clip-path="url(#sq)" transform="scale(1.5)"><use href="#mA"/></g></g>
+<g transform="translate(730,296)"><g clip-path="url(#ci)" transform="scale(0.46)"><use href="#mA"/></g></g>
+<text x="676" y="330" text-anchor="end" font-size="20" font-weight="700" fill="#1E6E5C">أ · جسد البيت زجاجُ قمرية</text>
+<text x="676" y="360" text-anchor="end" font-size="15" fill="#374151">هيكل البيت كما هو، لكن داخله ليس فراغاً: زجاج مضاء وورقات وجصّ.</text>
+<text x="676" y="386" text-anchor="end" font-size="15" fill="#374151">البيت يضيء من داخله · والدمج كامل لا إضافة جانبية.</text>
+
+<line x1="60" y1="440" x2="1060" y2="440" stroke="#E4E1D8" stroke-width="2"/>
+
+<g transform="translate(900,464)"><g clip-path="url(#sq)" transform="scale(1.5)"><use href="#mB"/></g></g>
+<g transform="translate(730,464)"><g clip-path="url(#ci)" transform="scale(0.46)"><use href="#mB"/></g></g>
+<text x="676" y="498" text-anchor="end" font-size="20" font-weight="700" fill="#1E6E5C">ب · الباب قمرية والضوء يخرج منه</text>
+<text x="676" y="528" text-anchor="end" font-size="15" fill="#374151">القوس الذهبي الحالي صار قمرية حقيقية، وضوؤها ينسكب على العتبة.</text>
+<text x="676" y="554" text-anchor="end" font-size="15" fill="#374151">أقربها إلى الحالي · تُقرأ كأنها الأيقونة نفسها وقد أُضيء بابها.</text>
+
+<line x1="60" y1="608" x2="1060" y2="608" stroke="#E4E1D8" stroke-width="2"/>
+
+<g transform="translate(900,632)"><g clip-path="url(#sq)" transform="scale(1.5)"><use href="#mC"/></g></g>
+<g transform="translate(730,632)"><g clip-path="url(#ci)" transform="scale(0.46)"><use href="#mC"/></g></g>
+<text x="676" y="666" text-anchor="end" font-size="20" font-weight="700" fill="#1E6E5C">ج · السقف قمرية</text>
+<text x="676" y="696" text-anchor="end" font-size="15" fill="#374151">السقف المثلّث صار قوساً، والقوس هو القمرية · والباب الذهبي باقٍ تحته.</text>
+<text x="676" y="722" text-anchor="end" font-size="15" fill="#374151">أجرؤها · يبدّل صورة «البيت» نفسها فيصير مبنى بقبّة.</text>
+
+<line x1="60" y1="776" x2="1060" y2="776" stroke="#E4E1D8" stroke-width="2"/>
+
+<g transform="translate(900,800)"><g clip-path="url(#sq)" transform="scale(1.5)"><use href="#mD"/></g></g>
+<g transform="translate(730,800)"><g clip-path="url(#ci)" transform="scale(0.46)"><use href="#mD"/></g></g>
+<text x="676" y="834" text-anchor="end" font-size="20" font-weight="700" fill="#1E6E5C">د · البيت في قلب القمرية</text>
+<text x="676" y="864" text-anchor="end" font-size="15" fill="#374151">قمرية كاملة خلفيةً، والبيت يقف في وسطها فتضيئه من ورائه.</text>
+<text x="676" y="890" text-anchor="end" font-size="15" fill="#374151">أغناها زخرفةً · والقوس الدائري يملأ القناع تماماً.</text>
+
+<line x1="60" y1="944" x2="1060" y2="944" stroke="#E4E1D8" stroke-width="2"/>
+
+<g transform="translate(900,968)"><g clip-path="url(#sq)" transform="scale(1.5)"><use href="#mE"/></g></g>
+<g transform="translate(730,968)"><g clip-path="url(#ci)" transform="scale(0.46)"><use href="#mE"/></g></g>
+<text x="676" y="1002" text-anchor="end" font-size="20" font-weight="700" fill="#1E6E5C">هـ · ورقة القمرية سقفاً</text>
+<text x="676" y="1032" text-anchor="end" font-size="15" fill="#374151">ورقة واحدة من ورقات القمرية تحلّ محلّ السقف فوق جدارين مستقيمين.</text>
+<text x="676" y="1058" text-anchor="end" font-size="15" fill="#374151">أبسطها وأوضحها صغيرةً · اختزالٌ لا نسخ.</text>
+
+<line x1="60" y1="1112" x2="1060" y2="1112" stroke="#E4E1D8" stroke-width="2"/>
+<text x="1080" y="1150" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ملاحظة تقنية تخصّ الخمسة</text>
+<text x="1080" y="1180" text-anchor="end" font-size="15" fill="#374151">أندرويد يضمن ظهور الدائرة الوسطى وحدها (٦٦٪) · رسمتُها كلها داخلها فلا يُقصّ تفصيل.</text>
+<text x="1080" y="1210" text-anchor="end" font-size="15" fill="#374151">والألوان كلها من لوحة التطبيق: الجصّ paper · الكهرمان gold · الأخضر emerald · لا لون جديد.</text>
+<text x="1080" y="1246" text-anchor="end" font-size="15" fill="#6B7280">قل الحرف، أو اطلب مزجاً بين اثنين — أعيد الرسم قبل أن أُولّد الملفات وأبني.</text>
+</svg>

@@ -1,0 +1,14 @@
+تقرير خطأ · عقاري
+الموضع: تجهيز استعادة
+الوقت: 2026-09-02T23:56:01.887Z
+المنصّة: android
+────────────────
+NotEnoughSpaceError: المساحة المتاحة 146.4 م.ب ولا تكفي · العملية تحتاج 250.5 م.ب. فرّغ مساحة ثم أعد المحاولة.
+    at NotEnoughSpaceError (address at index.android.bundle:1:1514618)
+    at ?anon_0_ensureFreeSpace (address at index.android.bundle:1:2267380)
+    at next (native)
+    at anonymous (address at InternalBytecode.js:1:8991)
+    at step (address at InternalBytecode.js:1:6731)
+    at anonymous (address at InternalBytecode.js:1:7890)
+    at tryCallOne (address at InternalBytecode.js:1:1296)
+    at anonymous (address at InternalBytecode.js:1:4984)

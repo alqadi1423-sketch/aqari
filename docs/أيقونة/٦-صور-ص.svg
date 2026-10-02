@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="960" viewBox="0 0 680 960" font-family="'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif">
+<rect width="680" height="960" fill="#F6F4EE"/>
+<text x="640" y="44" text-anchor="end" font-size="20" font-weight="700" fill="#10192E">صور الاتجاه «ص» · ص١ إلى ص٦</text>
+<defs>
+<clipPath id="s5sq"><rect width="100" height="100" rx="23"/></clipPath>
+<clipPath id="s5ci"><circle cx="50" cy="50" r="50"/></clipPath>
+<clipPath id="hFull"><path d="M24 84 V46 L50 24 L76 46 V84 Z"/></clipPath>
+<clipPath id="hWall"><path d="M24 84 V46 H76 V84 Z"/></clipPath>
+<g id="brkFull">
+<path d="M0 18 H100 M0 32 H100 M0 46 H100 M0 60 H100 M0 74 H100 M0 88 H100" stroke="#F6F4EE" stroke-width="1.8"/>
+<path d="M22 18 V32 M58 18 V32 M40 32 V46 M76 32 V46 M22 46 V60 M58 46 V60 M40 60 V74 M76 60 V74 M22 74 V88 M58 74 V88" stroke="#F6F4EE" stroke-width="1.8"/>
+</g>
+<g id="brkRows">
+<path d="M0 32 H100 M0 46 H100 M0 60 H100 M0 74 H100 M0 88 H100" stroke="#F6F4EE" stroke-width="2.2"/>
+</g>
+<g id="doorS">
+<path d="M40 84 V70 A10 10 0 0 1 60 70 V84 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 83 C47.5 78 48 74 50 70 C52 74 52.5 78 50 83 Z"/>
+<path d="M50 83 C47.5 78 48 74 50 70 C52 74 52.5 78 50 83 Z" transform="rotate(-36 50 84)"/>
+<path d="M50 83 C47.5 78 48 74 50 70 C52 74 52.5 78 50 83 Z" transform="rotate(36 50 84)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-width="1.5" stroke-linejoin="round">
+<path d="M50 83 C47.5 78 48 74 50 70 C52 74 52.5 78 50 83 Z"/>
+<path d="M50 83 C47.5 78 48 74 50 70 C52 74 52.5 78 50 83 Z" transform="rotate(-36 50 84)"/>
+<path d="M50 83 C47.5 78 48 74 50 70 C52 74 52.5 78 50 83 Z" transform="rotate(36 50 84)"/>
+</g>
+<path d="M40 84 V70 A10 10 0 0 1 60 70 V84" fill="none" stroke="#D9A441" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g id="doorL">
+<path d="M35 84 V67 A15 15 0 0 1 65 67 V84 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 82 C46 75 46.5 69 50 63 C53.5 69 54 75 50 82 Z"/>
+<path d="M50 82 C46 75 46.5 69 50 63 C53.5 69 54 75 50 82 Z" transform="rotate(-38 50 84)"/>
+<path d="M50 82 C46 75 46.5 69 50 63 C53.5 69 54 75 50 82 Z" transform="rotate(38 50 84)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-width="1.9" stroke-linejoin="round">
+<path d="M50 82 C46 75 46.5 69 50 63 C53.5 69 54 75 50 82 Z"/>
+<path d="M50 82 C46 75 46.5 69 50 63 C53.5 69 54 75 50 82 Z" transform="rotate(-38 50 84)"/>
+<path d="M50 82 C46 75 46.5 69 50 63 C53.5 69 54 75 50 82 Z" transform="rotate(38 50 84)"/>
+</g>
+<path d="M35 84 V67 A15 15 0 0 1 65 67 V84" fill="none" stroke="#D9A441" stroke-width="3.6" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g id="doorFan">
+<path d="M41 84 V64 H59 V84 Z" fill="#0E3830"/>
+<path d="M41 84 V64 H59 V84" fill="none" stroke="#D9A441" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M37 62 A13 13 0 0 1 63 62 Z" fill="#C99C3E"/>
+<g fill="#2E7D63">
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(-40 50 62)"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(40 50 62)"/>
+</g>
+<g fill="none" stroke="#F6F4EE" stroke-width="1.5" stroke-linejoin="round">
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(-40 50 62)"/>
+<path d="M50 61 C47.5 56 48 52 50 48 C52 52 52.5 56 50 61 Z" transform="rotate(40 50 62)"/>
+</g>
+<path d="M37 62 A13 13 0 0 1 63 62" fill="none" stroke="#D9A441" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+</g>
+<g id="hOut">
+<path d="M24 84 V46 L50 24 L76 46 V84" fill="none" stroke="#F6F4EE" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M12 84 H88" fill="none" stroke="#F6F4EE" stroke-width="4.6" stroke-linecap="round"/>
+</g>
+<g id="v1"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hFull)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.34"><use href="#brkFull"/></g></g><use href="#doorS"/><use href="#hOut"/></g>
+<g id="v2"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hFull)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.2"><use href="#brkFull"/></g></g><use href="#doorL"/><use href="#hOut"/></g>
+<g id="v3"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hFull)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.3"><use href="#brkFull"/></g></g><use href="#doorFan"/><use href="#hOut"/></g>
+<g id="v4"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hWall)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.34"><use href="#brkFull"/></g></g><use href="#doorS"/><use href="#hOut"/></g>
+<g id="v5"><rect width="100" height="100" fill="#144639"/><g clip-path="url(#hFull)"><rect width="100" height="100" fill="#1B5245"/><g opacity="0.3"><use href="#brkRows"/></g></g><use href="#doorS"/><use href="#hOut"/></g>
+<g id="v6">
+<rect width="100" height="100" fill="#F1EEE4"/>
+<g clip-path="url(#hFull)"><rect width="100" height="100" fill="#E3DFD1"/><g opacity="0.34"><use href="#brkFull" stroke="#10192E"/></g></g>
+<path d="M40 84 V70 A10 10 0 0 1 60 70 V84 Z" fill="#C99C3E"/>
+<g fill="#1E6E5C">
+<path d="M50 83 C47.5 78 48 74 50 70 C52 74 52.5 78 50 83 Z"/>
+<path d="M50 83 C47.5 78 48 74 50 70 C52 74 52.5 78 50 83 Z" transform="rotate(-36 50 84)"/>
+<path d="M50 83 C47.5 78 48 74 50 70 C52 74 52.5 78 50 83 Z" transform="rotate(36 50 84)"/>
+</g>
+<path d="M40 84 V70 A10 10 0 0 1 60 70 V84" fill="none" stroke="#8C6C24" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
+<g fill="none" stroke="#144639" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round">
+<path d="M24 84 V46 L50 24 L76 46 V84"/><path d="M12 84 H88"/>
+</g>
+</g>
+</defs>
+<g transform="translate(56,80) scale(1.08)"><g clip-path="url(#s5sq)"><use href="#v1"/></g></g>
+<g transform="translate(184,112) scale(0.44)"><g clip-path="url(#s5ci)"><use href="#v1"/></g></g>
+<text x="640" y="122" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ص١ · الأصل</text>
+<text x="640" y="148" text-anchor="end" font-size="13" fill="#6B7280">طوب كامل بمداميك ولحامات · باب قياسي</text>
+<g transform="translate(56,220) scale(1.08)"><g clip-path="url(#s5sq)"><use href="#v2"/></g></g>
+<g transform="translate(184,252) scale(0.44)"><g clip-path="url(#s5ci)"><use href="#v2"/></g></g>
+<text x="640" y="262" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ص٢ · باب أكبر وطوب أخفّ</text>
+<text x="640" y="288" text-anchor="end" font-size="13" fill="#6B7280">القمرية تتصدّر والطوب يتراجع</text>
+<g transform="translate(56,360) scale(1.08)"><g clip-path="url(#s5sq)"><use href="#v3"/></g></g>
+<g transform="translate(184,392) scale(0.44)"><g clip-path="url(#s5ci)"><use href="#v3"/></g></g>
+<text x="640" y="402" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ص٣ · قمرية فوق باب مستقيم · المختار</text>
+<text x="640" y="428" text-anchor="end" font-size="13" fill="#6B7280">كما في الصورة: قوس مضاء يعلو باباً مغلقاً</text>
+<g transform="translate(56,500) scale(1.08)"><g clip-path="url(#s5sq)"><use href="#v4"/></g></g>
+<g transform="translate(184,532) scale(0.44)"><g clip-path="url(#s5ci)"><use href="#v4"/></g></g>
+<text x="640" y="542" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ص٤ · الجدران طوب والسقف نظيف</text>
+<text x="640" y="568" text-anchor="end" font-size="13" fill="#6B7280">الجملون يبقى فارغاً فيُقرأ شكل البيت أسرع</text>
+<g transform="translate(56,640) scale(1.08)"><g clip-path="url(#s5sq)"><use href="#v5"/></g></g>
+<g transform="translate(184,672) scale(0.44)"><g clip-path="url(#s5ci)"><use href="#v5"/></g></g>
+<text x="640" y="682" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ص٥ · مداميك أفقية بلا لحامات</text>
+<text x="640" y="708" text-anchor="end" font-size="13" fill="#6B7280">أقلّ خطوطاً · لا يتحول الطوب إلى ضجيج</text>
+<g transform="translate(56,780) scale(1.08)"><g clip-path="url(#s5sq)"><use href="#v6"/></g></g>
+<g transform="translate(184,812) scale(0.44)"><g clip-path="url(#s5ci)"><use href="#v6"/></g></g>
+<text x="640" y="822" text-anchor="end" font-size="17" font-weight="700" fill="#10192E">ص٦ · نسخة فاتحة</text>
+<text x="640" y="848" text-anchor="end" font-size="13" fill="#6B7280">جصّ فاتح وبيت أخضر</text>
+</svg>

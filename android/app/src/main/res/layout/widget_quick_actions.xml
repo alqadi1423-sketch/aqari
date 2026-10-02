@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/qa_root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:background="@drawable/widget_bg"
+  android:orientation="horizontal"
+  android:gravity="center"
+  android:layoutDirection="rtl"
+  android:paddingStart="12dp"
+  android:paddingEnd="12dp">
+
+  <TextView
+    android:id="@+id/qa_collect"
+    android:layout_width="0dp"
+    android:layout_height="wrap_content"
+    android:layout_weight="1"
+    android:layout_marginEnd="6dp"
+    android:background="@drawable/widget_pill_green"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
+    android:gravity="center"
+    android:text="@string/widget_action_collect"
+    android:textSize="13sp"
+    android:textColor="#FF1E6E5C"/>
+
+  <TextView
+    android:id="@+id/qa_invoice"
+    android:layout_width="0dp"
+    android:layout_height="wrap_content"
+    android:layout_weight="1"
+    android:layout_marginEnd="6dp"
+    android:background="@drawable/widget_pill_gold"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
+    android:gravity="center"
+    android:text="@string/widget_action_invoice"
+    android:textSize="13sp"
+    android:textColor="#FF8C6C24"/>
+
+  <TextView
+    android:id="@+id/qa_claim"
+    android:layout_width="0dp"
+    android:layout_height="wrap_content"
+    android:layout_weight="1"
+    android:layout_marginEnd="6dp"
+    android:background="@drawable/widget_pill_gold"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
+    android:gravity="center"
+    android:text="@string/widget_action_claim"
+    android:textSize="13sp"
+    android:textColor="#FF8C6C24"/>
+
+  <TextView
+    android:id="@+id/qa_more"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:background="@drawable/widget_pill_gold"
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
+    android:gravity="center"
+    android:text="@string/widget_action_more"
+    android:textSize="13sp"
+    android:textColor="#FF6B7280"/>
+</LinearLayout>
