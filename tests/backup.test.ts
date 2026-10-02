@@ -14,6 +14,7 @@ import { SCHEMA_VERSION } from '@/db/schema';
 import { putAttachment, liveBlobs } from '@/files/store';
 import { openNodeDb } from '@/db/nodeAdapter';
 import { nodeHasher, nodeFs } from '@/files/nodeFs';
+import { postContractDeposit } from '@/domain/accounting/post';
 import type { FS } from '@/files/fsAdapter';
 
 function randBytes(n: number, seedByte: number): Uint8Array {
@@ -32,6 +33,8 @@ function insertSampleRows(env: ReturnType<typeof makeBackupEnv>): void {
       `INSERT INTO contracts (id,contract_no,tenant_name,unit_id,value_halalas,start,end,deposit_halalas,status,created_at)
        VALUES ('C1','EJ-2026-001','فيصل','U1',2400000,'2026-01-01','2026-12-31',200000,'سارٍ','x')`
     );
+    // التأمين المحتجز له قيده كما يرحّله تأكيد العقد · فالبيانات تجتاز فحص السلامة الذي يشترطه إنشاء النسخة
+    postContractDeposit(env.db, { id: 'C1', contract_no: 'EJ-2026-001', tenant: 'فيصل', start: '2026-01-01', deposit: 200000 });
   });
 }
 
@@ -162,8 +165,8 @@ describe('النسخ الاحتياطي — الاختبارات الاثنا ع
     env.closeLive();
   });
 
-  // ٥) حذف ملف من القرص ← نسخة معلَّمة ناقصة
-  test('٥ — مرفق محذوف من القرص: النسخة تُعلَّم ناقصة لا تفشل صامتة', async () => {
+  // ٥) حذف ملف من القرص ← يُرفض إنشاء النسخة ويُسمّى الملف (قرار المالك: لا نسخة «ناقصة»)
+  test('٥ — مرفق محذوف من القرص: يُرفض إنشاء النسخة ويُسمّى الملف · لا نسخة ناقصة', async () => {
     const env = makeBackupEnv(newDir());
     const a1 = await putAttachment(env.filesEnv, randBytes(300, 1), {
       entityType: 'library', kind: 'other', originalName: 'keep.bin',
@@ -172,10 +175,11 @@ describe('النسخ الاحتياطي — الاختبارات الاثنا ع
       entityType: 'library', kind: 'other', originalName: 'lost.bin',
     });
     fs.rmSync(path.join(env.attachmentsDir, `${a2.sha256}.${a2.ext}`));
-    const manifest = await createBackup(env, path.join(env.root, 'm.aqbk'));
-    expect(manifest.complete).toBe(false);
-    expect(manifest.missing_files).toContain(a2.sha256);
-    expect(manifest.files.map((f) => f.sha256)).toContain(a1.sha256);
+    const out = path.join(env.root, 'm.aqbk');
+    await expect(createBackup(env, out)).rejects.toThrow(/الملف «lost.bin» مفقود من القرص · يُرفض إنشاء النسخة/);
+    expect(fs.existsSync(out)).toBe(false);
+    // الملف السليم لم يكن ليُنقذ نسخة ناقصة · يبقى في مكانه والبيانات كما هي
+    expect(fs.existsSync(path.join(env.attachmentsDir, `${a1.sha256}.${a1.ext}`))).toBe(true);
     env.closeLive();
   });
 

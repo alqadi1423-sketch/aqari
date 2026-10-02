@@ -81,13 +81,15 @@ export default function Settings() {
     setBusy(true);
     const before = fingerprintData(appBackupEnv(db));
     try {
-      const m = await createAndShareBackup(db, setProgress);
+      await createAndShareBackup(db, setProgress);
       bump();
-      toast(m.complete ? 'أُنشئت النسخة وتُحقّق منها بنجاح' : 'أُنشئت النسخة. معلَّمة ناقصة: ملفات مفقودة من القرص');
+      // لا نسخة «ناقصة» · ما لم يجتز كل تحقق فلم يُنشأ أصلاً
+      toast('أُنشئت النسخة وتُحقّق منها بنجاح');
     } catch (e) {
       await reportFailure({
         title: 'تعذّر إنشاء النسخة الاحتياطية', where: 'إنشاء نسخة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
-        lead: 'لم يكتمل تجهيز النسخة.', before, env: appBackupEnv(db), e, retry: () => { doBackup(); },
+        // سبب الرفض كما كتبه التحقق: اسم الملف أو الفحص الذي فشل · والجملة العامة لما لم يُسمَّ
+        lead: arabicMessage(e) || 'لم يكتمل تجهيز النسخة.', before, env: appBackupEnv(db), e, retry: () => { doBackup(); },
       });
     }
     setProgress(null);

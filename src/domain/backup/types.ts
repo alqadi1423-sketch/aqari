@@ -56,6 +56,14 @@ export class BackupVerificationError extends Error {
   }
 }
 
+/** فحص سلامة مختلّ يمنع إنشاء النسخة · الرسالة تسمّي كل فحص فشل وقيمته */
+export class BackupIntegrityError extends Error {
+  constructor(public failed: string[]) {
+    super('يُرفض إنشاء النسخة · فحص السلامة مختلّ: ' + failed.join('، '));
+    this.name = 'BackupIntegrityError';
+  }
+}
+
 export class RestoreError extends Error {
   constructor(detail: string) {
     super('تعذّرت الاستعادة: ' + detail);

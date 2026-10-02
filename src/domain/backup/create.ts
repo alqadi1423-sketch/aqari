@@ -9,6 +9,7 @@ import type { DB } from '../../db/adapter';
 import {
   BACKUP_FORMAT,
   BACKUP_FORMAT_VERSION,
+  BackupIntegrityError,
   BackupVerificationError,
   HashingUnavailableError,
   NotEnoughSpaceError,
@@ -18,6 +19,20 @@ import {
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+
+/**
+ * اسم الملف كما يعرفه المستخدم في المكتبة · فرسالة الرفض تسمّيه لا تكتفي ببصمته.
+ * وإن لم يُعرف له اسم فأوّل البصمة وامتداده.
+ */
+function attachmentLabel(db: DB | null, sha: string, ext?: string): string {
+  try {
+    const r = db?.get<{ n: string | null }>(
+      `SELECT COALESCE(NULLIF(display_name, ''), original_name) AS n FROM attachments
+       WHERE sha256 = ? ORDER BY deleted_at IS NOT NULL, created_at LIMIT 1`, [sha]);
+    if (r?.n) return r.n;
+  } catch { /* القاعدة غير متاحة · يُكتفى بالبصمة */ }
+  return sha.slice(0, 12) + (ext ? '.' + ext : '');
+}
 
 /** ضعفُ ما تشغله البيانات · القاعدة تُنسخ ثم تُضغط ثم يُفكّ بعضها، فالثلاثة هي الحدّ الآمن */
 const SPACE_FACTOR = 3;
@@ -167,6 +182,9 @@ export async function createBackup(
   // ١) الفحوص الستة تُشغَّل قبل كل نسخة ومجاميعها تُكتب في البيان
   onProgress?.('جاري فحص سلامة الدفاتر');
   const integrity = integrityChecks(env.db);
+  // أي فحص مختلّ يمنع النسخة كلها · لا نسخة «ناقصة» ولا موسومة «كاملة» على خلل
+  const failedChecks = integrity.filter((c) => !c.ok);
+  if (failedChecks.length) throw new BackupIntegrityError(failedChecks.map((c) => `«${c.name}» (${c.value})`));
   const counts = tableCounts(env.db);
   const ledger = ledgerTotals(env.db);
   const schemaVersion = currentSchemaVersion(env.db);
@@ -204,22 +222,29 @@ export async function createBackup(
   const tmpArchive = joinPath(env.tmpDir, `backup-arch-${Date.now()}.aqbk`);
   try {
     const dbBytes = env.fs.read(tmpDb);
-    const dbSha = await hasher(dbBytes);
+    let dbSha: string;
+    try { dbSha = await hasher(dbBytes); }
+    catch { throw new BackupVerificationError('تعذّر حساب بصمة لقطة قاعدة البيانات (data.db) · يُرفض إنشاء النسخة'); }
 
-    // ٣) المرفقات الحية · التحقق من بصمة كل ملف أثناء جمعه · تنفّس بعد كل ملف
+    // ٣) المرفقات الحية · كل ملف يُحسب بصمته ويطابق المسجَّل وإلا رُفضت النسخة كلها ·
+    //    لا يُستبعد ملف ولا تُنشأ نسخة «ناقصة» · تنفّس بعد كل ملف
     const zipEntries: ZipEntry[] = [{ name: 'data.db', bytes: dbBytes, level: 6 }];
     const files: BackupManifest['files'] = [];
-    const missing: string[] = [];
     const blobs = liveBlobs(env.db);
     let bi = 0;
     for (const b of blobs) {
       bi += 1;
       onProgress?.(`جاري نسخ المرفقات · ${bi} من ${blobs.length}`);
       const p = joinPath(env.attachmentsDir, `${b.sha256}.${b.ext}`);
-      if (!env.fs.exists(p)) { missing.push(b.sha256); continue; }
+      const label = () => attachmentLabel(env.db, b.sha256, b.ext);
+      if (!env.fs.exists(p))
+        throw new BackupVerificationError(`الملف «${label()}» مفقود من القرص · يُرفض إنشاء النسخة`);
       const bytes = env.fs.read(p);
-      const actual = await hasher(bytes);
-      if (actual !== b.sha256) { missing.push(b.sha256); continue; }
+      let actual: string;
+      try { actual = await hasher(bytes); }
+      catch { throw new BackupVerificationError(`تعذّر حساب بصمة الملف «${label()}» · يُرفض إنشاء النسخة`); }
+      if (actual !== b.sha256)
+        throw new BackupVerificationError(`بصمة الملف «${label()}» لا تطابق المسجَّلة له · الملف تالف · يُرفض إنشاء النسخة`);
       // المرفقات تُخزَّن بلا إعادة ضغط · صورها وملفاتها مضغوطة أصلاً
       zipEntries.push({ name: `attachments/${b.sha256}.${b.ext}`, bytes, level: 0 });
       files.push({ sha256: b.sha256, ext: b.ext, size: bytes.byteLength });
@@ -235,11 +260,11 @@ export async function createBackup(
       device_id: deviceRow ? deviceRow.value : '',
       db_sha256: dbSha,
       files,
-      missing_files: missing,
+      missing_files: [],
       table_counts: counts,
       ledger,
       integrity,
-      complete: missing.length === 0,
+      complete: true,
     };
     zipEntries.push({ name: 'manifest.json', bytes: enc.encode(JSON.stringify(manifest, null, 1)), level: 6 });
 
@@ -297,30 +322,38 @@ export async function verifyArchiveAt(
     throw new BackupVerificationError('بصمة البيان لا تطابق المتوقع');
 
   // بصمة القاعدة
-  const dbSha = await hasher(entries['data.db']);
+  let dbSha: string;
+  try { dbSha = await hasher(entries['data.db']); }
+  catch { throw new BackupVerificationError('تعذّر حساب بصمة قاعدة البيانات (data.db) في الأرشيف'); }
   if (dbSha !== manifest.db_sha256)
-    throw new BackupVerificationError('بصمة قاعدة البيانات لا تطابق البيان');
+    throw new BackupVerificationError('بصمة قاعدة البيانات (data.db) لا تطابق البيان');
 
-  // بصمة كل مرفق · تنفّس بعد كل ملف
-  let vi = 0;
-  for (const f of manifest.files) {
-    vi += 1;
-    onProgress?.(`جاري التحقق من المرفقات · ${vi} من ${manifest.files.length}`);
-    const name = `attachments/${f.sha256}.${f.ext}`;
-    const fileBytes = entries[name];
-    if (!fileBytes) throw new BackupVerificationError('مرفق مفقود من الأرشيف: ' + f.sha256);
-    const actual = await hasher(fileBytes);
-    if (actual !== f.sha256) throw new BackupVerificationError('بصمة مرفق لا تطابق: ' + f.sha256);
-    if (vi % 8 === 0) await yieldUi();
-  }
-
-  // integrity_check على القاعدة المنسوخة + مطابقة الأعداد
+  // القاعدة المنسوخة تُفتح أولاً لتسمّي رسائلُ المرفقات الملفَّ باسمه
   const tmpCheckDb = joinPath(env.tmpDir, `verify-${Date.now()}.db`);
   env.fs.mkdirp(env.tmpDir);
   env.fs.write(tmpCheckDb, entries['data.db']);
   let check: DB | null = null;
   try {
     check = env.openDb(tmpCheckDb);
+
+    // بصمة كل مرفق · تنفّس بعد كل ملف
+    let vi = 0;
+    for (const f of manifest.files) {
+      vi += 1;
+      onProgress?.(`جاري التحقق من المرفقات · ${vi} من ${manifest.files.length}`);
+      const name = `attachments/${f.sha256}.${f.ext}`;
+      const fileBytes = entries[name];
+      if (!fileBytes)
+        throw new BackupVerificationError(`الملف «${attachmentLabel(check, f.sha256, f.ext)}» مفقود من الأرشيف`);
+      let actual: string;
+      try { actual = await hasher(fileBytes); }
+      catch { throw new BackupVerificationError(`تعذّر حساب بصمة الملف «${attachmentLabel(check, f.sha256, f.ext)}» في الأرشيف`); }
+      if (actual !== f.sha256)
+        throw new BackupVerificationError(`بصمة الملف «${attachmentLabel(check, f.sha256, f.ext)}» في الأرشيف لا تطابق البيان`);
+      if (vi % 8 === 0) await yieldUi();
+    }
+
+    // integrity_check على القاعدة المنسوخة + مطابقة الأعداد
     const ic = check.get<{ integrity_check: string }>(`PRAGMA integrity_check`);
     if (!ic || String(Object.values(ic)[0]) !== 'ok')
       throw new BackupVerificationError('integrity_check فشل على القاعدة المنسوخة');
