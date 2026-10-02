@@ -51,3 +51,7 @@ yarn-error.*
 
 # سجلات محاكي Firebase المحلي
 *-debug.log
+
+# سجلات انهيار JVM أثناء البناء
+hs_err_pid*.log
+replay_pid*.log
