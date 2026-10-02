@@ -2,6 +2,18 @@ apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
 
+// بناء الإصدار بلا مفتاحه يتوقف برسالة واضحة بدل حزمة غير موقَّعة أو موقَّعة بمفتاح التطوير
+gradle.taskGraph.whenReady { graph ->
+    def releaseTask = graph.allTasks.any { t ->
+        (t.name.startsWith('assemble') || t.name.startsWith('bundle') || t.name.startsWith('package')) &&
+            t.name.toLowerCase().contains('release')
+    }
+    def missing = ['AQARI_UPLOAD_STORE_FILE', 'AQARI_UPLOAD_STORE_PASSWORD', 'AQARI_UPLOAD_KEY_PASSWORD'].findAll { !System.getenv(it) }
+    if (releaseTask && missing) {
+        throw new GradleException("مفتاح الإصدار غير مضبوط · متغيرات البيئة الناقصة: ${missing.join(', ')} · قيمها في D:/keys/aqari/signing.env")
+    }
+}
+
 def projectRoot = rootDir.getAbsoluteFile().getParentFile().getAbsolutePath()
 
 /**
@@ -108,15 +120,24 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // مفتاح الإصدار خارج المشروع (D:/keys/aqari) · مساره وكلمتا سره من متغيرات البيئة وحدها
+        release {
+            def storePath = System.getenv('AQARI_UPLOAD_STORE_FILE')
+            if (storePath) {
+                storeFile file(storePath)
+                storePassword System.getenv('AQARI_UPLOAD_STORE_PASSWORD')
+                keyAlias System.getenv('AQARI_UPLOAD_KEY_ALIAS') ?: 'aqari-upload'
+                keyPassword System.getenv('AQARI_UPLOAD_KEY_PASSWORD')
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // الإصدار يُوقَّع بمفتاح الإصدار وحده · لا رجوع صامت إلى مفتاح التطوير
+            signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds
