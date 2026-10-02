@@ -2,7 +2,7 @@
  * الإعدادات · خمس مجموعات بترتيب المالك: المنشأة ثم المالية ثم المراسلات
  * ثم البيانات ثم النظام · وكل إعداد في الشاشة يسكن مجموعته.
  */
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, Platform, Modal, Linking } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
@@ -10,7 +10,7 @@ import { Screen } from '../src/ui/Screen';
 import {
   Card, CardTitle, T, Num, SetRow, ChipGroup, BtnPrimary, BtnGhost, Note, Row, Badge, EmptyState, Field,
 } from '../src/ui/components';
-import { Sheet } from '../src/ui/Sheet';
+import { Sheet, PickerSheet } from '../src/ui/Sheet';
 import { useDialog } from '../src/ui/AppDialog';
 import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
@@ -26,6 +26,11 @@ import { SCHEMA_VERSION } from '../src/db/schema';
 import { storageBreakdown, sweepCache, reclaimStorage } from '../src/services/storageOps';
 import { libSizeLabel } from '../src/domain/library';
 import { reportFailure, arabicMessage } from '../src/ui/failureDialog';
+import {
+  cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
+} from '../src/services/cloud';
+import type { DriveBackup } from '../src/cloud/drive';
+import { dfmt, toLocalISODate } from '../src/domain/dates';
 
 const APP_VERSION = '1.0.0';
 
@@ -53,6 +58,10 @@ export default function Settings() {
   const [wipeConfirm, setWipeConfirm] = useState<string | null>(null);
   // شريط تقدم بالمراحل · «جاري نسخ المرفقات · ٢٢ من ١١٨» فلا يُظن التطبيق متجمداً
   const [progress, setProgress] = useState<string | null>(null);
+  // الحساب والمزامنة · حالة حيّة من طبقة الربط
+  const [cloud, setCloud] = useState(cloudState());
+  useEffect(() => subscribeCloud(() => setCloud(cloudState())), []);
+  const [driveList, setDriveList] = useState<DriveBackup[] | null>(null);
 
   const data = useMemo(() => {
     const reminders = computeReminders(db);
@@ -97,12 +106,15 @@ export default function Settings() {
   };
 
   // الاستعادة لا تنهار أبداً · كل المسار ملفوف، والفشل رسالة عربية مبنيّة على فحص
-  const doRestore = async () => {
+  const doRestore = () => runRestore(() => pickAndPrepareRestore(db, setProgress));
+
+  // المسار الواحد للاستعادة من أي مصدر: التجهيز (فك وبصمات وفحص دلالي) ثم الملخص ثم التنفيذ
+  const runRestore = async (prepare: () => Promise<Awaited<ReturnType<typeof pickAndPrepareRestore>>>) => {
     setBusy(true);
     const before = fingerprintData(appBackupEnv(db));
     let prepared: Awaited<ReturnType<typeof pickAndPrepareRestore>> = null;
     try {
-      prepared = await pickAndPrepareRestore(db, setProgress);
+      prepared = await prepare();
       setProgress(null);
       if (!prepared) { setBusy(false); return; }
       const { env, plan, archiveTmp } = prepared;
@@ -156,6 +168,61 @@ export default function Settings() {
       });
     }
     setProgress(null);
+    setBusy(false);
+  };
+
+  /* ── الحساب والمزامنة ── */
+  const lastSync = (iso: string | null) => {
+    if (!iso) return 'لم تجرِ بعد';
+    const d = new Date(iso);
+    return dfmt(toLocalISODate(d)) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  };
+  const doSignIn = async () => {
+    setBusy(true);
+    try {
+      const u = await cloudSignIn();
+      if (u) toast('دخلت بحساب ' + u.email + ' · بدأت المزامنة');
+    } catch (e) {
+      await reportFailure({ title: 'تعذّر الدخول بحساب قوقل', where: 'تسجيل الدخول', db, e });
+    }
+    setBusy(false);
+  };
+  const doSignOut = () => dialog({
+    title: 'تسجيل الخروج',
+    body: 'تتوقف المزامنة والنسخ على Google Drive · بياناتك على هذا الجهاز تبقى كما هي، وما تغيّر بعد الخروج يُرسل حين تعود.',
+    tone: 'normal',
+    actions: [
+      { label: 'تراجع', variant: 'ghost' },
+      { label: 'تسجيل الخروج', variant: 'primary', onPress: async () => {
+        try { await cloudSignOut(); toast('خرجت من الحساب · بياناتك على الجهاز كما هي'); }
+        catch (e) { await reportFailure({ title: 'تعذّر تسجيل الخروج', where: 'تسجيل الخروج', db, e }); }
+      } },
+    ],
+  });
+  const doDriveBackup = async () => {
+    setBusy(true);
+    try {
+      const b = await backupToDrive(db, setProgress);
+      bump();
+      toast('رُفعت النسخة إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
+    } catch (e) {
+      await reportFailure({
+        title: 'تعذّر النسخ على Google Drive', where: 'نسخ على Drive', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
+        lead: arabicMessage(e) || 'لم يكتمل رفع النسخة.', e,
+      });
+    }
+    setProgress(null);
+    setBusy(false);
+  };
+  const openDriveRestore = async () => {
+    setBusy(true);
+    try {
+      const list = await listBackupsOnDrive();
+      if (!list.length) toast('لا نسخ على Google Drive بعد');
+      else setDriveList(list);
+    } catch (e) {
+      await reportFailure({ title: 'تعذّرت قراءة النسخ على Google Drive', where: 'قائمة نسخ Drive', db, e });
+    }
     setBusy(false);
   };
 
@@ -254,7 +321,47 @@ export default function Settings() {
       <Card>
         <CardTitle>البيانات</CardTitle>
 
-        <Sub first>نسخة احتياطية واستعادة</Sub>
+        <Sub first>الحساب والمزامنة</Sub>
+        {!cloud.configured ? (
+          <T size={TYPE.body} color={C.muted}>الربط بحساب قوقل غير مهيّأ في هذا البناء · التطبيق يعمل كاملاً بلا إنترنت وبلا حساب</T>
+        ) : !cloud.user ? (
+          <>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>
+              اختياري · الدخول يضيف المزامنة والنسخ على Google Drive، والقاعدة على هذا الجهاز تبقى الأصل
+            </T>
+            <Row style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
+              <T size={TYPE.body}>الاتصال</T>
+              <T size={TYPE.body} bold color={cloud.online ? C.emerald : C.muted}>{cloud.online ? 'متصل' : 'غير متصل'}</T>
+            </Row>
+            {cloud.online ? <BtnPrimary icon="lock" title="تسجيل الدخول بحساب قوقل" onPress={doSignIn} loading={busy} /> : null}
+          </>
+        ) : (
+          <>
+            {([
+              ['الحساب', cloud.user.email, C.ink],
+              ['الاتصال', cloud.online ? 'متصل' : 'غير متصل · التغييرات محفوظة في الطابور', cloud.online ? C.emerald : C.muted],
+              ['المزامنة', cloud.syncing ? (cloud.progress ?? 'جارية') : 'آخر مزامنة ' + lastSync(cloud.sync?.lastSyncAt ?? null), C.ink],
+              ['في الطابور', String(cloud.sync?.pending ?? 0), C.ink],
+              ['بانتظار سجل أب', String(cloud.sync?.waiting ?? 0), C.ink],
+              ['مرفوض عند الوصول', String(cloud.sync?.rejected ?? 0), (cloud.sync?.rejected ?? 0) > 0 ? C.rose : C.ink],
+            ] as Array<[string, string, string]>).map(([k, v, color]) => (
+              <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
+                <T size={TYPE.body}>{k}</T>
+                <T size={TYPE.body} bold color={color}>{v}</T>
+              </Row>
+            ))}
+            {cloud.lastError ? <Note tone="danger">{cloud.lastError}</Note> : null}
+            {cloud.online ? (
+              <Row style={{ marginTop: 6 }}>
+                <View style={{ flex: 1 }}><BtnPrimary icon="export" title="نسخ إلى Google Drive" onPress={doDriveBackup} loading={busy} /></View>
+                <View style={{ flex: 1 }}><BtnGhost icon="undo" title="استعادة من Google Drive" onPress={openDriveRestore} /></View>
+              </Row>
+            ) : null}
+            <View style={{ marginTop: 6 }}><BtnGhost title="تسجيل الخروج" onPress={doSignOut} /></View>
+          </>
+        )}
+
+        <Sub>نسخة احتياطية واستعادة</Sub>
         <Row style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
           <T size={TYPE.body}>آخر تصدير خارج الجهاز</T>
           <T size={TYPE.body} bold color={data.exp.warn ? C.rose : C.emerald}>
@@ -400,8 +507,30 @@ export default function Settings() {
             <Num size={TYPE.body} bold>{v}</Num>
           </Row>
         ))}
-        <Note tone="ok">لا خادم · لا حساب · لا إنترنت. بياناتك على هذا الجهاز وحده، ولا تغادره إلا حين تُصدّرها أنت.</Note>
+        {cloud.user ? (
+          <Note tone="ok">بياناتك على هذا الجهاز أولاً وتُزامَن مع حسابك ({cloud.user.email}) · لا يقرؤها ولا يكتبها غيرك.</Note>
+        ) : (
+          <Note tone="ok">لا خادم · لا حساب · لا إنترنت. بياناتك على هذا الجهاز وحده، ولا تغادره إلا حين تُصدّرها أنت.</Note>
+        )}
       </Card>
+
+      {/* نسخ Google Drive · اختيار نسخة ثم مسار الاستعادة نفسه */}
+      <PickerSheet
+        visible={!!driveList}
+        onClose={() => setDriveList(null)}
+        title="استعادة من Google Drive"
+        options={(driveList ?? []).map((b) => ({
+          value: b.id,
+          label: dfmt(toLocalISODate(new Date(b.createdTime))) + ' · ' + libSizeLabel(b.size),
+          sub: b.name,
+        }))}
+        value={''}
+        onPick={(id) => {
+          const b = (driveList ?? []).find((x) => x.id === id);
+          setDriveList(null);
+          if (b) runRestore(() => prepareRestoreFromDrive(db, b, setProgress));
+        }}
+      />
 
       {/* لوحة السلة */}
       <Sheet visible={trashOpen} onClose={() => setTrashOpen(false)} title="سلة المحذوفات" tall>

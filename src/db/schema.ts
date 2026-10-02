@@ -3,7 +3,9 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-export const SCHEMA_VERSION = 17;
+import { buildSyncMigration } from './syncTables';
+
+export const SCHEMA_VERSION = 18;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -836,6 +838,9 @@ BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُعدَّل'); END;
 -- المحفّزات أدناه تجمع خصوم القسط في كل كتابة · والفهرس يجعل الجمع قفزةً لا مسحاً للدفعات كلها
 CREATE INDEX IF NOT EXISTS ix_pay_installment ON contract_payments(installment_id);
 
+-- الدفعة لا تتجاوز مبلغ القسط وحدها · وخصمها مع المسدَّد الحالي وخصوم القسط لا يتجاوزه ·
+-- وصافيها يُحتسب حين يُحدَّث مسدَّد القسط (المحفّز التالي) لا هنا: فالمزامنة قد تأتي بالقسط
+-- ومسدَّده النهائي قبل دفعته، فلا يُحسب الصافي مرتين
 CREATE TRIGGER IF NOT EXISTS trg_pay_insert_cap
 BEFORE INSERT ON contract_payments
 WHEN NEW.installment_id IS NOT NULL
@@ -843,12 +848,15 @@ BEGIN
   SELECT CASE
     WHEN NEW.discount_halalas < 0 OR NEW.net_halalas < 0
       THEN RAISE(ABORT, 'دفعة بصافٍ أو خصم سالب')
-    WHEN (SELECT i.paid_halalas + NEW.net_halalas + NEW.discount_halalas
+    WHEN NEW.net_halalas + NEW.discount_halalas
+         > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
+      THEN RAISE(ABORT, 'الدفعة مع الخصم تتجاوز مبلغ القسط')
+    WHEN (SELECT i.paid_halalas + NEW.discount_halalas
                  + COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p
                              WHERE p.installment_id = i.id), 0)
           FROM contract_installments i WHERE i.id = NEW.installment_id)
          > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
-      THEN RAISE(ABORT, 'الدفعة مع الخصم تتجاوز المتبقي على القسط')
+      THEN RAISE(ABORT, 'الخصم يتجاوز المتبقي على القسط')
   END;
 END;
 
@@ -886,5 +894,8 @@ BEGIN
 END;
 `;
 
+/** بنية المزامنة: الطابور الصادر والوارد والمرفوض ومحفّزات الالتقاط · انظر syncTables.ts */
+export const MIGRATION_18 = buildSyncMigration();
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18];

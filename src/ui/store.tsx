@@ -18,6 +18,7 @@ import { perfAttachStorage } from '../perf/perf';
 import { getSetting } from '../repos/settings';
 import { today } from '../domain/dates';
 import { naturalKey } from '../domain/sortKey';
+import { startCloud } from '../services/cloud';
 
 /** هجرة البيانات القائمة: حساب مفتاح الترتيب لكل وحدة بلا مفتاح */
 function backfillSortKeys(db: AppDB): void {
@@ -100,6 +101,14 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       } catch { /* لا يعطّل الإقلاع */ }
     }, 3000);
     return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, [db, bump]);
+
+  // الربط بقوقل طبقة مضافة · تبدأ بعد الإقلاع ولا تؤخره، ولا تفعل شيئاً بلا دخول
+  // وما يصل بالمزامنة يُعيد رسم الشاشات
+  useEffect(() => {
+    let stop: () => void = () => {};
+    const t = setTimeout(() => { try { stop = startCloud(db, bump); } catch { /* لا يعطّل التطبيق */ } }, 4000);
+    return () => { clearTimeout(t); stop(); };
   }, [db, bump]);
   const updateSetting = useCallback(
     <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => {

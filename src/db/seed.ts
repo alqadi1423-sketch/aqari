@@ -58,6 +58,8 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
   stripExif: false,
 };
 
+export const seedScriptId = (i: number) => 'MS-SEED-' + (i + 1);
+
 export function isSeeded(db: DB): boolean {
   return !!db.get(`SELECT value FROM meta WHERE key = 'seeded'`);
 }
@@ -79,13 +81,14 @@ export function seed(db: DB, now: () => string = () => new Date().toISOString())
        VALUES ('FT-HANDOVER','نموذج استلام وتسليم',1,?,?)`,
       [JSON.stringify(HANDOVER_TEMPLATE), t]
     );
-    for (const s of SEED_SCRIPTS) {
+    // معرّف ثابت لكل قالب افتراضي · فلا يتكرر القالب حين يلتقي جهازان في حساب واحد
+    SEED_SCRIPTS.forEach((s, i) => {
       db.run(
         `INSERT INTO message_scripts (id, audience, category, title, body, created_at)
          VALUES (?,?,?,?,?,?)`,
-        [uid(), s.audience, 'عام', s.title, s.body, t]
+        [seedScriptId(i), s.audience, 'عام', s.title, s.body, t]
       );
-    }
+    });
     for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
       db.run(`INSERT INTO settings (key, value_json) VALUES (?,?)`, [k, JSON.stringify(v)]);
     }

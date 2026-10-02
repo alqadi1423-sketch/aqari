@@ -1,0 +1,70 @@
+rules_version = '2';
+
+// قواعد أمان عقاري · كل بيانات المستخدم تحت users/{uid} ولا يقرؤها ولا يكتبها إلا صاحبها.
+// وفوق ذلك ما لا يُعدَّل أصلاً: القيد المرحّل وسجل العمليات إضافةٌ فقط، ولا حذف لأي صف
+// (الحذف شاهدٌ بـ del = true على مستند المسودة)، والمبالغ أعداد صحيحة بالهللات.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    // شكل مستند الصف: الجدول والمفتاح يطابقان معرّفه، والحقول المعروفة وحدها
+    function validRow(rowId) {
+      let r = request.resource.data;
+      return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts'])
+        && r.t is string && r.k is string && rowId == r.t + '__' + r.k
+        && r.u is string && r.dev is string && r.del is bool
+        && r.ts == request.time
+        && (r.del == true || r.d is map)
+        && amountsAreIntegers(r);
+    }
+
+    // المبالغ بالهللات أعداد صحيحة في أعمدة المال الشائعة
+    function intOrAbsent(m, f) {
+      return !(f in m) || m[f] == null || m[f] is int;
+    }
+    function amountsAreIntegers(r) {
+      return r.del == true || (
+        intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'paid_halalas')
+        && intOrAbsent(r.d, 'value_halalas') && intOrAbsent(r.d, 'deposit_halalas')
+        && intOrAbsent(r.d, 'gross_halalas') && intOrAbsent(r.d, 'net_halalas')
+        && intOrAbsent(r.d, 'discount_halalas') && intOrAbsent(r.d, 'total_halalas')
+        && intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas')
+        && intOrAbsent(r.d, 'debit_halalas') && intOrAbsent(r.d, 'credit_halalas'));
+    }
+
+    function isPostedEntry(data) {
+      return data.t == 'journal_entries' && data.d != null && data.d.status == 'مرحّل';
+    }
+
+    // التعديل الوحيد المسموح على قيد مرحّل: ربطه بقيده العكسي مرة واحدة · لا غير
+    function onlyLinksReversal() {
+      let before = resource.data;
+      let after = request.resource.data;
+      return after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts'])
+        && after.d.diff(before.d).affectedKeys().hasOnly(['reversed_by'])
+        && before.d.reversed_by == null
+        && after.d.reversed_by is string;
+    }
+
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+
+      match /rows/{rowId} {
+        allow read: if isOwner(uid);
+        allow create: if isOwner(uid) && validRow(rowId);
+        allow update: if isOwner(uid) && validRow(rowId)
+          && resource.data.t != 'audit_log'
+          && (!isPostedEntry(resource.data) || onlyLinksReversal());
+        allow delete: if false;
+      }
+
+      // ما سوى الصفوف (حالة المزامنة مثلاً) لصاحبه وحده
+      match /{other}/{docId} {
+        allow read, write: if isOwner(uid) && other != 'rows';
+      }
+    }
+  }
+}
