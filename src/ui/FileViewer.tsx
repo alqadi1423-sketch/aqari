@@ -7,7 +7,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal, View, FlatList, Pressable, useWindowDimensions,
-  TextInput, ActivityIndicator, Image, PanResponder, Text,
+  TextInput, ActivityIndicator, Image, PanResponder, Text, Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -242,7 +242,15 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
   const doSaveToGallery = async () => {
     try {
       setBusy(true);
-      const perm = await MediaLibrary.requestPermissionsAsync();
+      // إذن الكتابة في التخزين الخارجي محذوف من التطبيق، ومكتبة المعرض تشترطه حتى أندرويد ١٢ ·
+      // فعلى ما دون ١٣ يمرّ الحفظ بنافذة المشاركة ويختار المستخدم منها «الصور» أو مجلداً
+      if (Platform.OS === 'android' && Number(Platform.Version) < 33) {
+        if (!(await Sharing.isAvailableAsync())) { toast('المشاركة غير متاحة على هذا الجهاز'); return; }
+        await Sharing.shareAsync(uri, { mimeType: cur.mime || undefined, dialogTitle: 'حفظ في معرض الجهاز' });
+        return;
+      }
+      // من أندرويد ١٣ يحفظ في المعرض بلا إذن قراءة · الطلب للكتابة وحدها
+      const perm = await MediaLibrary.requestPermissionsAsync(true);
       if (!perm.granted) { toast('لم يؤذن بالوصول إلى المعرض'); return; }
       await MediaLibrary.saveToLibraryAsync(uri);
       toast('حُفظ في معرض الجهاز');

@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.ContentValues
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.provider.MediaStore
 import java.io.File
 
@@ -33,28 +32,25 @@ class SaveErrorLogActivity : Activity() {
     val name = rawName ?: return
     if (!allowed.matches(name)) return
 
+    // التنزيلات عبر MediaStore بلا أي إذن من أندرويد ١٠ · وما دونه يحتاج إذن الكتابة
+    // المحذوف من التطبيق، فلا يُكتب هناك ويحفظه المستخدم من نافذة المشاركة في الحوار
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+
     val staged = File(File(filesDir, "tmp"), name)
     if (!staged.exists()) return
     val text = staged.readBytes()
 
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-      val values = ContentValues().apply {
-        put(MediaStore.Downloads.DISPLAY_NAME, name)
-        put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-        put(MediaStore.Downloads.IS_PENDING, 1)
-      }
-      val resolver = contentResolver
-      val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
-      resolver.openOutputStream(uri)?.use { it.write(text) }
-      values.clear()
-      values.put(MediaStore.Downloads.IS_PENDING, 0)
-      resolver.update(uri, values, null, null)
-    } else {
-      @Suppress("DEPRECATION")
-      val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-      if (!dir.exists()) dir.mkdirs()
-      File(dir, name).writeBytes(text)
+    val values = ContentValues().apply {
+      put(MediaStore.Downloads.DISPLAY_NAME, name)
+      put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+      put(MediaStore.Downloads.IS_PENDING, 1)
     }
+    val resolver = contentResolver
+    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
+    resolver.openOutputStream(uri)?.use { it.write(text) }
+    values.clear()
+    values.put(MediaStore.Downloads.IS_PENDING, 0)
+    resolver.update(uri, values, null, null)
 
     try { staged.delete() } catch (e: Exception) { /* نُقل · وبقاؤه لا يضرّ */ }
   }

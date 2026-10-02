@@ -36,6 +36,9 @@ export function errorReportText(where: string, e: unknown, at: Date = new Date()
  */
 export async function saveErrorReport(where: string, e: unknown): Promise<string> {
   if (Platform.OS !== 'android') return '';
+  // التنزيلات تُكتب عبر MediaStore بلا إذن من أندرويد ١٠ · وما دونه يحتاج إذن الكتابة المحذوف،
+  // فلا يُحفظ تلقائياً ويبقى زرّ «أرسل تقرير الخطأ» في الحوار: نافذة المشاركة تحفظه حيث يختار المستخدم
+  if (Number(Platform.Version) < 29) return '';
   try {
     const at = new Date();
     const name = reportName(at);
