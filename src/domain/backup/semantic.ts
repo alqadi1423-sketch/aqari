@@ -9,6 +9,7 @@
  *     (ودفعات ما قبل نوع الخصم تُحكم على مستوى القسط بخصم الدفتر).
  *  ٥) نوع الخصم معروف ولا يكون بلا خصم · وخصم «بعد الاستحقاق» له في الدفتر سطر 4900 بقيمته.
  *  ٤) كل مبلغ بالهللات عدد صحيح (لا كسر ولا نص) في كل عمود مالي.
+ * والدفعة الملغاة (الهجرة ٢١) خارج فحوص الدفعات: قيدها وخصمها معكوسان ومسدَّدها خارج القسط.
  * كل بند جملة عربية تسمّي موضعه · وأي بند يرفض ما ورد كاملاً.
  */
 import type { DB, SqlValue } from '../../db/adapter';
@@ -155,7 +156,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
   const negative = db.all<{ tenant: string | null; date: string }>(
     `SELECT c.tenant_name AS tenant, p.date FROM contract_payments p
      LEFT JOIN contracts c ON c.id = p.contract_id
-     WHERE p.installment_id IS NOT NULL AND (p.net_halalas < 0 OR p.discount_halalas < 0) AND ${pay.sql}
+     WHERE p.installment_id IS NOT NULL AND p.cancelled_at IS NULL AND (p.net_halalas < 0 OR p.discount_halalas < 0) AND ${pay.sql}
      ORDER BY p.date`, pay.params
   );
   if (negative.length) {
@@ -172,7 +173,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
      FROM contract_payments p
      JOIN contract_installments i ON i.id = p.installment_id
      LEFT JOIN contracts c ON c.id = p.contract_id
-     WHERE p.discount_kind IS NOT NULL
+     WHERE p.discount_kind IS NOT NULL AND p.cancelled_at IS NULL
        AND p.net_halalas + (CASE WHEN p.discount_kind = '${DISCOUNT_AFTER_DUE}' THEN p.discount_halalas ELSE 0 END) > i.amount_halalas
        AND ${pay.sql}
      ORDER BY p.date`, pay.params
@@ -189,7 +190,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
   const badKind = db.all<{ tenant: string | null; date: string }>(
     `SELECT c.tenant_name AS tenant, p.date FROM contract_payments p
      LEFT JOIN contracts c ON c.id = p.contract_id
-     WHERE p.discount_kind IS NOT NULL AND (p.discount_kind NOT IN (${kinds}) OR p.discount_halalas <= 0) AND ${pay.sql}
+     WHERE p.discount_kind IS NOT NULL AND p.cancelled_at IS NULL AND (p.discount_kind NOT IN (${kinds}) OR p.discount_halalas <= 0) AND ${pay.sql}
      ORDER BY p.date`, [...DISCOUNT_KINDS, ...pay.params]
   );
   if (badKind.length) {
@@ -205,7 +206,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
                           AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) AS booked
        FROM contract_payments p
        LEFT JOIN contracts c ON c.id = p.contract_id
-       WHERE p.discount_kind = '${DISCOUNT_AFTER_DUE}' AND ${pay.sql}
+       WHERE p.discount_kind = '${DISCOUNT_AFTER_DUE}' AND p.cancelled_at IS NULL AND ${pay.sql}
      ) WHERE booked != disc
      ORDER BY date`, pay.params
   );

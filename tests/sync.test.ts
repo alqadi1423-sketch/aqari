@@ -174,7 +174,7 @@ describe('قواعد القسم ٣ على مسار المزامنة', () => {
     b.close();
   });
 
-  test('دفعة واردة يتجاوز خصمها مبلغ القسط: تُرفض · وقسط وارد مسدَّده فوق مبلغه: يُرفض', async () => {
+  test('دفعة واردة يتجاوز خصمها مبلغ القسط: تُرفض · وقسط وارد بمسدَّد مكتوب: يُترك المسدَّد ويُحسب من الدفعات', async () => {
     const r = new MemoryRemote();
     const b = memDb();
     enableSync(b, UID);
@@ -187,13 +187,14 @@ describe('قواعد القسم ٣ على مسار المزامنة', () => {
     r.inject({ id: docId('contract_installments', k.inst), t: 'contract_installments', k: k.inst, u: '2026-05-01T00:00:00.000Z', dev: 'other', del: false,
       d: { ...row, paid_halalas: 999999 } as never });
     const rep = await sync(b, r);
-    expect(rep.rejected).toBe(2);
+    // الدفعة بلا نوع (صف من إصدار سابق) يحرسها سقف القسط بخصمها فتُرفض · والقسط الوارد يُقبل
+    // بلا مسدَّده المكتوب: المسدَّد لا يُزامَن، يُحسب من الدفعات وتوزيعها (الهجرة ٢١) فيبقى صفراً
+    expect(rep.rejected).toBe(1);
     expect(b.get(`SELECT id FROM contract_payments WHERE id = 'PY'`)).toBeFalsy();
     expect(b.get<{ p: number }>(`SELECT paid_halalas AS p FROM contract_installments WHERE id = ?`, [k.inst])!.p).toBe(0);
-    const reasons = b.all<{ reason: string }>(`SELECT reason FROM sync_rejects WHERE pk IN ('PY', ?)`, [k.inst]).map((x) => x.reason).join(' | ');
-    // الدفعة بلا نوع (صف من إصدار سابق) يحرسها سقف القسط بخصمها · والقسط يحرسه مبلغه
-    expect(reasons).toContain('الخصم يتجاوز المتبقي على القسط');
-    expect(reasons).toContain('المسدَّد يتجاوز مبلغ القسط');
+    // أثناء تطبيق الوارد لا يُفحص «المتبقي» المحلي في المحفّز (الهجرة ٢١) · فيمسكه الفحص الدلالي بسقف القسط
+    expect(b.get<{ reason: string }>(`SELECT reason FROM sync_rejects WHERE pk = 'PY'`)!.reason).toContain('قسط يتجاوز المسدَّدُ مع الخصم مبلغَه');
+    expect(b.get(`SELECT 1 FROM sync_rejects WHERE pk = ?`, [k.inst])).toBeFalsy();
     b.close();
   });
 });
@@ -255,7 +256,7 @@ describe('فحص الاستعادة نفسه على كل صف وارد · قبل
     b.close();
   });
 
-  test('بلا محفّزات القاعدة أصلاً: الفحص وحده يرفض القيد غير المتوازن والقيد بلا سطور والقسط المتجاوز والدفعة السالبة · بنص الاستعادة حرفاً', async () => {
+  test('بلا محفّزات القاعدة أصلاً: الفحص وحده يرفض القيد غير المتوازن والقيد بلا سطور والدفعة السالبة · بنص الاستعادة حرفاً · والمسدَّد الوارد يُترك', async () => {
     const { r, b, k } = await device(dropLedgerTriggers);
     const inst2 = b.get<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1 OFFSET 1`, [k.cid])!.id;
     const row = b.get<Record<string, unknown>>(`SELECT * FROM contract_installments WHERE id = ?`, [k.inst])!;
@@ -265,7 +266,8 @@ describe('فحص الاستعادة نفسه على كل صف وارد · قبل
       d: { ...row, paid_halalas: 999999 } as never });
     r.inject(payment({ cid: k.cid, inst: inst2 }, 'PN', { gross_halalas: -100, net_halalas: -100 }));
     const rep = await sync(b, r);
-    expect(rep.rejected).toBe(4);
+    // المسدَّد المكتوب في القسط الوارد لا يُزامَن (الهجرة ٢١) · يُترك ويُحسب من الدفعات، فلا رفض له
+    expect(rep.rejected).toBe(3);
     // لا أثر لشيء منها
     expect(count(b, `SELECT COUNT(*) AS n FROM journal_entries WHERE id IN ('JU', 'JN')`)).toBe(0);
     expect(b.get<{ p: number }>(`SELECT paid_halalas AS p FROM contract_installments WHERE id = ?`, [k.inst])!.p).toBe(0);
@@ -282,9 +284,11 @@ describe('فحص الاستعادة نفسه على كل صف وارد · قبل
            VALUES ('PN',?,?,'م','2026-01-01',-100,0,-100,'','','x')`, [k.cid, inst2]);
     const restoreSays = semanticIssues(b);
     expect(restoreSays).toHaveLength(4);
-    const syncSaid = ['JU', 'JN', k.inst, 'PN'].map((pk) => reasonOf(b, pk));
+    const syncSaid = ['JU', 'JN', 'PN'].map((pk) => reasonOf(b, pk));
     for (const reason of syncSaid) expect(reason.startsWith('الوارد مرفوض · ')).toBe(true);
-    expect(syncSaid.map((x) => x.replace('الوارد مرفوض · ', '')).sort()).toEqual([...restoreSays].sort());
+    // والاستعادة تسمّي القسط المكتوب مسدَّده مباشرة · وما سواه بنص المزامنة حرفاً
+    expect(syncSaid.map((x) => x.replace('الوارد مرفوض · ', '')).sort())
+      .toEqual(restoreSays.filter((x) => !x.startsWith('قسط يتجاوز')).sort());
     b.close();
   });
 });

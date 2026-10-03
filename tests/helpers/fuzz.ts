@@ -22,7 +22,9 @@ import { postEntry } from '@/domain/accounting/post';
 import { reverseFromJournal } from '@/domain/accounting/journalReversal';
 import { integrityChecks } from '@/domain/accounting/integrity';
 import { semanticIssues } from '@/domain/backup/semantic';
-import { planLedgerRepair, contractSurpluses } from '@/domain/ledgerReview';
+import { DERIVED_PAID_SQL } from '@/domain/contracts/paid';
+import { cancelPayment } from '@/domain/contracts/cancelPayment';
+import { setDeviceLetter } from '@/domain/numbering';
 import { enableSync, syncOnce, outboxCount, planCloudReplace, adoptAsCloudTruth } from '@/sync/engine';
 import type { RemoteDoc, RemoteStore, Cursor, WriteResult } from '@/sync/types';
 import { MemoryRemote } from './memoryRemote';
@@ -94,6 +96,9 @@ function openDevice(dir: string, name: 'A' | 'B', inner: MemoryRemote, seedNo: n
   fs.copyFileSync(templateFile(dir), file);
   const db = openNodeDb(file);
   const dev = ensureDeviceId(db, 'dev-' + name + '-' + seedNo);
+  // حرف الجهاز في ترقيم الحساب (numbering.ts) · الأول بلا حرف والثاني B كما يسجّلهما الحساب
+  setDeviceLetter(db, name === 'A' ? '' : 'B');
+  inner.letters[dev] = name === 'A' ? '' : 'B';
   enableSync(db, UID);
   return { name, file, db, dev, remote: new DeviceRemote(inner), backup: null };
 }
@@ -104,14 +109,17 @@ export function invariantIssues(db: DB): string[] {
   const out: string[] = [];
   for (const c of integrityChecks(db)) if (!c.ok) out.push('فحص الدفتر: ' + c.name + ' (' + c.value + ')');
   out.push(...semanticIssues(db).map((s) => 'دلالي: ' + s));
-  const plan = planLedgerRepair(db);
-  if (plan.changes.length || plan.issues.length) out.push('المسدَّد يخالف الدفتر: ' + plan.changes.length + ' قسط · ' + plan.issues.length + ' مسألة');
-  const sur = contractSurpluses(db);
-  if (sur.length) out.push('نقد في الدفتر أكثر من المسدَّد: ' + sur.map((s) => s.amount).join('، '));
-  // المسدَّد على الأقساط الحيّة = نقد الإيراد في قيود الدفعات (إيراد 4200 ناقص الخصم 4900) ناقص فائض التحصيل
+  // ١) المسدَّد المخزَّن هو المحسوب من الدفعات وتوزيعها محدوداً بالمبلغ ناقصاً الخصم (الهجرة ٢١)
+  const drift = db.all<{ id: string; paid: number; want: number }>(
+    `SELECT i.id, i.paid_halalas AS paid,
+            MIN(${DERIVED_PAID_SQL}, MAX(0, i.amount_halalas - ${INSTALLMENT_DISCOUNT_SQL})) AS want
+     FROM contract_installments i WHERE i.status != 'ملغية'`).filter((r) => Number(r.paid) !== Number(r.want));
+  if (drift.length) out.push('مسدَّد مخزَّن يخالف المحسوب: ' + drift.length + ' قسط');
+  // ٢) نقد الإيراد في قيود الدفعات القائمة (4200 ناقص الخصم 4900) = ما دفعته الدفعات على الأقساط بلا حدّ ·
+  //    فلا قبض يضيع ولو حُصّل القسط من جهازين (الزائد فوق المبلغ فائضٌ يظهر للرد)
   const rows = db.all<{ id: string; paid: number; cash: number }>(
     `SELECT c.id,
-       COALESCE((SELECT SUM(paid_halalas) FROM contract_installments WHERE contract_id = c.id AND status != 'ملغية'), 0) AS paid,
+       COALESCE((SELECT SUM(${DERIVED_PAID_SQL}) FROM contract_installments i WHERE i.contract_id = c.id AND i.status != 'ملغية'), 0) AS paid,
        COALESCE((SELECT SUM(CASE WHEN l.account_code = '4200' THEN l.credit_halalas - l.debit_halalas
                                   WHEN l.account_code = '4900' THEN l.credit_halalas - l.debit_halalas ELSE 0 END)
                  FROM contract_payments p
@@ -163,17 +171,11 @@ export async function runSequence(dir: string, seedNo: number, steps = 14): Prom
    * لا يكتب جهازٌ وللآخر كتابة لم تُرفع، ولا وهو متأخر عمّا رفعه الآخر · فالترقيم المتسلسل (البند ٥)
    * ومسدَّد القسط الواحد من جهازين منفصلين ينتظران قرار المالك · فيُرفع ويُسحب أولاً إن أمكن
    */
+  // الكتابة على الجهازين معاً بلا اتصال مسموحة منذ ترقيم الأجهزة (numbering.ts) والمسدَّد المحسوب (paid.ts) ·
+  // وما بقي من انتظار الآخر للاستعادة وحدها: لا تُعتمد نسخةٌ للسحابة وللآخر كتابة لم تُرفع
   const canWrite = async (d: Device): Promise<boolean> => {
-    const o = d === A ? B : A;
-    if (outboxCount(o.db) > 0) {
-      if (!o.remote.online || !d.remote.online) return false;
-      await sync(o);
-    }
-    if (stale.get(d)) {
-      if (!d.remote.online) return false;
-      await sync(d);
-    }
-    return outboxCount(o.db) === 0 && !stale.get(d);
+    void d;
+    return true;
   };
   const check = (d: Device, what: string) => {
     const issues = invariantIssues(d.db);
@@ -220,6 +222,12 @@ export async function runSequence(dir: string, seedNo: number, steps = 14): Prom
       const e = r.pick(es);
       reverseFromJournal(d.db, e.id); // يُرفض بسببه · فالمسدَّد لا يفارق الدفتر
       return 'عكس قيد دفعة';
+    } },
+    { name: 'إلغاء دفعة', run: async (d) => {
+      const ps = d.db.all<{ id: string }>(`SELECT id FROM contract_payments WHERE cancelled_at IS NULL ORDER BY id`);
+      if (!ps.length) return null;
+      cancelPayment(d.db, r.pick(ps).id, { date: date(), reason: 'اختبار' });
+      return 'إلغاء دفعة';
     } },
     { name: 'نسخة', run: async (d) => {
       const f = d.file.replace(/\.db$/, `-bk${++backups}.db`);

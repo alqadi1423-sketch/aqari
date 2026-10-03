@@ -9,6 +9,7 @@ import { pctOf, fmt as fmtH } from './money';
 import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount } from './accounting/post';
 import { addMeterReading } from './meters';
 import { logAudit } from './audit';
+import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
 
 export interface PurchaseInput {
   supplier: string;
@@ -65,10 +66,13 @@ export function purchaseTax(subtotalHalalas: number, exempt: boolean): number {
 }
 
 export function nextPurchaseNo(db: DB): string {
+  // تسلسل هذا الجهاز وحده (numbering.ts)
+  const letter = deviceLetter(db);
+  const own = ownNumbersSql('no', 'PUR-[0-9]*', letter);
   const row = db.get<{ mx: number }>(
-    `SELECT COALESCE(MAX(CAST(substr(no, 5) AS INTEGER)),0) AS mx FROM purchases WHERE no LIKE 'PUR-%'`
+    `SELECT COALESCE(MAX(CAST(substr(no, 5) AS INTEGER)),0) AS mx FROM purchases WHERE ${own.sql}`, own.params
   );
-  return 'PUR-' + String((row ? Number(row.mx) : 0) + 1).padStart(3, '0');
+  return withLetter('PUR-' + String((row ? Number(row.mx) : 0) + 1).padStart(3, '0'), letter);
 }
 
 export function savePurchase(db: DB, input: PurchaseInput, existingId?: string): string {

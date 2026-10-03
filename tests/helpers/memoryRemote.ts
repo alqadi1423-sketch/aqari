@@ -4,6 +4,7 @@
  */
 import type { Cursor, RemoteDoc, RemoteStore, WriteResult } from '@/sync/types';
 import { syncTable } from '@/db/syncTables';
+import { nextDeviceLetter } from '@/domain/numbering';
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
@@ -51,6 +52,14 @@ export class MemoryRemote implements RemoteStore {
     const page = after.slice(0, limit).map(clone);
     const last = page[page.length - 1];
     return { docs: page, next: last ? { ts: last.ts, id: last.id } : cursor };
+  }
+
+  /** حروف الأجهزة كسجل users/{uid}/meta/devices */
+  letters: Record<string, string> = {};
+  async registerDevice(deviceId: string): Promise<string> {
+    if (this.offline) throw new Error('Network request failed');
+    if (!(deviceId in this.letters)) this.letters[deviceId] = nextDeviceLetter(Object.values(this.letters));
+    return this.letters[deviceId];
   }
 
   /** كتابة مباشرة كما يفعل جهاز آخر أو عابث · لاختبار ما يرد */

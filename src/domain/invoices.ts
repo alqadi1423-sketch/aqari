@@ -7,6 +7,7 @@ import { uid } from './ids';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById } from './accounting/post';
 import { mulQty, pctOf } from './money';
 import { logAudit } from './audit';
+import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
 
 export interface InvoiceLineInput {
   descr: string;
@@ -38,10 +39,13 @@ export function invoiceTotals(lines: InvoiceLineInput[]): { subtotal: number; ta
 
 export function nextInvoiceNo(db: DB): string {
   const yr = new Date().getFullYear();
+  // تسلسل هذا الجهاز وحده (numbering.ts) · الرقم بعد السنة، وبحرف الجهاز بعده
+  const letter = deviceLetter(db);
+  const own = ownNumbersSql('no', 'INV-[0-9]*', letter);
   const row = db.get<{ mx: number }>(
-    `SELECT COALESCE(MAX(CAST(substr(no, -4) AS INTEGER)),0) AS mx FROM invoices WHERE no LIKE 'INV-%'`
+    `SELECT COALESCE(MAX(CAST(substr(no, 10) AS INTEGER)),0) AS mx FROM invoices WHERE ${own.sql}`, own.params
   );
-  return `INV-${yr}-` + String((row ? Number(row.mx) : 0) + 1).padStart(4, '0');
+  return withLetter(`INV-${yr}-` + String((row ? Number(row.mx) : 0) + 1).padStart(4, '0'), letter);
 }
 
 /** حفظ فاتورة (مسودة أو إصدار). التعديل يعكس القيد القديم ويعيد الترحيل. */

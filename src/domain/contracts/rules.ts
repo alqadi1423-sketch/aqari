@@ -5,6 +5,7 @@
 import type { DB } from '../../db/adapter';
 import { dfmt, today, daysBetween } from '../dates';
 import { normalizePhone } from '../phone';
+import { deviceLetter, withLetter } from '../numbering';
 
 export const RENEW_WINDOW_DAYS = 60;
 
@@ -356,12 +357,15 @@ export function nextContractNo(db: DB, dateStr?: string): string {
     `SELECT contract_no FROM contracts
      WHERE contract_no IS NOT NULL AND status != 'مسودة' AND deleted_at IS NULL`
   );
+  // تسلسل هذا الجهاز وحده (numbering.ts) · بلا حرف أو بحرفه بعد الرقم
+  const letter = deviceLetter(db);
+  const own = new RegExp('^EJ-\\d{4}-(\\d+)' + (letter ? '-' + letter : '') + '$');
   let max = 0;
   for (const r of rows) {
-    const m = String(r.contract_no || '').match(/^EJ-\d{4}-(\d+)$/);
+    const m = String(r.contract_no || '').match(own);
     if (m) max = Math.max(max, +m[1]);
   }
-  return 'EJ-' + yr + '-' + String(max + 1).padStart(3, '0');
+  return withLetter('EJ-' + yr + '-' + String(max + 1).padStart(3, '0'), letter);
 }
 
 /** القاعدة ٩: التقبيل لا يُسجَّل على عقد ملغى أو مسودة */

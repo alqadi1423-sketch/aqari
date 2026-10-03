@@ -35,7 +35,7 @@ export const INSTALLMENT_DISCOUNT_SQL = `(COALESCE((SELECT SUM(l.debit_halalas -
     JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
     WHERE p.installment_id = i.id AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
   + COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p
-    WHERE p.installment_id = i.id AND p.discount_kind IS NULL AND p.discount_halalas > 0
+    WHERE p.installment_id = i.id AND p.cancelled_at IS NULL AND p.discount_kind IS NULL AND p.discount_halalas > 0
       AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = p.journal_entry_id AND l.account_code = '4900')
       AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'discount' AND e.src_id = p.id)
       AND NOT EXISTS (SELECT 1 FROM contract_installments i2

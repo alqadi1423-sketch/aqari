@@ -102,13 +102,17 @@ describe('اقتراح التصحيح من الدفتر', () => {
     // الاقتراح قراءة محضة · لا شيء تغيّر قبل التطبيق
     expect(paidOf(db, k.insts.slice(0, 3))).toEqual([100000, 100000, 60000]);
     const ledger = JSON.stringify([db.all(`SELECT * FROM journal_entries ORDER BY id`), db.all(`SELECT * FROM journal_lines ORDER BY id`),
-      db.all(`SELECT * FROM contract_payments ORDER BY id`), db.all(`SELECT * FROM payment_allocations ORDER BY id`)]);
+      db.all(`SELECT * FROM contract_payments ORDER BY id`)]);
     expect(applyLedgerRepair(db, plan)).toBe(3);
     expect(paidOf(db, k.insts.slice(0, 3))).toEqual([80000, 80000, 80000]);
     expect(semanticIssues(db)).toEqual([]);
-    // لا قيد ولا دفعة ولا توزيع تغيّر · وكل تغيير في سجل العمليات بقيمه
+    // لا قيد ولا دفعة تغيّر · والمسدَّد يُحسب من الدفعات وتوزيعها (الهجرة ٢١) فيأتي التصحيح توزيعاً
+    // لدفعات العقد على أقساطه بترتيب الاستحقاق: ٢٤٠٠ منسوبة، و٢٠٠ فائض بلا توزيع
     expect(JSON.stringify([db.all(`SELECT * FROM journal_entries ORDER BY id`), db.all(`SELECT * FROM journal_lines ORDER BY id`),
-      db.all(`SELECT * FROM contract_payments ORDER BY id`), db.all(`SELECT * FROM payment_allocations ORDER BY id`)])).toBe(ledger);
+      db.all(`SELECT * FROM contract_payments ORDER BY id`)])).toBe(ledger);
+    const alloc = db.all<{ i: string; s: number }>(
+      `SELECT installment_id AS i, SUM(amount_halalas) AS s FROM payment_allocations GROUP BY installment_id`);
+    expect(Object.fromEntries(alloc.map((a) => [a.i, Number(a.s)]))).toEqual({ [k.insts[0]]: 80000, [k.insts[1]]: 80000, [k.insts[2]]: 80000 });
     const log = db.all<{ b: string; a: string }>(`SELECT before_json AS b, after_json AS a FROM audit_log WHERE entity_type = 'تصحيح من الدفتر' ORDER BY rowid`);
     expect(log.map((x) => [JSON.parse(x.b).paid_halalas, JSON.parse(x.a).paid_halalas])).toEqual([[100000, 80000], [100000, 80000], [60000, 80000]]);
     // والفائض الذي لم يحسمه الدفتر يُسجَّل عند التطبيق فلا يضيع بعد خروج العقد من المراجعة
@@ -135,7 +139,7 @@ describe('اقتراح التصحيح من الدفتر', () => {
     legacyPay(db, c.cid, c.insts[0], '2026-01-04', 100000, 0);
     paid(db, c.insts[0], 100000);
     legacyDiscount(db, c.insts[0], 150000);
-    // مسدَّد لا يطابق النقد
+    // مسدَّد مكتوب لا يطابق النقد · المكتوب لا يُعتدّ به منذ الهجرة ٢١ (يُحسب من الدفعات) فيُرى المتبقي الحقيقي
     const d = contract(db);
     legacyPay(db, d.cid, d.insts[0], '2026-01-04', 80000, 20000);
     paid(db, d.insts[0], 100000); paid(db, d.insts[1], 100000);
@@ -148,7 +152,7 @@ describe('اقتراح التصحيح من الدفتر', () => {
     expect(reasons).toContain('على العقد بعد خصومه في الدفتر متبقٍ 1,300.00 ولا يحدد الدفتر أي أقساطه لم تُسدَّد');
     expect(reasons).toContain('دفعة 2026-01-04 (1,000.00) بلا قيد مرحّل قائم في الدفتر · فلا يُعرف نقد العقد من الدفتر');
     expect(reasons).toContain('خصم قسط 2026-01-01 في الدفتر (1,500.00) أكبر من مبلغه (1,000.00)');
-    expect(reasons).toContain('مسدَّد الأقساط (2,000.00) لا يطابق نقد الدفعات في الدفتر (800.00) · فلا يُعرف أي الأقساط يُصحَّح');
+    expect(reasons).toContain('على العقد بعد خصومه في الدفتر متبقٍ 2,000.00 ولا يحدد الدفتر أي أقساطه لم تُسدَّد');
     applyLedgerRepair(db, plan);
     expect(JSON.stringify(db.all(`SELECT * FROM contract_installments ORDER BY id`))).toBe(before);
     db.close();

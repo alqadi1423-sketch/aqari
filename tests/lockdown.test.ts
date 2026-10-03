@@ -408,17 +408,17 @@ describe('هـ · المسدَّد مع الخصم لا يتجاوز مبلغ ا
     db.close();
   });
 
-  test('الاستعادة: قسط يتجاوزه مسدَّده مع خصمه يرفض النسخة كاملة ويُسمّى المستأجر والقسط', async () => {
+  test('الاستعادة: قسط كُتب مسدَّده فوق مبلغه · يُحسب من دفعات النسخة ويُعرض التغيير قبل التبديل', async () => {
     const archive = await craftArchive((db) => {
       const k = contractWithInstallments(db, 100000, 'سلوى التجريبية');
       dropLockTriggers(db);
       db.run(`UPDATE contract_installments SET paid_halalas = 300000 WHERE id = ?`, [k.insts[0]]);
     });
     const target = makeBackupEnv(newDir());
-    const err = await prepareRestore(target, archive).catch((e) => e);
-    expect(err).toBeInstanceOf(RestoreError);
-    expect(err.message).toContain('قسط يتجاوز المسدَّدُ مع الخصم مبلغَه أو مسدَّده سالب: سلوى التجريبية');
-    expect(err.message).toContain('(3,000.00 من 1,000.00)');
+    // المسدَّد لا يُقرأ من النسخة رقماً (الهجرة ٢١): لا دفعة على القسط فمسدَّده صفر · والتغيير في الخطة
+    const plan = await prepareRestore(target, archive);
+    expect(plan.paidRecomputed).toHaveLength(1);
+    expect(plan.paidRecomputed[0]).toMatchObject({ fromPaid: 300000, toPaid: 0 });
     target.closeLive();
   });
 

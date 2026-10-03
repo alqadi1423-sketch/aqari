@@ -20,6 +20,8 @@ import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
 import { SEED_SCRIPTS, seedScriptId } from '../db/seed';
 import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
+import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
+import { deviceLetterAssigned, setDeviceLetter } from '../domain/numbering';
 import type { Cursor, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 
 const nowIso = () => new Date().toISOString();
@@ -111,11 +113,23 @@ function readLines(db: DB, entryId: string): RowData[] {
   return db.all<RowData>(`SELECT * FROM journal_lines WHERE entry_id = ? ORDER BY id`, [entryId]);
 }
 
+/**
+ * ما يُشتق ولا يُزامَن: مسدَّد القسط وحالته يُحسبان على كل جهاز من الدفعات وتوزيعها (paid.ts) ·
+ * فلو سافر المسدَّد رقماً لغلب رقمُ جهازٍ رقمَ الآخر وضاع قبضٌ سُجّل على الجهازين بلا اتصال.
+ * و«ملغية» قرارٌ لا حساب، فتسافر وحدها.
+ */
+export function stripDerived(table: string, row: RowData): RowData {
+  if (table !== 'contract_installments') return row;
+  const { paid_halalas: _paid, ...rest } = row;
+  if (rest.status !== 'ملغية') delete rest.status;
+  return rest;
+}
+
 export function buildDoc(db: DB, table: string, key: string, op: 'upsert' | 'delete', changedAt: string, deviceId: string): RemoteDoc {
   const base = { id: docId(table, key), t: table, k: key, u: changedAt, dev: deviceId };
   const row = op === 'upsert' ? readRow(db, table, key) : undefined;
   if (!row) return { ...base, d: null, del: true };
-  const doc: RemoteDoc = { ...base, d: row, del: false };
+  const doc: RemoteDoc = { ...base, d: stripDerived(table, row), del: false };
   if (table === 'journal_entries') doc.lines = readLines(db, key);
   return doc;
 }
@@ -288,7 +302,8 @@ function applyOne(
         db.run(`INSERT OR IGNORE INTO "${doc.t}" (${keys.map((c) => `"${c}"`).join(',')}) VALUES (${keys.map(() => '?').join(',')})`,
           keys.map((c) => doc.d![c] as SqlValue));
       } else {
-        upsertRow(db, doc.t, doc.d!, cols(doc.t));
+        // ما أرسله جهازٌ بإصدار أقدم من مسدَّدٍ وحالة يُترك · فهما يُحسبان هنا بعد التطبيق
+        upsertRow(db, doc.t, stripDerived(doc.t, doc.d!), cols(doc.t));
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها
@@ -311,6 +326,25 @@ function applyOne(
   }
 }
 
+/** sync_ctl.applying · تقرؤه محفّزات سقف الدفعة (الهجرة ٢١) */
+function setApplying(db: DB, on: boolean): void {
+  db.run(`INSERT INTO sync_ctl (k, v) VALUES ('applying', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [on ? 1 : 0]);
+}
+
+/** الأقساط التي يمسّ مسدَّدَها مستندٌ وارد · وحذفُ دفعةٍ أو توزيعٍ لا يُعرف قسطه فيُعاد حساب الكل */
+function markTouched(db: DB, doc: RemoteDoc, touched: Set<string>): void {
+  const d = doc.d;
+  if (doc.t === 'contract_installments') touched.add(doc.k);
+  else if (doc.t === 'contract_payments') {
+    if (!d) { touched.add(ALL_INSTALLMENTS); return; }
+    for (const id of installmentsOfPayment(db, doc.k)) touched.add(id);
+  } else if (doc.t === 'payment_allocations') {
+    if (!d) { touched.add(ALL_INSTALLMENTS); return; }
+    if (d.installment_id) touched.add(String(d.installment_id));
+  }
+}
+const ALL_INSTALLMENTS = '*';
+
 /**
  * تطبيق الصندوق الوارد كله · بترتيب الآباء قبل الأبناء، ومرور ثانٍ وثالث لما انتظر أباً
  * وصل في المرور نفسه (قيد عكسي بعد أصله مثلاً). ما بقي ينتظر أباه يبقى للدورة التالية.
@@ -322,6 +356,9 @@ export function applyInbox(db: DB, deviceId: string): { applied: number; conflic
   let applied = 0, conflicts = 0, rejected = 0;
   const wasOn = captureOn(db);
   setCapture(db, false); // الوارد لا يرتدّ صداه إلى الطابور الصادر
+  // دفعةٌ سُجّلت على جهاز آخر لا يرفضها فحص «المتبقي» المحلي · يُحدّ المسدَّد بعد التطبيق ويظهر الزائد فائضاً
+  setApplying(db, true);
+  const touched = new Set<string>();
   try {
     for (let pass = 0; pass < 4; pass++) {
       let progress = 0;
@@ -353,6 +390,7 @@ export function applyInbox(db: DB, deviceId: string): { applied: number; conflic
               }
               db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
               progress++;
+              if (out === 'applied' || out === 'conflict-remote') markTouched(db, doc, touched);
               if (out === 'applied') applied++;
               else if (out === 'conflict-local' || out === 'conflict-remote') { conflicts++; if (out === 'conflict-remote') applied++; }
               else if (out === 'rejected') rejected++;
@@ -367,7 +405,10 @@ export function applyInbox(db: DB, deviceId: string): { applied: number; conflic
       if (!left) break;
     }
   } finally {
-    setCapture(db, wasOn);
+    setApplying(db, false);
+    // المسدَّد والحالة من الدفعات للأقساط التي مسّها الوارد · وما حُسب لا يرتدّ إلى الطابور
+    try { recomputeInstallments(db, touched.has(ALL_INSTALLMENTS) ? undefined : [...touched]); }
+    finally { setCapture(db, wasOn); }
   }
   const waiting = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
   return { applied, conflicts, rejected, waiting };
@@ -562,6 +603,11 @@ export async function syncOnce(
     setSyncState(db, 'backoff_until', until);
     throw new SyncBusyError(pushed, total, until);
   };
+
+  // ٠) حرف الجهاز في ترقيم الحساب قبل أي كتابة · مرة واحدة (numbering.ts)
+  if (remote.registerDevice && !deviceLetterAssigned(db)) {
+    setDeviceLetter(db, await retrying(() => remote.registerDevice!(deviceId)));
+  }
 
   // ١) السحب إلى الصندوق الوارد · المؤشر يُحفظ بعد حفظ كل صفحة
   let pulled = 0;

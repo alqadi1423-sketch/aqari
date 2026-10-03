@@ -17,6 +17,7 @@ import { logAudit } from './audit';
 import { fmt } from './money';
 import { postBookedDiscount, postEntry, type PostedEntry } from './accounting/post';
 import { walletCashBalance } from './accounting/ledger';
+import { DERIVED_PAID_SQL, recomputeInstallments } from './contracts/paid';
 import {
   INSTALLMENT_DISCOUNT_SQL, installmentStoredStatus, DISCOUNT_ACCOUNT, DISCOUNT_ENTRY_SRC,
   DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind,
@@ -55,18 +56,23 @@ export interface LedgerRepairPlan {
   issues: LedgerRepairIssue[];
 }
 
-interface InstRow { id: string; due_date: string; amount: number; paid: number; status: string; disc: number; rows_disc: number }
+interface InstRow { id: string; due_date: string; amount: number; paid: number; derived: number; status: string; disc: number; rows_disc: number }
 
 const label = (c: { contract_no: string | null; tenant_name: string | null }) => ({
   contractNo: c.contract_no || 'بلا رقم عقد',
   tenant: c.tenant_name || 'بلا مستأجر',
 });
 
-/** عقود فيها قسط مسدَّده مع خصمه في الدفتر يتجاوز مبلغه أو مسدَّده سالب · وحدها ما يُنظر فيه */
+/**
+ * عقود فيها قسط تتجاوز دفعاتُه مع خصمه في الدفتر مبلغَه · وحدها ما يُنظر فيه.
+ * والدفعات تُحسب بلا حدّ (المسدَّد المخزَّن محدودٌ بالمبلغ منذ الهجرة ٢١ فلا يُظهر التجاوز)،
+ * والمخزَّن نفسه إن كُتب فوق مبلغه أو سالباً.
+ */
 function contractsInBreach(db: DB): string[] {
   return db.all<{ id: string }>(
     `SELECT DISTINCT i.contract_id AS id FROM contract_installments i
-     WHERE i.status != 'ملغية' AND (i.paid_halalas < 0 OR i.paid_halalas + ${INSTALLMENT_DISCOUNT_SQL} > i.amount_halalas)`
+     WHERE i.status != 'ملغية' AND (i.paid_halalas < 0 OR i.paid_halalas + ${INSTALLMENT_DISCOUNT_SQL} > i.amount_halalas
+       OR ${DERIVED_PAID_SQL} + ${INSTALLMENT_DISCOUNT_SQL} > i.amount_halalas)`
   ).map((r) => r.id);
 }
 
@@ -83,7 +89,7 @@ export function planLedgerRepair(db: DB): LedgerRepairPlan {
     const orphan = db.get<{ date: string; net: number }>(
       `SELECT p.date, p.net_halalas AS net FROM contract_payments p
        LEFT JOIN journal_entries e ON e.id = p.journal_entry_id
-       WHERE p.contract_id = ? AND p.net_halalas > 0
+       WHERE p.contract_id = ? AND p.net_halalas > 0 AND p.cancelled_at IS NULL
          AND (e.id IS NULL OR e.status != 'مرحّل' OR e.reversed_by IS NOT NULL)
        ORDER BY p.date LIMIT 1`, [cid]);
     if (orphan) {
@@ -97,14 +103,14 @@ export function planLedgerRepair(db: DB): LedgerRepairPlan {
                 ELSE 0 END), 0) AS c,
               COUNT(DISTINCT p.journal_entry_id) AS n
        FROM contract_payments p JOIN journal_lines l ON l.entry_id = p.journal_entry_id
-       WHERE p.contract_id = ?`, [cid])!;
+       WHERE p.contract_id = ? AND p.cancelled_at IS NULL`, [cid])!;
 
     const insts = db.all<InstRow>(
       `SELECT i.id, i.due_date, i.amount_halalas AS amount, i.paid_halalas AS paid, i.status,
-              ${INSTALLMENT_DISCOUNT_SQL} AS disc,
+              ${INSTALLMENT_DISCOUNT_SQL} AS disc, ${DERIVED_PAID_SQL} AS derived,
               COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p WHERE p.installment_id = i.id), 0) AS rows_disc
        FROM contract_installments i WHERE i.contract_id = ? ORDER BY i.due_date, i.sort, i.id`, [cid]
-    ).map((r) => ({ ...r, amount: Number(r.amount), paid: Number(r.paid), disc: Number(r.disc), rows_disc: Number(r.rows_disc) }));
+    ).map((r) => ({ ...r, amount: Number(r.amount), paid: Number(r.paid), derived: Number(r.derived), disc: Number(r.disc), rows_disc: Number(r.rows_disc) }));
     const live = insts.filter((i) => i.status !== 'ملغية');
     const cancelledPaid = insts.filter((i) => i.status === 'ملغية').reduce((s, i) => s + i.paid, 0);
     const cashLive = Number(cash.c) - cancelledPaid;
@@ -114,7 +120,8 @@ export function planLedgerRepair(db: DB): LedgerRepairPlan {
       issue(`خصم قسط ${tooBig.due_date} في الدفتر (${fmt(tooBig.disc)}) أكبر من مبلغه (${fmt(tooBig.amount)})`);
       continue;
     }
-    const paidSum = live.reduce((s, i) => s + i.paid, 0);
+    // ما دفعته دفعات العقد على أقساطه بلا حدّ · يساوي نقد الدفتر متى كان لكل دفعة قيدها
+    const paidSum = live.reduce((s, i) => s + i.derived, 0);
     if (paidSum !== cashLive) {
       issue(`مسدَّد الأقساط (${fmt(paidSum)}) لا يطابق نقد الدفعات في الدفتر (${fmt(cashLive)}) · فلا يُعرف أي الأقساط يُصحَّح`);
       continue;
@@ -150,8 +157,10 @@ export function planLedgerRepair(db: DB): LedgerRepairPlan {
 }
 
 /**
- * تطبيق الاقتراح بأمر المستخدم · كل قسط بمسدَّده وحالته من الاقتراح، بشرط أن يكون كما عُرض،
- * وكل تغيير في سجل العمليات بقيمه قبل وبعد. لا يمسّ قيداً ولا دفعة ولا توزيعاً.
+ * تطبيق الاقتراح بأمر المستخدم · بشرط أن يكون كل قسط كما عُرض، وكل تغيير في سجل العمليات بقيمه قبل وبعد.
+ * والمسدَّد يُحسب من الدفعات وتوزيعها (الهجرة ٢١) فلا يُكتب رقماً: يُعاد توزيع دفعات العقد على أقساطه
+ * بترتيب الاستحقاق حتى يبلغ كلٌّ مبلغه ناقصاً خصمه في الدفتر، وما زاد يبقى فائضاً بلا توزيع ·
+ * فيخرج المسدَّد المحسوب كما في الاقتراح على كل جهاز تصله الدفعات وتوزيعها. لا يمسّ قيداً.
  */
 export function applyLedgerRepair(db: DB, plan: LedgerRepairPlan): number {
   return db.transaction(() => {
@@ -160,19 +169,55 @@ export function applyLedgerRepair(db: DB, plan: LedgerRepairPlan): number {
         `SELECT paid_halalas AS paid, status FROM contract_installments WHERE id = ?`, [ch.installmentId]);
       if (!cur || Number(cur.paid) !== ch.fromPaid || cur.status !== ch.fromStatus)
         throw new Error(`تغيّر قسط ${ch.tenant} · ${ch.due} منذ عرض التصحيح · أعد العرض`);
-      db.run(`UPDATE contract_installments SET paid_halalas = ?, status = ? WHERE id = ?`, [ch.toPaid, ch.toStatus, ch.installmentId]);
       logAudit(db, 'البيانات', 'update', 'تصحيح من الدفتر',
         `${ch.tenant} · ${ch.contractNo} · ${ch.due}: المسدَّد ${fmt(ch.fromPaid)} ← ${fmt(ch.toPaid)} · خصمه في الدفتر ${fmt(ch.ledgerDiscount)}`
           + (ch.discountEntries.length ? ' (' + ch.discountEntries.join('، ') + ')' : ''),
         { paid_halalas: ch.fromPaid, status: ch.fromStatus }, { paid_halalas: ch.toPaid, status: ch.toStatus });
     }
-    // ما لم يحسمه الدفتر في عقد صُحّح (كالنقد الزائد) يخرج من المراجعة بعد التصحيح · فيُسجَّل لئلا يضيع
     const touched = new Set(plan.changes.map((c) => c.contractId));
+    for (const cid of touched) reallocateContract(db, cid);
+    const after = new Map(recomputeInstallments(db, plan.changes.map((c) => c.installmentId)).map((x) => [x.installmentId, x.toPaid]));
+    for (const ch of plan.changes) {
+      const got = after.get(ch.installmentId) ?? ch.fromPaid;
+      if (got !== ch.toPaid) throw new Error(`لم يبلغ قسط ${ch.tenant} · ${ch.due} مسدَّده المقترح بعد التوزيع · أُلغي التصحيح`);
+    }
+    // ما لم يحسمه الدفتر في عقد صُحّح (كالنقد الزائد) يخرج من المراجعة بعد التصحيح · فيُسجَّل لئلا يضيع
     for (const x of plan.issues.filter((i) => touched.has(i.contractId))) {
       logAudit(db, 'البيانات', 'update', 'ما لم يحسمه الدفتر', `${x.tenant} · ${x.contractNo}: ${x.reason}`);
     }
     return plan.changes.length;
   });
+}
+
+/**
+ * توزيع دفعات العقد غير الملغاة على أقساطه الحيّة بترتيب الاستحقاق · كلٌّ حتى مبلغه ناقصاً خصمه.
+ * يستبدل توزيع هذه الدفعات كله، والدفعة الفردية تصير موزَّعة (فتُحسب بتوزيعها وحده).
+ */
+function reallocateContract(db: DB, contractId: string): void {
+  const insts = db.all<{ id: string; amount: number; disc: number }>(
+    `SELECT i.id, i.amount_halalas AS amount, ${INSTALLMENT_DISCOUNT_SQL} AS disc FROM contract_installments i
+     WHERE i.contract_id = ? AND i.status != 'ملغية' ORDER BY i.due_date, i.sort, i.id`, [contractId])
+    .map((i) => ({ id: i.id, room: Math.max(0, Number(i.amount) - Number(i.disc)) }));
+  const pays = db.all<{ id: string; net: number }>(
+    `SELECT id, net_halalas AS net FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL AND net_halalas > 0
+     ORDER BY date, created_at, id`, [contractId]);
+  for (const p of pays) db.run(`DELETE FROM payment_allocations WHERE payment_id = ?`, [p.id]);
+  let k = 0;
+  for (const p of pays) {
+    let left = Number(p.net);
+    while (left > 0 && k < insts.length) {
+      const take = Math.min(left, insts[k].room);
+      if (take > 0) {
+        db.run(`INSERT INTO payment_allocations (id, payment_id, installment_id, amount_halalas) VALUES (?,?,?,?)`,
+          [uid(), p.id, insts[k].id, take]);
+        insts[k].room -= take;
+        left -= take;
+      }
+      if (insts[k].room <= 0) k++;
+    }
+    // ما بقي من الدفعة بلا توزيع فائضٌ يظهر في «رد الفائض» · والدفعة التي لم يبقَ لها مكان
+    // تبقى على قسطها المباشر، والقسط ممتلئ فيحدّه السقف ويُحسب الزائد فائضاً
+  }
 }
 
 /* ═══════════ الخصومات بلا سطر في الدفتر ═══════════ */
@@ -317,7 +362,8 @@ export interface ContractSurplus {
  * والعقد الذي يتجاوز سقف قسطه يُعرض في التصحيح أولاً (وفائضه فيه) لا هنا.
  */
 export function contractSurpluses(db: DB): ContractSurplus[] {
-  const breach = new Set(contractsInBreach(db));
+  // ما يصحّحه الدفتر يُعرض في التصحيح أولاً · وما لا يحسمه (دفعةٌ تجاوزت قسطها والعقد لم يُغطَّ كله) فائضٌ هنا
+  const breach = new Set(planLedgerRepair(db).changes.map((c) => c.contractId));
   const rows = db.all<{
     id: string; contract_no: string | null; tenant_name: string | null; tenant_id: string | null;
     cash: number; live_paid: number; dead_paid: number; settled: number;

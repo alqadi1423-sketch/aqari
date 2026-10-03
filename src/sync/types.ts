@@ -42,6 +42,8 @@ export interface RemoteStore {
   pull(cursor: Cursor | null, limit: number): Promise<{ docs: RemoteDoc[]; next: Cursor | null }>;
   /** كتابة غير ذرية · نتيجة لكل مستند */
   write(docs: RemoteDoc[]): Promise<WriteResult[]>;
+  /** حرف الجهاز في ترقيم الحساب · يُسجَّل مرة ويبقى (numbering.ts) */
+  registerDevice?(deviceId: string): Promise<string>;
 }
 
 export interface SyncReport {

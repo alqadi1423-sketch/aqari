@@ -14,6 +14,7 @@ import { tableCounts, makeSafetyBackup, ensureFreeSpace } from './create';
 import { semanticIssues } from './semantic';
 import { planLedgerRepair, applyLedgerRepair, type LedgerRepairPlan } from '../ledgerReview';
 import { seed, ensureDeviceId } from '../../db/seed';
+import { recomputeInstallments, type PaidChange } from '../contracts/paid';
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
 
 const dec = new TextDecoder();
@@ -35,6 +36,8 @@ export interface RestorePlan {
    * null حين لا تحتاج النسخة تصحيحاً.
    */
   ledgerRepair: LedgerRepairPlan | null;
+  /** أقساط تغيّر مسدَّدها حين حُسب من دفعات النسخة وتوزيعها · يُعرض قبل التبديل */
+  paidRecomputed: PaidChange[];
 }
 
 /**
@@ -144,6 +147,7 @@ export async function prepareRestore(
     let migrated = false;
     let incoming: Record<string, number> = {};
     let ledgerRepair: LedgerRepairPlan | null = null;
+    let paidRecomputed: PaidChange[] = [];
     {
       let probe: DB | null = null;
       try {
@@ -168,22 +172,22 @@ export async function prepareRestore(
           if (counted[t] !== undefined && !migrated && counted[t] !== expected)
             throw new RestoreError(`عدد سجلات «${t}» لا يطابق البيان (${counted[t]} بدل ${expected})`);
         }
-        // الفحص الدلالي: قيد مرحّل غير متوازن أو قسط يتجاوزه مسدَّده مع خصمه يرفض الاستعادة كاملة ·
-        // إلا ما يحسمه دفتر النسخة نفسه: يُصحَّح على نسخة التجهيز ويُعرض على المستخدم قبل التبديل
-        let issues = semanticIssues(probe);
-        if (issues.length) {
-          const plan = planLedgerRepair(probe);
-          if (plan.changes.length) {
-            applyLedgerRepair(probe, plan);
-            issues = semanticIssues(probe);
-            ledgerRepair = plan;
-          }
-          if (issues.length) {
-            throw new RestoreError('النسخة مرفوضة · ' + issues.join(' · ')
-              + (plan.issues.length ? ' · وما لا يحسمه دفترها: ' + plan.issues.map((x) => `${x.tenant} · ${x.contractNo}: ${x.reason}`).join(' · ') : ''));
-          }
+        // ما يحسمه دفتر النسخة أولاً: دفعاتٌ تجاوزت أقساطها تُوزَّع على أقساط عقدها بترتيب الاستحقاق ·
+        // على نسخة التجهيز وحدها، ويُعرض على المستخدم قبل التبديل
+        const plan = planLedgerRepair(probe);
+        if (plan.changes.length) {
+          applyLedgerRepair(probe, plan);
+          ledgerRepair = plan;
         }
-        incoming = ledgerRepair ? tableCounts(probe) : counted;
+        // ثم المسدَّد من دفعات النسخة وتوزيعها (paid.ts) · وما تغيّر يُعرض في الحوار
+        paidRecomputed = recomputeInstallments(probe);
+        // الفحص الدلالي: قيد مرحّل غير متوازن أو دفعة سالبة أو خصم بلا سطره يرفض الاستعادة كاملة
+        const issues = semanticIssues(probe);
+        if (issues.length) {
+          throw new RestoreError('النسخة مرفوضة · ' + issues.join(' · ')
+            + (plan.issues.length ? ' · وما لا يحسمه دفترها: ' + plan.issues.map((x) => `${x.tenant} · ${x.contractNo}: ${x.reason}`).join(' · ') : ''));
+        }
+        incoming = ledgerRepair || paidRecomputed.length ? tableCounts(probe) : counted;
         probe.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
       } finally {
         try { probe?.close(); } catch { /* مغلقة */ }
@@ -194,7 +198,7 @@ export async function prepareRestore(
     // مرفقات البيانات الحالية بالبنود نفسها · فيُرى ما سيُخسر من الجانبين لا من جانب واحد
     const live = liveBlobs(env.db);
     return {
-      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair,
+      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed,
       current: tableCounts(env.db),
       attachmentsBytes,
       currentAttachments: { count: live.length, bytes: live.reduce((s, b) => s + Number(b.size_bytes), 0) },

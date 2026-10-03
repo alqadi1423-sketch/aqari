@@ -3,6 +3,7 @@ import { uid } from '../ids';
 import { today } from '../dates';
 import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
+import { deviceLetter, ownNumbersSql, withLetter } from '../numbering';
 
 export interface EntryLine {
   account: string;
@@ -29,14 +30,16 @@ export class MissingAccountsError extends Error {
   }
 }
 
-/** الرقم التالي للقيد JE-#### */
+/** آخر رقم قيد لهذا الجهاز · من أرقامه وحده (numbering.ts) */
+function lastJournalSeq(db: DB): number {
+  const own = ownNumbersSql('no', 'JE-[0-9]*', deviceLetter(db));
+  return Number(db.get<{ mx: number }>(
+    `SELECT COALESCE(MAX(CAST(substr(no, 4) AS INTEGER)), 0) AS mx FROM journal_entries WHERE ${own.sql}`, own.params)?.mx ?? 0);
+}
+
+/** الرقم التالي للقيد JE-#### · وبحرف الجهاز إن كان له حرف: JE-####-B */
 export function nextJournalNo(db: DB): string {
-  const row = db.get<{ mx: number }>(
-    `SELECT COALESCE(MAX(CAST(substr(no, 4) AS INTEGER)), 0) AS mx
-     FROM journal_entries WHERE no LIKE 'JE-%'`
-  );
-  const n = (row ? Number(row.mx) : 0) + 1;
-  return 'JE-' + String(n).padStart(4, '0');
+  return withLetter('JE-' + String(lastJournalSeq(db) + 1).padStart(4, '0'), deviceLetter(db));
 }
 
 /**
@@ -123,7 +126,7 @@ export function reverseEntryBySource(db: DB, srcType: string, srcId: string, mem
  * «قيد مرحّل لا يُحذف أبداً · يُعكَس»: يرحَّل قيد مرآة بتاريخ اليوم ويُختم الأصل
  * بـ reversed_by · الأصل والعاكس يبقيان معاً في الدفتر فالتاريخ لا يُمحى.
  */
-export function reverseEntryById(db: DB, entryId: string, memo?: string): PostedEntry | null {
+export function reverseEntryById(db: DB, entryId: string, memo?: string, date: string = today()): PostedEntry | null {
   const e = db.get<{ id: string; no: string; src_type: string | null; src_id: string | null }>(
     `SELECT id, no, src_type, src_id FROM journal_entries
      WHERE id = ? AND reversed_by IS NULL AND deleted_at IS NULL AND status = 'مرحّل'`,
@@ -136,7 +139,7 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string): Posted
   );
   return db.transaction(() => {
     const posted = postEntry(db, {
-      date: today(),
+      date,
       memo: memo ?? 'عكس قيد ' + e.no,
       lines: lines.map((l) => ({
         account: l.account_code,
@@ -176,9 +179,8 @@ export function reverseAllPostedEntries(db: DB, reason: string, date: string = t
          AND NOT EXISTS (SELECT 1 FROM journal_entries o WHERE o.reversed_by = e.id)
        ORDER BY e.created_at, e.id`
     );
-    let n = Number(db.get<{ mx: number }>(
-      `SELECT COALESCE(MAX(CAST(substr(no, 4) AS INTEGER)), 0) AS mx FROM journal_entries WHERE no LIKE 'JE-%'`
-    )?.mx ?? 0);
+    let n = lastJournalSeq(db);
+    const letter = deviceLetter(db);
     const now = new Date().toISOString();
     for (const t of targets) {
       const id = uid();
@@ -186,7 +188,7 @@ export function reverseAllPostedEntries(db: DB, reason: string, date: string = t
       db.run(
         `INSERT INTO journal_entries (id, no, date, memo, status, auto, src_type, src_id, created_at)
          VALUES (?,?,?,?,'قيد الإنشاء',1,?,?,?)`,
-        [id, 'JE-' + String(n).padStart(4, '0'), date, 'عكس قيد ' + t.no + ' · ' + reason,
+        [id, withLetter('JE-' + String(n).padStart(4, '0'), letter), date, 'عكس قيد ' + t.no + ' · ' + reason,
          (t.src_type ?? 'manual') + '_rev', t.src_id ?? t.id, now]
       );
       db.run(

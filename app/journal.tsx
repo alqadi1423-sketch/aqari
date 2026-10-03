@@ -16,6 +16,7 @@ import { useDialog } from '../src/ui/AppDialog';
 import { C } from '../src/ui/theme';
 import { postEntry, nextJournalNo, voidEntryById } from '../src/domain/accounting/post';
 import { reverseFromJournal, journalReversalBlock } from '../src/domain/accounting/journalReversal';
+import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { allAccounts } from '../src/domain/accounting/ledger';
 import { today, dfmt } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
@@ -56,14 +57,14 @@ const EntryCard = React.memo(function EntryCard({
         </Row>
         <T size={10.5} color={C.muted} numberOfLines={1} style={{ marginTop: 3 }}>{srcTypeLabel(srcType)}</T>
       </Pressable>
-      {/* القيد الآلي يُلغى من مستنده لا من الدفتر (journalReversal.ts) · فلا يُعرض له زرّ لا يصح فعله */}
-      {status === 'مرحّل' && auto && srcType ? null : (
+      {/* القيد الآلي يُلغى من عمليته الأصلية (sourceCancel.ts) · ومرآة القيد لا تُلغى فلا زرّ لها */}
+      {status === 'مرحّل' && srcType?.endsWith('_rev') ? null : (
         <Row style={{ justifyContent: 'flex-end', marginTop: 4 }}>
           <ActionMenuButton title={no} actions={[
             status === 'مرحّل'
               ? {
                   // قيد مرحّل لا يُحذف أبداً · يُعكَس بقيد مرآة والاثنان يبقيان في الدفتر
-                  icon: 'undo', label: 'عكس القيد',
+                  icon: 'undo', label: auto && srcType ? 'إلغاء من مصدره' : 'عكس القيد',
                   onPress: () => onReverse(id, no),
                 }
               : {
@@ -83,6 +84,7 @@ export default function Journal() {
   const dialog = useDialog();
   const [q, setQ] = useState('');
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [sourceFor, setSourceFor] = useState<{ id: string; no: string } | null>(null);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [date, setDate] = useState(today());
   const [memo, setMemo] = useState('');
@@ -157,12 +159,8 @@ export default function Journal() {
   const openDetail = useCallback((id: string) => setDetailId(id), []);
 
   const reverseEntry = useCallback((id: string, no: string) => {
-    // القيد الآلي يُلغى من مستنده · يُقال السبب قبل أي تأكيد
-    const why = journalReversalBlock(db, id);
-    if (why) {
-      dialog({ title: 'لا يُعكس القيد ' + no + ' من الدفتر', body: why + '.', tone: 'normal', actions: [{ label: 'حسناً', variant: 'ghost' }] });
-      return;
-    }
+    // القيد الآلي يُلغى من عمليته الأصلية بتأكيدها (sourceCancel.ts) · واليدوي يُعكس هنا
+    if (journalReversalBlock(db, id)) { setSourceFor({ id, no }); return; }
     dialog({
       title: 'عكس القيد ' + no,
       body: 'سيُرحَّل قيد عاكس بتاريخ اليوم يلغي أثره على الأرصدة، ويبقى القيدان معاً في الدفتر.',
@@ -235,6 +233,8 @@ export default function Journal() {
 
       {/* ورقة تفاصيل القيد · تُفتح بالضغط على أي قيد */}
       {detailId ? <EntrySheet entryId={detailId} onClose={() => setDetailId(null)} /> : null}
+      {/* القيد الآلي يُلغى من عمليته الأصلية بتأكيدها */}
+      {sourceFor ? <SourceCancelSheet entryId={sourceFor.id} entryNo={sourceFor.no} onClose={() => setSourceFor(null)} /> : null}
 
       <Sheet visible={builderOpen} onClose={() => setBuilderOpen(false)} title="قيد يومية جديد" tall
         footer={

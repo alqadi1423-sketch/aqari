@@ -19,6 +19,8 @@ import { getSetting } from '../repos/settings';
 import { today } from '../domain/dates';
 import { naturalKey } from '../domain/sortKey';
 import { startCloud } from '../services/cloud';
+import { recomputeInstallments } from '../domain/contracts/paid';
+import { logAudit } from '../domain/audit';
 
 /** هجرة البيانات القائمة: حساب مفتاح الترتيب لكل وحدة بلا مفتاح */
 function backfillSortKeys(db: AppDB): void {
@@ -88,6 +90,12 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         backfillHandovers(db);
         backfillSortKeys(db);
         backfillTenantLinks(db);
+        // المسدَّد يُحسب من الدفعات منذ الهجرة ٢١ · يُعاد حسابه مرة لكل قاعدة رُقّيت إليها
+        if (!db.get(`SELECT 1 FROM meta WHERE key = 'paid_derived_v21'`)) {
+          const changed = recomputeInstallments(db);
+          if (changed.length) logAudit(db, 'البيانات', 'update', 'المسدَّد من الدفعات', changed.length + ' قسط أُعيد حساب مسدَّده من دفعاته وتوزيعها');
+          db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('paid_derived_v21', ?)`, [new Date().toISOString()]);
+        }
         writeWidgetSnapshot(db);
         bump();
       } catch { /* لا يعطّل الإقلاع */ }

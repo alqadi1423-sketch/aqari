@@ -5,7 +5,7 @@
  */
 import { buildSyncMigration } from './syncTables';
 
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1101,5 +1101,140 @@ BEGIN
 END;
 `;
 
+/** خصم القسط NEW.installment_id من الدفتر · كنص الهجرة ٢٠ والدفعة الملغاة خارجه */
+const M21_INST_DISCOUNT = (inst: string, self: string) => `
+         COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE e.src_type = 'discount' AND e.src_id = ${inst}
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+                JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE p.installment_id = ${inst} AND p.id != ${self}
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM contract_payments p JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = p.id
+                JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE p.installment_id = ${inst} AND p.id != ${self}
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p
+                WHERE p.installment_id = ${inst} AND p.id != ${self} AND p.cancelled_at IS NULL
+                  AND p.discount_kind IS NULL AND p.discount_halalas > 0
+                  AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = p.journal_entry_id AND l.account_code = '4900')
+                  AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'discount' AND e.src_id = p.id)
+                  AND NOT EXISTS (SELECT 1 FROM contract_installments i2
+                                  JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = i2.id
+                                  WHERE i2.contract_id = p.contract_id)), 0)`;
+
+/** خصم الدفعة الجديدة نفسها في الدفتر أو في صفها · كنص الهجرة ٢٠ */
+const M21_OWN_DISCOUNT = `
+         COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE (e.id = NEW.journal_entry_id OR (e.src_type = 'discount' AND e.src_id = NEW.id))
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) + (CASE WHEN NEW.discount_kind IS NULL AND NEW.discount_halalas > 0
+             AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = NEW.journal_entry_id AND l.account_code = '4900')
+             AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'discount' AND e.src_id = NEW.id)
+             AND NOT EXISTS (SELECT 1 FROM contract_installments i2
+                             JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = i2.id
+                             WHERE i2.contract_id = NEW.contract_id)
+           THEN NEW.discount_halalas ELSE 0 END)`;
+
+/** الوارد بالمزامنة قيد التطبيق · فحص «المتبقي» للمسجَّل على هذا الجهاز وحده */
+const M21_LOCAL_WRITE = `COALESCE((SELECT v FROM sync_ctl WHERE k = 'applying'), 0) = 0`;
+
+/**
+ * المسدَّد يُحسب من الدفعات وتوزيعها، وإلغاء الدفعة (قرارا المالك ٢٠٢٦-١٠-٠٣) · وانظر src/domain/contracts/paid.ts:
+ * ١) إلغاء الدفعة لا يحذفها: cancelled_at وسببه وقيده العاكس · والملغاة خارج المسدَّد والخصم.
+ * ٢) sync_ctl.applying يُرفع أثناء تطبيق الوارد · فدفعةٌ سُجّلت على جهاز آخر بلا اتصال لا يرفضها
+ *    فحص «المتبقي» المحلي، بل تدخل ويُحدّ المسدَّد بمبلغ القسط ويظهر الزائد فائضاً للرد.
+ *    وفحص الدفعة وحدها (لا تتجاوز مبلغ قسطها، ولا صافٍ أو خصم سالب) باقٍ على كل كتابة.
+ * ٣) محفّزات السقف الثلاثة تُستبدل بذلك (ونصّ ١٧ و٢٠ كما هو).
+ */
+export const MIGRATION_21 = `
+ALTER TABLE contract_payments ADD COLUMN cancelled_at TEXT;
+ALTER TABLE contract_payments ADD COLUMN cancel_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE contract_payments ADD COLUMN cancel_entry_id TEXT;
+INSERT OR IGNORE INTO sync_ctl (k, v) VALUES ('applying', 0);
+
+-- حارس خصم «بعد الاستحقاق» كنصّ الهجرة ٢٠ · والدفعة الملغاة خارجه: قيدها وخطّ خصمها معكوسان بالإلغاء نفسه
+DROP TRIGGER IF EXISTS trg_pay_discount_booked_ins;
+CREATE TRIGGER trg_pay_discount_booked_ins
+BEFORE INSERT ON contract_payments
+WHEN NEW.discount_kind = 'بعد الاستحقاق' AND NEW.cancelled_at IS NULL
+BEGIN
+  SELECT CASE
+    WHEN COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE (e.id = NEW.journal_entry_id OR (e.src_type = 'discount' AND e.src_id = NEW.id))
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) != NEW.discount_halalas
+      THEN RAISE(ABORT, 'خصم بعد الاستحقاق بلا سطر خصم مساوٍ له في الدفتر')
+  END;
+END;
+
+DROP TRIGGER IF EXISTS trg_pay_discount_booked_upd;
+CREATE TRIGGER trg_pay_discount_booked_upd
+BEFORE UPDATE OF discount_kind, discount_halalas, journal_entry_id, cancelled_at ON contract_payments
+WHEN NEW.discount_kind = 'بعد الاستحقاق' AND NEW.cancelled_at IS NULL
+BEGIN
+  SELECT CASE
+    WHEN COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE (e.id = NEW.journal_entry_id OR (e.src_type = 'discount' AND e.src_id = NEW.id))
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) != NEW.discount_halalas
+      THEN RAISE(ABORT, 'خصم بعد الاستحقاق بلا سطر خصم مساوٍ له في الدفتر')
+  END;
+END;
+
+DROP TRIGGER IF EXISTS trg_pay_insert_cap;
+CREATE TRIGGER trg_pay_insert_cap
+BEFORE INSERT ON contract_payments
+WHEN NEW.installment_id IS NOT NULL AND NEW.cancelled_at IS NULL
+BEGIN
+  SELECT CASE
+    WHEN NEW.discount_halalas < 0 OR NEW.net_halalas < 0
+      THEN RAISE(ABORT, 'دفعة بصافٍ أو خصم سالب')
+    WHEN NEW.discount_kind IS NOT NULL
+         AND NEW.net_halalas + (CASE WHEN NEW.discount_kind = 'بعد الاستحقاق' THEN NEW.discount_halalas ELSE 0 END)
+             > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
+      THEN RAISE(ABORT, 'الدفعة مع الخصم تتجاوز مبلغ القسط')
+    WHEN ${M21_LOCAL_WRITE}
+         AND (SELECT paid_halalas FROM contract_installments WHERE id = NEW.installment_id)
+         + ${M21_INST_DISCOUNT('NEW.installment_id', 'NEW.id')}
+         + ${M21_OWN_DISCOUNT}
+         > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
+      THEN RAISE(ABORT, 'الخصم يتجاوز المتبقي على القسط')
+  END;
+END;
+
+DROP TRIGGER IF EXISTS trg_pay_update_cap;
+CREATE TRIGGER trg_pay_update_cap
+BEFORE UPDATE OF discount_halalas, net_halalas, installment_id, discount_kind, journal_entry_id ON contract_payments
+WHEN NEW.installment_id IS NOT NULL AND NEW.cancelled_at IS NULL
+BEGIN
+  SELECT CASE
+    WHEN NEW.discount_halalas < 0 OR NEW.net_halalas < 0
+      THEN RAISE(ABORT, 'دفعة بصافٍ أو خصم سالب')
+    WHEN ${M21_LOCAL_WRITE}
+         AND (SELECT paid_halalas FROM contract_installments WHERE id = NEW.installment_id)
+         + ${M21_INST_DISCOUNT('NEW.installment_id', 'NEW.id')}
+         + ${M21_OWN_DISCOUNT}
+         > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
+      THEN RAISE(ABORT, 'الخصم يتجاوز المتبقي على القسط')
+  END;
+END;
+
+DROP TRIGGER IF EXISTS trg_inst_update_cap;
+CREATE TRIGGER trg_inst_update_cap
+BEFORE UPDATE OF paid_halalas, amount_halalas ON contract_installments
+BEGIN
+  SELECT CASE
+    WHEN NEW.paid_halalas < 0
+      THEN RAISE(ABORT, 'مسدَّد سالب على القسط')
+    WHEN NEW.paid_halalas + ${M21_INST_DISCOUNT('NEW.id', "''")} > NEW.amount_halalas
+      THEN RAISE(ABORT, 'المسدَّد مع الخصم يتجاوز مبلغ القسط')
+  END;
+END;
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21];

@@ -18,6 +18,7 @@ import { printReceipt } from '../services/print';
 import { dfmt, today, daysBetween, periodLabel } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
+import { CancelPaymentPanel } from './CancelPaymentPanel';
 
 export function InstallmentSheet(props: {
   installmentId: string;
@@ -47,6 +48,7 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
   const [grace, setGrace] = useState('');
   const [reason, setReason] = useState('');
   const [entryFor, setEntryFor] = useState<string | null>(null);
+  const [cancelFor, setCancelFor] = useState<string | null>(null);
 
   const data = useMemo(() => {
     const i = db.get<{
@@ -58,19 +60,20 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
     // المخصَّص، والمباشرة عبر installment_id تُحسب فقط إن لم يكن لها أي صف تخصيص
     const pays = db.all<{
       id: string; date: string; net_halalas: number; discount_halalas: number; method_label: string; journal_entry_id: string | null; alloc: number | null;
+      cancelled_at: string | null; cancel_reason: string;
     }>(
-      `SELECT p.id, p.date, p.net_halalas, p.discount_halalas, p.method_label, p.journal_entry_id, a.amount_halalas AS alloc
+      `SELECT p.id, p.date, p.net_halalas, p.discount_halalas, p.method_label, p.journal_entry_id, a.amount_halalas AS alloc, p.cancelled_at, p.cancel_reason
        FROM payment_allocations a JOIN contract_payments p ON p.id = a.payment_id
        WHERE a.installment_id = ?
        UNION ALL
-       SELECT p.id, p.date, p.net_halalas, p.discount_halalas, p.method_label, p.journal_entry_id, NULL AS alloc
+       SELECT p.id, p.date, p.net_halalas, p.discount_halalas, p.method_label, p.journal_entry_id, NULL AS alloc, p.cancelled_at, p.cancel_reason
        FROM contract_payments p WHERE p.installment_id = ?
          AND NOT EXISTS (SELECT 1 FROM payment_allocations x WHERE x.payment_id = p.id)
        ORDER BY date`,
       [installmentId, installmentId]
     );
     // خصم القسط · من دفعاته المباشرة وحدها (التخصيصات الجماعية بلا خصم)
-    const discount = pays.reduce((s, p) => s + (p.alloc == null ? Number(p.discount_halalas) : 0), 0);
+    const discount = pays.reduce((s, p) => s + (p.alloc == null && !p.cancelled_at ? Number(p.discount_halalas) : 0), 0);
     const T_ = today();
     // العقد الملغى لا يُحصَّل عليه · الخدمة ترفض السداد فلا يُعرض زر التحصيل أصلاً
     const contractCancelled = db.get<{ status: string }>(
@@ -186,17 +189,24 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
               <Row style={{ justifyContent: 'space-between' }}>
                 <Num size={11.5} color={C.muted}>{dfmt(p.date)}</Num>
                 <Row gap={8}>
-                  <Money halalas={Number(p.alloc ?? p.net_halalas)} size={12} bold />
+                  <Money halalas={Number(p.alloc ?? p.net_halalas)} size={12} bold color={p.cancelled_at ? C.muted : undefined} />
                   <T size={11.5} color={C.muted}>{p.method_label}</T>
                 </Row>
               </Row>
+              {p.cancelled_at ? (
+                <T size={11.5} color={C.rose} style={{ marginTop: 2 }}>ملغاة {dfmt(p.cancelled_at)} · {p.cancel_reason}</T>
+              ) : null}
               <Row style={{ justifyContent: 'flex-end', marginTop: 4 }}>
+                {!p.cancelled_at ? (
+                  <BtnGhost small danger title="إلغاء الدفعة" onPress={() => setCancelFor((c) => (c === p.id ? null : p.id))} />
+                ) : null}
                 <BtnGhost small icon="print" title="سند القبض"
                   onPress={() => printReceipt(db, p.id, 'tenant').catch(() => toast('تعذّرت الطباعة'))} />
                 {p.journal_entry_id ? (
                   <BtnGhost small title="عرض القيد" onPress={() => setEntryFor((c) => (c === p.journal_entry_id ? null : p.journal_entry_id))} />
                 ) : null}
               </Row>
+              {cancelFor === p.id ? <CancelPaymentPanel paymentId={p.id} onClose={() => setCancelFor(null)} /> : null}
             </View>
           )) : <T size={12} color={C.muted}>لا دفعات على هذا القسط بعد</T>}
 

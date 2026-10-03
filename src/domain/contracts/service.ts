@@ -6,9 +6,10 @@ import type { DB } from '../../db/adapter';
 import { uid } from '../ids';
 import { today } from '../dates';
 import {
-  generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentStoredStatus,
+  generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining,
   DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind,
 } from './installments';
+import { recomputeInstallments } from './paid';
 import {
   validateConfirmedContract,
   nextContractNo,
@@ -501,22 +502,8 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
         );
       }
     }
-    if (input.installmentId) {
-      // الخصم لا يُطوى في المسدَّد: المسدَّد نقدٌ صافٍ، والحالة تُبنى من المسدَّد والخصم معاً
-      // (خصمُ هذه الدفعة سُجّل أعلاه فيدخل في المجموع) · قسطٌ خُصم بقيته «مدفوعة» لا «متأخرة»
-      const inst = db.get<{ id: string; amount_halalas: number; paid_halalas: number; discount: number }>(
-        `SELECT i.id, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount
-         FROM contract_installments i WHERE i.id = ?`,
-        [input.installmentId]
-      );
-      if (inst) {
-        const amount = Number(inst.amount_halalas);
-        const paid = Math.min(Number(inst.paid_halalas) + net, Math.max(0, amount - Number(inst.discount)));
-        db.run(`UPDATE contract_installments SET paid_halalas = ?, status = ? WHERE id = ?`, [
-          paid, installmentStoredStatus(amount, paid, Number(inst.discount)), input.installmentId,
-        ]);
-      }
-    }
+    // المسدَّد والحالة يُحسبان من الدفعات (paid.ts) · والخصم لا يُطوى في المسدَّد، فالحالة من الاثنين معاً
+    if (input.installmentId) recomputeInstallments(db, [input.installmentId]);
     logAudit(db, 'التحصيل', 'create', 'دفعة إيجار', c.tenant_name);
     return paymentId;
   });
@@ -712,11 +699,8 @@ export function recordBulkRentPayment(
     for (const a of allocations) {
       db.run(`INSERT INTO payment_allocations (id, payment_id, installment_id, amount_halalas) VALUES (?,?,?,?)`,
         [uid(), paymentId, a.installmentId, a.amount]);
-      const i = insts.find((x) => x.id === a.installmentId)!;
-      const paid = Number(i.paid_halalas) + a.amount;
-      db.run(`UPDATE contract_installments SET paid_halalas = ?, status = ? WHERE id = ?`,
-        [paid, installmentStoredStatus(Number(i.amount_halalas), paid, Number(i.discount)), a.installmentId]);
     }
+    recomputeInstallments(db, allocations.map((a) => a.installmentId));
     if (excess > 0) {
       const tid = db.get<{ tenant_id: string | null }>(`SELECT tenant_id FROM contracts WHERE id = ?`, [contractId])?.tenant_id;
       if (tid) db.run(`UPDATE tenants SET credit_halalas = credit_halalas + ? WHERE id = ?`, [excess, tid]);

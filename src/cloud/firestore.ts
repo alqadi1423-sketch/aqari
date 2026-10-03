@@ -6,6 +6,7 @@
  * تبقى صحيحة لا كسرية في Firestore كما هي في القاعدة المحلية.
  */
 import type { Cursor, RemoteDoc, RemoteStore, RowData, WriteResult } from '../sync/types';
+import { nextDeviceLetter } from '../domain/numbering';
 
 type FsValue =
   | { nullValue: null }
@@ -134,6 +135,43 @@ export class FirestoreRemote implements RemoteStore {
       const mid = Math.ceil(docs.length / 2);
       return [...(await this.write(docs.slice(0, mid))), ...(await this.write(docs.slice(mid)))];
     }
+  }
+
+  /**
+   * حرف هذا الجهاز في ترقيم الحساب (numbering.ts) · سجل واحد users/{uid}/meta/devices فيه حرف كل جهاز،
+   * يُكتب بشرط ألا يكون تغيّر منذ قُرئ (أو ألا يكون موجوداً) فلا يأخذ جهازان الحرف نفسه أبداً.
+   */
+  async registerDevice(deviceId: string): Promise<string> {
+    const url = `${this.root}/users/${this.o.uid}/meta/devices`;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const token = await this.o.idToken();
+      const res = await this.f(url, { headers: { Authorization: 'Bearer ' + token } });
+      let letters: Record<string, string> = {};
+      let updateTime: string | null = null;
+      if (res.status === 200) {
+        const doc = (await res.json()) as { fields?: Record<string, FsValue>; updateTime?: string };
+        letters = (decodeFields(doc.fields ?? {}).letters ?? {}) as Record<string, string>;
+        updateTime = doc.updateTime ?? null;
+      } else if (res.status !== 404) {
+        throw new FirestoreHttpError(res.status, await res.text());
+      }
+      if (deviceId in letters) return letters[deviceId];
+      const letter = nextDeviceLetter(Object.values(letters));
+      try {
+        await this.call(`${this.root}:commit`, {
+          writes: [{
+            update: { name: `${this.userPath}/meta/devices`, fields: encodeFields({ letters: { ...letters, [deviceId]: letter } }) },
+            currentDocument: updateTime ? { updateTime } : { exists: false },
+          }],
+        });
+        return letter;
+      } catch (e) {
+        // جهاز آخر سجّل في اللحظة نفسها · يُعاد القراءة والاختيار
+        if (e instanceof FirestoreHttpError && [400, 409].includes(e.status)) continue;
+        throw e;
+      }
+    }
+    throw new Error('تعذّر تسجيل حرف الجهاز · أعد المحاولة');
   }
 
   async pull(cursor: Cursor | null, limit: number): Promise<{ docs: RemoteDoc[]; next: Cursor | null }> {
