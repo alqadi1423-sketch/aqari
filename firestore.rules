@@ -10,18 +10,38 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid == uid;
     }
 
-    // شكل مستند الصف: الجدول والمفتاح يطابقان معرّفه، والحقول المعروفة وحدها
+    // الجداول التي يزامنها التطبيق وحدها (src/db/syncTables.ts) · لا journal_lines بينها:
+    // سطور القيد لا صفوف مستقلة لها، تسافر في حقل lines داخل مستند قيدها وتُحمى بحمايته
+    function syncedTable(t) {
+      return t in [
+        'accounts', 'tenants', 'suppliers', 'banks', 'properties', 'property_areas',
+        'property_area_items', 'property_floor_categories', 'units', 'unit_rooms', 'unit_room_items', 'meters',
+        'meter_readings', 'company', 'company_docs', 'message_scripts', 'form_templates', 'journal_entries',
+        'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'reservations', 'key_money_deals',
+        'contract_payments', 'payment_lines', 'payment_allocations', 'deposit_settlements', 'tenant_ratings', 'claims',
+        'invoices', 'invoice_lines', 'purchases', 'bank_tx', 'handovers', 'audit_log'
+      ];
+    }
+
+    // سطور القيد في مستند القيد وحده · ولا يحمل lines مستندٌ لغير قيد
+    function linesOnlyOnEntries(r) {
+      return !('lines' in r) || (r.t == 'journal_entries' && r.lines is list);
+    }
+
+    // شكل مستند الصف: جدول مزامَن، والجدول والمفتاح يطابقان معرّفه، والحقول المعروفة وحدها
     function validRow(rowId) {
       let r = request.resource.data;
       return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts'])
-        && r.t is string && r.k is string && rowId == r.t + '__' + r.k
+        && r.t is string && syncedTable(r.t) && linesOnlyOnEntries(r)
+        && r.k is string && rowId == r.t + '__' + r.k
         && r.u is string && r.dev is string && r.del is bool
         && r.ts == request.time
         && (r.del == true || r.d is map)
         && amountsAreIntegers(r);
     }
 
-    // المبالغ بالهللات أعداد صحيحة في أعمدة المال الشائعة
+    // المبالغ بالهللات أعداد صحيحة في كل عمود مالي بالقاعدة · وسطور القيد داخل lines لا تبلغها
+    // القواعد (لا تمرّ على القوائم)، فيفحصها الجهاز عند الاستقبال بفحص الاستعادة نفسه
     function intOrAbsent(m, f) {
       return !(f in m) || m[f] == null || m[f] is int;
     }
@@ -32,7 +52,12 @@ service cloud.firestore {
         && intOrAbsent(r.d, 'gross_halalas') && intOrAbsent(r.d, 'net_halalas')
         && intOrAbsent(r.d, 'discount_halalas') && intOrAbsent(r.d, 'total_halalas')
         && intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas')
-        && intOrAbsent(r.d, 'debit_halalas') && intOrAbsent(r.d, 'credit_halalas'));
+        && intOrAbsent(r.d, 'debit_halalas') && intOrAbsent(r.d, 'credit_halalas')
+        && intOrAbsent(r.d, 'opening_halalas') && intOrAbsent(r.d, 'price_halalas')
+        && intOrAbsent(r.d, 'commission_halalas') && intOrAbsent(r.d, 'deduction_halalas')
+        && intOrAbsent(r.d, 'refund_halalas') && intOrAbsent(r.d, 'cancel_deduction_halalas')
+        && intOrAbsent(r.d, 'cancel_refund_halalas') && intOrAbsent(r.d, 'lease_value_halalas')
+        && intOrAbsent(r.d, 'default_amount_halalas') && intOrAbsent(r.d, 'rent_monthly_halalas'));
     }
 
     function isPostedEntry(data) {
@@ -45,7 +70,7 @@ service cloud.firestore {
       let after = request.resource.data;
       return after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts'])
         && after.d.diff(before.d).affectedKeys().hasOnly(['reversed_by'])
-        && before.d.reversed_by == null
+        && (!('reversed_by' in before.d) || before.d.reversed_by == null)
         && after.d.reversed_by is string;
     }
 

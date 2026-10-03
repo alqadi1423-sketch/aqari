@@ -8,13 +8,16 @@
  *  - التعارض يُحلّ على مستوى الصف: الأحدث تغييراً يغلب (وقت التغيير ثم هوية الجهاز عند التساوي)،
  *    ويُسجَّل في سجل العمليات إن اختلف المضمون فعلاً.
  *  - القيد المرحّل إضافة فقط: لا يُعدَّل ولا يُحذف بالمزامنة · يُسمح بربطه بقيده العكسي مرة واحدة.
- *  - كل ما يرد يمرّ بمحفّزات القاعدة نفسها (توازن القيد · سقف القسط · المفاتيح) · فالمرفوض
- *    يُحفظ في sync_rejects ويُسجَّل، ولا يكسر بقية الدفعة.
+ *  - كل صف وارد يُكتب داخل نقطة حفظ ثم يمرّ بفحصين قبل اعتماده: محفّزات القاعدة (توازن القيد ·
+ *    سقف القسط · المفاتيح) ثم فحص الاستعادة نفسه semanticIssues محصوراً في الصف وما يمسّه
+ *    (توازن القيد وسطوره · سقف القسط · الدفعة السالبة · الأعداد الصحيحة). أي إخفاق يُرجع نقطة
+ *    الحفظ فلا يبقى من الصف أثر، ويُحفظ في sync_rejects ويُسجَّل، ولا يكسر بقية الدفعة.
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
 import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
+import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
 import { SEED_SCRIPTS, seedScriptId } from '../db/seed';
 import type { Cursor, RemoteDoc, RemoteStore, RowData, SyncReport } from './types';
 
@@ -208,6 +211,19 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   return 'applied';
 }
 
+/** ما يمسّه الصف الوارد من فحوص الاستعادة: صفه نفسه، وقيده، وقسطه، ودفعته */
+function scopeOf(db: DB, doc: RemoteDoc): SemanticScope {
+  const s: SemanticScope = { rows: [{ table: doc.t, where: pkWhere(doc.t), params: pkParams(doc.t, doc.k) }] };
+  if (doc.t === 'journal_entries') s.entryIds = [doc.k];
+  if (doc.t === 'contract_installments') s.installmentIds = [doc.k];
+  if (doc.t === 'contract_payments') {
+    s.paymentIds = [doc.k];
+    const p = db.get<{ i: string | null }>(`SELECT installment_id AS i FROM contract_payments WHERE id = ?`, [doc.k]);
+    s.installmentIds = p?.i ? [p.i] : [];
+  }
+  return s;
+}
+
 function deleteRow(db: DB, table: string, key: string): void {
   db.run(`DELETE FROM "${table}" WHERE ${pkWhere(table)}`, pkParams(table, key));
 }
@@ -220,7 +236,9 @@ function reject(db: DB, doc: RemoteDoc, reason: string): void {
   try { logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${reason}`.slice(0, 300)); } catch { /* السجل لا يعطّل */ }
 }
 
-function applyOne(db: DB, doc: RemoteDoc, deviceId: string, cache: Map<string, Set<string>>, joining: boolean): ApplyOutcome {
+function applyOne(
+  db: DB, doc: RemoteDoc, deviceId: string, cache: Map<string, Set<string>>, money: Map<string, string[]>, joining: boolean,
+): ApplyOutcome {
   const t = syncTable(doc.t);
   if (!t) { reject(db, doc, 'جدول خارج المزامنة'); return 'rejected'; }
   if (doc.dev === deviceId) return 'skipped'; // صدى ما كتبه هذا الجهاز
@@ -262,6 +280,11 @@ function applyOne(db: DB, doc: RemoteDoc, deviceId: string, cache: Map<string, S
       } else {
         upsertRow(db, doc.t, doc.d!, cols(doc.t));
       }
+      if (!doc.del) {
+        // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها
+        const issues = semanticIssues(db, scopeOf(db, doc), money);
+        if (issues.length) throw new Error('الوارد مرفوض · ' + issues.join(' · '));
+      }
       if (pending) db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
       if (conflict) {
         logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', joining
@@ -284,6 +307,7 @@ function applyOne(db: DB, doc: RemoteDoc, deviceId: string, cache: Map<string, S
  */
 export function applyInbox(db: DB, deviceId: string): { applied: number; conflicts: number; rejected: number; waiting: number } {
   const cache = new Map<string, Set<string>>();
+  const money = moneyColumns(db); // مرة لكل تطبيق لا لكل صف
   const joining = getSyncState(db, 'joining') === '1';
   let applied = 0, conflicts = 0, rejected = 0;
   const wasOn = captureOn(db);
@@ -301,7 +325,7 @@ export function applyInbox(db: DB, deviceId: string): { applied: number; conflic
         db.transaction(() => {
           for (const r of page) {
             const doc = JSON.parse(r.payload) as RemoteDoc;
-            const out = applyOne(db, doc, deviceId, cache, joining);
+            const out = applyOne(db, doc, deviceId, cache, money, joining);
             if (out === 'retry') {
               if (r.attempts + 1 >= MAX_ATTEMPTS) {
                 reject(db, doc, 'سجل أب غير موجود بعد محاولات متكررة');

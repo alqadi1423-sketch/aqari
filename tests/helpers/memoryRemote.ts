@@ -3,6 +3,7 @@
  * وقت الخادم يتزايد، القيد المرحّل وسجل العمليات لا يُعدَّلان إلا ربط القيد العكسي مرة واحدة.
  */
 import type { Cursor, RemoteDoc, RemoteStore, WriteResult } from '@/sync/types';
+import { syncTable } from '@/db/syncTables';
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
@@ -19,6 +20,8 @@ export class MemoryRemote implements RemoteStore {
   }
 
   private allowed(prev: RemoteDoc | undefined, next: RemoteDoc): boolean {
+    if (!syncTable(next.t)) return false;                                   // جدول خارج المزامنة
+    if (next.lines !== undefined && next.t !== 'journal_entries') return false; // السطور للقيد وحده
     if (!prev) return true;
     if (prev.t === 'audit_log') return false;
     const posted = prev.t === 'journal_entries' && prev.d?.status === 'مرحّل';
