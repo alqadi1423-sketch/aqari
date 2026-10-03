@@ -1,12 +1,12 @@
 /**
- * الثوابت تحت آلاف التسلسلات العشوائية · العدد من FUZZ_SEQS (الافتراضي ٥٠٠ في كل تشغيل، وفي جولة الإقفال ٥٠٠٠)
+ * الثوابت تحت آلاف التسلسلات العشوائية · العدد من FUZZ_SEQS (الافتراضي ٢٠٠ في كل تشغيل فلا يزاحم اختبارات الزمن، وفي جولة الإقفال ٥٠٠٠: FUZZ_SEQS=5000)
  * والبذرة الأولى من FUZZ_FROM. أي تسلسل يفشل يُحفظ بذرته في tests/fuzz-failures.json فيصير
  * اختباراً دائماً يعاد في كل تشغيل.
  */
 import { tempDir, rmrf } from './helpers/testDb';
 import { runSequence, saveFailure, type FuzzResult } from './helpers/fuzz';
 
-const N = Number(process.env.FUZZ_SEQS ?? 500);
+const N = Number(process.env.FUZZ_SEQS ?? 200);
 const FROM = Number(process.env.FUZZ_FROM ?? 1);
 
 let dir: string;
