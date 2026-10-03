@@ -1,3 +1,4 @@
+import type { CipherProvider } from './encryption';
 import type { DB } from '../../db/adapter';
 import type { FS, Hasher } from '../../files/fsAdapter';
 import type { IntegrityCheck } from '../accounting/integrity';
@@ -40,6 +41,8 @@ export interface BackupEnv {
   closeLive(): void;
   /** إعادة فتح القاعدة الحية بعد التبديل */
   reopenLive(): DB;
+  /** أوّليات التشفير القياسية · للنسخ بكلمة مرور (encryption.ts) · غيابها يمنع التشفير وفكّه */
+  cipher?: CipherProvider;
 }
 
 export class HashingUnavailableError extends Error {

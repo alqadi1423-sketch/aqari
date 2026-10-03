@@ -17,6 +17,7 @@ import { seed, ensureDeviceId } from '../../db/seed';
 import { recomputeInstallments, type PaidChange } from '../contracts/paid';
 import { planKeepPosted, applyKeepPosted, type KeptEntry } from './keepPosted';
 import type { RemoteDoc } from '../../sync/types';
+import { isEncryptedArchive, decryptArchive, PasswordRequiredError, WrongPasswordError } from './encryption';
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
 
 const dec = new TextDecoder();
@@ -50,6 +51,11 @@ export interface RestorePlan {
 export interface PrepareOptions {
   /** لقطة السحابة حين الدخول بحساب · قيودها المرحّلة تُضمّ كقيود الجهاز · تُقرأ بعد فحص البصمات لا قبله */
   cloud?: () => Promise<RemoteDoc[]>;
+  /**
+   * كلمة مرور نسخةٍ مشفّرة · تُطلب حين يكون الملف مشفّراً فقط · `wrong` صحيحٌ بعد محاولة خاطئة ·
+   * null = ألغى المستخدم (PasswordRequiredError)
+   */
+  password?: (wrong: boolean) => Promise<string | null>;
 }
 
 /**
@@ -103,8 +109,12 @@ export async function prepareRestore(
     // ٢) الفك المتنفس والبيان · ثم الكتابة للقرص وتحرير الذاكرة قبل أي خطوة ثقيلة
     onProgress?.('جاري فكّ الأرشيف');
     let entries: Record<string, Uint8Array> | null;
+    let raw: Uint8Array | null = env.fs.read(archivePath);
+    // نسخةٌ مشفّرة بكلمة مرور · تُفكّ في الذاكرة قبل الفك المضغوط ولا تُكتب مفكوكةً على القرص
+    if (isEncryptedArchive(raw)) raw = await openEncrypted(env, raw, opts, onProgress);
     try {
-      entries = await unzipYielding(env.fs.read(archivePath));
+      entries = await unzipYielding(raw);
+      raw = null;
     } catch (e) {
       console.error('[عقاري] تعذّر فكّ أرشيف الاستعادة · ' + (e instanceof Error ? (e.stack ?? e.message) : String(e)));
       throw new RestoreError(archiveFailureText(e, 'هذا الملف ليس نسخة احتياطية من عقاري'));
@@ -238,6 +248,23 @@ function carryDeviceLetter(from: DB, to: DB): void {
   const v = from.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_letter'`)?.value;
   if (v === undefined) to.run(`DELETE FROM meta WHERE key = 'device_letter'`);
   else to.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [v]);
+}
+
+/** فكّ نسخةٍ مشفّرة بكلمة مرورها · تُعاد المحاولة ما دام المستخدم يكتب، والإلغاء يرمي PasswordRequiredError */
+async function openEncrypted(env: BackupEnv, raw: Uint8Array, opts: PrepareOptions, onProgress?: (msg: string) => void): Promise<Uint8Array> {
+  if (!env.cipher) throw new RestoreError('هذه النسخة مشفّرة ومكوّن التشفير غير متاح على هذا الجهاز');
+  if (!opts.password) throw new PasswordRequiredError();
+  let wrong = false;
+  for (;;) {
+    const pw = await opts.password(wrong);
+    if (pw == null) throw new PasswordRequiredError();
+    try {
+      return await decryptArchive(raw, pw, env.cipher, onProgress);
+    } catch (e) {
+      if (!(e instanceof WrongPasswordError)) throw e;
+      wrong = true;
+    }
+  }
 }
 
 /** إلغاء التجهيز · يكنس staging والبيانات الحية كما هي بالضبط */

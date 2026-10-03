@@ -226,12 +226,14 @@ export function ChipGroup<Tv extends string | number>({
 }
 
 export function Field({
-  label, value, onChange, placeholder, keyboard, multiline, disabled, ltr, error,
+  label, value, onChange, placeholder, keyboard, multiline, disabled, ltr, error, secure,
 }: {
   label: string; value: string; onChange?: (v: string) => void; placeholder?: string;
   keyboard?: 'numeric' | 'default' | 'phone-pad'; multiline?: boolean; disabled?: boolean; ltr?: boolean;
   /** الحقل سبب رفضاً · يُظلَّل بالأحمر */
   error?: boolean;
+  /** كلمة مرور · تُخفى ولا تُقترح ولا تُحفظ في لوحة المفاتيح */
+  secure?: boolean;
 }) {
   const fs = useFs();
   // أول تغيير يُعلّم الورقة الحاوية بأن فيها إدخالاً · فلا تُغلق بإيماءة بلا استئذان
@@ -247,6 +249,10 @@ export function Field({
         keyboardType={keyboard === 'numeric' ? 'decimal-pad' : keyboard === 'phone-pad' ? 'phone-pad' : 'default'}
         multiline={multiline}
         editable={!disabled}
+        secureTextEntry={secure}
+        autoCorrect={secure ? false : undefined}
+        autoCapitalize={secure ? 'none' : undefined}
+        autoComplete={secure ? 'off' : undefined}
         style={[
           st.input, { fontSize: fs(TYPE.body) },
           multiline && { minHeight: 74, textAlignVertical: 'top' },

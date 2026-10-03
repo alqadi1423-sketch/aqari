@@ -26,6 +26,8 @@ export interface DriveBackup {
   size: number;
   createdTime: string;
   sha256: string;
+  /** مشفّرة بكلمة مرور النسخ (encryption.ts) · تُعرض في القائمة فيُعرف أنها ستطلبها */
+  encrypted?: boolean;
 }
 
 export class DriveError extends Error {
@@ -58,6 +60,7 @@ export async function listDriveBackups(io: DriveIO, token: string): Promise<Driv
   return (j.files ?? []).map((f) => ({
     id: f.id, name: f.name, size: Number(f.size ?? 0), createdTime: f.createdTime,
     sha256: (f.sha256Checksum ?? f.appProperties?.sha256 ?? '').toLowerCase(),
+    encrypted: f.appProperties?.encrypted === '1',
   }));
 }
 
@@ -76,7 +79,9 @@ async function remoteSha(io: DriveIO, token: string, id: string): Promise<{ sha:
  * رفع نسخة · البصمة المحلية تُحسب من الملف على القرص، وبصمة Drive تُقرأ بعد الرفع ·
  * أي اختلاف يحذف المرفوع ويرفض برسالة تسمّي الملف.
  */
-export async function uploadBackupToDrive(io: DriveIO, token: string, path: string, name: string): Promise<DriveBackup> {
+export async function uploadBackupToDrive(
+  io: DriveIO, token: string, path: string, name: string, opts: { encrypted?: boolean } = {},
+): Promise<DriveBackup> {
   const local = (await io.sha256OfFile(path)).toLowerCase();
   const size = io.sizeOf(path);
   const init = await io.fetch(`${UPLOAD}/files?uploadType=resumable&fields=id,name,size,createdTime,sha256Checksum`, {
@@ -86,7 +91,7 @@ export async function uploadBackupToDrive(io: DriveIO, token: string, path: stri
       'X-Upload-Content-Type': 'application/octet-stream',
       'X-Upload-Content-Length': String(size),
     }),
-    body: JSON.stringify({ name, parents: ['appDataFolder'], appProperties: { app: 'aqari', sha256: local } }),
+    body: JSON.stringify({ name, parents: ['appDataFolder'], appProperties: { app: 'aqari', sha256: local, ...(opts.encrypted ? { encrypted: '1' } : {}) } }),
   });
   if (init.status === 401 || init.status === 403) throw new DriveError('رُفض الوصول عند بدء الرفع · سجّل الدخول من جديد');
   const session = init.headers.get('Location') ?? init.headers.get('location');

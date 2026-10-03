@@ -3,6 +3,7 @@ import { openNodeDb } from '@/db/nodeAdapter';
 import { migrate } from '@/db/migrations';
 import { seed } from '@/db/seed';
 import { nodeFs, nodeHasher } from '@/files/nodeFs';
+import { nodeCipher } from '@/files/nodeCipher';
 import type { DB } from '@/db/adapter';
 import type { BackupEnv } from '@/domain/backup/types';
 import type { FilesEnv } from '@/files/store';
@@ -28,6 +29,7 @@ export function makeBackupEnv(root: string): TestBackupEnv {
     dbPath,
     fs: nodeFs,
     hasher: nodeHasher,
+    cipher: nodeCipher,
     attachmentsDir,
     tmpDir,
     appVersion: '1.0.0-test',

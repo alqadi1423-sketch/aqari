@@ -25,6 +25,7 @@ class MainApplication : Application(), ReactApplication {
           // add(MyReactNativePackage())
           // الشاشتان الداخليتان بقصد صريح · انظر AqariIntents.kt
           add(AqariIntentsPackage())
+          add(AqariCryptoPackage())
         }
     )
   }

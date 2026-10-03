@@ -14,6 +14,9 @@ import type { BackupEnv, BackupManifest } from '../domain/backup/types';
 import { setSetting } from '../repos/settings';
 import { toLocalISODate } from '../domain/dates';
 import { openNodeDbCompat } from './openTempDb';
+import { deviceCipher } from './cipher';
+import { getBackupPassword } from './backupPassword';
+import { sealBackupFile } from '../domain/backup/seal';
 
 export function appBackupEnv(db: AppDB): BackupEnv {
   const root = appDataRoot();
@@ -28,6 +31,7 @@ export function appBackupEnv(db: AppDB): BackupEnv {
     openDb: (path) => openTempSqlite(path),
     closeLive: () => { try { db.close(); } catch { /* مغلقة */ } },
     reopenLive: () => { db.reopen(); return db; },
+    cipher: deviceCipher,
   };
 }
 
@@ -45,6 +49,9 @@ export async function createAndShareBackup(
   const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
   const outPath = joinPath(env.tmpDir, name);
   const manifest = await createBackup(env, outPath, onProgress);
+  // بكلمة مرور النسخ إن وُضعت · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق
+  const pw = await getBackupPassword();
+  if (pw) await sealBackupFile(env, outPath, pw, onProgress);
   setSetting(db, 'lastBackupAt', new Date().toISOString());
   onProgress?.('جاري فتح نافذة المشاركة');
   // فشل المشاركة بعد نجاح النسخة لا يُحسب فشلاً للنسخة نفسها

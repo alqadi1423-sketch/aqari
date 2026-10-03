@@ -46,6 +46,8 @@ import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orpha
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
 import { EntrySheet } from '../src/ui/EntrySheet';
+import { getBackupPassword, setBackupPassword, clearBackupPassword, MIN_PASSWORD } from '../src/services/backupPassword';
+import { PasswordRequiredError } from '../src/domain/backup/encryption';
 import { pinWidget } from '../src/services/intents';
 import type { DriveBackup } from '../src/cloud/drive';
 import { dfmt, toLocalISODate, today } from '../src/domain/dates';
@@ -103,6 +105,31 @@ export default function Settings() {
   // قيدٌ من قائمة المراجعة مفتوحٌ بتفاصيله
   const [keptEntry, setKeptEntry] = useState<string | null>(null);
   const [keptCancel, setKeptCancel] = useState<{ id: string; no: string } | null>(null);
+  // كلمة مرور النسخ · مفعّلة أم لا (القيمة نفسها لا تُقرأ إلى الواجهة)
+  const [pwOn, setPwOn] = useState(false);
+  useEffect(() => { getBackupPassword().then((p) => setPwOn(!!p)).catch(() => {}); }, []);
+  const [pwEdit, setPwEdit] = useState(false);
+  const [pw1, setPw1] = useState('');
+  const [pw2, setPw2] = useState('');
+  // سؤال كلمة مرور نسخةٍ مشفّرة أثناء الاستعادة · يُجاب بوعد
+  const [pwAsk, setPwAsk] = useState<{ note: string; resolve: (v: string | null) => void } | null>(null);
+  const [pwTyped, setPwTyped] = useState('');
+  const askPassword = (note: string) => new Promise<string | null>((resolve) => { setPwTyped(''); setPwAsk({ note, resolve }); });
+  /** كلمة المحفوظة أولاً بلا سؤال، ثم السؤال · ورسالة الخطأ بحسب من أخطأ */
+  const restorePassword = () => {
+    let last: 'stored' | 'typed' | null = null;
+    return async (wrong: boolean) => {
+      if (!last) {
+        const stored = await getBackupPassword();
+        if (stored) { last = 'stored'; return stored; }
+      }
+      const note = !wrong ? 'هذه النسخة مشفّرة · اكتب كلمة المرور التي شُفّرت بها.'
+        : last === 'stored' ? 'هذه النسخة مشفّرة بكلمة مرور غير المحفوظة على هذا الجهاز · اكتب كلمتها.'
+        : 'كلمة المرور غير صحيحة · حاول مرة أخرى.';
+      last = 'typed';
+      return askPassword(note);
+    };
+  };
   // الحساب والمزامنة · حالة حيّة من طبقة الربط
   const [cloud, setCloud] = useState(cloudState());
   useEffect(() => subscribeCloud(() => setCloud(cloudState())), []);
@@ -138,7 +165,7 @@ export default function Settings() {
       await createAndShareBackup(db, setProgress);
       bump();
       // لا نسخة «ناقصة» · ما لم يجتز كل تحقق فلم يُنشأ أصلاً
-      toast('أُنشئت النسخة وتُحقّق منها بنجاح');
+      toast(pwOn ? 'أُنشئت النسخة مشفّرة وتُحقّق منها بنجاح' : 'أُنشئت النسخة وتُحقّق منها بنجاح');
     } catch (e) {
       await reportFailure({
         title: 'تعذّر إنشاء النسخة الاحتياطية', where: 'إنشاء نسخة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
@@ -204,7 +231,7 @@ export default function Settings() {
       // لقطة السحابة تُقرأ مرة بعد فحص النسخة · قيودها المرحّلة تُضمّ، ومنها خطة الاستبدال
       let snap: CloudSnapshot | null = null;
       const loadCloud = async () => (snap ??= await readCloudSnapshot(setProgress));
-      prepared = await prepare(signedIn ? { cloud: async () => (await loadCloud()).docs } : {});
+      prepared = await prepare({ ...(signedIn ? { cloud: async () => (await loadCloud()).docs } : {}), password: restorePassword() });
       setProgress(null);
       if (!prepared) { setBusy(false); if (resumeOnExit) resumeSync(); return; }
       const { env, plan, archiveTmp } = prepared;
@@ -286,6 +313,8 @@ export default function Settings() {
     } catch (e) {
       // لا يُترك مجلد تجهيز وراءنا إن فشل شيء بعد نجاح التجهيز
       if (prepared) { try { abortPreparedRestore(prepared.env, prepared.plan, prepared.archiveTmp); } catch { /* يكنسه الإقلاع */ } }
+      // ألغى المستخدم سؤال كلمة المرور · لا عطل يُبلَّغ
+      if (e instanceof PasswordRequiredError) { if (resumeOnExit) resumeSync(); setProgress(null); setBusy(false); return; }
       await reportFailure({
         title: 'تعذّرت الاستعادة', where: 'تجهيز استعادة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'update',
         before, env: appBackupEnv(db), e,
@@ -405,7 +434,7 @@ export default function Settings() {
     try {
       const b = await backupToDrive(db, setProgress);
       bump();
-      toast('رُفعت النسخة إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
+      toast('رُفعت النسخة' + (pwOn ? ' مشفّرة' : '') + ' إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
     } catch (e) {
       await reportFailure({
         title: 'تعذّر النسخ على Google Drive', where: 'نسخ على Drive', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
@@ -589,6 +618,24 @@ export default function Settings() {
           <View style={{ flex: 1 }}><BtnPrimary title="النسخ الاحتياطي" onPress={doBackup} loading={busy} /></View>
           <View style={{ flex: 1 }}><BtnGhost title="استعادة من نسخة" onPress={doRestore} disabled={busy} /></View>
         </Row>
+        <Row style={{ justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, marginTop: 6 }}>
+          <View style={{ flex: 1 }}>
+            <T size={TYPE.body}>كلمة مرور النسخ</T>
+            <T size={TYPE.caption} color={C.muted}>{pwOn ? 'كل نسخة تُصدَّر أو تُرفع إلى Drive تُشفَّر بها' : 'النسخ غير مشفّرة'}</T>
+          </View>
+          <BtnGhost small title={pwOn ? 'تغيير' : 'ضبط'} onPress={() => { setPw1(''); setPw2(''); setPwEdit(true); }} />
+          {pwOn ? (
+            <BtnGhost small danger title="إزالة" onPress={() => dialog({
+              title: 'إزالة كلمة مرور النسخ',
+              body: 'النسخ القادمة لا تُشفَّر. والنسخ المشفّرة من قبل تبقى تحتاج كلمتها نفسها لتُفتح، فاحتفظ بها.',
+              tone: 'danger',
+              actions: [
+                { label: 'تراجع', variant: 'ghost' },
+                { label: 'أزل', variant: 'primary', onPress: async () => { await clearBackupPassword(); setPwOn(false); toast('أُزيلت كلمة مرور النسخ'); } },
+              ],
+            })} />
+          ) : null}
+        </Row>
         <T size={TYPE.caption} color={C.muted} style={{ marginTop: 10, marginBottom: 5 }}>تذكير أسبوعي بالتصدير خارج الجهاز</T>
         <ChipGroup options={[[1, 'مفعّل'], [0, 'مطفأ']]} value={settings.backupWeekly ? 1 : 0}
           onChange={(v) => { updateSetting('backupWeekly', !!v); rescheduleAllNotifications(db).catch(() => {}); }} />
@@ -768,7 +815,7 @@ export default function Settings() {
         options={(driveList ?? []).map((b) => ({
           value: b.id,
           label: dfmt(toLocalISODate(new Date(b.createdTime))) + ' · ' + libSizeLabel(b.size),
-          sub: b.name,
+          sub: b.name + (b.encrypted ? ' · مشفّرة' : ''),
         }))}
         value={''}
         onPick={(id) => {
@@ -777,6 +824,34 @@ export default function Settings() {
           if (b) runRestore((opts) => prepareRestoreFromDrive(db, b, setProgress, opts));
         }}
       />
+
+      <Sheet visible={pwEdit} onClose={() => setPwEdit(false)} title={pwOn ? 'تغيير كلمة مرور النسخ' : 'كلمة مرور النسخ'}>
+        <Note tone="danger">
+          إن نسيت كلمة المرور فلا تُفتح النسخ المشفّرة بها أبداً · لا منّا ولا من غيرنا، فلا مفتاح خلفي. اكتبها في مكان آمن خارج الهاتف.
+        </Note>
+        <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 6 }}>
+          تُحفظ في المخزن الآمن على هذا الجهاز وحده، وتُشفَّر بها النسخ بمعيار AES-256-GCM.{pwOn ? ' والنسخ السابقة تبقى بكلمتها القديمة.' : ''}
+        </T>
+        <Field label={'كلمة المرور (' + MIN_PASSWORD + ' أحرف على الأقل)'} value={pw1} onChange={setPw1} secure ltr />
+        <Field label="أعد كتابتها" value={pw2} onChange={setPw2} secure ltr error={!!pw2 && pw2 !== pw1} />
+        {pw1.length >= MIN_PASSWORD && pw1 === pw2 ? (
+          <BtnPrimary title="احفظ كلمة المرور" onPress={async () => {
+            try { await setBackupPassword(pw1); setPwOn(true); setPwEdit(false); toast('حُفظت · النسخ القادمة مشفّرة'); }
+            catch (e) { reportFailure({ title: 'تعذّر حفظ كلمة المرور', e }); }
+          }} />
+        ) : null}
+      </Sheet>
+
+      <Sheet visible={!!pwAsk} onClose={() => { pwAsk?.resolve(null); setPwAsk(null); }} title="نسخة مشفّرة">
+        <T size={TYPE.body} style={{ marginBottom: 8 }}>{pwAsk?.note ?? ''}</T>
+        <Field label="كلمة المرور" value={pwTyped} onChange={setPwTyped} secure ltr />
+        <Row>
+          <View style={{ flex: 1 }}><BtnGhost title="إلغاء" onPress={() => { pwAsk?.resolve(null); setPwAsk(null); }} /></View>
+          {pwTyped ? (
+            <View style={{ flex: 1 }}><BtnPrimary title="فتح النسخة" onPress={() => { pwAsk?.resolve(pwTyped); setPwAsk(null); }} /></View>
+          ) : null}
+        </Row>
+      </Sheet>
 
       {keptCancel ? <SourceCancelSheet entryId={keptCancel.id} entryNo={keptCancel.no} onClose={() => setKeptCancel(null)} /> : null}
       {keptEntry ? <EntrySheet entryId={keptEntry} onClose={() => setKeptEntry(null)} onLeave={() => { setKeptEntry(null); setReviewOpen(false); }} /> : null}

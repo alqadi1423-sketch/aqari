@@ -32,6 +32,8 @@ import type { BackupEnv } from '../domain/backup/types';
 import { planKeepPosted, applyKeepPosted, type KeepPlan } from '../domain/backup/keepPosted';
 import { toLocalISODate } from '../domain/dates';
 import { appBackupEnv } from './backupService';
+import { getBackupPassword } from './backupPassword';
+import { sealBackupFile } from '../domain/backup/seal';
 
 /* ═══════════ الجلسة ═══════════ */
 
@@ -302,9 +304,12 @@ export async function backupToDrive(db: AppDB, onProgress?: (m: string) => void)
   const out = joinPath(env.tmpDir, 'drive-' + Date.now() + '.aqbk');
   await createBackup(env, out, onProgress);
   try {
+    // نسخة Drive تُشفَّر أيضاً إن وُضعت كلمة مرور النسخ
+    const pw = await getBackupPassword();
+    if (pw) await sealBackupFile(env, out, pw, onProgress);
     onProgress?.('جاري الرفع إلى Google Drive');
     const token = await driveToken();
-    return await uploadBackupToDrive(driveIO, token, out, name);
+    return await uploadBackupToDrive(driveIO, token, out, name, { encrypted: !!pw });
   } finally {
     try { env.fs.remove(out); } catch { /* يكنسه الإقلاع */ }
   }

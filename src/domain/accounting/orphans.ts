@@ -50,16 +50,16 @@ function orphanSql(): string {
 const MARKED = (alias: string) =>
   `EXISTS (SELECT 1 FROM audit_log a WHERE a.entity_type = '${KEPT_REVIEW_ENTITY}' AND json_extract(a.after_json, '$.id') = ${alias}.id)`;
 
-/** القيود المعلَّمة وعكوسها · خارج مطابقة الدفتر بالمستندات */
-export const MARKED_OR_ITS_REVERSAL = (alias: string) =>
-  `(${MARKED(alias)} OR EXISTS (SELECT 1 FROM journal_entries o WHERE o.reversed_by = ${alias}.id AND ${MARKED('o')}))`;
-
 /** صافي حساب (مدين موجب) في القيود المعلَّمة وعكوسها · يُطرح من رصيد الدفتر قبل مطابقته بالمستندات */
 export function markedNetOn(db: DB, account: string): number {
+  // المعلَّم يُجمع مرة ثم عكوسه · لا مسح لسجل العمليات عند كل سطر
   return Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS s
+    `WITH m AS (SELECT DISTINCT json_extract(after_json, '$.id') AS id FROM audit_log WHERE entity_type = ?),
+          ids AS (SELECT id FROM m UNION SELECT e.reversed_by FROM journal_entries e JOIN m ON m.id = e.id WHERE e.reversed_by IS NOT NULL)
+     SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS s
      FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-     WHERE l.account_code = ? AND e.status = 'مرحّل' AND e.deleted_at IS NULL AND ${MARKED_OR_ITS_REVERSAL('e')}`, [account])!.s);
+     WHERE l.account_code = ? AND e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.id IN (SELECT id FROM ids)`,
+    [KEPT_REVIEW_ENTITY, account])!.s);
 }
 
 /** قيود مرحّلة قائمة الأثر مستندها غائب ولم تُعلَّم بعد */
