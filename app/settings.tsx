@@ -36,10 +36,16 @@ import { libSizeLabel } from '../src/domain/library';
 import { reportFailure, arabicMessage } from '../src/ui/failureDialog';
 import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
-  pauseSync, resumeSync, syncNow, planReplaceCloud, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
-  restoreAwaitingAdoption,
+  pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
+  restoreAwaitingAdoption, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
 } from '../src/services/cloud';
-import type { CloudReplacePlan } from '../src/sync/engine';
+import type { CloudReplacePlan, CloudSnapshot } from '../src/sync/engine';
+import type { PrepareOptions } from '../src/domain/backup/restore';
+import type { KeptEntry } from '../src/domain/backup/keepPosted';
+import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orphans';
+import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
+import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
+import { EntrySheet } from '../src/ui/EntrySheet';
 import { pinWidget } from '../src/services/intents';
 import type { DriveBackup } from '../src/cloud/drive';
 import { dfmt, toLocalISODate, today } from '../src/domain/dates';
@@ -72,7 +78,7 @@ export default function Settings() {
   const [progress, setProgress] = useState<string | null>(null);
   // مراجعة الأقساط من الدفتر · قراءة عند كل تغيير، ولا يُطبَّق شيء إلا بموافقة المستخدم
   const [reviewOpen, setReviewOpen] = useState(false);
-  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db) }),
+  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db), kept: keptForReview(db) }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   // تسوية فائض: ردّ للمستأجر بتاريخه وطريقته، أو تحويله رصيداً دائناً
@@ -93,7 +99,10 @@ export default function Settings() {
     setSettleBank('');
   };
   const reviewCount = review.surpluses.length + review.plan.changes.length + review.plan.issues.length
-    + review.unbooked.items.length + review.unbooked.ambiguous.length;
+    + review.unbooked.items.length + review.unbooked.ambiguous.length + review.kept.length;
+  // قيدٌ من قائمة المراجعة مفتوحٌ بتفاصيله
+  const [keptEntry, setKeptEntry] = useState<string | null>(null);
+  const [keptCancel, setKeptCancel] = useState<{ id: string; no: string } | null>(null);
   // الحساب والمزامنة · حالة حيّة من طبقة الربط
   const [cloud, setCloud] = useState(cloudState());
   useEffect(() => subscribeCloud(() => setCloud(cloudState())), []);
@@ -153,7 +162,7 @@ export default function Settings() {
   };
 
   // الاستعادة لا تنهار أبداً · كل المسار ملفوف، والفشل رسالة عربية مبنيّة على فحص
-  const doRestore = () => runRestore(() => pickAndPrepareRestore(db, setProgress));
+  const doRestore = () => runRestore((opts) => pickAndPrepareRestore(db, setProgress, opts));
 
   /** ما في السحابة وما يصير إليه · سطور الحوار قبل الاعتماد */
   const cloudReplaceText = (p: CloudReplacePlan) =>
@@ -165,9 +174,25 @@ export default function Settings() {
         + ' ليست في النسخة: قواعد الأمان لا تحذفها من السحابة، فلا تنزل إلى هذا الجهاز وتبقى على أي جهاز آخر نزلت عليه.'
       : '');
 
+  /** القيود المرحّلة بعد تاريخ النسخة · تبقى وتُضمّ إليها · سطور الحوار قبل التأكيد */
+  const fromLabel = (k: KeptEntry) => (k.from === 'device' ? 'من هذا الجهاز' : k.from === 'cloud' ? 'من السحابة' : 'من الجهاز والسحابة');
+  const keptText = (kept: KeptEntry[]) => {
+    if (!kept.length) return '';
+    const shown = kept.slice(0, 8).map((k) => '· ' + (k.newNo ? k.no + ' ← ' + k.newNo : k.no) + ' · ' + k.date + ' · ' + fmt(k.amount)
+      + ' · ' + fromLabel(k) + (k.carried.length ? ' · ومعه ' + k.carried.join(' و') : '') + (k.review ? ' · للمراجعة' : ''));
+    const toReview = kept.filter((k) => k.review).length;
+    const renamed = kept.filter((k) => k.newNo).length;
+    return '\n\nقيود مرحّلة بعد تاريخ النسخة تبقى (' + kept.length + '):\n' + shown.join('\n')
+      + (kept.length > shown.length ? '\nو' + (kept.length - shown.length) + ' غيرها' : '')
+      + '\nالقيد المرحّل لا يُحذف بالاستعادة · يُضمّ إلى النسخة برقمه وسطوره، ومعه دفعته وتوزيعها وحركة بنكه متى كان عقدها وبنكها في النسخة.'
+      + (renamed ? '\n' + renamed + ' منها رقمه مستعمل في النسخة لقيد آخر فيأخذ رقماً جديداً، ويُذكر القديم في بيانه.' : '')
+      + (toReview ? '\n' + toReview + ' منها مستنده لم يُحمل · تجدها في «مراجعة الدفتر» لتراجعها.' : '');
+  };
+  const paidText = (n: number) => (n ? '\n\nمسدَّد ' + n + ' قسط حُسب من دفعات النسخة وتوزيعها بدل الرقم المخزّن فيها.' : '');
+
   // المسار الواحد للاستعادة من أي مصدر: التجهيز (فك وبصمات وفحص دلالي) ثم الملخص ثم التنفيذ ·
   // ومع الدخول بحساب: المزامنة تتوقف قبل كل شيء، ولا يُكتب إلى السحابة إلا بالاعتماد صراحةً
-  const runRestore = async (prepare: () => Promise<Awaited<ReturnType<typeof pickAndPrepareRestore>>>) => {
+  const runRestore = async (prepare: (opts: PrepareOptions) => Promise<Awaited<ReturnType<typeof pickAndPrepareRestore>>>) => {
     setBusy(true);
     const before = fingerprintData(appBackupEnv(db));
     const signedIn = !!cloudState().user;
@@ -176,14 +201,17 @@ export default function Settings() {
     let resumeOnExit = signedIn;
     try {
       if (signedIn) { setProgress('جاري إيقاف المزامنة'); await pauseSync(); }
-      prepared = await prepare();
+      // لقطة السحابة تُقرأ مرة بعد فحص النسخة · قيودها المرحّلة تُضمّ، ومنها خطة الاستبدال
+      let snap: CloudSnapshot | null = null;
+      const loadCloud = async () => (snap ??= await readCloudSnapshot(setProgress));
+      prepared = await prepare(signedIn ? { cloud: async () => (await loadCloud()).docs } : {});
       setProgress(null);
       if (!prepared) { setBusy(false); if (resumeOnExit) resumeSync(); return; }
       const { env, plan, archiveTmp } = prepared;
       let cloudPlan: CloudReplacePlan | null = null;
       if (signedIn) {
         const staged = env.openDb(plan.stagedDbPath);
-        try { cloudPlan = await planReplaceCloud(staged, setProgress); }
+        try { cloudPlan = planReplaceFromSnapshot(staged, await loadCloud()); }
         finally { try { staged.close(); } catch { /* أُغلقت */ } }
         setProgress(null);
       }
@@ -201,6 +229,8 @@ export default function Settings() {
         'قيود ' + cN('journal_entries') + ' · مرفقات ' + plan.currentAttachments.count
           + ' (' + (plan.currentAttachments.bytes / (1024 * 1024)).toFixed(1) + ' ميغا)'
           + (plan.ledgerRepair ? repairSummary(plan.ledgerRepair) : '')
+          + paidText(plan.paidRecomputed.length)
+          + keptText(plan.kept)
           + (cloudPlan ? '\n\nأنت داخل بحساب ' + (cloudState().user?.email ?? '') + ' · المزامنة متوقفة الآن.\n' + cloudReplaceText(cloudPlan) : ''),
         tone: 'normal',
         locked: true,
@@ -271,11 +301,13 @@ export default function Settings() {
     setBusy(true);
     try {
       await pauseSync();
-      const p = await planReplaceCloud(db, setProgress);
+      const ready = await planAdoptPending(db, setProgress);
+      const p = ready.plan;
       setProgress(null);
       dialog({
         title: 'اعتماد بيانات هذا الجهاز',
-        body: 'استُعيدت على هذا الجهاز نسخة ولم يُكتب منها شيء إلى السحابة.\n' + cloudReplaceText(p)
+        body: 'استُعيدت على هذا الجهاز نسخة ولم يُكتب منها شيء إلى السحابة.\n' + cloudReplaceText({ ...p, immutable: { ...p.immutable, entries: 0 } })
+          + keptText(ready.keep.entries)
           + '\n\nأو «دمج مع السحابة»: يغلب في كل سجل الأحدثُ تعديلاً بين الجهاز والسحابة.',
         tone: 'normal',
         locked: true,
@@ -287,8 +319,8 @@ export default function Settings() {
           } },
           { label: 'اعتماد بيانات هذا الجهاز واستبدال بيانات السحابة بها', variant: 'primary', onPress: async () => {
             try {
-              const { queued } = await adoptForCloud(db, p);
-              toast(queued + ' سجل في طريقه إلى السحابة');
+              const { queued, kept } = await adoptPendingWithKeep(db, ready);
+              toast(queued + ' سجل في طريقه إلى السحابة' + (kept ? ' · وضُمّ ' + kept + ' قيد مرحّل من السحابة' : ''));
             } catch (e) {
               await reportFailure({ title: 'تعذّر الاعتماد', where: 'اعتماد النسخة للسحابة', db, e });
             }
@@ -626,6 +658,12 @@ export default function Settings() {
                 </Num>
               </Row>
             ) : null}
+            {review.kept.length ? (
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+                <T size={TYPE.body}>قيود بلا مستند بعد الاستعادة</T>
+                <Num size={TYPE.body} bold>{review.kept.length}</Num>
+              </Row>
+            ) : null}
             <BtnGhost small title="افتح المراجعة" onPress={() => setReviewOpen(true)} />
           </>
         ) : null}
@@ -736,9 +774,12 @@ export default function Settings() {
         onPick={(id) => {
           const b = (driveList ?? []).find((x) => x.id === id);
           setDriveList(null);
-          if (b) runRestore(() => prepareRestoreFromDrive(db, b, setProgress));
+          if (b) runRestore((opts) => prepareRestoreFromDrive(db, b, setProgress, opts));
         }}
       />
+
+      {keptCancel ? <SourceCancelSheet entryId={keptCancel.id} entryNo={keptCancel.no} onClose={() => setKeptCancel(null)} /> : null}
+      {keptEntry ? <EntrySheet entryId={keptEntry} onClose={() => setKeptEntry(null)} onLeave={() => { setKeptEntry(null); setReviewOpen(false); }} /> : null}
 
       {/* لوحة السلة */}
       <Sheet visible={reviewOpen && !!reviewCount} onClose={() => setReviewOpen(false)} title="مراجعة الأقساط من الدفتر" tall>
@@ -796,6 +837,25 @@ export default function Settings() {
                 <Row gap={8} style={{ marginTop: 6 }}>
                   <BtnGhost small title="ردّ الفائض للمستأجر" onPress={() => openSettle(s, 'refund')} />
                   <BtnGhost small title="تحويله رصيداً دائناً" onPress={() => openSettle(s, 'credit')} />
+                </Row>
+              </View>
+            ))}
+          </>
+        ) : null}
+        {review.kept.length ? (
+          <>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>قيود بلا مستند بعد الاستعادة</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>
+              قيود مرحّلة غاب مستندها أو لم يُحمل حالُه (بعد استعادة نسخة هنا أو على جهاز آخر) · القيد المرحّل لا يُحذف، فراجع كلاً منها: اعكسه إن لم يعد له أصل، أو اتركه وعلّمه «تمّت مراجعته».
+            </T>
+            {review.kept.map((k) => (
+              <View key={k.id} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
+                <T size={TYPE.body} med>{k.no}</T>
+                <T size={TYPE.caption} color={C.muted}>{k.reason}</T>
+                <Row gap={8} style={{ marginTop: 6 }}>
+                  <BtnGhost small title="افتح القيد" onPress={() => setKeptEntry(k.id)} />
+                  {entrySourceAction(db, k.id) ? <BtnGhost small title="عكس القيد" onPress={() => setKeptCancel({ id: k.id, no: k.no })} /> : null}
+                  <BtnGhost small title="تمّت مراجعته" onPress={() => { dismissKeptReview(db, k.id); bump(); }} />
                 </Row>
               </View>
             ))}

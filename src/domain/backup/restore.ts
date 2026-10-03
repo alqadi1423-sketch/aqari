@@ -15,6 +15,8 @@ import { semanticIssues } from './semantic';
 import { planLedgerRepair, applyLedgerRepair, type LedgerRepairPlan } from '../ledgerReview';
 import { seed, ensureDeviceId } from '../../db/seed';
 import { recomputeInstallments, type PaidChange } from '../contracts/paid';
+import { planKeepPosted, applyKeepPosted, type KeptEntry } from './keepPosted';
+import type { RemoteDoc } from '../../sync/types';
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
 
 const dec = new TextDecoder();
@@ -38,6 +40,16 @@ export interface RestorePlan {
   ledgerRepair: LedgerRepairPlan | null;
   /** أقساط تغيّر مسدَّدها حين حُسب من دفعات النسخة وتوزيعها · يُعرض قبل التبديل */
   paidRecomputed: PaidChange[];
+  /**
+   * القيود المرحّلة بعد تاريخ النسخة (على هذا الجهاز أو في السحابة) · ضُمّت إلى نسخة التجهيز ولا تُحذف
+   * (keepPosted.ts) · تُعرض قبل التأكيد
+   */
+  kept: KeptEntry[];
+}
+
+export interface PrepareOptions {
+  /** لقطة السحابة حين الدخول بحساب · قيودها المرحّلة تُضمّ كقيود الجهاز · تُقرأ بعد فحص البصمات لا قبله */
+  cloud?: () => Promise<RemoteDoc[]>;
 }
 
 /**
@@ -71,7 +83,8 @@ export interface RestoreResult {
 export async function prepareRestore(
   env: BackupEnv,
   archivePath: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  opts: PrepareOptions = {}
 ): Promise<RestorePlan> {
   if (!env.hasher) throw new RestoreError('التحقق يحتاج مكوّن البصمات وهو غير متاح');
   const hasher = env.hasher;
@@ -142,12 +155,14 @@ export async function prepareRestore(
         throw new RestoreError('بصمة مرفق لا تطابق بيانها: ' + f.sha256.slice(0, 12));
       if (hi % 8 === 0) await yieldUi();
     }
+    const cloudDocs = opts.cloud ? await opts.cloud() : undefined;
     onProgress?.('جاري التشغيل التجريبي للنسخة');
 
     let migrated = false;
     let incoming: Record<string, number> = {};
     let ledgerRepair: LedgerRepairPlan | null = null;
     let paidRecomputed: PaidChange[] = [];
+    let kept: KeptEntry[] = [];
     {
       let probe: DB | null = null;
       try {
@@ -181,13 +196,19 @@ export async function prepareRestore(
         }
         // ثم المسدَّد من دفعات النسخة وتوزيعها (paid.ts) · وما تغيّر يُعرض في الحوار
         paidRecomputed = recomputeInstallments(probe);
+        // القيد المرحّل لا يُحذف بالاستعادة: ما رُحّل بعد النسخة يُضمّ إليها برقمه ومستنده ما أمكن ·
+        // وترقيم ما تصادم رقمه بحرف هذا الجهاز لا بحرف الجهاز الذي صنع النسخة
+        onProgress?.('جاري ضمّ القيود المرحّلة بعد تاريخ النسخة');
+        carryDeviceLetter(env.db, probe);
+        const keep = planKeepPosted(probe, { device: env.db, cloud: cloudDocs });
+        if (keep.entries.length) kept = applyKeepPosted(probe, keep).entries;
         // الفحص الدلالي: قيد مرحّل غير متوازن أو دفعة سالبة أو خصم بلا سطره يرفض الاستعادة كاملة
         const issues = semanticIssues(probe);
         if (issues.length) {
           throw new RestoreError('النسخة مرفوضة · ' + issues.join(' · ')
             + (plan.issues.length ? ' · وما لا يحسمه دفترها: ' + plan.issues.map((x) => `${x.tenant} · ${x.contractNo}: ${x.reason}`).join(' · ') : ''));
         }
-        incoming = ledgerRepair || paidRecomputed.length ? tableCounts(probe) : counted;
+        incoming = ledgerRepair || paidRecomputed.length || kept.length ? tableCounts(probe) : counted;
         probe.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
       } finally {
         try { probe?.close(); } catch { /* مغلقة */ }
@@ -198,7 +219,7 @@ export async function prepareRestore(
     // مرفقات البيانات الحالية بالبنود نفسها · فيُرى ما سيُخسر من الجانبين لا من جانب واحد
     const live = liveBlobs(env.db);
     return {
-      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed,
+      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept,
       current: tableCounts(env.db),
       attachmentsBytes,
       currentAttachments: { count: live.length, bytes: live.reduce((s, b) => s + Number(b.size_bytes), 0) },
@@ -207,6 +228,16 @@ export async function prepareRestore(
     abortRestore(env, stagingDir);
     throw e;
   }
+}
+
+/**
+ * حرف الجهاز في الترقيم يخصّ هذا الجهاز لا النسخة · فينتقل من البيانات الحالية إلى المستعادة،
+ * وجهازٌ لم يُسجَّل بعد يبقى بلا تسجيل فيأخذ حرفه عند أول مزامنة
+ */
+function carryDeviceLetter(from: DB, to: DB): void {
+  const v = from.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_letter'`)?.value;
+  if (v === undefined) to.run(`DELETE FROM meta WHERE key = 'device_letter'`);
+  else to.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [v]);
 }
 
 /** إلغاء التجهيز · يكنس staging والبيانات الحية كما هي بالضبط */
@@ -246,6 +277,7 @@ export async function commitRestore(
   // ٦) التبديل الذرّي · وهوية هذا الجهاز في المزامنة تُحفظ قبله لتعود إليه بعده
   onProgress?.('جاري التبديل إلى النسخة');
   const deviceId = env.db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_id'`)?.value ?? null;
+  const letter = env.db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_letter'`)?.value;
   const preSwap = env.dbPath + '.pre-restore';
   env.closeLive();
   for (const suffix of ['-wal', '-shm']) {
@@ -271,6 +303,8 @@ export async function commitRestore(
     // من الجهازين كتابة الآخر ظناً أنها صداه. ونسخة بلا علامة الزرع تأخذ ما ينقصها الآن لا عند التشغيل التالي
     seed(fresh);
     ensureDeviceId(fresh, deviceId);
+    if (letter === undefined) fresh.run(`DELETE FROM meta WHERE key = 'device_letter'`);
+    else fresh.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [letter]);
 
     // دمج المرفقات من staging بالنقل لا بالقراءة · الذاكرة لا تُحمَّل
     env.fs.mkdirp(env.attachmentsDir);

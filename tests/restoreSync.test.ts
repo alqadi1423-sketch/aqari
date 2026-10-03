@@ -1,7 +1,7 @@
 /**
  * الاستعادة مع المزامنة: قراءة ما في السحابة لا تكتب شيئاً، والاعتماد يجعل السحابة مطابقة للنسخة
  * المستعادة (ما تغيّر بعدها يُستبدل، وما أُضيف بعدها يُحذف بشاهد حذف)، وجهازٌ ينضمّ بعدها يصله
- * ما في النسخة لا ما قبلها · وما لا تحذفه قواعد الأمان (القيد المرحّل) يُعدّ ويُعرض قبل الاعتماد.
+ * ما في النسخة لا ما قبلها · والقيد المرحّل لا يُحذف: يُضمّ إلى القاعدة قبل الاعتماد (keepPosted.ts).
  */
 import * as path from 'node:path';
 import { memDb, tempDir, rmrf } from './helpers/testDb';
@@ -9,7 +9,8 @@ import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { MemoryRemote } from './helpers/memoryRemote';
 import { confirmContract } from '@/domain/contracts/service';
 import { postEntry } from '@/domain/accounting/post';
-import { enableSync, syncOnce, outboxCount, planCloudReplace, adoptAsCloudTruth, CloudReplaceBlockedError } from '@/sync/engine';
+import { enableSync, syncOnce, outboxCount, planCloudReplace, adoptAsCloudTruth, CloudReplaceBlockedError, readCloud, planFromSnapshot } from '@/sync/engine';
+import { planKeepPosted, applyKeepPosted } from '@/domain/backup/keepPosted';
 import { logAudit } from '@/domain/audit';
 import { openNodeDb } from '@/db/nodeAdapter';
 import { getMeta } from '@/repos/settings';
@@ -85,7 +86,7 @@ test('قراءة السحابة قبل الاعتماد لا تكتب شيئاً
   b.close(); c.close(); restored.close();
 });
 
-test('قيد مرحّل بعد النسخة يمنع الاعتماد · لا كتابة ولا تغيير في القاعدة المستعادة', async () => {
+test('قيد مرحّل في السحابة بعد النسخة: الاعتماد بلا ضمّه يُمنع (حزام) بلا كتابة · وبعد ضمّه يمضي ولا يُحذف القيد', async () => {
   const r = new MemoryRemote();
   const a = memDb();
   enableSync(a, UID);
@@ -103,9 +104,19 @@ test('قيد مرحّل بعد النسخة يمنع الاعتماد · لا ك
   const before = outboxCount(restored);
   const writes = r.writes;
   expect(() => adoptAsCloudTruth(restored, UID, plan)).toThrow(CloudReplaceBlockedError);
-  expect(() => adoptAsCloudTruth(restored, UID, plan)).toThrow(/قيد مرحّل ليس في هذه النسخة/);
+  expect(() => adoptAsCloudTruth(restored, UID, plan)).toThrow(/قيد مرحّل ليس في بيانات هذا الجهاز/);
   expect(outboxCount(restored)).toBe(before);
   expect(r.writes).toBe(writes);
+  // الضمّ (keepPosted.ts) ثم الاعتماد
+  const snap = await readCloud(r);
+  const keep = planKeepPosted(restored, { cloud: snap.docs });
+  expect(keep.entries.map((e) => e.memo)).toEqual(['بعد النسخة']);
+  applyKeepPosted(restored, keep);
+  const plan2 = planFromSnapshot(restored, snap);
+  expect(plan2.immutable.entries).toBe(0);
+  adoptAsCloudTruth(restored, UID, plan2);
+  await sync(restored, r);
+  expect(restored.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries WHERE memo = 'بعد النسخة'`)!.n).toBe(1);
   restored.close();
 });
 

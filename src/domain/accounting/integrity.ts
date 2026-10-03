@@ -1,5 +1,6 @@
 import type { DB } from '../../db/adapter';
 import { accountBalance, allAccounts } from './ledger';
+import { KEPT_REVIEW_ENTITY, markedNetOn } from './orphans';
 import { fmt } from '../money';
 
 export interface IntegrityCheck {
@@ -47,11 +48,13 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
        AND c.renewed_to IS NULL -- المجدَّد رُحِّل تأمينه إلى عقده الجديد
        AND NOT EXISTS (SELECT 1 FROM deposit_settlements ds WHERE ds.contract_id = c.id)`
   )!;
-  const bal2400 = accountBalance(db, '2400');
+  // القيد غائب المستند (orphans.ts) لا مستند يطابقه · يُطرح أثره قبل المطابقة ويُذكر
+  const out2400 = markedNetOn(db, '2400');
+  const bal2400 = accountBalance(db, '2400') + out2400;
   out.push({
     name: 'تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة)',
     ok: bal2400 === Number(dep.s),
-    value: fmt(bal2400) + ' / ' + fmt(Number(dep.s)),
+    value: fmt(bal2400) + ' / ' + fmt(Number(dep.s)) + (out2400 ? ' · خارجها قيود بلا مستند ' + fmt(-out2400) : ''),
   });
 
   // ٤) رصيد 1250 = مجموع المطالبات المفتوحة
@@ -59,11 +62,12 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     `SELECT COALESCE(SUM(amount_halalas),0) AS s FROM claims
      WHERE status = 'مفتوحة' AND deleted_at IS NULL`
   )!;
-  const bal1250 = accountBalance(db, '1250');
+  const out1250 = markedNetOn(db, '1250');
+  const bal1250 = accountBalance(db, '1250') - out1250;
   out.push({
     name: 'ذمم المطالبات = المطالبات المفتوحة',
     ok: bal1250 === Number(openClaims.s),
-    value: fmt(bal1250) + ' / ' + fmt(Number(openClaims.s)),
+    value: fmt(bal1250) + ' / ' + fmt(Number(openClaims.s)) + (out1250 ? ' · خارجها قيود بلا مستند ' + fmt(out1250) : ''),
   });
 
   // ٥) لا حركات بنكية يتيمة: كل حركة حيّة تشير إلى حساب بنكي حيّ
@@ -106,7 +110,10 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     `SELECT COUNT(*) AS n FROM journal_entries e
      WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.auto = 1
        AND e.reversed_by IS NULL AND e.src_type = 'rent'
-       AND NOT EXISTS (SELECT 1 FROM contract_payments p WHERE p.journal_entry_id = e.id)`
+       AND NOT EXISTS (SELECT 1 FROM contract_payments p WHERE p.journal_entry_id = e.id)
+       -- قيدٌ بقي بالاستعادة ومستنده ليس في النسخة · معروفٌ في أداة المراجعة لا مستندٌ حُذف (keepPosted.ts)
+       AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.entity_type = ? AND json_extract(a.after_json, '$.id') = e.id)`,
+    [KEPT_REVIEW_ENTITY]
   )!;
   out.push({
     name: 'لا قيود يتيمة لمصادر محذوفة',

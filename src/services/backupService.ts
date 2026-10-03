@@ -9,7 +9,7 @@ import { openExpoDb } from '../db/expoAdapter';
 import { expoFs, expoHasher, appDataRoot } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { createBackup, ensureFreeSpace } from '../domain/backup/create';
-import { prepareRestore, commitRestore, abortRestore, type RestorePlan } from '../domain/backup/restore';
+import { prepareRestore, commitRestore, abortRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
 import type { BackupEnv, BackupManifest } from '../domain/backup/types';
 import { setSetting } from '../repos/settings';
 import { toLocalISODate } from '../domain/dates';
@@ -63,7 +63,8 @@ export async function createAndShareBackup(
  */
 export async function pickAndPrepareRestore(
   db: AppDB,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  opts?: PrepareOptions
 ): Promise<{ env: BackupEnv; plan: RestorePlan; archiveTmp: string } | null> {
   const env = appBackupEnv(db);
   // القرص يسع العملية · **قبل فتح المنتقي** لا بعده:
@@ -84,7 +85,7 @@ export async function pickAndPrepareRestore(
   // نسخة المنتقي في الذاكرة المؤقتة صارت زائدة بعد نقلها إلى tmp · وهي بحجم
   // الأرشيف كاملاً ولا يعدّها شيء ولا يكنسها شيء، فتُحذف فور الاستغناء عنها
   try { env.fs.remove(pickedUri); } catch { /* المنتقي قد يكون سلّم مرجعاً لا نسخة */ }
-  const plan = await prepareRestore(env, archiveTmp, onProgress);
+  const plan = await prepareRestore(env, archiveTmp, onProgress, opts);
   return { env, plan, archiveTmp };
 }
 

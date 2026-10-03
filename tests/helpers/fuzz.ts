@@ -25,7 +25,9 @@ import { semanticIssues } from '@/domain/backup/semantic';
 import { DERIVED_PAID_SQL } from '@/domain/contracts/paid';
 import { cancelPayment } from '@/domain/contracts/cancelPayment';
 import { setDeviceLetter } from '@/domain/numbering';
-import { enableSync, syncOnce, outboxCount, planCloudReplace, adoptAsCloudTruth } from '@/sync/engine';
+import { enableSync, syncOnce, outboxCount, readCloud, planFromSnapshot, adoptAsCloudTruth } from '@/sync/engine';
+import { planKeepPosted, applyKeepPosted } from '@/domain/backup/keepPosted';
+import { recomputeInstallments } from '@/domain/contracts/paid';
 import type { RemoteDoc, RemoteStore, Cursor, WriteResult } from '@/sync/types';
 import { MemoryRemote } from './memoryRemote';
 import { addProperty, addUnit, contractInput } from './fixtures';
@@ -238,21 +240,31 @@ export async function runSequence(dir: string, seedNo: number, steps = 14): Prom
     } },
     { name: 'استعادة واعتمادها', run: async (d) => {
       if (!d.backup || !d.remote.online) return null;
-      // الاستعادة مع الدخول كما في التطبيق: المزامنة متوقفة · الخطة تُقرأ على قاعدة التجهيز قبل الاستبدال،
-      // فإن مُنع الاعتماد أُلغيت الاستعادة وبقيت البيانات كما هي
-      const staged = d.file.replace(/\.db$/, '-staged.db');
+      // الاستعادة مع الدخول كما في التطبيق (prepareRestore ثم الاعتماد): المزامنة متوقفة · لقطة السحابة تُقرأ مرة،
+      // والقيود المرحّلة بعد النسخة — من الجهاز والسحابة — تُضمّ إلى قاعدة التجهيز قبل التبديل (التصميم ٤)
+      const snap = await readCloud(d.remote);
+      const staged = d.file.replace(/.db$/, '-staged.db');
+      for (const x of ['', '-wal', '-shm']) fs.rmSync(staged + x, { force: true });
       fs.copyFileSync(d.backup, staged);
       const probe = openNodeDb(staged);
-      let plan;
-      try { plan = await planCloudReplace(probe, d.remote); } finally { probe.close(); fs.rmSync(staged, { force: true }); }
-      if (plan.immutable.entries > 0) { log.push(`${d.name}: استعادة مُنعت · ${plan.immutable.entries} قيد مرحّل بعد النسخة`); return null; }
+      let kept = 0;
+      try {
+        recomputeInstallments(probe);
+        const letter = d.db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_letter'`)?.value;
+        if (letter !== undefined) probe.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [letter]);
+        const keep = planKeepPosted(probe, { device: d.db, cloud: snap.docs });
+        kept = applyKeepPosted(probe, keep).entries.length;
+        probe.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      } finally { probe.close(); }
       d.db.close();
-      for (const s of ['', '-wal', '-shm']) if (fs.existsSync(d.file + s)) fs.rmSync(d.file + s);
-      fs.copyFileSync(d.backup, d.file);
+      for (const x of ['', '-wal', '-shm']) if (fs.existsSync(d.file + x)) fs.rmSync(d.file + x);
+      fs.copyFileSync(staged, d.file);
+      for (const x of ['', '-wal', '-shm']) fs.rmSync(staged + x, { force: true });
       d.db = openNodeDb(d.file);
       ensureDeviceId(d.db, d.dev);
-      adoptAsCloudTruth(d.db, UID, plan);
+      adoptAsCloudTruth(d.db, UID, planFromSnapshot(d.db, snap));
       await sync(d);
+      if (kept) log.push(`${d.name}: استعادة ضمّت ${kept} قيد مرحّل بعد النسخة`);
       // الآخر لم يسحب الاستبدال بعد
       stale.set(d === A ? B : A, true);
       return 'استعادة';

@@ -22,6 +22,7 @@ import { SEED_SCRIPTS, seedScriptId } from '../db/seed';
 import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
 import { deviceLetterAssigned, setDeviceLetter } from '../domain/numbering';
+import { markOrphans } from '../domain/accounting/orphans';
 import type { Cursor, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 
 const nowIso = () => new Date().toISOString();
@@ -252,6 +253,48 @@ function deleteRow(db: DB, table: string, key: string): void {
   db.run(`DELETE FROM "${table}" WHERE ${pkWhere(table)}`, pkParams(table, key));
 }
 
+/** صفوفٌ في جداول المزامنة تشير إلى جدولٍ بمفتاح أجنبي · والقيد وسجل العمليات لا يُمسّان أبداً */
+function fkChildren(db: DB, parent: string): Array<{ child: string; from: string; to: string; notNull: boolean }> {
+  const out: Array<{ child: string; from: string; to: string; notNull: boolean }> = [];
+  for (const t of SYNC_TABLES) {
+    if (t.name === 'journal_entries' || t.appendOnly) continue;
+    const fks = db.all<{ table: string; from: string; to: string | null }>(`PRAGMA foreign_key_list("${t.name}")`).filter((k) => k.table === parent);
+    if (!fks.length) continue;
+    const info = db.all<{ name: string; notnull: number }>(`PRAGMA table_info("${t.name}")`);
+    for (const k of fks) {
+      out.push({ child: t.name, from: k.from, to: k.to ?? syncTable(parent)!.pkCols[0], notNull: !!info.find((c) => c.name === k.from)?.notnull });
+    }
+  }
+  return out;
+}
+
+function enqueue(db: DB, table: string, key: string, op: 'upsert' | 'delete'): void {
+  db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?,?,?,?)
+          ON CONFLICT(tbl, pk) DO UPDATE SET op = excluded.op, changed_at = excluded.changed_at`, [table, key, op, nowIso()]);
+}
+
+/**
+ * حذفٌ وارد لصفٍّ له هنا أبناء لم يعرفهم الحاذف (كُتبوا على هذا الجهاز قبل أن يصله الحذف، كدفعةٍ على عقدٍ
+ * حذفته استعادةُ نسخة على جهاز آخر): الحاذف يغلب على المستندات كما تغلب الاستعادة. فالابن الذي لا يقوم
+ * بلا أبيه (مفتاحه إليه إلزامي) يُحذف معه، والابن الذي يقوم بلا أبيه يُفكّ ربطه (دفعةٌ حُذف قسطها تبقى
+ * فائضاً على عقدها يظهر للرد) · ويُرفع ما حُذف وما فُكّ فتتطابق الأجهزة. والقيد المرحّل لا يُحذف:
+ * ما غاب مستنده يُعلَّم للمراجعة بعد اكتمال الوارد (orphans.ts).
+ */
+function deleteOverChildren(db: DB, table: string, key: string, depth = 0): void {
+  if (depth > 8) throw new Error('تسلسل أبناء أعمق من المتوقع');
+  const row = readRow(db, table, key);
+  if (!row) return;
+  for (const c of fkChildren(db, table)) {
+    const ct = syncTable(c.child)!;
+    const kids = db.all<{ k: string }>(`SELECT ${ct.pk(`"${c.child}"`)} AS k FROM "${c.child}" WHERE "${c.from}" = ?`, [row[c.to] as SqlValue]);
+    for (const kid of kids) {
+      if (c.notNull) { deleteOverChildren(db, c.child, kid.k, depth + 1); enqueue(db, c.child, kid.k, 'delete'); }
+      else { db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k)); enqueue(db, c.child, kid.k, 'upsert'); }
+    }
+  }
+  deleteRow(db, table, key);
+}
+
 type ApplyOutcome = 'applied' | 'skipped' | 'conflict-local' | 'conflict-remote' | 'retry' | 'rejected';
 
 function reject(db: DB, doc: RemoteDoc, reason: string): void {
@@ -294,7 +337,10 @@ function applyOne(
     db.transaction(() => {
       if (doc.del) {
         if (t.appendOnly) throw new Error('سجل لا يُحذف');
-        deleteRow(db, doc.t, doc.k);
+        try { deleteRow(db, doc.t, doc.k); } catch (e) {
+          if (!isMissingParent(errText(e))) throw e;
+          deleteOverChildren(db, doc.t, doc.k);
+        }
       } else if (doc.t === 'journal_entries') {
         applyJournal(db, doc, { e: cols('journal_entries'), l: cols('journal_lines') });
       } else if (t.appendOnly) {
@@ -334,6 +380,7 @@ function setApplying(db: DB, on: boolean): void {
 /** الأقساط التي يمسّ مسدَّدَها مستندٌ وارد · وحذفُ دفعةٍ أو توزيعٍ لا يُعرف قسطه فيُعاد حساب الكل */
 function markTouched(db: DB, doc: RemoteDoc, touched: Set<string>): void {
   const d = doc.d;
+  if (doc.del && (doc.t === 'contracts' || doc.t === 'contract_installments')) { touched.add(ALL_INSTALLMENTS); return; }
   if (doc.t === 'contract_installments') touched.add(doc.k);
   else if (doc.t === 'contract_payments') {
     if (!d) { touched.add(ALL_INSTALLMENTS); return; }
@@ -411,40 +458,72 @@ export function applyInbox(db: DB, deviceId: string): { applied: number; conflic
     finally { setCapture(db, wasOn); }
   }
   const waiting = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
+  // قيدٌ وصل ومستنده لا يصل (حذفته استعادة على جهاز آخر) يبقى ويُعلَّم للمراجعة (orphans.ts) ·
+  // بعد اكتمال الوارد لا قبله، فالقيد يسبق مستنده في ترتيب التطبيق
+  if ((applied || rejected) && !waiting) markOrphans(db, 'وصل بالمزامنة');
   return { applied, conflicts, rejected, waiting };
 }
 
 /* ═══════════ اعتماد نسخة مستعادة واستبدال السحابة بها ═══════════ */
 
 /**
- * ما في السحابة مقابل القاعدة بعد الاستعادة · يُقرأ والمزامنة متوقفة، قبل أن يُكتب شيء.
- * `tombstones` صفوفٌ في السحابة ليست في النسخة فتُحذف منها بشاهد حذف ·
- * و`immutable` ما لا تحذفه قواعد الأمان أصلاً: سطور سجل العمليات تُضمّ إلى النسخة (إضافةٌ لا تغيّر
- * رقماً، فلا يفترق بها جهازان) · والقيد المرحّل بعد النسخة يمنع الاعتماد (CloudReplaceBlockedError):
- * لا يُحذف من السحابة ولا يُترك فيها وحدها، فاستعادة نسخة أقدم منه تفرّق دفاتر الأجهزة.
+ * ما في السحابة: آخر حالة لكل مستند · يُقرأ مرة والمزامنة متوقفة، قبل أن يُكتب شيء.
+ * منه تُؤخذ القيود المرحّلة التي ليست في النسخة لتُضمّ إليها (keepPosted.ts)، ومنه خطة الاستبدال.
+ * المستند كاملاً لما يحتاجه الضمّ (القيود ومستندات الدفع وحركات البنك وسجل العمليات) · وغيره بمفتاحه.
+ */
+export interface CloudSnapshot {
+  /** آخر مؤشر في السحابة · المزامنة بعد الاعتماد تبدأ منه فلا تسحب ما استُبدل */
+  cursor: Cursor | null;
+  docs: RemoteDoc[];
+}
+
+/** الجداول التي يُحفظ مستندها كاملاً في اللقطة · ما يُضمّ مع القيد المرحّل */
+export const SNAPSHOT_FULL = new Set(['journal_entries', 'contract_payments', 'payment_lines', 'payment_allocations', 'bank_tx', 'audit_log',
+  'contract_installments', 'tenants']);
+
+const PLAN_PAGE = 500;
+
+export async function readCloud(remote: RemoteStore, onProgress?: (msg: string) => void): Promise<CloudSnapshot> {
+  let cursor: Cursor | null = null;
+  // الصفحات مرتبة بوقت الخادم فالأحدث يغلب
+  const last = new Map<string, RemoteDoc>();
+  for (;;) {
+    onProgress?.('جاري قراءة ما في السحابة' + (last.size ? ' · ' + last.size : ''));
+    const { docs, next } = await remote.pull(cursor, PLAN_PAGE);
+    for (const d of docs) {
+      last.set(d.id, SNAPSHOT_FULL.has(d.t) ? d : { id: d.id, t: d.t, k: d.k, u: d.u, dev: d.dev, del: d.del, d: null });
+    }
+    if (next) cursor = next;
+    if (docs.length < PLAN_PAGE) break;
+  }
+  return { cursor, docs: [...last.values()] };
+}
+
+/**
+ * ما في السحابة مقابل القاعدة · `tombstones` صفوفٌ في السحابة ليست في القاعدة فتُحذف منها بشاهد حذف ·
+ * و`immutable` ما لا تحذفه قواعد الأمان أصلاً: سطور سجل العمليات تُضمّ (إضافةٌ لا تغيّر رقماً)،
+ * والقيود المرحّلة تُضمّ إلى القاعدة قبل الاعتماد مع مستنداتها (keepPosted.ts) فلا يبقى منها شيء هنا.
  */
 export interface CloudReplacePlan {
-  /** آخر مؤشر في السحابة · المزامنة بعد الاعتماد تبدأ منه فلا تسحب ما استُبدل */
   cursor: Cursor | null;
   /** مستندات السحابة الحية · للعرض */
   cloudRows: number;
   tombstones: { t: string; k: string }[];
   immutable: { entries: number; audit: number };
-  /** سطور سجل العمليات في السحابة وليست في النسخة · تُضمّ إليها عند الاعتماد */
+  /** القيود المرحّلة في السحابة وليست في القاعدة · حزامٌ عند الاعتماد */
+  posted: string[];
+  /** سطور سجل العمليات في السحابة وليست في القاعدة · تُضمّ إليها عند الاعتماد */
   absorb: RemoteDoc[];
 }
 
-/** في السحابة قيود مرحّلة بعد النسخة · لا اعتماد */
+/** حزام: قيد مرحّل في السحابة لم يُضمّ إلى القاعدة قبل الاعتماد · لا يقع في مسار التطبيق */
 export class CloudReplaceBlockedError extends Error {
   constructor(public entries: number) {
-    super(`في السحابة ${entries} قيد مرحّل ليس في هذه النسخة (رُحّل بعد تاريخها من هذا الجهاز أو غيره) · `
-      + 'القيد المرحّل لا يُحذف من السحابة، واستبدالها بنسخة أقدم منه يفرّق دفاتر الأجهزة · '
-      + 'استعد نسخةً أحدث منه، أو ألغِ الاستعادة');
+    super(`في السحابة ${entries} قيد مرحّل ليس في بيانات هذا الجهاز · القيد المرحّل لا يُحذف، `
+      + 'فيُضمّ قبل الاعتماد · أعد الاستعادة أو الاعتماد ليُضمّ');
     this.name = 'CloudReplaceBlockedError';
   }
 }
-
-const PLAN_PAGE = 500;
 
 /** صف السحابة موجود في القاعدة المحلية؟ · بمفتاحه الأساسي */
 function existsLocally(db: DB, t: string, k: string): boolean {
@@ -452,34 +531,27 @@ function existsLocally(db: DB, t: string, k: string): boolean {
   return !!db.get(`SELECT 1 FROM "${t}" WHERE ${pkWhere(t)}`, pkParams(t, k));
 }
 
-export async function planCloudReplace(
-  db: DB, remote: RemoteStore, onProgress?: (msg: string) => void
-): Promise<CloudReplacePlan> {
-  let cursor: Cursor | null = null;
+export function planFromSnapshot(db: DB, snap: CloudSnapshot): CloudReplacePlan {
   let cloudRows = 0;
-  // آخر حالة لكل مستند · الصفحات مرتبة بوقت الخادم فالأحدث يغلب
-  const last = new Map<string, { t: string; k: string; del: boolean; posted: boolean; doc: RemoteDoc | null }>();
-  for (;;) {
-    onProgress?.('جاري قراءة ما في السحابة' + (last.size ? ' · ' + last.size : ''));
-    const { docs, next } = await remote.pull(cursor, PLAN_PAGE);
-    for (const d of docs) {
-      last.set(d.id, { t: d.t, k: d.k, del: d.del, posted: d.t === 'journal_entries' && d.d?.status === 'مرحّل', doc: d.t === 'audit_log' ? d : null });
-    }
-    if (next) cursor = next;
-    if (docs.length < PLAN_PAGE) break;
-  }
   const tombstones: { t: string; k: string }[] = [];
   const immutable = { entries: 0, audit: 0 };
+  const posted: string[] = [];
   const absorb: RemoteDoc[] = [];
-  for (const d of last.values()) {
+  for (const d of snap.docs) {
     if (d.del) continue;
     cloudRows++;
     if (existsLocally(db, d.t, d.k)) continue;
-    if (d.t === 'audit_log') { immutable.audit++; if (d.doc) absorb.push(d.doc); }
-    else if (d.posted) immutable.entries++;
+    if (d.t === 'audit_log') { immutable.audit++; absorb.push(d); }
+    else if (d.t === 'journal_entries' && d.d?.status === 'مرحّل') { immutable.entries++; posted.push(d.k); }
     else tombstones.push({ t: d.t, k: d.k });
   }
-  return { cursor, cloudRows, tombstones, immutable, absorb };
+  return { cursor: snap.cursor, cloudRows, tombstones, immutable, posted, absorb };
+}
+
+export async function planCloudReplace(
+  db: DB, remote: RemoteStore, onProgress?: (msg: string) => void
+): Promise<CloudReplacePlan> {
+  return planFromSnapshot(db, await readCloud(remote, onProgress));
 }
 
 /**
@@ -488,7 +560,9 @@ export async function planCloudReplace(
  * القديم فوقها. لا كتابة إلى السحابة هنا · الرفع في دورة المزامنة التالية بعد الاعتماد.
  */
 export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan): { queued: number } {
-  if (plan.immutable.entries > 0) throw new CloudReplaceBlockedError(plan.immutable.entries);
+  // حزام: القيود المرحّلة في السحابة تُضمّ قبل هذه الخطوة (keepPosted.ts) · فما بقي منها خارج القاعدة يمنع
+  const missing = plan.posted.filter((k) => !existsLocally(db, 'journal_entries', k)).length;
+  if (missing > 0) throw new CloudReplaceBlockedError(missing);
   return db.transaction(() => {
     const at = nowIso();
     setCapture(db, false);
@@ -512,7 +586,8 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan): 
         `INSERT INTO sync_outbox (tbl, pk, op, changed_at)
          SELECT '${t.name}', ${t.pk(t.name)}, 'upsert', ? FROM "${t.name}" WHERE true`, [at]);
     }
-    for (const x of plan.tombstones) {
+    // ما ضُمّ بعد قراءة الخطة (دفعةٌ حُملت مع قيدها) لا يُحذف من السحابة
+    for (const x of plan.tombstones.filter((y) => !existsLocally(db, y.t, y.k))) {
       db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?,?, 'delete', ?)
               ON CONFLICT(tbl, pk) DO UPDATE SET op = 'delete', changed_at = excluded.changed_at`, [x.t, x.k, at]);
     }

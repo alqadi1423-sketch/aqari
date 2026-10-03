@@ -127,21 +127,22 @@ export function cancelPayment(db: DB, paymentId: string, input: { date?: string;
   db.transaction(() => {
     // ١) القيود بمرآتها بتاريخ الإلغاء · قيد الدفعة أولاً ثم خصمها
     let cancelEntry: string | null = null;
+    let cancelNo = '';
     for (const e of plan.entries) {
       const rev = reverseEntryById(db, e.id, 'إلغاء دفعة · ' + plan.tenant + ' · ' + reason, date);
-      if (e.id === p.journal_entry_id && rev) cancelEntry = rev.id;
+      if (e.id === p.journal_entry_id && rev) { cancelEntry = rev.id; cancelNo = rev.no; }
     }
     // ٣) التنزيل من القسط يرجع إلى مبلغه
     if (plan.restoreAmount) {
       db.run(`UPDATE contract_installments SET amount_halalas = amount_halalas + ? WHERE id = ?`,
         [plan.restoreAmount.by, plan.restoreAmount.installmentId]);
     }
-    // ٤) البنك بحركة سالبة · والرصيد الدائن
+    // ٤) البنك بحركة سالبة مربوطة بالقيد العكسي · والرصيد الدائن
     for (const b of plan.bank) {
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
-         VALUES (?,?,?,?,?,1,'',?,?)`,
-        [uid(), b.bankId, date, 'إلغاء دفعة إيجار · ' + plan.tenant, -b.amount, 'إلغاء دفعة إيجار', new Date().toISOString()]);
+         VALUES (?,?,?,?,?,1,?,?,?)`,
+        [uid(), b.bankId, date, 'إلغاء دفعة إيجار · ' + plan.tenant, -b.amount, cancelNo, 'إلغاء دفعة إيجار', new Date().toISOString()]);
     }
     if (plan.creditReversal > 0) {
       db.run(`UPDATE tenants SET credit_halalas = credit_halalas - ?

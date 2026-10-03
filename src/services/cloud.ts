@@ -19,16 +19,17 @@ import { createSession, type Session, type SessionUser } from '../cloud/session'
 import { FirestoreRemote } from '../cloud/firestore';
 import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, type DriveBackup, type DriveIO } from '../cloud/drive';
 import {
-  enableSync, syncOnce, syncStatus, setSyncState, getSyncState, planCloudReplace, adoptAsCloudTruth, syncBackoffUntil,
-  type SyncStatus, type CloudReplacePlan,
+  enableSync, syncOnce, syncStatus, setSyncState, getSyncState, planCloudReplace, adoptAsCloudTruth, readCloud, planFromSnapshot, syncBackoffUntil,
+  type SyncStatus, type CloudReplacePlan, type CloudSnapshot,
 } from '../sync/engine';
 import type { DB } from '../db/adapter';
 import { ensureDeviceId } from '../db/seed';
 import { expoHasher } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { createBackup, ensureFreeSpace } from '../domain/backup/create';
-import { prepareRestore, type RestorePlan } from '../domain/backup/restore';
+import { prepareRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
 import type { BackupEnv } from '../domain/backup/types';
+import { planKeepPosted, applyKeepPosted, type KeepPlan } from '../domain/backup/keepPosted';
 import { toLocalISODate } from '../domain/dates';
 import { appBackupEnv } from './backupService';
 
@@ -220,9 +221,13 @@ function remoteFor(): FirestoreRemote {
   return new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.idToken() });
 }
 
-/** قراءة ما في السحابة مقابل القاعدة المعطاة · والمزامنة متوقفة · بلا كتابة */
-export async function planReplaceCloud(db: DB, onProgress?: (m: string) => void): Promise<CloudReplacePlan> {
-  return planCloudReplace(db, remoteFor(), onProgress);
+/** لقطة ما في السحابة · تُقرأ مرة والمزامنة متوقفة، فتخدم ضمّ القيود المرحّلة وخطة الاستبدال معاً */
+export async function readCloudSnapshot(onProgress?: (m: string) => void): Promise<CloudSnapshot> {
+  return readCloud(remoteFor(), onProgress);
+}
+
+export function planReplaceFromSnapshot(db: DB, snap: CloudSnapshot): CloudReplacePlan {
+  return planFromSnapshot(db, snap);
 }
 
 /**
@@ -237,6 +242,25 @@ export async function adoptForCloud(
   const res = adoptAsCloudTruth(db, state.user!.uid, plan);
   patch({ sync: syncStatus(db), lastError: null });
   return { ...res, plan };
+}
+
+/**
+ * نسخةٌ استُعيدت خارج الحساب ثم دخل: القيود المرحّلة في السحابة وليست على الجهاز تُضمّ قبل الاعتماد
+ * (القيد المرحّل لا يُحذف) · قراءة فقط هنا، والضمّ بعد التأكيد
+ */
+export async function planAdoptPending(
+  db: AppDB, onProgress?: (m: string) => void
+): Promise<{ snap: CloudSnapshot; keep: KeepPlan; plan: CloudReplacePlan }> {
+  const snap = await readCloud(remoteFor(), onProgress);
+  return { snap, keep: planKeepPosted(db, { cloud: snap.docs }), plan: planFromSnapshot(db, snap) };
+}
+
+export async function adoptPendingWithKeep(
+  db: AppDB, ready: { snap: CloudSnapshot; keep: KeepPlan }
+): Promise<{ queued: number; kept: number }> {
+  const kept = ready.keep.entries.length ? applyKeepPosted(db, ready.keep).entries.length : 0;
+  const { queued } = await adoptForCloud(db, planFromSnapshot(db, ready.snap));
+  return { queued, kept };
 }
 
 /** الخروج: الرموز وحدها تُمسح · بياناتك على الجهاز كما هي والتقاط التغييرات مستمر لحين العودة */
@@ -295,7 +319,7 @@ export async function listBackupsOnDrive(): Promise<DriveBackup[]> {
  * الفك والبصمات والفحص الدلالي والملخص · والتنفيذ بعدها هو تنفيذ الاستعادة المحلية حرفاً بحرف.
  */
 export async function prepareRestoreFromDrive(
-  db: AppDB, b: DriveBackup, onProgress?: (m: string) => void
+  db: AppDB, b: DriveBackup, onProgress?: (m: string) => void, opts?: PrepareOptions
 ): Promise<{ env: BackupEnv; plan: RestorePlan; archiveTmp: string }> {
   const env = appBackupEnv(db);
   // القرص يسع العملية قبل أن يبدأ التنزيل · كما في الاستعادة من ملف
@@ -305,7 +329,7 @@ export async function prepareRestoreFromDrive(
   onProgress?.('جاري التنزيل من Google Drive');
   await downloadBackupFromDrive(driveIO, await driveToken(), b, archiveTmp);
   try {
-    const plan = await prepareRestore(env, archiveTmp, onProgress);
+    const plan = await prepareRestore(env, archiveTmp, onProgress, opts);
     return { env, plan, archiveTmp };
   } catch (e) {
     try { env.fs.remove(archiveTmp); } catch { /* يكنسه الإقلاع */ }

@@ -7,6 +7,7 @@
  *  - عمولة تقبيل ← «إلغاء التقبيل»: تُعكس وحركة بنكها، والصفقة تدخل السلة.
  *  - استرداد ضريبة أو رفضه ← «إلغاء الاسترداد»: يُعكس وترجع الفاتورة «لم يُطلب».
  *  - ردّ فائض أو تحويله رصيداً ← «إلغاء الرد»: يُعكس، وحركة البنك بمثلها، والرصيد الدائن يُطرح إن لم يُستعمل.
+ *  - قيدٌ غاب مستنده (بقي بعد استعادة · orphans.ts) ← «عكس القيد»: لا مستند يُلغى منه.
  *  - وما له عملية في شاشة مستنده (فاتورة · مشتريات · مطالبة · تأمين · حجز) يُفتح مستنده ليُلغى منه.
  * كلٌّ ذرّي بتاريخ وسبب، وفي سجل العمليات · والقيد اليدوي يُعكس من الدفتر كما هو.
  */
@@ -18,6 +19,7 @@ import { walletCashBalance } from './ledger';
 import { RuleViolation } from '../contracts/service';
 import { DISCOUNT_ENTRY_SRC } from '../contracts/installments';
 import { fmt } from '../money';
+import { isOrphanEntry } from './orphans';
 
 export type SourceAction =
   | { kind: 'payment'; paymentId: string }
@@ -35,17 +37,19 @@ const net = (db: DB, entryId: string, account: string) => Number(db.get<{ s: num
   `SELECT COALESCE(SUM(debit_halalas - credit_halalas), 0) AS s FROM journal_lines WHERE entry_id = ? AND account_code = ?`,
   [entryId, account])!.s);
 
-/** حركات البنك المربوطة بالقيد برقمه · تُعكس بمثلها */
-function reverseBankTx(db: DB, entryNo: string, date: string, descr: string): void {
+/** حركات البنك المربوطة بالقيد برقمه · تُعكس بمثلها مربوطةً برقم القيد العكسي، فتُحمل معه إن بقي بعد استعادة */
+function reverseBankTx(db: DB, entryNo: string, revNo: string, date: string, descr: string): void {
   for (const t of db.all<{ bank_id: string; amount: number }>(
     `SELECT bank_id, amount_halalas AS amount FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL`, [entryNo])) {
     db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
-            VALUES (?,?,?,?,?,1,'',?,?)`, [uid(), t.bank_id, date, descr, -Number(t.amount), descr, new Date().toISOString()]);
+            VALUES (?,?,?,?,?,1,?,?,?)`, [uid(), t.bank_id, date, descr, -Number(t.amount), revNo, descr, new Date().toISOString()]);
   }
 }
 
-function reverse(db: DB, e: EntryRow, date: string, memo: string): void {
-  if (!reverseEntryById(db, e.id, memo, date)) throw new RuleViolation('القيد ' + e.no + ' معكوس من قبل');
+function reverse(db: DB, e: EntryRow, date: string, memo: string): string {
+  const rev = reverseEntryById(db, e.id, memo, date);
+  if (!rev) throw new RuleViolation('القيد ' + e.no + ' معكوس من قبل');
+  return rev.no;
 }
 
 export function entrySourceAction(db: DB, entryId: string): SourceAction {
@@ -62,6 +66,15 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
       if (blockers.length) throw new RuleViolation(blockers.join(' · '));
       db.transaction(() => run(date, reason.trim()));
     } });
+
+  if (isOrphanEntry(db, e.id)) {
+    const cashIn = net(db, e.id, '1100');
+    const blockers = cashIn > 0 && walletCashBalance(db) < cashIn ? ['النقد في المحفظة (' + fmt(walletCashBalance(db)) + ') لا يكفي لعكس ' + fmt(cashIn)] : [];
+    return op('عكس القيد', ['يُعكس القيد ' + e.no + ' · مستنده ليس في البيانات فلا مستند يُلغى منه'], blockers, (date, reason) => {
+      reverse(db, e, date, 'عكس قيد بلا مستند · ' + reason);
+      logAudit(db, 'الدفتر', 'update', 'عكس قيد بلا مستند', e.no + ' · ' + reason);
+    });
+  }
 
   if (e.src_type === DISCOUNT_ENTRY_SRC) {
     const amount = net(db, e.id, '4900');
@@ -85,8 +98,8 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
 
   if (e.src_type === 'key_money') {
     return op('إلغاء التقبيل', ['يُعكس قيد العمولة ' + e.no, 'وحركة البنك بمثلها إن كانت', 'والصفقة تدخل سلة المحذوفات'], [], (date, reason) => {
-      reverse(db, e, date, 'إلغاء تقبيل · ' + reason);
-      reverseBankTx(db, e.no, date, 'إلغاء عمولة تقبيل');
+      const revNo = reverse(db, e, date, 'إلغاء تقبيل · ' + reason);
+      reverseBankTx(db, e.no, revNo, date, 'إلغاء عمولة تقبيل');
       db.run(`UPDATE key_money_deals SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), e.src_id]);
       logAudit(db, 'العقارات', 'delete', 'إلغاء تقبيل', e.no + ' · ' + reason);
     });
@@ -107,8 +120,8 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
     const blockers = credit > 0 && (!tenant || Number(tenant.c) < credit) ? ['الرصيد الدائن المحوَّل استُعمل منه · فلا يُطرح كاملاً'] : [];
     return op('إلغاء الرد', ['يُعكس القيد ' + e.no, credit > 0 ? 'ويُطرح ' + fmt(credit) + ' من رصيد المستأجر الدائن' : 'وحركة البنك بمثلها إن كانت', 'ويعود الفائض ظاهراً'],
       blockers, (date, reason) => {
-        reverse(db, e, date, 'إلغاء ردّ فائض · ' + reason);
-        reverseBankTx(db, e.no, date, 'إلغاء ردّ فائض');
+        const revNo = reverse(db, e, date, 'إلغاء ردّ فائض · ' + reason);
+        reverseBankTx(db, e.no, revNo, date, 'إلغاء ردّ فائض');
         if (credit > 0 && tenant) db.run(`UPDATE tenants SET credit_halalas = credit_halalas - ? WHERE id = ?`, [credit, tenant.id]);
         logAudit(db, 'التحصيل', 'update', 'إلغاء ردّ فائض', e.no + ' · ' + reason);
       });
