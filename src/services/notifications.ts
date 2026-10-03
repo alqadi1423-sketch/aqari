@@ -17,6 +17,22 @@ Notifications.setNotificationHandler({
   }),
 });
 
+/**
+ * قناة التذكيرات بخصوصية شاشة القفل · المحتوى يُخفى على القفل الآمن حين يطلب النظام ذلك ·
+ * ونصّ التنبيه نفسه بلا اسم مستأجر (reminders.ts) فلا يكشف أحداً ولو عُرض كاملاً.
+ */
+const CHANNEL = 'reminders';
+async function ensureChannel(): Promise<void> {
+  try {
+    await Notifications.setNotificationChannelAsync(CHANNEL, {
+      name: 'التذكيرات',
+      importance: Notifications.AndroidImportance.DEFAULT,
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
+      sound: null,
+    });
+  } catch { /* منصة بلا قنوات */ }
+}
+
 export async function ensurePermission(): Promise<boolean> {
   try {
     const cur = await Notifications.getPermissionsAsync();
@@ -37,6 +53,7 @@ const WEEKLY_ID = 'weekly-export-reminder';
 export async function rescheduleAllNotifications(db: DB): Promise<void> {
   const ok = await ensurePermission();
   if (!ok) return;
+  await ensureChannel();
   await Notifications.cancelAllScheduledNotificationsAsync();
   db.transaction(() => {
     db.run(`DELETE FROM scheduled_notifications`);
@@ -51,7 +68,7 @@ export async function rescheduleAllNotifications(db: DB): Promise<void> {
     try {
       const osId = await Notifications.scheduleNotificationAsync({
         content: { title: s.title, body: s.body },
-        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: when },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: when, channelId: CHANNEL },
       });
       db.run(
         `INSERT INTO scheduled_notifications (id, kind, entity_id, fire_at, os_id) VALUES (?,?,?,?,?)`,
@@ -74,6 +91,7 @@ export async function rescheduleAllNotifications(db: DB): Promise<void> {
           weekday: 6, // الجمعة
           hour: 10,
           minute: 0,
+          channelId: CHANNEL,
         },
       });
       db.run(

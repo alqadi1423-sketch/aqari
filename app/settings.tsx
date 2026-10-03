@@ -46,6 +46,7 @@ import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orpha
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
 import { EntrySheet } from '../src/ui/EntrySheet';
+import { LEAFLET_VERSION, LEAFLET_LICENSE } from '../src/ui/leafletBundle';
 import { getBackupPassword, setBackupPassword, clearBackupPassword, MIN_PASSWORD } from '../src/services/backupPassword';
 import { PasswordRequiredError } from '../src/domain/backup/encryption';
 import { pinWidget } from '../src/services/intents';
@@ -800,6 +801,9 @@ export default function Settings() {
             <Num size={TYPE.body} bold>{v}</Num>
           </Row>
         ))}
+        <T size={TYPE.caption} color={C.muted} style={{ marginTop: 6, marginBottom: 8 }}>
+          {'مكتبات مفتوحة المصدر مضمّنة: الخريطة Leaflet ' + LEAFLET_VERSION + ' · ' + LEAFLET_LICENSE + ' · صور الخريطة © مساهمو OpenStreetMap'}
+        </T>
         {cloud.user ? (
           <Note tone="ok">بياناتك على هذا الجهاز أولاً وتُزامَن مع حسابك ({cloud.user.email}) · لا يقرؤها ولا يكتبها غيرك.</Note>
         ) : (

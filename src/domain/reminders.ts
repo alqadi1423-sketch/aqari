@@ -111,9 +111,13 @@ export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[
     return `${y}-${m}-${dd}`;
   };
 
-  const insts = db.all<{ id: string; due_date: string; amount_halalas: number; paid_halalas: number; tenant_name: string }>(
-    `SELECT i.id, i.due_date, i.amount_halalas, i.paid_halalas, c.tenant_name
+  // التنبيه يظهر على شاشة القفل · فلا اسم مستأجر فيه (القرار ٧): الوحدة وعقارها يدلّان ولا يكشفان أحداً
+  const place = (u: string | null, p: string | null, no: string | null) =>
+    u ? 'وحدة ' + u + (p ? ' · ' + p : '') : (no || 'عقد');
+  const insts = db.all<{ id: string; due_date: string; amount_halalas: number; paid_halalas: number; unit_no: string | null; prop: string | null; contract_no: string | null }>(
+    `SELECT i.id, i.due_date, i.amount_halalas, i.paid_halalas, u.unit_no, p.name AS prop, c.contract_no
      FROM contract_installments i JOIN contracts c ON c.id = i.contract_id
+     LEFT JOIN units u ON u.id = c.unit_id LEFT JOIN properties p ON p.id = u.property_id
      WHERE c.status NOT IN ('مسودة','ملغى') AND c.deleted_at IS NULL AND i.status != 'ملغية'
        AND i.due_date >= ?`,
     [T]
@@ -124,12 +128,13 @@ export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[
     if (fire >= T)
       out.push({
         kind: 'payment', entityId: i.id, fireDate: fire,
-        title: 'دفعة تقترب', body: i.tenant_name + ' · تستحق ' + dfmt(i.due_date),
+        title: 'دفعة تقترب', body: place(i.unit_no, i.prop, i.contract_no) + ' · تستحق ' + dfmt(i.due_date),
       });
   }
-  const cs = db.all<{ id: string; contract_no: string | null; end: string; tenant_name: string }>(
-    `SELECT id, contract_no, end, tenant_name FROM contracts
-     WHERE status NOT IN ('مسودة','ملغى') AND deleted_at IS NULL AND end >= ?`,
+  const cs = db.all<{ id: string; contract_no: string | null; end: string; unit_no: string | null; prop: string | null }>(
+    `SELECT c.id, c.contract_no, c.end, u.unit_no, p.name AS prop FROM contracts c
+     LEFT JOIN units u ON u.id = c.unit_id LEFT JOIN properties p ON p.id = u.property_id
+     WHERE c.status NOT IN ('مسودة','ملغى') AND c.deleted_at IS NULL AND c.end >= ?`,
     [T]
   );
   for (const c of cs) {
@@ -137,7 +142,7 @@ export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[
     if (fire >= T)
       out.push({
         kind: 'contract', entityId: c.id, fireDate: fire,
-        title: 'عقد يقارب الانتهاء', body: (c.contract_no || 'لا يوجد') + ' · ' + c.tenant_name + ' ينتهي ' + dfmt(c.end),
+        title: 'عقد يقارب الانتهاء', body: place(c.unit_no, c.prop, c.contract_no) + ' · ينتهي ' + dfmt(c.end),
       });
   }
   const docs = db.all<{ id: string; name: string; expiry: string }>(

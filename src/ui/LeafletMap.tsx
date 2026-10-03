@@ -1,8 +1,8 @@
 /**
  * خريطة Leaflet داخل WebView · نفس محرك النموذج الأصلي (OSM، بلا مفاتيح API).
  * وضعان: عرض دبابيس بحلقة إشغال ملوّنة مع تجميع عند التصغير، والتقاط موقع بالنقر.
- * والمكتبة والبلاطات تُحمَّلان من الشبكة، فانقطاعها يعرض رسالة عربية وزر إعادة محاولة
- * لا شاشة رمادية صامتة.
+ * المكتبة مضمّنة في التطبيق (leafletBundle.ts) فتعمل الخريطة بلا اتصال: الدبابيس والتجميع والتقاط الموقع ·
+ * والبلاطات (صور الخريطة) وحدها من الشبكة، فانقطاعها يعرض شريطاً عربياً فوق الدبابيس لا شاشة رمادية صامتة.
  */
 import React, { useContext, useMemo, useState } from 'react';
 import { View } from 'react-native';
@@ -10,6 +10,7 @@ import { WebView } from 'react-native-webview';
 import { SheetScrollCtx } from './Sheet';
 import { T, BtnGhost } from './components';
 import { C, TYPE } from './theme';
+import { LEAFLET_JS, LEAFLET_CSS } from './leafletBundle';
 
 export interface MapMarker {
   /** معرّف يُعاد عند الضغط على الدبوس (لفتح بطاقته) */
@@ -66,8 +67,8 @@ function buildHtml(opts: {
 
   return `<!DOCTYPE html><html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>${LEAFLET_CSS}</style>
+<script>${LEAFLET_JS}</script>
 <style>
   html,body,#map{margin:0;padding:0;height:100%;width:100%}
   body{font-family:'Segoe UI',Tahoma,sans-serif;background:#F6F4EE}
@@ -84,9 +85,9 @@ function buildHtml(opts: {
     font-weight:700;color:#10192E;white-space:nowrap;margin-top:3px;box-shadow:0 1px 3px rgba(0,0,0,.15)}
 </style>
 </head><body>
-<div id="banner">تعذّر تحميل بلاطات الخريطة · تحقّق من اتصالك بالإنترنت</div>
+<div id="banner">صور الخريطة تحتاج اتصالاً بالإنترنت · الدبابيس تعمل بدونه</div>
 <div id="map"></div>
-<div id="offline">تعذّر تحميل الخريطة<br>الخريطة تحتاج اتصالاً بالإنترنت لتحميل بلاطاتها ومكتبتها</div>
+<div id="offline">تعذّر تشغيل الخريطة</div>
 <script>
   var RN = window.ReactNativeWebView;
   function post(o){ try { if (RN) RN.postMessage(JSON.stringify(o)); } catch (e) { /* لا شيء */ } }
@@ -205,7 +206,7 @@ export function LeafletMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [JSON.stringify(markers), c.lat, c.lng, zoom, pickable, pin?.lat, pin?.lng]
   );
-  // حالة الشبكة كما تبلّغها الصفحة · nolib: لم تصل المكتبة · notiles: لم تصل البلاطات
+  // حال الصفحة كما تبلّغها · nolib: لم تعمل المكتبة (مضمّنة، فلا يقع إلا بعطل في العرض) · notiles: لم تصل صور الخريطة
   const [fault, setFault] = useState<'nolib' | 'notiles' | null>(null);
   const [attempt, setAttempt] = useState(0);
   // داخل نافذة سفلية: لمس الخريطة يثبّت الصفحة حتى يرفع الإصبع · فالسحب يحرّك الخريطة لا النافذة
@@ -241,7 +242,7 @@ export function LeafletMap({
           alignItems: 'center', justifyContent: 'center', padding: 22, gap: 12,
         }}>
           <T size={TYPE.body} center color={C.charcoal}>
-            تعذّر تحميل الخريطة · تحتاج اتصالاً بالإنترنت لتحميل بلاطاتها ومكتبتها
+            تعذّر تشغيل الخريطة
           </T>
           <BtnGhost small icon="reload" title="إعادة المحاولة"
             onPress={() => { setFault(null); setAttempt((a) => a + 1); }} />
