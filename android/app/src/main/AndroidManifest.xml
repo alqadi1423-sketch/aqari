@@ -45,20 +45,9 @@
         <data android:scheme="aqari"/>
       </intent-filter>
     </activity>
-    <activity android:name=".PinWidgetActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true">
-      <intent-filter>
-        <action android:name="android.intent.action.VIEW"/>
-        <category android:name="android.intent.category.DEFAULT"/>
-        <data android:scheme="aqariwidget"/>
-      </intent-filter>
-    </activity>
-    <activity android:name=".SaveErrorLogActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true">
-      <intent-filter>
-        <action android:name="android.intent.action.VIEW"/>
-        <category android:name="android.intent.category.DEFAULT"/>
-        <data android:scheme="aqarilog"/>
-      </intent-filter>
-    </activity>
+    <!-- داخليتان لا غير · تناديهما AqariIntents.kt بقصد صريح، فلا مرشّح قصد ولا كشف -->
+    <activity android:name=".PinWidgetActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true"/>
+    <activity android:name=".SaveErrorLogActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true"/>
     <receiver android:name=".TodayStripWidget" android:exported="false">
       <intent-filter>
         <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>

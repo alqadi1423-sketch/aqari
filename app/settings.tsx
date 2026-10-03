@@ -3,7 +3,7 @@
  * ثم البيانات ثم النظام · وكل إعداد في الشاشة يسكن مجموعته.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Platform, Modal, Linking } from 'react-native';
+import { View, Platform, Modal } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
 import { Screen } from '../src/ui/Screen';
@@ -40,6 +40,7 @@ import {
   restoreAwaitingAdoption,
 } from '../src/services/cloud';
 import type { CloudReplacePlan } from '../src/sync/engine';
+import { pinWidget } from '../src/services/intents';
 import type { DriveBackup } from '../src/cloud/drive';
 import { dfmt, toLocalISODate, today } from '../src/domain/dates';
 
@@ -693,11 +694,11 @@ export default function Settings() {
         {/* أندرويد وحده يسمح بتثبيت الودجت من داخل التطبيق · وغيره لا يعرض الصفّ */}
         <Note>ضع رقمك على شاشة جوالك · الودجت تقرأ لقطةً يكتبها التطبيق ولا تفتح بياناتك.</Note>
         <SetRow icon="collect" title="شريط اليوم · كم متأخرة وبكم"
-          onPress={() => { Linking.openURL('aqariwidget://pin/strip').catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
+          onPress={() => { pinWidget('strip').catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
         <SetRow icon="chart" title="لوحة التحصيل · المحصَّل من المستحق"
-          onPress={() => { Linking.openURL('aqariwidget://pin/panel').catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
+          onPress={() => { pinWidget('panel').catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
         <SetRow icon="menu" title="أزرار سريعة · تحصيل وفاتورة ومطالبة"
-          onPress={() => { Linking.openURL('aqariwidget://pin/actions').catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
+          onPress={() => { pinWidget('actions').catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
 
         <Sub>قياس الأداء</Sub>
         <SetRow icon="chart" title="أزمنة التنقل والاستعلامات على جهازك" onPress={() => router.push('/perf' as never)} />

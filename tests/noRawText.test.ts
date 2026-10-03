@@ -15,6 +15,8 @@ const ALLOWED = new Set([
   'src/ui/Screen.tsx',
   'src/ui/ActionMenu.tsx',
   'src/ui/DateField.tsx',
+  // تُرسم قبل مزوّد الحالة (نسخة ما قبل الترقية) · وT يقرأ مقياس الخط منه فلا يعمل هناك
+  'src/ui/UpgradeGate.tsx',
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {

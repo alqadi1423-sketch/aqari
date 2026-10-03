@@ -23,6 +23,8 @@ class MainApplication : Application(), ReactApplication {
         PackageList(this).packages.apply {
           // Packages that cannot be autolinked yet can be added manually here, for example:
           // add(MyReactNativePackage())
+          // الشاشتان الداخليتان بقصد صريح · انظر AqariIntents.kt
+          add(AqariIntentsPackage())
         }
     )
   }

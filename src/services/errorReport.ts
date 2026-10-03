@@ -5,7 +5,8 @@
  * أضعافاً · فيضيع الموضع الذي وقع فيه العطل وهو أنفع ما في التقرير كلّه. فيُكتب
  * الأثر كاملاً في مجلد التنزيلات باسمٍ يحمل تاريخه، ويبقى نصّه في الحافظة بزرّ.
  */
-import { Linking, Platform } from 'react-native';
+import { Platform } from 'react-native';
+import { saveErrorLogNative } from './intents';
 import { appDataRoot, expoFs } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { redactForReport } from '../domain/redact';
@@ -50,7 +51,7 @@ export async function saveErrorReport(where: string, e: unknown): Promise<string
     const dir = joinPath(appDataRoot(), 'tmp');
     expoFs.mkdirp(dir);
     expoFs.write(joinPath(dir, name), enc.encode(errorReportText(where, e, at)));
-    await Linking.openURL('aqarilog://save/' + encodeURIComponent(name));
+    await saveErrorLogNative(name);
     return name;
   } catch {
     return '';
