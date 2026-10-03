@@ -5,7 +5,10 @@
 import type { DB } from '../../db/adapter';
 import { uid } from '../ids';
 import { today } from '../dates';
-import { generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentStoredStatus } from './installments';
+import {
+  generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentStoredStatus,
+  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind,
+} from './installments';
 import {
   validateConfirmedContract,
   nextContractNo,
@@ -404,8 +407,12 @@ export interface RentPaymentInput {
   installmentId?: string | null;
   period: string;
   date: string;
+  /** طرق السداد بالمقبوض فعلاً · مجموعها هو النقد الداخل */
   lines: RentPaymentLine[];
+  /** الخصم فوق المقبوض · يغطي المقبوضُ معه من القسط */
   discountHalalas: number;
+  /** نوع الخصم · لازم متى كان فيه خصم، ولا يُفترض أحدهما */
+  discountKind?: DiscountKind | null;
   notes: string;
 }
 
@@ -420,12 +427,16 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
     if (l.method !== 'cash' && !l.bankId)
       throw new RuleViolation('اختر الحساب البنكي الذي يستقر فيه المبلغ (' + PAY_METHOD_LABEL[l.method] + ')، أو بدِّل الطريقة لنقداً');
   }
-  // لا دفعة ولا خصم يتجاوز المتبقي على القسط · المدفوع يستهلك صافيه وخصمه معاً من المتبقي
-  const grossIn = rawLines.reduce((s, l) => s + l.amountHalalas, 0);
+  // طرق السداد بالمقبوض فعلاً والخصم فوقه · والمقبوض مع الخصم لا يتجاوز المتبقي على القسط
+  const received = rawLines.reduce((s, l) => s + l.amountHalalas, 0);
   const discountIn = input.discountHalalas || 0;
   if (discountIn < 0) throw new RuleViolation('الخصم لا يكون سالباً');
-  if (discountIn > grossIn)
-    throw new RuleViolation(`الخصم (${fmt(discountIn)}) أكبر من المبلغ المدخل (${fmt(grossIn)})`);
+  const kind = discountIn > 0 ? input.discountKind ?? null : null;
+  if (discountIn > 0 && !kind)
+    throw new RuleViolation('حدّد نوع الخصم: خصم بعد الاستحقاق أو تنزيل من قيمة القسط');
+  if (kind && !DISCOUNT_KINDS.includes(kind)) throw new RuleViolation('نوع خصم غير معروف');
+  if (kind === DISCOUNT_REDUCES_INSTALLMENT && !input.installmentId)
+    throw new RuleViolation('التنزيل من قيمة القسط يحتاج قسطاً محدداً');
   if (input.installmentId) {
     const cur = db.get<{ amount_halalas: number; paid_halalas: number; discount: number }>(
       `SELECT i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount
@@ -435,13 +446,13 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
     if (!cur) throw new RuleViolation('القسط غير موجود على هذا العقد');
     const remaining = installmentRemaining(Number(cur.amount_halalas), Number(cur.paid_halalas), Number(cur.discount));
     if (remaining <= 0) throw new RuleViolation('القسط مسدَّد بالكامل · لا متبقّي عليه');
-    if (grossIn > remaining)
-      throw new RuleViolation(`المبلغ مع الخصم (${fmt(grossIn)}) يتجاوز المتبقي على القسط (${fmt(remaining)})`);
+    if (received + discountIn > remaining)
+      throw new RuleViolation(`المقبوض مع الخصم (${fmt(received + discountIn)}) يتجاوز المتبقي على القسط (${fmt(remaining)})`);
   }
   return db.transaction(() => {
-    const gross = grossIn;
+    const net = received;
     const discount = discountIn;
-    const net = gross - discount;
+    const gross = net + discount;
     const date = input.date || today();
     const bankNames = db.all<{ id: string; name: string }>(
       `SELECT id, name FROM banks WHERE deleted_at IS NULL`
@@ -451,19 +462,28 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
       .map((l) => (l.method === 'cash' ? 'نقداً' : PAY_METHOD_LABEL[l.method] + ' · ' + bankName(l.bankId)))
       .join(' + ');
 
+    // تنزيل من القسط: القسط نفسه يُخفَّض أولاً · فالإيراد بالمخفَّض ولا سطر خصم، والعقد كما هو
+    if (kind === DISCOUNT_REDUCES_INSTALLMENT) {
+      const before = Number(db.get<{ a: number }>(`SELECT amount_halalas AS a FROM contract_installments WHERE id = ?`, [input.installmentId!])!.a);
+      db.run(`UPDATE contract_installments SET amount_halalas = ? WHERE id = ?`, [before - discount, input.installmentId!]);
+      logAudit(db, 'التحصيل', 'update', 'تنزيل من قيمة القسط',
+        c.tenant_name + ' · عقد ' + (c.contract_no || 'لا يوجد') + ' · ' + fmt(discount) + ' · يخالف قيمة العقد الموثّقة في منصة إيجار',
+        { amount_halalas: before }, { amount_halalas: before - discount });
+    }
+
     const entry = postRentCollection(db, {
       contractId, contractNo: c.contract_no || '', tenant: c.tenant_name,
-      net, date, period: input.period, discount,
+      net, date, period: input.period, discount, discountKind: kind,
       srcId: input.installmentId || contractId,
     });
 
     const paymentId = uid();
     db.run(
       `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
-        discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+        discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at, discount_kind)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [paymentId, contractId, input.installmentId ?? null, input.period, date, gross, discount, net,
-       methodsLabel, input.notes.trim(), entry ? entry.id : null, new Date().toISOString()]
+       methodsLabel, input.notes.trim(), entry ? entry.id : null, new Date().toISOString(), kind]
     );
     for (const l of rawLines) {
       db.run(

@@ -9,7 +9,7 @@ import { migrate, currentSchemaVersion } from '@/db/migrations';
 import { seed } from '@/db/seed';
 import { semanticIssues } from '@/domain/backup/semantic';
 
-test('قاعدة ١٦ ببيانات قديمة تترقّى إلى ١٩ دون أن يتغيّر صف', () => {
+test('قاعدة ١٦ ببيانات قديمة تترقّى إلى ٢٠ دون أن يتغيّر صف', () => {
   const db = openNodeDb(':memory:');
   db.exec('PRAGMA foreign_keys = OFF');
   for (let v = 0; v < 16; v++) db.exec(MIGRATIONS[v]);
@@ -25,7 +25,7 @@ test('قاعدة ١٦ ببيانات قديمة تترقّى إلى ١٩ دون 
 
   migrate(db);
   expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
-  expect(SCHEMA_VERSION).toBe(19);
+  expect(SCHEMA_VERSION).toBe(20);
   const triggers = db.all<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).map((t) => t.name);
   for (const t of ['trg_je_insert_balanced', 'trg_je_posted_no_trash', 'trg_je_posted_status', 'trg_pay_insert_cap', 'trg_inst_update_cap', 'sync_contracts_ins', 'sync_journal_lines_ins']) {
     expect(triggers).toContain(t);

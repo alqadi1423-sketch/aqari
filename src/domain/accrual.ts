@@ -14,6 +14,7 @@
 import type { DB } from '../db/adapter';
 import { daysBetween, addDays, contractEndFromDuration } from './dates';
 import { TS_DEDUCTIBLE } from './purchases';
+import { DISCOUNT_REDUCES_INSTALLMENT } from './contracts/installments';
 
 /** أساس القياس المعروض · نص صريح تستعمله الشاشات في الأزرار والعناوين */
 export type Basis = 'استحقاق' | 'نقدي';
@@ -25,8 +26,11 @@ export const BASIS_CASH: Basis = 'نقدي';
  * مصادر القيود التي يحلّ التوزيع محلّها فتُستثنى من الجانب الدفتري كي لا تُحسب مرتين:
  * دفعة الإيجار (تُسجَّل إيراداً يوم قبضها) وقيد فاتورة الشراء (يُسجَّل مصروفاً يوم تحريرها)،
  * ومعهما قيدا عكسهما · وما عداهما يبقى بتاريخه كما هو في الدفتر.
+ * ودفعة الإيجار في البيانات المنقولة إلى التطبيق مصدرها rent_payment · وقيد الخصم المنفصل (discount)
+ * دائنه الإيراد بقيمة الخصم، والتوزيع يحسب القيمة كاملة فيُستثنى جانب إيراده كذلك ·
+ * أما مدينه 4900 فمصروف يبقى في جانب المصروف، فيُطرح خصم «بعد الاستحقاق» من صافي الدخل.
  */
-const RENT_SOURCES = ['rent', 'rent_rev'];
+const RENT_SOURCES = ['rent', 'rent_rev', 'rent_payment', 'rent_payment_rev', 'discount', 'discount_rev'];
 const PURCHASE_SOURCES = ['purchase', 'purchase_rev'];
 
 // ─── توزيع قيمة على أيامها ───
@@ -180,6 +184,49 @@ export function contractPeriodRevenue(
   return accrualShare(c.value_halalas, w.start, w.end, f, t);
 }
 
+/**
+ * «تنزيل من القسط» يُخفّض القسط ولا يمسّ قيمة العقد الموثّقة · فيُطرح من إيراد الاستحقاق على مدة قسطه:
+ * من استحقاقه إلى ما قبل القسط التالي (أو نهاية العقد)، ويتوقف الطرح عند إلغاء العقد كما يتوقف الاستحقاق.
+ */
+interface AccrualReduction { amount: number; start: string; end: string; accrueUntil: string }
+
+function accrualReductions(db: DB): AccrualReduction[] {
+  const rows = db.all<{
+    amount: number; due: string; next_due: string | null;
+    start: string | null; end: string | null; status: string; cancel_date: string | null; value_halalas: number;
+  }>(
+    `SELECT p.discount_halalas AS amount, i.due_date AS due,
+            (SELECT MIN(i2.due_date) FROM contract_installments i2
+             WHERE i2.contract_id = i.contract_id AND i2.due_date > i.due_date) AS next_due,
+            c.start, c.end, c.status, c.cancel_date, c.value_halalas
+     FROM contract_payments p
+     JOIN contract_installments i ON i.id = p.installment_id
+     JOIN contracts c ON c.id = i.contract_id
+     WHERE p.discount_kind = '${DISCOUNT_REDUCES_INSTALLMENT}' AND p.discount_halalas > 0
+       AND c.deleted_at IS NULL AND c.status != 'مسودة'`
+  );
+  const out: AccrualReduction[] = [];
+  for (const r of rows) {
+    const w = contractAccrualWindow({ value_halalas: Number(r.value_halalas), start: r.start, end: r.end, status: r.status, cancel_date: r.cancel_date });
+    if (!w) continue;
+    const start = r.due < w.start ? w.start : r.due;
+    let end = r.next_due ? addDays(r.next_due, -1) : w.end;
+    if (end > w.end) end = w.end;
+    if (end < start) continue;
+    out.push({ amount: Number(r.amount), start, end, accrueUntil: w.accrueUntil < end ? w.accrueUntil : end });
+  }
+  return out;
+}
+
+/** نصيب فترة من تنزيلٍ واحد · بقاعدة توزيع العقد نفسها */
+function reductionShare(r: AccrualReduction, from: string | null, to: string | null): number {
+  if (r.accrueUntil < r.start) return 0;
+  const f = from || r.start;
+  let t = to || r.accrueUntil;
+  if (t > r.accrueUntil) t = r.accrueUntil;
+  return accrualShare(r.amount, r.start, r.end, f, t);
+}
+
 function accrualContracts(db: DB): ContractAccrualRow[] {
   return db.all<{
     id: string; value_halalas: number; start: string | null; end: string | null;
@@ -310,6 +357,7 @@ function ledgerNetOfType(
 export function periodRevenueAccrual(db: DB, from: string | null, to: string | null): number {
   let sum = 0;
   for (const c of accrualContracts(db)) sum += contractPeriodRevenue(c, from, to);
+  for (const r of accrualReductions(db)) sum -= reductionShare(r, from, to);
   return sum + ledgerNetOfType(db, 'إيراد', from, to, RENT_SOURCES);
 }
 
@@ -347,12 +395,14 @@ export function monthlyRevenueExpenseAccrual(
 ): Map<string, { revenue: number; expense: number }> {
   const out = new Map<string, { revenue: number; expense: number }>();
   const contracts = accrualContracts(db);
+  const reductions = accrualReductions(db);
   const purchases = accrualPurchases(db);
   for (let ym = fromMonth; ym <= toMonth; ym = nextMonthKey(ym)) {
     const b = monthBounds(ym);
     let revenue = ledgerNetOfType(db, 'إيراد', b.from, b.to, RENT_SOURCES);
     let expense = ledgerNetOfType(db, 'مصروف', b.from, b.to, PURCHASE_SOURCES);
     for (const c of contracts) revenue += contractPeriodRevenue(c, b.from, b.to);
+    for (const r of reductions) revenue -= reductionShare(r, b.from, b.to);
     for (const p of purchases) expense += purchasePeriodExpense(p, b.from, b.to);
     out.set(ym, { revenue, expense });
   }

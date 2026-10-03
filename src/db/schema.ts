@@ -5,7 +5,7 @@
  */
 import { buildSyncMigration } from './syncTables';
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -789,11 +789,55 @@ INSERT OR IGNORE INTO company (id) VALUES (1);
 `;
 
 /**
- * محفّزات سقف القسط (القسم ٣ج) · نصّها جزء من الهجرة ١٧ كما هو، ومسمّاة هنا لأن إصلاح
- * البيانات القديمة (legacyRepair) يرفعها داخل معاملة الهجرة ثم يعيدها بالنص نفسه.
+ * إقفال الدفتر والأقساط في القاعدة نفسها · فلا يمرّ خلل من أي مسار كتابة:
+ * الخدمات والإدراج المباشر والمزامنة والاستيراد سواء.
+ *
+ * ١) القيد المرحّل غير المتوازن يُرفض حتى لو أُدرج بحالة «مرحّل» مباشرة (INSERT لا UPDATE وحده).
+ * ٢) القيد المرحّل لا يدخل السلة ولا يُحذف ولا تتغيّر حالته · الإلغاء بقيد عكسي فقط،
+ *    وسطوره لا تُحذف ولو كان في السلة من إصدار سابق.
+ * ٣) المسدَّد على القسط مع مجموع خصومه لا يتجاوز مبلغه، ولا مسدَّد ولا خصم ولا صافي سالب:
+ *    على إدراج الدفعة وتعديلها، وعلى إدراج القسط وتعديل مسدَّده أو مبلغه ·
+ *    ومعها فهرس الدفعات بالقسط الذي تقرأ به المحفّزات.
  */
-export const INSTALLMENT_CAP_TRIGGER_NAMES = ['trg_pay_insert_cap', 'trg_pay_update_cap', 'trg_inst_insert_cap', 'trg_inst_update_cap'];
-export const INSTALLMENT_CAP_TRIGGERS = `
+export const MIGRATION_17 = `
+CREATE TRIGGER IF NOT EXISTS trg_je_insert_balanced
+BEFORE INSERT ON journal_entries
+WHEN NEW.status = 'مرحّل'
+BEGIN
+  SELECT CASE
+    WHEN (SELECT COUNT(*) FROM journal_lines WHERE entry_id = NEW.id) = 0
+      THEN RAISE(ABORT, 'قيد بلا سطور')
+    WHEN (SELECT COALESCE(SUM(debit_halalas - credit_halalas),0)
+          FROM journal_lines WHERE entry_id = NEW.id) != 0
+      THEN RAISE(ABORT, 'قيد غير متوازن')
+  END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_je_posted_no_trash
+BEFORE UPDATE OF deleted_at ON journal_entries
+WHEN OLD.status = 'مرحّل' AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يدخل السلة · يُلغى بقيد عكسي'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_je_posted_status
+BEFORE UPDATE OF status ON journal_entries
+WHEN OLD.status = 'مرحّل' AND NEW.status != 'مرحّل'
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا تتغيّر حالته · يُلغى بقيد عكسي'); END;
+
+DROP TRIGGER IF EXISTS trg_je_frozen_del;
+CREATE TRIGGER trg_je_frozen_del
+BEFORE DELETE ON journal_entries
+WHEN OLD.status = 'مرحّل'
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُحذف · يُلغى بقيد عكسي'); END;
+
+DROP TRIGGER IF EXISTS trg_jl_frozen_del;
+CREATE TRIGGER trg_jl_frozen_del
+BEFORE DELETE ON journal_lines
+WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) = 'مرحّل'
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُعدَّل'); END;
+
+-- المحفّزات أدناه تجمع خصوم القسط في كل كتابة · والفهرس يجعل الجمع قفزةً لا مسحاً للدفعات كلها
+CREATE INDEX IF NOT EXISTS ix_pay_installment ON contract_payments(installment_id);
+
 -- الدفعة لا تتجاوز مبلغ القسط وحدها · وخصمها مع المسدَّد الحالي وخصوم القسط لا يتجاوزه ·
 -- وصافيها يُحتسب حين يُحدَّث مسدَّد القسط (المحفّز التالي) لا هنا: فالمزامنة قد تأتي بالقسط
 -- ومسدَّده النهائي قبل دفعته، فلا يُحسب الصافي مرتين
@@ -850,69 +894,212 @@ BEGIN
 END;
 `;
 
-/**
- * إقفال الدفتر والأقساط في القاعدة نفسها · فلا يمرّ خلل من أي مسار كتابة:
- * الخدمات والإدراج المباشر والمزامنة والاستيراد سواء.
- *
- * ١) القيد المرحّل غير المتوازن يُرفض حتى لو أُدرج بحالة «مرحّل» مباشرة (INSERT لا UPDATE وحده).
- * ٢) القيد المرحّل لا يدخل السلة ولا يُحذف ولا تتغيّر حالته · الإلغاء بقيد عكسي فقط،
- *    وسطوره لا تُحذف ولو كان في السلة من إصدار سابق.
- * ٣) المسدَّد على القسط مع مجموع خصومه لا يتجاوز مبلغه، ولا مسدَّد ولا خصم ولا صافي سالب:
- *    على إدراج الدفعة وتعديلها، وعلى إدراج القسط وتعديل مسدَّده أو مبلغه ·
- *    ومعها فهرس الدفعات بالقسط الذي تقرأ به المحفّزات.
- */
-export const MIGRATION_17 = `
-CREATE TRIGGER IF NOT EXISTS trg_je_insert_balanced
-BEFORE INSERT ON journal_entries
-WHEN NEW.status = 'مرحّل'
-BEGIN
-  SELECT CASE
-    WHEN (SELECT COUNT(*) FROM journal_lines WHERE entry_id = NEW.id) = 0
-      THEN RAISE(ABORT, 'قيد بلا سطور')
-    WHEN (SELECT COALESCE(SUM(debit_halalas - credit_halalas),0)
-          FROM journal_lines WHERE entry_id = NEW.id) != 0
-      THEN RAISE(ABORT, 'قيد غير متوازن')
-  END;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_je_posted_no_trash
-BEFORE UPDATE OF deleted_at ON journal_entries
-WHEN OLD.status = 'مرحّل' AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL
-BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يدخل السلة · يُلغى بقيد عكسي'); END;
-
-CREATE TRIGGER IF NOT EXISTS trg_je_posted_status
-BEFORE UPDATE OF status ON journal_entries
-WHEN OLD.status = 'مرحّل' AND NEW.status != 'مرحّل'
-BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا تتغيّر حالته · يُلغى بقيد عكسي'); END;
-
-DROP TRIGGER IF EXISTS trg_je_frozen_del;
-CREATE TRIGGER trg_je_frozen_del
-BEFORE DELETE ON journal_entries
-WHEN OLD.status = 'مرحّل'
-BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُحذف · يُلغى بقيد عكسي'); END;
-
-DROP TRIGGER IF EXISTS trg_jl_frozen_del;
-CREATE TRIGGER trg_jl_frozen_del
-BEFORE DELETE ON journal_lines
-WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) = 'مرحّل'
-BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُعدَّل'); END;
-
--- المحفّزات أدناه تجمع خصوم القسط في كل كتابة · والفهرس يجعل الجمع قفزةً لا مسحاً للدفعات كلها
-CREATE INDEX IF NOT EXISTS ix_pay_installment ON contract_payments(installment_id);
-` + INSTALLMENT_CAP_TRIGGERS;
-
 /** بنية المزامنة: الطابور الصادر والوارد والمرفوض ومحفّزات الالتقاط · انظر syncTables.ts */
 export const MIGRATION_18 = buildSyncMigration();
 
 /**
- * بيانات ما قبل الإقفال بنموذجها القديم (نقد يُوزَّع على الأقساط بالترتيب، وخصم على الدفعة وحدها) ·
- * لا تغيير في البنية: الإصلاح نفسه في legacyRepair ويجريه migrate() عند العبور إلى هذا الإصدار،
- * في الترقية وفي الاستعادة سواء.
+ * الإصدار ١٩ بلا تغيير في البنية · كان يحمل إصلاحاً للبيانات القديمة أُزيل قبل أن يُطبَّق على أي جهاز،
+ * وبقي رقمه محجوزاً فتبدأ الترحيلات بعده من ٢٠.
  */
 export const MIGRATION_19 = `
--- إصلاح بيانات الأقساط القديمة · يجريه migrate() عند العبور إلى ١٩
+-- لا تغيير في البنية
 SELECT 1;
 `;
 
+/**
+ * نوعا الخصم والحارس وسقف القسط بخصم الدفتر:
+ * ١) نوع الخصم مع الدفعة: «بعد الاستحقاق» (القسط بقيمته، والإيراد كاملاً، والخصم مصروفاً في 4900 بقيد الدفعة نفسه)
+ *    أو «تنزيل من القسط» (القسط نفسه يُخفَّض والإيراد بالمخفَّض ولا سطر خصم). وفارغ في دفعات ما قبله.
+ * ٢) حساب 4900 «خصومات ممنوحة» بنوع مصروف · بالرقم والاسم والنوع أينما وُجد فلا يتعارض في المزامنة.
+ * ٣) الحارس: دفعة خصمها «بعد الاستحقاق» لا تُحفظ إلا وفي الدفتر سطر 4900 بقيمته، في قيدها نفسه
+ *    أو في قيد خصم مربوط بها (ما يُنشأ بأثر رجعي، فالقيد المرحّل لا يُعدَّل).
+ * ٤) سقف القسط يقرأ الخصم من الدفتر لا من صفوف الدفعات: محفّزات الهجرة ١٧ الثلاثة التي تجمع الخصم
+ *    تُستبدل هنا (ونص ١٧ كما هو)، فخصم «تنزيل من القسط» نزل من مبلغ القسط ولا يُعدّ ثانية.
+ *    وخصم الدفعة القديمة الذي لا سطر له في الدفتر يُعدّ بقيمته في صفّها ما لم يكن لعقدها قيود خصم،
+ *    حتى يُحدَّد نوعه · ونصّ الحساب نفسه في INSTALLMENT_DISCOUNT_SQL.
+ */
+export const MIGRATION_20 = `
+ALTER TABLE contract_payments ADD COLUMN discount_kind TEXT;
+
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at)
+VALUES ('4900', 'خصومات ممنوحة', 'مصروف', NULL, 0, 1, datetime('now'));
+
+CREATE TRIGGER IF NOT EXISTS trg_pay_discount_kind_ins
+BEFORE INSERT ON contract_payments
+WHEN NEW.discount_kind IS NOT NULL
+BEGIN
+  SELECT CASE
+    WHEN NEW.discount_kind NOT IN ('بعد الاستحقاق', 'تنزيل من القسط')
+      THEN RAISE(ABORT, 'نوع خصم غير معروف')
+    WHEN NEW.discount_halalas <= 0
+      THEN RAISE(ABORT, 'نوع خصم بلا خصم')
+  END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_pay_discount_kind_upd
+BEFORE UPDATE OF discount_kind, discount_halalas ON contract_payments
+WHEN NEW.discount_kind IS NOT NULL
+BEGIN
+  SELECT CASE
+    WHEN NEW.discount_kind NOT IN ('بعد الاستحقاق', 'تنزيل من القسط')
+      THEN RAISE(ABORT, 'نوع خصم غير معروف')
+    WHEN NEW.discount_halalas <= 0
+      THEN RAISE(ABORT, 'نوع خصم بلا خصم')
+  END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_pay_discount_booked_ins
+BEFORE INSERT ON contract_payments
+WHEN NEW.discount_kind = 'بعد الاستحقاق'
+BEGIN
+  SELECT CASE
+    WHEN COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE (e.id = NEW.journal_entry_id OR (e.src_type = 'discount' AND e.src_id = NEW.id))
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) != NEW.discount_halalas
+      THEN RAISE(ABORT, 'خصم بعد الاستحقاق بلا سطر خصم مساوٍ له في الدفتر')
+  END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_pay_discount_booked_upd
+BEFORE UPDATE OF discount_kind, discount_halalas, journal_entry_id ON contract_payments
+WHEN NEW.discount_kind = 'بعد الاستحقاق'
+BEGIN
+  SELECT CASE
+    WHEN COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE (e.id = NEW.journal_entry_id OR (e.src_type = 'discount' AND e.src_id = NEW.id))
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) != NEW.discount_halalas
+      THEN RAISE(ABORT, 'خصم بعد الاستحقاق بلا سطر خصم مساوٍ له في الدفتر')
+  END;
+END;
+
+DROP TRIGGER IF EXISTS trg_pay_insert_cap;
+CREATE TRIGGER trg_pay_insert_cap
+BEFORE INSERT ON contract_payments
+WHEN NEW.installment_id IS NOT NULL
+BEGIN
+  SELECT CASE
+    WHEN NEW.discount_halalas < 0 OR NEW.net_halalas < 0
+      THEN RAISE(ABORT, 'دفعة بصافٍ أو خصم سالب')
+    WHEN NEW.discount_kind IS NOT NULL
+         AND NEW.net_halalas + (CASE WHEN NEW.discount_kind = 'بعد الاستحقاق' THEN NEW.discount_halalas ELSE 0 END)
+             > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
+      THEN RAISE(ABORT, 'الدفعة مع الخصم تتجاوز مبلغ القسط')
+    WHEN (SELECT paid_halalas FROM contract_installments WHERE id = NEW.installment_id)
+         + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE e.src_type = 'discount' AND e.src_id = NEW.installment_id
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+                JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE p.installment_id = NEW.installment_id AND p.id != NEW.id
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM contract_payments p JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = p.id
+                JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE p.installment_id = NEW.installment_id AND p.id != NEW.id
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p
+                WHERE p.installment_id = NEW.installment_id AND p.id != NEW.id AND p.discount_kind IS NULL AND p.discount_halalas > 0
+                  AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = p.journal_entry_id AND l.account_code = '4900')
+                  AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'discount' AND e.src_id = p.id)
+                  AND NOT EXISTS (SELECT 1 FROM contract_installments i2
+                                  JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = i2.id
+                                  WHERE i2.contract_id = p.contract_id)), 0)
+         + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE (e.id = NEW.journal_entry_id OR (e.src_type = 'discount' AND e.src_id = NEW.id))
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) + (CASE WHEN NEW.discount_kind IS NULL AND NEW.discount_halalas > 0
+             AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = NEW.journal_entry_id AND l.account_code = '4900')
+             AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'discount' AND e.src_id = NEW.id)
+             AND NOT EXISTS (SELECT 1 FROM contract_installments i2
+                             JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = i2.id
+                             WHERE i2.contract_id = NEW.contract_id)
+           THEN NEW.discount_halalas ELSE 0 END)
+         > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
+      THEN RAISE(ABORT, 'الخصم يتجاوز المتبقي على القسط')
+  END;
+END;
+
+DROP TRIGGER IF EXISTS trg_pay_update_cap;
+CREATE TRIGGER trg_pay_update_cap
+BEFORE UPDATE OF discount_halalas, net_halalas, installment_id, discount_kind, journal_entry_id ON contract_payments
+WHEN NEW.installment_id IS NOT NULL
+BEGIN
+  SELECT CASE
+    WHEN NEW.discount_halalas < 0 OR NEW.net_halalas < 0
+      THEN RAISE(ABORT, 'دفعة بصافٍ أو خصم سالب')
+    WHEN (SELECT paid_halalas FROM contract_installments WHERE id = NEW.installment_id)
+         + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE e.src_type = 'discount' AND e.src_id = NEW.installment_id
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+                JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE p.installment_id = NEW.installment_id AND p.id != NEW.id
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM contract_payments p JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = p.id
+                JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE p.installment_id = NEW.installment_id AND p.id != NEW.id
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p
+                WHERE p.installment_id = NEW.installment_id AND p.id != NEW.id AND p.discount_kind IS NULL AND p.discount_halalas > 0
+                  AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = p.journal_entry_id AND l.account_code = '4900')
+                  AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'discount' AND e.src_id = p.id)
+                  AND NOT EXISTS (SELECT 1 FROM contract_installments i2
+                                  JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = i2.id
+                                  WHERE i2.contract_id = p.contract_id)), 0)
+         + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE (e.id = NEW.journal_entry_id OR (e.src_type = 'discount' AND e.src_id = NEW.id))
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) + (CASE WHEN NEW.discount_kind IS NULL AND NEW.discount_halalas > 0
+             AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = NEW.journal_entry_id AND l.account_code = '4900')
+             AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'discount' AND e.src_id = NEW.id)
+             AND NOT EXISTS (SELECT 1 FROM contract_installments i2
+                             JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = i2.id
+                             WHERE i2.contract_id = NEW.contract_id)
+           THEN NEW.discount_halalas ELSE 0 END)
+         > (SELECT amount_halalas FROM contract_installments WHERE id = NEW.installment_id)
+      THEN RAISE(ABORT, 'الخصم يتجاوز المتبقي على القسط')
+  END;
+END;
+
+DROP TRIGGER IF EXISTS trg_inst_update_cap;
+CREATE TRIGGER trg_inst_update_cap
+BEFORE UPDATE OF paid_halalas, amount_halalas ON contract_installments
+BEGIN
+  SELECT CASE
+    WHEN NEW.paid_halalas < 0
+      THEN RAISE(ABORT, 'مسدَّد سالب على القسط')
+    WHEN NEW.paid_halalas + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE e.src_type = 'discount' AND e.src_id = NEW.id
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+                JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE p.installment_id = NEW.id
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                FROM contract_payments p JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = p.id
+                JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                WHERE p.installment_id = NEW.id
+                  AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0)
+       + COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p
+                WHERE p.installment_id = NEW.id AND p.discount_kind IS NULL AND p.discount_halalas > 0
+                  AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = p.journal_entry_id AND l.account_code = '4900')
+                  AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'discount' AND e.src_id = p.id)
+                  AND NOT EXISTS (SELECT 1 FROM contract_installments i2
+                                  JOIN journal_entries e ON e.src_type = 'discount' AND e.src_id = i2.id
+                                  WHERE i2.contract_id = p.contract_id)), 0) > NEW.amount_halalas
+      THEN RAISE(ABORT, 'المسدَّد مع الخصم يتجاوز مبلغ القسط')
+  END;
+END;
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20];

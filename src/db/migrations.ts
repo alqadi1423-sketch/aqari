@@ -1,6 +1,5 @@
 import type { DB } from './adapter';
 import { MIGRATIONS, SCHEMA_VERSION } from './schema';
-import { LEGACY_REPAIR_VERSION, repairLegacyInstallments } from '../domain/contracts/legacyRepair';
 
 export class NewerSchemaError extends Error {
   constructor(public found: number, public supported: number) {
@@ -31,8 +30,6 @@ export function migrate(db: DB): void {
       for (let v = found; v < SCHEMA_VERSION; v++) {
         db.exec(MIGRATIONS[v]);
       }
-      // بيانات ما قبل إقفال القسم ٣ بنموذجها القديم · تُصلح مرة بقرارات المالك (legacyRepair)
-      if (found < LEGACY_REPAIR_VERSION) repairLegacyInstallments(db);
     });
   } finally {
     db.exec('PRAGMA foreign_keys = ON');

@@ -4,13 +4,16 @@
  * الدفتر سليم المعنى، والقواعد السحابية لا تجمع القوائم ولا تقرأ مستندات أخرى، فهنا
  * قواعد القاعدة نفسها تُطبَّق على ما كُتب قبل وجودها أو خارجها:
  *  ١) لا قيد مرحّل غير متوازن ولا قيد مرحّل بلا سطور.
- *  ٢) لا قسط مسدَّده مع مجموع خصومه يتجاوز مبلغه، ولا مسدَّد سالب.
- *  ٣) لا دفعة على قسط بصافٍ أو خصم سالب، ولا دفعة تتجاوز وحدها مبلغ قسطها.
+ *  ٢) لا قسط مسدَّده مع خصمه في الدفتر يتجاوز مبلغه، ولا مسدَّد سالب.
+ *  ٣) لا دفعة على قسط بصافٍ أو خصم سالب، ولا دفعة بنوع خصم تتجاوز وحدها مبلغ قسطها
+ *     (ودفعات ما قبل نوع الخصم تُحكم على مستوى القسط بخصم الدفتر).
+ *  ٥) نوع الخصم معروف ولا يكون بلا خصم · وخصم «بعد الاستحقاق» له في الدفتر سطر 4900 بقيمته.
  *  ٤) كل مبلغ بالهللات عدد صحيح (لا كسر ولا نص) في كل عمود مالي.
  * كل بند جملة عربية تسمّي موضعه · وأي بند يرفض ما ورد كاملاً.
  */
 import type { DB, SqlValue } from '../../db/adapter';
 import { fmt } from '../money';
+import { INSTALLMENT_DISCOUNT_SQL, DISCOUNT_AFTER_DUE, DISCOUNT_KINDS } from '../contracts/installments';
 
 const SHOW = 5;
 
@@ -127,23 +130,18 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
     out.push('قيد مرحّل بلا سطور: ' + listOf(lineless.slice(0, SHOW).map((r) => r.no), lineless.length));
   }
 
-  /* ٢) سقف القسط · الخصوم مجمَّعة مرة واحدة لا استعلاماً لكل قسط، ومحصورة في النطاق
-     فلا يُجمع دفتر الدفعات كله لكل صف وارد */
+  /* ٢) سقف القسط بخصم الدفتر · النص نفسه الذي تقرأ به الشاشات ومحفّزات السقف، ومحصور في النطاق */
   const ids = scope ? scope.installmentIds ?? [] : undefined;
   const inst = within('i.id', ids);
-  const dIn = within('installment_id', ids);
   const over = db.all<{ tenant: string | null; contract_no: string | null; due: string; amount: number; paid: number; disc: number }>(
-    `WITH d AS (
-       SELECT installment_id, SUM(discount_halalas) AS s FROM contract_payments
-       WHERE installment_id IS NOT NULL AND ${dIn.sql} GROUP BY installment_id
-     )
-     SELECT c.tenant_name AS tenant, c.contract_no, i.due_date AS due,
-            i.amount_halalas AS amount, i.paid_halalas AS paid, COALESCE(d.s, 0) AS disc
-     FROM contract_installments i
-     LEFT JOIN d ON d.installment_id = i.id
-     LEFT JOIN contracts c ON c.id = i.contract_id
-     WHERE (i.paid_halalas < 0 OR i.paid_halalas + COALESCE(d.s, 0) > i.amount_halalas) AND ${inst.sql}
-     ORDER BY i.due_date`, [...dIn.params, ...inst.params]
+    `SELECT tenant, contract_no, due, amount, paid, disc FROM (
+       SELECT c.tenant_name AS tenant, c.contract_no, i.due_date AS due,
+              i.amount_halalas AS amount, i.paid_halalas AS paid, ${INSTALLMENT_DISCOUNT_SQL} AS disc
+       FROM contract_installments i
+       LEFT JOIN contracts c ON c.id = i.contract_id
+       WHERE ${inst.sql}
+     ) WHERE paid < 0 OR paid + disc > amount
+     ORDER BY due`, inst.params
   );
   if (over.length) {
     out.push('قسط يتجاوز المسدَّدُ مع الخصم مبلغَه أو مسدَّده سالب: ' + listOf(
@@ -165,20 +163,56 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
       negative.slice(0, SHOW).map((r) => `${r.tenant || 'بلا مستأجر'} · ${r.date}`), negative.length));
   }
 
-  /* ٣ب) دفعة تتجاوز وحدها مبلغ قسطها · وهو أول ما يفحصه محفّز إدراج الدفعة، فلا تمرّ الاستعادة
-     بما ترفضه المزامنة */
+  /* ٣ب) دفعة بنوع خصم تتجاوز وحدها مبلغ قسطها · وهو أول ما يفحصه محفّز إدراج الدفعة، فلا تمرّ
+     الاستعادة بما ترفضه المزامنة · و«تنزيل من القسط» نزل من المبلغ فلا يُضاف خصمه ثانية */
   const big = db.all<{ tenant: string | null; date: string; total: number; amount: number }>(
-    `SELECT c.tenant_name AS tenant, p.date, p.net_halalas + p.discount_halalas AS total, i.amount_halalas AS amount
+    `SELECT c.tenant_name AS tenant, p.date,
+            p.net_halalas + (CASE WHEN p.discount_kind = '${DISCOUNT_AFTER_DUE}' THEN p.discount_halalas ELSE 0 END) AS total,
+            i.amount_halalas AS amount
      FROM contract_payments p
      JOIN contract_installments i ON i.id = p.installment_id
      LEFT JOIN contracts c ON c.id = p.contract_id
-     WHERE p.net_halalas + p.discount_halalas > i.amount_halalas AND ${pay.sql}
+     WHERE p.discount_kind IS NOT NULL
+       AND p.net_halalas + (CASE WHEN p.discount_kind = '${DISCOUNT_AFTER_DUE}' THEN p.discount_halalas ELSE 0 END) > i.amount_halalas
+       AND ${pay.sql}
      ORDER BY p.date`, pay.params
   );
   if (big.length) {
     out.push('دفعة تتجاوز وحدها مبلغ قسطها: ' + listOf(
       big.slice(0, SHOW).map((r) => `${r.tenant || 'بلا مستأجر'} · ${r.date} (${fmt(Number(r.total))} من ${fmt(Number(r.amount))})`),
       big.length));
+  }
+
+  /* ٥) نوع الخصم · معروف ولا يكون بلا خصم، وخصم «بعد الاستحقاق» له سطر 4900 بقيمته في الدفتر:
+     في قيد الدفعة نفسه أو في قيد خصم مربوط بها · كما يشترط الحارس عند الحفظ */
+  const kinds = DISCOUNT_KINDS.map(() => '?').join(',');
+  const badKind = db.all<{ tenant: string | null; date: string }>(
+    `SELECT c.tenant_name AS tenant, p.date FROM contract_payments p
+     LEFT JOIN contracts c ON c.id = p.contract_id
+     WHERE p.discount_kind IS NOT NULL AND (p.discount_kind NOT IN (${kinds}) OR p.discount_halalas <= 0) AND ${pay.sql}
+     ORDER BY p.date`, [...DISCOUNT_KINDS, ...pay.params]
+  );
+  if (badKind.length) {
+    out.push('دفعة بنوع خصم غير معروف أو بلا خصم: ' + listOf(
+      badKind.slice(0, SHOW).map((r) => `${r.tenant || 'بلا مستأجر'} · ${r.date}`), badKind.length));
+  }
+  const unbooked = db.all<{ tenant: string | null; date: string; disc: number; booked: number }>(
+    `SELECT tenant, date, disc, booked FROM (
+       SELECT c.tenant_name AS tenant, p.date, p.discount_halalas AS disc,
+              COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                        FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4900'
+                        WHERE (e.id = p.journal_entry_id OR (e.src_type = 'discount' AND e.src_id = p.id))
+                          AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) AS booked
+       FROM contract_payments p
+       LEFT JOIN contracts c ON c.id = p.contract_id
+       WHERE p.discount_kind = '${DISCOUNT_AFTER_DUE}' AND ${pay.sql}
+     ) WHERE booked != disc
+     ORDER BY date`, pay.params
+  );
+  if (unbooked.length) {
+    out.push('خصم بعد الاستحقاق بلا سطر خصم مساوٍ له في الدفتر: ' + listOf(
+      unbooked.slice(0, SHOW).map((r) => `${r.tenant || 'بلا مستأجر'} · ${r.date} (${fmt(Number(r.booked))} من ${fmt(Number(r.disc))})`),
+      unbooked.length));
   }
 
   return out;

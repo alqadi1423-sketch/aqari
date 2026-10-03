@@ -2,6 +2,7 @@ import type { DB } from '../../db/adapter';
 import { uid } from '../ids';
 import { today } from '../dates';
 import { fmt } from '../money';
+import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 
 export interface EntryLine {
   account: string;
@@ -383,6 +384,11 @@ export const postClaimCollection = (db: DB, cl: { id: string; amount: number; re
       })
     : null;
 
+/**
+ * قيد تحصيل الإيجار · النقد بالمقبوض فعلاً، وخصم «بعد الاستحقاق» في القيد نفسه:
+ * مدين النقد بالمقبوض · مدين 4900 بالخصم · دائن الإيراد بالمقبوض مع الخصم (قيمة ما غطّته الدفعة من القسط).
+ * و«تنزيل من القسط» لا سطر له: القسط نفسه خُفِّض والإيراد بالمقبوض وحده.
+ */
 export const postRentCollection = (
   db: DB,
   args: {
@@ -393,24 +399,48 @@ export const postRentCollection = (
     date: string;
     period?: string;
     discount?: number;
+    discountKind?: DiscountKind | null;
     srcId: string;
   }
-) =>
-  args.net > 0
+) => {
+  const booked = args.discountKind === DISCOUNT_AFTER_DUE ? (args.discount || 0) : 0;
+  const revenue = args.net + booked;
+  return revenue > 0
     ? postEntry(db, {
         date: args.date,
         memo:
           'تحصيل إيجار · ' + args.tenant + ' (عقد ' + args.contractNo + ')' +
           (args.period ? ' · ' + args.period : '') +
-          (args.discount ? ' بعد خصم ' + fmt(args.discount) : ''),
+          (args.discount && args.discountKind ? ' · ' + args.discountKind + ' ' + fmt(args.discount) : ''),
         lines: [
           { account: CASH, descr: 'إيجار محصَّل', debit: args.net, credit: 0 },
-          { account: '4200', descr: 'إيراد إيجار', debit: 0, credit: args.net },
+          { account: DISCOUNT_ACCOUNT, descr: 'خصم ممنوح بعد الاستحقاق', debit: booked, credit: 0 },
+          { account: '4200', descr: 'إيراد إيجار', debit: 0, credit: revenue },
         ],
         srcType: 'rent',
         srcId: args.srcId,
       })
     : null;
+};
+
+/**
+ * خصم «بعد الاستحقاق» لدفعة سُجّلت قبل أن يكون للخصم سطر · قيد جديد مربوط بالدفعة لا تعديل لقيدها المرحّل:
+ * مدين 4900 بالخصم · دائن الإيراد به (فيبلغ إيراد الدفعة قيمة ما غطّته من القسط).
+ */
+export const postBookedDiscount = (
+  db: DB,
+  d: { paymentId: string; tenant: string; contractNo: string; amount: number; date: string; paymentDate: string }
+) =>
+  postEntry(db, {
+    date: d.date,
+    memo: 'خصم ممنوح بعد الاستحقاق · ' + d.tenant + ' (عقد ' + d.contractNo + ') · دفعة ' + d.paymentDate,
+    lines: [
+      { account: DISCOUNT_ACCOUNT, descr: 'خصم ممنوح بعد الاستحقاق', debit: d.amount, credit: 0 },
+      { account: '4200', descr: 'إيراد إيجار يقابل الخصم', debit: 0, credit: d.amount },
+    ],
+    srcType: DISCOUNT_ENTRY_SRC,
+    srcId: d.paymentId,
+  });
 
 export const postKeyMoneyCommission = (
   db: DB,

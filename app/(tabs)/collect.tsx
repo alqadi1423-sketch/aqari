@@ -28,6 +28,7 @@ import {
   type CollectFilter, type InstallmentView,
 } from '../../src/domain/stats';
 import { recordRentPayment, paymentForInstallment, type RentPaymentLine, type PayMethod } from '../../src/domain/contracts/service';
+import { DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind } from '../../src/domain/contracts/installments';
 import { today, dfmt, periodLabel } from '../../src/domain/dates';
 import { fmt, toHalalas } from '../../src/domain/money';
 import { dialPhone } from '../../src/domain/phone';
@@ -151,6 +152,9 @@ export default function Collect() {
   const [payPeriod, setPayPeriod] = useState('');
   const [payLines, setPayLines] = useState<PayLine[]>([]);
   const [discount, setDiscount] = useState('');
+  // نوع الخصم يختاره المستخدم ولا يُفترض · والمبلغ المقبوض يتبع الخصم ما لم يعدّله المستخدم بيده
+  const [discountKind, setDiscountKind] = useState<DiscountKind | ''>('');
+  const [amountTouched, setAmountTouched] = useState(false);
   const [payNotes, setPayNotes] = useState('');
 
   const T_ = today();
@@ -240,6 +244,8 @@ export default function Collect() {
     const firstBank = db.get<{ id: string }>(`SELECT id FROM banks WHERE deleted_at IS NULL AND archived = 0 LIMIT 1`);
     setPayLines([{ method: firstBank ? 'bank' : 'cash', bankId: firstBank?.id ?? '', amount: fmt(x.remaining).replace(/,/g, '') }]);
     setDiscount('');
+    setDiscountKind('');
+    setAmountTouched(false);
     setPayNotes('');
     setPayRef('');
     setPayFile(null);
@@ -260,6 +266,7 @@ export default function Collect() {
           date: payDate,
           lines,
           discountHalalas: toHalalas(discount),
+          discountKind: toHalalas(discount) > 0 && discountKind ? discountKind : null,
           notes,
         });
       if (payFile) {
@@ -293,14 +300,18 @@ export default function Collect() {
       const bankName = l.method !== 'cash' ? banks.find((b) => b.id === l.bankId)?.name ?? '' : '';
       return label + (bankName ? ' (' + bankName + ')' : '');
     }).join(' + ');
-    const net = payLines.reduce((s, l) => s + toHalalas(l.amount), 0) - toHalalas(discount);
+    const received = payLines.reduce((s, l) => s + toHalalas(l.amount), 0);
+    const d = toHalalas(discount);
     // ما غاب من البنود غاب بعنوانه · لا «لا يوجد»
     dialog({
       title: 'تأكيد تسجيل الدفعة',
       body: [
         'المستأجر: ' + paying.tenant,
         'القسط: ' + (payPeriod.trim() || periodLabel(paying.dueDate)),
-        'المبلغ: ' + fmt(net) + ' ريال',
+        'المقبوض: ' + fmt(received) + ' ريال',
+        d > 0 ? 'الخصم: ' + fmt(d) + ' ريال · ' + (discountKind === DISCOUNT_AFTER_DUE ? 'خصم بعد الاستحقاق' : 'تنزيل من قيمة القسط') : '',
+        d > 0 ? 'يغطي من القسط: ' + fmt(received + d) + ' ريال' : '',
+        d > 0 && discountKind === DISCOUNT_REDUCES_INSTALLMENT ? 'تنبيه: تخفيض القسط يخالف قيمة العقد الموثّقة في منصة إيجار' : '',
         method ? 'طريقة الدفع: ' + method : '',
         'التاريخ: ' + dfmt(payDate),
       ].filter(Boolean).join('\n'),
@@ -317,13 +328,23 @@ export default function Collect() {
    * التسجيل لا يقبل بلا مبلغ، ولا بطريقة غير نقدية بلا حساب يستقر فيه المبلغ ·
    * فما دام لا يصح التسجيل لا يُعرض زره أصلاً.
    */
-  // ولا يتجاوز المدفوعُ مع الخصم المتبقيَ على القسط، ولا يزيد الخصم على المدفوع · كما تشترط الخدمة والقاعدة
-  const payGross = payLines.reduce((s, l) => s + Math.max(0, toHalalas(l.amount)), 0);
+  // طرق السداد بالمقبوض فعلاً والخصم فوقه · ولا يتجاوز المقبوضُ مع الخصم المتبقيَ على القسط،
+  // ولا خصم بلا نوع · كما تشترط الخدمة والقاعدة
+  const payReceived = payLines.reduce((s, l) => s + Math.max(0, toHalalas(l.amount)), 0);
   const payDiscount = toHalalas(discount);
-  const payOver = !!paying && (payGross > paying.remaining || payDiscount < 0 || payDiscount > payGross);
+  const payOver = !!paying && (payReceived + Math.max(0, payDiscount) > paying.remaining || payDiscount < 0);
+  const payNeedsKind = payDiscount > 0 && !discountKind;
   const payReady = payLines.some((l) => toHalalas(l.amount) > 0)
     && payLines.every((l) => toHalalas(l.amount) <= 0 || l.method === 'cash' || !!l.bankId)
-    && !payOver;
+    && !payOver && !payNeedsKind;
+  // الخصم يُنزل المقبوض المقترح ما دام المستخدم لم يعدّله بيده · فيبقى المقبوض مع الخصم هو المتبقي
+  const onDiscountChange = (v: string) => {
+    setDiscount(v);
+    if (!amountTouched && paying && payLines.length === 1) {
+      const left = Math.max(0, paying.remaining - Math.max(0, toHalalas(v)));
+      setPayLines((p) => p.map((x) => ({ ...x, amount: fmt(left).replace(/,/g, '') })));
+    }
+  };
 
   // كل نص يُرسل قالبٌ من الإعدادات · لا نص مكتوباً في الكود
   const [waFor, setWaFor] = useState<{ x: (typeof data.rows)[number]; via: 'wa' | 'sms' } | null>(null);
@@ -532,8 +553,8 @@ export default function Collect() {
                 emptyText="أضف حساباً بنكياً أولاً من شاشة البنوك"
               />
             )}
-            <Field label="المبلغ" value={l.amount} keyboard="numeric" ltr
-              onChange={(v) => setPayLines((p) => p.map((x, xi) => (xi === i ? { ...x, amount: v } : x)))} />
+            <Field label="المبلغ المقبوض" value={l.amount} keyboard="numeric" ltr
+              onChange={(v) => { setAmountTouched(true); setPayLines((p) => p.map((x, xi) => (xi === i ? { ...x, amount: v } : x))); }} />
             {payLines.length > 1 && (
               <BtnGhost small danger icon="cancel" title="حذف هذه الطريقة"
                 onPress={() => setPayLines((p) => p.filter((_, xi) => xi !== i))} />
@@ -543,7 +564,39 @@ export default function Collect() {
         <BtnGhost small title="+ إضافة طريقة سداد أخرى (دفع بأكثر من طريقة)"
           onPress={() => setPayLines((p) => [...p, { method: 'cash', bankId: '', amount: '' }])} />
         <View style={{ height: 10 }} />
-        <Field label="الخصم الإجمالي" value={discount} onChange={setDiscount} keyboard="numeric" ltr />
+        <Field label="الخصم" value={discount} onChange={onDiscountChange} keyboard="numeric" ltr />
+        {payDiscount > 0 ? (
+          <>
+            <SelectField<DiscountKind>
+              label="نوع الخصم"
+              value={discountKind || null}
+              placeholder="اختر نوع الخصم"
+              error={payNeedsKind}
+              options={[
+                { value: DISCOUNT_AFTER_DUE, label: 'خصم بعد الاستحقاق',
+                  sub: 'القسط يبقى بقيمته · الإيراد بقيمة ما غطّته الدفعة كاملاً · والخصم مصروف في الخصومات الممنوحة' },
+                { value: DISCOUNT_REDUCES_INSTALLMENT, label: 'تنزيل من قيمة القسط',
+                  sub: 'القسط نفسه يُخفَّض بالخصم · الإيراد بالمقبوض وحده · ولا يُسجَّل خصم' },
+              ]}
+              onPick={setDiscountKind}
+            />
+            {discountKind === DISCOUNT_AFTER_DUE ? (
+              <T size={11.5} color={C.muted} style={{ marginTop: -6, marginBottom: 10 }}>
+                القسط يبقى بقيمته · يُسجَّل الإيراد بقيمة ما غطّته الدفعة كاملاً، والخصم مصروفاً في حساب الخصومات الممنوحة
+              </T>
+            ) : null}
+            {discountKind === DISCOUNT_REDUCES_INSTALLMENT ? (
+              <View style={{ marginTop: -6, marginBottom: 10 }}>
+                <T size={11.5} color={C.muted}>
+                  تُخفَّض قيمة القسط نفسه بمبلغ الخصم · يُسجَّل الإيراد بالمقبوض وحده ولا يُسجَّل خصم
+                </T>
+                <T size={11.5} color={C.rose} style={{ marginTop: 4 }}>
+                  تنبيه: تخفيض القسط يخالف قيمة العقد الموثّقة في منصة إيجار
+                </T>
+              </View>
+            ) : null}
+          </>
+        ) : null}
         <Field label="مرجع الحوالة أو الشيك" value={payRef} onChange={setPayRef} ltr />
         <View style={{ marginBottom: 10 }}>
           <BtnGhost small icon="attach" title={payFile ? payFile.name : 'إرفاق صورة الإيصال'}
@@ -551,18 +604,25 @@ export default function Collect() {
         </View>
         <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 11, marginBottom: 10 }}>
           <Row style={{ justifyContent: 'space-between' }}>
-            <T size={13} bold>صافي المبلغ المحصَّل:</T>
-            <Num size={13} bold>
-              {fmt(payLines.reduce((s, l) => s + toHalalas(l.amount), 0) - toHalalas(discount))}
-            </Num>
+            <T size={13} bold>المقبوض فعلاً:</T>
+            <Num size={13} bold>{fmt(payReceived)}</Num>
           </Row>
+          {payDiscount > 0 ? (
+            <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
+              <T size={12} color={C.muted}>يغطي من القسط مع الخصم:</T>
+              <Num size={12}>{fmt(payReceived + payDiscount)}</Num>
+            </Row>
+          ) : null}
           {/* سبب غياب زر التحصيل حين يتجاوز المدخل المتبقي · فلا يُترك المستخدم بلا تفسير */}
           {payOver && paying ? (
             <T size={11.5} color={C.rose} style={{ marginTop: 6 }}>
-              {payDiscount > payGross
-                ? 'الخصم أكبر من المبلغ المدخل'
-                : 'المبلغ مع الخصم يتجاوز المتبقي على القسط (' + fmt(paying.remaining) + ')'}
+              {payDiscount < 0
+                ? 'الخصم لا يكون سالباً'
+                : 'المقبوض مع الخصم يتجاوز المتبقي على القسط (' + fmt(paying.remaining) + ')'}
             </T>
+          ) : null}
+          {payNeedsKind && !payOver ? (
+            <T size={11.5} color={C.rose} style={{ marginTop: 6 }}>اختر نوع الخصم ليظهر زر التحصيل</T>
           ) : null}
         </View>
         <Field label="ملاحظات" value={payNotes} onChange={setPayNotes} />

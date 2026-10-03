@@ -20,6 +20,9 @@ import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, dele
 import { createAndShareBackup, pickAndPrepareRestore, commitPreparedRestore, abortPreparedRestore, appBackupEnv } from '../src/services/backupService';
 import { wipeAllData } from '../src/domain/wipe';
 import { fingerprintData } from '../src/domain/backup/create';
+import { planLedgerRepair, applyLedgerRepair, unbookedDiscounts, bookDiscount, type UnbookedDiscount } from '../src/domain/ledgerReview';
+import { DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind } from '../src/domain/contracts/installments';
+import { fmt } from '../src/domain/money';
 import { rescheduleAllNotifications } from '../src/services/notifications';
 import { getMeta } from '../src/repos/settings';
 import { SCHEMA_VERSION } from '../src/db/schema';
@@ -58,6 +61,13 @@ export default function Settings() {
   const [wipeConfirm, setWipeConfirm] = useState<string | null>(null);
   // شريط تقدم بالمراحل · «جاري نسخ المرفقات · ٢٢ من ١١٨» فلا يُظن التطبيق متجمداً
   const [progress, setProgress] = useState<string | null>(null);
+  // مراجعة الأقساط من الدفتر · قراءة عند كل تغيير، ولا يُطبَّق شيء إلا بموافقة المستخدم
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db) }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version]);
+  const reviewCount = review.plan.changes.length + review.plan.issues.length
+    + review.unbooked.items.length + review.unbooked.ambiguous.length;
   // الحساب والمزامنة · حالة حيّة من طبقة الربط
   const [cloud, setCloud] = useState(cloudState());
   useEffect(() => subscribeCloud(() => setCloud(cloudState())), []);
@@ -105,6 +115,17 @@ export default function Settings() {
     setBusy(false);
   };
 
+  /** التصحيح من دفتر النسخة كما يُعرض في حوار الاستعادة · كل قسط بما كان وما يصير وقيد خصمه */
+  const repairSummary = (r: NonNullable<Awaited<ReturnType<typeof pickAndPrepareRestore>>>['plan']['ledgerRepair']) => {
+    if (!r) return '';
+    const shown = r.changes.slice(0, 8).map((c) =>
+      c.tenant + ' · ' + c.due + ': ' + fmt(c.fromPaid) + ' ← ' + fmt(c.toPaid)
+        + (c.discountEntries.length ? ' (خصم ' + fmt(c.ledgerDiscount) + ' · ' + c.discountEntries.join('، ') + ')' : ''));
+    return '\n\nتصحيح من دفتر النسخة قبل الاستعادة (' + r.changes.length + ' قسط):\n' + shown.join('\n')
+      + (r.changes.length > shown.length ? '\nو' + (r.changes.length - shown.length) + ' غيرها' : '')
+      + (r.issues.length ? '\n\nما لا يحسمه الدفتر ويبقى قرارُه لك:\n' + r.issues.map((x) => x.tenant + ' · ' + x.contractNo + ': ' + x.reason).join('\n') : '');
+  };
+
   // الاستعادة لا تنهار أبداً · كل المسار ملفوف، والفشل رسالة عربية مبنيّة على فحص
   const doRestore = () => runRestore(() => pickAndPrepareRestore(db, setProgress));
 
@@ -130,7 +151,8 @@ export default function Settings() {
         'ستحلّ محلّ بياناتك الحالية:\n' +
         'عقارات ' + cN('properties') + ' · وحدات ' + cN('units') + ' · عقود ' + cN('contracts') + '\n' +
         'قيود ' + cN('journal_entries') + ' · مرفقات ' + plan.currentAttachments.count
-          + ' (' + (plan.currentAttachments.bytes / (1024 * 1024)).toFixed(1) + ' ميغا)',
+          + ' (' + (plan.currentAttachments.bytes / (1024 * 1024)).toFixed(1) + ' ميغا)'
+          + (plan.ledgerRepair ? repairSummary(plan.ledgerRepair) : ''),
         tone: 'normal',
         locked: true,
         actions: [
@@ -139,7 +161,7 @@ export default function Settings() {
             onPress: () => { try { abortPreparedRestore(env, plan, archiveTmp); } catch { /* يكنسه الإقلاع */ } },
           },
           {
-            label: 'متابعة الاستعادة', variant: 'primary',
+            label: plan.ledgerRepair ? 'متابعة الاستعادة مع التصحيح' : 'متابعة الاستعادة', variant: 'primary',
             onPress: async () => {
               setBusy(true);
               try {
@@ -169,6 +191,42 @@ export default function Settings() {
     }
     setProgress(null);
     setBusy(false);
+  };
+
+  /** خصمٌ بلا قيد في الدفتر وزرّا نوعه · كلٌّ بتأكيد يبيّن ما سيحدث */
+  const unbookedRow = (u: UnbookedDiscount) => {
+    const choose = (kind: DiscountKind) => dialog({
+      title: kind === DISCOUNT_AFTER_DUE ? 'خصم بعد الاستحقاق' : 'تنزيل من قيمة القسط',
+      body: (kind === DISCOUNT_AFTER_DUE
+        ? 'يُنشأ قيد جديد بتاريخ الدفعة: مدين الخصومات الممنوحة ' + fmt(u.discount) + ' · دائن الإيراد بالمبلغ نفسه. قيد الدفعة لا يُعدَّل.'
+        : 'يُخفَّض القسط ' + (u.due ?? '') + ' بمبلغ ' + fmt(u.discount) + ' ولا يُنشأ قيد.\nتنبيه: تخفيض القسط يخالف قيمة العقد الموثّقة في منصة إيجار.')
+        + '\n\n' + u.tenant + ' · عقد ' + u.contractNo + ' · دفعة ' + u.date,
+      tone: 'normal',
+      actions: [
+        { label: 'تراجع', variant: 'ghost' },
+        { label: 'سجّل', variant: 'primary', onPress: () => {
+          try {
+            bookDiscount(db, u.paymentId, kind);
+            toast('سُجّل نوع الخصم');
+          } catch (e2) {
+            reportFailure({ title: 'تعذّر تسجيل نوع الخصم', e: e2 });
+          }
+          bump();
+        } },
+      ],
+    });
+    return (
+      <View key={u.paymentId} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
+        <T size={TYPE.body} med>{u.tenant + ' · عقد ' + u.contractNo + ' · دفعة ' + u.date + (u.due ? ' · قسط ' + u.due : '')}</T>
+        <T size={TYPE.caption} color={C.muted}>
+          {'المقبوض ' + fmt(u.received) + ' · الخصم ' + fmt(u.discount) + (u.entryNo ? ' · قيد الدفعة ' + u.entryNo : '')}
+        </T>
+        <Row gap={8} style={{ marginTop: 6 }}>
+          <BtnGhost small title="خصم بعد الاستحقاق" onPress={() => choose(DISCOUNT_AFTER_DUE)} />
+          {u.installmentId ? <BtnGhost small title="تنزيل من قيمة القسط" onPress={() => choose(DISCOUNT_REDUCES_INSTALLMENT)} /> : null}
+        </Row>
+      </View>
+    );
   };
 
   /* ── الحساب والمزامنة ── */
@@ -422,6 +480,33 @@ export default function Settings() {
           value={settings.trashRetention}
           onChange={(v) => updateSetting('trashRetention', v as never)} />
 
+        {reviewCount ? (
+          <>
+            <Sub>مراجعة الأقساط من الدفتر</Sub>
+            {review.plan.changes.length ? (
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+                <T size={TYPE.body}>تصحيح مقترح من الدفتر</T>
+                <Num size={TYPE.body} bold>{review.plan.changes.length + ' قسط'}</Num>
+              </Row>
+            ) : null}
+            {review.plan.issues.length ? (
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+                <T size={TYPE.body}>ما لا يحسمه الدفتر</T>
+                <Num size={TYPE.body} bold>{review.plan.issues.length}</Num>
+              </Row>
+            ) : null}
+            {review.unbooked.items.length + review.unbooked.ambiguous.length ? (
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+                <T size={TYPE.body}>خصومات بلا قيد في الدفتر</T>
+                <Num size={TYPE.body} bold>
+                  {review.unbooked.items.length + review.unbooked.ambiguous.reduce((s, a) => s + a.candidates.length, 0)}
+                </Num>
+              </Row>
+            ) : null}
+            <BtnGhost small title="افتح المراجعة" onPress={() => setReviewOpen(true)} />
+          </>
+        ) : null}
+
         <Sub>بياناتك بالأرقام</Sub>
         <Row style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
           <T size={TYPE.body}>إجمالي السجلات</T>
@@ -533,6 +618,76 @@ export default function Settings() {
       />
 
       {/* لوحة السلة */}
+      <Sheet visible={reviewOpen && !!reviewCount} onClose={() => setReviewOpen(false)} title="مراجعة الأقساط من الدفتر" tall>
+        <Note>
+          الدفتر هو المرجع: خصم كل قسط من قيود الخصومات الممنوحة، ونقد كل عقد من قيود دفعاته.
+          لا يتغيّر شيء إلا بموافقتك، وكل تغيير يُسجَّل في سجل العمليات بقيمه قبل وبعد.
+        </Note>
+        {review.plan.changes.length ? (
+          <>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 6, marginBottom: 4 }}>تصحيح مقترح من الدفتر</T>
+            {review.plan.changes.map((c) => (
+              <View key={c.installmentId} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
+                <T size={TYPE.body} med>{c.tenant + ' · عقد ' + c.contractNo + ' · قسط ' + c.due}</T>
+                <T size={TYPE.caption} color={C.muted}>
+                  {'المسدَّد ' + fmt(c.fromPaid) + ' ← ' + fmt(c.toPaid) + ' · خصمه في الدفتر ' + fmt(c.ledgerDiscount)
+                    + (c.discountEntries.length ? ' (' + c.discountEntries.join('، ') + ')' : '')}
+                </T>
+              </View>
+            ))}
+            <View style={{ marginTop: 8 }}>
+              <BtnPrimary title={'طبّق التصحيح (' + review.plan.changes.length + ' قسط)'}
+                onPress={() => dialog({
+                  title: 'تطبيق التصحيح من الدفتر',
+                  body: 'سيُعدَّل مسدَّد ' + review.plan.changes.length + ' قسط ليطابق الدفتر · لا يُمسّ قيد ولا دفعة. متابعة؟',
+                  tone: 'normal',
+                  actions: [
+                    { label: 'تراجع', variant: 'ghost' },
+                    { label: 'طبّق', variant: 'primary', onPress: () => {
+                      try {
+                        const n = applyLedgerRepair(db, review.plan);
+                        toast('صُحّح ' + n + ' قسط من الدفتر');
+                      } catch (e2) {
+                        reportFailure({ title: 'تعذّر التصحيح', e: e2 });
+                      }
+                      bump();
+                    } },
+                  ],
+                })} />
+            </View>
+          </>
+        ) : null}
+        {review.plan.issues.length ? (
+          <>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>ما لا يحسمه الدفتر ويبقى قرارُه لك</T>
+            {review.plan.issues.map((x, i) => (
+              <View key={x.contractId + i} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
+                <T size={TYPE.body} med>{x.tenant + ' · عقد ' + x.contractNo}</T>
+                <T size={TYPE.caption} color={C.muted}>{x.reason}</T>
+              </View>
+            ))}
+          </>
+        ) : null}
+        {review.unbooked.items.length + review.unbooked.ambiguous.length ? (
+          <>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>خصومات بلا قيد في الدفتر</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>
+              حدّد نوع كل خصم: «بعد الاستحقاق» يُنشئ قيداً جديداً بالخصم مربوطاً بالدفعة، و«تنزيل من قيمة القسط» يُخفّض القسط بلا قيد.
+            </T>
+            {review.unbooked.items.map((u) => unbookedRow(u))}
+            {review.unbooked.ambiguous.map((a) => (
+              <View key={a.contractId} style={{ marginTop: 8 }}>
+                <Note tone="danger">
+                  {a.tenant + ' · عقد ' + a.contractNo + ': في دفتره خصم يغطي بعض هذه الدفعات ويبقى ' + fmt(a.gap)
+                    + ' بلا قيد، ولا يحدد الدفتر أي الدفعات · حدّد ما تعرفه أنت.'}
+                </Note>
+                {a.candidates.map((u) => unbookedRow(u))}
+              </View>
+            ))}
+          </>
+        ) : null}
+      </Sheet>
+
       <Sheet visible={trashOpen} onClose={() => setTrashOpen(false)} title="سلة المحذوفات" tall>
         {data.trash.length ? (
           <>

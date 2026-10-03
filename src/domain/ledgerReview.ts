@@ -1,0 +1,287 @@
+/**
+ * مراجعة الأقساط من الدفتر · الدفتر هو المرجع، ولأي قاعدة لأي مستخدم:
+ *  - خصم كل قسط من سطور حساب الخصم 4900 (INSTALLMENT_DISCOUNT_SQL).
+ *  - نقد كل عقد من قيود دفعاته: دائن الإيراد في قيد الدفعة ناقص سطر الخصم فيه.
+ * يُقترح مسدَّد القسط حين يحسمه الدفتر وحده، وما لا يحسمه يُترك كما هو ويُذكر سببه للمستخدم.
+ * ولا يمسّ قيداً ولا دفعة ولا توزيعاً · ولا يُطبَّق شيء إلا بأمر المستخدم (applyLedgerRepair).
+ *
+ * ومعه الخصومات التي لا سطر لها في الدفتر (سُجّلت قبل أن يكون للخصم سطر): تُعرض، ولا يُنشأ لها شيء
+ * حتى يحدد المستخدم نوع كل واحد (bookDiscount) · فيكون قيداً جديداً أو تنزيلاً من القسط، لا تعديلاً لقائم.
+ */
+import type { DB } from '../db/adapter';
+import { logAudit } from './audit';
+import { fmt } from './money';
+import { postBookedDiscount } from './accounting/post';
+import {
+  INSTALLMENT_DISCOUNT_SQL, installmentStoredStatus, DISCOUNT_ACCOUNT, DISCOUNT_ENTRY_SRC,
+  DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind,
+} from './contracts/installments';
+
+export interface LedgerRepairChange {
+  installmentId: string;
+  contractId: string;
+  contractNo: string;
+  tenant: string;
+  due: string;
+  amount: number;
+  fromPaid: number;
+  toPaid: number;
+  fromStatus: string;
+  toStatus: string;
+  /** خصم القسط في الدفتر */
+  ledgerDiscount: number;
+  /** الخصم المنسوب إلى القسط في صفوف الدفعات (للمقارنة) */
+  rowsDiscount: number;
+  /** أرقام القيود التي تسند خصمه */
+  discountEntries: string[];
+  /** قيود الدفعات التي منها نقد العقد */
+  cashEntries: number;
+}
+
+export interface LedgerRepairIssue {
+  contractId: string;
+  contractNo: string;
+  tenant: string;
+  reason: string;
+}
+
+export interface LedgerRepairPlan {
+  changes: LedgerRepairChange[];
+  issues: LedgerRepairIssue[];
+}
+
+interface InstRow { id: string; due_date: string; amount: number; paid: number; status: string; disc: number; rows_disc: number }
+
+const label = (c: { contract_no: string | null; tenant_name: string | null }) => ({
+  contractNo: c.contract_no || 'بلا رقم عقد',
+  tenant: c.tenant_name || 'بلا مستأجر',
+});
+
+/** عقود فيها قسط مسدَّده مع خصمه في الدفتر يتجاوز مبلغه أو مسدَّده سالب · وحدها ما يُنظر فيه */
+function contractsInBreach(db: DB): string[] {
+  return db.all<{ id: string }>(
+    `SELECT DISTINCT i.contract_id AS id FROM contract_installments i
+     WHERE i.status != 'ملغية' AND (i.paid_halalas < 0 OR i.paid_halalas + ${INSTALLMENT_DISCOUNT_SQL} > i.amount_halalas)`
+  ).map((r) => r.id);
+}
+
+/** الاقتراح كاملاً · قراءة محضة */
+export function planLedgerRepair(db: DB): LedgerRepairPlan {
+  const plan: LedgerRepairPlan = { changes: [], issues: [] };
+  for (const cid of contractsInBreach(db)) {
+    const c = db.get<{ contract_no: string | null; tenant_name: string | null }>(
+      `SELECT contract_no, tenant_name FROM contracts WHERE id = ?`, [cid]);
+    const who = label(c ?? { contract_no: null, tenant_name: null });
+    const issue = (reason: string) => plan.issues.push({ contractId: cid, ...who, reason });
+
+    // نقد العقد من الدفتر · كل دفعة لها قيد مرحّل قائم، وإلا فلا يُحسب النقد من الدفتر
+    const orphan = db.get<{ date: string; net: number }>(
+      `SELECT p.date, p.net_halalas AS net FROM contract_payments p
+       LEFT JOIN journal_entries e ON e.id = p.journal_entry_id
+       WHERE p.contract_id = ? AND p.net_halalas > 0
+         AND (e.id IS NULL OR e.status != 'مرحّل' OR e.reversed_by IS NOT NULL)
+       ORDER BY p.date LIMIT 1`, [cid]);
+    if (orphan) {
+      issue(`دفعة ${orphan.date} (${fmt(Number(orphan.net))}) بلا قيد مرحّل قائم في الدفتر · فلا يُعرف نقد العقد من الدفتر`);
+      continue;
+    }
+    const cash = db.get<{ c: number; n: number }>(
+      `SELECT COALESCE(SUM(CASE
+                WHEN l.account_code = '4200' THEN l.credit_halalas - l.debit_halalas
+                WHEN l.account_code = '${DISCOUNT_ACCOUNT}' THEN l.credit_halalas - l.debit_halalas
+                ELSE 0 END), 0) AS c,
+              COUNT(DISTINCT p.journal_entry_id) AS n
+       FROM contract_payments p JOIN journal_lines l ON l.entry_id = p.journal_entry_id
+       WHERE p.contract_id = ?`, [cid])!;
+
+    const insts = db.all<InstRow>(
+      `SELECT i.id, i.due_date, i.amount_halalas AS amount, i.paid_halalas AS paid, i.status,
+              ${INSTALLMENT_DISCOUNT_SQL} AS disc,
+              COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p WHERE p.installment_id = i.id), 0) AS rows_disc
+       FROM contract_installments i WHERE i.contract_id = ? ORDER BY i.due_date, i.sort, i.id`, [cid]
+    ).map((r) => ({ ...r, amount: Number(r.amount), paid: Number(r.paid), disc: Number(r.disc), rows_disc: Number(r.rows_disc) }));
+    const live = insts.filter((i) => i.status !== 'ملغية');
+    const cancelledPaid = insts.filter((i) => i.status === 'ملغية').reduce((s, i) => s + i.paid, 0);
+    const cashLive = Number(cash.c) - cancelledPaid;
+
+    const tooBig = live.find((i) => i.disc > i.amount);
+    if (tooBig) {
+      issue(`خصم قسط ${tooBig.due_date} في الدفتر (${fmt(tooBig.disc)}) أكبر من مبلغه (${fmt(tooBig.amount)})`);
+      continue;
+    }
+    const paidSum = live.reduce((s, i) => s + i.paid, 0);
+    if (paidSum !== cashLive) {
+      issue(`مسدَّد الأقساط (${fmt(paidSum)}) لا يطابق نقد الدفعات في الدفتر (${fmt(cashLive)}) · فلا يُعرف أي الأقساط يُصحَّح`);
+      continue;
+    }
+    const capacity = live.reduce((s, i) => s + (i.amount - i.disc), 0);
+    if (cashLive < capacity) {
+      issue(`على العقد بعد خصومه في الدفتر متبقٍ ${fmt(capacity - cashLive)} ولا يحدد الدفتر أي أقساطه لم تُسدَّد`);
+      continue;
+    }
+    // الدفتر يحسمه: كل قسط حيّ مسدَّد بمبلغه ناقص خصمه
+    for (const i of live) {
+      const toPaid = i.amount - i.disc;
+      if (toPaid === i.paid) continue;
+      const discountEntries = db.all<{ no: string }>(
+        `SELECT DISTINCT e.no FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '${DISCOUNT_ACCOUNT}'
+         WHERE e.status = 'مرحّل' AND e.reversed_by IS NULL AND (
+           (e.src_type = '${DISCOUNT_ENTRY_SRC}' AND e.src_id = ?)
+           OR e.id IN (SELECT journal_entry_id FROM contract_payments WHERE installment_id = ?)
+           OR (e.src_type = '${DISCOUNT_ENTRY_SRC}' AND e.src_id IN (SELECT id FROM contract_payments WHERE installment_id = ?)))
+         ORDER BY e.no`, [i.id, i.id, i.id]).map((r) => r.no);
+      plan.changes.push({
+        installmentId: i.id, contractId: cid, ...who, due: i.due_date, amount: i.amount,
+        fromPaid: i.paid, toPaid, fromStatus: i.status,
+        toStatus: toPaid + i.disc > 0 ? installmentStoredStatus(i.amount, toPaid, i.disc) : 'مستحقة',
+        ledgerDiscount: i.disc, rowsDiscount: i.rows_disc, discountEntries, cashEntries: Number(cash.n),
+      });
+    }
+    if (cashLive > capacity) {
+      issue(`نقد زائد ${fmt(cashLive - capacity)} عن أقساط العقد بعد خصومها في الدفتر · لم يُنسب لقسط ويبقى قرارُه لك`);
+    }
+  }
+  return plan;
+}
+
+/**
+ * تطبيق الاقتراح بأمر المستخدم · كل قسط بمسدَّده وحالته من الاقتراح، بشرط أن يكون كما عُرض،
+ * وكل تغيير في سجل العمليات بقيمه قبل وبعد. لا يمسّ قيداً ولا دفعة ولا توزيعاً.
+ */
+export function applyLedgerRepair(db: DB, plan: LedgerRepairPlan): number {
+  return db.transaction(() => {
+    for (const ch of plan.changes) {
+      const cur = db.get<{ paid: number; status: string }>(
+        `SELECT paid_halalas AS paid, status FROM contract_installments WHERE id = ?`, [ch.installmentId]);
+      if (!cur || Number(cur.paid) !== ch.fromPaid || cur.status !== ch.fromStatus)
+        throw new Error(`تغيّر قسط ${ch.tenant} · ${ch.due} منذ عرض التصحيح · أعد العرض`);
+      db.run(`UPDATE contract_installments SET paid_halalas = ?, status = ? WHERE id = ?`, [ch.toPaid, ch.toStatus, ch.installmentId]);
+      logAudit(db, 'البيانات', 'update', 'تصحيح من الدفتر',
+        `${ch.tenant} · ${ch.contractNo} · ${ch.due}: المسدَّد ${fmt(ch.fromPaid)} ← ${fmt(ch.toPaid)} · خصمه في الدفتر ${fmt(ch.ledgerDiscount)}`
+          + (ch.discountEntries.length ? ' (' + ch.discountEntries.join('، ') + ')' : ''),
+        { paid_halalas: ch.fromPaid, status: ch.fromStatus }, { paid_halalas: ch.toPaid, status: ch.toStatus });
+    }
+    // ما لم يحسمه الدفتر في عقد صُحّح (كالنقد الزائد) يخرج من المراجعة بعد التصحيح · فيُسجَّل لئلا يضيع
+    const touched = new Set(plan.changes.map((c) => c.contractId));
+    for (const x of plan.issues.filter((i) => touched.has(i.contractId))) {
+      logAudit(db, 'البيانات', 'update', 'ما لم يحسمه الدفتر', `${x.tenant} · ${x.contractNo}: ${x.reason}`);
+    }
+    return plan.changes.length;
+  });
+}
+
+/* ═══════════ الخصومات بلا سطر في الدفتر ═══════════ */
+
+export interface UnbookedDiscount {
+  paymentId: string;
+  contractId: string;
+  contractNo: string;
+  tenant: string;
+  date: string;
+  installmentId: string | null;
+  due: string | null;
+  received: number;
+  discount: number;
+  entryNo: string | null;
+}
+
+export interface UnbookedReport {
+  /** خصومات لا سطر لها في الدفتر يقيناً */
+  items: UnbookedDiscount[];
+  /** عقود في دفترها خصم أقل من خصوم صفوفها، ولا يحدد الدفتر أي الدفعات بلا سطر */
+  ambiguous: { contractId: string; contractNo: string; tenant: string; gap: number; candidates: UnbookedDiscount[] }[];
+}
+
+/** دفعة بلا نوع خصم، وفيها خصم، ولا سطر 4900 في قيدها ولا قيد خصم مربوط بها */
+const CANDIDATES = `
+  SELECT p.id AS paymentId, p.contract_id AS contractId, c.contract_no, c.tenant_name, p.date,
+         p.installment_id AS installmentId, i.due_date AS due, p.net_halalas AS received, p.discount_halalas AS discount, e.no AS entryNo
+  FROM contract_payments p
+  LEFT JOIN contracts c ON c.id = p.contract_id
+  LEFT JOIN contract_installments i ON i.id = p.installment_id
+  LEFT JOIN journal_entries e ON e.id = p.journal_entry_id
+  WHERE p.discount_kind IS NULL AND p.discount_halalas > 0
+    AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = p.journal_entry_id AND l.account_code = '${DISCOUNT_ACCOUNT}')
+    AND NOT EXISTS (SELECT 1 FROM journal_entries d WHERE d.src_type = '${DISCOUNT_ENTRY_SRC}' AND d.src_id = p.id)
+  ORDER BY c.tenant_name, p.date, p.created_at`;
+
+export function unbookedDiscounts(db: DB): UnbookedReport {
+  const rows = db.all<{
+    paymentId: string; contractId: string; contract_no: string | null; tenant_name: string | null; date: string;
+    installmentId: string | null; due: string | null; received: number; discount: number; entryNo: string | null;
+  }>(CANDIDATES);
+  const byContract = new Map<string, UnbookedDiscount[]>();
+  for (const r of rows) {
+    const item: UnbookedDiscount = {
+      paymentId: r.paymentId, contractId: r.contractId, ...label(r), date: r.date,
+      installmentId: r.installmentId, due: r.due, received: Number(r.received), discount: Number(r.discount), entryNo: r.entryNo,
+    };
+    const list = byContract.get(r.contractId) ?? [];
+    list.push(item);
+    byContract.set(r.contractId, list);
+  }
+  const report: UnbookedReport = { items: [], ambiguous: [] };
+  for (const [cid, list] of byContract) {
+    // خصم العقد في قيود الخصم المربوطة بأقساطه (قيود ما قبل التطبيق)
+    const linked = Number(db.get<{ s: number }>(
+      `SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS s
+       FROM contract_installments i
+       JOIN journal_entries e ON e.src_type = '${DISCOUNT_ENTRY_SRC}' AND e.src_id = i.id AND e.status = 'مرحّل' AND e.reversed_by IS NULL
+       JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '${DISCOUNT_ACCOUNT}'
+       WHERE i.contract_id = ?`, [cid])!.s);
+    const total = list.reduce((s, x) => s + x.discount, 0);
+    if (linked === 0) report.items.push(...list);
+    else if (linked < total) report.ambiguous.push({ contractId: cid, contractNo: list[0].contractNo, tenant: list[0].tenant, gap: total - linked, candidates: list });
+    // وما غطّته قيود الخصم المربوطة بالأقساط كاملاً فليس بلا سطر
+  }
+  return report;
+}
+
+/**
+ * تحديد نوع خصمٍ بلا سطر في الدفتر · بأمر المستخدم لكل دفعة:
+ *  «بعد الاستحقاق»: قيد جديد بتاريخ الدفعة مربوط بها (مدين 4900 · دائن الإيراد) ثم يُحفظ النوع مع الدفعة.
+ *  «تنزيل من القسط»: يُحفظ النوع ثم يُخفَّض القسط بالخصم · ولا قيد، فالإيراد سُجّل بالمقبوض أصلاً.
+ * لا يُعدَّل قيد قائم، وكل واحد في سجل العمليات · ويُرفض إن تجاوز سقف القسط.
+ */
+export function bookDiscount(db: DB, paymentId: string, kind: DiscountKind): void {
+  const p = db.get<{
+    id: string; contract_id: string; installment_id: string | null; date: string; discount: number;
+    contract_no: string | null; tenant_name: string | null;
+  }>(
+    `SELECT p.id, p.contract_id, p.installment_id, p.date, p.discount_halalas AS discount, c.contract_no, c.tenant_name
+     FROM (${CANDIDATES}) x JOIN contract_payments p ON p.id = x.paymentId
+     LEFT JOIN contracts c ON c.id = p.contract_id
+     WHERE p.id = ?`, [paymentId]);
+  if (!p) throw new Error('الدفعة ليست خصماً بلا سطر في الدفتر · ربما حُدّد نوعه من قبل');
+  const who = label(p);
+  const amount = Number(p.discount);
+  db.transaction(() => {
+    if (kind === DISCOUNT_AFTER_DUE) {
+      const entry = postBookedDiscount(db, {
+        paymentId: p.id, tenant: who.tenant, contractNo: who.contractNo, amount, date: p.date, paymentDate: p.date,
+      });
+      db.run(`UPDATE contract_payments SET discount_kind = ? WHERE id = ?`, [DISCOUNT_AFTER_DUE, p.id]);
+      logAudit(db, 'التحصيل', 'update', 'خصم بعد الاستحقاق بأثر رجعي',
+        `${who.tenant} · ${who.contractNo} · دفعة ${p.date}: ${fmt(amount)} · قيد ${entry?.no ?? ''}`,
+        { discount_kind: null }, { discount_kind: DISCOUNT_AFTER_DUE, journal_no: entry?.no ?? null });
+    } else if (kind === DISCOUNT_REDUCES_INSTALLMENT) {
+      if (!p.installment_id) throw new Error('التنزيل من قيمة القسط يحتاج دفعة على قسط محدد');
+      const before = Number(db.get<{ a: number }>(`SELECT amount_halalas AS a FROM contract_installments WHERE id = ?`, [p.installment_id])!.a);
+      // النوع أولاً: فيخرج الخصم من عدّه المؤقت قبل أن ينزل من مبلغ القسط · فلا يُعدّ مرتين
+      db.run(`UPDATE contract_payments SET discount_kind = ? WHERE id = ?`, [DISCOUNT_REDUCES_INSTALLMENT, p.id]);
+      db.run(`UPDATE contract_installments SET amount_halalas = ? WHERE id = ?`, [before - amount, p.installment_id]);
+      logAudit(db, 'التحصيل', 'update', 'تنزيل من قيمة القسط بأثر رجعي',
+        `${who.tenant} · ${who.contractNo} · دفعة ${p.date}: ${fmt(amount)} · يخالف قيمة العقد الموثّقة في منصة إيجار`,
+        { amount_halalas: before, discount_kind: null }, { amount_halalas: before - amount, discount_kind: DISCOUNT_REDUCES_INSTALLMENT });
+    } else {
+      throw new Error('نوع خصم غير معروف');
+    }
+    // السقف بعد التحديد · خصم لم يكن يُعدّ (في عقد له قيود خصم أخرى) قد يتجاوزه فيُرفض كله
+    if (p.installment_id) {
+      const over = db.get<{ o: number }>(
+        `SELECT i.paid_halalas + ${INSTALLMENT_DISCOUNT_SQL} - i.amount_halalas AS o FROM contract_installments i WHERE i.id = ?`,
+        [p.installment_id]);
+      if (over && Number(over.o) > 0) throw new Error(`الخصم يتجاوز المتبقي على القسط بـ${fmt(Number(over.o))} · لم يُسجَّل`);
+    }
+  });
+}

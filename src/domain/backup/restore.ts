@@ -12,6 +12,7 @@ import { SCHEMA_VERSION } from '../../db/schema';
 import type { DB } from '../../db/adapter';
 import { tableCounts, makeSafetyBackup, ensureFreeSpace } from './create';
 import { semanticIssues } from './semantic';
+import { planLedgerRepair, applyLedgerRepair, type LedgerRepairPlan } from '../ledgerReview';
 import { seed, ensureDeviceId } from '../../db/seed';
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
 
@@ -29,6 +30,11 @@ export interface RestorePlan {
   attachmentsBytes: number;
   /** مرفقات البيانات الحالية · الجانبان يُعرضان بالبنود نفسها */
   currentAttachments: { count: number; bytes: number };
+  /**
+   * تصحيح من دفتر النسخة جرى على نسخة التجهيز وحدها · يُعرض قبل التبديل ولا يمسّ البيانات الحية إلا بالموافقة.
+   * null حين لا تحتاج النسخة تصحيحاً.
+   */
+  ledgerRepair: LedgerRepairPlan | null;
 }
 
 export interface RestoreResult {
@@ -117,6 +123,7 @@ export async function prepareRestore(
 
     let migrated = false;
     let incoming: Record<string, number> = {};
+    let ledgerRepair: LedgerRepairPlan | null = null;
     {
       let probe: DB | null = null;
       try {
@@ -127,18 +134,31 @@ export async function prepareRestore(
         const ic = probe.get<Record<string, string>>(`PRAGMA integrity_check`);
         if (!ic || String(Object.values(ic)[0]) !== 'ok')
           throw new RestoreError('قاعدة النسخة تالفة (integrity_check)');
-        // الفحص الدلالي: قيد مرحّل غير متوازن أو قسط يتجاوزه مسدَّده مع خصمه يرفض الاستعادة كاملة
-        const issues = semanticIssues(probe);
-        if (issues.length) throw new RestoreError('النسخة مرفوضة · ' + issues.join(' · '));
-        // قراءة من كل جدول أساسي + مطابقة الأعداد بالبيان
-        incoming = tableCounts(probe);
+        // قراءة من كل جدول أساسي + مطابقة الأعداد بالبيان · قبل أي تصحيح فيُطابَق ما في الملف كما هو
+        const counted = tableCounts(probe);
         // حزام: فتحٌ أنشأ قاعدة فارغة بدل المجهَّزة يُرفض ولا يمرّ صامتاً
-        if (!('properties' in incoming) || !('journal_entries' in incoming))
+        if (!('properties' in counted) || !('journal_entries' in counted))
           throw new RestoreError('تعذّر فتح قاعدة النسخة للفحص · لم يُقرأ منها جدول واحد');
         for (const [t, expected] of Object.entries(manifest.table_counts)) {
-          if (incoming[t] !== undefined && !migrated && incoming[t] !== expected)
-            throw new RestoreError(`عدد سجلات «${t}» لا يطابق البيان (${incoming[t]} بدل ${expected})`);
+          if (counted[t] !== undefined && !migrated && counted[t] !== expected)
+            throw new RestoreError(`عدد سجلات «${t}» لا يطابق البيان (${counted[t]} بدل ${expected})`);
         }
+        // الفحص الدلالي: قيد مرحّل غير متوازن أو قسط يتجاوزه مسدَّده مع خصمه يرفض الاستعادة كاملة ·
+        // إلا ما يحسمه دفتر النسخة نفسه: يُصحَّح على نسخة التجهيز ويُعرض على المستخدم قبل التبديل
+        let issues = semanticIssues(probe);
+        if (issues.length) {
+          const plan = planLedgerRepair(probe);
+          if (plan.changes.length) {
+            applyLedgerRepair(probe, plan);
+            issues = semanticIssues(probe);
+            ledgerRepair = plan;
+          }
+          if (issues.length) {
+            throw new RestoreError('النسخة مرفوضة · ' + issues.join(' · ')
+              + (plan.issues.length ? ' · وما لا يحسمه دفترها: ' + plan.issues.map((x) => `${x.tenant} · ${x.contractNo}: ${x.reason}`).join(' · ') : ''));
+          }
+        }
+        incoming = ledgerRepair ? tableCounts(probe) : counted;
         probe.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
       } finally {
         try { probe?.close(); } catch { /* مغلقة */ }
@@ -149,7 +169,7 @@ export async function prepareRestore(
     // مرفقات البيانات الحالية بالبنود نفسها · فيُرى ما سيُخسر من الجانبين لا من جانب واحد
     const live = liveBlobs(env.db);
     return {
-      manifest, stagingDir, stagedDbPath, migrated, incoming,
+      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair,
       current: tableCounts(env.db),
       attachmentsBytes,
       currentAttachments: { count: live.length, bytes: live.reduce((s, b) => s + Number(b.size_bytes), 0) },

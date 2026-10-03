@@ -21,8 +21,8 @@ describe('المحرّك المحاسبي — الأساس', () => {
   test('القاعدة تُزرع بالحسابات التسعة عشر', () => {
     const db = memDb();
     const n = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM accounts`)!;
-    expect(Number(n.n)).toBe(24); // 19 + محتجزات الغير 1260 + فروق التقريب 5900 + ضريبة مدخلات 1270 + أرصدة مستأجرين 2410 + محفظة إيجار 1265
-    for (const code of ['2400', '2450', '1250', '4300', '5900', '1270', '2410']) {
+    expect(Number(n.n)).toBe(25); // 19 + محتجزات الغير 1260 + فروق التقريب 5900 + ضريبة مدخلات 1270 + أرصدة مستأجرين 2410 + محفظة إيجار 1265 + خصومات ممنوحة 4900
+    for (const code of ['2400', '2450', '1250', '4300', '5900', '1270', '2410', '4900']) {
       expect(db.get(`SELECT code FROM accounts WHERE code = ?`, [code])).toBeTruthy();
     }
     db.close();

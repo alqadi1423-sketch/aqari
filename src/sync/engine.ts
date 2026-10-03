@@ -19,6 +19,7 @@ import { SYNC_TABLES, SYNC_RANK, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
 import { SEED_SCRIPTS, seedScriptId } from '../db/seed';
+import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import type { Cursor, RemoteDoc, RemoteStore, RowData, SyncReport } from './types';
 
 const nowIso = () => new Date().toISOString();
@@ -214,7 +215,16 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
 /** ما يمسّه الصف الوارد من فحوص الاستعادة: صفه نفسه، وقيده، وقسطه، ودفعته */
 function scopeOf(db: DB, doc: RemoteDoc): SemanticScope {
   const s: SemanticScope = { rows: [{ table: doc.t, where: pkWhere(doc.t), params: pkParams(doc.t, doc.k) }] };
-  if (doc.t === 'journal_entries') s.entryIds = [doc.k];
+  if (doc.t === 'journal_entries') {
+    s.entryIds = [doc.k];
+    // قيد خصم وارد يمسّ سقف قسطه: مربوط بالقسط نفسه، أو بدفعة فيُفحص قسطها وخصمها معها
+    const e = db.get<{ t: string | null; s: string | null }>(`SELECT src_type AS t, src_id AS s FROM journal_entries WHERE id = ?`, [doc.k]);
+    if (e?.t === DISCOUNT_ENTRY_SRC && e.s) {
+      const p = db.get<{ i: string | null }>(`SELECT installment_id AS i FROM contract_payments WHERE id = ?`, [e.s]);
+      if (p) { s.paymentIds = [e.s]; s.installmentIds = p.i ? [p.i] : []; }
+      else s.installmentIds = [e.s];
+    }
+  }
   if (doc.t === 'contract_installments') s.installmentIds = [doc.k];
   if (doc.t === 'contract_payments') {
     s.paymentIds = [doc.k];

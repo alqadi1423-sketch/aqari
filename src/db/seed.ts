@@ -34,6 +34,7 @@ export const MIGRATED_SYSTEM_ACCOUNTS: Array<{ code: string; name: string; type:
   { code: '1265', name: 'محفظة إيجار', type: 'أصل', grp: null },
   { code: '1270', name: 'ضريبة مدخلات قابلة للاسترداد', type: 'أصل', grp: null },
   { code: '2410', name: 'أرصدة مستأجرين دائنة', type: 'خصم', grp: null },
+  { code: '4900', name: 'خصومات ممنوحة', type: 'مصروف', grp: null },
   { code: '5900', name: 'فروق تقريب', type: 'مصروف', grp: null },
 ];
 
@@ -127,7 +128,9 @@ export function ensureDeviceId(db: DB, keep?: string | null): string {
   }
   const cur = db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_id'`);
   if (cur?.value) return cur.value;
-  const id = 'b' + uid().slice(0, 7);
+  // من الجزء العشوائي لا من أول المعرّف: أوله ساعةُ الإنشاء، فجهازان يُزرعان في اللحظة نفسها
+  // كانا يأخذان الهوية نفسها ويترك كلٌّ منهما كتابة الآخر ظناً أنها صداه
+  const id = 'b' + uid().slice(-10);
   db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_id', ?)`, [id]);
   return id;
 }
