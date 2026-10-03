@@ -12,6 +12,7 @@ import { SCHEMA_VERSION } from '../../db/schema';
 import type { DB } from '../../db/adapter';
 import { tableCounts, makeSafetyBackup, ensureFreeSpace } from './create';
 import { semanticIssues } from './semantic';
+import { seed, ensureDeviceId } from '../../db/seed';
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
 
 const dec = new TextDecoder();
@@ -193,8 +194,9 @@ export async function commitRestore(
       + (e instanceof Error ? e.message : ''));
   }
 
-  // ٦) التبديل الذرّي
+  // ٦) التبديل الذرّي · وهوية هذا الجهاز في المزامنة تُحفظ قبله لتعود إليه بعده
   onProgress?.('جاري التبديل إلى النسخة');
+  const deviceId = env.db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_id'`)?.value ?? null;
   const preSwap = env.dbPath + '.pre-restore';
   env.closeLive();
   for (const suffix of ['-wal', '-shm']) {
@@ -216,6 +218,10 @@ export async function commitRestore(
     const ic = fresh.get<Record<string, string>>(`PRAGMA integrity_check`);
     if (!ic || String(Object.values(ic)[0]) !== 'ok')
       throw new RestoreError('فشل الفحص بعد التبديل');
+    // النسخة تحمل هوية الجهاز الذي صنعها (أو لا هوية) · وهذا الجهاز يبقى هو، وإلا ترك كلٌّ
+    // من الجهازين كتابة الآخر ظناً أنها صداه. ونسخة بلا علامة الزرع تأخذ ما ينقصها الآن لا عند التشغيل التالي
+    seed(fresh);
+    ensureDeviceId(fresh, deviceId);
 
     // دمج المرفقات من staging بالنقل لا بالقراءة · الذاكرة لا تُحمَّل
     env.fs.mkdirp(env.attachmentsDir);

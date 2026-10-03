@@ -5,7 +5,7 @@
  * قواعد القاعدة نفسها تُطبَّق على ما كُتب قبل وجودها أو خارجها:
  *  ١) لا قيد مرحّل غير متوازن ولا قيد مرحّل بلا سطور.
  *  ٢) لا قسط مسدَّده مع مجموع خصومه يتجاوز مبلغه، ولا مسدَّد سالب.
- *  ٣) لا دفعة على قسط بصافٍ أو خصم سالب.
+ *  ٣) لا دفعة على قسط بصافٍ أو خصم سالب، ولا دفعة تتجاوز وحدها مبلغ قسطها.
  *  ٤) كل مبلغ بالهللات عدد صحيح (لا كسر ولا نص) في كل عمود مالي.
  * كل بند جملة عربية تسمّي موضعه · وأي بند يرفض ما ورد كاملاً.
  */
@@ -163,6 +163,22 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
   if (negative.length) {
     out.push('دفعة على قسط بصافٍ أو خصم سالب: ' + listOf(
       negative.slice(0, SHOW).map((r) => `${r.tenant || 'بلا مستأجر'} · ${r.date}`), negative.length));
+  }
+
+  /* ٣ب) دفعة تتجاوز وحدها مبلغ قسطها · وهو أول ما يفحصه محفّز إدراج الدفعة، فلا تمرّ الاستعادة
+     بما ترفضه المزامنة */
+  const big = db.all<{ tenant: string | null; date: string; total: number; amount: number }>(
+    `SELECT c.tenant_name AS tenant, p.date, p.net_halalas + p.discount_halalas AS total, i.amount_halalas AS amount
+     FROM contract_payments p
+     JOIN contract_installments i ON i.id = p.installment_id
+     LEFT JOIN contracts c ON c.id = p.contract_id
+     WHERE p.net_halalas + p.discount_halalas > i.amount_halalas AND ${pay.sql}
+     ORDER BY p.date`, pay.params
+  );
+  if (big.length) {
+    out.push('دفعة تتجاوز وحدها مبلغ قسطها: ' + listOf(
+      big.slice(0, SHOW).map((r) => `${r.tenant || 'بلا مستأجر'} · ${r.date} (${fmt(Number(r.total))} من ${fmt(Number(r.amount))})`),
+      big.length));
   }
 
   return out;

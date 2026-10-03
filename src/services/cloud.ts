@@ -19,7 +19,7 @@ import { createSession, type Session, type SessionUser } from '../cloud/session'
 import { FirestoreRemote } from '../cloud/firestore';
 import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, type DriveBackup, type DriveIO } from '../cloud/drive';
 import { enableSync, syncOnce, syncStatus, setSyncState, type SyncStatus } from '../sync/engine';
-import { getMeta } from '../repos/settings';
+import { ensureDeviceId } from '../db/seed';
 import { expoHasher } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { createBackup, ensureFreeSpace } from '../domain/backup/create';
@@ -109,8 +109,11 @@ export async function syncNow(): Promise<void> {
   running = true;
   patch({ syncing: true, lastError: null });
   try {
+    // القاعدة قد تكون استُبدلت باستعادة: بلا حالة مزامنة أو بحساب آخر أو بالتقاط متوقف ·
+    // enableSync لا يفعل شيئاً للحساب نفسه سوى تشغيل الالتقاط، ولغيره ينضمّ من جديد
+    enableSync(db, state.user.uid);
     const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => s.idToken() });
-    const rep = await syncOnce(db, remote, getMeta(db, 'device_id') ?? 'device', (msg) => patch({ progress: msg }));
+    const rep = await syncOnce(db, remote, ensureDeviceId(db), (msg) => patch({ progress: msg }));
     setSyncState(db, 'last_error', null);
     if (rep.applied || rep.conflicts) onData();
   } catch (e) {

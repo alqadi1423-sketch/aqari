@@ -4,7 +4,7 @@
 import * as SQLite from 'expo-sqlite';
 import { applyOpenPragmas, makeTransactionRunner, type DB, type SqlParams } from './adapter';
 import { migrate } from './migrations';
-import { seed } from './seed';
+import { seed, ensureDeviceId } from './seed';
 import { perfSqlTick } from '../perf/perf';
 
 const tNow = (): number =>
@@ -68,6 +68,7 @@ export function appDb(): AppDB {
     _appDb = openExpoDb();
     migrate(_appDb);
     seed(_appDb);
+    ensureDeviceId(_appDb);
   }
   return _appDb;
 }
