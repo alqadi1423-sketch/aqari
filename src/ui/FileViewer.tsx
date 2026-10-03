@@ -7,7 +7,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal, View, FlatList, Pressable, useWindowDimensions,
-  TextInput, ActivityIndicator, Image, PanResponder, Text, Platform,
+  TextInput, ActivityIndicator, Image, PanResponder, Text, Platform, I18nManager,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -16,7 +16,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
-import { File } from 'expo-file-system';
+import { File, Paths } from 'expo-file-system';
 import { T, Num, BtnGhost, BtnPrimary, Row } from './components';
 import { PickerSheet } from './Sheet';
 import { Icon, type IconName } from './icons';
@@ -241,12 +241,20 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
   const listRef = useRef<FlatList<ViewerFile>>(null);
   const cur = files[index];
   /*
-   * الشريط الأفقي يُرسم باتجاه ثابت من اليسار إلى اليمين والملفات معكوسة، فيأتي التالي من اليسار كما يُقرأ
-   * بالعربية · ولمَ لا «inverted» مع اتجاه التطبيق العربي: أندرويد لا يطبّق فيه موضع البدء ولا تطابق إزاحاتُه
-   * أرقامَ الصفحات، فكان الشريط العلوي يسمّي ملفاً والشاشة تعرض جاره (وجده الفحص على المحاكي).
+   * الشريط الأفقي باتجاه التطبيق العربي كما هو: الأول على اليمين والتالي يأتي من اليسار · فلا «inverted» ولا
+   * اتجاه مفروض: كلاهما قلب الحساب فكان الشريط العلوي يسمّي ملفاً والشاشة تعرض جاره (وجده الفحص على المحاكي).
+   * وأندرويد بالعربية يضع موضع البدء من اليمين لكنه يبلّغ إزاحة التمرير من اليسار · فتُقرأ معكوسة.
    */
-  const pages = useMemo(() => [...files].reverse(), [files]);
-  const toFile = (pos: number) => files.length - 1 - pos;
+  const pageAt = (x: number) => {
+    const pos = Math.round(x / width);
+    return Platform.OS === 'android' && I18nManager.isRTL ? files.length - 1 - pos : pos;
+  };
+  /** الانتقال بالزر · موضعه بالرقم نفسه الذي بدأ به الشريط */
+  const goTo = (i: number) => {
+    if (i < 0 || i >= files.length) return;
+    listRef.current?.scrollToIndex({ index: i, animated: true });
+    setIndex(i);
+  };
 
   // سحب لأعلى على الشريط السفلي يفتح بطاقة المعلومات
   const pan = useMemo(() => PanResponder.create({
@@ -288,7 +296,16 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
       // من أندرويد ١٣ يحفظ في المعرض بلا إذن قراءة · الطلب للكتابة وحدها
       const perm = await MediaLibrary.requestPermissionsAsync(true);
       if (!perm.granted) { toast('لم يؤذن بالوصول إلى المعرض'); return; }
-      await MediaLibrary.saveToLibraryAsync(uri);
+      // باسم الملف المعروض لا ببصمته · نسخة مؤقتة تُحذف بعد الحفظ
+      const base = cur.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim() || 'ملف';
+      const named = new File(Paths.cache, base.toLowerCase().endsWith('.' + cur.ext) ? base : base + '.' + cur.ext);
+      try {
+        if (named.exists) named.delete();
+        new File(uri).copy(named);
+        await MediaLibrary.saveToLibraryAsync(named.uri);
+      } finally {
+        try { if (named.exists) named.delete(); } catch { /* يكنسه الإقلاع */ }
+      }
       toast('حُفظ في معرض الجهاز');
     } catch (e) {
       reportFailure({ title: 'تعذّر الحفظ في المعرض', e });
@@ -391,25 +408,24 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
         ) : (
           <FlatList
             ref={listRef}
-            data={pages}
+            data={files}
             extraData={index}
             horizontal
             pagingEnabled
-            style={{ direction: 'ltr' }}
-            initialScrollIndex={toFile(index)}
+            initialScrollIndex={index}
             getItemLayout={(_d, i) => ({ length: width, offset: width * i, index: i })}
             keyExtractor={(f) => f.attId}
             showsHorizontalScrollIndicator={false}
             onMomentumScrollEnd={(e) => {
-              const pos = Math.round(e.nativeEvent.contentOffset.x / width);
-              if (pos >= 0 && pos < files.length) setIndex(toFile(pos));
+              const i = pageAt(e.nativeEvent.contentOffset.x);
+              if (i >= 0 && i < files.length) setIndex(i);
             }}
             windowSize={3}
             initialNumToRender={1}
             maxToRenderPerBatch={2}
-            renderItem={({ item, index: pos }) => {
+            renderItem={({ item, index: i }) => {
               const k = kindOf(item);
-              const active = toFile(pos) === index;
+              const active = i === index;
               if (k === 'image') return <ImagePage file={item} width={width} />;
               if (k === 'pdf') return <PdfPage file={item} width={width} active={active} />;
               if (k === 'video' || k === 'audio') return <MediaPage file={item} width={width} active={active} audio={k === 'audio'} />;
@@ -417,6 +433,21 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
             }}
           />
         )}
+
+        {/* التالي والسابق · عارض PDF الأصلي يأخذ السحب الأفقي لنفسه فلا يُغادَر بالسحب وحده ·
+            التالي على اليسار والسابق على اليمين كاتجاه القراءة، ولا يظهر سهمٌ لا ملف وراءه */}
+        {exists && index < files.length - 1 ? (
+          <Pressable accessibilityLabel="الملف التالي" onPress={() => goTo(index + 1)}
+            style={{ position: 'absolute', top: '46%', end: 8, backgroundColor: 'rgba(0,0,0,.5)', borderRadius: 999, padding: 10 }}>
+            <View style={{ transform: [{ scaleX: -1 }] }}><Icon name="back" size={20} color="#fff" /></View>
+          </Pressable>
+        ) : null}
+        {exists && index > 0 ? (
+          <Pressable accessibilityLabel="الملف السابق" onPress={() => goTo(index - 1)}
+            style={{ position: 'absolute', top: '46%', start: 8, backgroundColor: 'rgba(0,0,0,.5)', borderRadius: 999, padding: 10 }}>
+            <Icon name="back" size={20} color="#fff" />
+          </Pressable>
+        ) : null}
 
         {/* الشريط السفلي · سحبه لأعلى يفتح بطاقة المعلومات */}
         <View {...pan.panHandlers} style={{
