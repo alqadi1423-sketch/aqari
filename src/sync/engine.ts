@@ -352,8 +352,23 @@ function applyOne(
         upsertRow(db, doc.t, stripDerived(doc.t, doc.d!), cols(doc.t));
       }
       if (!doc.del) {
-        // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها
-        const issues = semanticIssues(db, scopeOf(db, doc), money);
+        // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·
+        // ومسدَّد القسط الذي يمسّه الصف يُحسب قبل الفحص لا بعد الوارد كله: خصمٌ وصل على قسطٍ سُدّد من
+        // جهاز آخر يُقرأ مع مسدَّدٍ محدود بمبلغه ناقصاً الخصم، لا مع رقمٍ مخزَّن قبل وصوله (وجده الاختبار العشوائي)
+        const scope = scopeOf(db, doc);
+        const insts = new Set(scope.installmentIds ?? []);
+        if (doc.t === 'contract_payments') for (const i of installmentsOfPayment(db, doc.k)) insts.add(i);
+        // ويُترك الحساب إن أخرج قسطاً مختلّاً (دفعة سالبة أو خصم فوق المبلغ) · فيسمّي الفحص العلّة بنص الاستعادة
+        if (insts.size) {
+          try {
+            db.transaction(() => {
+              recomputeInstallments(db, [...insts]);
+              if (db.get(`SELECT 1 FROM contract_installments WHERE id IN (SELECT value FROM json_each(?)) AND paid_halalas < 0`, [JSON.stringify([...insts])]))
+                throw new Error('مسدَّد سالب');
+            });
+          } catch { /* المخزَّن كما هو */ }
+        }
+        const issues = semanticIssues(db, scope, money);
         if (issues.length) throw new Error('الوارد مرفوض · ' + issues.join(' · '));
       }
       if (pending) db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
