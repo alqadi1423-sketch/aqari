@@ -5,7 +5,7 @@
  * الذاكرة لا تحمل الأرشيف والمرفقات معاً أثناء نسخة الأمان · هذا ما كان يقتل التطبيق.
  */
 import { joinPath } from '../../files/fsAdapter';
-import { liveBlobs } from '../../files/store';
+import { liveBlobs, isSafeBlobName } from '../../files/store';
 import { unzipYielding, yieldUi, archiveFailureText } from './zipStream';
 import { currentSchemaVersion, migrate, NewerSchemaError } from '../../db/migrations';
 import { SCHEMA_VERSION } from '../../db/schema';
@@ -35,6 +35,23 @@ export interface RestorePlan {
    * null حين لا تحتاج النسخة تصحيحاً.
    */
   ledgerRepair: LedgerRepairPlan | null;
+}
+
+/**
+ * أسماء المرفقات في بيان النسخة · بصمة وامتداد صريحان لا غير، ولا تكرار.
+ * يُفحص قبل أي كتابة إلى القرص · فالاسم يُبنى منه مسار في مجلد التجهيز ثم في مجلد المرفقات.
+ */
+export function assertSafeManifestFiles(manifest: BackupManifest): void {
+  if (!Array.isArray(manifest.files)) throw new RestoreError('بيان النسخة غير صالح (قائمة المرفقات)');
+  const seen = new Set<string>();
+  for (const f of manifest.files) {
+    if (!f || !isSafeBlobName(f.sha256, f.ext)) {
+      throw new RestoreError('النسخة مرفوضة · في بيانها مرفق باسم غير صالح، فلا يُكتب منها شيء');
+    }
+    const name = f.sha256 + '.' + f.ext;
+    if (seen.has(name)) throw new RestoreError('النسخة مرفوضة · مرفق مكرر في بيانها');
+    seen.add(name);
+  }
 }
 
 export interface RestoreResult {
@@ -87,6 +104,9 @@ export async function prepareRestore(
       throw new RestoreError('هذا الملف ليس نسخة احتياطية من عقاري');
     if (manifest.schema_version > SCHEMA_VERSION)
       throw new NewerSchemaError(manifest.schema_version, SCHEMA_VERSION);
+    // اسم كل مرفق يُبنى من بيان النسخة · فيُفحص شكله قبل أن يُكتب بايت: بصمة وامتداد لا غير،
+    // وإلا كتبت نسخةٌ مصنوعة باسم فيه «../» أيَّ ملف في مساحة التطبيق قبل أن يبدأ التحقق
+    assertSafeManifestFiles(manifest);
 
     // ٣) الاستخراج إلى staging · البيانات الحالية لم تُمسّ · تنفّس بعد كل ملف
     env.fs.write(stagedDbPath, entries['data.db']);
@@ -139,6 +159,11 @@ export async function prepareRestore(
         // حزام: فتحٌ أنشأ قاعدة فارغة بدل المجهَّزة يُرفض ولا يمرّ صامتاً
         if (!('properties' in counted) || !('journal_entries' in counted))
           throw new RestoreError('تعذّر فتح قاعدة النسخة للفحص · لم يُقرأ منها جدول واحد');
+        // بصمات المرفقات وامتداداتها في قاعدة النسخة تصير أسماء ملفات وتدخل صفحات العرض ·
+        // فما ليس بصمةً وامتداداً صريحين يرفض النسخة كاملة
+        const badBlobs = probe.all<{ sha256: unknown; ext: unknown }>(`SELECT sha256, ext FROM blobs`)
+          .filter((b) => !isSafeBlobName(b.sha256, b.ext));
+        if (badBlobs.length) throw new RestoreError(`النسخة مرفوضة · ${badBlobs.length} مرفق باسم غير صالح في قاعدتها`);
         for (const [t, expected] of Object.entries(manifest.table_counts)) {
           if (counted[t] !== undefined && !migrated && counted[t] !== expected)
             throw new RestoreError(`عدد سجلات «${t}» لا يطابق البيان (${counted[t]} بدل ${expected})`);

@@ -24,7 +24,7 @@ import { useToast } from './Toast';
 import { useDialog } from './AppDialog';
 import { C, FONT_BOLD } from './theme';
 import { LIB_CATS, libCat, libSizeLabel, updateLibraryFile } from '../domain/library';
-import { softDeleteAttachment, unlinkAttachment } from '../files/store';
+import { softDeleteAttachment, unlinkAttachment, isSafeBlobName } from '../files/store';
 import { dfmt } from '../domain/dates';
 import { joinPath } from '../files/fsAdapter';
 import { appDataRoot } from '../files/expoFs';
@@ -67,11 +67,17 @@ function ImagePage({ file, width }: { file: ViewerFile; width: number }) {
     if (!thumb) thumbUri(file.sha256, file.ext, file.mime).then(setThumb).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.sha256]);
+  // مسار الصورة يُبنى من بصمة المرفق وامتداده · لا يدخل الصفحة نصّاً في وسم، بل قيمةً مُرمَّزة
+  // في السكربت (JSON مع تهريب «<») · وسياسة المحتوى تمنع الشبكة وأي مصدر غير ملف محلي، فلو
+  // تسلّل نص إلى الصفحة لم يجد طريقاً يرسل منه شيئاً
+  const src = isSafeBlobName(file.sha256, file.ext) ? fileUriOf(file) : '';
   const html = `<!DOCTYPE html><html><head>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src file:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
     <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=8">
     <style>body{margin:0;background:#14171D;min-height:100vh;display:flex;align-items:center;justify-content:center}
     img{max-width:100vw;max-height:100vh;transition:transform .2s}</style></head>
-    <body><img id="im" src="${fileUriOf(file)}"><script>
+    <body><img id="im"><script>
+    document.getElementById('im').src = ${JSON.stringify(src).replace(/</g, '\\u003c')};
     let rot=0; function rotate(){rot=(rot+90)%360; document.getElementById('im').style.transform='rotate('+rot+'deg)';}
     document.getElementById('im').addEventListener('dblclick',()=>{});
     </script></body></html>`;
@@ -90,10 +96,10 @@ function ImagePage({ file, width }: { file: ViewerFile; width: number }) {
         ref={webRef}
         source={{ html, baseUrl: 'file:///' }}
         style={{ flex: 1, backgroundColor: '#14171D' }}
-        originWhitelist={['*']}
+        originWhitelist={['file://*', 'about:*']}
         allowFileAccess
-        allowFileAccessFromFileURLs
-        allowUniversalAccessFromFileURLs
+        allowFileAccessFromFileURLs={false}
+        allowUniversalAccessFromFileURLs={false}
         setBuiltInZoomControls
         setDisplayZoomControls={false}
         onLoadEnd={() => setLoaded(true)}

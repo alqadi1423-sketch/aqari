@@ -42,9 +42,15 @@ export interface AttachmentRow {
   size_bytes: number;
 }
 
+/** شكل البصمة والامتداد المقبولان · منهما يُبنى اسم الملف على القرص ويدخل صفحات العرض */
+export const SHA256_RE = /^[0-9a-f]{64}$/;
+export const EXT_RE = /^[a-z0-9]{1,5}$/;
+export const isSafeBlobName = (sha: unknown, ext: unknown): boolean =>
+  typeof sha === 'string' && typeof ext === 'string' && SHA256_RE.test(sha) && EXT_RE.test(ext);
+
 export function extOf(name: string | undefined, mime?: string): string {
   const fromName = name && name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
-  if (fromName && fromName.length <= 5) return fromName;
+  if (fromName && EXT_RE.test(fromName)) return fromName;
   const mimeMap: Record<string, string> = {
     'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
     'application/pdf': 'pdf',
