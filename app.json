@@ -10,14 +10,14 @@
     "backgroundColor": "#F6F4EE",
     "primaryColor": "#1E6E5C",
     "ios": {
-      "bundleIdentifier": "com.rekaz.aqari",
+      "bundleIdentifier": "com.aqari.app",
       "supportsTablet": true,
       "infoPlist": {
         "CFBundleAllowMixedLocalizations": true
       }
     },
     "android": {
-      "package": "com.rekaz.aqari",
+      "package": "com.aqari.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundImage": "./assets/adaptive-icon-bg.png",

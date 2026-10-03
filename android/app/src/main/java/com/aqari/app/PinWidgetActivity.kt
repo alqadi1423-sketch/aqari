@@ -1,4 +1,4 @@
-package com.rekaz.aqari
+package com.aqari.app
 
 import android.app.Activity
 import android.appwidget.AppWidgetManager

@@ -1,4 +1,4 @@
-package com.rekaz.aqari
+package com.aqari.app
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
