@@ -3,7 +3,7 @@
  * ولا يُسلَّم ملفٌ مشفّر قبل أن يُفكّ ويطابق ما شُفّر بصمةً: تشفيرٌ لا يُفكّ نسخةٌ ضائعة.
  */
 import type { BackupEnv } from './types';
-import { encryptArchive, decryptArchive } from './encryption';
+import { encryptArchiveWithKey, decryptArchive } from './encryption';
 
 export async function sealBackupFile(
   env: BackupEnv, path: string, password: string, onProgress?: (msg: string) => void, iterations?: number,
@@ -12,10 +12,10 @@ export async function sealBackupFile(
   if (!env.hasher) throw new Error('وحدة التجزئة غير متاحة');
   let plain: Uint8Array | null = env.fs.read(path);
   const before = await env.hasher(plain);
-  const sealed = await encryptArchive(plain, password, env.cipher, { onProgress, iterations });
+  const { sealed, key } = await encryptArchiveWithKey(plain, password, env.cipher, { onProgress, iterations });
   plain = null;
   onProgress?.('جاري التحقق من النسخة المشفّرة');
-  const back = await decryptArchive(sealed, password, env.cipher);
+  const back = await decryptArchive(sealed, password, env.cipher, undefined, key);
   if ((await env.hasher(back)) !== before) throw new Error('النسخة المشفّرة لا تُفكّ إلى الأصل · لم تُسلَّم');
   env.fs.write(path, sealed);
   // ما على القرص هو ما شُفّر وتُحقّق منه

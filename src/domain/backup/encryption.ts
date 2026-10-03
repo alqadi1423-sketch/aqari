@@ -67,6 +67,14 @@ export async function encryptArchive(
   plain: Uint8Array, password: string, p: CipherProvider,
   opts: { iterations?: number; chunk?: number; onProgress?: (msg: string) => void } = {},
 ): Promise<Uint8Array> {
+  return (await encryptArchiveWithKey(plain, password, p, opts)).sealed;
+}
+
+/** مع المفتاح المشتق · ليُتحقق من الملف بفكّه دون اشتقاقٍ ثانٍ (الاشتقاق مقصودٌ بطؤه) */
+export async function encryptArchiveWithKey(
+  plain: Uint8Array, password: string, p: CipherProvider,
+  opts: { iterations?: number; chunk?: number; onProgress?: (msg: string) => void } = {},
+): Promise<{ sealed: Uint8Array; key: Uint8Array }> {
   if (!password) throw new Error('كلمة المرور فارغة');
   const iterations = opts.iterations ?? DEFAULT_ITERATIONS;
   const chunk = opts.chunk ?? CHUNK;
@@ -83,11 +91,13 @@ export async function encryptArchive(
     parts.push(await p.seal(key, nonce, plain.subarray(i * chunk, last ? plain.length : (i + 1) * chunk), aad));
     if (i % 4 === 3) { opts.onProgress?.(`جاري التشفير · ${i + 1} من ${full + 1}`); await tick(); }
   }
-  return concat(parts);
+  return { sealed: concat(parts), key };
 }
 
 export async function decryptArchive(
   bytes: Uint8Array, password: string, p: CipherProvider, onProgress?: (msg: string) => void,
+  /** مفتاحٌ اشتُقّ لهذا الملف نفسه (encryptArchiveWithKey) · يُغني عن الاشتقاق */
+  knownKey?: Uint8Array,
 ): Promise<Uint8Array> {
   if (!isEncryptedArchive(bytes)) throw new Error('الملف ليس نسخة مشفّرة');
   if (bytes[8] !== KDF_PBKDF2_SHA256) throw new Error('نسخة مشفّرة بإصدار أحدث من التطبيق');
@@ -97,8 +107,8 @@ export async function decryptArchive(
   const prefix = bytes.slice(29, 37);
   const chunk = readU32(bytes, 37);
   if (!iterations || iterations > 50_000_000 || !chunk || chunk > 64 << 20) throw new WrongPasswordError();
-  onProgress?.('جاري تجهيز مفتاح فكّ التشفير');
-  const key = await p.pbkdf2(password, salt, iterations);
+  if (!knownKey) onProgress?.('جاري تجهيز مفتاح فكّ التشفير');
+  const key = knownKey ?? await p.pbkdf2(password, salt, iterations);
   const parts: Uint8Array[] = [];
   let at = HEADER;
   let i = 0;

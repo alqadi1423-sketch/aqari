@@ -12,7 +12,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import * as MediaLibrary from 'expo-media-library';
+// الواجهة القديمة صراحةً · SDK 57 يرمي «deprecated» على الاستدعاء من المسار الرئيسي فكان الحفظ في المعرض يفشل
+import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { File } from 'expo-file-system';
@@ -239,6 +240,13 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
   const [busy, setBusy] = useState(false);
   const listRef = useRef<FlatList<ViewerFile>>(null);
   const cur = files[index];
+  /*
+   * الشريط الأفقي يُرسم باتجاه ثابت من اليسار إلى اليمين والملفات معكوسة، فيأتي التالي من اليسار كما يُقرأ
+   * بالعربية · ولمَ لا «inverted» مع اتجاه التطبيق العربي: أندرويد لا يطبّق فيه موضع البدء ولا تطابق إزاحاتُه
+   * أرقامَ الصفحات، فكان الشريط العلوي يسمّي ملفاً والشاشة تعرض جاره (وجده الفحص على المحاكي).
+   */
+  const pages = useMemo(() => [...files].reverse(), [files]);
+  const toFile = (pos: number) => files.length - 1 - pos;
 
   // سحب لأعلى على الشريط السفلي يفتح بطاقة المعلومات
   const pan = useMemo(() => PanResponder.create({
@@ -383,25 +391,25 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
         ) : (
           <FlatList
             ref={listRef}
-            data={files}
+            data={pages}
             extraData={index}
             horizontal
-            inverted
             pagingEnabled
-            initialScrollIndex={index}
+            style={{ direction: 'ltr' }}
+            initialScrollIndex={toFile(index)}
             getItemLayout={(_d, i) => ({ length: width, offset: width * i, index: i })}
             keyExtractor={(f) => f.attId}
             showsHorizontalScrollIndicator={false}
             onMomentumScrollEnd={(e) => {
-              const i = Math.round(e.nativeEvent.contentOffset.x / width);
-              if (i >= 0 && i < files.length) setIndex(i);
+              const pos = Math.round(e.nativeEvent.contentOffset.x / width);
+              if (pos >= 0 && pos < files.length) setIndex(toFile(pos));
             }}
             windowSize={3}
             initialNumToRender={1}
             maxToRenderPerBatch={2}
-            renderItem={({ item, index: i }) => {
+            renderItem={({ item, index: pos }) => {
               const k = kindOf(item);
-              const active = i === index;
+              const active = toFile(pos) === index;
               if (k === 'image') return <ImagePage file={item} width={width} />;
               if (k === 'pdf') return <PdfPage file={item} width={width} active={active} />;
               if (k === 'video' || k === 'audio') return <MediaPage file={item} width={width} active={active} audio={k === 'audio'} />;

@@ -205,7 +205,7 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
     if (!type || SELF_CONTAINED.has(base)) continue;
     // عكسيٌّ رُبط بأصله في النسخة ومستندُ أصله بلا حالٍ تُحمل · يُراجَع مستنده
     const doc = SOURCE_DOC[base];
-    const label = doc?.[0] ?? base;
+    const label = doc?.[0] ?? 'آلي'; // نوعٌ غير معروف لا يُعرض اسمه التقني
     const inBackup = doc ? doc[1].some((t) => exists(target, t, d.row.src_id as string)) : false;
     review.set(id, type.endsWith('_rev')
       ? `عكس قيد ${label} · ${inBackup ? 'مستنده في النسخة بحاله قبل العكس' : 'مستنده ليس في النسخة'}`

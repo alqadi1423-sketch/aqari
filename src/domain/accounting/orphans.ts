@@ -85,7 +85,7 @@ export function markForReview(db: DB, entry: { id: string; no: string }, reason:
 export function markOrphans(db: DB, how: string): number {
   const found = unmarkedOrphans(db);
   for (const e of found) {
-    const label = SOURCE_DOC[e.src_type]?.[0] ?? e.src_type;
+    const label = SOURCE_DOC[e.src_type]?.[0] ?? 'آلي'; // نوعٌ غير معروف لا يُعرض اسمه التقني
     markForReview(db, e, `قيد ${label} ${how} ومستنده ليس في البيانات`);
   }
   return found.length;

@@ -74,7 +74,7 @@ function buildHtml(opts: {
   body{font-family:'Segoe UI',Tahoma,sans-serif;background:#F6F4EE}
   #offline{display:none;height:100%;width:100%;box-sizing:border-box;padding:22px;
     align-items:center;justify-content:center;text-align:center;color:#77808F;font-size:13px;line-height:2}
-  #banner{display:none;position:absolute;top:8px;right:8px;left:8px;z-index:900;background:#F7E9E6;
+  #banner{display:none;position:absolute;top:8px;right:8px;left:52px;z-index:900;background:#F7E9E6;
     color:#AE4438;border:1px solid #AE4438;border-radius:8px;padding:7px 10px;font-size:12px;text-align:center}
   .pinWrap{display:flex;flex-direction:column;align-items:center}
   .ring{border-radius:50%;background:${TRACK};display:flex;align-items:center;justify-content:center;

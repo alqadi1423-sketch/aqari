@@ -206,7 +206,7 @@ export default function Settings() {
   const fromLabel = (k: KeptEntry) => (k.from === 'device' ? 'من هذا الجهاز' : k.from === 'cloud' ? 'من السحابة' : 'من الجهاز والسحابة');
   const keptText = (kept: KeptEntry[]) => {
     if (!kept.length) return '';
-    const shown = kept.slice(0, 8).map((k) => '· ' + (k.newNo ? k.no + ' ← ' + k.newNo : k.no) + ' · ' + k.date + ' · ' + fmt(k.amount)
+    const shown = kept.slice(0, 8).map((k) => '· ' + (k.newNo ? k.newNo + ' (كان ' + k.no + ')' : k.no) + ' · ' + k.date + ' · ' + fmt(k.amount)
       + ' · ' + fromLabel(k) + (k.carried.length ? ' · ومعه ' + k.carried.join(' و') : '') + (k.review ? ' · للمراجعة' : ''));
     const toReview = kept.filter((k) => k.review).length;
     const renamed = kept.filter((k) => k.newNo).length;
