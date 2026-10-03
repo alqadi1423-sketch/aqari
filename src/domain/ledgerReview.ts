@@ -7,11 +7,16 @@
  *
  * ومعه الخصومات التي لا سطر لها في الدفتر (سُجّلت قبل أن يكون للخصم سطر): تُعرض، ولا يُنشأ لها شيء
  * حتى يحدد المستخدم نوع كل واحد (bookDiscount) · فيكون قيداً جديداً أو تنزيلاً من القسط، لا تعديلاً لقائم.
+ *
+ * والفائض عن الأقساط (نقد في الدفتر لم يُنسب لقسط): يبقى ظاهراً حتى يُردّ للمستأجر أو يُحوَّل رصيداً
+ * دائناً له (settleSurplus) · بقيد جديد بتاريخ التنفيذ وطريقته، وفي سجل العمليات.
  */
 import type { DB } from '../db/adapter';
+import { uid } from './ids';
 import { logAudit } from './audit';
 import { fmt } from './money';
-import { postBookedDiscount } from './accounting/post';
+import { postBookedDiscount, postEntry, type PostedEntry } from './accounting/post';
+import { walletCashBalance } from './accounting/ledger';
 import {
   INSTALLMENT_DISCOUNT_SQL, installmentStoredStatus, DISCOUNT_ACCOUNT, DISCOUNT_ENTRY_SRC,
   DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind,
@@ -283,5 +288,136 @@ export function bookDiscount(db: DB, paymentId: string, kind: DiscountKind): voi
         [p.installment_id]);
       if (over && Number(over.o) > 0) throw new Error(`الخصم يتجاوز المتبقي على القسط بـ${fmt(Number(over.o))} · لم يُسجَّل`);
     }
+  });
+}
+
+/* ═══════════ الفائض عن الأقساط ═══════════ */
+
+/** مصدر قيدَي تسوية الفائض · مربوطان بالعقد */
+export const SURPLUS_REFUND_SRC = 'surplus_refund';
+export const SURPLUS_CREDIT_SRC = 'surplus_credit';
+
+export interface ContractSurplus {
+  contractId: string;
+  contractNo: string;
+  tenant: string;
+  tenantId: string | null;
+  /** النقد المنسوب للأقساط الحيّة في الدفتر */
+  cash: number;
+  /** مجموع مسدَّد الأقساط الحيّة */
+  paid: number;
+  /** ما سُوّي منه قبلُ بردّ أو رصيد */
+  settled: number;
+  /** الفائض الباقي = النقد ناقص المسدَّد ناقص ما سُوّي */
+  amount: number;
+}
+
+/**
+ * عقود في دفترها نقد من دفعاتها أكثر مما سُدّد على أقساطها الحيّة، بعد ما سُوّي منه ·
+ * والعقد الذي يتجاوز سقف قسطه يُعرض في التصحيح أولاً (وفائضه فيه) لا هنا.
+ */
+export function contractSurpluses(db: DB): ContractSurplus[] {
+  const breach = new Set(contractsInBreach(db));
+  const rows = db.all<{
+    id: string; contract_no: string | null; tenant_name: string | null; tenant_id: string | null;
+    cash: number; live_paid: number; dead_paid: number; settled: number;
+  }>(
+    `SELECT c.id, c.contract_no, c.tenant_name, c.tenant_id,
+            COALESCE((SELECT SUM(CASE WHEN l.account_code IN ('4200', '${DISCOUNT_ACCOUNT}') THEN l.credit_halalas - l.debit_halalas ELSE 0 END)
+                      FROM contract_payments p
+                      JOIN journal_entries e ON e.id = p.journal_entry_id AND e.status = 'مرحّل' AND e.reversed_by IS NULL
+                      JOIN journal_lines l ON l.entry_id = e.id
+                      WHERE p.contract_id = c.id), 0) AS cash,
+            COALESCE((SELECT SUM(paid_halalas) FROM contract_installments WHERE contract_id = c.id AND status != 'ملغية'), 0) AS live_paid,
+            COALESCE((SELECT SUM(paid_halalas) FROM contract_installments WHERE contract_id = c.id AND status = 'ملغية'), 0) AS dead_paid,
+            COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
+                      FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4200'
+                      WHERE e.src_type IN ('${SURPLUS_REFUND_SRC}', '${SURPLUS_CREDIT_SRC}') AND e.src_id = c.id
+                        AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) AS settled
+     FROM contracts c
+     WHERE c.deleted_at IS NULL AND EXISTS (SELECT 1 FROM contract_payments p WHERE p.contract_id = c.id)
+     ORDER BY c.tenant_name, c.contract_no`);
+  const out: ContractSurplus[] = [];
+  for (const r of rows) {
+    if (breach.has(r.id)) continue;
+    const cash = Number(r.cash) - Number(r.dead_paid);
+    const paid = Number(r.live_paid);
+    const settled = Number(r.settled);
+    const amount = cash - paid - settled;
+    if (amount > 0) {
+      out.push({ contractId: r.id, ...label(r), tenantId: r.tenant_id, cash, paid, settled, amount });
+    }
+  }
+  return out;
+}
+
+export interface SettleSurplusInput {
+  /** ردّ للمستأجر، أو تحويله رصيداً دائناً له */
+  action: 'refund' | 'credit';
+  amountHalalas: number;
+  date: string;
+  /** طريقة الردّ · نقداً من المحفظة أو تحويلاً من حساب بنكي */
+  method?: 'cash' | 'bank';
+  bankId?: string;
+  notes?: string;
+}
+
+/**
+ * تسوية الفائض بأمر المستخدم · قيد جديد بتاريخ التنفيذ مربوط بالعقد:
+ *  ردّ:   مدين الإيراد 4200 (ما قُبض فوق الأقساط سُجّل إيراداً يوم قبضه ولا قسط يقابله، فيُنقَص منه ما رُدّ)
+ *         دائن النقدية والبنوك 1100 (النقد الخارج للمستأجر) · وحركة بنكية سالبة إن كان تحويلاً.
+ *  رصيد:  مدين الإيراد 4200 · دائن أرصدة مستأجرين دائنة 2410 (التزام للمستأجر حتى يُستعمل أو يُردّ)،
+ *         ويزيد رصيد المستأجر الدائن بالمبلغ نفسه.
+ */
+export function settleSurplus(db: DB, contractId: string, input: SettleSurplusInput): PostedEntry {
+  const s = contractSurpluses(db).find((x) => x.contractId === contractId);
+  if (!s) throw new Error('لا فائض على هذا العقد');
+  const amount = Math.round(Number(input.amountHalalas) || 0);
+  if (amount <= 0) throw new Error('أدخل مبلغاً أكبر من صفر');
+  if (amount > s.amount) throw new Error(`المبلغ (${fmt(amount)}) أكبر من الفائض (${fmt(s.amount)})`);
+  if (!input.date) throw new Error('حدّد تاريخ التنفيذ');
+  const refund = input.action === 'refund';
+  if (refund && input.method !== 'cash' && input.method !== 'bank') throw new Error('حدّد طريقة الردّ: نقداً أو تحويلاً بنكياً');
+  if (refund && input.method === 'bank' && !input.bankId) throw new Error('اختر الحساب البنكي الذي خرج منه التحويل');
+  if (refund && input.method === 'cash') {
+    const w = walletCashBalance(db);
+    if (amount > w) throw new Error('رصيد المحفظة النقدية ' + fmt(w) + ' لا يكفي لردّ ' + fmt(amount));
+  }
+  const bank = refund && input.method === 'bank'
+    ? db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ? AND deleted_at IS NULL`, [input.bankId!])
+    : null;
+  if (refund && input.method === 'bank' && !bank) throw new Error('الحساب البنكي غير موجود');
+  const who = s.tenant + ' (عقد ' + s.contractNo + ')';
+  return db.transaction(() => {
+    const entry = postEntry(db, {
+      date: input.date,
+      memo: (refund ? 'ردّ فائض للمستأجر · ' : 'تحويل فائض رصيداً دائناً · ') + who
+        + (refund ? ' · ' + (input.method === 'bank' ? 'تحويل من ' + bank!.name : 'نقداً') : '')
+        + (input.notes?.trim() ? ' · ' + input.notes.trim() : ''),
+      lines: refund
+        ? [
+            { account: '4200', descr: 'ردّ ما قُبض فوق الأقساط', debit: amount, credit: 0 },
+            { account: '1100', descr: input.method === 'bank' ? 'تحويل للمستأجر' : 'نقد للمستأجر', debit: 0, credit: amount },
+          ]
+        : [
+            { account: '4200', descr: 'ما قُبض فوق الأقساط', debit: amount, credit: 0 },
+            { account: '2410', descr: 'رصيد دائن للمستأجر', debit: 0, credit: amount },
+          ],
+      srcType: refund ? SURPLUS_REFUND_SRC : SURPLUS_CREDIT_SRC,
+      srcId: contractId,
+    })!;
+    if (refund && input.method === 'bank') {
+      db.run(
+        `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
+         VALUES (?,?,?,?,?,1,?,?,?)`,
+        [uid(), input.bankId!, input.date, 'ردّ فائض للمستأجر · ' + who, -amount, entry.no, 'ردّ فائض للمستأجر', new Date().toISOString()]);
+    }
+    if (!refund && s.tenantId) {
+      db.run(`UPDATE tenants SET credit_halalas = credit_halalas + ? WHERE id = ?`, [amount, s.tenantId]);
+    }
+    logAudit(db, 'التحصيل', 'create', refund ? 'ردّ فائض للمستأجر' : 'تحويل فائض رصيداً دائناً',
+      `${who}: ${fmt(amount)} · قيد ${entry.no}` + (refund ? ' · ' + (input.method === 'bank' ? 'تحويل' : 'نقداً') : ''),
+      { surplus_halalas: s.amount }, { surplus_halalas: s.amount - amount, journal_no: entry.no });
+    return entry;
   });
 }

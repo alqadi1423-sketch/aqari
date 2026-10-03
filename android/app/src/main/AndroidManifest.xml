@@ -42,23 +42,20 @@
       <intent-filter>
         <action android:name="android.intent.action.VIEW"/>
         <category android:name="android.intent.category.DEFAULT"/>
-        <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="aqari"/>
       </intent-filter>
     </activity>
-    <activity android:name=".PinWidgetActivity" android:exported="true" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true">
+    <activity android:name=".PinWidgetActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true">
       <intent-filter>
         <action android:name="android.intent.action.VIEW"/>
         <category android:name="android.intent.category.DEFAULT"/>
-        <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="aqariwidget"/>
       </intent-filter>
     </activity>
-    <activity android:name=".SaveErrorLogActivity" android:exported="true" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true">
+    <activity android:name=".SaveErrorLogActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true">
       <intent-filter>
         <action android:name="android.intent.action.VIEW"/>
         <category android:name="android.intent.category.DEFAULT"/>
-        <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="aqarilog"/>
       </intent-filter>
     </activity>

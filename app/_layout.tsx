@@ -10,6 +10,7 @@ import {
   IBMPlexSansArabic_700Bold,
 } from '@expo-google-fonts/ibm-plex-sans-arabic';
 import { AppStateProvider } from '../src/ui/store';
+import { UpgradeGate } from '../src/ui/UpgradeGate';
 import { UiScaleView } from '../src/ui/UiScale';
 import { ToastProvider } from '../src/ui/Toast';
 import { DialogProvider } from '../src/ui/AppDialog';
@@ -88,6 +89,7 @@ export default function RootLayout() {
 
   return (
     <SafeAreaProvider>
+      <UpgradeGate>
       <AppStateProvider>
         <ToastProvider>
         <DialogProvider>
@@ -107,6 +109,7 @@ export default function RootLayout() {
         </DialogProvider>
         </ToastProvider>
       </AppStateProvider>
+      </UpgradeGate>
     </SafeAreaProvider>
   );
 }

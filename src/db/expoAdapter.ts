@@ -5,6 +5,7 @@ import * as SQLite from 'expo-sqlite';
 import { applyOpenPragmas, makeTransactionRunner, type DB, type SqlParams } from './adapter';
 import { migrate } from './migrations';
 import { seed, ensureDeviceId } from './seed';
+import { upgradeState } from '../domain/backup/upgrade';
 import { perfSqlTick } from '../perf/perf';
 
 const tNow = (): number =>
@@ -61,14 +62,40 @@ export function openExpoDb(name: string = DB_NAME): AppDB {
 }
 
 let _appDb: AppDB | null = null;
+let _raw: AppDB | null = null;
+let _upgradeCleared = false;
 
-/** قاعدة التطبيق الوحيدة · تُفتح وتُهاجَر وتُزرع عند أول طلب */
+/** القاعدة تنتظر نسخة ما قبل الترقية · لا يُهاجرها طلبٌ يسبق بوابة الترقية */
+export class UpgradePendingError extends Error {
+  constructor() { super('upgrade-pending'); this.name = 'UpgradePendingError'; }
+}
+
+/** القاعدة مفتوحة بلا هجرة · لبوابة الترقية وحدها: تقرأ الإصدار وتنسخ قبل أن تُمسّ البنية */
+export function rawAppDb(): AppDB {
+  if (_appDb) return _appDb;
+  if (!_raw) _raw = openExpoDb();
+  return _raw;
+}
+
+/** تأذن بوابة الترقية بالهجرة · بعد نسخة ناجحة أو حين لا بيانات تُنسخ */
+export function clearUpgrade(): void {
+  _upgradeCleared = true;
+}
+
+/**
+ * قاعدة التطبيق الوحيدة · تُفتح وتُهاجَر وتُزرع عند أول طلب.
+ * قاعدةٌ أقدم من التطبيق فيها بيانات لا تُهاجَر هنا قبل أن تأذن البوابة (src/ui/UpgradeGate.tsx)
+ * بعد نسخة كاملة · فيرمي الطلب المبكر بدل أن يرقّيها بلا نسخة.
+ */
 export function appDb(): AppDB {
   if (!_appDb) {
-    _appDb = openExpoDb();
-    migrate(_appDb);
-    seed(_appDb);
-    ensureDeviceId(_appDb);
+    const d = rawAppDb();
+    if (!_upgradeCleared && upgradeState(d).needsBackup) throw new UpgradePendingError();
+    migrate(d);
+    seed(d);
+    ensureDeviceId(d);
+    _appDb = d;
+    _raw = null;
   }
   return _appDb;
 }

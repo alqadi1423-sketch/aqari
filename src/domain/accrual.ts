@@ -30,7 +30,10 @@ export const BASIS_CASH: Basis = 'نقدي';
  * دائنه الإيراد بقيمة الخصم، والتوزيع يحسب القيمة كاملة فيُستثنى جانب إيراده كذلك ·
  * أما مدينه 4900 فمصروف يبقى في جانب المصروف، فيُطرح خصم «بعد الاستحقاق» من صافي الدخل.
  */
-const RENT_SOURCES = ['rent', 'rent_rev', 'rent_payment', 'rent_payment_rev', 'discount', 'discount_rev'];
+// وتسوية الفائض (ردّاً أو رصيداً) مدينها الإيراد بما قُبض فوق الأقساط · والتوزيع لم يعدّ ذلك الفائض أصلاً
+// فيُستثنى جانب إيرادها كذلك
+const RENT_SOURCES = ['rent', 'rent_rev', 'rent_payment', 'rent_payment_rev', 'discount', 'discount_rev',
+  'surplus_refund', 'surplus_refund_rev', 'surplus_credit', 'surplus_credit_rev'];
 const PURCHASE_SOURCES = ['purchase', 'purchase_rev'];
 
 // ─── توزيع قيمة على أيامها ───

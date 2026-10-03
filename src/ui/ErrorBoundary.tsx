@@ -9,6 +9,7 @@ import { Icon } from './icons';
 import { C } from './theme';
 import { appDb } from '../db/expoAdapter';
 import { logAudit } from '../domain/audit';
+import { redactForReport } from '../domain/redact';
 
 interface Props {
   children: React.ReactNode;
@@ -35,7 +36,8 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   render(): React.ReactNode {
     if (!this.state.error) return this.props.children;
-    const detail = this.state.error.message;
+    // ما يُشارك خارج الجهاز محجوبةٌ بياناته كتقرير الخطأ نفسه
+    const detail = redactForReport(this.state.error.name + ': ' + this.state.error.message);
     return (
       <View style={{ backgroundColor: '#fff', borderRadius: 12, padding: 16, margin: 12, borderWidth: 1, borderColor: C.line }}>
         <Row style={{ alignItems: 'center', marginBottom: 6 }}>

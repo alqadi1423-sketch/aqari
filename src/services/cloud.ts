@@ -18,7 +18,11 @@ import { signInWithGoogleIdToken, refreshIdToken } from '../cloud/authRest';
 import { createSession, type Session, type SessionUser } from '../cloud/session';
 import { FirestoreRemote } from '../cloud/firestore';
 import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, type DriveBackup, type DriveIO } from '../cloud/drive';
-import { enableSync, syncOnce, syncStatus, setSyncState, type SyncStatus } from '../sync/engine';
+import {
+  enableSync, syncOnce, syncStatus, setSyncState, getSyncState, planCloudReplace, adoptAsCloudTruth, syncBackoffUntil,
+  type SyncStatus, type CloudReplacePlan,
+} from '../sync/engine';
+import type { DB } from '../db/adapter';
 import { ensureDeviceId } from '../db/seed';
 import { expoHasher } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
@@ -101,11 +105,30 @@ const arabic = (e: unknown) => {
   return /[؀-ۿ]/.test(m) ? m : 'تعذّر الاتصال بالخادم · ستُعاد المحاولة';
 };
 
+/** إيقاف مؤقت أثناء الاستعادة · لا سحب ولا رفع حتى يُستأنف */
+let paused = false;
+
+/** يوقف المزامنة وينتظر انتهاء دورة جارية · فلا تكتب دورةٌ في القاعدة وهي تُستبدل */
+export async function pauseSync(): Promise<void> {
+  paused = true;
+  while (running) await new Promise((r) => setTimeout(r, 200));
+}
+export function resumeSync(): void {
+  paused = false;
+}
+
 export async function syncNow(): Promise<void> {
   const s = getSession();
   const db = appDb;
   const cfg = cloudConfig();
-  if (!s || !db || !cfg || running || !state.user || !state.online) return;
+  if (!s || !db || !cfg || running || paused || !state.user || !state.online) return;
+  // استعادةٌ جرت خارج الحساب لم تُعتمد بعد · لا تُدمج مع السحابة صامتةً، فتنتظر قرار المستخدم
+  if (getSyncState(db, 'restored_unadopted') === '1') {
+    patch({ lastError: 'استُعيدت نسخة ولم تُعتمد للسحابة بعد · افتح الإعدادات لاعتمادها' });
+    return;
+  }
+  // رفضٌ متكرر من الخادم (حصة أو انشغال) · تُؤجَّل الدورات ثم تُستأنف من الطابور نفسه
+  if (syncBackoffUntil(db)) return;
   running = true;
   patch({ syncing: true, lastError: null });
   try {
@@ -164,10 +187,56 @@ export async function cloudSignIn(): Promise<SessionUser | null> {
   if (!s || !appDb) return null;
   const u = await s.signIn();
   if (!u) return null;
-  enableSync(appDb, u.uid);
+  // نسخة مستعادة لم تُعتمد · لا يُفعَّل الانضمام فيغلب ما في السحابة عليها صامتاً
+  if (getSyncState(appDb, 'restored_unadopted') !== '1') enableSync(appDb, u.uid);
   patch({ user: u, sync: syncStatus(appDb) });
   syncNow();
   return u;
+}
+
+/** استعادة تمّت ولم تُعتمد للسحابة بعد (جرت والمستخدم خارج حسابه) */
+export function restoreAwaitingAdoption(db: AppDB): boolean {
+  return getSyncState(db, 'restored_unadopted') === '1';
+}
+
+/** بعد استعادة لم يُستبدل بها ما في السحابة · تبقى المزامنة منتظرة قرار المستخدم */
+export function markRestoredUnadopted(db: AppDB): void {
+  setSyncState(db, 'restored_unadopted', '1');
+}
+
+/** «دمج مع السحابة» بقرار المستخدم · تُرفع العلامة وتعمل المزامنة بقاعدتها المعتادة (الأحدث يغلب) */
+export function clearRestoredUnadopted(db: AppDB, uid: string): void {
+  setSyncState(db, 'restored_unadopted', null);
+  enableSync(db, uid);
+  patch({ sync: syncStatus(db), lastError: null });
+}
+
+function remoteFor(): FirestoreRemote {
+  const s = getSession();
+  const cfg = cloudConfig();
+  if (!s || !cfg || !state.user) throw new Error('سجّل الدخول بحساب قوقل أولاً');
+  if (!state.online) throw new Error('لا اتصال بالإنترنت · اعتماد النسخة للسحابة يحتاج اتصالاً لقراءة ما فيها');
+  const sess = s;
+  return new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.idToken() });
+}
+
+/** قراءة ما في السحابة مقابل القاعدة المعطاة · والمزامنة متوقفة · بلا كتابة */
+export async function planReplaceCloud(db: DB, onProgress?: (m: string) => void): Promise<CloudReplacePlan> {
+  return planCloudReplace(db, remoteFor(), onProgress);
+}
+
+/**
+ * اعتماد القاعدة الحالية (المستعادة) حقيقةً لهذا الحساب · ثم يرفعها استئناف المزامنة.
+ * الخطة المقروءة على قاعدة التجهيز قبل الاستعادة تصلح هنا (الاستعادة تنقل الملف نفسه، والتصحيح
+ * يضيف صفوفاً ولا يحذف) · وبلا خطة تُقرأ من جديد على القاعدة الحالية.
+ */
+export async function adoptForCloud(
+  db: AppDB, ready?: CloudReplacePlan, onProgress?: (m: string) => void
+): Promise<{ queued: number; plan: CloudReplacePlan }> {
+  const plan = ready ?? await planCloudReplace(db, remoteFor(), onProgress);
+  const res = adoptAsCloudTruth(db, state.user!.uid, plan);
+  patch({ sync: syncStatus(db), lastError: null });
+  return { ...res, plan };
 }
 
 /** الخروج: الرموز وحدها تُمسح · بياناتك على الجهاز كما هي والتقاط التغييرات مستمر لحين العودة */

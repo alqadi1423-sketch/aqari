@@ -1,7 +1,7 @@
 import { joinPath } from '../../files/fsAdapter';
 import { zipYielding, unzipYielding, yieldUi, archiveFailureText, type ZipEntry } from './zipStream';
 import { liveBlobs } from '../../files/store';
-import { integrityChecks } from '../accounting/integrity';
+import { integrityChecks, type IntegrityCheck } from '../accounting/integrity';
 import { allAccounts, accountBalance } from '../accounting/ledger';
 import { currentSchemaVersion } from '../../db/migrations';
 import { libSizeLabel } from '../library';
@@ -37,6 +37,9 @@ function attachmentLabel(db: DB | null, sha: string, ext?: string): string {
 /** ضعفُ ما تشغله البيانات · القاعدة تُنسخ ثم تُضغط ثم يُفكّ بعضها، فالثلاثة هي الحدّ الآمن */
 const SPACE_FACTOR = 3;
 
+/** بادئة نسخ ما قبل الترقية في مجلد نسخ الأمان */
+export const PRE_UPGRADE_PREFIX = 'pre-upgrade';
+
 /** مجلد نسخ الأمان · دائم بجوار المؤقت لا داخله فلا يُكنس عند الإقلاع */
 export function safetyBackupsDir(env: BackupEnv): string {
   return joinPath(env.tmpDir, '..', 'backups');
@@ -58,8 +61,9 @@ export async function makeSafetyBackup(
   const keep = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}.aqbk`;
   const outPath = joinPath(dir, keep);
   await createBackup(env, outPath, onProgress);
+  // نسخ ما قبل الترقية لها سقفها في upgrade.ts · لا تحذفها نسخة استعادة ولا مسح
   for (const name of env.fs.list(dir)) {
-    if (name === keep || !name.endsWith('.aqbk')) continue;
+    if (name === keep || !name.endsWith('.aqbk') || name.startsWith(PRE_UPGRADE_PREFIX)) continue;
     try { env.fs.remove(joinPath(dir, name)); } catch { /* التالي · لا يعطّل */ }
   }
   return outPath;
@@ -171,22 +175,47 @@ function ledgerTotals(db: DB): BackupManifest['ledger'] {
  * والتحقق من كل بصمة و integrity_check ومطابقة الأعداد.
  * تتنفس بين الملفات وتبلّغ تقدمها فلا يتجمد التطبيق ولا يقتله النظام.
  */
+export interface CreateBackupOptions {
+  /**
+   * نسخة ما قبل الترقية: تحفظ القاعدة كما هي ولو كان في دفترها خلل أو في بنيتها ما لا تقرؤه
+   * فحوص الإصدار الحالي (فالرفض هنا يحبس المستخدم خارج تطبيقه بلا سبيل لإصلاح شيء) ·
+   * فنتائج الفحوص تُكتب في البيان ولا تمنع، ومرفقٌ مفقود من القرص أو تالف يُسمّى في
+   * missing_files وتُوسم النسخة غير كاملة. وكل ما عدا ذلك من تحقق يبقى مانعاً كما هو:
+   * بصمة القاعدة، وإعادة فتح الأرشيف، وintegrity_check، ومطابقة الأعداد، وبصمة كل مرفق محفوظ.
+   */
+  preUpgrade?: boolean;
+}
+
 export async function createBackup(
   env: BackupEnv,
   outPath: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  opts: CreateBackupOptions = {}
 ): Promise<BackupManifest> {
   if (!env.hasher) throw new HashingUnavailableError();
   const hasher = env.hasher;
 
   // ١) الفحوص الستة تُشغَّل قبل كل نسخة ومجاميعها تُكتب في البيان
   onProgress?.('جاري فحص سلامة الدفاتر');
-  const integrity = integrityChecks(env.db);
+  let integrity: IntegrityCheck[];
+  try {
+    integrity = integrityChecks(env.db);
+  } catch (e) {
+    if (!opts.preUpgrade) throw e;
+    // بنية أقدم من أعمدة الفحوص · يُكتب ذلك في البيان والقاعدة تُحفظ كما هي
+    integrity = [{ name: 'فحوص الدفتر', ok: false, value: 'بنية الإصدار ' + currentSchemaVersion(env.db) + ' أقدم من أن تُفحص قبل ترقيتها' }];
+  }
   // أي فحص مختلّ يمنع النسخة كلها · لا نسخة «ناقصة» ولا موسومة «كاملة» على خلل
   const failedChecks = integrity.filter((c) => !c.ok);
-  if (failedChecks.length) throw new BackupIntegrityError(failedChecks.map((c) => `«${c.name}» (${c.value})`));
+  if (failedChecks.length && !opts.preUpgrade) throw new BackupIntegrityError(failedChecks.map((c) => `«${c.name}» (${c.value})`));
   const counts = tableCounts(env.db);
-  const ledger = ledgerTotals(env.db);
+  let ledger: BackupManifest['ledger'];
+  try {
+    ledger = ledgerTotals(env.db);
+  } catch (e) {
+    if (!opts.preUpgrade) throw e;
+    ledger = { total_debit_halalas: 0, total_credit_halalas: 0, balances: {} };
+  }
   const schemaVersion = currentSchemaVersion(env.db);
   const deviceRow = env.db.get<{ value: string }>(`SELECT value FROM meta WHERE key='device_id'`);
   await yieldUi();
@@ -230,6 +259,7 @@ export async function createBackup(
     //    لا يُستبعد ملف ولا تُنشأ نسخة «ناقصة» · تنفّس بعد كل ملف
     const zipEntries: ZipEntry[] = [{ name: 'data.db', bytes: dbBytes, level: 6 }];
     const files: BackupManifest['files'] = [];
+    const missing: string[] = [];
     const blobs = liveBlobs(env.db);
     let bi = 0;
     for (const b of blobs) {
@@ -237,14 +267,18 @@ export async function createBackup(
       onProgress?.(`جاري نسخ المرفقات · ${bi} من ${blobs.length}`);
       const p = joinPath(env.attachmentsDir, `${b.sha256}.${b.ext}`);
       const label = () => attachmentLabel(env.db, b.sha256, b.ext);
-      if (!env.fs.exists(p))
+      if (!env.fs.exists(p)) {
+        if (opts.preUpgrade) { missing.push(`${b.sha256}.${b.ext}`); continue; }
         throw new BackupVerificationError(`الملف «${label()}» مفقود من القرص · يُرفض إنشاء النسخة`);
+      }
       const bytes = env.fs.read(p);
       let actual: string;
       try { actual = await hasher(bytes); }
       catch { throw new BackupVerificationError(`تعذّر حساب بصمة الملف «${label()}» · يُرفض إنشاء النسخة`); }
-      if (actual !== b.sha256)
+      if (actual !== b.sha256) {
+        if (opts.preUpgrade) { missing.push(`${b.sha256}.${b.ext}`); continue; }
         throw new BackupVerificationError(`بصمة الملف «${label()}» لا تطابق المسجَّلة له · الملف تالف · يُرفض إنشاء النسخة`);
+      }
       // المرفقات تُخزَّن بلا إعادة ضغط · صورها وملفاتها مضغوطة أصلاً
       zipEntries.push({ name: `attachments/${b.sha256}.${b.ext}`, bytes, level: 0 });
       files.push({ sha256: b.sha256, ext: b.ext, size: bytes.byteLength });
@@ -260,11 +294,11 @@ export async function createBackup(
       device_id: deviceRow ? deviceRow.value : '',
       db_sha256: dbSha,
       files,
-      missing_files: [],
+      missing_files: missing,
       table_counts: counts,
       ledger,
       integrity,
-      complete: true,
+      complete: missing.length === 0 && failedChecks.length === 0,
     };
     zipEntries.push({ name: 'manifest.json', bytes: enc.encode(JSON.stringify(manifest, null, 1)), level: 6 });
 

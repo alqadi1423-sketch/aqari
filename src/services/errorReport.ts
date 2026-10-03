@@ -8,6 +8,9 @@
 import { Linking, Platform } from 'react-native';
 import { appDataRoot, expoFs } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
+import { redactForReport } from '../domain/redact';
+
+export { redactForReport };
 
 const enc = new TextEncoder();
 
@@ -17,16 +20,18 @@ function reportName(at: Date): string {
   return `عقاري · خطأ · ${stamp}.txt`;
 }
 
-/** نصّ التقرير · عناوينه عربية ومتنه أثر الاستثناء كما هو */
+/** نصّ التقرير · عناوينه عربية ومتنه أثر الاستثناء محجوبةً بياناتُه */
 export function errorReportText(where: string, e: unknown, at: Date = new Date()): string {
-  const stack = e instanceof Error ? (e.stack ?? e.message) : String(e);
+  const stack = e instanceof Error ? (e.stack ?? (e.name + ': ' + e.message)) : String(e);
+  // في Hermes يبدأ الأثر بسطر الرسالة · وإن لم يحملها أُضيف نوع الخطأ وحده
   return [
     'تقرير خطأ · عقاري',
     'الموضع: ' + where,
     'الوقت: ' + at.toISOString(),
     'المنصّة: ' + Platform.OS,
+    'النوع: ' + (e instanceof Error ? e.name : typeof e),
     '────────────────',
-    stack,
+    redactForReport(stack),
   ].join('\n');
 }
 

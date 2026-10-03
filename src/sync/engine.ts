@@ -20,7 +20,7 @@ import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
 import { SEED_SCRIPTS, seedScriptId } from '../db/seed';
 import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
-import type { Cursor, RemoteDoc, RemoteStore, RowData, SyncReport } from './types';
+import type { Cursor, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 
 const nowIso = () => new Date().toISOString();
 
@@ -325,36 +325,42 @@ export function applyInbox(db: DB, deviceId: string): { applied: number; conflic
   try {
     for (let pass = 0; pass < 4; pass++) {
       let progress = 0;
-      let lastRank = -1, lastU = '', lastDoc = '';
-      for (;;) {
-        const page = db.all<{ doc: string; rank: number; updated_at: string; payload: string; attempts: number }>(
-          `SELECT doc, rank, updated_at, payload, attempts FROM sync_inbox
-           WHERE (rank, updated_at, doc) > (?, ?, ?)
-           ORDER BY rank, updated_at, doc LIMIT 300`, [lastRank, lastU, lastDoc]);
-        if (!page.length) break;
-        db.transaction(() => {
-          for (const r of page) {
-            const doc = JSON.parse(r.payload) as RemoteDoc;
-            const out = applyOne(db, doc, deviceId, cache, money, joining);
-            if (out === 'retry') {
-              if (r.attempts + 1 >= MAX_ATTEMPTS) {
-                reject(db, doc, 'سجل أب غير موجود بعد محاولات متكررة');
-                db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
-                rejected++;
-              } else {
-                db.run(`UPDATE sync_inbox SET attempts = attempts + 1, last_error = 'بانتظار سجل أب' WHERE doc = ?`, [r.doc]);
+      // شواهد الحذف أولاً والأبناء قبل الآباء (المفتاح الأجنبي يمنع حذف أبٍ له أبناء) · ثم الصفوف
+      // والآباء قبل الأبناء · وإلا وصل صفٌّ جديد يحمل رقماً فريداً قبل حذف من كان يحمله فرُفض بلا رجعة
+      // (وجده اختبار الثوابت: عقد حُذف باستعادة ثم أُنشئ غيره بالرقم نفسه)
+      for (const deletes of [true, false]) {
+        const key = deletes ? '(1000 - rank)' : 'rank';
+        let lastKey = -1, lastU = '', lastDoc = '';
+        for (;;) {
+          const page = db.all<{ doc: string; k: number; updated_at: string; payload: string; attempts: number }>(
+            `SELECT doc, ${key} AS k, updated_at, payload, attempts FROM sync_inbox
+             WHERE COALESCE(json_extract(payload, '$.del'), 0) = ? AND (${key}, updated_at, doc) > (?, ?, ?)
+             ORDER BY ${key}, updated_at, doc LIMIT 300`, [deletes ? 1 : 0, lastKey, lastU, lastDoc]);
+          if (!page.length) break;
+          db.transaction(() => {
+            for (const r of page) {
+              const doc = JSON.parse(r.payload) as RemoteDoc;
+              const out = applyOne(db, doc, deviceId, cache, money, joining);
+              if (out === 'retry') {
+                if (r.attempts + 1 >= MAX_ATTEMPTS) {
+                  reject(db, doc, 'سجل أب غير موجود بعد محاولات متكررة');
+                  db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
+                  rejected++;
+                } else {
+                  db.run(`UPDATE sync_inbox SET attempts = attempts + 1, last_error = 'بانتظار سجل أب' WHERE doc = ?`, [r.doc]);
+                }
+                continue;
               }
-              continue;
+              db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
+              progress++;
+              if (out === 'applied') applied++;
+              else if (out === 'conflict-local' || out === 'conflict-remote') { conflicts++; if (out === 'conflict-remote') applied++; }
+              else if (out === 'rejected') rejected++;
             }
-            db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
-            progress++;
-            if (out === 'applied') applied++;
-            else if (out === 'conflict-local' || out === 'conflict-remote') { conflicts++; if (out === 'conflict-remote') applied++; }
-            else if (out === 'rejected') rejected++;
-          }
-        });
-        const last = page[page.length - 1];
-        lastRank = last.rank; lastU = last.updated_at; lastDoc = last.doc;
+          });
+          const last = page[page.length - 1];
+          lastKey = last.k; lastU = last.updated_at; lastDoc = last.doc;
+        }
       }
       if (!progress) break;
       const left = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
@@ -365,6 +371,113 @@ export function applyInbox(db: DB, deviceId: string): { applied: number; conflic
   }
   const waiting = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
   return { applied, conflicts, rejected, waiting };
+}
+
+/* ═══════════ اعتماد نسخة مستعادة واستبدال السحابة بها ═══════════ */
+
+/**
+ * ما في السحابة مقابل القاعدة بعد الاستعادة · يُقرأ والمزامنة متوقفة، قبل أن يُكتب شيء.
+ * `tombstones` صفوفٌ في السحابة ليست في النسخة فتُحذف منها بشاهد حذف ·
+ * و`immutable` ما لا تحذفه قواعد الأمان أصلاً: سطور سجل العمليات تُضمّ إلى النسخة (إضافةٌ لا تغيّر
+ * رقماً، فلا يفترق بها جهازان) · والقيد المرحّل بعد النسخة يمنع الاعتماد (CloudReplaceBlockedError):
+ * لا يُحذف من السحابة ولا يُترك فيها وحدها، فاستعادة نسخة أقدم منه تفرّق دفاتر الأجهزة.
+ */
+export interface CloudReplacePlan {
+  /** آخر مؤشر في السحابة · المزامنة بعد الاعتماد تبدأ منه فلا تسحب ما استُبدل */
+  cursor: Cursor | null;
+  /** مستندات السحابة الحية · للعرض */
+  cloudRows: number;
+  tombstones: { t: string; k: string }[];
+  immutable: { entries: number; audit: number };
+  /** سطور سجل العمليات في السحابة وليست في النسخة · تُضمّ إليها عند الاعتماد */
+  absorb: RemoteDoc[];
+}
+
+/** في السحابة قيود مرحّلة بعد النسخة · لا اعتماد */
+export class CloudReplaceBlockedError extends Error {
+  constructor(public entries: number) {
+    super(`في السحابة ${entries} قيد مرحّل ليس في هذه النسخة (رُحّل بعد تاريخها من هذا الجهاز أو غيره) · `
+      + 'القيد المرحّل لا يُحذف من السحابة، واستبدالها بنسخة أقدم منه يفرّق دفاتر الأجهزة · '
+      + 'استعد نسخةً أحدث منه، أو ألغِ الاستعادة');
+    this.name = 'CloudReplaceBlockedError';
+  }
+}
+
+const PLAN_PAGE = 500;
+
+/** صف السحابة موجود في القاعدة المحلية؟ · بمفتاحه الأساسي */
+function existsLocally(db: DB, t: string, k: string): boolean {
+  if (!syncTable(t)) return true; // جدول خارج المزامنة · لا يُمسّ
+  return !!db.get(`SELECT 1 FROM "${t}" WHERE ${pkWhere(t)}`, pkParams(t, k));
+}
+
+export async function planCloudReplace(
+  db: DB, remote: RemoteStore, onProgress?: (msg: string) => void
+): Promise<CloudReplacePlan> {
+  let cursor: Cursor | null = null;
+  let cloudRows = 0;
+  // آخر حالة لكل مستند · الصفحات مرتبة بوقت الخادم فالأحدث يغلب
+  const last = new Map<string, { t: string; k: string; del: boolean; posted: boolean; doc: RemoteDoc | null }>();
+  for (;;) {
+    onProgress?.('جاري قراءة ما في السحابة' + (last.size ? ' · ' + last.size : ''));
+    const { docs, next } = await remote.pull(cursor, PLAN_PAGE);
+    for (const d of docs) {
+      last.set(d.id, { t: d.t, k: d.k, del: d.del, posted: d.t === 'journal_entries' && d.d?.status === 'مرحّل', doc: d.t === 'audit_log' ? d : null });
+    }
+    if (next) cursor = next;
+    if (docs.length < PLAN_PAGE) break;
+  }
+  const tombstones: { t: string; k: string }[] = [];
+  const immutable = { entries: 0, audit: 0 };
+  const absorb: RemoteDoc[] = [];
+  for (const d of last.values()) {
+    if (d.del) continue;
+    cloudRows++;
+    if (existsLocally(db, d.t, d.k)) continue;
+    if (d.t === 'audit_log') { immutable.audit++; if (d.doc) absorb.push(d.doc); }
+    else if (d.posted) immutable.entries++;
+    else tombstones.push({ t: d.t, k: d.k });
+  }
+  return { cursor, cloudRows, tombstones, immutable, absorb };
+}
+
+/**
+ * القاعدة المستعادة هي الحقيقة لهذا الحساب: كل صف فيها يدخل الطابور بوقت الآن فيغلب ما في
+ * السحابة، وما في السحابة وليس فيها يُحذف بشاهد حذف، والمؤشر إلى آخر ما قُرئ فلا يعود الوارد
+ * القديم فوقها. لا كتابة إلى السحابة هنا · الرفع في دورة المزامنة التالية بعد الاعتماد.
+ */
+export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan): { queued: number } {
+  if (plan.immutable.entries > 0) throw new CloudReplaceBlockedError(plan.immutable.entries);
+  return db.transaction(() => {
+    const at = nowIso();
+    setCapture(db, false);
+    // سجل العمليات في السحابة يُضمّ كما هو · إضافة فقط
+    const cols = columnsOf(db, 'audit_log');
+    for (const d of plan.absorb) {
+      const keys = Object.keys(d.d ?? {}).filter((c) => cols.has(c));
+      if (!keys.length) continue;
+      db.run(`INSERT OR IGNORE INTO audit_log (${keys.map((c) => `"${c}"`).join(',')}) VALUES (${keys.map(() => '?').join(',')})`,
+        keys.map((c) => d.d![c] as SqlValue));
+    }
+    db.run(`DELETE FROM sync_inbox`);
+    db.run(`DELETE FROM sync_outbox`);
+    setSyncState(db, 'uid', uid);
+    setSyncState(db, 'cursor', plan.cursor ? JSON.stringify(plan.cursor) : null);
+    setSyncState(db, 'joining', null);
+    setSyncState(db, 'restored_unadopted', null);
+    unifySeedIds(db);
+    for (const t of SYNC_TABLES) {
+      db.run(
+        `INSERT INTO sync_outbox (tbl, pk, op, changed_at)
+         SELECT '${t.name}', ${t.pk(t.name)}, 'upsert', ? FROM "${t.name}" WHERE true`, [at]);
+    }
+    for (const x of plan.tombstones) {
+      db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?,?, 'delete', ?)
+              ON CONFLICT(tbl, pk) DO UPDATE SET op = 'delete', changed_at = excluded.changed_at`, [x.t, x.k, at]);
+    }
+    setCapture(db, true);
+    return { queued: outboxCount(db) };
+  });
 }
 
 /* ═══════════ الدورة الكاملة ═══════════ */
@@ -379,19 +492,87 @@ function immutableDenied(doc: RemoteDoc, code?: string): boolean {
   return doc.t === 'journal_entries' && doc.d?.status === 'مرحّل';
 }
 
+/**
+ * المزامنة الكبيرة الأولى (آلاف الصفوف) تصطدم بحصة الخادم أو انشغاله · فلا تُسقط الدورة كلها:
+ * تنتظر وتعيد بمهلة تتضاعف، وتصغّر الدفعة، وإن طال الرفض أجّلت الدورات التالية مدةً ثم استأنفت
+ * من الطابور نفسه. ولا ضياع ولا تكرار: الصف لا يخرج من الطابور إلا بعد قبول الخادم له،
+ * ومعرّف المستند ثابت (الجدول__المفتاح) فإعادة الكتابة تستبدل ولا تضيف.
+ */
+export interface SyncOptions {
+  /** للاختبار: انتظار بلا وقت حقيقي */
+  sleep?: (ms: number) => Promise<void>;
+  /** محاولات متتالية قبل التأجيل */
+  maxRetries?: number;
+  /** أول مهلة · تتضاعف حتى دقيقة */
+  baseDelayMs?: number;
+}
+
+const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const MAX_DELAY_MS = 60_000;
+/** تأجيل الدورات بعد استنفاد المحاولات · ربع ساعة */
+export const BACKOFF_PAUSE_MS = 15 * 60_000;
+const MIN_PUSH_BATCH = 25;
+
+/** خطأ عابر يستحق الانتظار والإعادة · الحصة والانشغال وانقطاع المهلة */
+export function isTransientRemoteError(e: unknown): boolean {
+  const status = (e as { status?: unknown })?.status;
+  if (typeof status === 'number' && [408, 429, 500, 502, 503, 504].includes(status)) return true;
+  const msg = e instanceof Error ? e.message : String(e);
+  return /RESOURCE_EXHAUSTED|UNAVAILABLE|ABORTED|DEADLINE_EXCEEDED|quota/i.test(msg);
+}
+
+/** المزامنة مؤجَّلة بعد رفضٍ متكرر؟ · تعيد وقت الاستئناف أو null */
+export function syncBackoffUntil(db: DB, now: Date = new Date()): string | null {
+  const v = getSyncState(db, 'backoff_until');
+  return v && v > now.toISOString() ? v : null;
+}
+
+export class SyncBusyError extends Error {
+  constructor(public pushed: number, public total: number, public until: string) {
+    super(`السحابة مشغولة أو بلغت حصتها · رُفع ${pushed} من ${total} والباقي محفوظ في الطابور، ويُستأنف تلقائياً بعد ربع ساعة`);
+    this.name = 'SyncBusyError';
+  }
+}
+
 export async function syncOnce(
   db: DB,
   remote: RemoteStore,
   deviceId: string,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  opts: SyncOptions = {}
 ): Promise<SyncReport> {
+  const sleep = opts.sleep ?? realSleep;
+  const maxRetries = opts.maxRetries ?? 6;
+  const base = opts.baseDelayMs ?? 1000;
+
+  /** النداء نفسه بإعادة بعد مهلة تتضاعف · وما ليس عابراً يُرمى فوراً */
+  const retrying = async <T>(fn: () => Promise<T>): Promise<T> => {
+    for (let attempt = 0; ; attempt++) {
+      try { return await fn(); }
+      catch (e) {
+        if (!isTransientRemoteError(e) || attempt >= maxRetries) throw e;
+        const delay = Math.min(base * 2 ** attempt, MAX_DELAY_MS);
+        onProgress?.('السحابة مشغولة · إعادة المحاولة بعد ' + Math.ceil(delay / 1000) + ' ثانية');
+        await sleep(delay);
+      }
+    }
+  };
+  const giveUp = (pushed: number, total: number): never => {
+    const until = new Date(Date.now() + BACKOFF_PAUSE_MS).toISOString();
+    setSyncState(db, 'backoff_until', until);
+    throw new SyncBusyError(pushed, total, until);
+  };
+
   // ١) السحب إلى الصندوق الوارد · المؤشر يُحفظ بعد حفظ كل صفحة
   let pulled = 0;
   const saved = getSyncState(db, 'cursor');
   let cursor: Cursor | null = saved ? (JSON.parse(saved) as Cursor) : null;
   for (;;) {
     onProgress?.('جاري سحب التغييرات' + (pulled ? ' · ' + pulled : ''));
-    const { docs, next } = await remote.pull(cursor, PULL_PAGE);
+    let page: { docs: RemoteDoc[]; next: Cursor | null };
+    try { page = await retrying(() => remote.pull(cursor, PULL_PAGE)); }
+    catch (e) { if (isTransientRemoteError(e)) giveUp(0, outboxCount(db)); throw e; }
+    const { docs, next } = page!;
     if (docs.length) {
       stageInbox(db, docs);
       pulled += docs.length;
@@ -405,14 +586,32 @@ export async function syncOnce(
   const a = applyInbox(db, deviceId);
   if (getSyncState(db, 'joining') === '1') setSyncState(db, 'joining', null);
 
-  // ٣) الدفع
+  // ٣) الدفع · على دفعات بتقدّم ظاهر «ن من م»، والدفعة تصغر عند الانشغال
   let pushed = 0;
+  const total = outboxCount(db);
+  let size = PUSH_BATCH;
+  let failures = 0;
   for (;;) {
-    const batch = pendingOutbox(db, PUSH_BATCH);
+    const batch = pendingOutbox(db, size);
     if (!batch.length) break;
-    onProgress?.('جاري رفع التغييرات · ' + pushed);
+    onProgress?.('جاري رفع التغييرات · ' + pushed + ' من ' + total);
     const docs = batch.map((r) => buildDoc(db, r.tbl, r.pk, r.op, r.changed_at, deviceId));
-    const results = await remote.write(docs);
+    let results: WriteResult[];
+    try {
+      results = await remote.write(docs);
+      failures = 0;
+    } catch (e) {
+      // انقطاع الاتصال وما ليس عابراً · الطابور كما هو ويُستأنف عند عودته
+      if (!isTransientRemoteError(e)) throw e;
+      if (failures >= maxRetries) giveUp(pushed, total);
+      // الدفعة تُبنى من جديد أصغر · وتُنتظر مهلة تتضاعف
+      size = Math.max(MIN_PUSH_BATCH, Math.floor(size / 2));
+      const delay = Math.min(base * 2 ** failures, MAX_DELAY_MS);
+      failures++;
+      onProgress?.('السحابة مشغولة · إعادة المحاولة بعد ' + Math.ceil(delay / 1000) + ' ثانية');
+      await sleep(delay);
+      continue;
+    }
     let progressed = 0;
     db.transaction(() => {
       results.forEach((res, i) => {
@@ -431,6 +630,7 @@ export async function syncOnce(
     if (!progressed) break; // كل الدفعة رُفضت · لا دوران بلا تقدّم
   }
 
+  setSyncState(db, 'backoff_until', null);
   setSyncState(db, 'last_sync_at', nowIso());
   const pending = outboxCount(db);
   return { pulled, applied: a.applied, conflicts: a.conflicts, rejected: a.rejected, pushed, pending, waiting: a.waiting };

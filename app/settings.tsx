@@ -10,7 +10,8 @@ import { Screen } from '../src/ui/Screen';
 import {
   Card, CardTitle, T, Num, SetRow, ChipGroup, BtnPrimary, BtnGhost, Note, Row, Badge, EmptyState, Field,
 } from '../src/ui/components';
-import { Sheet, PickerSheet } from '../src/ui/Sheet';
+import { Sheet, PickerSheet, SelectField } from '../src/ui/Sheet';
+import { DateField } from '../src/ui/DateField';
 import { useDialog } from '../src/ui/AppDialog';
 import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
@@ -20,7 +21,11 @@ import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, dele
 import { createAndShareBackup, pickAndPrepareRestore, commitPreparedRestore, abortPreparedRestore, appBackupEnv } from '../src/services/backupService';
 import { wipeAllData } from '../src/domain/wipe';
 import { fingerprintData } from '../src/domain/backup/create';
-import { planLedgerRepair, applyLedgerRepair, unbookedDiscounts, bookDiscount, type UnbookedDiscount } from '../src/domain/ledgerReview';
+import {
+  planLedgerRepair, applyLedgerRepair, unbookedDiscounts, bookDiscount, contractSurpluses, settleSurplus,
+  type UnbookedDiscount, type ContractSurplus,
+} from '../src/domain/ledgerReview';
+import { toHalalas } from '../src/domain/money';
 import { DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind } from '../src/domain/contracts/installments';
 import { fmt } from '../src/domain/money';
 import { rescheduleAllNotifications } from '../src/services/notifications';
@@ -31,9 +36,12 @@ import { libSizeLabel } from '../src/domain/library';
 import { reportFailure, arabicMessage } from '../src/ui/failureDialog';
 import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
+  pauseSync, resumeSync, syncNow, planReplaceCloud, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
+  restoreAwaitingAdoption,
 } from '../src/services/cloud';
+import type { CloudReplacePlan } from '../src/sync/engine';
 import type { DriveBackup } from '../src/cloud/drive';
-import { dfmt, toLocalISODate } from '../src/domain/dates';
+import { dfmt, toLocalISODate, today } from '../src/domain/dates';
 
 const APP_VERSION = '1.0.0';
 
@@ -63,10 +71,27 @@ export default function Settings() {
   const [progress, setProgress] = useState<string | null>(null);
   // مراجعة الأقساط من الدفتر · قراءة عند كل تغيير، ولا يُطبَّق شيء إلا بموافقة المستخدم
   const [reviewOpen, setReviewOpen] = useState(false);
-  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db) }),
+  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db) }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
-  const reviewCount = review.plan.changes.length + review.plan.issues.length
+  // تسوية فائض: ردّ للمستأجر بتاريخه وطريقته، أو تحويله رصيداً دائناً
+  const [settle, setSettle] = useState<{ s: ContractSurplus; action: 'refund' | 'credit' } | null>(null);
+  const [settleAmount, setSettleAmount] = useState('');
+  const [settleDate, setSettleDate] = useState(today());
+  const [settleMethod, setSettleMethod] = useState<'cash' | 'bank' | ''>('');
+  const [settleBank, setSettleBank] = useState('');
+  const banks = useMemo(() => db.all<{ id: string; name: string }>(
+    `SELECT id, name FROM banks WHERE deleted_at IS NULL AND archived = 0 ORDER BY name`),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version]);
+  const openSettle = (s: ContractSurplus, action: 'refund' | 'credit') => {
+    setSettle({ s, action });
+    setSettleAmount(fmt(s.amount).replace(/,/g, ''));
+    setSettleDate(today());
+    setSettleMethod('');
+    setSettleBank('');
+  };
+  const reviewCount = review.surpluses.length + review.plan.changes.length + review.plan.issues.length
     + review.unbooked.items.length + review.unbooked.ambiguous.length;
   // الحساب والمزامنة · حالة حيّة من طبقة الربط
   const [cloud, setCloud] = useState(cloudState());
@@ -129,16 +154,38 @@ export default function Settings() {
   // الاستعادة لا تنهار أبداً · كل المسار ملفوف، والفشل رسالة عربية مبنيّة على فحص
   const doRestore = () => runRestore(() => pickAndPrepareRestore(db, setProgress));
 
-  // المسار الواحد للاستعادة من أي مصدر: التجهيز (فك وبصمات وفحص دلالي) ثم الملخص ثم التنفيذ
+  /** ما في السحابة وما يصير إليه · سطور الحوار قبل الاعتماد */
+  const cloudReplaceText = (p: CloudReplacePlan) =>
+    'في حسابك على السحابة ' + p.cloudRows + ' سجل · تُستبدل بما في النسخة'
+    + (p.tombstones.length ? '، ويُحذف منها ' + p.tombstones.length + ' سجل ليس في النسخة' : '') + '.'
+    + (p.immutable.entries || p.immutable.audit
+      ? '\nويبقى في السحابة ' + (p.immutable.entries ? p.immutable.entries + ' قيد مرحّل' : '')
+        + (p.immutable.entries && p.immutable.audit ? ' و' : '') + (p.immutable.audit ? p.immutable.audit + ' سطر من سجل العمليات' : '')
+        + ' ليست في النسخة: قواعد الأمان لا تحذفها من السحابة، فلا تنزل إلى هذا الجهاز وتبقى على أي جهاز آخر نزلت عليه.'
+      : '');
+
+  // المسار الواحد للاستعادة من أي مصدر: التجهيز (فك وبصمات وفحص دلالي) ثم الملخص ثم التنفيذ ·
+  // ومع الدخول بحساب: المزامنة تتوقف قبل كل شيء، ولا يُكتب إلى السحابة إلا بالاعتماد صراحةً
   const runRestore = async (prepare: () => Promise<Awaited<ReturnType<typeof pickAndPrepareRestore>>>) => {
     setBusy(true);
     const before = fingerprintData(appBackupEnv(db));
+    const signedIn = !!cloudState().user;
     let prepared: Awaited<ReturnType<typeof pickAndPrepareRestore>> = null;
+    // يُستأنف كل مسار انتهى بلا اعتماد · والاعتماد يستأنف بنفسه بعد أن يرفع
+    let resumeOnExit = signedIn;
     try {
+      if (signedIn) { setProgress('جاري إيقاف المزامنة'); await pauseSync(); }
       prepared = await prepare();
       setProgress(null);
-      if (!prepared) { setBusy(false); return; }
+      if (!prepared) { setBusy(false); if (resumeOnExit) resumeSync(); return; }
       const { env, plan, archiveTmp } = prepared;
+      let cloudPlan: CloudReplacePlan | null = null;
+      if (signedIn) {
+        const staged = env.openDb(plan.stagedDbPath);
+        try { cloudPlan = await planReplaceCloud(staged, setProgress); }
+        finally { try { staged.close(); } catch { /* أُغلقت */ } }
+        setProgress(null);
+      }
       const n = (t: string) => plan.incoming[t] ?? 0;
       const cN = (t: string) => plan.current[t] ?? 0;
       const mb = (plan.attachmentsBytes / (1024 * 1024)).toFixed(1);
@@ -152,27 +199,50 @@ export default function Settings() {
         'عقارات ' + cN('properties') + ' · وحدات ' + cN('units') + ' · عقود ' + cN('contracts') + '\n' +
         'قيود ' + cN('journal_entries') + ' · مرفقات ' + plan.currentAttachments.count
           + ' (' + (plan.currentAttachments.bytes / (1024 * 1024)).toFixed(1) + ' ميغا)'
-          + (plan.ledgerRepair ? repairSummary(plan.ledgerRepair) : ''),
+          + (plan.ledgerRepair ? repairSummary(plan.ledgerRepair) : '')
+          + (cloudPlan ? '\n\nأنت داخل بحساب ' + (cloudState().user?.email ?? '') + ' · المزامنة متوقفة الآن.\n' + cloudReplaceText(cloudPlan) : ''),
         tone: 'normal',
         locked: true,
         actions: [
           {
             label: 'إلغاء', variant: 'ghost',
-            onPress: () => { try { abortPreparedRestore(env, plan, archiveTmp); } catch { /* يكنسه الإقلاع */ } },
+            onPress: () => {
+              try { abortPreparedRestore(env, plan, archiveTmp); } catch { /* يكنسه الإقلاع */ }
+              if (signedIn) resumeSync();
+            },
           },
           {
-            label: plan.ledgerRepair ? 'متابعة الاستعادة مع التصحيح' : 'متابعة الاستعادة', variant: 'primary',
+            label: cloudPlan ? 'اعتماد هذه النسخة واستبدال بيانات السحابة بها'
+              : plan.ledgerRepair ? 'متابعة الاستعادة مع التصحيح' : 'متابعة الاستعادة',
+            variant: 'primary',
             onPress: async () => {
               setBusy(true);
+              let restored = false;
               try {
                 await commitPreparedRestore(env, plan, archiveTmp, setProgress);
+                restored = true;
+                if (cloudPlan) {
+                  setProgress('جاري اعتماد النسخة للسحابة');
+                  const { queued } = await adoptForCloud(db, cloudPlan);
+                  resumeSync();
+                  syncNow();
+                  toast('اكتملت الاستعادة · ' + queued + ' سجل في طريقه إلى السحابة');
+                } else {
+                  // بلا دخول: لا تُدمج النسخة مع السحابة عند الدخول التالي إلا بقرار
+                  if (cloudState().configured) markRestoredUnadopted(db);
+                  toast('اكتملت الاستعادة والتُحقق منها');
+                }
                 bump();
                 rescheduleAllNotifications(db).catch(() => {});
-                toast('اكتملت الاستعادة والتُحقق منها');
               } catch (e) {
+                // الاستعادة تمّت والاعتماد لم يتمّ: المزامنة تبقى منتظرة القرار ولا تدمج صامتةً
+                if (restored && cloudPlan) { try { markRestoredUnadopted(db); } catch { /* القاعدة مشغولة */ } resumeSync(); bump(); }
+                else if (signedIn) resumeSync();
                 await reportFailure({
-                  title: 'تعذّرت الاستعادة', where: 'استعادة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'update',
-                  before, env: appBackupEnv(db), e,
+                  title: restored ? 'تمّت الاستعادة ولم تُعتمد للسحابة' : 'تعذّرت الاستعادة',
+                  where: restored ? 'اعتماد النسخة للسحابة' : 'استعادة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'update',
+                  before: restored ? undefined : before, env: appBackupEnv(db), e,
+                  lead: restored ? 'بياناتك الآن من النسخة، ولم يُكتب شيء إلى السحابة · اعتمدها من «الحساب والمزامنة» حين يعود الاتصال.' : undefined,
                 });
               }
               setProgress(null);
@@ -181,6 +251,7 @@ export default function Settings() {
           },
         ],
       });
+      resumeOnExit = false; // الحوار مفتوح · زرّاه يستأنفان
     } catch (e) {
       // لا يُترك مجلد تجهيز وراءنا إن فشل شيء بعد نجاح التجهيز
       if (prepared) { try { abortPreparedRestore(prepared.env, prepared.plan, prepared.archiveTmp); } catch { /* يكنسه الإقلاع */ } }
@@ -188,6 +259,45 @@ export default function Settings() {
         title: 'تعذّرت الاستعادة', where: 'تجهيز استعادة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'update',
         before, env: appBackupEnv(db), e,
       });
+    }
+    if (resumeOnExit) resumeSync();
+    setProgress(null);
+    setBusy(false);
+  };
+
+  /** نسخة استُعيدت خارج الحساب · تُعتمد للسحابة أو تُدمج معها بقرار صريح */
+  const doAdoptPending = async () => {
+    setBusy(true);
+    try {
+      await pauseSync();
+      const p = await planReplaceCloud(db, setProgress);
+      setProgress(null);
+      dialog({
+        title: 'اعتماد بيانات هذا الجهاز',
+        body: 'استُعيدت على هذا الجهاز نسخة ولم يُكتب منها شيء إلى السحابة.\n' + cloudReplaceText(p)
+          + '\n\nأو «دمج مع السحابة»: يغلب في كل سجل الأحدثُ تعديلاً بين الجهاز والسحابة.',
+        tone: 'normal',
+        locked: true,
+        actions: [
+          { label: 'إلغاء', variant: 'ghost', onPress: () => resumeSync() },
+          { label: 'دمج مع السحابة', variant: 'ghost', onPress: () => {
+            const uid = cloudState().user?.uid;
+            if (uid) { clearRestoredUnadopted(db, uid); resumeSync(); syncNow(); bump(); }
+          } },
+          { label: 'اعتماد بيانات هذا الجهاز واستبدال بيانات السحابة بها', variant: 'primary', onPress: async () => {
+            try {
+              const { queued } = await adoptForCloud(db, p);
+              toast(queued + ' سجل في طريقه إلى السحابة');
+            } catch (e) {
+              await reportFailure({ title: 'تعذّر الاعتماد', where: 'اعتماد النسخة للسحابة', db, e });
+            }
+            resumeSync(); syncNow(); bump();
+          } },
+        ],
+      });
+    } catch (e) {
+      resumeSync();
+      await reportFailure({ title: 'تعذّرت قراءة ما في السحابة', where: 'اعتماد النسخة للسحابة', db, e });
     }
     setProgress(null);
     setBusy(false);
@@ -409,6 +519,12 @@ export default function Settings() {
               </Row>
             ))}
             {cloud.lastError ? <Note tone="danger">{cloud.lastError}</Note> : null}
+            {restoreAwaitingAdoption(db) ? (
+              <View style={{ marginTop: 6 }}>
+                <Note tone="danger">استُعيدت على هذا الجهاز نسخة ولم تُعتمد للسحابة · المزامنة متوقفة حتى تقرّر</Note>
+                {cloud.online ? <BtnPrimary title="اعتماد النسخة أو دمجها" onPress={doAdoptPending} loading={busy} /> : null}
+              </View>
+            ) : null}
             {cloud.online ? (
               <Row style={{ marginTop: 6 }}>
                 <View style={{ flex: 1 }}><BtnPrimary icon="export" title="نسخ إلى Google Drive" onPress={doDriveBackup} loading={busy} /></View>
@@ -493,6 +609,12 @@ export default function Settings() {
               <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
                 <T size={TYPE.body}>ما لا يحسمه الدفتر</T>
                 <Num size={TYPE.body} bold>{review.plan.issues.length}</Num>
+              </Row>
+            ) : null}
+            {review.surpluses.length ? (
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
+                <T size={TYPE.body}>فائض عن الأقساط</T>
+                <Num size={TYPE.body} bold>{review.surpluses.length}</Num>
               </Row>
             ) : null}
             {review.unbooked.items.length + review.unbooked.ambiguous.length ? (
@@ -657,6 +779,27 @@ export default function Settings() {
             </View>
           </>
         ) : null}
+        {review.surpluses.length ? (
+          <>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>فائض عن الأقساط</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>
+              نقد قُبض فوق أقساط العقد ولم يُنسب لقسط · يبقى هنا حتى يُردّ للمستأجر أو يُحوَّل رصيداً دائناً له.
+            </T>
+            {review.surpluses.map((s) => (
+              <View key={s.contractId} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
+                <T size={TYPE.body} med>{s.tenant + ' · عقد ' + s.contractNo}</T>
+                <T size={TYPE.caption} color={C.muted}>
+                  {'الفائض ' + fmt(s.amount) + ' · نقد الدفعات في الدفتر ' + fmt(s.cash) + ' · مسدَّد الأقساط ' + fmt(s.paid)
+                    + (s.settled ? ' · سُوّي منه ' + fmt(s.settled) : '')}
+                </T>
+                <Row gap={8} style={{ marginTop: 6 }}>
+                  <BtnGhost small title="ردّ الفائض للمستأجر" onPress={() => openSettle(s, 'refund')} />
+                  <BtnGhost small title="تحويله رصيداً دائناً" onPress={() => openSettle(s, 'credit')} />
+                </Row>
+              </View>
+            ))}
+          </>
+        ) : null}
         {review.plan.issues.length ? (
           <>
             <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>ما لا يحسمه الدفتر ويبقى قرارُه لك</T>
@@ -684,6 +827,70 @@ export default function Settings() {
                 {a.candidates.map((u) => unbookedRow(u))}
               </View>
             ))}
+          </>
+        ) : null}
+      </Sheet>
+
+      <Sheet visible={!!settle} onClose={() => setSettle(null)}
+        title={settle?.action === 'credit' ? 'تحويل الفائض رصيداً دائناً' : 'ردّ الفائض للمستأجر'}
+        footer={settle && toHalalas(settleAmount) > 0 && toHalalas(settleAmount) <= settle.s.amount && !!settleDate
+          && (settle.action === 'credit' || settleMethod === 'cash' || (settleMethod === 'bank' && !!settleBank)) ? (
+          <View style={{ flex: 1 }}>
+            <BtnPrimary title={settle.action === 'credit' ? 'سجّل التحويل' : 'سجّل الردّ'} onPress={() => {
+              const cur = settle;
+              setSettle(null);
+              try {
+                const e = settleSurplus(db, cur.s.contractId, {
+                  action: cur.action, amountHalalas: toHalalas(settleAmount), date: settleDate,
+                  method: cur.action === 'refund' ? (settleMethod || undefined) : undefined,
+                  bankId: settleMethod === 'bank' ? settleBank : undefined,
+                });
+                toast((cur.action === 'credit' ? 'حُوّل الفائض رصيداً دائناً · قيد ' : 'سُجّل ردّ الفائض · قيد ') + e.no);
+              } catch (e2) {
+                reportFailure({ title: 'تعذّرت تسوية الفائض', e: e2 });
+              }
+              bump();
+            }} />
+          </View>
+        ) : null}>
+        {settle ? (
+          <>
+            <T size={TYPE.body} med style={{ marginBottom: 6 }}>{settle.s.tenant + ' · عقد ' + settle.s.contractNo}</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 10 }}>
+              {settle.action === 'credit'
+                ? 'قيد جديد: مدين إيرادات الإيجار (ما قُبض فوق الأقساط) · دائن أرصدة مستأجرين دائنة، ويزيد رصيد المستأجر الدائن.'
+                : 'قيد جديد بتاريخ الردّ: مدين إيرادات الإيجار (ما قُبض فوق الأقساط) · دائن النقدية والبنوك بما خرج للمستأجر.'}
+            </T>
+            <Field label={'المبلغ (الفائض ' + fmt(settle.s.amount) + ')'} value={settleAmount} onChange={setSettleAmount} keyboard="numeric" ltr />
+            <DateField label={settle.action === 'credit' ? 'تاريخ التحويل' : 'تاريخ الردّ'} value={settleDate} onChange={setSettleDate} />
+            {settle.action === 'refund' ? (
+              <>
+                <SelectField<'cash' | 'bank'>
+                  label="طريقة الردّ"
+                  value={settleMethod || null}
+                  placeholder="اختر طريقة الردّ"
+                  options={[{ value: 'cash', label: 'نقداً' }, { value: 'bank', label: 'تحويل بنكي' }]}
+                  onPick={setSettleMethod}
+                />
+                {settleMethod === 'bank' ? (
+                  <SelectField
+                    label="الحساب الذي خرج منه التحويل"
+                    value={settleBank || null}
+                    options={banks.map((b) => ({ value: b.id, label: b.name }))}
+                    onPick={setSettleBank}
+                    placeholder="اختر الحساب"
+                    emptyText="أضف حساباً بنكياً أولاً من شاشة البنوك"
+                  />
+                ) : null}
+              </>
+            ) : null}
+            {toHalalas(settleAmount) > settle.s.amount ? (
+              <T size={11.5} color={C.rose}>المبلغ أكبر من الفائض</T>
+            ) : settle.action === 'refund' && !settleMethod ? (
+              <T size={11.5} color={C.rose}>اختر طريقة الردّ ليظهر زر التسجيل</T>
+            ) : settleMethod === 'bank' && !settleBank ? (
+              <T size={11.5} color={C.rose}>اختر الحساب ليظهر زر التسجيل</T>
+            ) : null}
           </>
         ) : null}
       </Sheet>

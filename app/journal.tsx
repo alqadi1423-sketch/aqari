@@ -14,7 +14,8 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { useDialog } from '../src/ui/AppDialog';
 import { C } from '../src/ui/theme';
-import { postEntry, nextJournalNo, voidEntryById, reverseEntryById } from '../src/domain/accounting/post';
+import { postEntry, nextJournalNo, voidEntryById } from '../src/domain/accounting/post';
+import { reverseFromJournal, journalReversalBlock } from '../src/domain/accounting/journalReversal';
 import { allAccounts } from '../src/domain/accounting/ledger';
 import { today, dfmt } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
@@ -30,9 +31,9 @@ interface EntryRow {
 const EMPTY_ENTRIES: EntryRow[] = [];
 
 const EntryCard = React.memo(function EntryCard({
-  id, no, date, memo, status, srcType, d, c, onOpen, onReverse, onDeleteDraft,
+  id, no, date, memo, status, srcType, auto, d, c, onOpen, onReverse, onDeleteDraft,
 }: {
-  id: string; no: string; date: string; memo: string; status: string;
+  id: string; no: string; date: string; memo: string; status: string; auto: boolean;
   srcType: string | null; d: number; c: number;
   /** الضغط على القيد يفتح ورقة تفاصيله */
   onOpen: (id: string) => void;
@@ -55,20 +56,23 @@ const EntryCard = React.memo(function EntryCard({
         </Row>
         <T size={10.5} color={C.muted} numberOfLines={1} style={{ marginTop: 3 }}>{srcTypeLabel(srcType)}</T>
       </Pressable>
-      <Row style={{ justifyContent: 'flex-end', marginTop: 4 }}>
-        <ActionMenuButton title={no} actions={[
-          status === 'مرحّل'
-            ? {
-                // قيد مرحّل لا يُحذف أبداً · يُعكَس بقيد مرآة والاثنان يبقيان في الدفتر
-                icon: 'undo', label: 'عكس القيد',
-                onPress: () => onReverse(id, no),
-              }
-            : {
-                icon: 'trash', label: 'حذف', danger: true,
-                onPress: () => onDeleteDraft(id),
-              },
-        ]} />
-      </Row>
+      {/* القيد الآلي يُلغى من مستنده لا من الدفتر (journalReversal.ts) · فلا يُعرض له زرّ لا يصح فعله */}
+      {status === 'مرحّل' && auto && srcType ? null : (
+        <Row style={{ justifyContent: 'flex-end', marginTop: 4 }}>
+          <ActionMenuButton title={no} actions={[
+            status === 'مرحّل'
+              ? {
+                  // قيد مرحّل لا يُحذف أبداً · يُعكَس بقيد مرآة والاثنان يبقيان في الدفتر
+                  icon: 'undo', label: 'عكس القيد',
+                  onPress: () => onReverse(id, no),
+                }
+              : {
+                  icon: 'trash', label: 'حذف', danger: true,
+                  onPress: () => onDeleteDraft(id),
+                },
+          ]} />
+        </Row>
+      )}
     </Card>
   );
 });
@@ -153,6 +157,12 @@ export default function Journal() {
   const openDetail = useCallback((id: string) => setDetailId(id), []);
 
   const reverseEntry = useCallback((id: string, no: string) => {
+    // القيد الآلي يُلغى من مستنده · يُقال السبب قبل أي تأكيد
+    const why = journalReversalBlock(db, id);
+    if (why) {
+      dialog({ title: 'لا يُعكس القيد ' + no + ' من الدفتر', body: why + '.', tone: 'normal', actions: [{ label: 'حسناً', variant: 'ghost' }] });
+      return;
+    }
     dialog({
       title: 'عكس القيد ' + no,
       body: 'سيُرحَّل قيد عاكس بتاريخ اليوم يلغي أثره على الأرصدة، ويبقى القيدان معاً في الدفتر.',
@@ -162,9 +172,11 @@ export default function Journal() {
         {
           label: 'عكس القيد', variant: 'primary',
           onPress: () => {
-            const rev = reverseEntryById(db, id);
-            bump();
-            toast(rev ? 'رُحّل القيد العاكس ' + rev.no : 'هذا القيد معكوس من قبل');
+            try {
+              const rev = reverseFromJournal(db, id);
+              bump();
+              toast(rev ? 'رُحّل القيد العاكس ' + rev.no : 'هذا القيد معكوس من قبل');
+            } catch (e) { reportFailure({ title: 'تعذّر عكس القيد', e }); }
           },
         },
       ],
@@ -192,7 +204,7 @@ export default function Journal() {
   const renderEntry = useCallback(({ item }: { item: EntryRow }) => (
     <EntryCard
       id={item.id} no={item.no} date={item.date} memo={item.memo} status={item.status}
-      srcType={item.src_type} d={Number(item.d)} c={Number(item.c)}
+      srcType={item.src_type} auto={Number(item.auto) === 1} d={Number(item.d)} c={Number(item.c)}
       onOpen={openDetail} onReverse={reverseEntry} onDeleteDraft={deleteDraft}
     />
   ), [openDetail, reverseEntry, deleteDraft]);
