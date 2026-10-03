@@ -31,7 +31,7 @@ import { appDataRoot } from '../files/expoFs';
 import { thumbUri, existingThumbUri, isImageFile } from '../services/thumbs';
 import Pdf from 'react-native-pdf';
 import { logAudit } from '../domain/audit';
-import { reportFailure } from './failureDialog';
+import { reportFailure, recordFailure, copyFailureDetails, shareFailureDetails } from './failureDialog';
 
 export interface ViewerFile {
   attId: string;
@@ -113,11 +113,17 @@ function ImagePage({ file, width }: { file: ViewerFile; width: number }) {
   );
 }
 
-/* ═══════════ صفحة PDF · محرك النظام (PdfRenderer) فالتشكيل العربي عليه لا علينا ═══════════ */
-function PdfPage({ file, width }: { file: ViewerFile; width: number }) {
+/*
+ * ═══════════ صفحة PDF · محرك النظام (PdfRenderer) فالتشكيل العربي عليه لا علينا ═══════════
+ * عارض PDF الأصلي لا يتبع قصّ الصفحات ولا قلبها في الشريط الأفقي، فكان يبقى على الشاشة بعد السحب
+ * إلى صورة · فلا يُركَّب إلا والصفحةُ هي المعروضة، ومكانه في الجيران بطاقةٌ باسمه.
+ * وخطؤه يُعرض في بطاقته بأزرار التقرير لا في حوارٍ ثانٍ يتسابق مع نافذة العارض فيُخفى خلفها.
+ */
+function PdfPage({ file, width, active }: { file: ViewerFile; width: number; active: boolean }) {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [err, setErr] = useState('');
+  const [report, setReport] = useState<{ full: string; saved: string | null } | null>(null);
   const openExternal = () => {
     Sharing.isAvailableAsync().then((ok) => {
       if (ok) Sharing.shareAsync(fileUriOf(file), { mimeType: 'application/pdf', dialogTitle: file.name });
@@ -128,9 +134,22 @@ function PdfPage({ file, width }: { file: ViewerFile; width: number }) {
       <View style={{ width, flex: 1, backgroundColor: '#14171D', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
         <Icon name="claim" size={44} color={C.rose} />
         <T size={13} color="#fff" style={{ marginTop: 12, textAlign: 'center' }}>{err}</T>
-        <View style={{ marginTop: 14, minWidth: 200 }}>
+        {report?.saved ? (
+          <T size={11.5} color="#C9CFDA" style={{ marginTop: 6, textAlign: 'center' }}>{'حُفظت التفاصيل في التنزيلات باسم ' + report.saved}</T>
+        ) : null}
+        <View style={{ marginTop: 14, minWidth: 220, gap: 8 }}>
           <BtnPrimary title="فتح بتطبيق آخر" onPress={openExternal} />
+          {report ? <BtnGhost title="نسخ تفاصيل الخطأ" onPress={() => copyFailureDetails(report.full)} /> : null}
+          {report ? <BtnGhost title="أرسل تقرير الخطأ" onPress={() => shareFailureDetails(report.full)} /> : null}
         </View>
+      </View>
+    );
+  }
+  if (!active) {
+    return (
+      <View style={{ width, flex: 1, backgroundColor: '#14171D', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+        <Icon name="library" size={40} color="#C9CFDA" />
+        <T size={13} color="#C9CFDA" style={{ marginTop: 10, textAlign: 'center' }} numberOfLines={2}>{file.name}</T>
       </View>
     );
   }
@@ -141,7 +160,10 @@ function PdfPage({ file, width }: { file: ViewerFile; width: number }) {
         style={{ flex: 1, backgroundColor: '#14171D' }}
         onLoadComplete={(n) => setTotal(n)}
         onPageChanged={(pg, n) => { setPage(pg); setTotal(n); }}
-        onError={(e) => { setErr('تعذّر عرض الملف داخلياً'); reportFailure({ title: 'تعذّر عرض الملف داخلياً', where: 'عرض الملف', e }); }}
+        onError={(e) => {
+          setErr('تعذّر عرض الملف داخلياً');
+          recordFailure({ title: 'تعذّر عرض الملف داخلياً', where: 'عرض الملف', e }).then(setReport).catch(() => {});
+        }}
         trustAllCerts={false}
       />
       <View style={{
@@ -362,6 +384,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
           <FlatList
             ref={listRef}
             data={files}
+            extraData={index}
             horizontal
             inverted
             pagingEnabled
@@ -380,7 +403,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
               const k = kindOf(item);
               const active = i === index;
               if (k === 'image') return <ImagePage file={item} width={width} />;
-              if (k === 'pdf') return <PdfPage file={item} width={width} />;
+              if (k === 'pdf') return <PdfPage file={item} width={width} active={active} />;
               if (k === 'video' || k === 'audio') return <MediaPage file={item} width={width} active={active} audio={k === 'audio'} />;
               return <OtherPage file={item} width={width} />;
             }}

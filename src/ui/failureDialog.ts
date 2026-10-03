@@ -45,6 +45,26 @@ export function arabicMessage(e: unknown): string {
   return AR.test(m) ? m : '';
 }
 
+/**
+ * التسجيل وحده بلا حوار: سجل العمليات وملف التفاصيل · لخطأٍ يُعرض في موضعه (بطاقة داخل شاشة
+ * ملء الشاشة) حيث يتسابق حوارٌ ثانٍ مع نافذتها فيُخفى خلفها. يعيد نصّ التفاصيل واسم الملف لأزرار الموضع.
+ */
+export async function recordFailure(args: Pick<FailureArgs, 'title' | 'where' | 'e' | 'db' | 'auditModule' | 'auditAction'>):
+  Promise<{ full: string; saved: string | null }> {
+  const where = args.where ?? args.title;
+  if (args.db) {
+    try {
+      logAudit(args.db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', 'فشل ' + where,
+        (args.e instanceof Error ? args.e.message : String(args.e)).slice(0, 300));
+    } catch { /* السجل لا يعطّل */ }
+  }
+  return { full: errorReportText(where, args.e), saved: (await saveErrorReport(where, args.e)) || null };
+}
+
+/** أزرار التقرير نفسها في أي موضع · نسخ التفاصيل وإرسالها */
+export const copyFailureDetails = (full: string) => { Clipboard.setStringAsync(full).then(() => showToast('نُسخت التفاصيل')).catch(() => {}); };
+export const shareFailureDetails = (full: string) => { Share.share({ message: full }).catch(() => {}); };
+
 export async function reportFailure(args: FailureArgs): Promise<void> {
   const { title, e, db, before, env, retry } = args;
   const where = args.where ?? title;
@@ -81,8 +101,8 @@ export async function reportFailure(args: FailureArgs): Promise<void> {
 
   const actions: DialogAction[] = [
     { label: 'حسناً', variant: 'ghost' },
-    { label: 'نسخ تفاصيل الخطأ', variant: 'ghost', onPress: () => { Clipboard.setStringAsync(full).then(() => showToast('نُسخت التفاصيل')).catch(() => {}); } },
-    { label: 'أرسل تقرير الخطأ', variant: 'primary', onPress: () => { Share.share({ message: full }).catch(() => {}); } },
+    { label: 'نسخ تفاصيل الخطأ', variant: 'ghost', onPress: () => copyFailureDetails(full) },
+    { label: 'أرسل تقرير الخطأ', variant: 'primary', onPress: () => shareFailureDetails(full) },
   ];
   if (retry) actions.push({ label: 'أعِد المحاولة', variant: 'primary', onPress: retry });
 
