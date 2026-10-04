@@ -18,6 +18,7 @@ import { useDeferredReady } from '../../src/ui/useDeferredReady';
 import { Skeleton } from '../../src/ui/Skeleton';
 import { DateField } from '../../src/ui/DateField';
 import { ActionMenuButton } from '../../src/ui/ActionMenu';
+import { usePerm } from '../../src/ui/access';
 import { useApp } from '../../src/ui/store';
 import { attachPicked, pickFile, type PickedFile } from '../../src/ui/attach';
 import { useToast } from '../../src/ui/Toast';
@@ -55,20 +56,22 @@ type RowItem = ReturnType<typeof filterInstallments>[number];
  * بطاقة القسط: بطاقة القسط القابل للتحصيل هي زر سداده، وغيرُه بطاقة عرض لا تُضغط ·
  * التواصل وسند القبض في ⋮ أعلى البطاقة يساراً · مكوّن بذاكرة.
  */
-const InstCard = React.memo(function InstCard({ x, onPay, onWa, onSms, onReceipt }: {
+const InstCard = React.memo(function InstCard({ x, onPay, onWa, onSms, onReceipt, canPay }: {
   x: RowItem;
+  /** «التحصيل: إدخال» فأعلى · بلاه البطاقة عرضٌ لا يُضغط ولا تواصل منها */
+  canPay: boolean;
   onPay: (x: RowItem) => void;
   onWa: (x: RowItem) => void;
   onSms: (x: RowItem) => void;
   onReceipt: (x: RowItem) => void;
 }) {
-  const payable = x.remaining > 0 && x.status !== 'ملغية' && x.contractStatus !== 'ملغى';
+  const payable = canPay && x.remaining > 0 && x.status !== 'ملغية' && x.contractStatus !== 'ملغى';
   /**
    * ميزان الحالة: الاتصال يصح ما دام هناك جوال · والمطالبة برسالة لا تصح
    * لقسط مسدَّد أو ملغى (نصّها يحمل المتبقي) · وسند القبض لا يُعرض لقسط لم يُدفع منه شيء.
    */
   const menu = [
-    ...(x.phone ? [
+    ...(x.phone && canPay ? [
       { icon: 'phone' as const, label: 'اتصال', onPress: () => Linking.openURL('tel:' + (dialPhone(x.phone) ?? x.phone)) },
     ] : []),
     ...(x.phone && payable ? [
@@ -112,6 +115,7 @@ const InstCard = React.memo(function InstCard({ x, onPay, onWa, onSms, onReceipt
 
 export default function Collect() {
   const { db, version, bump } = useApp();
+  const perm = usePerm('collect');
   const toast = useToast();
   const dialog = useDialog();
   const [filter, setFilter] = useState<CollectFilter>('due');
@@ -133,7 +137,7 @@ export default function Collect() {
   // القدوم من جدول العقد: نفس نافذة السداد لا نافذة ثانية
   const params = useLocalSearchParams<{ pay?: string; filter?: string; bucket?: string; q?: string }>();
   useEffect(() => {
-    if (params.pay) {
+    if (params.pay && perm.add) {
       const x = base.all.find((r) => r.installmentId === String(params.pay));
       if (x) openPayment(x);
     }
@@ -423,8 +427,8 @@ export default function Collect() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, dialog]);
   const renderInst = React.useCallback(({ item: x }: { item: RowItem }) => (
-    <InstCard x={x} onPay={openPayment} onWa={onWaCb} onSms={onSmsCb} onReceipt={onReceiptCb} />
-  ), [openPayment, onWaCb, onSmsCb, onReceiptCb]);
+    <InstCard x={x} onPay={openPayment} onWa={onWaCb} onSms={onSmsCb} onReceipt={onReceiptCb} canPay={perm.add} />
+  ), [openPayment, onWaCb, onSmsCb, onReceiptCb, perm.add]);
 
   // ذيل القائمة: تقسيم الصفحات ثم آخر التحصيلات
   const footer = (

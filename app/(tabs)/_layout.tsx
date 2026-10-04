@@ -3,6 +3,9 @@ import { Tabs } from 'expo-router';
 import { C, FONT_MED } from '../../src/ui/theme';
 import { Icon } from '../../src/ui/icons';
 import { useScaledInsets, TAB_BAR_BASE } from '../../src/ui/UiScale';
+import { useAccess } from '../../src/ui/access';
+import { canView } from '../../src/domain/access/access';
+import type { SectionKey } from '../../src/domain/access/sections';
 
 /**
  * التنقّل السفلي الخمسة: الرئيسية · العقارات · العقود · التحصيل · المزيد.
@@ -11,6 +14,9 @@ import { useScaledInsets, TAB_BAR_BASE } from '../../src/ui/UiScale';
  */
 export default function TabsLayout() {
   const insets = useScaledInsets();
+  // الشريط يُبنى من صلاحيات العضو · التبويب الذي قسمه «لا» لا يظهر (href: null)
+  const access = useAccess();
+  const hide = (sec: SectionKey) => (canView(access, sec) ? {} : { href: null });
   return (
     <Tabs
       screenOptions={{
@@ -36,15 +42,15 @@ export default function TabsLayout() {
       />
       <Tabs.Screen
         name="properties"
-        options={{ title: 'العقارات', tabBarIcon: ({ color }) => <Icon name="building" size={21} color={String(color)} /> }}
+        options={{ title: 'العقارات', ...hide('props'), tabBarIcon: ({ color }) => <Icon name="building" size={21} color={String(color)} /> }}
       />
       <Tabs.Screen
         name="contracts"
-        options={{ title: 'العقود', tabBarIcon: ({ color }) => <Icon name="contract" size={21} color={String(color)} /> }}
+        options={{ title: 'العقود', ...hide('contracts'), tabBarIcon: ({ color }) => <Icon name="contract" size={21} color={String(color)} /> }}
       />
       <Tabs.Screen
         name="collect"
-        options={{ title: 'التحصيل', tabBarIcon: ({ color }) => <Icon name="collect" size={21} color={String(color)} /> }}
+        options={{ title: 'التحصيل', ...hide('collect'), tabBarIcon: ({ color }) => <Icon name="collect" size={21} color={String(color)} /> }}
       />
       <Tabs.Screen
         name="more"

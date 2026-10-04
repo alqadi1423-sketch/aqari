@@ -26,9 +26,24 @@ export interface RemoteDoc {
   del: boolean;
   /** وقت الخادم · يملؤه الخادم عند الكتابة ويُقرأ عند السحب */
   ts?: string;
+  /** المنشأة وحدها (sync/acl.ts): قسم العملية التي تجيز كتابة العضو */
+  op?: string;
+  /** رموز الرؤية «قسم|عقار» */
+  g?: string[];
+  /** عقارات الصف · '*' للعام */
+  pids?: string[];
+  /** كاتب المسودة الأول */
+  by?: string;
+  /** مستندات تُكتب معه في الدفعة نفسها ولا تُرفع وحدها (إسقاطه بلا مبالغ) · لا تُحفظ في السحابة حقلاً */
+  companions?: RemoteDoc[];
 }
 
-export interface Cursor { ts: string; id: string }
+export interface Cursor {
+  ts: string;
+  id: string;
+  /** سحب العضو: مؤشر لكل دفعة رموز (cloud/firestore.ts) */
+  parts?: Record<string, { ts: string; id: string }>;
+}
 
 export interface WriteResult {
   ok: boolean;
@@ -42,6 +57,8 @@ export interface RemoteStore {
   pull(cursor: Cursor | null, limit: number): Promise<{ docs: RemoteDoc[]; next: Cursor | null }>;
   /** كتابة غير ذرية · نتيجة لكل مستند */
   write(docs: RemoteDoc[]): Promise<WriteResult[]>;
+  /** المنشأة: يزيّن المستند الخارج بحقول الرؤية وإسقاطه قبل الكتابة (sync/acl.ts) */
+  annotate?(db: import('../db/adapter').DB, doc: RemoteDoc): RemoteDoc;
   /** حرف الجهاز في ترقيم الحساب · يُسجَّل مرة ويبقى (numbering.ts) */
   registerDevice?(deviceId: string): Promise<string>;
 }

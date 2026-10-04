@@ -13,6 +13,7 @@ import { C, TYPE } from '../src/ui/theme';
 import { uid } from '../src/domain/ids';
 import { logAudit } from '../src/domain/audit';
 import { HandoverSheet } from '../src/ui/HandoverSheet';
+import { usePerm } from '../src/ui/access';
 
 interface TplSection { section: string; items: string[] }
 
@@ -25,6 +26,9 @@ export default function FormTemplates() {
   const toast = useToast();
   const dialog = useDialog();
   const fsheet = useFilterSheet();
+  const perm = usePerm('company');
+  // استخدام القالب يُنشئ نموذج استلام وتسليم · فهو إضافة في قسمه لا في المنشأة
+  const canFill = usePerm('handover').add;
   const [q, setQ] = useState('');
   const [kindFilter, setKindFilter] = useState('');
   const [builderFor, setBuilderFor] = useState<string | null | false>(false); // false=مغلق، null=جديد
@@ -112,10 +116,10 @@ export default function FormTemplates() {
         <T size={TYPE.sectionTitle} bold style={{ flex: 1 }}>{t.name}</T>
         <Row gap={8}>
           {Number(t.is_system) ? <Badge kind="draft" label="قالب النظام" /> : null}
-          <ActionMenuButton title={t.name} actions={[
+          <ActionMenuButton title={t.name} actions={perm.manage ? [
             { icon: 'edit', label: 'تعديل البنود', onPress: () => openBuilder(t.id) },
             Number(t.is_system) ? null : { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(t) },
-          ]} />
+          ] : []} />
         </Row>
       </Row>
       <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
@@ -123,10 +127,12 @@ export default function FormTemplates() {
           <Badge key={s.section} kind="draft" label={`${s.section} (${s.items.length})`} />
         ))}
       </Row>
-      <Row style={{ flexWrap: 'wrap' }}>
-        <BtnGhost small title="استخدام · استلام" onPress={() => setUseFor({ templateId: t.id, type: 'استلام' })} />
-        <BtnGhost small title="استخدام · تسليم" onPress={() => setUseFor({ templateId: t.id, type: 'تسليم' })} />
-      </Row>
+      {canFill ? (
+        <Row style={{ flexWrap: 'wrap' }}>
+          <BtnGhost small title="استخدام · استلام" onPress={() => setUseFor({ templateId: t.id, type: 'استلام' })} />
+          <BtnGhost small title="استخدام · تسليم" onPress={() => setUseFor({ templateId: t.id, type: 'تسليم' })} />
+        </Row>
+      ) : null}
     </Card>
   );
 
@@ -137,7 +143,7 @@ export default function FormTemplates() {
 
   return (
     <Screen title="إنشاء النماذج" scroll={false}
-      actions={<BtnPrimary small title="+ قالب نموذج جديد" onPress={() => openBuilder(null)} />}>
+      actions={perm.add ? <BtnPrimary small title="+ قالب نموذج جديد" onPress={() => openBuilder(null)} /> : null}>
       <FlatList
         data={templates}
         renderItem={renderItem}

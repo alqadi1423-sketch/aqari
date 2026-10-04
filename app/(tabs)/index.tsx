@@ -14,6 +14,9 @@ import { Sheet } from '../../src/ui/Sheet';
 import { Skeleton } from '../../src/ui/Skeleton';
 import { useDeferredReady } from '../../src/ui/useDeferredReady';
 import { perfNow, perfProbe } from '../../src/perf/perf';
+import { useAccess } from '../../src/ui/access';
+import { canView } from '../../src/domain/access/access';
+import type { SectionKey } from '../../src/domain/access/sections';
 import { useApp } from '../../src/ui/store';
 import { C, TYPE } from '../../src/ui/theme';
 import { periodRevenueExpense, cashOnHand, monthlyRevenueExpense } from '../../src/domain/accounting/ledger';
@@ -124,6 +127,9 @@ export default function Dashboard() {
   const [catDrill, setCatDrill] = useState<string | null>(null);
   const [monthDrill, setMonthDrill] = useState<{ key: string; label: string } | null>(null);
   const T0 = today();
+  // الرئيسية تُبنى من صلاحيات العضو · البطاقة التي قسمها «لا» لا تظهر
+  const access = useAccess();
+  const sees = (k: SectionKey) => canView(access, k);
 
   const data = useMemo(() => {
     const { from, to } = rangeDates(range, customFrom, customTo);
@@ -286,20 +292,20 @@ export default function Dashboard() {
       <>
       {/* التنبيهات أولاً · كلٌّ يفتح المعنيّين به تحديداً */}
       {stage >= 1 ? <Static deps={[data]}><View style={{ marginTop: 10 }}>
-        {data.soonContracts.length > 0 && (
+        {sees('contracts') && data.soonContracts.length > 0 && (
           <Pressable onPress={() => router.push(`/contracts?status=${encodeURIComponent('ينتهي قريباً')}`)} style={alertStyle(C.goldSoft)}>
             <T size={12.5} color="#8A6C25">{data.soonContracts.length} عقداً ينتهي خلال 60 يوماً</T>
             <T size={12} bold color={C.emerald}>عرض</T>
           </Pressable>
         )}
-        {data.late.length > 0 && (
+        {sees('collect') && data.late.length > 0 && (
           <Pressable onPress={() => router.push('/collect?filter=late')} style={alertStyle('#FBEBE9')}>
             <T size={12.5} color={C.rose}>{data.late.length} دفعة متأخرة · {fmt(data.overdue)}</T>
             <T size={12} bold color={C.emerald}>عرض</T>
           </Pressable>
         )}
-        <RemindersCard />
-        {data.openClaims.length > 0 && (
+        {sees('contracts') ? <RemindersCard /> : null}
+        {sees('claims') && data.openClaims.length > 0 && (
           <Pressable onPress={() => router.push('/claims')} style={alertStyle('#FBEBE9')}>
             <T size={12.5} color={C.rose}>{data.openClaims.length} مطالبة مفتوحة</T>
             <T size={12} bold color={C.emerald}>عرض</T>
@@ -308,19 +314,19 @@ export default function Dashboard() {
       </View></Static> : null}
 
       {/* المؤشرات في صف مضغوط · كل رقم يُفتح */}
-      {stage >= 2 ? <Static deps={[data]}><>
+      {stage >= 2 && sees('reports') ? <Static deps={[data]}><>
       <Row style={{ marginTop: 4 }}>
         <MiniKpi label="الإيرادات" value={fmt(data.revenue)} onPress={() => setDrill('إيراد')} />
         <MiniKpi label="المصروفات" value={fmt(data.expense)} danger={data.expense > 0} onPress={() => setDrill('مصروف')} />
       </Row>
       <Row style={{ marginTop: 6 }}>
         <MiniKpi label="صافي الربح" value={fmt(net)} danger={net < 0} onPress={() => router.push('/reports')} />
-        <MiniKpi label={`النقد في ${data.banksCount} حسابات`} value={fmt(data.cash)} onPress={() => router.push('/banks')} />
+        {sees('banks') ? <MiniKpi label={`النقد في ${data.banksCount} حسابات`} value={fmt(data.cash)} onPress={() => router.push('/banks')} /> : null}
       </Row>
       </></Static> : null}
 
       {/* الإيرادات مقابل المصروفات · أعمدة متجاورة، ومفتاح الأساس أعلى البطاقة */}
-      {stage >= 3 ? <Static deps={[data, basis]}><Card style={{ marginTop: 10 }}>
+      {stage >= 3 && sees('reports') ? <Static deps={[data, basis]}><Card style={{ marginTop: 10 }}>
         {/* المفتاح صف واحد لا ينكسر · ChipGroup يلتف داخل حيز العنوان الضيق */}
         <CardTitle action={
           <Row gap={6} style={{ flexWrap: 'nowrap' }}>
@@ -338,7 +344,7 @@ export default function Dashboard() {
       </Card></Static> : null}
 
       {/* توزيع المصروفات · كل فئة تفتح فواتيرها */}
-      {stage >= 4 ? <Static deps={[data]}><Card>
+      {stage >= 4 && sees('reports') ? <Static deps={[data]}><Card>
         <CardTitle>توزيع المصروفات</CardTitle>
         {data.split.length ? data.split.map(([k, v]) => (
           <BarRow key={k} label={k} value={fmt(v)} pct={splitTotal ? (v / splitTotal) * 100 : 0}
@@ -347,7 +353,7 @@ export default function Dashboard() {
       </Card></Static> : null}
 
       {/* أعمار الذمم · كل شريحة تفتح أقساطها في التحصيل */}
-      {stage >= 5 ? <Static deps={[data]}><Card>
+      {stage >= 5 && sees('collect') ? <Static deps={[data]}><Card>
         <CardTitle>أعمار الذمم المدينة</CardTitle>
         {AGING_BUCKETS.map((b, k) => (
           <BarRow key={b[0]} label={b[0]} value={fmt(data.aging[k])} pct={(data.aging[k] / maxAging) * 100}
@@ -364,15 +370,15 @@ export default function Dashboard() {
 
       {stage >= 6 ? <Static deps={[data]}><>
       {/* العقارات · الأعداد تفتح قوائمها */}
-      <Card>
+      {sees('props') ? <Card>
         <CardTitle action={<Pressable onPress={() => router.push('/properties')}><T size={12} bold color={C.emerald}>عرض الكل</T></Pressable>}>
           العقارات
         </CardTitle>
         <Row style={{ flexWrap: 'wrap', marginBottom: 10 }}>
           <MiniKpi label="معدل الإشغال" value={data.pf.total ? data.pf.occupancyPct + '%' : ''} onPress={() => router.push('/units')} />
           <MiniKpi label="وحدات مشغولة" value={`${data.pf.occupied} من ${data.pf.total}`} onPress={() => router.push('/units?occ=rented')} />
-          <MiniKpi label="نسبة التحصيل" value={(data.totalDue ? Math.round((data.totalPaid / data.totalDue) * 100) : 0) + '%'} onPress={() => router.push('/collect?filter=month')} />
-          <MiniKpi label="المتأخرات" value={fmt(data.overdue)} danger={data.overdue > 0} onPress={() => router.push('/collect?filter=late')} />
+          {sees('collect') ? <MiniKpi label="نسبة التحصيل" value={(data.totalDue ? Math.round((data.totalPaid / data.totalDue) * 100) : 0) + '%'} onPress={() => router.push('/collect?filter=month')} /> : null}
+          {sees('collect') ? <MiniKpi label="المتأخرات" value={fmt(data.overdue)} danger={data.overdue > 0} onPress={() => router.push('/collect?filter=late')} /> : null}
         </Row>
         <BarRow label="مشغولة" value={String(data.pf.occupied)} pct={data.pf.total ? (data.pf.occupied / data.pf.total) * 100 : 0} color={C.emerald}
           onPress={() => router.push('/units?occ=rented')} />
@@ -380,10 +386,10 @@ export default function Dashboard() {
           onPress={() => router.push('/units?occ=vacant')} />
         <BarRow label="محجوزة" value={String(data.reserved)} pct={data.pf.total ? (data.reserved / data.pf.total) * 100 : 0} color={C.gold}
           onPress={() => router.push('/units')} />
-      </Card>
+      </Card> : null}
 
       {/* أحدث الحركات · كل قيد يفتح مستنده */}
-      <Card>
+      {sees('ledger') ? <Card>
         <CardTitle action={<Pressable onPress={() => router.push('/journal')}><T size={12} bold color={C.emerald}>عرض الكل</T></Pressable>}>
           أحدث الحركات
         </CardTitle>
@@ -398,10 +404,10 @@ export default function Dashboard() {
             </Row>
           </Pressable>
         )) : <EmptyState>لا حركات بعد</EmptyState>}
-      </Card>
+      </Card> : null}
 
       {/* أكبر الأرصدة المستحقة · الاسم يفتح دفعاته في التحصيل */}
-      <Card>
+      {sees('collect') ? <Card>
         <CardTitle action={<Pressable onPress={() => router.push('/collect')}><T size={12} bold color={C.emerald}>عرض الكل</T></Pressable>}>
           أكبر الأرصدة المستحقة
         </CardTitle>
@@ -413,10 +419,10 @@ export default function Dashboard() {
             </Row>
           </Pressable>
         )) : <EmptyState>لا مستحقات</EmptyState>}
-      </Card>
+      </Card> : null}
 
       {/* أحدث الفواتير · كل صف يفتح فاتورته */}
-      <Card>
+      {sees('invoices') ? <Card>
         <CardTitle action={<Pressable onPress={() => router.push('/invoices')}><T size={12} bold color={C.emerald}>عرض الكل</T></Pressable>}>
           أحدث الفواتير
         </CardTitle>
@@ -435,7 +441,7 @@ export default function Dashboard() {
             </View>
           </Pressable>
         )) : <EmptyState>لا توجد فواتير بعد</EmptyState>}
-      </Card>
+      </Card> : null}
       </></Static> : null}
       </>
       )}

@@ -21,6 +21,8 @@ import { allAccounts } from '../src/domain/accounting/ledger';
 import { today, dfmt } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
 import { reportFailure } from '../src/ui/failureDialog';
+import { usePerm } from '../src/ui/access';
+import { rowBy } from '../src/services/access';
 
 interface JeLine { account: string; debit: string; credit: string }
 
@@ -32,10 +34,14 @@ interface EntryRow {
 const EMPTY_ENTRIES: EntryRow[] = [];
 
 const EntryCard = React.memo(function EntryCard({
-  id, no, date, memo, status, srcType, auto, d, c, onOpen, onReverse, onDeleteDraft,
+  id, no, date, memo, status, srcType, auto, d, c, canReverse, canDeleteDraft, onOpen, onReverse, onDeleteDraft,
 }: {
   id: string; no: string; date: string; memo: string; status: string; auto: boolean;
   srcType: string | null; d: number; c: number;
+  /** عكس المرحّل أو إلغاؤه من مصدره · كامل في الدفتر */
+  canReverse: boolean;
+  /** حذف المسودة · كامل، أو كاتبها بإدخال */
+  canDeleteDraft: boolean;
   /** الضغط على القيد يفتح ورقة تفاصيله */
   onOpen: (id: string) => void;
   onReverse: (id: string, no: string) => void;
@@ -58,7 +64,7 @@ const EntryCard = React.memo(function EntryCard({
         <T size={10.5} color={C.muted} numberOfLines={1} style={{ marginTop: 3 }}>{srcTypeLabel(srcType)}</T>
       </Pressable>
       {/* القيد الآلي يُلغى من عمليته الأصلية (sourceCancel.ts) · ومرآة القيد لا تُلغى فلا زرّ لها */}
-      {status === 'مرحّل' && srcType?.endsWith('_rev') ? null : (
+      {(status === 'مرحّل' && srcType?.endsWith('_rev')) || !(status === 'مرحّل' ? canReverse : canDeleteDraft) ? null : (
         <Row style={{ justifyContent: 'flex-end', marginTop: 4 }}>
           <ActionMenuButton title={no} actions={[
             status === 'مرحّل'
@@ -82,6 +88,7 @@ export default function Journal() {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
+  const perm = usePerm('ledger');
   const [q, setQ] = useState('');
   const [detailId, setDetailId] = useState<string | null>(null);
   const [sourceFor, setSourceFor] = useState<{ id: string; no: string } | null>(null);
@@ -203,13 +210,17 @@ export default function Journal() {
     <EntryCard
       id={item.id} no={item.no} date={item.date} memo={item.memo} status={item.status}
       srcType={item.src_type} auto={Number(item.auto) === 1} d={Number(item.d)} c={Number(item.c)}
+      canReverse={perm.manage}
+      // كاتب المسودة يُقرأ لها وحدها · المرحّل لا مسودة فيه
+      canDeleteDraft={item.status === 'قيد الإنشاء'
+        && perm.edit({ by: perm.manage ? null : rowBy(db, 'journal_entries', item.id), draft: true })}
       onOpen={openDetail} onReverse={reverseEntry} onDeleteDraft={deleteDraft}
     />
-  ), [openDetail, reverseEntry, deleteDraft]);
+  ), [openDetail, reverseEntry, deleteDraft, perm, db]);
 
   return (
     <Screen title="القيود اليومية" scroll={false}
-      actions={<BtnPrimary small title="+ قيد جديد" onPress={openBuilder} />}>
+      actions={perm.add ? <BtnPrimary small title="+ قيد جديد" onPress={openBuilder} /> : null}>
       {!ready ? <Skeleton /> : (
         <FlatList
           data={rows}

@@ -15,6 +15,7 @@ import { Sheet, SelectField } from '../../src/ui/Sheet';
 import { DateField } from '../../src/ui/DateField';
 import { ActionMenuButton } from '../../src/ui/ActionMenu';
 import { MetersEditor, SectionsEditor, type SectionData } from '../../src/ui/editors';
+import { usePerm } from '../../src/ui/access';
 import { useApp } from '../../src/ui/store';
 import { AttachStrip } from '../../src/ui/AttachStrip';
 import { useToast } from '../../src/ui/Toast';
@@ -60,6 +61,7 @@ interface PropRow extends PropertyRow {
 
 export default function Properties() {
   const { db, version, bump } = useApp();
+  const perm = usePerm('props');
   const toast = useToast();
   const dialog = useDialog();
   const router = useRouter();
@@ -152,7 +154,7 @@ export default function Properties() {
       actions={
         <Row>
           <BtnGhost small icon="map" title="الخريطة" onPress={() => router.push('/propmap')} />
-          <BtnPrimary small title="+ عقار جديد" onPress={() => { setEditingId(null); setFormOpen(true); }} />
+          {perm.add ? <BtnPrimary small title="+ عقار جديد" onPress={() => { setEditingId(null); setFormOpen(true); }} /> : null}
         </Row>
       }>
       {/* الإشغال بمقياسيه: أيام الشهر أولاً ثم اللحظة · لا نسبة واحدة تخفي الأخرى */}
@@ -206,10 +208,10 @@ export default function Properties() {
                     label={`${st.occupied}/${st.total} مؤجَّرة (${st.occupancyPct}٪)`} />
                   <ActionMenuButton title={p.name} actions={[
                     { icon: 'eye', label: 'عرض التفاصيل', onPress: () => setDetailId(p.id) },
-                    { icon: 'edit', label: 'تعديل', onPress: () => { setEditingId(p.id); setFormOpen(true); } },
+                    perm.manage ? { icon: 'edit', label: 'تعديل', onPress: () => { setEditingId(p.id); setFormOpen(true); } } : null,
                     // لا تُضاف وحدة لعقار مؤرشف · الأرشيف خارج التشغيل
-                    p.archived ? null : { label: '+ إضافة وحدة', onPress: () => setUnitFormFor({ propertyId: p.id }) },
-                    {
+                    p.archived || !perm.add ? null : { label: '+ إضافة وحدة', onPress: () => setUnitFormFor({ propertyId: p.id }) },
+                    !perm.manage ? null : {
                       icon: p.archived ? 'undo' : 'archive',
                       label: p.archived ? 'إلغاء الأرشفة' : 'أرشفة',
                       onPress: () => {
@@ -219,7 +221,7 @@ export default function Properties() {
                       },
                     },
                     // الحذف لا يُعرض لعقار له مرتبطات · لا يصح فعله فلا يُعرض ثم يُرفض
-                    linkedProps.has(p.id) ? null : {
+                    linkedProps.has(p.id) || !perm.manage ? null : {
                       icon: 'trash', label: 'حذف', danger: true,
                       onPress: () => dialog({
                         title: 'حذف العقار',
@@ -592,6 +594,11 @@ function PropertyDetailSheet({
   propertyId, onClose, onAddUnit, onOpenUnit,
 }: { propertyId: string; onClose: () => void; onAddUnit: () => void; onOpenUnit: (unitId: string) => void }) {
   const { db, version } = useApp();
+  const perm = usePerm('props');
+  // المبالغ بيانات مرتبطة · لا تُعرض إلا لمن له قسمها (الحد اللازم)
+  const seesPurchases = usePerm('purchases').view;
+  const seesInvoices = usePerm('invoices').view;
+  const seesReports = usePerm('reports').view;
   const [meterOpen, setMeterOpen] = useState<LabeledMeter | null>(null);
   const router = useRouter();
   const p = db.get<PropRow>(`SELECT * FROM properties WHERE id = ?`, [propertyId]);
@@ -635,7 +642,7 @@ function PropertyDetailSheet({
           sub={stats.cancelledCount + (stats.cancelledCount === 1 ? ' عقد' : ' عقود')} />
       </Row>
 
-      <AttachStrip entityType="property" entityId={propertyId} kind="deed"
+      <AttachStrip section="props" entityType="property" entityId={propertyId} kind="deed"
         linked={p?.name ?? 'العقار'} title="الصك وصور العقار" hideAdd />
 
       {/* المصاريف: المشتركة على العقار مفروقة عن مصاريف الوحدات · بالاشتقاق من نفس الصفوف */}
@@ -651,7 +658,7 @@ function PropertyDetailSheet({
            GROUP BY pu.unit_id ORDER BY u.unit_no`, [propertyId]
         );
         const unitsTotal = perUnit.reduce((s, r) => s + Number(r.s), 0);
-        if (!shared && !perUnit.length) return null;
+        if (!seesPurchases || (!shared && !perUnit.length)) return null;
         return (
           <View style={{ backgroundColor: C.paper, borderRadius: 9, padding: 11, marginBottom: 10 }}>
             <T size={13} bold color={C.ink} style={{ marginBottom: 6 }}>المصاريف</T>
@@ -715,7 +722,7 @@ function PropertyDetailSheet({
       <Row style={{ justifyContent: 'space-between', marginTop: 12, marginBottom: 8 }}>
         <T size={13} bold color={C.ink}>الوحدات ({units.length})</T>
         {/* العقار المؤرشف خارج التشغيل · لا تُضاف إليه وحدة */}
-        {p.archived ? null : <BtnPrimary small title="+ إضافة وحدة" onPress={onAddUnit} />}
+        {p.archived || !perm.add ? null : <BtnPrimary small title="+ إضافة وحدة" onPress={onAddUnit} />}
       </Row>
       <Row style={{ flexWrap: 'wrap', gap: 8 }}>
         {units.length ? units.map((u) => {
@@ -733,11 +740,11 @@ function PropertyDetailSheet({
       </Row>
 
       <Row style={{ flexWrap: 'wrap', marginTop: 14 }}>
-        <KpiCard label="إجمالي الفواتير (إيرادات)" tone="pos" value={<Money halalas={rev} size={13} bold />}
-          onPress={() => { onClose(); router.push('/invoices'); }} />
-        <KpiCard label="إجمالي المصاريف المرتبطة" tone="neg" value={<Money halalas={exp} size={13} bold />}
-          onPress={() => { onClose(); router.push(`/purchases?property=${propertyId}`); }} />
-        <KpiCard label="الصافي" tone={rev - exp >= 0 ? 'pos' : 'neg'} value={<Money halalas={rev - exp} size={13} bold />} />
+        {seesInvoices ? <KpiCard label="إجمالي الفواتير (إيرادات)" tone="pos" value={<Money halalas={rev} size={13} bold />}
+          onPress={() => { onClose(); router.push('/invoices'); }} /> : null}
+        {seesPurchases ? <KpiCard label="إجمالي المصاريف المرتبطة" tone="neg" value={<Money halalas={exp} size={13} bold />}
+          onPress={() => { onClose(); router.push(`/purchases?property=${propertyId}`); }} /> : null}
+        {seesReports ? <KpiCard label="الصافي" tone={rev - exp >= 0 ? 'pos' : 'neg'} value={<Money halalas={rev - exp} size={13} bold />} /> : null}
       </Row>
       <View style={{ height: 14 }} />
     </Sheet>

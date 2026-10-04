@@ -49,6 +49,8 @@ import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
 import { EntrySheet } from '../src/ui/EntrySheet';
 import { reviewData } from '../src/domain/backup/checks';
+import { useAccess } from '../src/ui/access';
+import { canView, isAdmin } from '../src/domain/access/access';
 import { LEAFLET_VERSION, LEAFLET_LICENSE } from '../src/ui/leafletBundle';
 import { getBackupPassword, setBackupPassword, clearBackupPassword, MIN_PASSWORD } from '../src/services/backupPassword';
 import { PasswordRequiredError } from '../src/domain/backup/encryption';
@@ -102,6 +104,7 @@ function Fold({ icon, title, value, children }: { icon: IconName; title: string;
 
 export default function Settings() {
   const { db, version, bump, settings, updateSetting, uiPct, fontPct, previewScale, commitScale } = useApp();
+  const access = useAccess();
   const toast = useToast();
   const dialog = useDialog();
   const router = useRouter();
@@ -557,6 +560,8 @@ export default function Settings() {
     </Row>
   );
 
+  // العضو يرى إعداداته الشخصية وحدها · «الأعضاء والإعدادات» للمالك وحده (docs/PERMISSIONS.md)
+  const admin = isAdmin(access);
   return (
     <Screen title="الإعدادات" icon="settings">
       {/* ١ · الحساب والمزامنة */}
@@ -577,13 +582,13 @@ export default function Settings() {
                 : 'آخر مزامنة ' + lastSync(cloud.sync?.lastSyncAt ?? null)}
               tone={(cloud.sync?.rejected ?? 0) > 0 || cloud.lastError ? 'danger' : undefined}
               onPress={() => setSyncOpen(true)} />
-            {cloud.online ? (
+            {admin && cloud.online ? (
               <ValueRow icon="export" title="النسخ على Drive" value="نسخ أو استعادة" onPress={() => setDriveOpen(true)} />
             ) : null}
-            {cloud.online ? (
+            {admin && cloud.online ? (
               <ValueRow icon="trash" title="حذف حسابي" value="الحساب وبياناته" tone="danger" onPress={() => { setDelTyped(''); setDelOpen(true); }} />
             ) : null}
-            {restoreAwaitingAdoption(db) ? (
+            {admin && restoreAwaitingAdoption(db) ? (
               <View style={{ marginTop: 6 }}>
                 <Note tone="danger">استُعيدت على هذا الجهاز نسخة ولم تُعتمد للسحابة · المزامنة متوقفة حتى تقرّر</Note>
                 {cloud.online ? <BtnPrimary title="اعتماد النسخة أو دمجها" onPress={doAdoptPending} loading={busy} /> : null}
@@ -594,7 +599,7 @@ export default function Settings() {
       </Card>
 
       {/* ٢ · النسخ الاحتياطي */}
-      <Card>
+      {admin ? <Card>
         <CardTitle>النسخ الاحتياطي</CardTitle>
         <ValueRow icon="shield" title="آخر نسخة خارج الجهاز"
           value={(data.exp.daysSinceExport === null ? 'لم تحدث بعد'
@@ -610,16 +615,16 @@ export default function Settings() {
         <ValueRow icon="bell" title="التذكير الأسبوعي" value={settings.backupWeekly ? 'مفعّل' : 'مطفأ'}
           onPress={() => openChoice('التذكير الأسبوعي بالتصدير', [[1, 'مفعّل'], [0, 'مطفأ']], settings.backupWeekly ? 1 : 0,
             (v) => { updateSetting('backupWeekly', !!v); rescheduleAllNotifications(db).catch(() => {}); })} />
-      </Card>
+      </Card> : null}
 
       {/* ٣ · المالية */}
-      <Card>
+      {admin ? <Card>
         <CardTitle>المالية</CardTitle>
         <ValueRow icon="wallet" title="العملة ودليل الحسابات" value={(data.counts.find(([k]) => k === 'حسابات')?.[1] ?? 0) + ' حساباً'} onPress={() => router.push('/accounts')} />
         <ValueRow icon="invoice" title="ضريبة القيمة المضافة" value={vatOn ? 'مفعّلة' : 'مطفأة · لا تُحتسب'}
           onPress={() => openChoice('ضريبة القيمة المضافة', [[0, 'مطفأة · لا تُحتسب'], [1, 'مفعّلة']], vatOn,
             (v) => { db.transaction(() => db.run(`UPDATE company SET vat_enabled = ? WHERE id = 1`, [v])); bump(); })} />
-      </Card>
+      </Card> : null}
 
       {/* ٤ · التنبيهات */}
       <Card>
@@ -639,8 +644,8 @@ export default function Settings() {
         ))}
       </Card>
 
-      {/* ٥ · ودجت الشاشة · أندرويد وحده يثبّتها من داخل التطبيق */}
-      <Card>
+      {/* ٥ · ودجت الشاشة · أندرويد وحده يثبّتها من داخل التطبيق · أرقامها من التحصيل */}
+      {canView(access, 'collect') ? <Card>
         <CardTitle>ودجت الشاشة</CardTitle>
         {([
           ['strip', 'collect', 'شريط اليوم · كم متأخرة وبكم'],
@@ -650,7 +655,7 @@ export default function Settings() {
           <ValueRow key={kind} icon={icon} title={title} value="أضف"
             onPress={() => { pinWidget(kind).catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
         ))}
-      </Card>
+      </Card> : null}
 
       {/* العرض · لم يرد في ترتيب المالك فبقي بطاقةً مستقلة حتى يحدّد مكانه */}
       <Card>
@@ -679,6 +684,7 @@ export default function Settings() {
         {/* بلا مؤقتات لا تفريغ · الصف بلا ضغط */}
         <ValueRow icon="reload" title="الملفات المؤقتة" value={storage.cacheBytes > 0 ? libSizeLabel(storage.cacheBytes) + ' · تفريغ' : 'لا شيء'}
           onPress={storage.cacheBytes > 0 ? () => { const freed = sweepCache(); bump(); toast('حُرّر ' + libSizeLabel(freed) + ' من المؤقتات'); } : undefined} />
+        {admin ? <>
         <ValueRow icon="trash" title="سلة المحذوفات" value={data.trash.length + ' سجل'} onPress={() => setTrashOpen(true)} />
         <ValueRow icon="calendar" title="مدة الاحتفاظ قبل الحذف النهائي" value={settings.trashRetention + ' يوماً'}
           onPress={() => openChoice('مدة الاحتفاظ', [[30, '٣٠ يوماً'], [60, '٦٠ يوماً'], [90, '٩٠ يوماً']], settings.trashRetention,
@@ -689,6 +695,7 @@ export default function Settings() {
         {reviewCount ? (
           <ValueRow icon="shield" title="مراجعة الدفتر" value={reviewCount + ' للمراجعة'} tone="danger" onPress={() => setReviewOpen(true)} />
         ) : null}
+        </> : null}
       </Card>
 
       {/* ٧ · عن التطبيق */}
@@ -708,13 +715,13 @@ export default function Settings() {
       </Card>
 
       {/* ٨ · مسح كل البيانات · آخر الصفحة، بطاقة مستقلة حمراء */}
-      <Card style={{ borderColor: C.rose, borderWidth: 1.4, backgroundColor: C.roseSoft }}>
+      {admin ? <Card style={{ borderColor: C.rose, borderWidth: 1.4, backgroundColor: C.roseSoft }}>
         <CardTitle>مسح كل البيانات</CardTitle>
         <T size={TYPE.body} color={C.rose} style={{ marginBottom: 10 }}>
           المسح ينقل كل شيء إلى سلة المحذوفات ويبقى قابلاً للاسترجاع طوال مدة الاحتفاظ، وتسبقه نسخة أمان.
         </T>
         <BtnGhost danger icon="trash" title="امسح كل البيانات" onPress={() => setWipeConfirm('')} />
-      </Card>
+      </Card> : null}
 
       {/* اختيار القيمة · لوحة سفلية واحدة لكل صفوف القيم */}
       <PickerSheet

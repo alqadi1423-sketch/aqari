@@ -30,6 +30,8 @@ import {
 } from '../src/services/reportExport';
 import type { IconName } from '../src/ui/icons';
 import { reportFailure } from '../src/ui/failureDialog';
+import { useAccess, usePerm } from '../src/ui/access';
+import { routeAllowed } from '../src/domain/access/routes';
 
 type Range = 'month' | 'quarter' | 'year' | 'all' | 'custom';
 type Tab = 'income' | 'balance' | 'cash' | 'equity' | 'trial';
@@ -51,6 +53,10 @@ export default function Reports() {
   const { db, version } = useApp();
   const router = useRouter();
   const toast = useToast();
+  // التقارير: عرض → القوائم والإقرار · كامل → التصدير
+  const perm = usePerm('reports');
+  const seesLedger = usePerm('ledger').view;
+  const seesPurchases = routeAllowed(useAccess(), '/purchases');
   const [finYear, setFinYear] = useState<number | 'all' | 'custom' | null>(null);
   const [finQ, setFinQ] = useState<0 | 1 | 2 | 3 | 4>(0);
   const [customFrom, setCustomFrom] = useState('');
@@ -310,10 +316,11 @@ export default function Reports() {
       <Card>
         <CardTitle>تقارير مفصلة</CardTitle>
         <SetRow icon="shield" title="الإقرار الضريبي" onPress={() => setVatOpen(true)} />
-        {DETAIL_REPORTS.map((r) => (
+        {/* التقارير المفصلة تصديرٌ وحده · فلا تظهر لمن لا يصدّر */}
+        {perm.manage ? DETAIL_REPORTS.map((r) => (
           <SetRow key={r.kind} icon={r.icon} title={r.title}
             onPress={() => { setDetailKind(r.kind); setSelectedIds([]); setEntityQ(''); }} />
-        ))}
+        )) : null}
       </Card>
 
       {/* ٢ · القوائم المالية */}
@@ -458,11 +465,13 @@ export default function Reports() {
       )}
 
       {/* شريط التصدير الوحيد · يصدّر القائمة المعروضة أعلاه بالصيغ الثلاث */}
-      <Row style={{ justifyContent: 'flex-end', marginBottom: 8 }} gap={8}>
-        <BtnGhost small title="إكسل" onPress={() => runStatementExport('xlsx')} />
-        <BtnGhost small title="وورد" onPress={() => runStatementExport('docx')} />
-        <BtnGhost small icon="print" title="PDF" onPress={() => runStatementExport('pdf')} />
-      </Row>
+      {perm.manage ? (
+        <Row style={{ justifyContent: 'flex-end', marginBottom: 8 }} gap={8}>
+          <BtnGhost small title="إكسل" onPress={() => runStatementExport('xlsx')} />
+          <BtnGhost small title="وورد" onPress={() => runStatementExport('docx')} />
+          <BtnGhost small icon="print" title="PDF" onPress={() => runStatementExport('pdf')} />
+        </Row>
+      ) : null}
 
       {/* كشف حركة حساب · من ضغط صف في الميزان · وكل سطر يفتح ورقة تفاصيل قيده */}
       {stmtAccount && (
@@ -481,7 +490,7 @@ export default function Reports() {
             return lines2.length ? lines2.map((l, i) => {
               run += Number(l.debit_halalas) - Number(l.credit_halalas);
               return (
-                <Pressable key={i} onPress={() => setStmtEntry(l.entry_id)}>
+                <Pressable key={i} disabled={!seesLedger} onPress={() => setStmtEntry(l.entry_id)}>
                   <View style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
                     <Row style={{ justifyContent: 'space-between' }}>
                       <T size={12} numberOfLines={2} style={{ flex: 1, minWidth: NAME_MIN }}>{l.memo}</T>
@@ -511,13 +520,13 @@ export default function Reports() {
       {/* الإقرار الضريبي · بترقيم الهيئة والمستبعدة في سطر رقابة */}
       {vatOpen && (
         <Sheet visible onClose={() => setVatOpen(false)} title="الإقرار الضريبي"
-          footer={
+          footer={perm.manage ? (
             <>
               <View style={{ flex: 1 }}><BtnGhost small title="إكسل" disabled={exporting} onPress={() => runVat('xlsx')} /></View>
               <View style={{ flex: 1 }}><BtnGhost small title="وورد" disabled={exporting} onPress={() => runVat('docx')} /></View>
               <View style={{ flex: 1 }}><BtnPrimary small icon="print" title="PDF" loading={exporting} onPress={() => runVat('pdf')} /></View>
             </>
-          }>
+          ) : undefined}>
           {!years.length ? (
             <EmptyState>لا توجد مستندات بعد. سجّل فاتورة لتظهر فترتها هنا.</EmptyState>
           ) : (
@@ -559,7 +568,7 @@ export default function Reports() {
         <Sheet visible onClose={() => setVatDrill(null)} tall
           title={vatDrill === 'deductible' ? 'فواتير البند ٧ · القابلة للخصم' : 'غير القابلة للخصم · خارج البند ٧'}>
           {(vatDrill === 'deductible' ? vatPreview.schedules.deductiblePurchases : vatPreview.schedules.excludedPurchases).map((r) => (
-            <Pressable key={r.id}
+            <Pressable key={r.id} disabled={!seesPurchases}
               onPress={() => { setVatDrill(null); setVatOpen(false); router.push(`/purchases?detail=${r.id}`); }}>
               <Row style={{ justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
                 <View style={{ flex: 1, minWidth: NAME_MIN }}>

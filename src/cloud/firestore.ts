@@ -7,6 +7,9 @@
  */
 import type { Cursor, RemoteDoc, RemoteStore, RowData, WriteResult } from '../sync/types';
 import { nextDeviceLetter } from '../domain/numbering';
+import type { DB } from '../db/adapter';
+import { OWNER_ACCESS, type Access } from '../domain/access/access';
+import { annotate as aclAnnotate } from '../sync/acl';
 
 type FsValue =
   | { nullValue: null }
@@ -53,6 +56,11 @@ export function decodeFields(f: Record<string, FsValue>): Record<string, unknown
 export function docToFields(d: RemoteDoc): Record<string, FsValue> {
   const f: Record<string, unknown> = { t: d.t, k: d.k, d: d.d, u: d.u, dev: d.dev, del: d.del };
   if (d.lines) f.lines = d.lines;
+  // حقول الرؤية في المنشأة وحدها (sync/acl.ts)
+  if (d.g) f.g = d.g;
+  if (d.pids) f.pids = d.pids;
+  if (d.op) f.op = d.op;
+  if (d.by) f.by = d.by;
   return encodeFields(f);
 }
 export function fieldsToDoc(id: string, fields: Record<string, FsValue>): RemoteDoc {
@@ -64,6 +72,10 @@ export function fieldsToDoc(id: string, fields: Record<string, FsValue>): Remote
     lines: Array.isArray(o.lines) ? (o.lines as RowData[]) : undefined,
     u: String(o.u), dev: String(o.dev), del: Boolean(o.del),
     ts: typeof o.ts === 'string' ? o.ts : undefined,
+    ...(Array.isArray(o.g) ? { g: o.g as string[] } : {}),
+    ...(Array.isArray(o.pids) ? { pids: o.pids as string[] } : {}),
+    ...(typeof o.op === 'string' ? { op: o.op } : {}),
+    ...(typeof o.by === 'string' ? { by: o.by } : {}),
   };
 }
 
@@ -81,6 +93,15 @@ export interface FirestoreOptions {
   idToken: () => Promise<string>;
   /** للمحاكي في الاختبارات: http://127.0.0.1:8080 */
   baseUrl?: string;
+  /**
+   * المنشأة (docs/PERMISSIONS.md): المسار orgs/{org} بدل users/{uid} · ورموز العضو تحصر السحب
+   * فيما تجيزه القواعد (null للمالك: كل شيء). والجداول التي يقرأ العضو مستندها الكامل يُهمل إسقاطها.
+   */
+  org?: string;
+  memberTokens?: () => string[] | null;
+  fullReadTables?: () => Set<string>;
+  /** صلاحية من يكتب · لحقول الكتابة op و by */
+  access?: () => Access;
   fetchImpl?: typeof fetch;
 }
 
@@ -88,14 +109,22 @@ export class FirestoreRemote implements RemoteStore {
   private root: string;
   private docsRoot: string;
   private userPath: string;
+  private relPath: string;
   private f: typeof fetch;
 
   constructor(private o: FirestoreOptions) {
     const base = (o.baseUrl ?? 'https://firestore.googleapis.com').replace(/\/$/, '');
     this.docsRoot = `projects/${o.projectId}/databases/(default)/documents`;
     this.root = `${base}/v1/${this.docsRoot}`;
-    this.userPath = `${this.docsRoot}/users/${o.uid}`;
+    this.userPath = o.org ? `${this.docsRoot}/orgs/${o.org}` : `${this.docsRoot}/users/${o.uid}`;
+    this.relPath = o.org ? `orgs/${o.org}` : `users/${o.uid}`;
     this.f = o.fetchImpl ?? fetch;
+    if (o.org) {
+      this.annotate = (db, doc) => {
+        const { doc: d, pub } = aclAnnotate(db, doc, o.access?.() ?? OWNER_ACCESS);
+        return pub ? { ...d, companions: [pub] } : d;
+      };
+    }
   }
 
   private async call(url: string, body: unknown): Promise<unknown> {
@@ -110,6 +139,9 @@ export class FirestoreRemote implements RemoteStore {
     return text ? JSON.parse(text) : {};
   }
 
+  /** المنشأة وحدها: حقول الرؤية والكتابة وإسقاط المبالغ · وفي users/{uid} يبقى المستند كما هو */
+  annotate?: (db: DB, doc: RemoteDoc) => RemoteDoc;
+
   docName(id: string): string {
     return `${this.userPath}/rows/${id}`;
   }
@@ -123,7 +155,8 @@ export class FirestoreRemote implements RemoteStore {
     if (!docs.length) return [];
     try {
       await this.call(`${this.root}:commit`, {
-        writes: docs.map((d) => ({
+        // المستند وإسقاطه بلا مبالغ (companions) في دفعة واحدة ذرّية
+        writes: docs.flatMap((d) => [d, ...(d.companions ?? [])]).map((d) => ({
           update: { name: this.docName(d.id), fields: docToFields(d) },
           updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
         })),
@@ -142,7 +175,7 @@ export class FirestoreRemote implements RemoteStore {
    * يُكتب بشرط ألا يكون تغيّر منذ قُرئ (أو ألا يكون موجوداً) فلا يأخذ جهازان الحرف نفسه أبداً.
    */
   async registerDevice(deviceId: string): Promise<string> {
-    const url = `${this.root}/users/${this.o.uid}/meta/devices`;
+    const url = `${this.root}/${this.relPath}/meta/devices`;
     for (let attempt = 0; attempt < 6; attempt++) {
       const token = await this.o.idToken();
       const res = await this.f(url, { headers: { Authorization: 'Bearer ' + token } });
@@ -187,7 +220,7 @@ export class FirestoreRemote implements RemoteStore {
     });
     const list = async (collection: string): Promise<string[]> => {
       const token = await this.o.idToken();
-      const res = await this.f(`${this.root}/users/${this.o.uid}/${collection}?pageSize=300&mask.fieldPaths=u`,
+      const res = await this.f(`${this.root}/${this.relPath}/${collection}?pageSize=300&mask.fieldPaths=u`,
         { headers: { Authorization: 'Bearer ' + token } });
       const text = await res.text();
       if (!res.ok) throw new FirestoreHttpError(res.status, text);
@@ -208,19 +241,23 @@ export class FirestoreRemote implements RemoteStore {
     return deleted;
   }
 
-  async pull(cursor: Cursor | null, limit: number): Promise<{ docs: RemoteDoc[]; next: Cursor | null }> {
+  /** صفحة واحدة من الصفوف بعد مؤشر · بشرط رموز اختيارياً (array-contains-any حتى ٣٠ رمزاً) */
+  private async page(cursor: Cursor | null, limit: number, tokens: string[] | null): Promise<RemoteDoc[]> {
     const structuredQuery: Record<string, unknown> = {
       from: [{ collectionId: 'rows' }],
       orderBy: [{ field: { fieldPath: 'ts' }, direction: 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
       limit,
     };
+    if (tokens) {
+      structuredQuery.where = { fieldFilter: { field: { fieldPath: 'g' }, op: 'ARRAY_CONTAINS_ANY', value: encodeValue(tokens) } };
+    }
     if (cursor) {
       structuredQuery.startAt = {
         values: [{ timestampValue: cursor.ts }, { referenceValue: this.docName(cursor.id) }],
         before: false,
       };
     }
-    const rows = (await this.call(`${this.root.replace(/\/documents$/, '')}/documents/users/${this.o.uid}:runQuery`, { structuredQuery })) as
+    const rows = (await this.call(`${this.root}/${this.relPath}:runQuery`, { structuredQuery })) as
       Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
     const docs: RemoteDoc[] = [];
     for (const r of rows) {
@@ -228,7 +265,36 @@ export class FirestoreRemote implements RemoteStore {
       const id = r.document.name.slice(r.document.name.lastIndexOf('/') + 1);
       docs.push(fieldsToDoc(id, r.document.fields));
     }
-    const last = docs[docs.length - 1];
-    return { docs, next: last && last.ts ? { ts: last.ts, id: last.id } : cursor };
+    return docs;
+  }
+
+  async pull(cursor: Cursor | null, limit: number): Promise<{ docs: RemoteDoc[]; next: Cursor | null }> {
+    const tokens = this.o.memberTokens?.() ?? null;
+    if (!tokens) {
+      const docs = await this.page(cursor, limit, null);
+      const last = docs[docs.length - 1];
+      return { docs, next: last && last.ts ? { ts: last.ts, id: last.id } : cursor };
+    }
+    // العضو: استعلام لكل ٣٠ رمزاً بمؤشره · والإسقاط يُحوَّل إلى جدوله ما لم يقرأ العضو المستند الكامل
+    const full = this.o.fullReadTables?.() ?? new Set<string>();
+    const parts: Record<string, Cursor> = { ...(cursor?.parts ?? {}) };
+    const out: RemoteDoc[] = [];
+    for (let i = 0; i * 30 < Math.max(tokens.length, 1); i++) {
+      const chunk = tokens.slice(i * 30, i * 30 + 30);
+      if (!chunk.length) break;
+      const key = chunk.join(',');
+      const docs = await this.page(parts[key] ?? null, limit, chunk);
+      const last = docs[docs.length - 1];
+      if (last && last.ts) parts[key] = { ts: last.ts, id: last.id };
+      for (const d of docs) {
+        const pub = d.t.endsWith('~pub');
+        if (!pub) { out.push(d); continue; }
+        const base = d.t.slice(0, -4);
+        if (full.has(base)) continue;
+        out.push({ ...d, id: base + '__' + d.k, t: base });
+      }
+    }
+    const last = out[out.length - 1];
+    return { docs: out, next: { ts: last?.ts ?? cursor?.ts ?? '', id: last?.id ?? cursor?.id ?? '', parts } };
   }
 }

@@ -15,6 +15,7 @@ import { planCancelPayment, cancelPayment } from '../domain/contracts/cancelPaym
 import { dfmt, today } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
+import { usePerm } from './access';
 
 export function CancelPaymentPanel({ paymentId, onClose, onDone }: {
   paymentId: string;
@@ -23,6 +24,8 @@ export function CancelPaymentPanel({ paymentId, onClose, onDone }: {
 }) {
   const { db, version, bump } = useApp();
   const toast = useToast();
+  // إلغاء الدفعة تعديلٌ في التحصيل · كامل وحده، ومن دونه تُعرض المعاينة بلا تأكيد
+  const canCancel = usePerm('collect').manage;
   const [date, setDate] = useState(today());
   const [reason, setReason] = useState('');
   const plan = useMemo(() => {
@@ -58,7 +61,7 @@ export function CancelPaymentPanel({ paymentId, onClose, onDone }: {
       {plan.bank.map((b, k) => line('حركة سالبة في ' + (b.bankName || 'البنك'), <Money halalas={-b.amount} size={12} bold color={C.rose} />, 'b' + k))}
       {plan.creditReversal > 0 ? line('يُطرح من رصيد المستأجر الدائن', <Money halalas={plan.creditReversal} size={12} bold />) : null}
 
-      {plan.blockers.length ? (
+      {plan.blockers.length || !canCancel ? (
         <>
           {plan.blockers.map((b, k) => <T key={k} size={12} color={C.rose} style={{ marginTop: 6 }}>{b}</T>)}
           <View style={{ marginTop: 10 }}><BtnGhost small title="رجوع" onPress={onClose} /></View>

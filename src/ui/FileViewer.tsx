@@ -4,6 +4,8 @@
  * بمشغّل أصلي، وسائر الأنواع ببطاقة وفتح بتطبيق آخر · سحب أفقي بين ملفات المجموعة،
  * وبطاقة معلومات، ومشاركة وطباعة وحفظ في المعرض وإعادة تسمية ونقل وحذف.
  */
+import type { SectionKey } from '../domain/access/sections';
+import { usePerm } from './access';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal, View, FlatList, Pressable, useWindowDimensions,
@@ -219,15 +221,21 @@ function OtherPage({ file, width }: { file: ViewerFile; width: number }) {
 }
 
 /* ═══════════ العارض ═══════════ */
-export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }: {
+export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, canManage: canManageProp = true, section }: {
   files: ViewerFile[];
   startIndex: number;
   onClose: () => void;
   onMutated?: () => void;
   /** فتح شاشة تعديل بيانات الملف (الملاحظة وغيرها) لدى المستدعي */
   onEditMeta?: (attId: string) => void;
+  /** false تُخفي إعادة التسمية والنقل ونزع الربط والحذف وتعديل البيانات · ويبقى العرض والمشاركة */
+  canManage?: boolean;
+  /** قسم الملف · الإدارة تُحسب منه (كامل) */
+  section?: SectionKey;
 }) {
   const { db } = useApp();
+  const secPerm = usePerm(section ?? 'library');
+  const canManage = canManageProp && (!section || secPerm.manage);
   const toast = useToast();
   const dialog = useDialog();
   const insets = useSafeAreaInsets();
@@ -385,20 +393,24 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
         }}>
           <Pressable onPress={onClose} style={{ padding: 6 }}><Icon name="x" size={20} color="#fff" /></Pressable>
           <Text style={{ flex: 1, color: '#fff', fontSize: 13.5, fontFamily: FONT_BOLD, textAlign: 'right' }} numberOfLines={1}>{cur.name}</Text>
-          <Pressable onPress={() => { setNewName(cur.name); setRenaming(true); }} style={{ padding: 6 }}>
-            <Icon name="edit" size={17} color="#fff" />
-          </Pressable>
-          <Pressable onPress={() => setMoveOpen(true)} style={{ padding: 6 }}>
-            <Icon name="swap" size={17} color="#fff" />
-          </Pressable>
-          {linkedEntity !== 'library' ? (
-            <Pressable onPress={doUnlink} style={{ padding: 6 }}>
-              <Icon name="cancel" size={17} color="#F5C86E" />
-            </Pressable>
+          {canManage ? (
+            <>
+              <Pressable onPress={() => { setNewName(cur.name); setRenaming(true); }} style={{ padding: 6 }}>
+                <Icon name="edit" size={17} color="#fff" />
+              </Pressable>
+              <Pressable onPress={() => setMoveOpen(true)} style={{ padding: 6 }}>
+                <Icon name="swap" size={17} color="#fff" />
+              </Pressable>
+              {linkedEntity !== 'library' ? (
+                <Pressable onPress={doUnlink} style={{ padding: 6 }}>
+                  <Icon name="cancel" size={17} color="#F5C86E" />
+                </Pressable>
+              ) : null}
+              <Pressable onPress={doDelete} style={{ padding: 6 }}>
+                <Icon name="trash" size={17} color="#FA7D68" />
+              </Pressable>
+            </>
           ) : null}
-          <Pressable onPress={doDelete} style={{ padding: 6 }}>
-            <Icon name="trash" size={17} color="#FA7D68" />
-          </Pressable>
         </View>
 
         {!exists ? (
@@ -485,7 +497,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta }
                   <T size={12.5} bold style={{ flexShrink: 1, textAlign: 'left' }}>{v}</T>
                 </Row>
               ))}
-              {onEditMeta ? (
+              {onEditMeta && canManage ? (
                 <View style={{ marginTop: 10 }}>
                   <BtnGhost small icon="edit" title="تعديل بيانات الملف"
                     onPress={() => { setInfoOpen(false); onClose(); onEditMeta(cur.attId); }} />

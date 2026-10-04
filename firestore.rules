@@ -106,5 +106,197 @@ service cloud.firestore {
         allow write: if isOwner(uid) && other != 'rows' && !(other == 'meta' && docId == 'deletion');
       }
     }
+
+    // <org:generated> · لا تُعدَّل باليد: src/domain/access/rulesGen.ts
+    // صلاحيات الأقسام: المالك (uid == org) يقرأ ويكتب كل شيء بقيود الصف نفسها، والعضو بمستند عضويته
+    function orgOwner(org) {
+      return request.auth != null && request.auth.uid == org;
+    }
+    function memberPath(org) {
+      return /databases/$(database)/documents/orgs/$(org)/members/$(request.auth.uid);
+    }
+    function isMember(org) {
+      return request.auth != null && exists(memberPath(org));
+    }
+    function mem(org) {
+      return get(memberPath(org)).data;
+    }
+    function lvl(org, s) {
+      return s is string && s in mem(org).perm ? mem(org).perm[s] : 0;
+    }
+    // الجدول الأصل لمستند الإسقاط (contracts~pub ← contracts)
+    function baseT(t) {
+      return t.split('~')[0];
+    }
+    function syncedOrPub(t) {
+      return syncedTable(baseT(t)) && (t == baseT(t) || t == baseT(t) + '~pub');
+    }
+    function isDraft(data) {
+      return data.d != null && (
+        (baseT(data.t) == 'contracts' && data.d.status == 'مسودة')
+        || (data.t == 'invoices' && data.d.status == 'مسودة')
+        || (data.t == 'journal_entries' && data.d.status == 'قيد الإنشاء'));
+    }
+    // عقارات الصف ضمن عقارات العضو · والصف العام '*' مسموح لمن له القسم
+    function propsOk(org, r) {
+      return mem(org).all == true || r.pids.hasOnly(mem(org).props.concat(['*']));
+    }
+
+    // ما ينشئه كل قسم (create + own في OP_WRITES)
+    function opCreates(op, t) {
+      return (op == 'props' && t in ['audit_log', 'properties', 'property_areas', 'property_area_items', 'property_floor_categories', 'units', 'unit_rooms', 'unit_room_items', 'meters'])
+        || (op == 'maintenance' && t in ['audit_log'])
+        || (op == 'contracts' && t in ['journal_entries', 'audit_log', 'tenants', 'handovers', 'claims', 'bank_tx', 'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'])
+        || (op == 'tenants' && t in ['audit_log', 'tenants'])
+        || (op == 'collect' && t in ['journal_entries', 'audit_log', 'bank_tx', 'contract_payments', 'payment_lines', 'payment_allocations'])
+        || (op == 'deposits' && t in ['journal_entries', 'audit_log', 'bank_tx', 'claims', 'deposit_settlements'])
+        || (op == 'reservations' && t in ['journal_entries', 'audit_log', 'bank_tx', 'reservations', 'key_money_deals'])
+        || (op == 'claims' && t in ['journal_entries', 'audit_log', 'bank_tx', 'claims'])
+        || (op == 'invoices' && t in ['journal_entries', 'audit_log', 'invoices', 'invoice_lines'])
+        || (op == 'purchases' && t in ['journal_entries', 'audit_log', 'bank_tx', 'suppliers', 'purchases', 'meter_readings'])
+        || (op == 'handover' && t in ['audit_log', 'handovers'])
+        || (op == 'banks' && t in ['journal_entries', 'audit_log', 'banks', 'bank_tx'])
+        || (op == 'ledger' && t in ['audit_log', 'journal_entries', 'accounts'])
+        || (op == 'library' && t in ['audit_log'])
+        || (op == 'company' && t in ['audit_log', 'company', 'company_docs', 'message_scripts', 'form_templates'])
+        || (op == 'reports' && t in ['audit_log']);
+    }
+    // جداول القسم نفسه · تعديلها وحذفها بكامل
+    function opOwns(op, t) {
+      return (op == 'props' && t in ['properties', 'property_areas', 'property_area_items', 'property_floor_categories', 'units', 'unit_rooms', 'unit_room_items', 'meters'])
+        || (op == 'contracts' && t in ['contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'])
+        || (op == 'tenants' && t in ['tenants'])
+        || (op == 'collect' && t in ['contract_payments', 'payment_lines', 'payment_allocations'])
+        || (op == 'deposits' && t in ['deposit_settlements'])
+        || (op == 'reservations' && t in ['reservations', 'key_money_deals'])
+        || (op == 'claims' && t in ['claims'])
+        || (op == 'invoices' && t in ['invoices', 'invoice_lines'])
+        || (op == 'purchases' && t in ['suppliers', 'purchases', 'meter_readings'])
+        || (op == 'handover' && t in ['handovers'])
+        || (op == 'banks' && t in ['banks', 'bank_tx'])
+        || (op == 'ledger' && t in ['journal_entries', 'accounts'])
+        || (op == 'company' && t in ['company', 'company_docs', 'message_scripts', 'form_templates']);
+    }
+    // حقولٌ بعينها في جداول أقسام أخرى تمسّها العملية جانبياً بإدخال
+    function opTouches(op, t, keys) {
+      return (op == 'maintenance' && t == 'units' && keys.hasOnly(['under_maintenance']))
+        || (op == 'contracts' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
+        || (op == 'contracts' && t == 'reservations' && keys.hasOnly(['status', 'converted_contract_id']))
+        || (op == 'tenants' && t == 'contracts' && keys.hasOnly(['tenant_id', 'tenant_name']))
+        || (op == 'collect' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
+        || (op == 'collect' && t == 'contract_installments' && keys.hasOnly(['paid_halalas', 'status']))
+        || (op == 'collect' && t == 'tenants' && keys.hasOnly(['credit_halalas']))
+        || (op == 'deposits' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
+        || (op == 'reservations' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
+        || (op == 'claims' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
+        || (op == 'invoices' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
+        || (op == 'purchases' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
+        || (op == 'purchases' && t == 'meters' && keys.hasOnly(['supplier_id']))
+        || (op == 'banks' && t == 'journal_entries' && keys.hasOnly(['reversed_by']));
+    }
+
+    function validOrgRow(rowId) {
+      let r = request.resource.data;
+      return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts', 'op', 'g', 'pids', 'by'])
+        && r.t is string && syncedOrPub(r.t) && (!('lines' in r) || (r.t == 'journal_entries' && r.lines is list))
+        && r.k is string && rowId == r.t + '__' + r.k
+        && r.u is string && r.dev is string && r.del is bool
+        && r.ts == request.time
+        && (r.del == true || r.d is map)
+        && r.g is list && r.pids is list && r.pids.size() > 0
+        && (!('by' in r) || r.by is string)
+        && amountsAreIntegers(r);
+    }
+
+    function memberCreates(org) {
+      let r = request.resource.data;
+      return isMember(org) && r.op is string && lvl(org, r.op) >= 2 && opCreates(r.op, baseT(r.t))
+        && propsOk(org, r) && (!('by' in r) || r.by == request.auth.uid);
+    }
+
+    // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
+    function memberUpdates(org) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let op = after.op;
+      return isMember(org) && op is string && propsOk(org, after)
+        && after.get('by', null) == before.get('by', null)
+        && (
+          (opOwns(op, baseT(after.t)) && lvl(org, op) >= 3)
+          || (opOwns(op, baseT(after.t)) && lvl(org, op) >= 2 && isDraft(before)
+              && before.get('by', '') == request.auth.uid)
+          || (lvl(org, op) >= 2 && after.del == false && before.d != null
+              && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
+        );
+    }
+
+    // التعديل الوحيد على قيد مرحّل: ربطه بعاكسه مرة · وحقول الرؤية تُكتب مع كل كتابة
+    function orgOnlyLinksReversal() {
+      let before = resource.data;
+      let after = request.resource.data;
+      return after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'pids'])
+        && after.d.diff(before.d).affectedKeys().hasOnly(['reversed_by'])
+        && (!('reversed_by' in before.d) || before.d.reversed_by == null)
+        && after.d.reversed_by is string;
+    }
+
+    // «حذف حسابي» للمالك: نافذة ساعة بطلبٍ بوقت الخادم كما في users/{uid}
+    function orgDeletionOpen(org) {
+      let p = /databases/$(database)/documents/orgs/$(org)/meta/deletion;
+      return exists(p) && request.time < get(p).data.at + duration.value(1, 'h');
+    }
+
+    match /orgs/{org} {
+      allow read, write: if orgOwner(org);
+
+      match /rows/{rowId} {
+        allow read: if orgOwner(org) || (isMember(org) && resource.data.g.hasAny(mem(org).tokens));
+        allow create: if validOrgRow(rowId) && (orgOwner(org) || memberCreates(org));
+        allow update: if validOrgRow(rowId)
+          && resource.data.t != 'audit_log'
+          && (!isPostedEntry(resource.data) || orgOnlyLinksReversal())
+          && (orgOwner(org) || memberUpdates(org));
+        allow delete: if orgOwner(org) && orgDeletionOpen(org);
+      }
+
+      // العضوية: يكتبها المالك · والعضو ينشئ عضويته مرة من دعوةٍ بإيميله وبنصّها حرفياً، ويغادر بحذفها
+      match /members/{uid} {
+        allow read: if orgOwner(org) || (request.auth != null && request.auth.uid == uid);
+        allow create: if orgOwner(org) || (
+          request.auth != null && request.auth.uid == uid && request.auth.token.email_verified == true
+          && exists(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email))
+          && request.resource.data == get(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email)).data);
+        allow update: if orgOwner(org);
+        allow delete: if orgOwner(org) || (request.auth != null && request.auth.uid == uid);
+      }
+
+      match /invites/{email} {
+        allow read: if orgOwner(org) || (request.auth != null && request.auth.token.email == email);
+        allow create, update: if orgOwner(org) && request.resource.data.email == email;
+        allow delete: if orgOwner(org) || (request.auth != null && request.auth.token.email == email);
+      }
+
+      // حروف الأجهزة في ترقيم المنشأة · العضو يضيف حرف جهازه ولا يغيّر حرفاً قائماً
+      match /meta/devices {
+        allow read: if orgOwner(org) || isMember(org);
+        allow create: if orgOwner(org);
+        allow update: if orgOwner(org) || (isMember(org)
+          && request.resource.data.keys().hasOnly(['letters'])
+          && request.resource.data.letters.diff(resource.data.letters).changedKeys().size() == 0
+          && request.resource.data.letters.diff(resource.data.letters).removedKeys().size() == 0);
+      }
+
+      match /meta/deletion {
+        allow read, delete: if orgOwner(org);
+        allow create, update: if orgOwner(org)
+          && request.resource.data.keys().hasOnly(['at']) && request.resource.data.at == request.time;
+      }
+    }
+
+    // العضو يجد دعوته بإيميله بين المنشآت
+    match /{path=**}/invites/{email} {
+      allow read: if request.auth != null && resource.data.email == request.auth.token.email;
+    }
+    // </org:generated>
   }
 }

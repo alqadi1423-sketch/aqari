@@ -19,6 +19,7 @@ import { dfmt, today, daysBetween, periodLabel } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
 import { CancelPaymentPanel } from './CancelPaymentPanel';
+import { usePerm } from './access';
 
 export function InstallmentSheet(props: {
   installmentId: string;
@@ -43,6 +44,8 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
+  // التحصيل إضافة · وإلغاء الدفعة وتعديل الموعد تعديلٌ في التحصيل (كامل)
+  const perm = usePerm('collect');
   const [editOpen, setEditOpen] = useState(false);
   const [agreed, setAgreed] = useState('');
   const [grace, setGrace] = useState('');
@@ -112,8 +115,8 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
   if (!data) return null;
   const { i, pays, discount, remaining, status, kind, contractCancelled, fallbackPayment } = data;
   // القسط المسدَّد كلياً أو الملغي لا موعد له يُعدَّل · والعقد الملغى لا يُحصَّل
-  const scheduleEditable = remaining > 0 && i.status !== 'ملغية';
-  const collectable = remaining > 0 && i.status !== 'ملغية' && !contractCancelled;
+  const scheduleEditable = remaining > 0 && i.status !== 'ملغية' && perm.manage;
+  const collectable = remaining > 0 && i.status !== 'ملغية' && !contractCancelled && perm.add;
 
   const saveSchedule = () => {
     try {
@@ -197,7 +200,7 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
                 <T size={11.5} color={C.rose} style={{ marginTop: 2 }}>ملغاة {dfmt(p.cancelled_at)} · {p.cancel_reason}</T>
               ) : null}
               <Row style={{ justifyContent: 'flex-end', marginTop: 4 }}>
-                {!p.cancelled_at ? (
+                {!p.cancelled_at && perm.manage ? (
                   <BtnGhost small danger title="إلغاء الدفعة" onPress={() => setCancelFor((c) => (c === p.id ? null : p.id))} />
                 ) : null}
                 <BtnGhost small icon="print" title="سند القبض"

@@ -21,12 +21,18 @@ import { contractStatusKind, contractStatusLabel } from '../domain/contracts/rul
 import { today, dfmt } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
+import { useAccess, usePerm } from './access';
+import { routeAllowed } from '../domain/access/routes';
 
 export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; onClose: () => void }) {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
   const router = useRouter();
+  const perm = usePerm('tenants');
+  const access = useAccess();
+  const openContracts = routeAllowed(access, '/contracts');
+  const openClaims = routeAllowed(access, '/claims');
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState('');
   const p = useMemo(() => tenantProfile(db, tenantId, today()),
@@ -69,18 +75,22 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
       </Row>
 
       {/* أفعال الملف · الإرفاق أيقونة عارية بمحاذاة زر تعديل الاسم */}
-      <Row style={{ justifyContent: 'flex-end', marginBottom: 4 }}>
-        <BtnGhost small title="تعديل الاسم" onPress={() => {
-          // الضغط ثانيةً يطوي اللوحة · والاسم المعدَّل لا يُمحى بلا تأكيد
-          if (renaming) { if (newName.trim() && newName !== p.tenant.name) confirmDiscard(dialog, () => setRenaming(false)); else setRenaming(false); return; }
-          setNewName(p.tenant.name); setRenaming(true);
-        }} />
-        <BtnIcon icon="attach" accessibilityLabel="إضافة مستند" onPress={addDoc} />
-      </Row>
+      {perm.add ? (
+        <Row style={{ justifyContent: 'flex-end', marginBottom: 4 }}>
+          {perm.manage ? (
+            <BtnGhost small title="تعديل الاسم" onPress={() => {
+              // الضغط ثانيةً يطوي اللوحة · والاسم المعدَّل لا يُمحى بلا تأكيد
+              if (renaming) { if (newName.trim() && newName !== p.tenant.name) confirmDiscard(dialog, () => setRenaming(false)); else setRenaming(false); return; }
+              setNewName(p.tenant.name); setRenaming(true);
+            }} />
+          ) : null}
+          <BtnIcon icon="attach" accessibilityLabel="إضافة مستند" onPress={addDoc} />
+        </Row>
+      ) : null}
 
       <CollapsibleSection title="عقوده" count={p.contracts.length} icon="contract" pageKey="tenantContracts">
         {(page) => p.contracts.slice(page.offset, page.offset + page.limit).map((c) => (
-          <Pressable key={c.id} onPress={() => { onClose(); router.push(`/contracts?detail=${c.id}`); }}>
+          <Pressable key={c.id} disabled={!openContracts} onPress={() => { onClose(); router.push(`/contracts?detail=${c.id}`); }}>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
               <View style={{ flex: 1 }}>
                 <T size={TYPE.cardTitle} bold>{c.unit_label}</T>
@@ -107,7 +117,7 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
            ORDER BY cl.date DESC, cl.created_at DESC LIMIT ? OFFSET ?`,
           [tenantId, page.limit, page.offset]
         ).map((cl) => (
-          <Pressable key={cl.id} onPress={() => { onClose(); router.push(`/claims?detail=${cl.id}`); }}>
+          <Pressable key={cl.id} disabled={!openClaims} onPress={() => { onClose(); router.push(`/claims?detail=${cl.id}`); }}>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
               <View style={{ flex: 1 }}>
                 {cl.reason ? <T size={TYPE.cardTitle}>{cl.reason}</T> : null}
@@ -125,7 +135,7 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
       <CollapsibleSection title="هويته ومستنداته" count={attCount} icon="attach">
         {() => (
           <AttachStrip entityType="tenant" entityId={tenantId} kind="tenant_id"
-            linked={p.tenant.name} title="هويته ومستنداته" hideAdd />
+            linked={p.tenant.name} title="هويته ومستنداته" hideAdd canManage={perm.manage} />
         )}
       </CollapsibleSection>
 
@@ -158,6 +168,8 @@ export function SimilarTenantsSheet({ onClose }: { onClose: () => void }) {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
+  // الدمج يعدّل العقود ويحذف المستأجرين · كامل وحده
+  const canMerge = usePerm('tenants').manage;
   const groups = useMemo(() => similarTenantGroups(db),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
@@ -171,7 +183,7 @@ export function SimilarTenantsSheet({ onClose }: { onClose: () => void }) {
               <Num size={TYPE.caption} color={C.muted}>{[t.national_id, t.contracts + ' عقد'].filter(Boolean).join(' · ')}</Num>
             </Row>
           ))}
-          <View style={{ marginTop: 6 }}>
+          {canMerge ? <View style={{ marginTop: 6 }}>
             <BtnGhost small title={'دمج الكل في «' + g.tenants[0].name + '»'} onPress={() => {
               dialog({
                 title: 'دمج المستأجرين',
@@ -193,7 +205,7 @@ export function SimilarTenantsSheet({ onClose }: { onClose: () => void }) {
                 ],
               });
             }} />
-          </View>
+          </View> : null}
         </View>
       )) : <EmptyState>لا أسماء متشابهة · كل مستأجر سجل واحد</EmptyState>}
       <View style={{ height: 10 }} />

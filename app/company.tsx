@@ -20,6 +20,7 @@ import { daysBetween, dfmt, today } from '../src/domain/dates';
 import { uid } from '../src/domain/ids';
 import { logAudit } from '../src/domain/audit';
 import { reportFailure } from '../src/ui/failureDialog';
+import { usePerm } from '../src/ui/access';
 
 const OFFICIAL_DOCS: Array<{ kind: string; label: string; numberField: 'vatno' | 'cr' | null; numberLabel: string | null; expField: boolean }> = [
   { kind: 'vat_cert', label: 'شهادة الرقم الضريبي', numberField: 'vatno', numberLabel: 'الرقم الضريبي (15 رقماً)', expField: false },
@@ -31,6 +32,7 @@ function CompanyBody() {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
+  const perm = usePerm('company');
   const co = useMemo(
     () => db.get<{ name: string; vatno: string; cr: string; phone: string; address: string; cr_exp: string | null }>(
       `SELECT * FROM company WHERE id = 1`
@@ -133,7 +135,7 @@ function CompanyBody() {
 
   return (
     <Screen title="بيانات المنشأة"
-      actions={<BtnPrimary small title="حفظ البيانات" onPress={save} />}>
+      actions={perm.manage ? <BtnPrimary small title="حفظ البيانات" onPress={save} /> : null}>
       <Card>
         <CardTitle>بيانات المنشأة</CardTitle>
         <Row style={{ marginBottom: 10 }}>
@@ -145,7 +147,7 @@ function CompanyBody() {
               <Image source={{ uri: 'file://' + attachmentPath(env, logo).replace(/^file:\/\//, '') }} style={{ width: 64, height: 64 }} resizeMode="contain" />
             ) : <Icon name="building" size={24} color={C.muted} />}
           </View>
-          <View style={{ flex: 1 }}><BtnGhost small title="رفع شعار المنشأة" onPress={pickLogo} /></View>
+          <View style={{ flex: 1 }}>{perm.manage ? <BtnGhost small title="رفع شعار المنشأة" onPress={pickLogo} /> : null}</View>
         </Row>
         <Row>
           <View style={{ flex: 1 }}><Field label="اسم المنشأة" value={name} onChange={setName} /></View>
@@ -169,7 +171,9 @@ function CompanyBody() {
               )}
               {d.expField && <DateField label="تاريخ الانتهاء" value={crExp} onChange={setCrExp} />}
               <Row>
-                <BtnGhost small icon={file ? 'reload' : 'export'} title={file ? 'استبدال الملف' : 'رفع الملف'} onPress={() => uploadOfficial(d.kind)} />
+                {perm.manage ? (
+                  <BtnGhost small icon={file ? 'reload' : 'export'} title={file ? 'استبدال الملف' : 'رفع الملف'} onPress={() => uploadOfficial(d.kind)} />
+                ) : null}
                 {!file && <T size={10.5} color={C.muted}>لم يُرفع ملف بعد</T>}
               </Row>
             </View>
@@ -178,7 +182,7 @@ function CompanyBody() {
       </Card>
 
       <Card>
-        <CardTitle action={<BtnPrimary small title="+ إضافة مستند" onPress={() => setDocOpen(true)} />}>
+        <CardTitle action={perm.add ? <BtnPrimary small title="+ إضافة مستند" onPress={() => setDocOpen(true)} /> : undefined}>
           مستندات إضافية
         </CardTitle>
         {extraDocs.length ? extraDocs.map((d) => (
@@ -187,7 +191,7 @@ function CompanyBody() {
               <T size={12.5} med>{d.name}</T>
               {expiryBadge(d.expiry)}
             </Row>
-            <Row style={{ justifyContent: 'flex-end', marginTop: 5 }}>
+            {perm.manage ? <Row style={{ justifyContent: 'flex-end', marginTop: 5 }}>
               <BtnGhost small danger icon="trash" title="حذف"
                 onPress={() => dialog({
                   title: 'حذف المستند',
@@ -204,7 +208,7 @@ function CompanyBody() {
                     },
                   ],
                 })} />
-            </Row>
+            </Row> : null}
           </View>
         )) : <EmptyState>لا توجد مستندات إضافية</EmptyState>}
       </Card>

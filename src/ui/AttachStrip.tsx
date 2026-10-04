@@ -2,6 +2,8 @@
  * شريط مرفقات أفقي · المرفق يُفتح من الشيء المرتبط به لا من المكتبة وحدها:
  * مصغّرات تُضغط فيفتح العارض ويُسحب للتالي، وزر «إضافة مرفق» في الموضع نفسه.
  */
+import type { SectionKey } from '../domain/access/sections';
+import { usePerm } from './access';
 import React, { useMemo, useState } from 'react';
 import { View, ScrollView, Pressable, Image } from 'react-native';
 import { T, Num, Row, BtnGhost } from './components';
@@ -25,7 +27,7 @@ function toViewer(a: AttachmentRow, linked: string): ViewerFile {
   };
 }
 
-export function AttachStrip({ entityType, entityId, kind, linked, title, hideAdd }: {
+export function AttachStrip({ entityType, entityId, kind, linked, title, hideAdd: hideAddProp, canManage: canManageProp = true, section }: {
   entityType: string;
   entityId: string;
   /** تصنيف المرفق الجديد عند الإضافة من هنا */
@@ -35,8 +37,15 @@ export function AttachStrip({ entityType, entityId, kind, linked, title, hideAdd
   title?: string;
   /** true تُخفي زر «إضافة مرفق» ويبقى العرض والفتح · الافتراضي إظهاره */
   hideAdd?: boolean;
+  /** false تُخفي في العارض إعادة التسمية والنقل ونزع الربط والحذف · الافتراضي إظهارها */
+  canManage?: boolean;
+  /** قسم الجهة المرتبط بها · يُحسب منه الإضافة (إدخال) والإدارة (كامل) فلا يمرّرهما كل مستدعٍ */
+  section?: SectionKey;
 }) {
   const { db, version, bump } = useApp();
+  const sec = usePerm(section ?? 'library');
+  const hideAdd = hideAddProp || (!!section && !sec.add);
+  const canManage = canManageProp && (!section || sec.manage);
   const toast = useToast();
   const [viewer, setViewer] = useState<number | null>(null);
   const atts = useMemo(() => attachmentsFor(db, entityType, entityId),
@@ -87,7 +96,7 @@ export function AttachStrip({ entityType, entityId, kind, linked, title, hideAdd
       )}
       {viewer != null && (
         <FileViewer files={files} startIndex={viewer}
-          onClose={() => setViewer(null)} onMutated={() => bump()} />
+          onClose={() => setViewer(null)} onMutated={() => bump()} canManage={canManage} />
       )}
     </View>
   );

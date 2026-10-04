@@ -25,9 +25,9 @@ test('قاعدة ١٦ ببيانات قديمة تترقّى إلى ٢٠ دون 
 
   migrate(db);
   expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
-  expect(SCHEMA_VERSION).toBe(21);
+  expect(SCHEMA_VERSION).toBe(22);
   const triggers = db.all<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).map((t) => t.name);
-  for (const t of ['trg_je_insert_balanced', 'trg_je_posted_no_trash', 'trg_je_posted_status', 'trg_pay_insert_cap', 'trg_inst_update_cap', 'sync_contracts_ins', 'sync_journal_lines_ins']) {
+  for (const t of ['trg_je_insert_balanced', 'trg_je_posted_no_trash', 'trg_je_posted_status', 'trg_pay_insert_cap', 'trg_inst_update_cap', 'sync_contracts_ins', 'sync_journal_lines_ins', 'row_by_contracts']) {
     expect(triggers).toContain(t);
   }
   expect(db.all(`SELECT * FROM journal_entries ORDER BY id`)).toEqual(before);

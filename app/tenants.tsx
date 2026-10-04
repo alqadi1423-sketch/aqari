@@ -20,6 +20,7 @@ import { today } from '../src/domain/dates';
 import { toHalalas } from '../src/domain/money';
 import { uid } from '../src/domain/ids';
 import { logAudit } from '../src/domain/audit';
+import { usePerm } from '../src/ui/access';
 
 interface TenantRow {
   id: string; name: string; phone: string; national_id: string;
@@ -45,24 +46,27 @@ const similarKey = (name: string): string =>
   name.trim().replace(/\s+/g, '').replace(/^ال/, '').replace(/ال(?=[؀-ۿ]{2,})/g, '');
 
 const TenantCard = React.memo(function TenantCard({
-  id, name, phone, contracts, outstanding, credit, onOpen,
+  id, name, phone, contracts, outstanding, credit, showMoney, onOpen,
 }: {
   id: string; name: string; phone: string; contracts: number;
-  outstanding: number; credit: number; onOpen: (id: string) => void;
+  outstanding: number; credit: number;
+  /** المتأخرات والرصيد من التحصيل · لا تُعرض لمن لا يرى التحصيل */
+  showMoney: boolean;
+  onOpen: (id: string) => void;
 }) {
   return (
     <Pressable onPress={() => onOpen(id)}>
       <Card style={{ paddingVertical: 10 }}>
         <Row style={{ justifyContent: 'space-between' }}>
           <T size={TYPE.sectionTitle} bold style={{ flex: 1 }}>{name}</T>
-          <Money halalas={outstanding} size={TYPE.cardTitle} bold color={outstanding > 0 ? C.rose : C.emerald} />
+          {showMoney ? <Money halalas={outstanding} size={TYPE.cardTitle} bold color={outstanding > 0 ? C.rose : C.emerald} /> : null}
         </Row>
         <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
           <Row gap={8}>
             {phone ? <Num size={TYPE.caption} color={C.muted}>{phone}</Num> : null}
             <T size={TYPE.caption} color={C.muted}>· {contracts} عقود</T>
           </Row>
-          {credit > 0 ? <Row gap={4}><T size={TYPE.caption} color={C.emerald}>رصيد دائن</T><Money halalas={credit} size={TYPE.caption} color={C.emerald} /></Row> : null}
+          {showMoney && credit > 0 ? <Row gap={4}><T size={TYPE.caption} color={C.emerald}>رصيد دائن</T><Money halalas={credit} size={TYPE.caption} color={C.emerald} /></Row> : null}
         </Row>
         <Divider />
       </Card>
@@ -73,6 +77,9 @@ const TenantCard = React.memo(function TenantCard({
 export default function Tenants() {
   const { db, version, bump } = useApp();
   const toast = useToast();
+  const perm = usePerm('tenants');
+  // المتأخرات والرصيد الدائن بيانات مرتبطة · لمن يرى التحصيل وحده (الحد اللازم)
+  const seesMoney = usePerm('collect').view;
   const [q, setQ] = useState('');
   const [fMoney, setFMoney] = useState('');
   const [fContracts, setFContracts] = useState('');
@@ -183,9 +190,9 @@ export default function Tenants() {
   const renderTenant = useCallback(({ item }: { item: TenantRow }) => (
     <TenantCard
       id={item.id} name={item.name} phone={item.phone} contracts={item.contracts}
-      outstanding={item.outstanding} credit={item.credit} onOpen={openProfile}
+      outstanding={item.outstanding} credit={item.credit} showMoney={seesMoney} onOpen={openProfile}
     />
-  ), [openProfile]);
+  ), [openProfile, seesMoney]);
 
   const clearFilters = useCallback(() => { setQ(''); setFMoney(''); setFContracts(''); }, []);
   const chips: ActiveChip[] = [
@@ -195,12 +202,12 @@ export default function Tenants() {
 
   return (
     <Screen title="المستأجرون" icon="collect" scroll={false}
-      actions={<BtnPrimary small title="+ مستأجر" onPress={() => setFormOpen(true)} />}>
+      actions={perm.add ? <BtnPrimary small title="+ مستأجر" onPress={() => setFormOpen(true)} /> : undefined}>
       <FilterBar chips={chips} onOpen={fsheet.show} onClearAll={clearFilters}
         resultCount={total} total={base.length} filtered={total} itemName="مستأجراً"
         search={<SearchBox value={q} onChange={setQ} />} />
-      {/* لا أسماء متشابهة فلا زر دمج · لا يُعرض ثم يقول «لا يوجد» */}
-      {hasSimilar ? (
+      {/* لا أسماء متشابهة فلا زر دمج · لا يُعرض ثم يقول «لا يوجد» · والدمج تعديل فلصاحب «كامل» */}
+      {hasSimilar && perm.manage ? (
         <Row style={{ justifyContent: 'flex-end', marginBottom: 8 }}>
           <BtnGhost small title="المتشابهون · دمج" onPress={() => setSimilarOpen(true)} />
         </Row>
@@ -210,7 +217,7 @@ export default function Tenants() {
           data={rows}
           keyExtractor={(t) => t.id}
           renderItem={renderTenant}
-          ListEmptyComponent={<Card><EmptyState>{base.length ? 'لا يوجد مستأجرون مطابقون' : 'أضف مستأجراً بزر «+ مستأجر»'}</EmptyState></Card>}
+          ListEmptyComponent={<Card><EmptyState>{base.length ? 'لا يوجد مستأجرون مطابقون' : perm.add ? 'أضف مستأجراً بزر «+ مستأجر»' : 'لا يوجد مستأجرون'}</EmptyState></Card>}
           ListFooterComponent={<Pager pager={pager} total={total} />}
           initialNumToRender={12}
           maxToRenderPerBatch={12}
@@ -222,7 +229,8 @@ export default function Tenants() {
       )}
 
       <FilterSheet open={fsheet.open} onClose={fsheet.hide} onClearAll={clearFilters} resultCount={total}>
-        <SelectField label="الحالة المالية" value={fMoney} options={MONEY_OPTIONS} onPick={setFMoney} />
+        {/* المرشِّح المالي يكشف المتأخرات · لمن يرى التحصيل وحده */}
+        {seesMoney ? <SelectField label="الحالة المالية" value={fMoney} options={MONEY_OPTIONS} onPick={setFMoney} /> : null}
         <SelectField label="العقود" value={fContracts} options={CONTRACT_OPTIONS} onPick={setFContracts} />
       </FilterSheet>
 
@@ -242,9 +250,12 @@ export default function Tenants() {
           <View style={{ flex: 1 }}>
             <Field label="رقم الجوال" value={tPhone} onChange={setTPhone} keyboard="phone-pad" ltr placeholder="05XXXXXXXX" />
           </View>
-          <View style={{ flex: 1 }}>
-            <Field label="حد الائتمان" value={tCredit} onChange={setTCredit} keyboard="numeric" ltr />
-          </View>
+          {/* الرصيد مبلغ من التحصيل · لمن يرى التحصيل وحده */}
+          {seesMoney ? (
+            <View style={{ flex: 1 }}>
+              <Field label="حد الائتمان" value={tCredit} onChange={setTCredit} keyboard="numeric" ltr />
+            </View>
+          ) : null}
         </Row>
       </Sheet>
       {profileId && <TenantProfileSheet tenantId={profileId} onClose={() => setProfileId(null)} />}

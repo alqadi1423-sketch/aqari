@@ -13,6 +13,8 @@ import { Sheet } from './Sheet';
 import { Row, T, Num, Money, BtnPrimary, EmptyState } from './components';
 import { C } from './theme';
 import { useApp, useFs } from './store';
+import { useAccess } from './access';
+import { routeAllowed } from '../domain/access/routes';
 import { dfmt } from '../domain/dates';
 import type { DB } from '../db/adapter';
 
@@ -111,6 +113,7 @@ export function EntrySheet({
   const { db, version } = useApp();
   const router = useRouter();
   const fs = useFs();
+  const access = useAccess();
 
   const head = useMemo(() => db.get<EntryHead>(
     `SELECT id, no, date, memo, status, src_type, src_id FROM journal_entries WHERE id = ?`, [entryId]),
@@ -125,10 +128,12 @@ export function EntrySheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, entryId]);
 
-  const route = useMemo(
-    () => (head ? entrySourceRoute(db, head.src_type, head.src_id) : null),
+  // مستندٌ في قسمٍ لا يراه المستخدم لا يُعرض زرّه · المسار يُفحص بلا معاملاته
+  const route = useMemo(() => {
+    const r = head ? entrySourceRoute(db, head.src_type, head.src_id) : null;
+    return r && routeAllowed(access, r.split('?')[0]) ? r : null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [db, version, head]);
+  }, [db, version, head, access]);
 
   const title = head ? head.no + ' · ' + dfmt(head.date) : 'تفاصيل القيد';
 

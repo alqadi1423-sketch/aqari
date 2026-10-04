@@ -26,6 +26,7 @@ import { appFilesEnv } from '../src/services/filesEnv';
 import { putAttachment } from '../src/files/store';
 import { printClaim } from '../src/services/print';
 import { reportFailure } from '../src/ui/failureDialog';
+import { usePerm } from '../src/ui/access';
 
 interface ClaimRow {
   id: string; contract_id: string; amount_halalas: number; reason: string; date: string;
@@ -50,10 +51,12 @@ const PERIOD_OPTIONS = [{ value: '', label: 'كل الفترات' },
 /** بطاقة مطالبة واحدة · خارج الشاشة ومحفوظة كي لا يُعاد رسمها بلا داعٍ */
 const ClaimCard = React.memo(function ClaimCard({
   id, tenantName, contractNo, date, status, source, reason, amountHalalas,
-  onCollect, onEdit, onPrint, onDelete,
+  canManage, onCollect, onEdit, onPrint, onDelete,
 }: {
   id: string; tenantName: string; contractNo: string | null; date: string; status: string; source: string;
   reason: string; amountHalalas: number;
+  /** «المطالبات: كامل» · التحصيل والتعديل والحذف */
+  canManage: boolean;
   onCollect: (id: string) => void; onEdit: (id: string) => void; onPrint: (id: string) => void; onDelete: (id: string) => void;
 }) {
   const open = status === 'مفتوحة';
@@ -67,10 +70,10 @@ const ClaimCard = React.memo(function ClaimCard({
           <Badge kind={source === 'تسوية تأمين' ? 'due' : 'draft'}
             label={source === 'تسوية تأمين' ? 'تسوية تأمين تلقائية' : 'يدوية'} />
           <ActionMenuButton title={tenantName} actions={[
-            open ? { icon: 'wallet', label: 'تحصيل المطالبة', onPress: () => onCollect(id) } : null,
-            open ? { icon: 'edit', label: 'تعديل', onPress: () => onEdit(id) } : null,
+            open && canManage ? { icon: 'wallet', label: 'تحصيل المطالبة', onPress: () => onCollect(id) } : null,
+            open && canManage ? { icon: 'edit', label: 'تعديل', onPress: () => onEdit(id) } : null,
             { icon: 'print', label: 'طباعة / PDF', onPress: () => onPrint(id) },
-            { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) },
+            canManage ? { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) } : null,
           ]} />
         </Row>
       </Row>
@@ -88,6 +91,7 @@ const ClaimCard = React.memo(function ClaimCard({
 
 export default function Claims() {
   const { db, version, bump } = useApp();
+  const perm = usePerm('claims');
   const toast = useToast();
   const dialog = useDialog();
   const ready = useDeferredReady();
@@ -203,9 +207,9 @@ export default function Claims() {
   const renderItem = useCallback(({ item }: { item: ClaimRow }) => (
     <ClaimCard id={item.id} tenantName={item.tenant_name} contractNo={item.contract_no}
       date={item.date} status={item.status} source={item.source} reason={item.reason}
-      amountHalalas={Number(item.amount_halalas)}
+      amountHalalas={Number(item.amount_halalas)} canManage={perm.manage}
       onCollect={onCollect} onEdit={openEdit} onPrint={onPrint} onDelete={onDelete} />
-  ), [onCollect, openEdit, onPrint, onDelete]);
+  ), [onCollect, openEdit, onPrint, onDelete, perm.manage]);
 
   const pickInvoices = async () => {
     const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], multiple: true });
@@ -240,6 +244,9 @@ export default function Claims() {
       }
     : null;
 
+  // الجديدة بإدخال · وتعديل المفتوحة بكامل · وما سوى ذلك عرضٌ بلا حفظ ولا إرفاق
+  const canSave = !editingId ? perm.add : editingStatus === 'مفتوحة' && perm.manage;
+
   const clearFilters = useCallback(() => { setQ(''); setFStatus(''); setFSource(''); setFPeriod(''); }, []);
   const chips: ActiveChip[] = [
     ...(fStatus ? [{ key: 'status', label: fStatus, onClear: () => setFStatus('') }] : []),
@@ -250,7 +257,7 @@ export default function Claims() {
   return (
     <Screen title="المطالبات" icon="claim" scroll={false}
       /* لا عقد موثَّق فلا مطالبة تُسجَّل · الزر لا يُعرض بدل أن يُعرض ويرفض */
-      actions={contracts.length ? <BtnPrimary small title="+ مطالبة جديدة" onPress={openNew} /> : undefined}>
+      actions={contracts.length && perm.add ? <BtnPrimary small title="+ مطالبة جديدة" onPress={openNew} /> : undefined}>
       {!ready ? <Skeleton /> : (
         <FlatList
           data={rows}
@@ -289,11 +296,11 @@ export default function Claims() {
 
       {/* المطالبة المحصَّلة تُعرض ولا تُحفظ · قيدها أُقفل فلا يُعرض لها زر حفظ */}
       <Sheet visible={formOpen} onClose={() => setFormOpen(false)}
-        title={!editingId ? 'مطالبة جديدة' : editingStatus === 'مفتوحة' ? 'تعديل المطالبة' : 'المطالبة المحصَّلة'} tall
+        title={!editingId ? 'مطالبة جديدة' : editingStatus !== 'مفتوحة' ? 'المطالبة المحصَّلة' : canSave ? 'تعديل المطالبة' : 'المطالبة'} tall
         footer={
           <>
             {/* الإغلاق بعلامة ✕ في رأس الورقة وحدها */}
-            {!editingId || editingStatus === 'مفتوحة' ? (
+            {canSave ? (
               <View style={{ flex: 1 }}><BtnPrimary title="حفظ المطالبة" onPress={save} /></View>
             ) : null}
           </>
@@ -304,14 +311,16 @@ export default function Claims() {
         <Field label="المبلغ" value={amount} onChange={setAmount} keyboard="numeric" ltr />
         <Field label="السبب / وصف المشكلة" value={reason} onChange={setReason} multiline />
         {editingId ? (
-          <AttachStrip entityType="claim" entityId={editingId} kind="claim"
+          <AttachStrip section="claims" entityType="claim" entityId={editingId} kind="claim"
             linked="المطالبة" title="صور الضرر وفواتير الإصلاح" />
         ) : null}
         <DateField label="التاريخ" value={date} onChange={setDate} />
-        <Row style={{ marginBottom: 8 }}>
-          <View style={{ flex: 1 }}><BtnGhost small icon="attach" title="إرفاق فواتير تكاليف" onPress={pickInvoices} /></View>
-          <View style={{ flex: 1 }}><BtnGhost small icon="attach" title="إرفاق صور المشكلة" onPress={pickPhotos} /></View>
-        </Row>
+        {canSave ? (
+          <Row style={{ marginBottom: 8 }}>
+            <View style={{ flex: 1 }}><BtnGhost small icon="attach" title="إرفاق فواتير تكاليف" onPress={pickInvoices} /></View>
+            <View style={{ flex: 1 }}><BtnGhost small icon="attach" title="إرفاق صور المشكلة" onPress={pickPhotos} /></View>
+          </Row>
+        ) : null}
         {pendingFiles.length ? <T size={TYPE.caption} color={C.muted}>سيُرفع {pendingFiles.length} ملف عند الحفظ</T> : null}
         {existingCounts && (existingCounts.inv || existingCounts.ph) ? (
           <T size={TYPE.caption} color={C.muted}>

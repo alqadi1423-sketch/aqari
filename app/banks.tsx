@@ -29,6 +29,8 @@ import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
 import { logAudit } from '../src/domain/audit';
 import { reportFailure } from '../src/ui/failureDialog';
+import { useAccess, usePerm } from '../src/ui/access';
+import { routeAllowed } from '../src/domain/access/routes';
 
 interface BankRow {
   id: string; name: string; iban: string; opening_halalas: number; opening_date: string | null;
@@ -46,6 +48,7 @@ const BALANCE_OPTIONS = [{ value: '', label: 'كل الأرصدة' },
 
 export default function Banks() {
   const { db, version, bump } = useApp();
+  const perm = usePerm('banks');
   const toast = useToast();
   const dialog = useDialog();
   const fsheet = useFilterSheet();
@@ -148,8 +151,8 @@ export default function Banks() {
           <Money halalas={b.balance} size={TYPE.number} bold color={b.balance >= 0 ? C.emerald : C.rose} />
           <ActionMenuButton title={b.name} actions={[
             { icon: 'eye', label: 'البيانات وكل العمليات', onPress: () => setDetailId(b.id) },
-            { icon: 'edit', label: 'تعديل', onPress: () => openEdit(b) },
-            {
+            perm.manage ? { icon: 'edit', label: 'تعديل', onPress: () => openEdit(b) } : null,
+            !perm.manage ? null : {
               icon: Number(b.archived) ? 'undo' : 'archive',
               label: Number(b.archived) ? 'إلغاء الأرشفة' : 'أرشفة',
               onPress: () => {
@@ -157,7 +160,7 @@ export default function Banks() {
                 bump(); toast(Number(b.archived) ? 'أُلغيت الأرشفة' : 'أُرشف الحساب · حركاته وأرصدته باقية كما هي');
               },
             },
-            Number(b.linked_n) ? null : { icon: 'trash' as const, label: 'حذف', danger: true, onPress: () => onDelete(b) },
+            Number(b.linked_n) || !perm.manage ? null : { icon: 'trash' as const, label: 'حذف', danger: true, onPress: () => onDelete(b) },
           ]} />
         </Row>
       </Row>
@@ -180,7 +183,7 @@ export default function Banks() {
 
   return (
     <Screen title="الحسابات البنكية" icon="bank" scroll={false}
-      actions={<BtnPrimary small title="+ حساب بنكي" onPress={openNew} />}>
+      actions={perm.add ? <BtnPrimary small title="+ حساب بنكي" onPress={openNew} /> : undefined}>
       <FlatList
         data={rows}
         renderItem={renderItem}
@@ -237,7 +240,7 @@ export default function Banks() {
 
       {detailId && (
         <BankDetailSheet bankId={detailId} onClose={() => setDetailId(null)}
-          onEdit={() => { const id = detailId; setDetailId(null); openEditById(id); }} />
+          onEdit={perm.manage ? () => { const id = detailId; setDetailId(null); openEditById(id); } : undefined} />
       )}
       {walletOpen && <WalletSheet onClose={() => setWalletOpen(false)} />}
     </Screen>
@@ -250,10 +253,12 @@ export default function Banks() {
  * والمملوء مطويّ لا تُجلب سطوره إلا عند فتحه، وداخله تقسيم صفحات ·
  * وكل حركة تفتح مستندها المصدر، ومن لا مستند له يُفتح قيده داخل الورقة.
  */
-function BankDetailSheet({ bankId, onClose, onEdit }: { bankId: string; onClose: () => void; onEdit: () => void }) {
+function BankDetailSheet({ bankId, onClose, onEdit }: { bankId: string; onClose: () => void; onEdit?: () => void }) {
   const { db, version } = useApp();
   const router = useRouter();
   const toast = useToast();
+  const access = useAccess();
+  const seesLedger = usePerm('ledger').view;
   const [entryFor, setEntryFor] = useState<string | null>(null);
   const b = useMemo(() => db.get<{ name: string; iban: string; opening_halalas: number; opening_date: string | null }>(
     `SELECT name, iban, opening_halalas, opening_date FROM banks WHERE id = ?`, [bankId]
@@ -283,34 +288,48 @@ function BankDetailSheet({ bankId, onClose, onEdit }: { bankId: string; onClose:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, entryFor]);
 
-  // نسج على نمط openSource في دليل الحسابات: استعلام القيد بمصدره ثم التوجيه لمستنده
-  const openTx = useCallback((journalNo: string) => {
+  // نسج على نمط openSource في دليل الحسابات: استعلام القيد بمصدره ثم التوجيه لمستنده ·
+  // المستند يُفتح إن سُمح مساره، وإلا فالقيد داخل الورقة لمن له الدفتر، وإلا فلا وجهة (null)
+  const txDest = useCallback((journalNo: string): (() => void) | 'nojournal' | null => {
     const e = journalNo ? db.get<{ id: string; src_type: string | null; src_id: string | null }>(
       `SELECT id, src_type, src_id FROM journal_entries WHERE no = ? AND deleted_at IS NULL`, [journalNo]
     ) : undefined;
-    if (!e) { toast('حركة بلا قيد مرتبط'); return; }
+    if (!e) return 'nojournal';
     const srcType = e.src_type;
     const srcId = e.src_id;
     if (srcType && srcId) {
-      if (['purchase', 'purchase_pay', 'vat_refund'].includes(srcType)) { onClose(); router.push(`/purchases?detail=${srcId}`); return; }
-      if (srcType === 'invoice') { onClose(); router.push(`/invoices?detail=${srcId}`); return; }
-      if (srcType === 'rent') {
+      if (['purchase', 'purchase_pay', 'vat_refund'].includes(srcType) && routeAllowed(access, '/purchases')) {
+        return () => { onClose(); router.push(`/purchases?detail=${srcId}`); };
+      }
+      if (srcType === 'invoice' && routeAllowed(access, '/invoices')) {
+        return () => { onClose(); router.push(`/invoices?detail=${srcId}`); };
+      }
+      if (srcType === 'rent' && routeAllowed(access, '/contracts')) {
         const cRow = db.get<{ contract_id: string }>(`SELECT contract_id FROM contract_payments WHERE id = ?`, [srcId]);
-        if (cRow) { onClose(); router.push(`/contracts?detail=${cRow.contract_id}`); return; }
+        if (cRow) return () => { onClose(); router.push(`/contracts?detail=${cRow.contract_id}`); };
       }
-      if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'key_money'].includes(srcType)) {
+      if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'key_money'].includes(srcType)
+        && routeAllowed(access, '/contracts')) {
         const cRow = db.get<{ id: string }>(`SELECT id FROM contracts WHERE id = ?`, [srcId]);
-        if (cRow) { onClose(); router.push(`/contracts?detail=${srcId}`); return; }
+        if (cRow) return () => { onClose(); router.push(`/contracts?detail=${srcId}`); };
       }
-      if (['claim', 'claim_collect'].includes(srcType)) { onClose(); router.push(`/claims?detail=${srcId}`); return; }
+      if (['claim', 'claim_collect'].includes(srcType) && routeAllowed(access, '/claims')) {
+        return () => { onClose(); router.push(`/claims?detail=${srcId}`); };
+      }
     }
-    setEntryFor((cur) => (cur === e.id ? null : e.id));
+    return seesLedger ? () => setEntryFor((cur) => (cur === e.id ? null : e.id)) : null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, router, toast, onClose]);
+  }, [db, router, onClose, access, seesLedger]);
+  const openTx = useCallback((journalNo: string) => {
+    const d = txDest(journalNo);
+    if (d === 'nojournal') toast('حركة بلا قيد مرتبط');
+    else if (d) d();
+  }, [txDest, toast]);
 
   const txRow = useCallback((t: { id: string; date: string; descr: string; amount_halalas: number; source: string; journal_no: string }) => (
     <View key={t.id}>
-      <Pressable onPress={() => openTx(t.journal_no)}>
+      {/* من له الدفتر يفتح كل حركة · وغيره ما سُمح مسار مستندها وحده */}
+      <Pressable disabled={!seesLedger && !txDest(t.journal_no)} onPress={() => openTx(t.journal_no)}>
         <View style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
           <Row style={{ justifyContent: 'space-between' }}>
             <T size={TYPE.cardTitle} bold style={{ flex: 1 }}>{t.descr}</T>
@@ -340,7 +359,7 @@ function BankDetailSheet({ bankId, onClose, onEdit }: { bankId: string; onClose:
         </View>
       ) : null}
     </View>
-  ), [openTx, entry]);
+  ), [openTx, entry, seesLedger, txDest]);
 
   if (!b) return null;
   const inflow = Number(sums?.inflow ?? 0);
@@ -352,12 +371,12 @@ function BankDetailSheet({ bankId, onClose, onEdit }: { bankId: string; onClose:
      ORDER BY date DESC, created_at DESC LIMIT ? OFFSET ?`;
   return (
     <Sheet visible onClose={onClose} title={b.name} tall
-      footer={
+      footer={onEdit ? (
         <>
           {/* الإغلاق بعلامة ✕ في رأس الورقة وحدها · لا زرّ نصّي مؤطَّر يكرّرها */}
           <View style={{ flex: 1 }}><BtnPrimary title="تعديل" onPress={onEdit} /></View>
         </>
-      }>
+      ) : undefined}>
       {b.iban ? <Num size={TYPE.caption} color={C.muted}>{b.iban}</Num> : null}
       <Row style={{ flexWrap: 'wrap', marginVertical: 8 }}>
         <KpiCard label="الرصيد المشتق" tone={balance >= 0 ? 'pos' : 'neg'} value={<Money halalas={balance} />} />
@@ -395,6 +414,7 @@ const CASH_OPS: Array<{ key: CashOp; label: string; icon: IconName; needBanks: n
 
 function WalletSheet({ onClose }: { onClose: () => void }) {
   const { db, version, bump } = useApp();
+  const canAdd = usePerm('banks').add;
   const toast = useToast();
   const dialog = useDialog();
   const [op, setOp] = useState<CashOp | null>(null);
@@ -515,8 +535,8 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
 
       {/* التصرف بالنقد · ما لا يصلح تنفيذه اليوم لا يُعرض:
           الإيداع والسحب يحتاجان حساباً، والتحويل حسابين */}
-      <T size={TYPE.sectionTitle} bold color={C.ink} style={{ marginBottom: 6 }}>التصرف بالنقد</T>
-      <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginBottom: 12 }}>
+      {canAdd ? <T size={TYPE.sectionTitle} bold color={C.ink} style={{ marginBottom: 6 }}>التصرف بالنقد</T> : null}
+      {canAdd ? <View style={{ flexDirection: 'row-reverse', flexWrap: 'wrap', gap: 7, marginBottom: 12 }}>
         {CASH_OPS.filter((o) => banksList.length >= o.needBanks).map((o) => (
           <Pressable key={o.key} onPress={() => startOp(o.key)}
             style={{
@@ -529,7 +549,7 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
             </Row>
           </Pressable>
         ))}
-      </View>
+      </View> : null}
 
       <CollapsibleSection title="مقبوضات نقدية" count={counts.cashIn} icon="collect" pageKey="walletCashIn">
         {(page) => db.all<{ id: string; date: string; tenant_name: string; period: string; amount_halalas: number }>(

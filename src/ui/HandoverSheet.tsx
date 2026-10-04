@@ -22,6 +22,7 @@ import { uid } from '../domain/ids';
 import { logAudit } from '../domain/audit';
 import { printHandoverDoc } from '../services/print';
 import { reportFailure } from './failureDialog';
+import { usePerm } from './access';
 
 /** عنوان قسم داخل النموذج */
 function Head({ children, first }: { children: React.ReactNode; first?: boolean }) {
@@ -62,18 +63,19 @@ export function HandoverSheet({
   const { db, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
+  const perm = usePerm('handover');
 
-  // نموذج العقد الواحد · يُنشأ تلقائياً إن لم يوجد (لعقود ما قبل هذه السياسة)
+  // نموذج العقد الواحد · يُنشأ تلقائياً إن لم يوجد (لعقود ما قبل هذه السياسة) · والإنشاء لمن له الإضافة
   const record = useMemo(() => {
     if (!contractId) return undefined;
     let h = getContractHandover(db, contractId);
-    if (!h) {
+    if (!h && perm.add) {
       createHandoverForContract(db, contractId);
       h = getContractHandover(db, contractId);
     }
     return h;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, contractId]);
+  }, [db, contractId, perm.add]);
 
   // بيانات المستأجر مصدرها العقد وحده · تُعرض للقراءة ولا تُعدَّل من هنا
   const fromContract = useMemo(() => {
@@ -85,6 +87,9 @@ export function HandoverSheet({
   }, [db, contractId]);
 
   const locked = !!record && !!Number(record.locked);
+  // حفظ النموذج القائم تعديلٌ (كامل) · والنموذج المستقل الجديد إضافة · ومن لا يملك الحفظ يرى ويطبع فقط
+  const canSave = record ? perm.manage : perm.add;
+  const readOnly = locked || !canSave;
 
   const [employee, setEmployee] = useState(record?.employee_name ?? '');
   const [tenant, setTenant] = useState(fromContract?.tenant_name ?? record?.tenant_name ?? '');
@@ -178,7 +183,7 @@ export function HandoverSheet({
     <Sheet visible onClose={onClose}
       title="نموذج استلام وتسليم" tall
       footer={
-        locked ? (
+        readOnly ? (
           <View style={{ flex: 1 }}><BtnPrimary icon="print" title="طباعة الوثيقة" onPress={printDoc} /></View>
         ) : (
           <>
@@ -203,31 +208,31 @@ export function HandoverSheet({
         </View>
       ) : (
         <>
-          <Field label="اسم المستأجر / المستلم" value={tenant} onChange={setTenant} disabled={locked} />
+          <Field label="اسم المستأجر / المستلم" value={tenant} onChange={setTenant} disabled={readOnly} />
           <Row>
-            <View style={{ flex: 1 }}><Field label="رقم الهوية / الإقامة" value={idNumber} onChange={setIdNumber} keyboard="numeric" ltr disabled={locked} /></View>
-            <View style={{ flex: 1 }}><Field label="رقم الجوال" value={phone} onChange={setPhone} keyboard="phone-pad" ltr disabled={locked} /></View>
+            <View style={{ flex: 1 }}><Field label="رقم الهوية / الإقامة" value={idNumber} onChange={setIdNumber} keyboard="numeric" ltr disabled={readOnly} /></View>
+            <View style={{ flex: 1 }}><Field label="رقم الجوال" value={phone} onChange={setPhone} keyboard="phone-pad" ltr disabled={readOnly} /></View>
           </Row>
         </>
       )}
 
       <Head>بيانات الوحدة والعقد</Head>
       <Row>
-        <View style={{ flex: 1 }}><Field label="عنوان الشقة بالكامل" value={address} onChange={setAddress} disabled={locked} /></View>
-        <View style={{ flex: 1 }}><Field label="رقم الوحدة / الطابق" value={unitFloor} onChange={setUnitFloor} disabled={locked} /></View>
+        <View style={{ flex: 1 }}><Field label="عنوان الشقة بالكامل" value={address} onChange={setAddress} disabled={readOnly} /></View>
+        <View style={{ flex: 1 }}><Field label="رقم الوحدة / الطابق" value={unitFloor} onChange={setUnitFloor} disabled={readOnly} /></View>
       </Row>
       <Row>
-        <View style={{ flex: 1 }}><Field label="مدة العقد" value={period} onChange={setPeriod} disabled={locked} /></View>
+        <View style={{ flex: 1 }}><Field label="مدة العقد" value={period} onChange={setPeriod} disabled={readOnly} /></View>
         <View style={{ flex: 1 }}>
-          {locked
+          {readOnly
             ? <Field label="التاريخ" value={date} disabled ltr />
             : <DateField label="التاريخ" value={date} onChange={setDate} />}
         </View>
       </Row>
 
       <Head>بيانات المحضر</Head>
-      <Field label="اسم الموظف" value={employee} onChange={setEmployee} disabled={locked} />
-      <Field label="أخرى" value={otherNotes} onChange={setOtherNotes} disabled={locked} />
+      <Field label="اسم الموظف" value={employee} onChange={setEmployee} disabled={readOnly} />
+      <Field label="أخرى" value={otherNotes} onChange={setOtherNotes} disabled={readOnly} />
 
       <Head>محتويات الوحدة</Head>
       {sections.map((s, si) => (
@@ -239,18 +244,18 @@ export function HandoverSheet({
                   <T size={TYPE.cardTitle} bold style={{ marginBottom: 6 }}>{it.name}</T>
                   <Row>
                     <View style={{ flex: 1 }}>
-                      <Field label="العدد" value={it.count} onChange={(v) => setItem(si, ii, 'count', v)} keyboard="numeric" ltr disabled={locked} />
+                      <Field label="العدد" value={it.count} onChange={(v) => setItem(si, ii, 'count', v)} keyboard="numeric" ltr disabled={readOnly} />
                     </View>
                     <View style={{ flex: 2 }}>
-                      <Field label="الحالة عند الاستلام" value={it.receiveCondition} onChange={(v) => setItem(si, ii, 'receiveCondition', v)} disabled={locked} />
+                      <Field label="الحالة عند الاستلام" value={it.receiveCondition} onChange={(v) => setItem(si, ii, 'receiveCondition', v)} disabled={readOnly} />
                     </View>
                   </Row>
                   <Row>
                     <View style={{ flex: 1 }}>
-                      <Field label="الحالة عند التسليم" value={it.deliverCondition} onChange={(v) => setItem(si, ii, 'deliverCondition', v)} disabled={locked} />
+                      <Field label="الحالة عند التسليم" value={it.deliverCondition} onChange={(v) => setItem(si, ii, 'deliverCondition', v)} disabled={readOnly} />
                     </View>
                     <View style={{ flex: 1 }}>
-                      <Field label="ملاحظات" value={it.notes} onChange={(v) => setItem(si, ii, 'notes', v)} disabled={locked} />
+                      <Field label="ملاحظات" value={it.notes} onChange={(v) => setItem(si, ii, 'notes', v)} disabled={readOnly} />
                     </View>
                   </Row>
                 </View>
@@ -263,8 +268,8 @@ export function HandoverSheet({
       <Head>الإقرار والتوقيعات</Head>
       <T size={TYPE.body} color={C.muted} style={{ marginBottom: 10, lineHeight: 21 }}>{HANDOVER_LEGAL_FOOTER}</T>
       <Row>
-        <View style={{ flex: 1 }}><Field label="اسم المستأجر / المستلم (توقيع)" value={tenantSign} onChange={setTenantSign} disabled={locked} /></View>
-        <View style={{ flex: 1 }}><Field label="اسم ممثل الشركة / المالك (توقيع)" value={companySign} onChange={setCompanySign} disabled={locked} /></View>
+        <View style={{ flex: 1 }}><Field label="اسم المستأجر / المستلم (توقيع)" value={tenantSign} onChange={setTenantSign} disabled={readOnly} /></View>
+        <View style={{ flex: 1 }}><Field label="اسم ممثل الشركة / المالك (توقيع)" value={companySign} onChange={setCompanySign} disabled={readOnly} /></View>
       </Row>
     </Sheet>
   );

@@ -23,6 +23,8 @@ import { today, dfmt, addDays } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
 import { printInvoice } from '../src/services/print';
 import { reportFailure } from '../src/ui/failureDialog';
+import { usePerm } from '../src/ui/access';
+import { rowBy } from '../src/services/access';
 
 const STATUS_MAP: Record<string, string> = { 'مدفوعة': 'paid', 'مستحقة': 'due', 'متأخرة': 'overdue', 'مسودة': 'draft' };
 const DEFAULT_NOTES = 'يتم سداد المبلغ خلال 30 يوماً من تاريخ الإصدار. تُضاف غرامة تأخير بنسبة 1.5٪ شهرياً على المبالغ المتأخرة.';
@@ -51,9 +53,13 @@ const EMPTY_PAGE: { rows: InvoiceRow[]; total: number } = { rows: [], total: 0 }
 /** بطاقة فاتورة واحدة · خارج الشاشة ومحفوظة كي لا يُعاد رسمها بلا داعٍ ·
  * الضغط عليها يفتح ورقة العرض لا التعديل · والمدفوعة لا زر تعديل لها (التصحيح بتغيير الحالة) */
 const InvoiceCard = React.memo(function InvoiceCard({
-  id, no, customerName, issue, due, status, totalHalalas, onView, onEdit, onStatus, onPrint, onDelete,
+  id, no, customerName, issue, due, status, totalHalalas, canEdit, canManage, onView, onEdit, onStatus, onPrint, onDelete,
 }: {
   id: string; no: string; customerName: string; issue: string; due: string; status: string; totalHalalas: number;
+  /** كامل، أو مسودة كاتبها بإدخال · للتعديل والحذف */
+  canEdit: boolean;
+  /** كامل · لتغيير الحالة */
+  canManage: boolean;
   onView: (id: string) => void; onEdit: (id: string) => void; onStatus: (id: string) => void;
   onPrint: (id: string) => void; onDelete: (id: string) => void;
 }) {
@@ -68,10 +74,10 @@ const InvoiceCard = React.memo(function InvoiceCard({
             <Badge kind={STATUS_MAP[status] || 'draft'} label={status} />
             <ActionMenuButton title={no} actions={[
               { icon: 'eye', label: 'عرض الفاتورة', onPress: () => onView(id) },
-              status !== 'مدفوعة' ? { icon: 'edit', label: 'تعديل الفاتورة', onPress: () => onEdit(id) } : null,
-              { icon: 'swap', label: 'تغيير الحالة', onPress: () => onStatus(id) },
+              status !== 'مدفوعة' && canEdit ? { icon: 'edit', label: 'تعديل الفاتورة', onPress: () => onEdit(id) } : null,
+              canManage ? { icon: 'swap', label: 'تغيير الحالة', onPress: () => onStatus(id) } : null,
               status !== 'مسودة' ? { icon: 'print', label: 'طباعة / PDF', onPress: () => onPrint(id) } : null,
-              { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) },
+              canEdit ? { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) } : null,
             ]} />
           </Row>
         </Row>
@@ -86,6 +92,7 @@ const InvoiceCard = React.memo(function InvoiceCard({
 
 export default function Invoices() {
   const { db, version, bump } = useApp();
+  const perm = usePerm('invoices');
   const toast = useToast();
   const dialog = useDialog();
   const ready = useDeferredReady();
@@ -196,12 +203,20 @@ export default function Invoices() {
     });
   }, [db, bump, toast, dialog]);
 
+  // المسودة يعدّلها ويحذفها كاتبها بإدخال · وما سواها كامل (وكامل لا يحتاج كاتب الصف)
+  const mayEdit = useCallback(
+    (id: string, status: string) =>
+      perm.manage || perm.edit({ by: rowBy(db, 'invoices', id), draft: status === 'مسودة' }),
+    [db, perm]
+  );
+
   const keyExtractor = useCallback((it: InvoiceRow) => it.id, []);
   const renderItem = useCallback(({ item }: { item: InvoiceRow }) => (
     <InvoiceCard id={item.id} no={item.no} customerName={item.customer_name} issue={item.issue}
       due={item.due} status={item.status} totalHalalas={Number(item.total_halalas)}
+      canEdit={mayEdit(item.id, item.status)} canManage={perm.manage}
       onView={onView} onEdit={openEdit} onStatus={onStatus} onPrint={onPrint} onDelete={onDelete} />
-  ), [onView, openEdit, onStatus, onPrint, onDelete]);
+  ), [onView, openEdit, onStatus, onPrint, onDelete, mayEdit, perm.manage]);
 
   const toInputs = (): InvoiceLineInput[] =>
     lines.map((l) => ({ descr: l.descr, qty: parseFloat(l.qty) || 0, priceHalalas: toHalalas(l.price), taxPct: parseFloat(l.tax) || 0 }));
@@ -232,7 +247,7 @@ export default function Invoices() {
 
   return (
     <Screen title="الفواتير" icon="invoice" scroll={false}
-      actions={<BtnPrimary small title="+ فاتورة جديدة" onPress={openNew} />}>
+      actions={perm.add ? <BtnPrimary small title="+ فاتورة جديدة" onPress={openNew} /> : undefined}>
       {!ready ? <Skeleton /> : (
         <FlatList
           data={rows}
@@ -269,7 +284,8 @@ export default function Invoices() {
         footer={
           <>
             <View style={{ flex: 1 }}><BtnGhost title="حفظ كمسودة" onPress={() => doSave('مسودة')} /></View>
-            <View style={{ flex: 1 }}><BtnPrimary title="إصدار الفاتورة" onPress={() => doSave('مستحقة')} /></View>
+            {/* الإصدار يرحّل محاسبياً · كامل وحده */}
+            {perm.manage ? <View style={{ flex: 1 }}><BtnPrimary title="إصدار الفاتورة" onPress={() => doSave('مستحقة')} /></View> : null}
           </>
         }>
         <Field label="العميل" value={customer} onChange={setCustomer} />
@@ -335,7 +351,7 @@ export default function Invoices() {
       </Sheet>
 
       {/* تغيير الحالة */}
-      {statusFor && (
+      {statusFor && perm.manage && (
         <Sheet visible onClose={() => setStatusFor(null)} title="تغيير حالة الفاتورة">
           {ALL_STATUSES.filter((s) => s !== statusNow).map((s) => (
             <View key={s} style={{ marginBottom: 8 }}>
@@ -351,7 +367,7 @@ export default function Invoices() {
 
       {/* ورقة عرض الفاتورة الكاملة · الضغط على البطاقة يفتحها والتعديل زر داخلها */}
       {viewFor && (
-        <InvoiceViewSheet invoiceId={viewFor} onClose={() => setViewFor(null)} onEdit={openEdit} />
+        <InvoiceViewSheet invoiceId={viewFor} onClose={() => setViewFor(null)} onEdit={openEdit} mayEdit={mayEdit} />
       )}
     </Screen>
   );
@@ -362,10 +378,11 @@ export default function Invoices() {
  * ومجاميعها وملاحظاتها · زر «تعديل» يغلقها ويفتح نموذج التعديل القائم،
  * والمدفوعة بلا زر تعديل · تصحيحها عبر «تغيير الحالة» القائم.
  */
-function InvoiceViewSheet({ invoiceId, onClose, onEdit }: {
+function InvoiceViewSheet({ invoiceId, onClose, onEdit, mayEdit }: {
   invoiceId: string;
   onClose: () => void;
   onEdit: (id: string) => void;
+  mayEdit: (id: string, status: string) => boolean;
 }) {
   const { db, version } = useApp();
   const data = useMemo(() => {
@@ -387,7 +404,7 @@ function InvoiceViewSheet({ invoiceId, onClose, onEdit }: {
     <Sheet visible onClose={onClose} title={'فاتورة ' + v.no} tall>
       <Row style={{ justifyContent: 'space-between', marginBottom: 10 }}>
         <Badge kind={STATUS_MAP[v.status] || 'draft'} label={v.status} />
-        {v.status !== 'مدفوعة' ? (
+        {v.status !== 'مدفوعة' && mayEdit(v.id, v.status) ? (
           <BtnGhost small icon="edit" title="تعديل" onPress={() => { onClose(); onEdit(v.id); }} />
         ) : null}
       </Row>

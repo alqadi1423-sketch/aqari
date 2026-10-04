@@ -25,6 +25,7 @@ import { fmt } from '../src/domain/money';
 import { UnitDetailSheet, UnitFormSheet } from '../src/ui/unitSheets';
 import { ReservationSheet } from '../src/ui/ReservationSheet';
 import { reportFailure } from '../src/ui/failureDialog';
+import { usePerm } from '../src/ui/access';
 
 interface UnitRow {
   id: string; property_id: string; unit_no: string; floor: string; type: string;
@@ -73,9 +74,15 @@ const EMPTY_PAGE = { rows: [] as UnitRow[], total: 0, totalAll: 0 };
 
 /** بطاقة وحدة واحدة · خارج الشاشة ومغلّفة بـ memo كي لا يُعاد رسم القائمة كلها */
 const UnitCard = React.memo(function UnitCard({
-  u, propName, stKey, stLabel, onDetail, onEdit, onToggleMaintenance, onToggleArchive, onDelete,
+  u, propName, stKey, stLabel, canManage, canMaint, showRent, onDetail, onEdit, onToggleMaintenance, onToggleArchive, onDelete,
 }: {
   u: UnitRow; propName: string; stKey: UnitStatusInfo['key']; stLabel: string;
+  /** «العقارات: كامل» · التعديل والأرشفة والحذف */
+  canManage: boolean;
+  /** «الصيانة: كامل» · وضع الوحدة تحت الصيانة وإنهاؤها */
+  canMaint: boolean;
+  /** الإيجار من بيانات العقود · لا يُعرض لمن لا يرى العقود */
+  showRent: boolean;
   onDetail: (id: string) => void;
   onEdit: (id: string) => void;
   onToggleMaintenance: (id: string) => void;
@@ -95,18 +102,18 @@ const UnitCard = React.memo(function UnitCard({
           <Badge kind={stKey === 'rented' ? 'paid' : stKey === 'reserved' ? 'due' : stKey === 'maintenance' ? 'overdue' : 'draft'} label={stLabel} />
           <ActionMenuButton title={u.unit_no} actions={[
             { icon: 'eye', label: 'عرض التفاصيل', onPress: () => onDetail(u.id) },
-            { icon: 'edit', label: 'تعديل', onPress: () => onEdit(u.id) },
-            {
+            canManage ? { icon: 'edit', label: 'تعديل', onPress: () => onEdit(u.id) } : null,
+            canMaint ? {
               icon: Number(u.under_maintenance) ? 'check' : 'wrench',
               label: Number(u.under_maintenance) ? 'إنهاء الصيانة' : 'وضع تحت الصيانة',
               onPress: () => onToggleMaintenance(u.id),
-            },
-            {
+            } : null,
+            canManage ? {
               icon: Number(u.archived) ? 'undo' : 'archive',
               label: Number(u.archived) ? 'إلغاء الأرشفة' : 'أرشفة',
               onPress: () => onToggleArchive(u.id, !!Number(u.archived)),
-            },
-            Number(u.linked_n) ? null : {
+            } : null,
+            Number(u.linked_n) || !canManage ? null : {
               icon: 'trash' as const, label: 'حذف', danger: true,
               onPress: () => onDelete(u.id, [propName, u.unit_no].filter(Boolean).join(' · ')),
             },
@@ -118,7 +125,7 @@ const UnitCard = React.memo(function UnitCard({
           {[u.floor, u.type, u.subtype].filter(Boolean).length
             ? <T size={TYPE.cardTitle} color={C.muted}>{[u.floor, u.type, u.subtype].filter(Boolean).join(' · ')}</T>
             : null}
-          <Money halalas={Number(u.rent_monthly_halalas)} size={TYPE.cardTitle} bold />
+          {showRent ? <Money halalas={Number(u.rent_monthly_halalas)} size={TYPE.cardTitle} bold /> : null}
         </Row>
       </Pressable>
     </Card>
@@ -132,6 +139,13 @@ export default function Units() {
   const ready = useDeferredReady();
   const pager = usePager('units');
   const fsheet = useFilterSheet();
+  const perm = usePerm('props');
+  // وضع الوحدة تحت الصيانة عمل الصيانة نفسه · «إدخال» يكفيه (فني الصيانة) كما في OP_WRITES
+  const canMaint = usePerm('maintenance').add;
+  // المبالغ بيانات مرتبطة · لا تُعرض إلا لمن له قسمها (الحد اللازم)
+  const seesRent = usePerm('contracts').view;
+  const seesInvoices = usePerm('invoices').view;
+  const seesPurchases = usePerm('purchases').view;
   const [q, setQ] = useState('');
   const [formFor, setFormFor] = useState<{ propertyId?: string; unitId?: string } | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -254,10 +268,11 @@ export default function Units() {
     return (
       <UnitCard u={item} propName={base.propNames.get(item.property_id) ?? ''}
         stKey={st.key} stLabel={st.label}
+        canManage={perm.manage} canMaint={canMaint} showRent={seesRent}
         onDetail={openDetail} onEdit={openEdit} onToggleMaintenance={onToggleMaintenance}
         onToggleArchive={onToggleArchive} onDelete={onDelete} />
     );
-  }, [base, openDetail, openEdit, onToggleMaintenance, onToggleArchive, onDelete]);
+  }, [base, openDetail, openEdit, onToggleMaintenance, onToggleArchive, onDelete, perm.manage, canMaint, seesRent]);
 
   const clearFilters = useCallback(() => {
     setQ(''); setFloorF(''); setTypeF(''); setOccF('all'); setRentF('all');
@@ -279,14 +294,17 @@ export default function Units() {
         <KpiCard label="نسبة التشغيل الإجمالية" tone="pos" value={base.pf.occupancyPct + '٪'} sub={`${base.pf.occupied} من ${base.pf.total} وحدة`} />
         <KpiCard label="الوحدات الشاغرة" tone="neu" value={String(base.pf.vacant)} />
       </Row>
-      <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
-        <KpiCard label="الوحدة الأعلى دخلاً" tone="pos"
-          value={base.topRevenueLabel}
-          sub={base.top.topUnitRevenue ? fmt(base.top.topUnitRevenue.amount) : undefined} />
-        <KpiCard label="الوحدة الأكثر صرفاً" tone="neg"
-          value={base.topExpenseLabel}
-          sub={base.top.topUnitExpense ? fmt(base.top.topUnitExpense.amount) : undefined} />
-      </Row>
+      {seesInvoices || seesPurchases ? (
+        <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
+          {/* الدخل من الفواتير والصرف من المشتريات · كلٌّ لمن يرى قسمه */}
+          {seesInvoices ? <KpiCard label="الوحدة الأعلى دخلاً" tone="pos"
+            value={base.topRevenueLabel}
+            sub={base.top.topUnitRevenue ? fmt(base.top.topUnitRevenue.amount) : undefined} /> : null}
+          {seesPurchases ? <KpiCard label="الوحدة الأكثر صرفاً" tone="neg"
+            value={base.topExpenseLabel}
+            sub={base.top.topUnitExpense ? fmt(base.top.topUnitExpense.amount) : undefined} /> : null}
+        </Row>
+      ) : null}
       <FilterBar chips={activeChips} onOpen={fsheet.show} onClearAll={clearFilters}
         resultCount={page.total} total={page.totalAll} filtered={page.total} itemName="وحدة"
         search={<SearchBox value={q} onChange={setQ} />} />
@@ -302,7 +320,7 @@ export default function Units() {
   return (
     <Screen title="الوحدات" icon="home" scroll={false}
       /* لا عقار فلا وحدة تُضاف · الزر لا يُعرض بدل أن يُعرض ويرفض */
-      actions={base.addableProps ? <BtnPrimary small title="+ وحدة جديدة" onPress={() => setFormFor({})} /> : undefined}>
+      actions={base.addableProps && perm.add ? <BtnPrimary small title="+ وحدة جديدة" onPress={() => setFormFor({})} /> : undefined}>
       {!ready ? <Skeleton /> : (
         <FlatList
           data={page.rows}
@@ -351,11 +369,14 @@ export default function Units() {
             options={[['all', 'الكل'], ['occupied', 'مشغولة'], ['vacant', 'شاغرة']]}
             value={occF} onChange={setOccF} />
         </View>
-        <View style={{ marginBottom: 8 }}>
-          <ChipGroup<RentFilter>
-            options={[['all', 'كل الإيجارات'], ['upto1000', 'حتى 1000'], ['from1000to3000', 'من 1000 إلى 3000'], ['over3000', 'فوق 3000']]}
-            value={rentF} onChange={setRentF} />
-        </View>
+        {/* مرشِّح الإيجار يكشف المبلغ · لمن يرى العقود وحده */}
+        {seesRent ? (
+          <View style={{ marginBottom: 8 }}>
+            <ChipGroup<RentFilter>
+              options={[['all', 'كل الإيجارات'], ['upto1000', 'حتى 1000'], ['from1000to3000', 'من 1000 إلى 3000'], ['over3000', 'فوق 3000']]}
+              value={rentF} onChange={setRentF} />
+          </View>
+        ) : null}
       </FilterSheet>
     </Screen>
   );

@@ -160,6 +160,10 @@ export function stageInbox(db: DB, docs: RemoteDoc[]): void {
            device_id = excluded.device_id, attempts = 0, last_error = NULL
          WHERE excluded.updated_at >= sync_inbox.updated_at`,
         [d.id, d.t, d.k, SYNC_RANK[d.t] ?? 999, JSON.stringify(d), d.u, d.dev]);
+      // كاتب المسودة يصل مع مستندها (المنشأة) · فيعرف الجهاز مسودة من هي
+      if (d.by && (d.t === 'contracts' || d.t === 'invoices' || d.t === 'journal_entries')) {
+        db.run(`INSERT OR IGNORE INTO row_by (tbl, pk, uid) VALUES (?, ?, ?)`, [d.t, d.k, d.by]);
+      }
     }
   });
 }
@@ -731,7 +735,11 @@ export async function syncOnce(
     const batch = pendingOutbox(db, size);
     if (!batch.length) break;
     onProgress?.('جاري رفع التغييرات · ' + pushed + ' من ' + total);
-    const docs = batch.map((r) => buildDoc(db, r.tbl, r.pk, r.op, r.changed_at, deviceId));
+    // المنشأة: حقول الرؤية والكتابة وإسقاط المبالغ تُضاف هنا (sync/acl.ts)
+    const docs = batch.map((r) => {
+      const d = buildDoc(db, r.tbl, r.pk, r.op, r.changed_at, deviceId);
+      return remote.annotate ? remote.annotate(db, d) : d;
+    });
     let results: WriteResult[];
     try {
       results = await remote.write(docs);

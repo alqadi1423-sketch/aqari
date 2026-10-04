@@ -5,7 +5,7 @@
  */
 import { buildSyncMigration } from './syncTables';
 
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1236,5 +1236,25 @@ BEGIN
 END;
 `;
 
+/**
+ * الهجرة ٢٢ · كاتب المسودة (صلاحيات الأقسام · docs/PERMISSIONS.md): صاحب «إدخال» يعدّل مسودته هو وحده.
+ * جدولٌ يخص الجهاز ولا يُزامَن كصف: من أنشأ كل عقد وفاتورة وقيد. يملؤه المحفّز عند الإنشاء المحلي
+ * (والالتقاط مطفأ أثناء تطبيق الوارد فلا يُنسب الوارد لصاحب الجهاز)، وتملؤه المزامنة من حقل by للوارد.
+ */
+export const MIGRATION_22 = `
+CREATE TABLE IF NOT EXISTS row_by (
+  tbl TEXT NOT NULL,
+  pk  TEXT NOT NULL,
+  uid TEXT NOT NULL,
+  PRIMARY KEY (tbl, pk)
+);
+${['contracts', 'invoices', 'journal_entries'].map((t) => `
+CREATE TRIGGER IF NOT EXISTS row_by_${t} AFTER INSERT ON ${t}
+WHEN (SELECT v FROM sync_ctl WHERE k = 'capture') = 1 AND (SELECT v FROM sync_state WHERE k = 'uid') IS NOT NULL
+BEGIN
+  INSERT OR IGNORE INTO row_by (tbl, pk, uid) VALUES ('${t}', NEW.id, (SELECT v FROM sync_state WHERE k = 'uid'));
+END;`).join('\n')}
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22];

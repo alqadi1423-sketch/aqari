@@ -15,6 +15,7 @@ import {
 } from '../src/domain/templates';
 import { uid } from '../src/domain/ids';
 import { logAudit } from '../src/domain/audit';
+import { usePerm } from '../src/ui/access';
 
 interface ScriptRow { id: string; audience: string; category: string; title: string; body: string }
 
@@ -23,6 +24,7 @@ export default function Scripts() {
   const toast = useToast();
   const dialog = useDialog();
   const fsheet = useFilterSheet();
+  const perm = usePerm('company');
   const [q, setQ] = useState('');
   const [fAudience, setFAudience] = useState('');
   const [fCategory, setFCategory] = useState('');
@@ -124,10 +126,10 @@ export default function Scripts() {
             <View style={{ backgroundColor: tag.bg, borderRadius: 6, paddingVertical: 3, paddingHorizontal: 8 }}>
               <T size={TYPE.caption} med color={tag.fg}>{s.audience}</T>
             </View>
-            <ActionMenuButton title={s.title} actions={[
+            <ActionMenuButton title={s.title} actions={perm.manage ? [
               { icon: 'edit', label: 'تعديل', onPress: () => openEdit(s) },
               { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(s) },
-            ]} />
+            ] : []} />
           </Row>
         </Row>
         <T size={TYPE.cardTitle} style={{ lineHeight: 21 }}>{s.body}</T>
@@ -143,7 +145,7 @@ export default function Scripts() {
 
   return (
     <Screen title="قوالب الرسائل" icon="message" scroll={false}
-      actions={<BtnPrimary small title="+ قالب جديد" onPress={openNew} />}>
+      actions={perm.add ? <BtnPrimary small title="+ قالب جديد" onPress={openNew} /> : null}>
       <FlatList
         data={rows}
         renderItem={renderItem}

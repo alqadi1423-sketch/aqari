@@ -33,6 +33,8 @@ import { unitActiveReservation, contractStatusKind, contractStatusLabel } from '
 import { fmt, toHalalas } from '../domain/money';
 import { dfmt, today } from '../domain/dates';
 import { reportFailure } from './failureDialog';
+import { useAccess, usePerm } from './access';
+import { routeAllowed } from '../domain/access/routes';
 
 export function UnitFormSheet({
   propertyId, unitId, onClose, onSaved,
@@ -134,6 +136,12 @@ export function UnitDetailSheet({
   const toast = useToast();
   const dialog = useDialog();
   const router = useRouter();
+  const perm = usePerm('props');
+  const rsvPerm = usePerm('reservations');
+  const seesContracts = usePerm('contracts').view;
+  const seesHandover = usePerm('handover').view;
+  const access = useAccess();
+  const openPurchases = routeAllowed(access, '/purchases');
   const [meterOpen, setMeterOpen] = useState<LabeledMeter | null>(null);
   const [contractFor, setContractFor] = useState<string | null>(null);
   const [handoverFor, setHandoverFor] = useState<string | null>(null);
@@ -190,7 +198,7 @@ export function UnitDetailSheet({
   const rsv = data.rsv;
   return (
     <Sheet visible onClose={onClose} title={[propName, u.unit_no].filter(Boolean).join(' · ')} tall
-      footer={
+      footer={perm.manage ? (
         <>
           <View style={{ flex: 1 }}><BtnGhost icon="edit" title="تعديل" onPress={onEdit} /></View>
           <View style={{ flex: 1 }}>
@@ -199,7 +207,7 @@ export function UnitDetailSheet({
               onPress={() => { toggleUnitMaintenance(db, unitId); bump(); }} />
           </View>
         </>
-      }>
+      ) : undefined}>
       <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
         {u.type || u.subtype ? <View><T size={TYPE.caption} color={C.muted}>النوع</T><T size={TYPE.cardTitle}>{[u.type, u.subtype].filter(Boolean).join(' · ')}</T></View> : null}
         {u.floor ? <View><T size={TYPE.caption} color={C.muted}>الطابق</T><T size={TYPE.cardTitle}>{u.floor}</T></View> : null}
@@ -209,8 +217,8 @@ export function UnitDetailSheet({
       <Row style={{ marginBottom: 10 }}>
         <Badge kind={data.st.key === 'rented' ? 'paid' : data.st.key === 'reserved' ? 'due' : data.st.key === 'maintenance' ? 'overdue' : 'draft'}
           label={data.st.label} />
-        {data.st.key === 'vacant' && <BtnGhost small icon="card" title="حجز بعربون" onPress={onReserve} />}
-        {rsv && (
+        {data.st.key === 'vacant' && rsvPerm.add && <BtnGhost small icon="card" title="حجز بعربون" onPress={onReserve} />}
+        {rsv && rsvPerm.manage && (
           <BtnGhost small danger icon="cancel" title="إلغاء الحجز" onPress={() => {
             dialog({
               title: 'إلغاء الحجز',
@@ -233,7 +241,7 @@ export function UnitDetailSheet({
           }} />
         )}
         <View style={{ flex: 1 }} />
-        <BtnIcon icon="attach" accessibilityLabel="إضافة مستند أو صورة" onPress={addDoc} />
+        {perm.add ? <BtnIcon icon="attach" accessibilityLabel="إضافة مستند أو صورة" onPress={addDoc} /> : null}
       </Row>
       <Row style={{ flexWrap: 'wrap', marginBottom: 10 }}>
         <KpiCard label="نسبة التشغيل (آخر 365 يوماً)" tone="neu" value={data.rate + '٪'} />
@@ -306,7 +314,7 @@ export function UnitDetailSheet({
         ).map((c) => {
           const row = { ...c, status: c.status as 'مسودة' | 'سارٍ' | 'منتهٍ' | 'ملغى' };
           return (
-            <Pressable key={c.id} onPress={() => setContractFor(c.id)}
+            <Pressable key={c.id} disabled={!seesContracts} onPress={() => setContractFor(c.id)}
               style={{ paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.line }}>
               <Row style={{ justifyContent: 'space-between' }}>
                 <T size={TYPE.cardTitle} med>{c.tenant_name}</T>
@@ -337,7 +345,7 @@ export function UnitDetailSheet({
               <Num size={TYPE.caption} color={C.muted}>{dfmt(h.date)}</Num>
             </Row>
           );
-          return h.contract_id
+          return h.contract_id && seesHandover
             ? <Pressable key={h.id} onPress={() => setHandoverFor(h.contract_id!)}>{line}</Pressable>
             : <View key={h.id}>{line}</View>;
         })}
@@ -349,7 +357,7 @@ export function UnitDetailSheet({
            WHERE deleted_at IS NULL AND unit_id = ? ORDER BY date DESC LIMIT ? OFFSET ?`,
           [unitId, page.limit, page.offset]
         ).map((e) => (
-          <Pressable key={e.id} onPress={() => { onClose(); router.push(`/purchases?detail=${e.id}`); }}>
+          <Pressable key={e.id} disabled={!openPurchases} onPress={() => { onClose(); router.push(`/purchases?detail=${e.id}`); }}>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: C.line }}>
               <T size={TYPE.body}>{e.supplier_name} · {dfmt(e.date)}</T>
               <Money halalas={Number(e.total_halalas)} size={TYPE.body} />
@@ -361,7 +369,7 @@ export function UnitDetailSheet({
       <CollapsibleSection title="صور الوحدة ومستنداتها" count={data.counts.atts} icon="attach">
         {() => (
           <AttachStrip entityType="unit" entityId={unitId} kind="photo"
-            linked="الوحدة" title="صور الوحدة ومستنداتها" hideAdd />
+            linked="الوحدة" title="صور الوحدة ومستنداتها" hideAdd canManage={perm.manage} />
         )}
       </CollapsibleSection>
 
@@ -394,6 +402,7 @@ function ContractQuickSheet({ contractId, onClose, onOpenInstallment, onOpenFull
   onOpenFull: () => void;
 }) {
   const { db, version } = useApp();
+  const openFull = routeAllowed(useAccess(), '/contracts');
   const c = db.get<{
     id: string; contract_no: string; tenant_name: string; phone: string; start: string; end: string;
     value_halalas: number; deposit_halalas: number; cycle: string; status: string;
@@ -407,7 +416,7 @@ function ContractQuickSheet({ contractId, onClose, onOpenInstallment, onOpenFull
   const row = { status: c.status, start: c.start, end: c.end } as never;
   return (
     <Sheet visible onClose={onClose} title={'عقد' + (c.contract_no ? ' ' + c.contract_no : '') + ' · ' + c.tenant_name} tall
-      footer={<View style={{ flex: 1 }}><BtnGhost title="فتح صفحة العقد كاملة" onPress={onOpenFull} /></View>}>
+      footer={openFull ? <View style={{ flex: 1 }}><BtnGhost title="فتح صفحة العقد كاملة" onPress={onOpenFull} /></View> : undefined}>
       <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
         <Badge kind={contractStatusKind(row, today())} label={contractStatusLabel(row, today())} />
         <Num size={TYPE.caption} color={C.muted}>{dfmt(c.start)} · {dfmt(c.end)}</Num>

@@ -18,6 +18,7 @@ import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
 import { logAudit } from '../src/domain/audit';
 import { reportFailure } from '../src/ui/failureDialog';
+import { usePerm } from '../src/ui/access';
 
 const GROUPS = ['أصل', 'خصم', 'حقوق ملكية', 'إيراد', 'مصروف'];
 const GROUP_LABEL: Record<string, string> = {
@@ -45,10 +46,12 @@ type AccListItem =
   | { kind: 'row'; key: string; a: AccountItem; last: boolean };
 
 const AccountRowItem = React.memo(function AccountRowItem({
-  code, name, type, opening, debit, credit, balance, tagBg, tagFg, onOpen, onEdit, onDelete,
+  code, name, type, opening, debit, credit, balance, tagBg, tagFg, canManage, onOpen, onEdit, onDelete,
 }: {
   code: string; name: string; type: string; opening: number; debit: number; credit: number;
   balance: number; tagBg: string; tagFg: string;
+  /** التعديل والحذف · كامل في الدفتر */
+  canManage: boolean;
   onOpen: (code: string, name: string) => void;
   onEdit: (code: string) => void;
   onDelete: (code: string) => void;
@@ -85,10 +88,10 @@ const AccountRowItem = React.memo(function AccountRowItem({
           </View>
         </Row>
       </Pressable>
-      <ActionMenuButton title={name} actions={[
+      <ActionMenuButton title={name} actions={canManage ? [
         { icon: 'edit', label: 'تعديل', onPress: () => onEdit(code) },
         { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(code) },
-      ]} />
+      ] : []} />
     </Row>
   );
 });
@@ -97,6 +100,7 @@ export default function Accounts() {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
+  const perm = usePerm('ledger');
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
   const [period, setPeriod] = useState<PeriodKey>('all');
@@ -309,11 +313,11 @@ export default function Accounts() {
         <AccountRowItem
           code={item.a.code} name={item.a.name} type={item.a.type}
           opening={item.a.opening} debit={item.a.debit} credit={item.a.credit} balance={item.a.balance}
-          tagBg={tag.bg} tagFg={tag.fg}
+          tagBg={tag.bg} tagFg={tag.fg} canManage={perm.manage}
           onOpen={openStmt} onEdit={openEdit} onDelete={doDelete} />
       </View>
     );
-  }, [openStmt, openEdit, doDelete]);
+  }, [openStmt, openEdit, doDelete, perm.manage]);
 
   let running = stmtCarry;
 
@@ -333,7 +337,7 @@ export default function Accounts() {
 
   return (
     <Screen title="دليل الحسابات" scroll={false}
-      actions={<BtnPrimary small title="+ حساب جديد" onPress={openNew} />}>
+      actions={perm.add ? <BtnPrimary small title="+ حساب جديد" onPress={openNew} /> : null}>
       {!ready ? (
         /* هيكل فقط · الرأس فيه حقل بحث أصلي وتركيبه يؤخر أول إيداع للشاشة */
         <Skeleton rows={8} />

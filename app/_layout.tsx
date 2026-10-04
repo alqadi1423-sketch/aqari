@@ -12,6 +12,7 @@ import {
 import { AppStateProvider } from '../src/ui/store';
 import { UpgradeGate } from '../src/ui/UpgradeGate';
 import { AuthGate } from '../src/ui/AuthGate';
+import { RouteGuard } from '../src/ui/access';
 import { UiScaleView } from '../src/ui/UiScale';
 import { ToastProvider } from '../src/ui/Toast';
 import { DialogProvider } from '../src/ui/AppDialog';
@@ -106,7 +107,10 @@ export default function RootLayout() {
             >
               <PerfPathTracker />
               {/* القياس أثبت أن إذابة الشاشة المجمدة أبطأ من إبقائها حية (وصول 3.5 ث) · التجميد أُطفئ */}
-              <Stack screenOptions={{ headerShown: false, freezeOnBlur: false, contentStyle: { backgroundColor: C.paper } }} />
+              {/* صلاحيات الأقسام: مسار قسمه «لا» لا يُفتح ولو برابط مباشر (docs/PERMISSIONS.md) */}
+              <RouteGuard>
+                <Stack screenOptions={{ headerShown: false, freezeOnBlur: false, contentStyle: { backgroundColor: C.paper } }} />
+              </RouteGuard>
             </View>
             </AuthGate>
           </UiScaleView>

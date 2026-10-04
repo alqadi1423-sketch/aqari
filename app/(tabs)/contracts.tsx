@@ -56,6 +56,9 @@ import { attachPicked, pickFile } from '../../src/ui/attach';
 import { attachmentsFor } from '../../src/files/store';
 import { logAudit } from '../../src/domain/audit';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../../src/ui/FilterSheet';
+import { usePerm, useAccess } from '../../src/ui/access';
+import { rowBy } from '../../src/services/access';
+import { routeAllowed } from '../../src/domain/access/routes';
 
 type SortKey = 'start' | 'contract_no' | 'value_halalas' | 'tenant_name';
 
@@ -70,6 +73,9 @@ export default function Contracts() {
   }, [params.detail, params.status]);
   const toast = useToast();
   const dialog = useDialog();
+  const perm = usePerm('contracts');
+  const handoverPerm = usePerm('handover');
+  const kmPerm = usePerm('reservations');
   const [q, setQ] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('start');
   const [showArchived, setShowArchived] = useState(false);
@@ -236,7 +242,8 @@ export default function Contracts() {
       }
       setReviewOpen(false);
       afterMutation(`تمت إضافة عقد "${form.state.tenant}"`);
-      dialog({
+      // عرض فتح نموذج الاستلام لمن له إنشاؤه وحده
+      if (handoverPerm.add) dialog({
         title: 'تم توثيق العقد',
         body: 'العقد تم توثيقه بنجاح. هل تبي تفتح نموذج الاستلام الآن لتوثيق حالة الوحدة عند بداية العقد؟',
         tone: 'normal',
@@ -289,7 +296,11 @@ export default function Contracts() {
   );
 
   // بطاقة عقد واحدة · تُرسم افتراضياً داخل FlatList
-  const renderContract = ({ item: c }: { item: ContractRow }) => (
+  const renderContract = ({ item: c }: { item: ContractRow }) => {
+    const draft = c.status === 'مسودة';
+    // المسودة يعدّلها ويحذفها كاتبها بإدخال · وما بعدها لصاحب «كامل»
+    const draftEditable = draft && perm.edit({ by: rowBy(db, 'contracts', c.id), draft: true });
+    return (
         <Card style={{ paddingVertical: 10 }}>
           <Pressable onPress={() => setDetailId(c.id)}>
             {/* صف العنوان: اسم المستأجر يميناً وشارته ثم ⋮ في أقصى اليسار بمحاذاته */}
@@ -300,7 +311,7 @@ export default function Contracts() {
                 <ActionMenuButton title={c.tenant_name} actions={[
                   { icon: 'eye', label: 'عرض التفاصيل والدفعات', onPress: () => setDetailId(c.id) },
                   // يظهر فقط إن لم يكن للعقد مستند من نوعه · الرفع بالمسار الواحد نفسه attachPicked
-                  attachmentsFor(db, 'contract', c.id, 'lease').length === 0 ? {
+                  perm.add && attachmentsFor(db, 'contract', c.id, 'lease').length === 0 ? {
                     icon: 'attach', label: 'إرفاق مستند العقد',
                     onPress: async () => {
                       const f = await pickFile(['application/pdf', 'image/*']);
@@ -310,18 +321,19 @@ export default function Contracts() {
                         .catch((e) => reportFailure({ title: 'تعذّر الإرفاق', e }));
                     },
                   } : null,
-                  c.status === 'مسودة' ? { icon: 'edit', label: 'تعديل', onPress: () => openEditDraft(c) } : null,
-                  c.status === 'مسودة' ? { icon: 'trash', label: 'حذف', danger: true, onPress: () => doDeleteDraft(c) } : null,
-                  c.status !== 'مسودة' ? { icon: 'clipboard', label: 'نموذج الاستلام والتسليم', onPress: () => setHandoverFor(c.id) } : null,
+                  draftEditable ? { icon: 'edit', label: 'تعديل', onPress: () => openEditDraft(c) } : null,
+                  draftEditable ? { icon: 'trash', label: 'حذف', danger: true, onPress: () => doDeleteDraft(c) } : null,
+                  // النموذج يُنشأ عند فتحه · فهو إضافة في قسم الاستلام والتسليم
+                  !draft && handoverPerm.add ? { icon: 'clipboard', label: 'نموذج الاستلام والتسليم', onPress: () => setHandoverFor(c.id) } : null,
                   c.status !== 'مسودة' ? { icon: 'print', label: 'كشف حساب المستأجر', onPress: () => { printTenantStatement(db, c.id).catch(() => toast('تعذّرت الطباعة')); } } : null,
                   c.status !== 'مسودة' ? { icon: 'export', label: 'طباعة العقد · نسخة المكتب', onPress: () => { printContractDoc(db, c.id).catch(() => toast('تعذّرت الطباعة')); } } : null,
-                  canRenewContract(c) ? { icon: 'reload', label: 'تجديد العقد', onPress: () => setRenewId(c.id) } : null,
-                  c.status !== 'ملغى' && c.status !== 'مسودة'
+                  perm.manage && canRenewContract(c) ? { icon: 'reload', label: 'تجديد العقد', onPress: () => setRenewId(c.id) } : null,
+                  perm.manage && c.status !== 'ملغى' && c.status !== 'مسودة'
                     ? { icon: 'cancel', label: 'إلغاء العقد', danger: true, onPress: () => setCancelId(c.id) } : null,
                   // التقبيل لا يُسجَّل على ملغى ولا مسودة · فإن مُنع لم يُعرض زره
-                  keyMoneyBlockReason(c) ? null
+                  !kmPerm.add || keyMoneyBlockReason(c) ? null
                     : { icon: 'clipboard', label: 'تسجيل تقبيل', onPress: () => setKmContract(c) },
-                  c.status !== 'مسودة' ? {
+                  perm.manage && !draft ? {
                     icon: c.archived ? 'undo' : 'archive',
                     label: c.archived ? 'إلغاء الأرشفة' : 'أرشفة',
                     onPress: () => {
@@ -355,11 +367,12 @@ export default function Contracts() {
             </Row>
           </Pressable>
         </Card>
-  );
+    );
+  };
 
   return (
     <Screen title="عقود الإيجار" noBack scroll={false}
-      actions={<BtnPrimary small title="+ عقد جديد" onPress={openNew} />}>
+      actions={perm.add ? <BtnPrimary small title="+ عقد جديد" onPress={openNew} /> : null}>
       {/* هيكل فقط قبل الجاهزية · الرأس فيه حقل بحث أصلي يثقل أول إيداع */}
       {!ready ? <Skeleton rows={6} /> : (
       <FlatList
@@ -471,7 +484,7 @@ export default function Contracts() {
       {renewId && <RenewSheet contractId={renewId} onClose={() => setRenewId(null)} onDone={afterMutation} />}
       {cancelId && <CancelSheet contractId={cancelId} onClose={() => setCancelId(null)} onDone={(msg) => {
         afterMutation(msg);
-        dialog({
+        if (handoverPerm.add) dialog({
           title: 'تم إلغاء العقد',
           body: 'تم إلغاء العقد. هل تبي تفتح نموذج التسليم الآن لتوثيق حالة الوحدة عند إخلائها؟',
           tone: 'normal',
@@ -559,6 +572,11 @@ function ContractDetailSheet({
   const toast = useToast();
   const dialog = useDialog();
   const router = useRouter();
+  const access = useAccess();
+  const perm = usePerm('contracts');
+  const depPerm = usePerm('deposits');
+  const collectPerm = usePerm('collect');
+  const seesPurchases = routeAllowed(access, '/purchases');
   const [occEditing, setOccEditing] = useState<OccupantRow | null>(null);
   const [instFor, setInstFor] = useState<string | null>(null);
   const [expOpen, setExpOpen] = useState(false);
@@ -640,7 +658,8 @@ function ContractDetailSheet({
   // صف قسط واحد · مشترك بين قسمي المستحق والسجل · الضغط يفتح تفاصيل القسط
   const renderInst = (i: (typeof insts)[number]) => {
     const remaining = installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount));
-    const payable = remaining > 0 && i.status !== 'ملغية' && c.status !== 'ملغى';
+    // زر «تحصيل» تسجيل دفعة · لصاحب الإضافة في التحصيل
+    const payable = collectPerm.add && remaining > 0 && i.status !== 'ملغية' && c.status !== 'ملغى';
     return (
       <Pressable key={i.id} onPress={() => setInstFor(i.id)}
         style={{ paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -734,7 +753,7 @@ function ContractDetailSheet({
                  AND (? IS NULL OR date >= ?) AND (? IS NULL OR date <= ?) ORDER BY date DESC`,
               [c.unit_id, c.start, c.start, c.end, c.end]
             ).map((pu) => (
-              <Pressable key={pu.id} onPress={() => { onClose(); router.push(`/purchases?detail=${pu.id}`); }}>
+              <Pressable key={pu.id} disabled={!seesPurchases} onPress={() => { onClose(); router.push(`/purchases?detail=${pu.id}`); }}>
                 <Row style={{ justifyContent: 'space-between', paddingVertical: 4, paddingStart: 10 }}>
                   <Num size={11} color={C.muted}>{pu.supplier_name} · {dfmt(pu.date)}</Num>
                   <Money halalas={Number(pu.total_halalas)} size={11.5} />
@@ -754,7 +773,9 @@ function ContractDetailSheet({
         <>
           <Row style={{ justifyContent: 'space-between', marginTop: 12, marginBottom: 8 }}>
             <T size={13.5} bold color={C.ink}>التصرف بالتأمين</T>
-            <BtnGhost small icon="edit" title={settlement ? 'تعديل التسوية' : 'تسجيل التسوية'} onPress={onOpenSettlement} />
+            {(settlement ? depPerm.manage : depPerm.add)
+              ? <BtnGhost small icon="edit" title={settlement ? 'تعديل التسوية' : 'تسجيل التسوية'} onPress={onOpenSettlement} />
+              : null}
           </Row>
           {settlement ? (
             <View>
@@ -778,7 +799,9 @@ function ContractDetailSheet({
               <T size={13.5} bold color={C.ink}>تقييم المستأجر</T>
               {overall ? <Badge kind={overall.cls} label={overall.label} /> : null}
             </Row>
-            <BtnGhost small icon="edit" title={rating ? 'تعديل' : 'تقييم الآن'} onPress={onOpenRating} />
+            {(rating ? perm.manage : perm.add)
+              ? <BtnGhost small icon="edit" title={rating ? 'تعديل' : 'تقييم الآن'} onPress={onOpenRating} />
+              : null}
           </Row>
           {rating ? (
             <View>
@@ -810,7 +833,7 @@ function ContractDetailSheet({
       <Row style={{ justifyContent: 'space-between', marginTop: 14, marginBottom: 8 }}>
         <T size={13.5} bold color={C.ink}>ساكنو الوحدة ({occupants.filter((o) => !o.moved_out).length})</T>
         {/* العقد الملغى لا يُسكَّن فيه أحد · يبقى سجل ساكنيه للعرض وحده */}
-        {c.status === 'ملغى' ? null : <BtnGhost small title="+ إضافة ساكن" onPress={() => onAddOccupant()} />}
+        {c.status === 'ملغى' || !perm.add ? null : <BtnGhost small title="+ إضافة ساكن" onPress={() => onAddOccupant()} />}
       </Row>
       {/* النموذج تحت الزر مباشرةً · لا يفصل بينهما عنصر · الاسم والهوية إلزاميان */}
       {occOpen ? (
@@ -843,8 +866,8 @@ function ContractDetailSheet({
             </Num>
           </View>
           <ActionMenuButton title={o.name} actions={[
-            { icon: 'edit', label: 'تعديل', onPress: () => onEditOccupant(o) },
-            ...(!o.moved_out ? [{
+            perm.manage ? { icon: 'edit', label: 'تعديل', onPress: () => onEditOccupant(o) } : null,
+            ...(perm.manage && !o.moved_out ? [{
               icon: 'undo' as const, label: 'تسجيل مغادرة',
               onPress: () => {
                 markOccupantLeft(db, o.id, today());
@@ -852,7 +875,7 @@ function ContractDetailSheet({
               },
             }] : []),
             // هوية الساكن مرفوعة أصلاً · لا يُعرض إرفاقها ثانيةً
-            attachmentsFor(db, 'occupant', o.id, 'tenant_id').length ? null : {
+            !perm.add || attachmentsFor(db, 'occupant', o.id, 'tenant_id').length ? null : {
               icon: 'attach' as const, label: 'إرفاق صورة الهوية',
               onPress: async () => {
                 const f = await pickFile();
@@ -861,7 +884,7 @@ function ContractDetailSheet({
                   .catch((e) => reportFailure({ title: 'تعذّر الإرفاق', e }));
               },
             },
-            { icon: 'trash', label: 'حذف', danger: true, onPress: () => {
+            !perm.manage ? null : { icon: 'trash', label: 'حذف', danger: true, onPress: () => {
               dialog({
                 title: 'حذف الساكن',
                 body: o.name + '؟',
@@ -902,7 +925,7 @@ function ContractDetailSheet({
  */
 function ContractAttachments({ contractId, linked }: { contractId: string; linked: string }) {
   return (
-    <AttachStrip entityType="contract" entityId={contractId} kind="lease"
+    <AttachStrip section="contracts" entityType="contract" entityId={contractId} kind="lease"
       linked={linked} title="مستندات العقد" hideAdd />
   );
 }
@@ -925,7 +948,7 @@ function ContractFileButton({ contractId, linked }: { contractId: string; linked
     <View style={{ marginBottom: 8 }}>
       <BtnGhost small icon="attach" title="فتح ملف العقد الأصلي" onPress={() => setOpen(true)} />
       {open && (
-        <FileViewer files={[file]} startIndex={0}
+        <FileViewer section="contracts" files={[file]} startIndex={0}
           onClose={() => setOpen(false)} onMutated={() => bump()} />
       )}
     </View>
@@ -936,6 +959,7 @@ function ContractFileButton({ contractId, linked }: { contractId: string; linked
 function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg?: string) => void }) {
   const { db } = useApp();
   const toast = useToast();
+  const depPerm = usePerm('deposits');
   const c = db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId])!;
   const defaultStart = c.end ? addDays(c.end, 1) : today();
   const [start, setStart] = useState(defaultStart);
@@ -1021,9 +1045,10 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
             options={CYCLE_OPTIONS.map((v) => ({ value: v, label: v }))}
             onPick={setCycle} />
         </View>
-        <View style={{ flex: 1 }}><Field label="تأمين إضافي" value={extraDeposit} onChange={setExtraDeposit} keyboard="numeric" ltr /></View>
+        {/* استلام التأمين وترحيله من قسم التأمينات · ومن لا يملكه يجدد بالترحيل الافتراضي */}
+        {depPerm.add ? <View style={{ flex: 1 }}><Field label="تأمين إضافي" value={extraDeposit} onChange={setExtraDeposit} keyboard="numeric" ltr /></View> : null}
       </Row>
-      {Number(c.deposit_halalas) > 0 && (
+      {depPerm.add && Number(c.deposit_halalas) > 0 && (
         <Pressable onPress={() => setCarry((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>
           <View style={{
             width: 22, height: 22, borderRadius: 5, borderWidth: 2,
@@ -1081,6 +1106,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const [deduction, setDeduction] = useState('');
   const [refund, setRefund] = useState('');
   const [dedReason, setDedReason] = useState('');
+  const depPerm = usePerm('deposits');
 
   const dedH = toHalalas(deduction);
   const depH = Number(c.deposit_halalas) || 0;
@@ -1120,16 +1146,19 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         ]}
         onPick={setFate}
       />
-      <Pressable onPress={() => setSettle((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>
-        <View style={{
-          width: 22, height: 22, borderRadius: 5, borderWidth: 2,
-          borderColor: settle ? C.emerald : C.line, backgroundColor: settle ? C.emerald : '#fff',
-          alignItems: 'center', justifyContent: 'center',
-        }}>
-          {settle ? <Icon name="check" size={14} color="#fff" /> : null}
-        </View>
-        <T size={12.5}>تسوية التأمين عند الإلغاء</T>
-      </Pressable>
+      {/* تسوية التأمين من قسم التأمينات · بلا صلاحيته يُلغى العقد بلا تسوية وتُسوّى لاحقاً */}
+      {depPerm.add ? (
+        <Pressable onPress={() => setSettle((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>
+          <View style={{
+            width: 22, height: 22, borderRadius: 5, borderWidth: 2,
+            borderColor: settle ? C.emerald : C.line, backgroundColor: settle ? C.emerald : '#fff',
+            alignItems: 'center', justifyContent: 'center',
+          }}>
+            {settle ? <Icon name="check" size={14} color="#fff" /> : null}
+          </View>
+          <T size={12.5}>تسوية التأمين عند الإلغاء</T>
+        </Pressable>
+      ) : null}
       {settle && (
         <>
           <Row>

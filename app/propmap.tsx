@@ -13,6 +13,8 @@ import { useApp } from '../src/ui/store';
 import { C, TYPE } from '../src/ui/theme';
 import { allPropertyStats } from '../src/domain/stats';
 import { today } from '../src/domain/dates';
+import { useAccess, usePerm } from '../src/ui/access';
+import { routeAllowed } from '../src/domain/access/routes';
 
 const LEGEND: Array<[string, string]> = [
   [OCC.high.color, OCC.high.label],
@@ -32,6 +34,10 @@ interface PropCard {
 export default function PropMap() {
   const { db, version } = useApp();
   const router = useRouter();
+  const access = useAccess();
+  // دخل الشهر من التحصيل · لمن يرى التحصيل وحده (الحد اللازم)
+  const seesCollect = usePerm('collect').view;
+  const canOpenProps = routeAllowed(access, '/properties');
   const [selected, setSelected] = useState<string | null>(null);
   const [mapH, setMapH] = useState(0);
 
@@ -95,7 +101,7 @@ export default function PropMap() {
         {card ? (
           <View style={{ position: 'absolute', right: 8, left: 8, bottom: 8 }}>
             <Pressable
-              onPress={() => router.push({ pathname: '/(tabs)/properties', params: { detail: card.id } })}
+              onPress={canOpenProps ? () => router.push({ pathname: '/(tabs)/properties', params: { detail: card.id } }) : undefined}
               style={({ pressed }) => (pressed ? { opacity: 0.9 } : null)}
             >
               <Card style={{ marginBottom: 0 }}>
@@ -105,7 +111,7 @@ export default function PropMap() {
                 </Row>
                 <Row style={{ flexWrap: 'wrap' }}>
                   <KpiCard label="الإشغال" value={card.pct == null ? '' : <Num>{card.pct + '٪'}</Num>} />
-                  <KpiCard label="دخل الشهر" value={<Money halalas={card.monthIncome} />} />
+                  {seesCollect ? <KpiCard label="دخل الشهر" value={<Money halalas={card.monthIncome} />} /> : null}
                   <KpiCard label="الوحدات" value={<Num>{card.units}</Num>} />
                 </Row>
               </Card>

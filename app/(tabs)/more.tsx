@@ -7,6 +7,8 @@ import { useRouter } from 'expo-router';
 import { Screen } from '../../src/ui/Screen';
 import { Card, CardTitle, SetRow } from '../../src/ui/components';
 import type { IconName } from '../../src/ui/icons';
+import { useAccess } from '../../src/ui/access';
+import { routeAllowed } from '../../src/domain/access/routes';
 
 const SECTIONS: Array<{ title: string; items: Array<[string, string, string, IconName]> }> = [
   {
@@ -58,9 +60,14 @@ const SECTIONS: Array<{ title: string; items: Array<[string, string, string, Ico
 
 export default function More() {
   const router = useRouter();
+  // يُبنى من صلاحيات العضو وحدها · الشاشة غير المسموحة لا تظهر، والمجموعة الفارغة لا تظهر
+  const access = useAccess();
+  const visible = SECTIONS
+    .map((s) => ({ ...s, items: s.items.filter(([path]) => routeAllowed(access, path)) }))
+    .filter((s) => s.items.length);
   return (
     <Screen title="المزيد" noBack icon="menu">
-      {SECTIONS.map((s) => (
+      {visible.map((s) => (
         <Card key={s.title}>
           <CardTitle>{s.title}</CardTitle>
           {s.items.map(([path, title, sub, icon]) => (

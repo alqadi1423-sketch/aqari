@@ -18,6 +18,7 @@ import { uid } from '../src/domain/ids';
 import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
 import { logAudit } from '../src/domain/audit';
+import { usePerm } from '../src/ui/access';
 
 interface TxRow {
   id: string; bank_id: string; date: string; descr: string; amount_halalas: number;
@@ -42,10 +43,12 @@ const PERIOD_OPTIONS = [{ value: '', label: 'كل الفترات' },
   ...Object.entries(PERIOD_LABELS).map(([value, label]) => ({ value, label }))];
 
 const TxCard = React.memo(function TxCard({
-  id, bankId, date, descr, amountHalalas, matched, journalNo, source, bankName, onEdit, onDelete,
+  id, bankId, date, descr, amountHalalas, matched, journalNo, source, bankName, canManage, onEdit, onDelete,
 }: {
   id: string; bankId: string; date: string; descr: string; amountHalalas: number;
   matched: number; journalNo: string; source: string; bankName: string;
+  /** «البنوك والنقد: كامل» · التعديل والحذف */
+  canManage: boolean;
   onEdit: (id: string, bankId: string, date: string, amountHalalas: number, descr: string, source: string) => void;
   onDelete: (id: string) => void;
 }) {
@@ -59,7 +62,7 @@ const TxCard = React.memo(function TxCard({
         <Row gap={8}>
           <Money halalas={amountHalalas} size={TYPE.number} bold
             color={amountHalalas < 0 ? C.rose : C.emerald} />
-          <ActionMenuButton title={descr} actions={generated ? [] : [
+          <ActionMenuButton title={descr} actions={generated || !canManage ? [] : [
             { icon: 'edit', label: 'تعديل', onPress: () => onEdit(id, bankId, date, amountHalalas, descr, source) },
             { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) },
           ]} />
@@ -80,6 +83,7 @@ const TxCard = React.memo(function TxCard({
 
 export default function Transactions() {
   const { db, version, bump } = useApp();
+  const perm = usePerm('banks');
   const toast = useToast();
   const dialog = useDialog();
   const [q, setQ] = useState('');
@@ -199,9 +203,9 @@ export default function Transactions() {
       id={item.id} bankId={item.bank_id} date={item.date} descr={item.descr}
       amountHalalas={Number(item.amount_halalas)} matched={Number(item.matched)}
       journalNo={item.journal_no} source={item.source} bankName={bankName(item.bank_id)}
-      onEdit={openEdit} onDelete={deleteTx}
+      canManage={perm.manage} onEdit={openEdit} onDelete={deleteTx}
     />
-  ), [bankName, openEdit, deleteTx]);
+  ), [bankName, openEdit, deleteTx, perm.manage]);
 
   const clearFilters = useCallback(() => {
     setQ(''); setBankFilter('all'); setDirFilter('all'); setMatchFilter('all'); setPeriodFilter('');
@@ -221,7 +225,7 @@ export default function Transactions() {
   return (
     <Screen title="الحركات البنكية" icon="tx" scroll={false}
       /* لا حساب بنكياً فلا حركة تُضاف · الزر لا يُعرض بدل أن يُعرض ويرفض */
-      actions={banks.length ? <BtnPrimary small title="+ حركة جديدة" onPress={openNew} /> : undefined}>
+      actions={banks.length && perm.add ? <BtnPrimary small title="+ حركة جديدة" onPress={openNew} /> : undefined}>
       {!ready ? <Skeleton /> : (
         <FlatList
           data={rows}

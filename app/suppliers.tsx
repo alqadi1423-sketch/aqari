@@ -26,6 +26,7 @@ import { uid } from '../src/domain/ids';
 import { fmt, toHalalas } from '../src/domain/money';
 import { dfmt } from '../src/domain/dates';
 import { logAudit } from '../src/domain/audit';
+import { usePerm } from '../src/ui/access';
 
 interface SupplierRow {
   id: string; name: string; vat: string; phone: string; category: string; utility_type: string; archived: number;
@@ -49,10 +50,12 @@ const STATE_OPTIONS = [{ value: 'active', label: 'الموردون النشطو�
 
 /** بطاقة مورد واحدة · معزولة وممذكَّرة كي لا يعاد رسم القائمة كلها */
 const SupplierCard = React.memo(function SupplierCard({
-  id, name, vat, phone, category, utilityType, archived, linked, onDetail, onEdit, onArchiveToggle, onDelete,
+  id, name, vat, phone, category, utilityType, archived, linked, canManage, onDetail, onEdit, onArchiveToggle, onDelete,
 }: {
   id: string; name: string; vat: string; phone: string; category: string; utilityType: string;
   archived: number; linked: boolean;
+  /** «المشتريات والموردون: كامل» · التعديل والأرشفة والحذف */
+  canManage: boolean;
   onDetail: (id: string) => void;
   onEdit: (id: string) => void;
   onArchiveToggle: (id: string, archived: number) => void;
@@ -77,12 +80,12 @@ const SupplierCard = React.memo(function SupplierCard({
           {archived ? <Badge kind="draft" label="مؤرشف" /> : null}
           <ActionMenuButton title={name} actions={[
             { icon: 'eye', label: 'عرض التفاصيل', onPress: () => onDetail(id) },
-            { icon: 'edit', label: 'تعديل', onPress: () => onEdit(id) },
-            {
+            canManage ? { icon: 'edit', label: 'تعديل', onPress: () => onEdit(id) } : null,
+            canManage ? {
               icon: archived ? 'undo' : 'archive', label: archived ? 'إلغاء الأرشفة' : 'أرشفة',
               onPress: () => onArchiveToggle(id, archived),
-            },
-            linked ? null : { icon: 'trash' as const, label: 'حذف', danger: true, onPress: () => onDelete(id, name) },
+            } : null,
+            linked || !canManage ? null : { icon: 'trash' as const, label: 'حذف', danger: true, onPress: () => onDelete(id, name) },
           ]} />
         </Row>
       </Row>
@@ -102,6 +105,7 @@ export default function Suppliers() {
   const dialog = useDialog();
   const ready = useDeferredReady();
   const fsheet = useFilterSheet();
+  const perm = usePerm('purchases');
   const [q, setQ] = useState('');
   const [fState, setFState] = useState('active');
   const [fUtility, setFUtility] = useState('');
@@ -231,9 +235,9 @@ export default function Suppliers() {
   const renderItem: ListRenderItem<SupplierRow> = useCallback(({ item }) => (
     <SupplierCard id={item.id} name={item.name} vat={item.vat} phone={item.phone}
       category={item.category} utilityType={item.utility_type} archived={Number(item.archived)}
-      linked={!!Number(item.linked_n)}
+      linked={!!Number(item.linked_n)} canManage={perm.manage}
       onDetail={onDetail} onEdit={openEdit} onArchiveToggle={onArchiveToggle} onDelete={onDelete} />
-  ), [onDetail, openEdit, onArchiveToggle, onDelete]);
+  ), [onDetail, openEdit, onArchiveToggle, onDelete, perm.manage]);
 
   const editingMeters = useMemo(
     () => (editingId ? supplierMeters(db, editingId) : []),
@@ -252,7 +256,7 @@ export default function Suppliers() {
 
   return (
     <Screen title="الموردون" icon="supplier" scroll={false}
-      actions={<BtnPrimary small title="+ مورد جديد" onPress={openNew} />}>
+      actions={perm.add ? <BtnPrimary small title="+ مورد جديد" onPress={openNew} /> : undefined}>
       <FilterBar chips={chips} onOpen={fsheet.show} onClearAll={clearFilters}
         resultCount={total} total={totalAll} filtered={total} itemName="مورداً"
         search={<SearchBox value={q} onChange={setQ} />} />
@@ -292,7 +296,7 @@ export default function Suppliers() {
         }>
         <Field label="اسم المورد" value={name} onChange={setName} />
         {editingId ? (
-          <AttachStrip entityType="supplier" entityId={editingId} kind="purchase"
+          <AttachStrip section="purchases" entityType="supplier" entityId={editingId} kind="purchase"
             linked="المورد" title="فواتيره وعقده" />
         ) : null}
         <Row>
@@ -345,6 +349,9 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
 }) {
   const { db, version } = useApp();
   const router = useRouter();
+  const canManage = usePerm('purchases').manage;
+  // القيود من الدفتر · قسمها لمن يرى الدفتر وحده (الحد اللازم)
+  const seesLedger = usePerm('ledger').view;
   const [entryFor, setEntryFor] = useState<string | null>(null);
   const [meterOpen, setMeterOpen] = useState<LabeledMeter | null>(null);
 
@@ -437,12 +444,12 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
 
   return (
     <Sheet visible onClose={onClose} title={s.name} tall
-      footer={
+      footer={canManage ? (
         <>
           {/* الإغلاق بعلامة ✕ في رأس الورقة وحدها */}
           <View style={{ flex: 1 }}><BtnPrimary title="تعديل" onPress={() => onEdit(supplierId)} /></View>
         </>
-      }>
+      ) : undefined}>
       {/* بياناته */}
       <Row style={{ marginBottom: 8 }}>
         {s.vat ? <View style={{ flex: 1 }}><T size={TYPE.caption} color={C.muted}>الرقم الضريبي</T><Num size={TYPE.cardTitle}>{s.vat}</Num></View> : null}
@@ -530,7 +537,7 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
       </CollapsibleSection>
 
       {/* قيوده · قيدا التسجيل والسداد من فواتيره */}
-      <CollapsibleSection title="قيوده" count={counts.entries} icon="clipboard" pageKey="supplierEntries">
+      <CollapsibleSection title="قيوده" count={seesLedger ? counts.entries : 0} icon="clipboard" pageKey="supplierEntries">
         {(page) => db.all<{ id: string; no: string; date: string; memo: string }>(
           `SELECT id, no, date, memo FROM journal_entries
            WHERE deleted_at IS NULL AND id IN (
@@ -557,7 +564,7 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
       {/* مرفقاته · عرض فقط · الإضافة من نافذة تعديل المورد */}
       <CollapsibleSection title="مرفقاته" count={counts.atts} icon="attach">
         {() => (
-          <AttachStrip entityType="supplier" entityId={supplierId} kind="purchase" linked="المورد" title="مرفقاته" hideAdd />
+          <AttachStrip section="purchases" entityType="supplier" entityId={supplierId} kind="purchase" linked="المورد" title="مرفقاته" hideAdd />
         )}
       </CollapsibleSection>
 

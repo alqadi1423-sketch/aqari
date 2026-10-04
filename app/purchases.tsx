@@ -32,6 +32,7 @@ import { attachPicked, pickFile } from '../src/ui/attach';
 import { FileViewer, type ViewerFile } from '../src/ui/FileViewer';
 import { AttachStrip } from '../src/ui/AttachStrip';
 import { reportFailure } from '../src/ui/failureDialog';
+import { usePerm } from '../src/ui/access';
 
 const CATEGORIES = ['كهرباء', 'مياه', 'اتصالات وإنترنت', 'إيجار', 'رواتب', 'تكلفة مبيعات', 'مصروفات تأسيس', 'مصروفات أخرى'];
 const INCORP_ITEMS = ['رسوم حكومية', 'ديكور وتجهيزات', 'معدات', 'تسويق افتتاحي', 'استشارات'];
@@ -78,13 +79,15 @@ function statusBadge(p: { paid: number; due: string }) {
  * الضغط على البطاقة يفتح ورقة العرض الشاملة · السداد المسدَّد لا يُعدَّل بل يُتراجع عنه */
 const PurchaseCard = React.memo(function PurchaseCard({
   id, no, supplierName, date, due, category, subtotalHalalas, taxHalalas, totalHalalas,
-  exempt, excludeFromVat, paid, taxStatus, refundStatus, hasOriginal,
+  exempt, excludeFromVat, paid, taxStatus, refundStatus, hasOriginal, canManage,
   onDetail, onPay, onEdit, onUndoPay, onPrint, onDelete, onVatFiled, onVatRefunded, onVatRejected,
 }: {
   id: string; no: string; supplierName: string; date: string; due: string; category: string;
   subtotalHalalas: number; taxHalalas: number; totalHalalas: number;
   exempt: number; excludeFromVat: number; paid: number; taxStatus: string;
   refundStatus: string; hasOriginal: boolean;
+  /** «المشتريات والموردون: كامل» · السداد والتراجع والتعديل والحذف واسترداد الضريبة */
+  canManage: boolean;
   onDetail: (id: string) => void;
   onPay: (id: string, totalHalalas: number) => void;
   onEdit: (id: string) => void;
@@ -97,7 +100,7 @@ const PurchaseCard = React.memo(function PurchaseCard({
 }) {
   // الضريبة إذا استُردت أو رُفضت فقد انتهت قصتها · لا يُعرض لها فعل استرداد بعدها
   const vatSettled = refundStatus.startsWith('مسترَد') || refundStatus === 'مرفوض';
-  const vatActions = taxStatus === TS_DEDUCTIBLE && !vatSettled ? [
+  const vatActions = canManage && taxStatus === TS_DEDUCTIBLE && !vatSettled ? [
     ...(refundStatus.startsWith('مُقدَّم') ? [] : [
       { icon: 'reload' as const, label: 'الضريبة: مُقدَّمة في الإقرار', onPress: () => onVatFiled(id) },
     ]),
@@ -115,15 +118,15 @@ const PurchaseCard = React.memo(function PurchaseCard({
             {statusBadge({ paid, due })}
             <ActionMenuButton title={no} actions={[
               { icon: 'eye', label: 'عرض التفاصيل', onPress: () => onDetail(id) },
-              !paid ? { icon: 'card', label: 'تسديد الفاتورة', onPress: () => onPay(id, totalHalalas) } : null,
-              paid ? { icon: 'undo', label: 'التراجع عن السداد', onPress: () => onUndoPay(id) } : null,
-              paid ? null : { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) },
+              canManage && !paid ? { icon: 'card', label: 'تسديد الفاتورة', onPress: () => onPay(id, totalHalalas) } : null,
+              canManage && paid ? { icon: 'undo', label: 'التراجع عن السداد', onPress: () => onUndoPay(id) } : null,
+              paid || !canManage ? null : { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) },
               hasOriginal ? { icon: 'print' as const, label: 'الفاتورة الأصلية', onPress: () => onPrint(id, no) } : null,
               ...vatActions,
-              {
+              canManage ? {
                 icon: 'trash', label: 'حذف', danger: true,
                 onPress: () => onDelete(id),
-              },
+              } : null,
             ]} />
           </Row>
         </Row>
@@ -150,6 +153,7 @@ export default function Purchases() {
   const toast = useToast();
   const dialog = useDialog();
   const ready = useDeferredReady();
+  const perm = usePerm('purchases');
   const [q, setQ] = useState('');
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -510,11 +514,11 @@ export default function Purchases() {
       category={item.category} subtotalHalalas={Number(item.subtotal_halalas)} taxHalalas={Number(item.tax_halalas)}
       totalHalalas={Number(item.total_halalas)} exempt={Number(item.exempt)} excludeFromVat={Number(item.exclude_from_vat)}
       paid={Number(item.paid)} taxStatus={item.tax_status ?? ''} refundStatus={item.refund_status ?? ''}
-      hasOriginal={!!Number(item.att_n)}
+      hasOriginal={!!Number(item.att_n)} canManage={perm.manage}
       onDetail={openDetail} onPay={openPay} onEdit={openEdit} onUndoPay={undoPay} onPrint={printOriginal} onDelete={doDelete}
       onVatFiled={vatFiled} onVatRefunded={vatRefunded} onVatRejected={vatRejected}
     />
-  ), [openDetail, openPay, openEdit, undoPay, printOriginal, doDelete, vatFiled, vatRefunded, vatRejected]);
+  ), [openDetail, openPay, openEdit, undoPay, printOriginal, doDelete, vatFiled, vatRefunded, vatRejected, perm.manage]);
 
   // نافذة القرار عند عدم التوازن · Alert في أندرويد يعرض ثلاثة أزرار فقط فيُسقط الرابع
   const [imbalance, setImbalance] = useState<{ bh: number; xh: number; gh: number } | null>(null);
@@ -527,7 +531,8 @@ export default function Purchases() {
           body: '«' + supplier.trim() + '» بلا رقم ضريبي في بطاقته · والرقم شرط نظامي للخصم.',
           actions: [
             { label: 'تراجع', variant: 'ghost' },
-            { label: 'أضِفه الآن', variant: 'primary', onPress: () => { setVatFixValue(''); setVatFixOpen(true); } },
+            // تعديل بطاقة المورد · لصاحب «كامل» وحده
+            ...(perm.manage ? [{ label: 'أضِفه الآن', variant: 'primary' as const, onPress: () => { setVatFixValue(''); setVatFixOpen(true); } }] : []),
           ],
         });
         return;
@@ -557,7 +562,7 @@ export default function Purchases() {
   return (
     <Screen title="فواتير الشراء" icon="wrench" scroll={false}
       /* لا مورد فلا فاتورة شراء تُسجَّل · الزر لا يُعرض بدل أن يُعرض ويرفض */
-      actions={suppliers.length ? <BtnPrimary small title="+ تسجيل فاتورة شراء" onPress={openNew} /> : undefined}>
+      actions={suppliers.length && perm.add ? <BtnPrimary small title="+ تسجيل فاتورة شراء" onPress={openNew} /> : undefined}>
       {!ready ? <Skeleton /> : (
         <FlatList
           data={rows}
@@ -566,7 +571,7 @@ export default function Purchases() {
           ListHeaderComponent={listHeader}
           ListFooterComponent={<Pager pager={pager} total={total} />}
           ListEmptyComponent={<Card><EmptyState>{totalAll === 0
-            ? (suppliers.length
+            ? (!perm.add ? 'لا توجد فواتير شراء مسجَّلة' : suppliers.length
               ? 'لا توجد فواتير شراء مسجَّلة · اضغط «+ تسجيل فاتورة شراء»'
               : 'لا فواتير شراء · أضف مورداً أولاً فالفاتورة تُسجَّل على مورد')
             : 'لا نتائج مطابقة · عدّل البحث أو اضغط «مسح الكل»'}</EmptyState></Card>}
@@ -676,7 +681,7 @@ export default function Purchases() {
         ) : null}
         {/* الفاتورة الأصلية مستند واحد لا أكثر · فما أُرفق أصله لا يُعرض معه زر إرفاق أصل آخر */}
         {editingAttCount ? (
-          <AttachStrip entityType="purchase" entityId={editingId!} kind="purchase"
+          <AttachStrip section="purchases" entityType="purchase" entityId={editingId!} kind="purchase"
             linked={'فاتورة شراء ' + (supplier.trim() || '')} title="الفاتورة الأصلية المرفقة" hideAdd />
         ) : (
           <View style={{ marginBottom: 10 }}>
@@ -713,9 +718,11 @@ export default function Purchases() {
             ) : (
               <View style={{ backgroundColor: C.roseSoft, borderRadius: 8, padding: 10, marginBottom: 10 }}>
                 <T size={12} bold color={C.rose}>«{supplier.trim() || 'المورد'}» بلا رقم ضريبي · والرقم شرط نظامي للخصم</T>
-                <View style={{ marginTop: 8 }}>
-                  <BtnGhost small title="أضِفه الآن" onPress={() => { setVatFixValue(''); setVatFixOpen(true); }} />
-                </View>
+                {perm.manage ? (
+                  <View style={{ marginTop: 8 }}>
+                    <BtnGhost small title="أضِفه الآن" onPress={() => { setVatFixValue(''); setVatFixOpen(true); }} />
+                  </View>
+                ) : null}
               </View>
             )}
             <CheckRow checked={confirmOurs} onToggle={() => setConfirmOurs((v) => !v)}
@@ -772,7 +779,7 @@ export default function Purchases() {
 
       {/* عارض الفاتورة الأصلية */}
       {viewOrig && (
-        <FileViewer files={viewOrig.files} startIndex={viewOrig.index}
+        <FileViewer section="purchases" files={viewOrig.files} startIndex={viewOrig.index}
           onClose={() => setViewOrig(null)} onMutated={() => bump()} />
       )}
 
@@ -930,6 +937,9 @@ function PurchaseDetailSheet({ purchaseId, onClose, onEdit }: {
   onEdit: (id: string) => void;
 }) {
   const { db, version } = useApp();
+  const canManage = usePerm('purchases').manage;
+  // القيود من الدفتر · لمن يرى الدفتر وحده (الحد اللازم)
+  const seesLedger = usePerm('ledger').view;
   const [entryFor, setEntryFor] = useState<string | null>(null);
 
   const data = useMemo(() => {
@@ -987,7 +997,7 @@ function PurchaseDetailSheet({ purchaseId, onClose, onEdit }: {
       {/* المسدَّدة لا يُعرض لها «تعديل» · التصحيح بالتراجع عن السداد ثم التعديل */}
       <Row style={{ justifyContent: 'space-between', marginBottom: 10 }}>
         {statusBadge({ paid, due: p.due })}
-        {paid ? null : <BtnGhost small icon="edit" title="تعديل" onPress={() => { onClose(); onEdit(p.id); }} />}
+        {paid || !canManage ? null : <BtnGhost small icon="edit" title="تعديل" onPress={() => { onClose(); onEdit(p.id); }} />}
       </Row>
       <Row style={{ marginBottom: 8 }}>
         {cell('المورد', <T size={12.5} bold>{p.supplier_name}</T>)}
@@ -1031,7 +1041,7 @@ function PurchaseDetailSheet({ purchaseId, onClose, onEdit }: {
           </T>
         ) : null}
       </View>
-      {je ? (
+      {je && seesLedger ? (
         <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
           <Row gap={6}>
             <T size={12} color={C.muted}>قيد التسجيل</T>
@@ -1040,7 +1050,7 @@ function PurchaseDetailSheet({ purchaseId, onClose, onEdit }: {
           <BtnGhost small title="عرض القيد" onPress={() => setEntryFor((c) => (c === je.id ? null : je.id))} />
         </Row>
       ) : null}
-      {payJe ? (
+      {payJe && seesLedger ? (
         <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
           <Row gap={6}>
             <T size={12} color={C.muted}>قيد السداد</T>
@@ -1065,7 +1075,7 @@ function PurchaseDetailSheet({ purchaseId, onClose, onEdit }: {
         </View>
       ) : null}
       {attCount ? (
-        <AttachStrip entityType="purchase" entityId={p.id} kind="purchase"
+        <AttachStrip section="purchases" entityType="purchase" entityId={p.id} kind="purchase"
           linked={'فاتورة شراء ' + p.no} title="المرفقات" hideAdd />
       ) : null}
       <View style={{ height: 12 }} />

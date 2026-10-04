@@ -30,6 +30,7 @@ import { usePager, Pager } from '../src/ui/Pager';
 import { useDeferredReady } from '../src/ui/useDeferredReady';
 import { Skeleton } from '../src/ui/Skeleton';
 import { reportFailure } from '../src/ui/failureDialog';
+import { usePerm } from '../src/ui/access';
 
 const EMPTY_FILES: LibraryFile[] = [];
 
@@ -113,6 +114,7 @@ export default function Library() {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
+  const perm = usePerm('library');
   const env = appFilesEnv(db);
   const ready = useDeferredReady();
   const pager = usePager('library');
@@ -310,9 +312,11 @@ export default function Library() {
   const onPressCard = useCallback((id: string) => {
     if (selActive) toggleSel(id); else openPreview(id);
   }, [selActive, toggleSel, openPreview]);
+  // التحديد المتعدد لا يحمل إلا النقل والحذف · فلا يبدأ لمن لا يملكهما
   const onLongPressCard = useCallback((id: string) => {
+    if (!perm.manage) return;
     setSel((s) => new Set(s).add(id));
-  }, []);
+  }, [perm.manage]);
 
   const renderItem = useCallback(({ item }: { item: LibraryFile }) => (
     <FileCard
@@ -425,7 +429,7 @@ export default function Library() {
         <Chip label="مستندات" active={kind === 'doc'} onPress={() => setKind(kind === 'doc' ? '' : 'doc')} />
       </Row>
 
-      {sel.size ? (
+      {sel.size && perm.manage ? (
         <Card style={{ backgroundColor: C.emeraldSoft }}>
           <Row style={{ justifyContent: 'space-between', flexWrap: 'wrap' }}>
             <T size={12.5} bold>{sel.size} محدَّد</T>
@@ -444,7 +448,7 @@ export default function Library() {
 
   return (
     <Screen title="المكتبة" scroll={false}
-      actions={<BtnPrimary small title="+ رفع ملفات" onPress={() => setUploadOpen(true)} />}>
+      actions={perm.add ? <BtnPrimary small title="+ رفع ملفات" onPress={() => setUploadOpen(true)} /> : null}>
       <FlatList
         data={ready ? pageRows : EMPTY_FILES}
         keyExtractor={keyExtractor}
@@ -510,6 +514,7 @@ export default function Library() {
           startIndex={preview.idx}
           onClose={() => setPreview(null)}
           onMutated={() => bump()}
+          canManage={perm.manage}
           onEditMeta={(attId) => {
             const r = preview.list.find((x) => x.id === attId);
             if (!r) return;
