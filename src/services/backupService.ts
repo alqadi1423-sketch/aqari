@@ -8,7 +8,7 @@ import type { AppDB } from '../db/expoAdapter';
 import { openExpoDb } from '../db/expoAdapter';
 import { expoFs, expoHasher, appDataRoot } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
-import { createBackup, ensureFreeSpace } from '../domain/backup/create';
+import { createBackup, ensureFreeSpace, safetyBackupsDir } from '../domain/backup/create';
 import { prepareRestore, commitRestore, abortRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
 import type { BackupEnv, BackupManifest } from '../domain/backup/types';
 import { setSetting } from '../repos/settings';
@@ -68,6 +68,29 @@ export async function createAndShareBackup(
  * المرحلة التفاعلية الأولى: اختيار الملف وتجهيز الاستعادة (تشغيل تجريبي كامل).
  * لا يمسّ البيانات الحية · يعيد الخطة والملخص أو null عند الإلغاء.
  */
+/**
+ * نسخة الأمان الأحدث على الجهاز (قبل آخر مسح أو استعادة) · تُستعاد من «البيانات والمساحة» بالمسار المعتاد نفسه.
+ * تُنسخ أولاً إلى المؤقت لأن الاستعادة تصنع نسخة أمان جديدة تحذف ما قبلها.
+ */
+export async function prepareRestoreFromSafety(
+  db: AppDB,
+  onProgress?: (msg: string) => void,
+  opts?: PrepareOptions
+): Promise<{ env: BackupEnv; plan: RestorePlan; archiveTmp: string } | null> {
+  const env = appBackupEnv(db);
+  const dir = safetyBackupsDir(env);
+  const names = (env.fs.exists(dir) ? env.fs.list(dir) : [])
+    .filter((n) => n.endsWith('.aqbk') && (n.startsWith('pre-wipe-') || n.startsWith('pre-restore-'))).sort();
+  const latest = names[names.length - 1];
+  if (!latest) return null;
+  await ensureFreeSpace(env);
+  env.fs.mkdirp(env.tmpDir);
+  const archiveTmp = joinPath(env.tmpDir, 'restore-input.aqbk');
+  env.fs.write(archiveTmp, env.fs.read(joinPath(dir, latest)));
+  const plan = await prepareRestore(env, archiveTmp, onProgress, opts);
+  return { env, plan, archiveTmp };
+}
+
 export async function pickAndPrepareRestore(
   db: AppDB,
   onProgress?: (msg: string) => void,

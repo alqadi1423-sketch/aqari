@@ -21,7 +21,7 @@ import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import { exportStatus } from '../src/domain/reminders';
 import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash } from '../src/domain/trash';
-import { createAndShareBackup, pickAndPrepareRestore, commitPreparedRestore, abortPreparedRestore, appBackupEnv } from '../src/services/backupService';
+import { createAndShareBackup, pickAndPrepareRestore, prepareRestoreFromSafety, commitPreparedRestore, abortPreparedRestore, appBackupEnv } from '../src/services/backupService';
 import { fingerprintData } from '../src/domain/backup/create';
 import {
   planLedgerRepair, applyLedgerRepair, unbookedDiscounts, bookDiscount, contractSurpluses, settleSurplus,
@@ -249,6 +249,7 @@ export default function Settings() {
 
   // الاستعادة لا تنهار أبداً · كل المسار ملفوف، والفشل رسالة عربية مبنيّة على فحص
   const doRestore = () => runRestore((opts) => pickAndPrepareRestore(db, setProgress, opts));
+  const doRestoreSafety = () => runRestore((opts) => prepareRestoreFromSafety(db, setProgress, opts));
 
   /** ما في السحابة وما يصير إليه · سطور الحوار قبل الاعتماد */
   const cloudReplaceText = (p: CloudReplacePlan) =>
@@ -696,7 +697,9 @@ export default function Settings() {
           {storageRow('المصغّرات', storage.thumbsBytes)}
           {storageRow('قاعدة البيانات', storage.dbBytes)}
           {storageRow('سلة المحذوفات', storage.trashBytes, storage.trashCount + ' ملف')}
-          {storageRow('نسخة الأمان قبل آخر استيراد أو مسح', storage.safetyBytes, storage.safetyCount + ' ملف')}
+          {/* طريق الاسترجاع بعد «مسح كل البيانات» · للمالك وحده كسائر الاستعادة */}
+          {storageRow('نسخة الأمان قبل آخر استيراد أو مسح', storage.safetyBytes, storage.safetyCount + ' ملف',
+            admin && storage.safetyCount > 0 ? <BtnGhost small title="استعادة" onPress={doRestoreSafety} disabled={busy} /> : undefined)}
         </Fold>
         <Fold icon="chart" title="بياناتك بالأرقام" value={String(data.total) + ' سجل'}>
           {data.counts.map(([k, n]) => (
