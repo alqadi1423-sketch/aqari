@@ -107,7 +107,7 @@ async function outputPdf(db: DB, uri: string, title: string, filename: string, t
 
 /** مستند عام (التقارير) · نفس القشرة والهوية */
 export async function printHtmlDoc(title: string, bodyHtml: string, filename?: string): Promise<void> {
-  const brand = '<div style="text-align:center;margin-top:22px;font-size:10.5px;color:#9AA1AD">صدر عبر تطبيق عقاري · ' + esc(issuedNow()) + '</div>';
+  const brand = '<div style="text-align:center;margin-top:22px;font-size:10.5px;color:#9AA1AD">صدر عبر تطبيق عقاري · أحد حلول منصة رِكز · ' + esc(issuedNow()) + '</div>';
   const uri = await renderPdf(title, bodyHtml + brand, filename || title);
   await sharePdf(uri, title);
 }

@@ -235,7 +235,7 @@ async function renderBlocks(
     return;
   }
   await shareOfficeFile(filenameBase + '.docx',
-    buildDocx(title, sub, blocks, 'صدر عبر تطبيق عقاري'), 'docx');
+    buildDocx(title, sub, blocks, 'صدر عبر تطبيق عقاري · أحد حلول منصة رِكز'), 'docx');
 }
 
 /* ═══════════ الواجهات ═══════════ */
@@ -363,7 +363,7 @@ export async function exportVatReturn(
   }
   await shareOfficeFile(filenameBase + '.docx',
     buildDocx(title, `${dfmt(d.from)} إلى ${dfmt(d.to)}`, [mainBlock, schedules],
-      'صدر عبر تطبيق عقاري', ['المحاسب', 'المدير']), 'docx');
+      'صدر عبر تطبيق عقاري · أحد حلول منصة رِكز', ['المحاسب', 'المدير']), 'docx');
 }
 
 /* ═══════════ ميزان المراجعة ═══════════ */

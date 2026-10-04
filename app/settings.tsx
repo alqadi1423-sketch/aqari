@@ -671,7 +671,7 @@ export default function Settings() {
       {/* ٧ · عن التطبيق */}
       <Card>
         <CardTitle>عن التطبيق</CardTitle>
-        <Fold icon="home" title="عقاري" value={'الإصدار ' + APP_VERSION}>
+        <Fold icon="home" title="عقاري · أحد حلول منصة رِكز" value={'الإصدار ' + APP_VERSION}>
           {([['الإصدار', APP_VERSION], ['إصدار قاعدة البيانات', String(SCHEMA_VERSION)]] as Array<[string, string]>).map(([k, v]) => (
             <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
               <T size={TYPE.body}>{k}</T>
