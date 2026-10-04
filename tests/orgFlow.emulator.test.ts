@@ -82,7 +82,7 @@ d('رحلة المنشأة', () => {
     const { memDb } = await import('./helpers/testDb');
     const { syncOnce } = await import('@/sync/engine');
     const orgR = new FirestoreRemote({ ...base(OWNER, 'owner@example.test'), org: OWNER });
-    await sendInvite(orgR, OWNER, { email: MEMBER_EMAIL, perms: { collect: 2, contracts: 1, props: 1 }, allProps: false, props: ['FP1'] }, 'منشأة الرحلة');
+    await sendInvite(orgR, OWNER, { email: MEMBER_EMAIL, perms: { collect: 2, contracts: 1, props: 1 }, allProps: false, props: ['FP1'] }, 'منشأة الرحلة', 'owner@example.test');
     mem = memDb();
     const plain = new FirestoreRemote(base(MEMBER, MEMBER_EMAIL));
     const inv = await findInvites(plain, MEMBER_EMAIL);

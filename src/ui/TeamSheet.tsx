@@ -6,13 +6,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Linking, Pressable, View } from 'react-native';
 import { Sheet } from './Sheet';
-import { BtnGhost, BtnPrimary, Chip, EmptyState, Field, Note, Row, T } from './components';
+import { Badge, BtnGhost, BtnPrimary, Chip, EmptyState, Field, Note, Row, T } from './components';
 import { C, TYPE } from './theme';
 import { useApp } from './store';
 import { useDialog } from './AppDialog';
 import { useToast } from './Toast';
 import { reportFailure } from './failureDialog';
-import { GRANTABLE, LEVEL_LABEL, LEVEL_MEANING, TEMPLATES, type Level, type Perms } from '../domain/access/sections';
+import { GRANTABLE, LEVEL_DOES, LEVEL_LABEL, SECTION_GROUPS, TEMPLATES, levelsOf, sectionDef, type Level, type Perms, type SectionKey } from '../domain/access/sections';
+import { canView, level, type Access } from '../domain/access/access';
+import { routeAllowed } from '../domain/access/routes';
+import { MONEY_SECTIONS } from '../domain/access/readSections';
+import { MORE_SCREENS } from './moreScreens';
 import type { MemberDoc, MemberSpec } from '../services/org';
 import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow } from '../services/cloud';
 
@@ -106,10 +110,14 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
   );
 }
 
-/** رسالة الدعوة بالواتساب · بلا رقم: يختار المالك المحادثة */
+/** رابط تنزيل التطبيق للمدعوّ · من إعداد البناء، وغيابه يُسقط سطره من الرسالة */
+const DOWNLOAD_URL = process.env.EXPO_PUBLIC_APP_DOWNLOAD_URL ?? '';
+
+/** رسالة الدعوة بالواتساب: اسم المنشأة من بياناتها ورابط التنزيل والإيميل المدعوّ · بلا رقم: يختار المالك المحادثة */
 function shareInvite(doc: MemberDoc): void {
   const text = 'دعوتك للانضمام إلى «' + (doc.orgName || 'منشأتنا') + '» في تطبيق عقاري.\n'
-    + 'ثبّت التطبيق وادخل بحساب قوقل هذا: ' + doc.email;
+    + (DOWNLOAD_URL ? 'نزّل التطبيق: ' + DOWNLOAD_URL + '\n' : '')
+    + 'ثم ادخل بحساب قوقل هذا: ' + doc.email;
   Linking.openURL('whatsapp://send?text=' + encodeURIComponent(text)).catch(() => {});
 }
 
@@ -122,6 +130,7 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
   const [allProps, setAllProps] = useState(initial?.all ?? true);
   const [props, setProps] = useState<string[]>(initial?.props ?? []);
   const [saving, setSaving] = useState(false);
+  const [openKey, setOpenKey] = useState<SectionKey | null>(null);
   const properties = useMemo(() => db.all<{ id: string; name: string }>(
     `SELECT id, name FROM properties WHERE deleted_at IS NULL ORDER BY name`), [db]);
   const any = GRANTABLE.some((s) => (perms[s.key] ?? 0) > 0);
@@ -139,24 +148,43 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
       {isNew ? <Field label="إيميل قوقل للعضو" value={email} onChange={setEmail} ltr placeholder="name@gmail.com" /> : null}
 
       <T size={TYPE.cardTitle} bold style={{ marginTop: 6, marginBottom: 4 }}>قالب سريع</T>
+      <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>يعبّئ الاختيارات أدناه ثم تعدّلها · والعضو الجديد يبدأ بلا شيء</T>
       <Row style={{ flexWrap: 'wrap', marginBottom: 6 }}>
         {TEMPLATES.map((t) => <Chip key={t.key} label={t.label} onPress={() => setPerms({ ...t.perms })} />)}
       </Row>
 
-      <T size={TYPE.cardTitle} bold style={{ marginTop: 8, marginBottom: 2 }}>الأقسام</T>
-      <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>
-        {([0, 1, 2, 3] as Level[]).map((l) => LEVEL_LABEL[l] + ': ' + LEVEL_MEANING[l]).join(' · ')}
-      </T>
-      {GRANTABLE.map((s) => (
-        <View key={s.key} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
-          <T size={TYPE.body} bold>{s.label}</T>
-          <T size={TYPE.caption} color={C.muted}>{s.covers}</T>
-          <Row style={{ marginTop: 5, flexWrap: 'wrap' }} gap={6}>
-            {([0, 1, 2, 3] as Level[]).filter((l) => l <= s.max).map((l) => (
-              <Chip key={l} label={LEVEL_LABEL[l]} active={(perms[s.key] ?? 0) === l}
-                onPress={() => setPerms((p) => ({ ...p, [s.key]: l }))} />
-            ))}
-          </Row>
+      {SECTION_GROUPS.map((g) => (
+        <View key={g.title} style={{ marginTop: 12 }}>
+          <T size={TYPE.cardTitle} bold style={{ marginBottom: 2 }}>{g.title}</T>
+          {g.keys.map((k) => {
+            const def = sectionDef(k);
+            const cur = (perms[k] ?? 0) as Level;
+            const open = openKey === k;
+            return (
+              <View key={k} style={{ borderBottomWidth: 1, borderBottomColor: C.line }}>
+                <Pressable onPress={() => setOpenKey(open ? null : k)}>
+                  <Row style={{ justifyContent: 'space-between', paddingVertical: 8 }}>
+                    <View style={{ flex: 1 }}>
+                      <T size={TYPE.body} bold>{def.label}</T>
+                      <T size={TYPE.caption} color={cur ? C.charcoal : C.muted}>{cur ? doesUpTo(k, cur) : 'لا يظهر له'}</T>
+                    </View>
+                    <Badge kind={cur === 0 ? 'draft' : cur === 3 ? 'paid' : 'due'} label={LEVEL_LABEL[cur]} />
+                  </Row>
+                </Pressable>
+                {open ? levelsOf(k).map((l) => (
+                  <Pressable key={l} onPress={() => { setPerms((p) => ({ ...p, [k]: l })); setOpenKey(null); }}>
+                    <Row style={{ paddingVertical: 7, paddingHorizontal: 8, marginBottom: 4, borderRadius: 8,
+                      backgroundColor: l === cur ? C.emeraldSoft : C.paper }}>
+                      <View style={{ flex: 1 }}>
+                        <T size={TYPE.body} bold color={l === cur ? C.emerald : C.ink}>{LEVEL_LABEL[l]}</T>
+                        <T size={TYPE.caption} color={C.muted}>{l === 0 ? 'القسم لا يظهر له أبداً، ولا رابط يفتحه' : doesUpTo(k, l)}</T>
+                      </View>
+                    </Row>
+                  </Pressable>
+                )) : null}
+              </View>
+            );
+          })}
         </View>
       ))}
 
@@ -176,8 +204,47 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
           </Pressable>
         );
       }) : null}
+      <MemberPreview perms={perms} allProps={allProps} props={props} properties={properties} />
       {!ready ? <Note>{!any ? 'اختر قسماً واحداً على الأقل' : !allProps && !props.length ? 'اختر عقاراً واحداً على الأقل' : 'اكتب إيميل قوقل صحيحاً'}</Note> : null}
       <View style={{ height: 14 }} />
     </Sheet>
+  );
+}
+
+/** ما يستطيعه حتى هذا المستوى · السطور تتراكم (إدخال يشمل العرض) */
+function doesUpTo(k: SectionKey, l: Level): string {
+  const d = LEVEL_DOES[k] ?? {};
+  return ([1, 2, 3] as Level[]).filter((x) => x <= l && d[x]).map((x) => d[x]).join('، ');
+}
+
+/** «ما سيظهر لهذا العضو» · يُحسب من الاختيارات نفسها التي تفرضها الواجهة والقواعد */
+function MemberPreview({ perms, allProps, props, properties }: {
+  perms: Perms; allProps: boolean; props: string[]; properties: Array<{ id: string; name: string }>;
+}) {
+  const a: Access = { owner: false, uid: null, perms, allProps, props };
+  const tabs = ['الرئيسية', ...(canView(a, 'props') ? ['العقارات'] : []), ...(canView(a, 'contracts') ? ['العقود'] : []),
+    ...(canView(a, 'collect') ? ['التحصيل'] : []), 'المزيد'];
+  const screens = MORE_SCREENS.flatMap((g) => g.items).filter(([p]) => routeAllowed(a, p) && p !== '/settings').map(([, t]) => t);
+  const money = GRANTABLE.filter((x) => MONEY_SECTIONS.has(x.key) && canView(a, x.key)).map((x) => x.label);
+  const adds = GRANTABLE.filter((x) => level(a, x.key) === 2).map((x) => x.label);
+  const full = GRANTABLE.filter((x) => level(a, x.key) === 3).map((x) => x.label);
+  const names = allProps ? 'كل العقارات' : properties.filter((p) => props.includes(p.id)).map((p) => p.name).join('، ') || 'لم يُختر عقار';
+  const line = (k: string, v: string) => (
+    <View style={{ paddingVertical: 4 }}>
+      <T size={TYPE.caption} color={C.muted}>{k}</T>
+      <T size={TYPE.body}>{v}</T>
+    </View>
+  );
+  return (
+    <View style={{ marginTop: 14, padding: 12, borderRadius: 10, backgroundColor: C.paper, borderWidth: 1, borderColor: C.line }}>
+      <T size={TYPE.cardTitle} bold style={{ marginBottom: 4 }}>ما سيظهر لهذا العضو</T>
+      {line('الشريط السفلي', tabs.join(' · '))}
+      {line('في «المزيد»', screens.length ? screens.join(' · ') : 'الإعدادات وحدها')}
+      {line('العقارات', names)}
+      {line('المبالغ', money.length ? 'يراها في: ' + money.join('، ') : 'لا يرى أي مبلغ')}
+      {adds.length ? line('يضيف ولا يعدّل', adds.join('، ')) : null}
+      {full.length ? line('يضيف ويعدّل ويلغي', full.join('، ')) : null}
+      {line('لا يظهر له أبداً', 'الأعضاء والصلاحيات · النسخ الاحتياطي والاستعادة · المالية · المسح · حذف الحساب')}
+    </View>
   );
 }

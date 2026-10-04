@@ -19,6 +19,7 @@ import { createSession, type Session, type SessionUser } from '../cloud/session'
 import { FirestoreRemote } from '../cloud/firestore';
 import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, deleteAllAppDataFiles, type DriveBackup, type DriveIO } from '../cloud/drive';
 import { resetDeviceData } from './deviceReset';
+import { hasUserData } from '../domain/backup/upgrade';
 import {
   enableSync, syncOnce, syncStatus, setSyncState, getSyncState, planCloudReplace, adoptAsCloudTruth, readCloud, planFromSnapshot, syncBackoffUntil,
   type SyncStatus, type CloudReplacePlan, type CloudSnapshot,
@@ -37,7 +38,9 @@ import { getBackupPassword } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
 import { SYNC_TABLES } from '../db/syncTables';
 import { memberTokens, fullReadTables } from '../sync/acl';
-import { setCapture } from '../sync/engine';
+import { setCapture, outboxCount } from '../sync/engine';
+import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
+import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
   moveOwnerToOrg, refreshMembership, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
@@ -96,9 +99,14 @@ export interface CloudState {
   restored: boolean;
   /** دعوات منشآت لإيميل الداخل على جهاز جديد · تعرضها بوابة الدخول قبل أي مزامنة */
   invites: Array<{ org: string; doc: MemberDoc }> | null;
+  /**
+   * ما تنتظره بوابة الدخول قبل فتح التطبيق: 'retry' تعذّر التحقق من الدعوات (يلزم اتصال) ·
+   * 'unbound' على الجهاز بيانات بلا حساب ينتظر قرار الداخل فيها · 'switching' تُفتح نسخة الحساب
+   */
+  gate: 'retry' | 'unbound' | 'switching' | null;
 }
 
-let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null, restored: false, invites: null };
+let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null, restored: false, invites: null, gate: null };
 const listeners = new Set<() => void>();
 function patch(p: Partial<CloudState>): void {
   state = { ...state, ...p };
@@ -263,7 +271,8 @@ export function startCloud(db: AppDB, onRemoteData?: () => void): () => void {
 
   s.restore().then((u) => {
     patch({ user: u, restored: true });
-    if (u) syncNow();
+    if (u && activeAccount(db) !== u.uid) activateAccount(u);
+    else if (u) syncNow();
   }).catch(() => patch({ restored: true }));
 
   return () => {
@@ -277,24 +286,73 @@ export async function cloudSignIn(): Promise<SessionUser | null> {
   if (!s || !appDb) return null;
   const u = await s.signIn();
   if (!u) return null;
-  // على الجهاز بيانات حساب آخر · لا تُرفع إلى هذا الحساب ولا يُنضمّ بها: بوابة الدخول تعرض الاختيار
-  const owner = deviceAccount(appDb);
-  if (owner && owner.uid !== u.uid) { patch({ user: u }); return u; }
-  // جهازٌ بلا حساب ولا عضوية: دعوات منشآت لإيميله تُعرض أولاً، ولا مزامنة قبل قراره
-  if (!owner && !readMembership(appDb) && state.online) {
-    try {
-      const sess = s;
-      const inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.email);
-      if (inv.length) { patch({ user: u, invites: inv }); return u; }
-    } catch { /* لا دعوات تُقرأ · يكمل مالكاً */ }
-  }
-  // نسخة مستعادة لم تُعتمد · لا يُفعَّل الانضمام فيغلب ما في السحابة عليها صامتاً
-  if (getSyncState(appDb, 'restored_unadopted') !== '1') enableSync(appDb, u.uid);
-  // إيميل الحساب على الجهاز · تقرؤه شاشة الدخول إن خرج صاحبه أو دخل غيره
-  setSyncState(appDb, 'email', u.email);
-  patch({ user: u, sync: syncStatus(appDb) });
-  syncNow();
+  await activateAccount(u);
   return u;
+}
+
+let activating = false;
+
+/**
+ * نسخة الحساب الداخل تصير النشطة (توجيه المالك: البيانات ملك الحساب لا الجهاز) · نسخة غيره تُركن
+ * مقفلةً بطابورها ولا تُمسح. والنسخة الجديدة لا تُنشئ منشأة قبل التحقق من الدعوات: المدعوّ يرى دعوته
+ * وحدها حتى يقرر، وتعذّر التحقق (بلا اتصال) لا يُفترض معه أنه مالك.
+ */
+export async function activateAccount(u: SessionUser): Promise<void> {
+  const db = appDb;
+  const s = getSession();
+  if (!db || !s || activating) return;
+  activating = true;
+  patch({ user: u, gate: 'switching', invites: null });
+  await pauseSync();
+  try {
+    const env = appSlotEnv(db);
+    const r = switchTo(env, u.uid);
+    onData();
+    if (activeAccount(db) !== u.uid) {
+      // نسخة جديدة أو بيانات بلا حساب · الدعوات أولاً
+      let inv: Array<{ org: string; doc: MemberDoc }> | null = null;
+      if (state.online) {
+        try {
+          const sess = s;
+          inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.email);
+        } catch { inv = null; }
+      }
+      if (inv === null) { patch({ gate: 'retry' }); return; }
+      if (inv.length) {
+        // بيانات الجهاز التي بلا حساب لا تُعرض على مدعوّ · تُركن كما هي
+        if (r === 'unbound') { parkActive(env, UNBOUND); onData(); }
+        patch({ invites: inv, gate: null });
+        return;
+      }
+      if (r === 'unbound') { patch({ gate: 'unbound' }); return; }
+      // لا دعوة: صاحب الحساب مالكٌ لمنشأته · نسخته الجديدة تسحب ما في سحابته (الانضمام: السحابة تغلب)
+      enableSync(db, u.uid);
+    }
+    setSyncState(db, 'email', u.email);
+    patch({ gate: null, sync: syncStatus(db) });
+  } finally {
+    activating = false;
+    resumeSync();
+  }
+  syncNow();
+}
+
+/** بيانات بلا حساب على الجهاز: يربطها الداخل بحسابه بقراره */
+export function bindUnboundToAccount(db: AppDB): void {
+  if (!state.user) return;
+  enableSync(db, state.user.uid);
+  setSyncState(db, 'email', state.user.email);
+  patch({ gate: null, sync: syncStatus(db) });
+  syncNow();
+}
+
+/** أو يتركها على الجهاز بلا حساب (تُركن ولا تُمسح) ويبدأ بنسخة حسابه من السحابة */
+export async function keepUnboundAside(db: AppDB): Promise<void> {
+  if (!state.user) return;
+  await pauseSync();
+  try { parkActive(appSlotEnv(db), UNBOUND); onData(); }
+  finally { resumeSync(); }
+  await activateAccount(state.user);
 }
 
 /** استعادة تمّت ولم تُعتمد للسحابة بعد (جرت والمستخدم خارج حسابه) */
@@ -366,16 +424,6 @@ export async function adoptPendingWithKeep(
   return { queued, kept };
 }
 
-/** بعد تفريغ جهازٍ كانت عليه بيانات حساب آخر · يرتبط الجهاز بالحساب الداخل ويبدأ مزامنته */
-export async function bindDeviceToCurrentAccount(db: AppDB): Promise<void> {
-  if (!state.user) return;
-  await resetDeviceData(db);
-  enableSync(db, state.user.uid);
-  setSyncState(db, 'email', state.user.email);
-  patch({ sync: syncStatus(db), lastError: null });
-  syncNow();
-}
-
 /** حساب البيانات على هذا الجهاز (uid وإيميل) · آخر من دخل وارتبطت به المزامنة */
 export function deviceAccount(db: DB): { uid: string; email: string } | null {
   const uid = getSyncState(db, 'uid');
@@ -421,11 +469,35 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
 }
 
 /** الخروج: الرموز وحدها تُمسح · بياناتك على الجهاز كما هي والتقاط التغييرات مستمر لحين العودة */
+/**
+ * الخروج: نسخة الحساب تُركن على الجهاز مقفلةً فلا يراها حساب آخر أبداً · ولا خروج ما دام شيء لم يُرفع
+ * (طابور أو نسخة مستعادة لم تُعتمد)، فلا يبقى تغيير على الجهاز وحده.
+ */
 export async function cloudSignOut(): Promise<void> {
   const s = getSession();
   if (!s) return;
-  await s.signOut();
-  patch({ user: null });
+  const db = appDb;
+  if (db) {
+    const waiting = outboxCount(db);
+    if (waiting > 0) throw new Error('لم تُرفع ' + waiting + ' تغييرات بعد · اتصل بالإنترنت ودع المزامنة تكمل ثم اخرج');
+    if (getSyncState(db, 'restored_unadopted') === '1') throw new Error('على الجهاز نسخة مستعادة لم تُعتمد للسحابة · اعتمدها أولاً ثم اخرج');
+  }
+  await pauseSync();
+  try {
+    const uid = db ? activeAccount(db) : null;
+    if (db && uid) { parkActive(appSlotEnv(db), uid); onData(); }
+    await s.signOut();
+    patch({ user: null, invites: null, gate: null, sync: db ? syncStatus(db) : null });
+  } finally {
+    resumeSync();
+  }
+}
+
+/** بعد استعادة نسخة والحساب داخل · النسخة المستعادة تُنسب لحسابه فوراً فلا تبقى بلا حساب */
+export function bindRestoredToCurrentAccount(db: AppDB): void {
+  if (!state.user) return;
+  setSyncState(db, 'uid', state.user.uid);
+  setSyncState(db, 'email', state.user.email);
 }
 
 /* ═══════════ المنشأة والأعضاء ═══════════ */
@@ -438,7 +510,8 @@ export async function acceptInviteNow(db: AppDB, org: string, doc: MemberDoc): P
   const user = state.user;
   await pauseSync();
   try {
-    await resetDeviceData(db);
+    // نسخة الحساب الجديدة فارغة (activateAccount) · وإن لم تكن فلا يُمسح شيء ويُرفض القبول
+    if (activeAccount(db) || hasUserData(db)) throw new Error('على الجهاز نسخة فيها بيانات لهذا الحساب · لا تُستبدل بعضوية');
     const remote = new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: user.uid, idToken: () => sess.idToken() });
     const m = await acceptInvite(db, remote, org, user.uid, doc);
     bindMember(db, m, user.email, doc.orgName || null);
@@ -449,20 +522,23 @@ export async function acceptInviteNow(db: AppDB, org: string, doc: MemberDoc): P
   syncNow();
 }
 
-/** رفض الدعوات · يكمل صاحب الجهاز مالكاً لمنشأته */
+/** رفض الدعوات · يكمل صاحب الحساب مالكاً لمنشأته */
 export function declineInvites(db: AppDB): void {
   if (!state.user) return;
   enableSync(db, state.user.uid);
+  setSyncState(db, 'email', state.user.email);
   setSyncState(db, 'email', state.user.email);
   patch({ invites: null, sync: syncStatus(db) });
   syncNow();
 }
 
-/** مغادرة العضو المنشأة · تُحذف عضويته ويُفرَّغ الجهاز ويخرج */
+/** مغادرة العضو المنشأة · تُحذف عضويته ويُفرَّغ الجهاز ويخرج · ولا مغادرة قبل رفع تغييراته */
 export async function leaveOrgNow(db: AppDB): Promise<void> {
   const m = readMembership(db);
   const s = getSession();
   if (!m || !s || !state.user) return;
+  const waiting = outboxCount(db);
+  if (waiting > 0) throw new Error('لم تُرفع ' + waiting + ' تغييرات بعد · اتصل بالإنترنت ودع المزامنة تكمل ثم غادر');
   const sess = s;
   await pauseSync();
   try {
@@ -486,7 +562,7 @@ function teamRemote(): { remote: FirestoreRemote; org: string } {
 const orgNameOf = (db: DB) => db.get<{ name: string }>('SELECT name FROM company WHERE id = 1')?.name || 'منشأة عقاري';
 
 export async function listTeamNow() { const t = teamRemote(); return listTeam(t.remote, t.org); }
-export async function inviteMemberNow(db: DB, spec: MemberSpec) { const t = teamRemote(); return sendInvite(t.remote, t.org, spec, orgNameOf(db)); }
+export async function inviteMemberNow(db: DB, spec: MemberSpec) { const t = teamRemote(); return sendInvite(t.remote, t.org, spec, orgNameOf(db), state.user!.email); }
 export async function updateMemberNow(db: DB, uid: string, spec: MemberSpec) { const t = teamRemote(); return updateMember(t.remote, t.org, uid, spec, orgNameOf(db)); }
 export async function removeMemberNow(uid: string) { const t = teamRemote(); return removeMember(t.remote, t.org, uid); }
 export async function revokeInviteNow(email: string) { const t = teamRemote(); return revokeInvite(t.remote, t.org, email); }

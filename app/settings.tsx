@@ -40,7 +40,7 @@ import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
   pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
   restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
-  leaveOrgNow,
+  leaveOrgNow, bindRestoredToCurrentAccount,
 } from '../src/services/cloud';
 import { TeamSheet } from '../src/ui/TeamSheet';
 import { getSyncState } from '../src/sync/engine';
@@ -340,6 +340,8 @@ export default function Settings() {
               try {
                 await commitPreparedRestore(env, plan, archiveTmp, setProgress);
                 restored = true;
+                // النسخة المستعادة لحساب الداخل فوراً · فلا تبقى على الجهاز بيانات بلا حساب يراها غيره
+                bindRestoredToCurrentAccount(db);
                 if (cloudPlan) {
                   setProgress('جاري اعتماد النسخة للسحابة');
                   const { queued } = await adoptForCloud(db, cloudPlan);
@@ -486,12 +488,12 @@ export default function Settings() {
     actions: [{ label: 'حسناً', variant: 'ghost' }],
   }) : dialog({
     title: 'تسجيل الخروج',
-    body: 'تعود إلى شاشة الدخول، وبيانات هذا الجهاز تبقى عليه مقفلة لا تُفتح إلا بدخول هذا الحساب نفسه.',
+    body: 'تعود إلى شاشة الدخول، ونسخة حسابك تبقى على الجهاز مقفلة لا يراها حساب آخر، وتُفتح حين تدخل بحسابك نفسه.',
     tone: 'normal',
     actions: [
       { label: 'تراجع', variant: 'ghost' },
       { label: 'تسجيل الخروج', variant: 'primary', onPress: async () => {
-        try { await cloudSignOut(); }
+        try { await cloudSignOut(); bump(); }
         catch (e) { await reportFailure({ title: 'تعذّر تسجيل الخروج', where: 'تسجيل الخروج', db, e }); }
       } },
     ],
@@ -578,7 +580,10 @@ export default function Settings() {
             onPress={cloud.online && !busy ? doSignIn : undefined} />
         ) : (
           <>
-            <ValueRow icon="lock" title="حساب قوقل" value={cloud.user.email} onPress={doSignOut} />
+            {/* أعلى الإعدادات دائماً: الحساب الحالي والمنشأة والدور (توجيه المالك) */}
+            <ValueRow icon="lock" title="الحساب" value={cloud.user.email} onPress={doSignOut} />
+            <ValueRow icon="building" title="المنشأة"
+              value={(admin ? (db.get<{ name: string }>('SELECT name FROM company WHERE id = 1')?.name || 'منشأتك') : (getSyncState(db, 'org_name') || 'منشأة عقاري')) + ' · ' + (admin ? 'مالك' : 'عضو')} />
             <ValueRow icon="reload" title="حالة المزامنة"
               value={cloud.syncing ? (cloud.progress ?? 'جارية')
                 : (cloud.sync?.rejected ?? 0) > 0 ? (cloud.sync?.rejected ?? 0) + ' مرفوض عند الوصول'
@@ -589,9 +594,6 @@ export default function Settings() {
             {/* الأعضاء والصلاحيات للمالك · والعضو يرى منشأته ويغادرها (docs/PERMISSIONS.md) */}
             {admin && cloud.online ? (
               <ValueRow icon="collect" title="الأعضاء والصلاحيات" value="الدعوة والأقسام والعقارات" onPress={() => setTeamOpen(true)} />
-            ) : null}
-            {!admin ? (
-              <ValueRow icon="building" title="المنشأة" value={(getSyncState(db, 'org_name') || 'منشأة عقاري') + ' · عضو'} />
             ) : null}
             {!admin && cloud.online ? (
               <ValueRow icon="trash" title="مغادرة المنشأة" value="تُمسح بياناتها من الجهاز" tone="danger" onPress={() => dialog({
@@ -685,8 +687,7 @@ export default function Settings() {
       {/* العرض · لم يرد في ترتيب المالك فبقي بطاقةً مستقلة حتى يحدّد مكانه */}
       <Card>
         <CardTitle>العرض</CardTitle>
-        <ValueRow icon="eye" title="حجم الواجهة والخط" value={uiPct + '٪ · ' + fontPct + '٪'} onPress={() => setDisplayOpen(true)} />
-      </Card>
+        <ValueRow icon="eye" title="حجم الواجهة والخط" value={uiPct + '٪ · ' + fontPct + '٪'} onPress={() => setDisplayOpen(true)} />      </Card>
 
       {/* ٦ · البيانات والمساحة */}
       <Card>

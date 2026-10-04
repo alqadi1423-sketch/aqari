@@ -213,6 +213,24 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
       .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
 
+  test('لا دعوة لإيميل المالك نفسه · في القواعد وفي الخدمة', async () => {
+    const own = ORG.toLowerCase() + '@example.test'; // إيميل رمز المالك في token()
+    expect(await putDoc(`orgs/${ORG}/invites/${own}`, { email: own, perm: { collect: 1 }, all: true, props: [], tokens: ['collect|@'], orgName: 'x' }, ORG)).toBe(403);
+    const { sendInvite } = await import('@/services/org');
+    await expect(sendInvite(remoteFor(ORG, null), ORG, { email: own, perms: { collect: 1 }, allProps: true, props: [] }, 'x', own))
+      .rejects.toThrow(/إيميلك أنت/);
+    // ولا لعضو قائم
+    await expect(sendInvite(remoteFor(ORG, null), ORG, { email: 'u-col@example.test', perms: { collect: 1 }, allProps: true, props: [] }, 'x', own))
+      .rejects.toThrow(/عضو في المنشأة/);
+  });
+
+  test('العضو لا يرى قائمة الأعضاء ولا الدعوات ولا يدعو أحداً', async () => {
+    const r = remoteFor(COLLECTOR.uid!, COLLECTOR);
+    await expect(r.listDocs(`orgs/${ORG}/members`)).rejects.toThrow(/403/);
+    await expect(r.listDocs(`orgs/${ORG}/invites`)).rejects.toThrow(/403/);
+    expect(await putDoc(`orgs/${ORG}/invites/someone@example.test`, { email: 'someone@example.test', perm: { collect: 1 }, all: true, props: [], tokens: ['collect|@'], orgName: 'x' }, COLLECTOR.uid!)).toBe(403);
+  });
+
   test('العضو لا يعدّل مستند عضويته', async () => {
     expect(await putDoc(`orgs/${ORG}/members/${COLLECTOR.uid}`, { email: 'u-col@example.test', perm: { collect: 3 }, all: true, props: [], tokens: ['collect|@'] }, COLLECTOR.uid!)).toBe(403);
   });

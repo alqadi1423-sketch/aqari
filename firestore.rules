@@ -278,7 +278,9 @@ service cloud.firestore {
 
       match /invites/{email} {
         allow read: if orgOwner(org) || (request.auth != null && request.auth.token.email == email);
-        allow create, update: if orgOwner(org) && request.resource.data.email == email;
+        // لا دعوة لإيميل المالك نفسه
+        allow create, update: if orgOwner(org) && request.resource.data.email == email
+          && email != request.auth.token.email;
         allow delete: if orgOwner(org) || (request.auth != null && request.auth.token.email == email);
       }
 

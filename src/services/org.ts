@@ -49,9 +49,15 @@ function asMemberDoc(d: Record<string, unknown>): MemberDoc {
 
 /* ─── المالك ─── */
 
-export async function sendInvite(remote: FirestoreRemote, org: string, spec: MemberSpec, orgName: string): Promise<MemberDoc> {
+export async function sendInvite(
+  remote: FirestoreRemote, org: string, spec: MemberSpec, orgName: string, ownerEmail: string,
+): Promise<MemberDoc> {
   const doc = memberDoc(spec, orgName);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(doc.email)) throw new Error('اكتب إيميل قوقل صحيحاً للعضو');
+  // لا دعوة للمالك نفسه ولا لعضو قائم (والقواعد ترفض الأولى أيضاً)
+  if (doc.email === normEmail(ownerEmail)) throw new Error('هذا إيميلك أنت · المالك لا يُدعى إلى منشأته');
+  const team = await listTeam(remote, org);
+  if (team.members.some((m) => normEmail(m.doc.email) === doc.email)) throw new Error('هذا الإيميل عضو في المنشأة بالفعل · عدّل صلاحيته بدل دعوته');
   await remote.setDoc(`orgs/${org}/invites/${doc.email}`, doc as unknown as Record<string, unknown>);
   return doc;
 }
