@@ -5,6 +5,7 @@
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { appDb, type AppDB } from '../db/expoAdapter';
+import { readAccess } from '../services/access';
 import { getAllSettings, setSetting, type AppSettings } from '../repos/settings';
 import { backfillHandovers } from '../domain/handover/service';
 import { refreshContractStatuses } from '../domain/contracts/rules';
@@ -86,12 +87,14 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const t1 = setTimeout(() => {
       try {
-        refreshContractStatuses(db, today());
-        backfillHandovers(db);
+        // الإعمار يكتب صفوفاً تُزامَن · يجري على جهاز المالك وحده، وجهاز العضو يتلقاها منه (docs/PERMISSIONS.md)
+        const owner = readAccess(db).owner;
+        if (owner) refreshContractStatuses(db, today());
+        if (owner) backfillHandovers(db);
         backfillSortKeys(db);
-        backfillTenantLinks(db);
+        if (owner) backfillTenantLinks(db);
         // المسدَّد يُحسب من الدفعات منذ الهجرة ٢١ · يُعاد حسابه مرة لكل قاعدة رُقّيت إليها
-        if (!db.get(`SELECT 1 FROM meta WHERE key = 'paid_derived_v21'`)) {
+        if (owner && !db.get(`SELECT 1 FROM meta WHERE key = 'paid_derived_v21'`)) {
           const changed = recomputeInstallments(db);
           if (changed.length) logAudit(db, 'البيانات', 'update', 'المسدَّد من الدفعات', changed.length + ' قسط أُعيد حساب مسدَّده من دفعاته وتوزيعها');
           db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('paid_derived_v21', ?)`, [new Date().toISOString()]);

@@ -10,7 +10,7 @@ import type { RemoteDoc, RowData } from './types';
 import type { Access } from '../domain/access/access';
 import { level } from '../domain/access/access';
 import { SECTION_KEYS, type SectionKey } from '../domain/access/sections';
-import { moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
+import { CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
 import { OP_WRITES } from '../domain/access/opWrites';
 
 export const ORG_WIDE = '*';
@@ -96,6 +96,12 @@ export function chooseOp(a: Access, table: string): SectionKey | null {
     ?? null;
 }
 
+/** الجداول التي يقرأ العضو مستندها الكامل (بمبالغه) · فيُهمل إسقاطها عند السحب */
+export function fullReadTables(a: Access, tables: string[]): Set<string> {
+  return new Set(tables.filter((t) => (!CROSS_PROPERTY[t] || a.owner || a.allProps)
+    && readSectionsOf(t, null).some((s) => MONEY_SECTIONS.has(s) && level(a, s) >= 1)));
+}
+
 export interface AclDocs {
   /** المستند الكامل بحقول الرؤية */
   doc: RemoteDoc;
@@ -119,6 +125,14 @@ export function annotate(db: DB, doc: RemoteDoc, a: Access): AclDocs {
     if (by) extra.by = by;
   }
   const out: RemoteDoc = { ...doc, ...extra };
+  if (CROSS_PROPERTY[doc.t]) {
+    // الكامل لذي كل العقارات وحده (رموز «قسم|@») · والإسقاط لكل قارئ بعقاراته
+    out.g = tokensFor(full, []);
+    return {
+      doc: out,
+      pub: { ...out, id: doc.t + '~pub__' + doc.k, t: doc.t + '~pub', d: row ? (crossPublicFields(doc.t, row) as RowData) : null, g: tokensFor(readers, pids) },
+    };
+  }
   if (!pub.length) return { doc: out, pub: null };
   const pubDoc: RemoteDoc = {
     ...out,

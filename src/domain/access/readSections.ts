@@ -76,6 +76,21 @@ export function moneySplit(row: Record<string, unknown> | null, readers: Section
   return { full: readers.filter((r) => MONEY_SECTIONS.has(r)), pub: readers.filter((r) => !MONEY_SECTIONS.has(r)) };
 }
 
+/**
+ * صفٌّ مشترك بين العقارات (المستأجر بعقود في أكثر من عقار) وفيه ما يجمع العقارات كلها: رصيده الدائن
+ * وملاحظاته. مستنده الكامل لا يقرؤه إلا العضو ذو كل العقارات، والمحصور بعقارات يقرأ إسقاطه بلا هذه
+ * الحقول · فلا يرى من نشاطه في عقار آخر شيئاً ولا أن له عقداً هناك (الدراسة ب).
+ */
+export const CROSS_PROPERTY: Record<string, string[]> = { tenants: ['notes'] };
+
+/** إسقاط الصف المشترك: بلا مبالغ ولا الحقول الجامعة */
+export function crossPublicFields(table: string, row: Record<string, unknown>): Record<string, unknown> {
+  const drop = new Set(CROSS_PROPERTY[table] ?? []);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(row)) if (!isMoneyColumn(k) && !drop.has(k)) out[k] = v;
+  return out;
+}
+
 /** قسم القيد من مصدره · القيد يقرؤه الدفتر والتقارير وقسمُ مصدره */
 export function journalSection(srcType: string | null | undefined): SectionKey {
   const s = (srcType || '').replace(/_rev$/, '');

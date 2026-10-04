@@ -17,6 +17,7 @@ import { reportFailure } from './failureDialog';
 import { cloudConfig } from '../cloud/config';
 import {
   cloudState, subscribeCloud, primeSession, cloudSignIn, cloudSignOut, deviceAccount, restoreAwaitingAdoption, bindDeviceToCurrentAccount,
+  acceptInviteNow, declineInvites,
 } from '../services/cloud';
 
 /** صفحتا الشروط والخصوصية على استضافة المشروع · تُنشران بعد مراجعة المالك لمسودتيهما */
@@ -51,6 +52,28 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     return <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.paper }}><ActivityIndicator color={C.emerald} size="large" /></View>;
   }
   const owner = deviceAccount(db);
+  // دعوة منشأة لإيميل الداخل على جهاز جديد · يختار قبل أي مزامنة (صلاحيات الأقسام)
+  if (cloud.user && cloud.invites?.length) {
+    return (
+      <Shell>
+        <T size={TYPE.cardTitle} bold style={{ textAlign: 'center', marginBottom: 10 }}>دعوة للانضمام</T>
+        {cloud.invites.map((inv) => (
+          <View key={inv.org} style={{ marginBottom: 10 }}>
+            <BtnPrimary title={'انضم إلى «' + (inv.doc.orgName || 'منشأة عقاري') + '»'} loading={busy} onPress={async () => {
+              setBusy(true);
+              try { await acceptInviteNow(db, inv.org, inv.doc); bump(); }
+              catch (e) { await reportFailure({ title: 'تعذّر الانضمام', where: 'قبول الدعوة', db, e }); }
+              setBusy(false);
+            }} />
+          </View>
+        ))}
+        <Note>ترى في المنشأة ما تجيزه لك صلاحيتك وحدها، وتُمسح أي بيانات على هذا الجهاز قبل الانضمام.</Note>
+        <View style={{ marginTop: 12 }}>
+          <BtnGhost title="لا · أستعمل التطبيق لأملاكي" onPress={() => { declineInvites(db); bump(); }} />
+        </View>
+      </Shell>
+    );
+  }
   if (cloud.user && (!owner || owner.uid === cloud.user.uid || restoreAwaitingAdoption(db))) return <>{children}</>;
 
   const legal = legalUrls();

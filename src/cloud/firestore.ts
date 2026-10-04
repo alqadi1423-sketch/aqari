@@ -119,6 +119,7 @@ export class FirestoreRemote implements RemoteStore {
     this.userPath = o.org ? `${this.docsRoot}/orgs/${o.org}` : `${this.docsRoot}/users/${o.uid}`;
     this.relPath = o.org ? `orgs/${o.org}` : `users/${o.uid}`;
     this.f = o.fetchImpl ?? fetch;
+    this.memberMode = !!o.org && !!o.memberTokens?.();
     if (o.org) {
       this.annotate = (db, doc) => {
         const { doc: d, pub } = aclAnnotate(db, doc, o.access?.() ?? OWNER_ACCESS);
@@ -141,6 +142,7 @@ export class FirestoreRemote implements RemoteStore {
 
   /** المنشأة وحدها: حقول الرؤية والكتابة وإسقاط المبالغ · وفي users/{uid} يبقى المستند كما هو */
   annotate?: (db: DB, doc: RemoteDoc) => RemoteDoc;
+  memberMode?: boolean;
 
   docName(id: string): string {
     return `${this.userPath}/rows/${id}`;
@@ -234,11 +236,64 @@ export class FirestoreRemote implements RemoteStore {
       deleted += names.length;
       onProgress?.(deleted);
     }
-    const meta = (await list('meta')).filter((n) => !n.endsWith('/meta/deletion'));
+    // ومع meta في المنشأة: أعضاؤها ودعواتها (والمسار القديم لا شيء فيهما)
+    const meta = [
+      ...(await list('meta')).filter((n) => !n.endsWith('/meta/deletion')),
+      ...(await list('members')),
+      ...(await list('invites')),
+    ];
     await this.call(`${this.root}:commit`, {
       writes: [...meta.map((name) => ({ delete: name })), { delete: this.userPath }, { delete: `${this.userPath}/meta/deletion` }],
     });
     return deleted;
+  }
+
+  /* ─── مستندات المنشأة المفردة (العضوية والدعوات وحروف الأجهزة) · المسار نسبي لجذر المستندات ─── */
+
+  /** قراءة مستند · null إن لم يوجد */
+  async getDoc(path: string): Promise<Record<string, unknown> | null> {
+    const token = await this.o.idToken();
+    const res = await this.f(`${this.root}/${path}`, { headers: { Authorization: 'Bearer ' + token } });
+    if (res.status === 404) return null;
+    const text = await res.text();
+    if (!res.ok) throw new FirestoreHttpError(res.status, text);
+    return decodeFields((JSON.parse(text) as { fields?: Record<string, FsValue> }).fields ?? {});
+  }
+
+  /** كتابة مستند كاملاً (استبدال) */
+  async setDoc(path: string, data: Record<string, unknown>): Promise<void> {
+    await this.call(`${this.root}:commit`, { writes: [{ update: { name: `${this.docsRoot}/${path}`, fields: encodeFields(data) } }] });
+  }
+
+  async deleteDoc(path: string): Promise<void> {
+    await this.call(`${this.root}:commit`, { writes: [{ delete: `${this.docsRoot}/${path}` }] });
+  }
+
+  /** مستندات مجموعة واحدة (بلا ترقيم · العضوية والدعوات قليلة) */
+  async listDocs(collectionPath: string): Promise<Array<{ id: string; data: Record<string, unknown> }>> {
+    const token = await this.o.idToken();
+    const res = await this.f(`${this.root}/${collectionPath}?pageSize=300`, { headers: { Authorization: 'Bearer ' + token } });
+    const text = await res.text();
+    if (!res.ok) throw new FirestoreHttpError(res.status, text);
+    const docs = ((text ? JSON.parse(text) : {}).documents ?? []) as Array<{ name: string; fields?: Record<string, FsValue> }>;
+    return docs.map((d) => ({ id: d.name.slice(d.name.lastIndexOf('/') + 1), data: decodeFields(d.fields ?? {}) }));
+  }
+
+  /** دعوات هذا الإيميل بين المنشآت (استعلام مجموعة invites) · مع رقم منشأة كلٍّ من مساره */
+  async invitesFor(email: string): Promise<Array<{ org: string; data: Record<string, unknown> }>> {
+    const rows = (await this.call(`${this.root}:runQuery`, {
+      structuredQuery: {
+        from: [{ collectionId: 'invites', allDescendants: true }],
+        where: { fieldFilter: { field: { fieldPath: 'email' }, op: 'EQUAL', value: { stringValue: email } } },
+      },
+    })) as Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
+    const out: Array<{ org: string; data: Record<string, unknown> }> = [];
+    for (const r of rows) {
+      if (!r.document) continue;
+      const m = /\/orgs\/([^/]+)\/invites\//.exec(r.document.name);
+      if (m) out.push({ org: m[1], data: decodeFields(r.document.fields) });
+    }
+    return out;
   }
 
   /** صفحة واحدة من الصفوف بعد مؤشر · بشرط رموز اختيارياً (array-contains-any حتى ٣٠ رمزاً) */

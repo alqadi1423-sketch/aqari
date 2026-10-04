@@ -40,7 +40,10 @@ import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
   pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
   restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
+  leaveOrgNow,
 } from '../src/services/cloud';
+import { TeamSheet } from '../src/ui/TeamSheet';
+import { getSyncState } from '../src/sync/engine';
 import type { CloudReplacePlan, CloudSnapshot } from '../src/sync/engine';
 import type { PrepareOptions } from '../src/domain/backup/restore';
 import type { KeptEntry } from '../src/domain/backup/keepPosted';
@@ -117,6 +120,7 @@ export default function Settings() {
   const [driveOpen, setDriveOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
+  const [teamOpen, setTeamOpen] = useState(false);
   const [delTyped, setDelTyped] = useState('');
   const [busy, setBusy] = useState(false);
   const [wipeConfirm, setWipeConfirm] = useState<string | null>(null);
@@ -582,6 +586,27 @@ export default function Settings() {
                 : 'آخر مزامنة ' + lastSync(cloud.sync?.lastSyncAt ?? null)}
               tone={(cloud.sync?.rejected ?? 0) > 0 || cloud.lastError ? 'danger' : undefined}
               onPress={() => setSyncOpen(true)} />
+            {/* الأعضاء والصلاحيات للمالك · والعضو يرى منشأته ويغادرها (docs/PERMISSIONS.md) */}
+            {admin && cloud.online ? (
+              <ValueRow icon="collect" title="الأعضاء والصلاحيات" value="الدعوة والأقسام والعقارات" onPress={() => setTeamOpen(true)} />
+            ) : null}
+            {!admin ? (
+              <ValueRow icon="building" title="المنشأة" value={(getSyncState(db, 'org_name') || 'منشأة عقاري') + ' · عضو'} />
+            ) : null}
+            {!admin && cloud.online ? (
+              <ValueRow icon="trash" title="مغادرة المنشأة" value="تُمسح بياناتها من الجهاز" tone="danger" onPress={() => dialog({
+                title: 'مغادرة المنشأة',
+                body: 'تُلغى عضويتك، ويُفرَّغ هذا الجهاز من بيانات المنشأة، وتخرج من حسابك. لا رجعة إلا بدعوة جديدة.',
+                tone: 'danger',
+                actions: [
+                  { label: 'تراجع', variant: 'ghost' },
+                  { label: 'غادِر', variant: 'danger', onPress: async () => {
+                    try { await leaveOrgNow(db); bump(); }
+                    catch (e) { await reportFailure({ title: 'تعذّرت المغادرة', where: 'الإعدادات', db, e }); }
+                  } },
+                ],
+              })} />
+            ) : null}
             {admin && cloud.online ? (
               <ValueRow icon="export" title="النسخ على Drive" value="نسخ أو استعادة" onPress={() => setDriveOpen(true)} />
             ) : null}
@@ -722,6 +747,8 @@ export default function Settings() {
         </T>
         <BtnGhost danger icon="trash" title="امسح كل البيانات" onPress={() => setWipeConfirm('')} />
       </Card> : null}
+
+      {teamOpen ? <TeamSheet visible onClose={() => setTeamOpen(false)} /> : null}
 
       {/* اختيار القيمة · لوحة سفلية واحدة لكل صفوف القيم */}
       <PickerSheet

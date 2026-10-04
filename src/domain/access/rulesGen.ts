@@ -70,6 +70,12 @@ export function generateOrgRules(): string {
     function propsOk(org, r) {
       return mem(org).all == true || r.pids.hasOnly(mem(org).props.concat(['*']));
     }
+    // الحقل الجانبي في صفٍّ مشترك (رصيد مستأجرٍ له عقد في عقار آخر): يكفي أن يمسّ الصف عقاراً للعضو
+    // وألا تتغيّر عقاراته
+    function propsTouch(org, before, after) {
+      return mem(org).all == true
+        || (after.pids == before.pids && after.pids.hasAny(mem(org).props.concat(['*'])));
+    }
 ${writesFns()}
 
     function validOrgRow(rowId) {
@@ -96,13 +102,13 @@ ${writesFns()}
       let before = resource.data;
       let after = request.resource.data;
       let op = after.op;
-      return isMember(org) && op is string && propsOk(org, after)
+      return isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)
         && (
-          (opOwns(op, baseT(after.t)) && lvl(org, op) >= 3)
+          (opOwns(op, baseT(after.t)) && lvl(org, op) >= 3 && propsOk(org, after))
           || (opOwns(op, baseT(after.t)) && lvl(org, op) >= 2 && isDraft(before)
-              && before.get('by', '') == request.auth.uid)
-          || (lvl(org, op) >= 2 && after.del == false && before.d != null
+              && before.get('by', '') == request.auth.uid && propsOk(org, after))
+          || (lvl(org, op) >= 2 && after.del == false && before.d != null && propsTouch(org, before, after)
               && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
         );
     }

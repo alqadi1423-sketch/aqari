@@ -479,7 +479,8 @@ export function applyInbox(db: DB, deviceId: string): { applied: number; conflic
   const waiting = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
   // قيدٌ وصل ومستنده لا يصل (حذفته استعادة على جهاز آخر) يبقى ويُعلَّم للمراجعة (orphans.ts) ·
   // بعد اكتمال الوارد لا قبله، فالقيد يسبق مستنده في ترتيب التطبيق
-  if ((applied || rejected) && !waiting) markOrphans(db, 'وصل بالمزامنة');
+  // جهاز العضو يحمل جزءاً من الدفتر بصلاحيته · فلا يُعلَّم ما غاب مصدره عنه يتيماً
+  if ((applied || rejected) && !waiting && !getSyncState(db, 'membership')) markOrphans(db, 'وصل بالمزامنة');
   return { applied, conflicts, rejected, waiting };
 }
 
@@ -740,9 +741,14 @@ export async function syncOnce(
       const d = buildDoc(db, r.tbl, r.pk, r.op, r.changed_at, deviceId);
       return remote.annotate ? remote.annotate(db, d) : d;
     });
+    // العضو: ما لا قسم يجيزه له لا يُرسل أصلاً · يُعامل كالمرفوض
+    const results0: Array<WriteResult | null> = docs.map((d) => (remote.memberMode && !d.op ? { ok: false, code: 'PERMISSION_DENIED', message: 'لا قسم يجيزه' } : null));
     let results: WriteResult[];
     try {
-      results = await remote.write(docs);
+      const sendIdx = results0.map((x, i) => (x ? -1 : i)).filter((i) => i >= 0);
+      const sent = sendIdx.length ? await remote.write(sendIdx.map((i) => docs[i])) : [];
+      results = results0.map((x) => x ?? { ok: false });
+      sendIdx.forEach((i, j) => { results[i] = sent[j]; });
       failures = 0;
     } catch (e) {
       // انقطاع الاتصال وما ليس عابراً · الطابور كما هو ويُستأنف عند عودته
@@ -760,7 +766,13 @@ export async function syncOnce(
     db.transaction(() => {
       results.forEach((res, i) => {
         const r = batch[i];
-        if (res.ok || immutableDenied(docs[i], res.code)) {
+        // العضو: المرفوض لصلاحيته لا تفيده الإعادة · يخرج من الطابور ويُسجَّل
+        const memberDenied = remote.memberMode && res.code === 'PERMISSION_DENIED';
+        if (memberDenied) {
+          db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
+            [docs[i].id, r.tbl, r.pk, 'خارج صلاحيتك · بقي على هذا الجهاز ولم يُرفع', JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
+        }
+        if (res.ok || memberDenied || immutableDenied(docs[i], res.code)) {
           // لا يُحذف إن تغيّر الصف أثناء الرفع · يبقى للدفعة التالية بوقته الجديد
           db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND changed_at = ?`, [r.tbl, r.pk, r.changed_at]);
           if (res.ok) pushed++;

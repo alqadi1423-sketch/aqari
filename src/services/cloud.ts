@@ -35,6 +35,14 @@ import { toLocalISODate } from '../domain/dates';
 import { appBackupEnv } from './backupService';
 import { getBackupPassword } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
+import { SYNC_TABLES } from '../db/syncTables';
+import { memberTokens, fullReadTables } from '../sync/acl';
+import { setCapture } from '../sync/engine';
+import { readAccess, readMembership, saveMembership, type Membership } from './access';
+import {
+  moveOwnerToOrg, refreshMembership, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
+  type MemberDoc, type MemberSpec,
+} from './org';
 
 /* ═══════════ الجلسة ═══════════ */
 
@@ -86,9 +94,11 @@ export interface CloudState {
   sync: SyncStatus | null;
   /** انتهت قراءة الجلسة المحفوظة عند الإقلاع · قبلها لا تُعرض شاشة الدخول فلا تومض */
   restored: boolean;
+  /** دعوات منشآت لإيميل الداخل على جهاز جديد · تعرضها بوابة الدخول قبل أي مزامنة */
+  invites: Array<{ org: string; doc: MemberDoc }> | null;
 }
 
-let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null, restored: false };
+let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null, restored: false, invites: null };
 const listeners = new Set<() => void>();
 function patch(p: Partial<CloudState>): void {
   state = { ...state, ...p };
@@ -110,6 +120,43 @@ const arabic = (e: unknown) => {
   const m = e instanceof Error ? e.message : String(e);
   return /[؀-ۿ]/.test(m) ? m : 'تعذّر الاتصال بالخادم · ستُعاد المحاولة';
 };
+
+/**
+ * عميل السحابة لهذا الجهاز (docs/PERMISSIONS.md) · العضو: منشأته برموزه، والمالك: منشأته orgs/{uid}
+ * بعد انتقاله، وقبله المسار القديم users/{uid} (legacy=true يفرضه، لقراءة حروف الأجهزة القديمة).
+ */
+function remoteOf(db: DB, uid: string, idToken: () => Promise<string>, legacy = false): FirestoreRemote {
+  const cfg = cloudConfig()!;
+  const m = readMembership(db);
+  const tables = SYNC_TABLES.map((t) => t.name);
+  if (m && !legacy) {
+    return new FirestoreRemote({
+      projectId: cfg.projectId, uid, idToken, org: m.org,
+      memberTokens: () => memberTokens(readAccess(db)),
+      fullReadTables: () => fullReadTables(readAccess(db), tables),
+      access: () => readAccess(db),
+    });
+  }
+  if (!legacy && getSyncState(db, 'org') === uid) {
+    return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid, access: () => readAccess(db) });
+  }
+  return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken });
+}
+
+/** ربط الجهاز بعضويته بعد تفريغه · بلا رفع ما زُرع عليه (ليس للعضو أن يكتبه في منشأة غيره) */
+function bindMember(db: DB, m: Membership, email: string, orgName: string | null): void {
+  db.transaction(() => {
+    saveMembership(db, m);
+    setSyncState(db, 'uid', m.uid);
+    setSyncState(db, 'email', email);
+    setSyncState(db, 'org', m.org);
+    setSyncState(db, 'org_name', orgName);
+    setSyncState(db, 'cursor', null);
+    setSyncState(db, 'joining', '1');
+    db.run('DELETE FROM sync_outbox');
+    setCapture(db, true);
+  });
+}
 
 /** إيقاف مؤقت أثناء الاستعادة · لا سحب ولا رفع حتى يُستأنف */
 let paused = false;
@@ -143,11 +190,31 @@ export async function syncNow(): Promise<void> {
   try {
     // القاعدة قد تكون استُبدلت باستعادة: بلا حالة مزامنة أو بحساب آخر أو بالتقاط متوقف ·
     // enableSync لا يفعل شيئاً للحساب نفسه سوى تشغيل الالتقاط، ولغيره ينضمّ من جديد
-    enableSync(db, state.user.uid);
-    const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => s.idToken() });
-    const rep = await syncOnce(db, remote, ensureDeviceId(db), (msg) => patch({ progress: msg }));
+    const uid = state.user.uid;
+    const idToken = () => s.idToken();
+    const member = readMembership(db);
+    if (!member) {
+      enableSync(db, uid);
+      // المالك ينتقل إلى منشأته مرة (صلاحيات الأقسام) · حروف أجهزته تنتقل كما هي
+      await moveOwnerToOrg(db, remoteOf(db, uid, idToken, true), new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid }), uid);
+    }
+    const rep = await syncOnce(db, remoteOf(db, uid, idToken), ensureDeviceId(db), (msg) => patch({ progress: msg }));
     setSyncState(db, 'last_error', null);
     if (rep.applied || rep.conflicts) onData();
+    if (member) {
+      // العضوية في الخادم: أُزيلت فيُفرَّغ الجهاز · تغيّرت فيُعاد السحب من أوله بصلاحيته الجديدة
+      const r = await refreshMembership(db, remoteOf(db, uid, idToken));
+      if (r === 'removed') {
+        await resetDeviceData(db as AppDB);
+        patch({ lastError: 'أُزيلت عضويتك من المنشأة · فُرّغ هذا الجهاز من بياناتها' });
+        onData();
+      } else if (r === 'changed') {
+        const next = readMembership(db)!;
+        await resetDeviceData(db as AppDB);
+        bindMember(db, next, state.user.email, getSyncState(db, 'org_name'));
+        onData();
+      }
+    }
   } catch (e) {
     const msg = arabic(e);
     try { setSyncState(db, 'last_error', msg); } catch { /* القاعدة مشغولة · يظهر في الحالة وحدها */ }
@@ -213,6 +280,14 @@ export async function cloudSignIn(): Promise<SessionUser | null> {
   // على الجهاز بيانات حساب آخر · لا تُرفع إلى هذا الحساب ولا يُنضمّ بها: بوابة الدخول تعرض الاختيار
   const owner = deviceAccount(appDb);
   if (owner && owner.uid !== u.uid) { patch({ user: u }); return u; }
+  // جهازٌ بلا حساب ولا عضوية: دعوات منشآت لإيميله تُعرض أولاً، ولا مزامنة قبل قراره
+  if (!owner && !readMembership(appDb) && state.online) {
+    try {
+      const sess = s;
+      const inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.email);
+      if (inv.length) { patch({ user: u, invites: inv }); return u; }
+    } catch { /* لا دعوات تُقرأ · يكمل مالكاً */ }
+  }
   // نسخة مستعادة لم تُعتمد · لا يُفعَّل الانضمام فيغلب ما في السحابة عليها صامتاً
   if (getSyncState(appDb, 'restored_unadopted') !== '1') enableSync(appDb, u.uid);
   // إيميل الحساب على الجهاز · تقرؤه شاشة الدخول إن خرج صاحبه أو دخل غيره
@@ -245,7 +320,8 @@ function remoteFor(): FirestoreRemote {
   if (!s || !cfg || !state.user) throw new Error('سجّل الدخول بحساب قوقل أولاً');
   if (!state.online) throw new Error('لا اتصال بالإنترنت · اعتماد النسخة للسحابة يحتاج اتصالاً لقراءة ما فيها');
   const sess = s;
-  return new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.idToken() });
+  if (!appDb) throw new Error('القاعدة غير جاهزة');
+  return remoteOf(appDb, state.user.uid, () => sess.idToken());
 }
 
 /** لقطة ما في السحابة · تُقرأ مرة والمزامنة متوقفة، فتخدم ضمّ القيود المرحّلة وخطة الاستبدال معاً */
@@ -323,9 +399,14 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
   if (fresh.uid !== uid) throw new Error('اخترت حساباً آخر · اختر الحساب نفسه لحذفه');
   await pauseSync();
   try {
-    const remote = new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() });
     onProgress?.('جاري حذف بياناتك من السحابة');
-    await remote.deleteAllData((n) => onProgress?.('جاري حذف بياناتك من السحابة · ' + n));
+    // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
+    for (const remote of [
+      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
+      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() }),
+    ]) {
+      await remote.deleteAllData((n) => onProgress?.('جاري حذف بياناتك من السحابة · ' + n));
+    }
     onProgress?.('جاري حذف نسخك على Google Drive');
     await deleteAllAppDataFiles(driveIO, await s.driveToken());
     onProgress?.('جاري حذف الحساب');
@@ -346,6 +427,69 @@ export async function cloudSignOut(): Promise<void> {
   await s.signOut();
   patch({ user: null });
 }
+
+/* ═══════════ المنشأة والأعضاء ═══════════ */
+
+/** قبول دعوة: الجهاز يُفرَّغ ثم يُربط بالمنشأة عضواً ويسحب ما تجيزه صلاحيته */
+export async function acceptInviteNow(db: AppDB, org: string, doc: MemberDoc): Promise<void> {
+  const s = getSession();
+  if (!s || !state.user) throw new Error('سجّل الدخول أولاً');
+  const sess = s;
+  const user = state.user;
+  await pauseSync();
+  try {
+    await resetDeviceData(db);
+    const remote = new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: user.uid, idToken: () => sess.idToken() });
+    const m = await acceptInvite(db, remote, org, user.uid, doc);
+    bindMember(db, m, user.email, doc.orgName || null);
+    patch({ invites: null, sync: syncStatus(db) });
+  } finally {
+    resumeSync();
+  }
+  syncNow();
+}
+
+/** رفض الدعوات · يكمل صاحب الجهاز مالكاً لمنشأته */
+export function declineInvites(db: AppDB): void {
+  if (!state.user) return;
+  enableSync(db, state.user.uid);
+  setSyncState(db, 'email', state.user.email);
+  patch({ invites: null, sync: syncStatus(db) });
+  syncNow();
+}
+
+/** مغادرة العضو المنشأة · تُحذف عضويته ويُفرَّغ الجهاز ويخرج */
+export async function leaveOrgNow(db: AppDB): Promise<void> {
+  const m = readMembership(db);
+  const s = getSession();
+  if (!m || !s || !state.user) return;
+  const sess = s;
+  await pauseSync();
+  try {
+    await leaveOrg(remoteOf(db, state.user.uid, () => sess.idToken()), m.org, m.uid);
+    await resetDeviceData(db);
+    await sess.signOut();
+    patch({ user: null, sync: syncStatus(db) });
+  } finally {
+    resumeSync();
+  }
+}
+
+function teamRemote(): { remote: FirestoreRemote; org: string } {
+  const s = getSession();
+  const cfg = cloudConfig();
+  if (!s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
+  if (!state.online) throw new Error('إدارة الأعضاء تحتاج اتصالاً بالإنترنت');
+  const sess = s;
+  return { remote: new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.idToken(), org: state.user.uid }), org: state.user.uid };
+}
+const orgNameOf = (db: DB) => db.get<{ name: string }>('SELECT name FROM company WHERE id = 1')?.name || 'منشأة عقاري';
+
+export async function listTeamNow() { const t = teamRemote(); return listTeam(t.remote, t.org); }
+export async function inviteMemberNow(db: DB, spec: MemberSpec) { const t = teamRemote(); return sendInvite(t.remote, t.org, spec, orgNameOf(db)); }
+export async function updateMemberNow(db: DB, uid: string, spec: MemberSpec) { const t = teamRemote(); return updateMember(t.remote, t.org, uid, spec, orgNameOf(db)); }
+export async function removeMemberNow(uid: string) { const t = teamRemote(); return removeMember(t.remote, t.org, uid); }
+export async function revokeInviteNow(email: string) { const t = teamRemote(); return revokeInvite(t.remote, t.org, email); }
 
 /* ═══════════ Google Drive ═══════════ */
 

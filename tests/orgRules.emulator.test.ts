@@ -1,15 +1,13 @@
 /**
  * قواعد المنشأة وصلاحيات الأقسام على محاكي Firestore (docs/PERMISSIONS.md) · بالعميل والمحرّك نفسيهما.
  * يعمل حين يكون المحاكي قائماً ويُتخطّى غير ذلك:
- *   firebase emulators:exec --only firestore --project demo-aqari "npx jest tests/orgRules.emulator.test.ts"
+ *   firebase emulators:exec --only firestore --project demo-aqari "npx jest -i tests/orgRules.emulator.test.ts" (‏-i: ملفات المحاكي تُمسح بياناته في أولها فلا تتوازى)
  * البيانات مصطنعة كلها.
  */
 import { FirestoreRemote, encodeFields } from '@/cloud/firestore';
 import type { RemoteDoc } from '@/sync/types';
 import type { Access } from '@/domain/access/access';
-import { memberTokens, annotate } from '@/sync/acl';
-import { readSectionsOf, MONEY_SECTIONS } from '@/domain/access/readSections';
-import { canView } from '@/domain/access/access';
+import { memberTokens, annotate, fullReadTables } from '@/sync/acl';
 import { SYNC_TABLES } from '@/db/syncTables';
 
 const HOST = process.env.FIRESTORE_EMULATOR_HOST;
@@ -29,9 +27,8 @@ function token(uid: string, email = uid.toLowerCase() + '@example.test'): string
 const member = (uid: string, perms: Access['perms'], props: string[] | 'all'): Access =>
   ({ owner: false, uid, perms, allProps: props === 'all', props: props === 'all' ? [] : props });
 
-/** الجداول التي يقرأ العضو مستندها الكامل · فيُهمل إسقاطها */
-const fullTables = (a: Access) => new Set(SYNC_TABLES.map((t) => t.name).filter((t) =>
-  readSectionsOf(t, null).some((s) => MONEY_SECTIONS.has(s) && canView(a, s))));
+/** الجداول التي يقرأ العضو مستندها الكامل · فيُهمل إسقاطها (كما يبنيها services/cloud.ts) */
+const fullTables = (a: Access) => fullReadTables(a, SYNC_TABLES.map((t) => t.name));
 
 function remoteFor(uid: string, a: Access | null): FirestoreRemote {
   return new FirestoreRemote({
@@ -185,6 +182,35 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
       body: JSON.stringify({ fields: encodeFields(inv) }),
     });
     expect(bad.status).toBe(403);
+  });
+
+  test('المستأجر المشترك بين عقارين: المحصور بعقار يراه بلا رصيده وملاحظاته · ويمسّ رصيده من عقاره', async () => {
+    const { addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const { syncOnce } = await import('@/sync/engine');
+    // المستأجر الأول نفسه بعقد ثانٍ في العقار الآخر
+    confirmContract(db, contractInput(addUnit(db, 'P2', { id: 'UN3' }), { tenant: 'مستأجر أول تجريبي', idNumber: '1000000033', phone: '0500000011' }));
+    const tid = db.get<{ tenant_id: string }>(`SELECT tenant_id FROM contracts WHERE id = ?`, [C1])!.tenant_id;
+    db.run(`UPDATE tenants SET credit_halalas = 7000, notes = 'ملاحظة تخص العقار الآخر' WHERE id = ?`, [tid]);
+    await syncOnce(db, remoteFor(ORG, null), 'dev-owner');
+    const docs = await pullAll(COLLECTOR);
+    const t = docs.find((x) => x.id === 'tenants__' + tid)!;
+    expect(t).toBeTruthy();
+    expect(t.d!.name).toBe('مستأجر أول تجريبي');
+    expect('credit_halalas' in t.d!).toBe(false);
+    expect('notes' in t.d!).toBe(false);
+    // ذو كل العقارات وقسم مالي يرى الكامل
+    const allCol = member('U-ALL', { collect: 1 }, 'all');
+    expect(await putDoc(`orgs/${ORG}/members/U-ALL`, { email: 'u-all@example.test', perm: allCol.perms, all: true, props: [], tokens: memberTokens(allCol) }, ORG)).toBe(200);
+    const full = (await pullAll(allCol)).find((x) => x.id === 'tenants__' + tid)!;
+    expect(full.d!.credit_halalas).toBe(7000);
+    // المحصِّل المحصور يزيد الرصيد (فائض دفعة) من عقاره
+    const row = db.get<Record<string, unknown>>(`SELECT * FROM tenants WHERE id = ?`, [tid])!;
+    expect(await write(COLLECTOR, { id: 'tenants__' + tid, t: 'tenants', k: tid, u: 'w1', dev: 'dev-col', del: false, d: { ...row, credit_halalas: 7500 } as never }))
+      .toMatchObject({ ok: true });
+    // ولا يغيّر اسمه (ليس له قسم المستأجرين)
+    expect(await write(COLLECTOR, { id: 'tenants__' + tid, t: 'tenants', k: tid, u: 'w2', dev: 'dev-col', del: false, d: { ...row, credit_halalas: 7500, name: 'اسم آخر' } as never }))
+      .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
 
   test('العضو لا يعدّل مستند عضويته', async () => {

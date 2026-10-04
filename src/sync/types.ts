@@ -59,6 +59,11 @@ export interface RemoteStore {
   write(docs: RemoteDoc[]): Promise<WriteResult[]>;
   /** المنشأة: يزيّن المستند الخارج بحقول الرؤية وإسقاطه قبل الكتابة (sync/acl.ts) */
   annotate?(db: import('../db/adapter').DB, doc: RemoteDoc): RemoteDoc;
+  /**
+   * جهاز عضو في منشأة: ما لا يجيزه قسمٌ له (op غائب) لا يُرفع، والمرفوض من القواعد يخرج من الطابور
+   * إلى سجل المرفوض · فالحالة المشتقة محلياً (عقد انتهى، حجز سقط) لا تحبس الطابور، ويكتبها جهاز المالك
+   */
+  memberMode?: boolean;
   /** حرف الجهاز في ترقيم الحساب · يُسجَّل مرة ويبقى (numbering.ts) */
   registerDevice?(deviceId: string): Promise<string>;
 }
