@@ -183,6 +183,9 @@ export async function syncNow(): Promise<void> {
   const db = appDb;
   const cfg = cloudConfig();
   if (!s || !db || !cfg || running || paused || !state.user || !state.online) return;
+  // قرارٌ معلّق (دعوة، أو بيانات بلا حساب، أو تحقق لم يتمّ) · لا مزامنة فلا تُنشأ منشأة قبله
+  if (state.gate || state.invites?.length || activating) return;
+  if (activeAccount(db) !== state.user.uid) return;
   // استعادةٌ جرت خارج الحساب لم تُعتمد بعد · لا تُدمج مع السحابة صامتةً، فتنتظر قرار المستخدم
   if (getSyncState(db, 'restored_unadopted') === '1') {
     patch({ lastError: 'استُعيدت نسخة ولم تُعتمد للسحابة بعد · افتح الإعدادات لاعتمادها' });
@@ -271,8 +274,8 @@ export function startCloud(db: AppDB, onRemoteData?: () => void): () => void {
 
   s.restore().then((u) => {
     patch({ user: u, restored: true });
-    if (u && activeAccount(db) !== u.uid) activateAccount(u);
-    else if (u) syncNow();
+    // كل إقلاع يمرّ بفتح نسخة الحساب: نسخة غيره تُركن، والنسخة الفارغة تُعرض دعواتها قبل أي مزامنة
+    if (u) activateAccount(u);
   }).catch(() => patch({ restored: true }));
 
   return () => {
@@ -302,13 +305,25 @@ export async function activateAccount(u: SessionUser): Promise<void> {
   const s = getSession();
   if (!db || !s || activating) return;
   activating = true;
-  patch({ user: u, gate: 'switching', invites: null });
+  // شاشة الانتظار حين تُفتح نسخة غير النشطة وحدها · والنسخة النشطة نفسها لا تومض عند كل إقلاع
+  patch(activeAccount(db) === u.uid ? { user: u, invites: null } : { user: u, gate: 'switching', invites: null });
   await pauseSync();
   try {
     const env = appSlotEnv(db);
     const r = switchTo(env, u.uid);
     onData();
-    if (activeAccount(db) !== u.uid) {
+    const fresh = activeAccount(db) !== u.uid;
+    // نسخة الحساب بلا عضوية ولا بيانات (منشأة فارغة أُنشئت قبل قراره) · تُعرض دعواته كالجديدة،
+    // وتعذّر التحقق هنا لا يوقفه لأن له نسخة
+    const emptyOwn = !fresh && !readMembership(db) && !hasUserData(db);
+    if (emptyOwn && state.online) {
+      try {
+        const sess = s;
+        const inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.email);
+        if (inv.length) { patch({ invites: inv, gate: null }); return; }
+      } catch { /* يكمل بنسخته */ }
+    }
+    if (fresh) {
       // نسخة جديدة أو بيانات بلا حساب · الدعوات أولاً
       let inv: Array<{ org: string; doc: MemberDoc }> | null = null;
       if (state.online) {
@@ -511,7 +526,8 @@ export async function acceptInviteNow(db: AppDB, org: string, doc: MemberDoc): P
   await pauseSync();
   try {
     // نسخة الحساب الجديدة فارغة (activateAccount) · وإن لم تكن فلا يُمسح شيء ويُرفض القبول
-    if (activeAccount(db) || hasUserData(db)) throw new Error('على الجهاز نسخة فيها بيانات لهذا الحساب · لا تُستبدل بعضوية');
+    // نسخته فارغة (جديدة، أو منشأة فارغة له قبل قراره) · وما فيه بيانات لا يُستبدل بعضوية
+    if (hasUserData(db) || (activeAccount(db) && activeAccount(db) !== user.uid)) throw new Error('على الجهاز نسخة فيها بيانات لهذا الحساب · لا تُستبدل بعضوية');
     const remote = new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: user.uid, idToken: () => sess.idToken() });
     const m = await acceptInvite(db, remote, org, user.uid, doc);
     bindMember(db, m, user.email, doc.orgName || null);
