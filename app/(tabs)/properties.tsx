@@ -62,6 +62,10 @@ interface PropRow extends PropertyRow {
 export default function Properties() {
   const { db, version, bump } = useApp();
   const perm = usePerm('props');
+  // المبالغ بيانات مرتبطة · قيم العقود للعقود، والدخل للتقارير، والصرف للمشتريات (الحد اللازم)
+  const seesContracts = usePerm('contracts').view;
+  const seesReports = usePerm('reports').view;
+  const seesPurchasesList = usePerm('purchases').view;
   const toast = useToast();
   const dialog = useDialog();
   const router = useRouter();
@@ -166,23 +170,23 @@ export default function Properties() {
           sub={`${summary.occ.now.occupied} من ${summary.occ.now.total} وحدة`}
           onPress={() => router.push('/units?occ=rented')} />
       </Row>
-      <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
+      {seesContracts ? <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
         <KpiCard label="إجمالي قيمة عقود الإيجار (المحصَّلة)" tone="pos" value={<Money halalas={summary.pf.income} size={14} bold />}
           onPress={() => router.push('/contracts')} />
         <KpiCard label="عقود ملغية" tone="neu" value={<Money halalas={summary.pf.cancelledValue} size={14} bold />}
           sub={summary.pf.cancelledCount + (summary.pf.cancelledCount === 1 ? ' عقد' : ' عقود')}
           onPress={() => router.push(`/contracts?status=${encodeURIComponent('ملغى')}`)} />
-      </Row>
-      <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
-        <KpiCard label="العقار الأعلى دخلاً" tone="pos"
+      </Row> : null}
+      {seesReports || seesPurchasesList ? <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
+        {seesReports ? <KpiCard label="العقار الأعلى دخلاً" tone="pos"
           value={summary.topRevName}
           sub={summary.top.topPropRevenue ? fmt(summary.top.topPropRevenue.amount) : undefined}
-          onPress={summary.top.topPropRevenue ? () => setDetailId(summary.top.topPropRevenue!.id) : undefined} />
-        <KpiCard label="العقار الأكثر صرفاً" tone="neg"
+          onPress={summary.top.topPropRevenue ? () => setDetailId(summary.top.topPropRevenue!.id) : undefined} /> : null}
+        {seesPurchasesList ? <KpiCard label="العقار الأكثر صرفاً" tone="neg"
           value={summary.topExpName}
           sub={summary.top.topPropExpense ? fmt(summary.top.topPropExpense.amount) : undefined}
-          onPress={summary.top.topPropExpense ? () => setDetailId(summary.top.topPropExpense!.id) : undefined} />
-      </Row>
+          onPress={summary.top.topPropExpense ? () => setDetailId(summary.top.topPropExpense!.id) : undefined} /> : null}
+      </Row> : null}
 
       <View style={{ marginBottom: 8 }}><SearchBox value={q} onChange={setQ} /></View>
       {archivedCount > 0 || showArchived ? (
@@ -254,7 +258,7 @@ export default function Properties() {
                   {p.activity_type ? <Badge kind="draft" label={p.activity_type} /> : null}
                   {p.activity_subtype ? <Badge kind="draft" label={p.activity_subtype} /> : null}
                 </Row>
-                <View><T size={10} color={C.muted}>قيمة العقود</T><Money halalas={st.income} size={12} bold /></View>
+                {seesContracts ? <View><T size={10} color={C.muted}>قيمة العقود</T><Money halalas={st.income} size={12} bold /></View> : null}
               </Row>
             </Pressable>
           </Card>

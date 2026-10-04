@@ -276,12 +276,13 @@ export default function Dashboard() {
 
   return (
     <Screen title="الرئيسية" noBack>
-      <ChipGroup
+      {/* الفترة تحكم الأرقام المالية وحدها · فلا تظهر لمن لا يراها */}
+      {sees('reports') ? <ChipGroup
         options={[['month', 'هذا الشهر'], ['quarter', 'هذا الربع'], ['year', 'هذه السنة'], ['all', 'كل الفترات'], ['custom', 'مخصصة']]}
         value={range}
         onChange={setRange}
-      />
-      {range === 'custom' && (
+      /> : null}
+      {sees('reports') && range === 'custom' && (
         <Row style={{ marginTop: 8 }}>
           <View style={{ flex: 1 }}><DateField label="من" value={customFrom} onChange={setCustomFrom} /></View>
           <View style={{ flex: 1 }}><DateField label="إلى" value={customTo} onChange={setCustomTo} /></View>
