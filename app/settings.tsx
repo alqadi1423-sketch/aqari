@@ -1,22 +1,25 @@
 /**
- * الإعدادات · خمس مجموعات بترتيب المالك: المنشأة ثم المالية ثم المراسلات
- * ثم البيانات ثم النظام · وكل إعداد في الشاشة يسكن مجموعته.
+ * الإعدادات · تفضيلات لا أماكن (الأماكن في «المزيد») · صفحة واحدة بثماني بطاقات بترتيب المالك:
+ * الحساب والمزامنة · النسخ الاحتياطي · المالية · التنبيهات · ودجت الشاشة · البيانات والمساحة ·
+ * عن التطبيق · ومسح كل البيانات آخرها بطاقةً حمراء. كل صفٍّ: أيقونة واسم وقيمته الحالية وسهم،
+ * وضغطه يفتح الخيارات في لوحة سفلية بدل أزرار الاختيار المتراصّة.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Platform, Modal } from 'react-native';
+import { View, Modal, Pressable } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
 import { Screen } from '../src/ui/Screen';
 import {
-  Card, CardTitle, T, Num, SetRow, ChipGroup, BtnPrimary, BtnGhost, Note, Row, Badge, EmptyState, Field,
+  Card, CardTitle, T, Num, BtnPrimary, BtnGhost, Note, Row, Badge, EmptyState, Field,
 } from '../src/ui/components';
 import { Sheet, PickerSheet, SelectField } from '../src/ui/Sheet';
+import { Icon, type IconName } from '../src/ui/icons';
 import { DateField } from '../src/ui/DateField';
 import { useDialog } from '../src/ui/AppDialog';
 import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
-import { computeReminders, exportStatus } from '../src/domain/reminders';
+import { exportStatus } from '../src/domain/reminders';
 import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash } from '../src/domain/trash';
 import { createAndShareBackup, pickAndPrepareRestore, commitPreparedRestore, abortPreparedRestore, appBackupEnv } from '../src/services/backupService';
 import { wipeAllData } from '../src/domain/wipe';
@@ -29,7 +32,6 @@ import { toHalalas } from '../src/domain/money';
 import { DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind } from '../src/domain/contracts/installments';
 import { fmt } from '../src/domain/money';
 import { rescheduleAllNotifications } from '../src/services/notifications';
-import { getMeta } from '../src/repos/settings';
 import { SCHEMA_VERSION } from '../src/db/schema';
 import { storageBreakdown, sweepCache, reclaimStorage } from '../src/services/storageOps';
 import { libSizeLabel } from '../src/domain/library';
@@ -55,16 +57,44 @@ import { dfmt, toLocalISODate, today } from '../src/domain/dates';
 
 const APP_VERSION = '1.0.0';
 
-const PLATFORM_AR: Record<string, string> = { android: 'أندرويد', ios: 'آيفون', web: 'الويب' };
+/** خيارات مهل التنبيه · القيمة بالأيام */
+const PAYMENT_LEADS = [[1, 'بيوم'], [3, 'بثلاثة أيام'], [7, 'بأسبوع'], [14, 'بأسبوعين']] as const;
+const CONTRACT_LEADS = [[15, 'بخمسة عشر يوماً'], [30, 'بشهر'], [60, 'بشهرين'], [90, 'بثلاثة أشهر']] as const;
+const DOC_LEADS = [[15, 'بخمسة عشر يوماً'], [30, 'بشهر'], [60, 'بشهرين']] as const;
 
-/** عنوان قسم داخل المجموعة · الفاصل فوقه يفصل ما قبله عمّا بعده */
-function Sub({ children, first }: { children: React.ReactNode; first?: boolean }) {
+/** صفّ إعداد: أيقونة واسم وقيمته الحالية وسهم · بلا ضغط لا سهم */
+function ValueRow({ icon, title, value, onPress, tone }: {
+  icon: IconName; title: string; value: string; onPress?: () => void; tone?: 'danger' | 'ok';
+}) {
   return (
-    <View style={{
-      marginTop: first ? 0 : 14, marginBottom: 8, paddingTop: first ? 0 : 12,
-      borderTopWidth: first ? 0 : 1, borderTopColor: C.paperLine,
-    }}>
-      <T size={TYPE.cardTitle} bold color={C.ink}>{children}</T>
+    <Pressable onPress={onPress} disabled={!onPress}
+      style={({ pressed }) => [{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11,
+        borderBottomWidth: 1, borderBottomColor: C.paperLine }, pressed && onPress ? { backgroundColor: C.paper } : null]}>
+      <Icon name={icon} size={18} color={C.emerald} />
+      <T size={TYPE.body} med style={{ flexShrink: 1 }}>{title}</T>
+      <View style={{ flex: 1 }} />
+      <T size={TYPE.caption} bold color={tone === 'danger' ? C.rose : tone === 'ok' ? C.emerald : C.muted}
+        style={{ flexShrink: 1 }} numberOfLines={2}>{value}</T>
+      {onPress ? <View style={{ transform: [{ scaleX: -1 }] }}><Icon name="back" size={14} color={C.muted} /></View> : null}
+    </Pressable>
+  );
+}
+
+/** طيّة: صفٌّ يفتح ما تحته ويطويه · مطويّة ابتداءً */
+function Fold({ icon, title, value, children }: { icon: IconName; title: string; value: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <View>
+      <Pressable onPress={() => setOpen((o) => !o)}
+        style={({ pressed }) => [{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 11,
+          borderBottomWidth: 1, borderBottomColor: C.paperLine }, pressed ? { backgroundColor: C.paper } : null]}>
+        <Icon name={icon} size={18} color={C.emerald} />
+        <T size={TYPE.body} med style={{ flexShrink: 1 }}>{title}</T>
+        <View style={{ flex: 1 }} />
+        <T size={TYPE.caption} bold color={C.muted} style={{ flexShrink: 1 }}>{value}</T>
+        <View style={{ transform: [{ rotate: open ? '-90deg' : '90deg' }] }}><Icon name="back" size={14} color={C.muted} /></View>
+      </Pressable>
+      {open ? <View style={{ paddingTop: 4, paddingBottom: 8 }}>{children}</View> : null}
     </View>
   );
 }
@@ -75,6 +105,13 @@ export default function Settings() {
   const dialog = useDialog();
   const router = useRouter();
   const [trashOpen, setTrashOpen] = useState(false);
+  // لوحات الإعدادات · الاختيار الواحد، وتفصيل المزامنة، والنسخ على Drive، وحجم العرض
+  const [choice, setChoice] = useState<{ title: string; options: Array<[number, string]>; value: number; onPick: (v: number) => void } | null>(null);
+  const openChoice = (title: string, options: ReadonlyArray<readonly [number, string]>, value: number, onPick: (v: number) => void) =>
+    setChoice({ title, options: options.map(([v, l]) => [v, l] as [number, string]), value, onPick });
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [driveOpen, setDriveOpen] = useState(false);
+  const [displayOpen, setDisplayOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [wipeConfirm, setWipeConfirm] = useState<string | null>(null);
   // شريط تقدم بالمراحل · «جاري نسخ المرفقات · ٢٢ من ١١٨» فلا يُظن التطبيق متجمداً
@@ -101,6 +138,10 @@ export default function Settings() {
     setSettleMethod('');
     setSettleBank('');
   };
+  const vatOn = useMemo(
+    () => Number(db.get<{ vat_enabled: number }>(`SELECT vat_enabled FROM company WHERE id = 1`)?.vat_enabled ?? 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version]);
   const reviewCount = review.surpluses.length + review.plan.changes.length + review.plan.issues.length
     + review.unbooked.items.length + review.unbooked.ambiguous.length + review.kept.length;
   // قيدٌ من قائمة المراجعة مفتوحٌ بتفاصيله
@@ -137,7 +178,6 @@ export default function Settings() {
   const [driveList, setDriveList] = useState<DriveBackup[] | null>(null);
 
   const data = useMemo(() => {
-    const reminders = computeReminders(db);
     const exp = exportStatus(db);
     const trash = trashItems(db);
     const counts: Array<[string, number]> = [
@@ -155,7 +195,7 @@ export default function Settings() {
       ['عمليات في السجل', Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log`)!.n)],
     ];
     const total = counts.slice(0, 8).reduce((s, [, n]) => s + n, 0);
-    return { reminders, exp, trash, counts, total };
+    return { exp, trash, counts, total };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version]);
 
@@ -499,247 +539,203 @@ export default function Settings() {
 
   return (
     <Screen title="الإعدادات" icon="settings">
-      {/* ١ · المنشأة */}
+      {/* ١ · الحساب والمزامنة */}
       <Card>
-        <CardTitle>المنشأة</CardTitle>
-        <SetRow icon="building" title="الاسم والرقم الضريبي · الشعار والترويسة"
-          onPress={() => router.push('/company')} />
-      </Card>
-
-      {/* ٢ · المالية */}
-      <Card>
-        <CardTitle>المالية</CardTitle>
-        <SetRow icon="wallet" title="العملة ودليل الحسابات" onPress={() => router.push('/accounts')} />
-        <Sub>ضريبة القيمة المضافة</Sub>
-        <VatChips />
-      </Card>
-
-      {/* ٣ · المراسلات */}
-      <Card>
-        <CardTitle>المراسلات</CardTitle>
-        <SetRow icon="message" title="قوالب الرسائل" onPress={() => router.push('/scripts')} />
-        <Sub>تنبيهات المواعيد</Sub>
-        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 5 }}>الحالة</T>
-        <ChipGroup options={[[1, 'مفعّلة'], [0, 'مطفأة']]} value={settings.remindersOn ? 1 : 0}
-          onChange={(v) => { updateSetting('remindersOn', !!v); rescheduleAllNotifications(db).catch(() => {}); }} />
-        <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 5 }}>تنبيه قبل استحقاق الدفعة</T>
-        <ChipGroup options={[[1, 'بيوم'], [3, 'بثلاثة أيام'], [7, 'بأسبوع'], [14, 'بأسبوعين']]}
-          value={settings.remindPayment}
-          onChange={(v) => { updateSetting('remindPayment', v as never); rescheduleAllNotifications(db).catch(() => {}); }} />
-        <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 5 }}>تنبيه قبل انتهاء العقد</T>
-        <ChipGroup options={[[15, 'بخمسة عشر يوماً'], [30, 'بشهر'], [60, 'بشهرين'], [90, 'بثلاثة أشهر']]}
-          value={settings.remindContract}
-          onChange={(v) => { updateSetting('remindContract', v as never); rescheduleAllNotifications(db).catch(() => {}); }} />
-        <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 5 }}>تنبيه قبل انتهاء المستند</T>
-        <ChipGroup options={[[15, 'بخمسة عشر يوماً'], [30, 'بشهر'], [60, 'بشهرين']]}
-          value={settings.remindDoc}
-          onChange={(v) => { updateSetting('remindDoc', v as never); rescheduleAllNotifications(db).catch(() => {}); }} />
-        <Row style={{ justifyContent: 'space-between', marginTop: 10 }}>
-          <T size={TYPE.body}>تنبيهات مستحقة الآن</T>
-          <Num size={TYPE.body} bold>{data.reminders.length}</Num>
-        </Row>
-        {data.reminders.slice(0, 6).map((r, i) => (
-          <Row key={i} style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
-            <T size={TYPE.caption}>{r.kind} · {r.subject}</T>
-            <T size={TYPE.caption} bold color={r.days < 0 ? C.rose : C.muted}>
-              {r.days < 0 ? 'متأخر ' + Math.abs(r.days) + ' يوماً' : 'بعد ' + r.days + ' يوماً'}
-            </T>
-          </Row>
-        ))}
-      </Card>
-
-      {/* ٤ · البيانات */}
-      <Card>
-        <CardTitle>البيانات</CardTitle>
-
-        <Sub first>الحساب والمزامنة</Sub>
+        <CardTitle>الحساب والمزامنة</CardTitle>
         {!cloud.configured ? (
-          <T size={TYPE.body} color={C.muted}>الربط بحساب قوقل غير مهيّأ في هذا البناء · التطبيق يعمل كاملاً بلا إنترنت وبلا حساب</T>
+          <ValueRow icon="lock" title="حساب قوقل" value="غير مهيّأ في هذا البناء" />
         ) : !cloud.user ? (
-          <>
-            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>
-              اختياري · الدخول يضيف المزامنة والنسخ على Google Drive، والقاعدة على هذا الجهاز تبقى الأصل
-            </T>
-            <Row style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
-              <T size={TYPE.body}>الاتصال</T>
-              <T size={TYPE.body} bold color={cloud.online ? C.emerald : C.muted}>{cloud.online ? 'متصل' : 'غير متصل'}</T>
-            </Row>
-            {cloud.online ? <BtnPrimary icon="lock" title="تسجيل الدخول بحساب قوقل" onPress={doSignIn} loading={busy} /> : null}
-          </>
+          <ValueRow icon="lock" title="حساب قوقل" value={cloud.online ? 'لم تسجّل الدخول' : 'غير متصل'}
+            onPress={cloud.online && !busy ? doSignIn : undefined} />
         ) : (
           <>
-            {([
-              ['الحساب', cloud.user.email, C.ink],
-              ['الاتصال', cloud.online ? 'متصل' : 'غير متصل · التغييرات محفوظة في الطابور', cloud.online ? C.emerald : C.muted],
-              ['المزامنة', cloud.syncing ? (cloud.progress ?? 'جارية') : 'آخر مزامنة ' + lastSync(cloud.sync?.lastSyncAt ?? null), C.ink],
-              ['في الطابور', String(cloud.sync?.pending ?? 0), C.ink],
-              ['بانتظار سجل أب', String(cloud.sync?.waiting ?? 0), C.ink],
-              ['مرفوض عند الوصول', String(cloud.sync?.rejected ?? 0), (cloud.sync?.rejected ?? 0) > 0 ? C.rose : C.ink],
-            ] as Array<[string, string, string]>).map(([k, v, color]) => (
-              <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
-                <T size={TYPE.body}>{k}</T>
-                <T size={TYPE.body} bold color={color}>{v}</T>
-              </Row>
-            ))}
-            {cloud.lastError ? <Note tone="danger">{cloud.lastError}</Note> : null}
+            <ValueRow icon="lock" title="حساب قوقل" value={cloud.user.email} onPress={doSignOut} />
+            <ValueRow icon="reload" title="حالة المزامنة"
+              value={cloud.syncing ? (cloud.progress ?? 'جارية')
+                : (cloud.sync?.rejected ?? 0) > 0 ? (cloud.sync?.rejected ?? 0) + ' مرفوض عند الوصول'
+                : !cloud.online ? 'غير متصل · التغييرات محفوظة'
+                : 'آخر مزامنة ' + lastSync(cloud.sync?.lastSyncAt ?? null)}
+              tone={(cloud.sync?.rejected ?? 0) > 0 || cloud.lastError ? 'danger' : undefined}
+              onPress={() => setSyncOpen(true)} />
+            {cloud.online ? (
+              <ValueRow icon="export" title="النسخ على Drive" value="نسخ أو استعادة" onPress={() => setDriveOpen(true)} />
+            ) : null}
             {restoreAwaitingAdoption(db) ? (
               <View style={{ marginTop: 6 }}>
                 <Note tone="danger">استُعيدت على هذا الجهاز نسخة ولم تُعتمد للسحابة · المزامنة متوقفة حتى تقرّر</Note>
                 {cloud.online ? <BtnPrimary title="اعتماد النسخة أو دمجها" onPress={doAdoptPending} loading={busy} /> : null}
               </View>
             ) : null}
-            {cloud.online ? (
-              <Row style={{ marginTop: 6 }}>
-                <View style={{ flex: 1 }}><BtnPrimary icon="export" title="نسخ إلى Google Drive" onPress={doDriveBackup} loading={busy} /></View>
-                <View style={{ flex: 1 }}><BtnGhost icon="undo" title="استعادة من Google Drive" onPress={openDriveRestore} /></View>
-              </Row>
-            ) : null}
-            <View style={{ marginTop: 6 }}><BtnGhost title="تسجيل الخروج" onPress={doSignOut} /></View>
           </>
         )}
+      </Card>
 
-        <Sub>نسخة احتياطية واستعادة</Sub>
-        <Row style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
-          <T size={TYPE.body}>آخر تصدير خارج الجهاز</T>
-          <T size={TYPE.body} bold color={data.exp.warn ? C.rose : C.emerald}>
-            {data.exp.daysSinceExport === null ? 'لم يحدث بعد'
-              : data.exp.daysSinceExport === 0 ? 'اليوم' : 'قبل ' + data.exp.daysSinceExport + ' يوماً'}
-          </T>
-        </Row>
-        <Row style={{ justifyContent: 'space-between', paddingVertical: 5, marginBottom: 8 }}>
-          <T size={TYPE.body}>حالة الحماية</T>
-          <T size={TYPE.body} bold color={data.exp.warn ? C.rose : C.emerald}>{data.exp.warn ? 'تحتاج انتباهك' : 'محمية'}</T>
-        </Row>
-        {settings.backupWeekly && data.exp.warn ? (
-          <Note tone="danger">
-            مضى {data.exp.daysSinceExport === null ? 'وقت طويل' : data.exp.daysSinceExport + ' يوماً'} بلا تصدير خارج الجهاز.
-          </Note>
-        ) : null}
-        <Row>
+      {/* ٢ · النسخ الاحتياطي */}
+      <Card>
+        <CardTitle>النسخ الاحتياطي</CardTitle>
+        <ValueRow icon="shield" title="آخر نسخة خارج الجهاز"
+          value={(data.exp.daysSinceExport === null ? 'لم تحدث بعد'
+            : data.exp.daysSinceExport === 0 ? 'اليوم' : 'قبل ' + data.exp.daysSinceExport + ' يوماً')
+            + ' · ' + (data.exp.warn ? 'تحتاج انتباهك' : 'محمية')}
+          tone={data.exp.warn ? 'danger' : 'ok'} />
+        <Row style={{ marginTop: 8 }}>
           <View style={{ flex: 1 }}><BtnPrimary title="النسخ الاحتياطي" onPress={doBackup} loading={busy} /></View>
           <View style={{ flex: 1 }}><BtnGhost title="استعادة من نسخة" onPress={doRestore} disabled={busy} /></View>
         </Row>
-        <Row style={{ justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8, marginTop: 6 }}>
-          <View style={{ flex: 1 }}>
-            <T size={TYPE.body}>كلمة مرور النسخ</T>
-            <T size={TYPE.caption} color={C.muted}>{pwOn ? 'كل نسخة تُصدَّر أو تُرفع إلى Drive تُشفَّر بها' : 'النسخ غير مشفّرة'}</T>
-          </View>
-          <BtnGhost small title={pwOn ? 'تغيير' : 'ضبط'} onPress={() => { setPw1(''); setPw2(''); setPwEdit(true); }} />
-          {pwOn ? (
-            <BtnGhost small danger title="إزالة" onPress={() => dialog({
-              title: 'إزالة كلمة مرور النسخ',
-              body: 'النسخ القادمة لا تُشفَّر. والنسخ المشفّرة من قبل تبقى تحتاج كلمتها نفسها لتُفتح، فاحتفظ بها.',
-              tone: 'danger',
-              actions: [
-                { label: 'تراجع', variant: 'ghost' },
-                { label: 'أزل', variant: 'primary', onPress: async () => { await clearBackupPassword(); setPwOn(false); toast('أُزيلت كلمة مرور النسخ'); } },
-              ],
-            })} />
-          ) : null}
-        </Row>
-        <T size={TYPE.caption} color={C.muted} style={{ marginTop: 10, marginBottom: 5 }}>تذكير أسبوعي بالتصدير خارج الجهاز</T>
-        <ChipGroup options={[[1, 'مفعّل'], [0, 'مطفأ']]} value={settings.backupWeekly ? 1 : 0}
-          onChange={(v) => { updateSetting('backupWeekly', !!v); rescheduleAllNotifications(db).catch(() => {}); }} />
+        <ValueRow icon="lock" title="كلمة مرور النسخ" value={pwOn ? 'مفعّلة' : 'غير مفعّلة'}
+          onPress={() => { setPw1(''); setPw2(''); setPwEdit(true); }} />
+        <ValueRow icon="bell" title="التذكير الأسبوعي" value={settings.backupWeekly ? 'مفعّل' : 'مطفأ'}
+          onPress={() => openChoice('التذكير الأسبوعي بالتصدير', [[1, 'مفعّل'], [0, 'مطفأ']], settings.backupWeekly ? 1 : 0,
+            (v) => { updateSetting('backupWeekly', !!v); rescheduleAllNotifications(db).catch(() => {}); })} />
+      </Card>
 
-        <Sub>المساحة</Sub>
-        <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-          <T size={TYPE.cardTitle} bold>المساحة المستهلكة</T>
-          <Num size={TYPE.number} bold color={C.emerald}>{libSizeLabel(storageTotal)}</Num>
-        </Row>
-        {storageRow('الملفات الأصلية', storage.originalsBytes, storage.originalsCount + ' ملف')}
-        {storageRow('المصغّرات', storage.thumbsBytes)}
-        {storageRow('قاعدة البيانات', storage.dbBytes)}
-        {/* بلا مؤقتات لا تفريغ · الزر الذي لا يصحّ فعله لا يُعرض */}
-        {storageRow('ملفات مؤقتة', storage.cacheBytes, undefined,
-          storage.cacheBytes > 0 ? (
-            <BtnGhost small title="تفريغ" onPress={() => {
-              const freed = sweepCache();
-              bump(); toast('حُرّر ' + libSizeLabel(freed) + ' من المؤقتات');
-            }} />
-          ) : undefined)}
-        {storageRow('سلة المحذوفات', storage.trashBytes, storage.trashCount + ' ملف')}
-        {storageRow('نسخة الأمان قبل آخر استيراد أو مسح', storage.safetyBytes,
-          storage.safetyCount + ' ملف')}
-        <T size={TYPE.caption} color={C.muted} style={{ marginTop: 10, marginBottom: 5 }}>نزع بيانات الصور الوصفية عند الرفع</T>
-        <ChipGroup options={[[0, 'مطفأ'], [1, 'مفعّل']]} value={settings.stripExif ? 1 : 0}
-          onChange={(v) => updateSetting('stripExif', !!v)} />
+      {/* ٣ · المالية */}
+      <Card>
+        <CardTitle>المالية</CardTitle>
+        <ValueRow icon="wallet" title="العملة ودليل الحسابات" value={(data.counts.find(([k]) => k === 'حسابات')?.[1] ?? 0) + ' حساباً'} onPress={() => router.push('/accounts')} />
+        <ValueRow icon="invoice" title="ضريبة القيمة المضافة" value={vatOn ? 'مفعّلة' : 'مطفأة · لا تُحتسب'}
+          onPress={() => openChoice('ضريبة القيمة المضافة', [[0, 'مطفأة · لا تُحتسب'], [1, 'مفعّلة']], vatOn,
+            (v) => { db.transaction(() => db.run(`UPDATE company SET vat_enabled = ? WHERE id = 1`, [v])); bump(); })} />
+      </Card>
 
-        <Sub>سلة المحذوفات</Sub>
-        <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
-          <T size={TYPE.body}>سجلات في السلة</T>
-          <Row gap={10}>
-            <Num size={TYPE.body} bold>{data.trash.length}</Num>
-            <BtnGhost small title="افتح" onPress={() => setTrashOpen(true)} />
-          </Row>
-        </Row>
-        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 5 }}>مدة الاحتفاظ قبل الحذف النهائي</T>
-        <ChipGroup options={[[30, '٣٠ يوماً'], [60, '٦٠ يوماً'], [90, '٩٠ يوماً']]}
-          value={settings.trashRetention}
-          onChange={(v) => updateSetting('trashRetention', v as never)} />
-
-        {reviewCount ? (
-          <>
-            <Sub>مراجعة الأقساط من الدفتر</Sub>
-            {review.plan.changes.length ? (
-              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
-                <T size={TYPE.body}>تصحيح مقترح من الدفتر</T>
-                <Num size={TYPE.body} bold>{review.plan.changes.length + ' قسط'}</Num>
-              </Row>
-            ) : null}
-            {review.plan.issues.length ? (
-              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
-                <T size={TYPE.body}>ما لا يحسمه الدفتر</T>
-                <Num size={TYPE.body} bold>{review.plan.issues.length}</Num>
-              </Row>
-            ) : null}
-            {review.surpluses.length ? (
-              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
-                <T size={TYPE.body}>فائض عن الأقساط</T>
-                <Num size={TYPE.body} bold>{review.surpluses.length}</Num>
-              </Row>
-            ) : null}
-            {review.unbooked.items.length + review.unbooked.ambiguous.length ? (
-              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
-                <T size={TYPE.body}>خصومات بلا قيد في الدفتر</T>
-                <Num size={TYPE.body} bold>
-                  {review.unbooked.items.length + review.unbooked.ambiguous.reduce((s, a) => s + a.candidates.length, 0)}
-                </Num>
-              </Row>
-            ) : null}
-            {review.kept.length ? (
-              <Row style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
-                <T size={TYPE.body}>قيود بلا مستند بعد الاستعادة</T>
-                <Num size={TYPE.body} bold>{review.kept.length}</Num>
-              </Row>
-            ) : null}
-            <BtnGhost small title="افتح المراجعة" onPress={() => setReviewOpen(true)} />
-          </>
-        ) : null}
-
-        <Sub>بياناتك بالأرقام</Sub>
-        <Row style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
-          <T size={TYPE.body}>إجمالي السجلات</T>
-          <Num size={TYPE.body} bold>{data.total}</Num>
-        </Row>
-        {data.counts.map(([k, n]) => (
-          <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 5, borderTopWidth: 1, borderTopColor: C.line }}>
-            <T size={TYPE.body}>{k}</T>
-            <Num size={TYPE.body} bold>{n}</Num>
-          </Row>
+      {/* ٤ · التنبيهات */}
+      <Card>
+        <CardTitle>التنبيهات</CardTitle>
+        <ValueRow icon="bell" title="الحالة" value={settings.remindersOn ? 'مفعّلة' : 'مطفأة'}
+          onPress={() => openChoice('التنبيهات', [[1, 'مفعّلة'], [0, 'مطفأة']], settings.remindersOn ? 1 : 0,
+            (v) => { updateSetting('remindersOn', !!v); rescheduleAllNotifications(db).catch(() => {}); })} />
+        {([
+          ['remindPayment', 'قبل استحقاق الدفعة', 'collect', PAYMENT_LEADS],
+          ['remindContract', 'قبل انتهاء العقد', 'contract', CONTRACT_LEADS],
+          ['remindDoc', 'قبل انتهاء المستند', 'claim', DOC_LEADS],
+        ] as const).map(([key, title, icon, opts]) => (
+          <ValueRow key={key} icon={icon} title={title}
+            value={opts.find(([n]) => n === settings[key])?.[1] ?? String(settings[key])}
+            onPress={() => openChoice('تنبيه ' + title, opts as unknown as Array<[number, string]>, settings[key] as number,
+              (v) => { updateSetting(key, v as never); rescheduleAllNotifications(db).catch(() => {}); })} />
         ))}
+      </Card>
 
-        <Sub>حذف كل البيانات</Sub>
-        <Note tone="danger">
-          المسح ينقل كل شيء إلى سلة المحذوفات ويبقى قابلاً للاسترجاع طوال مدة الاحتفاظ أعلاه.
-        </Note>
+      {/* ٥ · ودجت الشاشة · أندرويد وحده يثبّتها من داخل التطبيق */}
+      <Card>
+        <CardTitle>ودجت الشاشة</CardTitle>
+        {([
+          ['strip', 'collect', 'شريط اليوم · كم متأخرة وبكم'],
+          ['panel', 'chart', 'لوحة التحصيل · المحصَّل من المستحق'],
+          ['actions', 'menu', 'أزرار سريعة · تحصيل وفاتورة ومطالبة'],
+        ] as const).map(([kind, icon, title]) => (
+          <ValueRow key={kind} icon={icon} title={title} value="أضف"
+            onPress={() => { pinWidget(kind).catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
+        ))}
+      </Card>
+
+      {/* العرض · لم يرد في ترتيب المالك فبقي بطاقةً مستقلة حتى يحدّد مكانه */}
+      <Card>
+        <CardTitle>العرض</CardTitle>
+        <ValueRow icon="eye" title="حجم الواجهة والخط" value={uiPct + '٪ · ' + fontPct + '٪'} onPress={() => setDisplayOpen(true)} />
+      </Card>
+
+      {/* ٦ · البيانات والمساحة */}
+      <Card>
+        <CardTitle>البيانات والمساحة</CardTitle>
+        <Fold icon="library" title="المساحة" value={libSizeLabel(storageTotal)}>
+          {storageRow('الملفات الأصلية', storage.originalsBytes, storage.originalsCount + ' ملف')}
+          {storageRow('المصغّرات', storage.thumbsBytes)}
+          {storageRow('قاعدة البيانات', storage.dbBytes)}
+          {storageRow('سلة المحذوفات', storage.trashBytes, storage.trashCount + ' ملف')}
+          {storageRow('نسخة الأمان قبل آخر استيراد أو مسح', storage.safetyBytes, storage.safetyCount + ' ملف')}
+        </Fold>
+        <Fold icon="chart" title="بياناتك بالأرقام" value={String(data.total) + ' سجل'}>
+          {data.counts.map(([k, n]) => (
+            <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
+              <T size={TYPE.body}>{k}</T>
+              <Num size={TYPE.body} bold>{n}</Num>
+            </Row>
+          ))}
+        </Fold>
+        {/* بلا مؤقتات لا تفريغ · الصف بلا ضغط */}
+        <ValueRow icon="reload" title="الملفات المؤقتة" value={storage.cacheBytes > 0 ? libSizeLabel(storage.cacheBytes) + ' · تفريغ' : 'لا شيء'}
+          onPress={storage.cacheBytes > 0 ? () => { const freed = sweepCache(); bump(); toast('حُرّر ' + libSizeLabel(freed) + ' من المؤقتات'); } : undefined} />
+        <ValueRow icon="trash" title="سلة المحذوفات" value={data.trash.length + ' سجل'} onPress={() => setTrashOpen(true)} />
+        <ValueRow icon="calendar" title="مدة الاحتفاظ قبل الحذف النهائي" value={settings.trashRetention + ' يوماً'}
+          onPress={() => openChoice('مدة الاحتفاظ', [[30, '٣٠ يوماً'], [60, '٦٠ يوماً'], [90, '٩٠ يوماً']], settings.trashRetention,
+            (v) => updateSetting('trashRetention', v as never))} />
+        <ValueRow icon="eye" title="نزع بيانات الصور الوصفية عند الرفع" value={settings.stripExif ? 'مفعّل' : 'مطفأ'}
+          onPress={() => openChoice('نزع بيانات الصور الوصفية', [[0, 'مطفأ'], [1, 'مفعّل']], settings.stripExif ? 1 : 0,
+            (v) => updateSetting('stripExif', !!v))} />
+        {reviewCount ? (
+          <ValueRow icon="shield" title="مراجعة الدفتر" value={reviewCount + ' للمراجعة'} tone="danger" onPress={() => setReviewOpen(true)} />
+        ) : null}
+      </Card>
+
+      {/* ٧ · عن التطبيق */}
+      <Card>
+        <CardTitle>عن التطبيق</CardTitle>
+        <Fold icon="home" title="عقاري" value={'الإصدار ' + APP_VERSION}>
+          {([['الإصدار', APP_VERSION], ['إصدار قاعدة البيانات', String(SCHEMA_VERSION)]] as Array<[string, string]>).map(([k, v]) => (
+            <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
+              <T size={TYPE.body}>{k}</T>
+              <Num size={TYPE.body} bold>{v}</Num>
+            </Row>
+          ))}
+          <T size={TYPE.caption} color={C.muted} style={{ marginTop: 6 }}>
+            {'مكتبات مفتوحة المصدر مضمّنة: الخريطة Leaflet ' + LEAFLET_VERSION + ' · ' + LEAFLET_LICENSE + ' · صور الخريطة © مساهمو OpenStreetMap'}
+          </T>
+        </Fold>
+      </Card>
+
+      {/* ٨ · مسح كل البيانات · آخر الصفحة، بطاقة مستقلة حمراء */}
+      <Card style={{ borderColor: C.rose, borderWidth: 1.4, backgroundColor: C.roseSoft }}>
+        <CardTitle>مسح كل البيانات</CardTitle>
+        <T size={TYPE.body} color={C.rose} style={{ marginBottom: 10 }}>
+          المسح ينقل كل شيء إلى سلة المحذوفات ويبقى قابلاً للاسترجاع طوال مدة الاحتفاظ، وتسبقه نسخة أمان.
+        </T>
         <BtnGhost danger icon="trash" title="امسح كل البيانات" onPress={() => setWipeConfirm('')} />
       </Card>
 
-      {/* ٥ · النظام */}
-      <Card>
-        <CardTitle>النظام</CardTitle>
+      {/* اختيار القيمة · لوحة سفلية واحدة لكل صفوف القيم */}
+      <PickerSheet
+        visible={!!choice}
+        onClose={() => setChoice(null)}
+        title={choice?.title ?? ''}
+        options={(choice?.options ?? []).map(([v, label]) => ({ value: String(v), label }))}
+        value={choice ? String(choice.value) : null}
+        onPick={(v) => { choice?.onPick(Number(v)); }}
+      />
 
-        <Sub first>العرض</Sub>
+      {/* حالة المزامنة بتفصيلها */}
+      <Sheet visible={syncOpen && !!cloud.user} onClose={() => setSyncOpen(false)} title="حالة المزامنة">
+        {([
+          ['الاتصال', cloud.online ? 'متصل' : 'غير متصل · التغييرات محفوظة في الطابور'],
+          ['المزامنة', cloud.syncing ? (cloud.progress ?? 'جارية') : 'آخر مزامنة ' + lastSync(cloud.sync?.lastSyncAt ?? null)],
+          ['في الطابور', String(cloud.sync?.pending ?? 0)],
+          ['بانتظار سجل أب', String(cloud.sync?.waiting ?? 0)],
+          ['مرفوض عند الوصول', String(cloud.sync?.rejected ?? 0)],
+        ] as Array<[string, string]>).map(([k, v]) => (
+          <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
+            <T size={TYPE.body}>{k}</T>
+            <T size={TYPE.body} bold>{v}</T>
+          </Row>
+        ))}
+        {cloud.lastError ? <Note tone="danger">{cloud.lastError}</Note> : null}
+        {cloud.online && !cloud.syncing ? (
+          <View style={{ marginTop: 10 }}><BtnPrimary icon="reload" title="زامِن الآن" onPress={() => { syncNow(); setSyncOpen(false); }} /></View>
+        ) : null}
+      </Sheet>
+
+      {/* النسخ على Drive */}
+      <Sheet visible={driveOpen && !!cloud.user && cloud.online} onClose={() => setDriveOpen(false)} title="النسخ على Google Drive">
+        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 10 }}>
+          {pwOn ? 'النسخة تُشفَّر بكلمة مرور النسخ قبل رفعها.' : 'النسخة تُرفع كما هي · ضع كلمة مرور النسخ من «النسخ الاحتياطي» لتُشفَّر.'}
+        </T>
+        <BtnPrimary icon="export" title="نسخ إلى Google Drive" onPress={() => { setDriveOpen(false); doDriveBackup(); }} loading={busy} />
+        <View style={{ marginTop: 8 }}>
+          <BtnGhost icon="undo" title="استعادة من Google Drive" onPress={() => { setDriveOpen(false); openDriveRestore(); }} />
+        </View>
+      </Sheet>
+
+      {/* حجم الواجهة والخط */}
+      <Sheet visible={displayOpen} onClose={() => setDisplayOpen(false)} title="حجم الواجهة والخط">
         <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
           <T size={TYPE.body} med>حجم عرض الواجهة</T>
           <Num size={TYPE.number} bold color={C.emerald}>{uiPct}٪</Num>
@@ -752,9 +748,11 @@ export default function Settings() {
           onSlidingComplete={(v) => commitScale('displayScale', v)}
           minimumTrackTintColor={C.emerald} maximumTrackTintColor={C.line} thumbTintColor={C.emerald}
         />
-        <Row style={{ justifyContent: 'flex-start', marginBottom: 10 }}>
-          <BtnGhost small icon="undo" title="إعادة للافتراضي" onPress={() => commitScale('displayScale', 100)} />
-        </Row>
+        {settings.displayScale !== 100 ? (
+          <Row style={{ justifyContent: 'flex-start', marginBottom: 10 }}>
+            <BtnGhost small icon="undo" title="إعادة للافتراضي" onPress={() => commitScale('displayScale', 100)} />
+          </Row>
+        ) : null}
         <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
           <T size={TYPE.body} med>حجم الخط</T>
           <Num size={TYPE.number} bold color={C.emerald}>{fontPct}٪</Num>
@@ -767,49 +765,17 @@ export default function Settings() {
           onSlidingComplete={(v) => commitScale('fontScale', v)}
           minimumTrackTintColor={C.emerald} maximumTrackTintColor={C.line} thumbTintColor={C.emerald}
         />
-        <Row style={{ justifyContent: 'flex-start' }}>
-          <BtnGhost small icon="undo" title="إعادة للافتراضي" onPress={() => commitScale('fontScale', 100)} />
-        </Row>
+        {settings.fontScale !== 100 ? (
+          <Row style={{ justifyContent: 'flex-start' }}>
+            <BtnGhost small icon="undo" title="إعادة للافتراضي" onPress={() => commitScale('fontScale', 100)} />
+          </Row>
+        ) : null}
         {/* معاينة حية: سطر نص وسطر رقم يتغيّران أثناء السحب */}
         <View style={{ backgroundColor: C.paper, borderRadius: 9, padding: 11, marginTop: 8 }}>
           <T size={TYPE.cardTitle}>عقد إيجار وحدة B-14</T>
           <Num size={TYPE.cardTitle} bold>36,000.00 · 2026-08-18</Num>
         </View>
-
-        <Sub>ودجت الشاشة</Sub>
-        {/* أندرويد وحده يسمح بتثبيت الودجت من داخل التطبيق · وغيره لا يعرض الصفّ */}
-        <Note>ضع رقمك على شاشة جوالك · الودجت تقرأ لقطةً يكتبها التطبيق ولا تفتح بياناتك.</Note>
-        <SetRow icon="collect" title="شريط اليوم · كم متأخرة وبكم"
-          onPress={() => { pinWidget('strip').catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
-        <SetRow icon="chart" title="لوحة التحصيل · المحصَّل من المستحق"
-          onPress={() => { pinWidget('panel').catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
-        <SetRow icon="menu" title="أزرار سريعة · تحصيل وفاتورة ومطالبة"
-          onPress={() => { pinWidget('actions').catch(() => toast('المشغّل لا يدعم التثبيت · أضفها بالضغط المطوّل على الشاشة')); }} />
-
-        <Sub>قياس الأداء</Sub>
-        <SetRow icon="chart" title="أزمنة التنقل والاستعلامات على جهازك" onPress={() => router.push('/perf' as never)} />
-
-        <Sub>عن التطبيق</Sub>
-        <T size={TYPE.number} bold style={{ marginBottom: 2 }}>عقاري · أحد حلول منصة رِكز</T>
-        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>تطبيق إدارة الأملاك العقارية من منصة رِكز</T>
-        {([['الإصدار', APP_VERSION], ['إصدار قاعدة البيانات', String(SCHEMA_VERSION)],
-          ['المنصّة', PLATFORM_AR[Platform.OS] ?? 'غير معروفة'],
-          ['معرّف الجهاز', getMeta(db, 'device_id') ?? '']] as Array<[string, string]>)
-          .filter(([, v]) => v !== '').map(([k, v]) => (
-          <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
-            <T size={TYPE.body}>{k}</T>
-            <Num size={TYPE.body} bold>{v}</Num>
-          </Row>
-        ))}
-        <T size={TYPE.caption} color={C.muted} style={{ marginTop: 6, marginBottom: 8 }}>
-          {'مكتبات مفتوحة المصدر مضمّنة: الخريطة Leaflet ' + LEAFLET_VERSION + ' · ' + LEAFLET_LICENSE + ' · صور الخريطة © مساهمو OpenStreetMap'}
-        </T>
-        {cloud.user ? (
-          <Note tone="ok">بياناتك على هذا الجهاز أولاً وتُزامَن مع حسابك ({cloud.user.email}) · لا يقرؤها ولا يكتبها غيرك.</Note>
-        ) : (
-          <Note tone="ok">لا خادم · لا حساب · لا إنترنت. بياناتك على هذا الجهاز وحده، ولا تغادره إلا حين تُصدّرها أنت.</Note>
-        )}
-      </Card>
+      </Sheet>
 
       {/* نسخ Google Drive · اختيار نسخة ثم مسار الاستعادة نفسه */}
       <PickerSheet
@@ -843,6 +809,19 @@ export default function Settings() {
             try { await setBackupPassword(pw1); setPwOn(true); setPwEdit(false); toast('حُفظت · النسخ القادمة مشفّرة'); }
             catch (e) { reportFailure({ title: 'تعذّر حفظ كلمة المرور', e }); }
           }} />
+        ) : null}
+        {pwOn ? (
+          <View style={{ marginTop: 10 }}>
+            <BtnGhost danger title="إزالة كلمة المرور" onPress={() => dialog({
+              title: 'إزالة كلمة مرور النسخ',
+              body: 'النسخ القادمة لا تُشفَّر. والنسخ المشفّرة من قبل تبقى تحتاج كلمتها نفسها لتُفتح، فاحتفظ بها.',
+              tone: 'danger',
+              actions: [
+                { label: 'تراجع', variant: 'ghost' },
+                { label: 'أزل', variant: 'primary', onPress: async () => { await clearBackupPassword(); setPwOn(false); setPwEdit(false); toast('أُزيلت كلمة مرور النسخ'); } },
+              ],
+            })} />
+          </View>
         ) : null}
       </Sheet>
 
@@ -1161,18 +1140,3 @@ export default function Settings() {
   );
 }
 
-function VatChips() {
-  const { db, version, bump } = useApp();
-  const vat = useMemo(
-    () => Number(db.get<{ vat_enabled: number }>(`SELECT vat_enabled FROM company WHERE id = 1`)?.vat_enabled ?? 0),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [db, version]
-  );
-  return (
-    <ChipGroup options={[[0, 'مطفأة · لا تُحتسب'], [1, 'مفعّلة']]} value={vat}
-      onChange={(v) => {
-        db.transaction(() => db.run(`UPDATE company SET vat_enabled = ? WHERE id = 1`, [v]));
-        bump();
-      }} />
-  );
-}

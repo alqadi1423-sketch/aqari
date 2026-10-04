@@ -92,7 +92,7 @@ export function pageFooter(pageNo: number, total: number, issuedAt: string): str
   return `<div class="pfoot">
     <span>صفحة <span class="num">${pageNo}</span> من <span class="num">${total}</span></span>
     <span>صدر في <span class="num">${esc(issuedAt)}</span></span>
-    <span>عقاري · منصة رِكز</span>
+    <span>عقاري</span>
   </div>`;
 }
 
