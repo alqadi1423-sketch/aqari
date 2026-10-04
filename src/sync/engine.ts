@@ -205,6 +205,33 @@ function upsertRow(db: DB, table: string, data: RowData, cols: Set<string>): voi
  * المرحّل محلياً لا يتغيّر إلا بربط قيده العكسي مرة واحدة · والوارد مرحّلاً يُنشأ مسودةً
  * بسطوره ثم يُرقّى فيمرّ بمحفّز التوازن كأي قيد.
  */
+/**
+ * ربط القيد بعاكسه · والعاكس لم يصل بعد (رفعٌ انقطع على جهاز آخر) لا يحبس القيد ولا دفعته في الوارد:
+ * يُطبَّق القيد ويُحفظ الربط معلّقاً حتى يصل عاكسه (resolvePendingReversals)
+ */
+const PENDING_REV = 'pending_reversal_links';
+function linkReversal(db: DB, entryId: string, revId: string): void {
+  if (db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [revId])) {
+    db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [revId, entryId]);
+    return;
+  }
+  const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
+  pending[entryId] = revId;
+  setSyncState(db, PENDING_REV, JSON.stringify(pending));
+}
+export function resolvePendingReversals(db: DB): number {
+  const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
+  let done = 0;
+  for (const [entryId, revId] of Object.entries(pending)) {
+    if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [revId])) continue;
+    db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [revId, entryId]);
+    delete pending[entryId];
+    done++;
+  }
+  if (done) setSyncState(db, PENDING_REV, Object.keys(pending).length ? JSON.stringify(pending) : null);
+  return done;
+}
+
 function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<string> }): 'applied' | 'kept' {
   const d = doc.d!;
   const local = db.get<{ status: string; reversed_by: string | null }>(
@@ -212,7 +239,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   const remoteRev = (d.reversed_by as string | null) ?? null;
   if (local?.status === 'مرحّل') {
     if (remoteRev && !local.reversed_by) {
-      db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [remoteRev, doc.k]);
+      linkReversal(db, doc.k, remoteRev);
       return 'applied';
     }
     return 'kept';
@@ -227,7 +254,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
       keys.map((c) => l[c] as SqlValue));
   }
   if (posted) db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [doc.k]);
-  if (remoteRev) db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [remoteRev, doc.k]);
+  if (remoteRev) linkReversal(db, doc.k, remoteRev);
   return 'applied';
 }
 
@@ -470,6 +497,7 @@ export function applyInbox(db: DB, deviceId: string): { applied: number; conflic
       const left = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
       if (!left) break;
     }
+    resolvePendingReversals(db);
   } finally {
     setApplying(db, false);
     // المسدَّد والحالة من الدفعات للأقساط التي مسّها الوارد · وما حُسب لا يرتدّ إلى الطابور

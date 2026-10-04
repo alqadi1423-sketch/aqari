@@ -64,7 +64,8 @@ describe('اختبار الحمل · آلاف السجلات', () => {
       [x.tenant, x.unitNo, x.contractNo ?? ''].some((v) => v && String(v).includes('مستأجر 25-'))));
     // eslint-disable-next-line no-console
     console.log('البحث في ٢٤٬٠٠٠ قسط ' + tSearch + 'م.ث');
-    expect(tSearch).toBeLessThan(500);
+    // منفرداً ~٣٠م.ث وتحت حمل الحزمة الكاملة بلغ ~٧٠٠ · الحد يصطاد انحدار رتبة كاملة ويسامح توازي العمّال كحدّ الأقساط
+    expect(tSearch).toBeLessThan(2000);
     db.close();
   });
 });
