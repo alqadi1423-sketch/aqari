@@ -39,7 +39,7 @@ import { reportFailure, arabicMessage } from '../src/ui/failureDialog';
 import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
   pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
-  restoreAwaitingAdoption, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
+  restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
 } from '../src/services/cloud';
 import type { CloudReplacePlan, CloudSnapshot } from '../src/sync/engine';
 import type { PrepareOptions } from '../src/domain/backup/restore';
@@ -48,6 +48,7 @@ import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orpha
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
 import { EntrySheet } from '../src/ui/EntrySheet';
+import { reviewData } from '../src/domain/backup/checks';
 import { LEAFLET_VERSION, LEAFLET_LICENSE } from '../src/ui/leafletBundle';
 import { getBackupPassword, setBackupPassword, clearBackupPassword, MIN_PASSWORD } from '../src/services/backupPassword';
 import { PasswordRequiredError } from '../src/domain/backup/encryption';
@@ -112,13 +113,15 @@ export default function Settings() {
   const [syncOpen, setSyncOpen] = useState(false);
   const [driveOpen, setDriveOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
+  const [delOpen, setDelOpen] = useState(false);
+  const [delTyped, setDelTyped] = useState('');
   const [busy, setBusy] = useState(false);
   const [wipeConfirm, setWipeConfirm] = useState<string | null>(null);
   // شريط تقدم بالمراحل · «جاري نسخ المرفقات · ٢٢ من ١١٨» فلا يُظن التطبيق متجمداً
   const [progress, setProgress] = useState<string | null>(null);
   // مراجعة الأقساط من الدفتر · قراءة عند كل تغيير، ولا يُطبَّق شيء إلا بموافقة المستخدم
   const [reviewOpen, setReviewOpen] = useState(false);
-  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db), kept: keptForReview(db) }),
+  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db), kept: keptForReview(db), checks: reviewData(db).notes }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   // تسوية فائض: ردّ للمستأجر بتاريخه وطريقته، أو تحويله رصيداً دائناً
@@ -143,7 +146,7 @@ export default function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   const reviewCount = review.surpluses.length + review.plan.changes.length + review.plan.issues.length
-    + review.unbooked.items.length + review.unbooked.ambiguous.length + review.kept.length;
+    + review.unbooked.items.length + review.unbooked.ambiguous.length + review.kept.length + review.checks.length;
   // قيدٌ من قائمة المراجعة مفتوحٌ بتفاصيله
   const [keptEntry, setKeptEntry] = useState<string | null>(null);
   const [keptCancel, setKeptCancel] = useState<{ id: string; no: string } | null>(null);
@@ -199,14 +202,23 @@ export default function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version]);
 
+  /** نسخةٌ فيها فروق محاسبية · تُسمّى ويُشار إلى أداة المراجعة */
+  const notesDialog = (title: string, notes: string[]) => dialog({
+    title,
+    body: 'حُفظت بياناتك كاملة، وفيها فروق محاسبية تحتاج مراجعتك:\n· ' + notes.join('\n· ')
+      + '\n\nتجدها في «مراجعة الدفتر» في البيانات والمساحة.',
+    tone: 'normal',
+    actions: [{ label: 'حسناً', variant: 'ghost' }],
+  });
   const doBackup = async () => {
     setBusy(true);
     const before = fingerprintData(appBackupEnv(db));
     try {
-      await createAndShareBackup(db, setProgress);
+      const m = await createAndShareBackup(db, setProgress);
       bump();
-      // لا نسخة «ناقصة» · ما لم يجتز كل تحقق فلم يُنشأ أصلاً
-      toast(pwOn ? 'أُنشئت النسخة مشفّرة وتُحقّق منها بنجاح' : 'أُنشئت النسخة وتُحقّق منها بنجاح');
+      // الفرق المحاسبي لا يمنع حفظ البيانات (checks.ts) · تُنشأ النسخة وتُوسم «فيها ملاحظات» وتُسمّى
+      if (m.notes?.length) notesDialog('أُنشئت النسخة وفيها ملاحظات', m.notes);
+      else toast(pwOn ? 'أُنشئت النسخة مشفّرة وتُحقّق منها بنجاح' : 'أُنشئت النسخة وتُحقّق منها بنجاح');
     } catch (e) {
       await reportFailure({
         title: 'تعذّر إنشاء النسخة الاحتياطية', where: 'إنشاء نسخة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
@@ -298,6 +310,7 @@ export default function Settings() {
           + ' (' + (plan.currentAttachments.bytes / (1024 * 1024)).toFixed(1) + ' ميغا)'
           + (plan.ledgerRepair ? repairSummary(plan.ledgerRepair) : '')
           + paidText(plan.paidRecomputed.length)
+          + (plan.notes.length ? '\n\nفي النسخة فروق محاسبية لا تمنع استعادتها، وتظهر بعدها في «مراجعة الدفتر»:\n· ' + plan.notes.join('\n· ') : '')
           + keptText(plan.kept)
           + (cloudPlan ? '\n\nأنت داخل بحساب ' + (cloudState().user?.email ?? '') + ' · المزامنة متوقفة الآن.\n' + cloudReplaceText(cloudPlan) : ''),
         tone: 'normal',
@@ -458,14 +471,20 @@ export default function Settings() {
     }
     setBusy(false);
   };
-  const doSignOut = () => dialog({
+  // الخروج لا يترك تغييراً لم يُرفع: ما في الطابور يُرفع أولاً، وإلا لا يظهر زرّ الخروج ويظهر العدد
+  const doSignOut = () => (cloud.sync?.pending ?? 0) > 0 ? dialog({
     title: 'تسجيل الخروج',
-    body: 'تتوقف المزامنة والنسخ على Google Drive · بياناتك على هذا الجهاز تبقى كما هي، وما تغيّر بعد الخروج يُرسل حين تعود.',
+    body: (cloud.sync?.pending ?? 0) + ' تغييراً لم يُرفع إلى حسابك بعد · اتصل بالإنترنت وانتظر المزامنة ثم اخرج، فلا يضيع منها شيء.',
+    tone: 'normal',
+    actions: [{ label: 'حسناً', variant: 'ghost' }],
+  }) : dialog({
+    title: 'تسجيل الخروج',
+    body: 'تعود إلى شاشة الدخول، وبيانات هذا الجهاز تبقى عليه مقفلة لا تُفتح إلا بدخول هذا الحساب نفسه.',
     tone: 'normal',
     actions: [
       { label: 'تراجع', variant: 'ghost' },
       { label: 'تسجيل الخروج', variant: 'primary', onPress: async () => {
-        try { await cloudSignOut(); toast('خرجت من الحساب · بياناتك على الجهاز كما هي'); }
+        try { await cloudSignOut(); }
         catch (e) { await reportFailure({ title: 'تعذّر تسجيل الخروج', where: 'تسجيل الخروج', db, e }); }
       } },
     ],
@@ -475,7 +494,8 @@ export default function Settings() {
     try {
       const b = await backupToDrive(db, setProgress);
       bump();
-      toast('رُفعت النسخة' + (pwOn ? ' مشفّرة' : '') + ' إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
+      if (b.notes) notesDialog('رُفعت النسخة إلى Google Drive وفيها ملاحظات', reviewData(db).notes);
+      else toast('رُفعت النسخة' + (pwOn ? ' مشفّرة' : '') + ' إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
     } catch (e) {
       await reportFailure({
         title: 'تعذّر النسخ على Google Drive', where: 'نسخ على Drive', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
@@ -559,6 +579,9 @@ export default function Settings() {
               onPress={() => setSyncOpen(true)} />
             {cloud.online ? (
               <ValueRow icon="export" title="النسخ على Drive" value="نسخ أو استعادة" onPress={() => setDriveOpen(true)} />
+            ) : null}
+            {cloud.online ? (
+              <ValueRow icon="trash" title="حذف حسابي" value="الحساب وبياناته" tone="danger" onPress={() => { setDelTyped(''); setDelOpen(true); }} />
             ) : null}
             {restoreAwaitingAdoption(db) ? (
               <View style={{ marginTop: 6 }}>
@@ -734,6 +757,33 @@ export default function Settings() {
         </View>
       </Sheet>
 
+      {/* حذف الحساب · كلمة التأكيد تُكتب حرفياً فيظهر الزر */}
+      <Sheet visible={delOpen && !!cloud.user} onClose={() => setDelOpen(false)} title="حذف حسابي">
+        <Note tone="danger">
+          {'يُحذف نهائياً ولا يُستعاد: حسابك ' + (cloud.user?.email ?? '') + '، وكل بياناته في السحابة، ونسخ التطبيق على Google Drive، '
+            + 'وكل البيانات على هذا الجهاز. وأي جهاز آخر على الحساب يتوقف عن المزامنة.'}
+        </Note>
+        <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 8 }}>
+          إن أردت الاحتفاظ بنسخة فصدّرها من «النسخ الاحتياطي» قبل الحذف. ويُطلب منك الدخول بقوقل مرة أخرى لتأكيد هويتك.
+        </T>
+        <Field label="اكتب: احذف حسابي" value={delTyped} onChange={setDelTyped} />
+        {delTyped.trim() === 'احذف حسابي' ? (
+          <BtnPrimary danger icon="trash" title="احذف حسابي نهائياً" loading={busy} onPress={async () => {
+            setBusy(true);
+            try {
+              await deleteMyAccount(db, setProgress);
+              setDelOpen(false);
+              bump();
+            } catch (e) {
+              await reportFailure({ title: 'تعذّر حذف الحساب', where: 'حذف الحساب', db, e,
+                lead: arabicMessage(e) || 'توقف الحذف عند خطوة لم تكتمل · ما حُذف قبلها لا يعود، وأعد المحاولة لإكمال الباقي.' });
+            }
+            setProgress(null);
+            setBusy(false);
+          }} />
+        ) : null}
+      </Sheet>
+
       {/* حجم الواجهة والخط */}
       <Sheet visible={displayOpen} onClose={() => setDisplayOpen(false)} title="حجم الواجهة والخط">
         <Row style={{ justifyContent: 'space-between', alignItems: 'center' }}>
@@ -785,7 +835,7 @@ export default function Settings() {
         options={(driveList ?? []).map((b) => ({
           value: b.id,
           label: dfmt(toLocalISODate(new Date(b.createdTime))) + ' · ' + libSizeLabel(b.size),
-          sub: b.name + (b.encrypted ? ' · مشفّرة' : ''),
+          sub: b.name + (b.encrypted ? ' · مشفّرة' : '') + (b.notes ? ' · فيها ملاحظات' : ''),
         }))}
         value={''}
         onPick={(id) => {
@@ -896,6 +946,19 @@ export default function Settings() {
                   <BtnGhost small title="ردّ الفائض للمستأجر" onPress={() => openSettle(s, 'refund')} />
                   <BtnGhost small title="تحويله رصيداً دائناً" onPress={() => openSettle(s, 'credit')} />
                 </Row>
+              </View>
+            ))}
+          </>
+        ) : null}
+        {review.checks.length ? (
+          <>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>فحوص الدفتر</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>
+              فروق بين الدفتر والمستندات · لا تمنع النسخ ولا الاستعادة، وتحتاج مراجعتك.
+            </T>
+            {review.checks.map((x, i) => (
+              <View key={i} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
+                <T size={TYPE.body}>{x}</T>
               </View>
             ))}
           </>

@@ -25,6 +25,7 @@ import {
 } from '../../src/domain/stats';
 import { today, toLocalISODate, dfmt, daysBetween, ARABIC_MONTHS_SHORT } from '../../src/domain/dates';
 import { fmt } from '../../src/domain/money';
+import { computeReminders } from '../../src/domain/reminders';
 
 type Range = 'month' | 'quarter' | 'year' | 'all' | 'custom';
 
@@ -297,6 +298,7 @@ export default function Dashboard() {
             <T size={12} bold color={C.emerald}>عرض</T>
           </Pressable>
         )}
+        <RemindersCard />
         {data.openClaims.length > 0 && (
           <Pressable onPress={() => router.push('/claims')} style={alertStyle('#FBEBE9')}>
             <T size={12.5} color={C.rose}>{data.openClaims.length} مطالبة مفتوحة</T>
@@ -496,6 +498,44 @@ export default function Dashboard() {
         </Sheet>
       )}
     </Screen>
+  );
+}
+
+/**
+ * بطاقة «تنبيهات» تحت شريط المتأخرات (اعتمدها المالك ٢٠٢٦-١٠-٠٤): عددها وأقرب ثلاثة ·
+ * انتهاء عقد · انتهاء مستند · دفعة تقترب · و«عرض الكل» في لوحة سفلية. المتأخرات لا تتكرر هنا، شريطها فوقها.
+ * ولا تظهر البطاقة بلا تنبيه.
+ */
+function RemindersCard() {
+  const { db, version } = useApp();
+  const [all, setAll] = useState(false);
+  const items = useMemo(
+    () => computeReminders(db).filter((r) => r.kind !== 'دفعة متأخرة').sort((a, b) => a.days - b.days),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version]);
+  if (!items.length) return null;
+  const line = (r: (typeof items)[number], i: number) => (
+    <Row key={i} style={{ justifyContent: 'space-between', paddingVertical: 4, gap: 10 }}>
+      <T size={12.5} style={{ flexShrink: 1 }}>{r.kind} · {r.subject}</T>
+      {/* تذكير العقد يحمل مدته في نصّه · فلا تتكرر */}
+      {r.kind !== 'عقد يقارب الانتهاء' ? (
+        <T size={12} bold color={C.muted}>{r.days === 0 ? 'اليوم' : 'بعد ' + r.days + ' يوماً'}</T>
+      ) : null}
+    </Row>
+  );
+  return (
+    <View style={{ backgroundColor: C.goldSoft, borderRadius: 10, padding: 11, marginBottom: 8 }}>
+      <Row style={{ justifyContent: 'space-between', marginBottom: 4 }}>
+        <T size={12.5} bold color="#8A6C25">تنبيهات · {items.length}</T>
+        {items.length > 3 ? (
+          <Pressable onPress={() => setAll(true)}><T size={12} bold color={C.emerald}>عرض الكل</T></Pressable>
+        ) : null}
+      </Row>
+      {items.slice(0, 3).map(line)}
+      <Sheet visible={all} onClose={() => setAll(false)} title={'التنبيهات · ' + items.length} tall>
+        {items.map(line)}
+      </Sheet>
+    </View>
   );
 }
 

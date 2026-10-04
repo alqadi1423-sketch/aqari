@@ -83,6 +83,9 @@ function nonIntegers(db: DB, table: string, cols: string[], where: string, param
   return cols.map((col, i) => ({ col, n: Number(r?.['c' + i] ?? 0) })).filter((x) => x.n > 0);
 }
 
+/** بادئة العيب الوحيد الذي هو تلفٌ لا فرقٌ محاسبي: مبلغ بالهللات ليس عدداً صحيحاً (لا ينتجه التطبيق) · checks.ts */
+export const NON_INTEGER_ISSUE = 'مبلغ بالهللات ليس عدداً صحيحاً';
+
 export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColumns(db)): string[] {
   const out: string[] = [];
 
@@ -105,7 +108,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
       }
     }
   }
-  if (bad.length) out.push('مبلغ بالهللات ليس عدداً صحيحاً: ' + listOf(bad.slice(0, SHOW), bad.length));
+  if (bad.length) out.push(NON_INTEGER_ISSUE + ': ' + listOf(bad.slice(0, SHOW), bad.length));
 
   /* ١) القيود المرحّلة */
   const e = within('e.id', scope ? scope.entryIds ?? [] : undefined);

@@ -164,4 +164,26 @@ d('قواعد Firestore · users/{uid}', () => {
     const next = await a.pull(first.next, 10);
     expect(next.docs.map((x) => x.id)).toEqual(['tenants__B']);
   });
+  test('«حذف حسابي»: الحذف ممنوع بلا طلب · والطلب بوقت الخادم يفتح ساعةً يحذف فيها صاحبه كل شيء ولا يفتحها غيره', async () => {
+    const owner = client('DEL1');
+    await owner.write([entry('مرحّل'), { id: 'audit_log__AX', t: 'audit_log', k: 'AX', u: 'x', dev: 'd', del: false, d: { id: 'AX', entity_name: 'أ' } }]);
+    await owner.registerDevice('devA');
+    const base = 'http://' + HOST + '/v1/projects/' + PROJECT + '/databases/(default)/documents';
+    const commit = (uid: string, asUid: string, writes: unknown[]) => fetch(base + ':commit', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(asUid) },
+      body: JSON.stringify({ writes }),
+    });
+    // بلا طلب: حذف صفٍّ مرفوض
+    expect((await commit('DEL1', 'DEL1', [{ delete: 'projects/' + PROJECT + '/databases/(default)/documents/users/DEL1/rows/journal_entries__E1' }])).status).toBe(403);
+    // طلبٌ بوقتٍ يكتبه الجهاز (مستقبلاً) مرفوض · وطلبٌ لحساب غيره مرفوض
+    const name = (u: string) => 'projects/' + PROJECT + '/databases/(default)/documents/users/' + u + '/meta/deletion';
+    expect((await commit('DEL1', 'DEL1', [{ update: { name: name('DEL1'), fields: { at: { timestampValue: '2099-01-01T00:00:00Z' } } } }])).status).toBe(403);
+    expect((await commit('DEL1', 'INTRUDER', [{ update: { name: name('DEL1'), fields: {} },
+      updateTransforms: [{ fieldPath: 'at', setToServerValue: 'REQUEST_TIME' }] }])).status).toBe(403);
+    // صاحبه يحذف كل شيء: القيد المرحّل وسجل العمليات ومستندات meta
+    expect(await owner.deleteAllData()).toBe(2);
+    expect((await owner.pull(null, 10)).docs).toEqual([]);
+    const meta = await fetch(base + '/users/DEL1/meta', { headers: { Authorization: 'Bearer ' + token('DEL1') } });
+    expect(((await meta.json()) as { documents?: unknown[] }).documents ?? []).toEqual([]);
+  });
 });

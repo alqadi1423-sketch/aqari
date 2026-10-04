@@ -14,10 +14,11 @@ import { File } from 'expo-file-system';
 import { GoogleSignin, isSuccessResponse } from '@react-native-google-signin/google-signin';
 import type { AppDB } from '../db/expoAdapter';
 import { cloudConfig, DRIVE_SCOPE } from '../cloud/config';
-import { signInWithGoogleIdToken, refreshIdToken } from '../cloud/authRest';
+import { signInWithGoogleIdToken, refreshIdToken, deleteFirebaseAccount } from '../cloud/authRest';
 import { createSession, type Session, type SessionUser } from '../cloud/session';
 import { FirestoreRemote } from '../cloud/firestore';
-import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, type DriveBackup, type DriveIO } from '../cloud/drive';
+import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, deleteAllAppDataFiles, type DriveBackup, type DriveIO } from '../cloud/drive';
+import { resetDeviceData } from './deviceReset';
 import {
   enableSync, syncOnce, syncStatus, setSyncState, getSyncState, planCloudReplace, adoptAsCloudTruth, readCloud, planFromSnapshot, syncBackoffUntil,
   type SyncStatus, type CloudReplacePlan, type CloudSnapshot,
@@ -83,9 +84,11 @@ export interface CloudState {
   progress: string | null;
   lastError: string | null;
   sync: SyncStatus | null;
+  /** انتهت قراءة الجلسة المحفوظة عند الإقلاع · قبلها لا تُعرض شاشة الدخول فلا تومض */
+  restored: boolean;
 }
 
-let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null };
+let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null, restored: false };
 const listeners = new Set<() => void>();
 function patch(p: Partial<CloudState>): void {
   state = { ...state, ...p };
@@ -130,6 +133,9 @@ export async function syncNow(): Promise<void> {
     patch({ lastError: 'استُعيدت نسخة ولم تُعتمد للسحابة بعد · افتح الإعدادات لاعتمادها' });
     return;
   }
+  // بيانات الجهاز لحساب آخر · لا تُرفع إلى الداخل ولا يُنضمّ بها حتى يختار في بوابة الدخول
+  const owner = deviceAccount(db);
+  if (owner && owner.uid !== state.user.uid) return;
   // رفضٌ متكرر من الخادم (حصة أو انشغال) · تُؤجَّل الدورات ثم تُستأنف من الطابور نفسه
   if (syncBackoffUntil(db)) return;
   running = true;
@@ -152,13 +158,27 @@ export async function syncNow(): Promise<void> {
   }
 }
 
+/**
+ * قراءة الجلسة المحفوظة فور الإقلاع لبوابة الدخول · بلا شبكة ولا مزامنة (تبدأ هي متأخرةً في startCloud) ·
+ * فلا تنتظر البوابة ثواني ولا تومض شاشة الدخول لمن دخل من قبل
+ */
+export function primeSession(): void {
+  if (state.restored) return;
+  const s = getSession();
+  if (!s) { patch({ configured: false, restored: true }); return; }
+  Network.getNetworkStateAsync()
+    .then((n) => patch({ online: !!n.isConnected && n.isInternetReachable !== false }))
+    .catch(() => {});
+  s.restore().then((u) => patch({ user: u, restored: true })).catch(() => patch({ restored: true }));
+}
+
 /** يبدأ مع التطبيق · يعيد دالة الإيقاف */
 export function startCloud(db: AppDB, onRemoteData?: () => void): () => void {
   appDb = db;
   onData = onRemoteData ?? (() => {});
   const s = getSession();
   patch({ configured: !!s, sync: syncStatus(db) });
-  if (!s) return () => {};
+  if (!s) { patch({ restored: true }); return () => {}; }
   let timer: ReturnType<typeof setInterval> | null = null;
   const subs: Array<{ remove(): void }> = [];
 
@@ -175,9 +195,9 @@ export function startCloud(db: AppDB, onRemoteData?: () => void): () => void {
   timer = setInterval(() => { if (AppState.currentState === 'active') syncNow(); }, 60_000);
 
   s.restore().then((u) => {
-    patch({ user: u });
+    patch({ user: u, restored: true });
     if (u) syncNow();
-  }).catch(() => {});
+  }).catch(() => patch({ restored: true }));
 
   return () => {
     if (timer) clearInterval(timer);
@@ -190,8 +210,13 @@ export async function cloudSignIn(): Promise<SessionUser | null> {
   if (!s || !appDb) return null;
   const u = await s.signIn();
   if (!u) return null;
+  // على الجهاز بيانات حساب آخر · لا تُرفع إلى هذا الحساب ولا يُنضمّ بها: بوابة الدخول تعرض الاختيار
+  const owner = deviceAccount(appDb);
+  if (owner && owner.uid !== u.uid) { patch({ user: u }); return u; }
   // نسخة مستعادة لم تُعتمد · لا يُفعَّل الانضمام فيغلب ما في السحابة عليها صامتاً
   if (getSyncState(appDb, 'restored_unadopted') !== '1') enableSync(appDb, u.uid);
+  // إيميل الحساب على الجهاز · تقرؤه شاشة الدخول إن خرج صاحبه أو دخل غيره
+  setSyncState(appDb, 'email', u.email);
   patch({ user: u, sync: syncStatus(appDb) });
   syncNow();
   return u;
@@ -265,6 +290,55 @@ export async function adoptPendingWithKeep(
   return { queued, kept };
 }
 
+/** بعد تفريغ جهازٍ كانت عليه بيانات حساب آخر · يرتبط الجهاز بالحساب الداخل ويبدأ مزامنته */
+export async function bindDeviceToCurrentAccount(db: AppDB): Promise<void> {
+  if (!state.user) return;
+  await resetDeviceData(db);
+  enableSync(db, state.user.uid);
+  setSyncState(db, 'email', state.user.email);
+  patch({ sync: syncStatus(db), lastError: null });
+  syncNow();
+}
+
+/** حساب البيانات على هذا الجهاز (uid وإيميل) · آخر من دخل وارتبطت به المزامنة */
+export function deviceAccount(db: DB): { uid: string; email: string } | null {
+  const uid = getSyncState(db, 'uid');
+  return uid ? { uid, email: getSyncState(db, 'email') ?? '' } : null;
+}
+
+/**
+ * «حذف حسابي» (الدراسة أ، معتمدة): دخولٌ جديد بقوقل للحساب نفسه ثم بالترتيب ·
+ * بيانات السحابة كلها (firestore.rules تأذن ساعةً بطلبٍ بوقت الخادم) · نسخ التطبيق على Drive ·
+ * حساب Firebase · ثم الجهاز (resetDeviceData) · ثم الخروج. فشل خطوةٍ يوقف ما بعدها ويُبلَّغ.
+ */
+export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => void): Promise<void> {
+  const s = getSession();
+  const cfg = cloudConfig();
+  if (!s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
+  if (!state.online) throw new Error('حذف الحساب يحتاج اتصالاً بالإنترنت');
+  const uid = state.user.uid;
+  onProgress?.('جاري تأكيد هويتك بقوقل');
+  const fresh = await s.signIn();
+  if (!fresh) throw new Error('أُلغي تأكيد الهوية');
+  if (fresh.uid !== uid) throw new Error('اخترت حساباً آخر · اختر الحساب نفسه لحذفه');
+  await pauseSync();
+  try {
+    const remote = new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() });
+    onProgress?.('جاري حذف بياناتك من السحابة');
+    await remote.deleteAllData((n) => onProgress?.('جاري حذف بياناتك من السحابة · ' + n));
+    onProgress?.('جاري حذف نسخك على Google Drive');
+    await deleteAllAppDataFiles(driveIO, await s.driveToken());
+    onProgress?.('جاري حذف الحساب');
+    await deleteFirebaseAccount({ apiKey: cfg.apiKey }, await s.idToken());
+    onProgress?.('جاري تفريغ هذا الجهاز');
+    await resetDeviceData(db);
+    await s.signOut();
+    patch({ user: null, sync: syncStatus(db), lastError: null });
+  } finally {
+    resumeSync();
+  }
+}
+
 /** الخروج: الرموز وحدها تُمسح · بياناتك على الجهاز كما هي والتقاط التغييرات مستمر لحين العودة */
 export async function cloudSignOut(): Promise<void> {
   const s = getSession();
@@ -302,14 +376,14 @@ export async function backupToDrive(db: AppDB, onProgress?: (m: string) => void)
   const env = appBackupEnv(db);
   const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
   const out = joinPath(env.tmpDir, 'drive-' + Date.now() + '.aqbk');
-  await createBackup(env, out, onProgress);
+  const manifest = await createBackup(env, out, onProgress);
   try {
     // نسخة Drive تُشفَّر أيضاً إن وُضعت كلمة مرور النسخ
     const pw = await getBackupPassword();
     if (pw) await sealBackupFile(env, out, pw, onProgress);
     onProgress?.('جاري الرفع إلى Google Drive');
     const token = await driveToken();
-    return await uploadBackupToDrive(driveIO, token, out, name, { encrypted: !!pw });
+    return await uploadBackupToDrive(driveIO, token, out, name, { encrypted: !!pw, notes: !!manifest.notes?.length });
   } finally {
     try { env.fs.remove(out); } catch { /* يكنسه الإقلاع */ }
   }

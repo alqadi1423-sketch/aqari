@@ -11,7 +11,7 @@ import { currentSchemaVersion, migrate, NewerSchemaError } from '../../db/migrat
 import { SCHEMA_VERSION } from '../../db/schema';
 import type { DB } from '../../db/adapter';
 import { tableCounts, makeSafetyBackup, ensureFreeSpace } from './create';
-import { semanticIssues } from './semantic';
+import { reviewData } from './checks';
 import { planLedgerRepair, applyLedgerRepair, type LedgerRepairPlan } from '../ledgerReview';
 import { seed, ensureDeviceId } from '../../db/seed';
 import { recomputeInstallments, type PaidChange } from '../contracts/paid';
@@ -46,6 +46,8 @@ export interface RestorePlan {
    * (keepPosted.ts) · تُعرض قبل التأكيد
    */
   kept: KeptEntry[];
+  /** فروق محاسبية في النسخة بعد تجهيزها (checks.ts) · تُعرض في الحوار ولا تمنع، كما في إنشاء النسخة */
+  notes: string[];
 }
 
 export interface PrepareOptions {
@@ -173,6 +175,7 @@ export async function prepareRestore(
     let ledgerRepair: LedgerRepairPlan | null = null;
     let paidRecomputed: PaidChange[] = [];
     let kept: KeptEntry[] = [];
+    let notes: string[] = [];
     {
       let probe: DB | null = null;
       try {
@@ -197,6 +200,9 @@ export async function prepareRestore(
           if (counted[t] !== undefined && !migrated && counted[t] !== expected)
             throw new RestoreError(`عدد سجلات «${t}» لا يطابق البيان (${counted[t]} بدل ${expected})`);
         }
+        // التلف يرفض الاستعادة قبل أي حساب على أرقامها · كما يرفض إنشاء النسخة
+        const damage = reviewData(probe).blocking;
+        if (damage.length) throw new RestoreError('النسخة مرفوضة · ' + damage.join(' · '));
         // ما يحسمه دفتر النسخة أولاً: دفعاتٌ تجاوزت أقساطها تُوزَّع على أقساط عقدها بترتيب الاستحقاق ·
         // على نسخة التجهيز وحدها، ويُعرض على المستخدم قبل التبديل
         const plan = planLedgerRepair(probe);
@@ -212,12 +218,8 @@ export async function prepareRestore(
         carryDeviceLetter(env.db, probe);
         const keep = planKeepPosted(probe, { device: env.db, cloud: cloudDocs });
         if (keep.entries.length) kept = applyKeepPosted(probe, keep).entries;
-        // الفحص الدلالي: قيد مرحّل غير متوازن أو دفعة سالبة أو خصم بلا سطره يرفض الاستعادة كاملة
-        const issues = semanticIssues(probe);
-        if (issues.length) {
-          throw new RestoreError('النسخة مرفوضة · ' + issues.join(' · ')
-            + (plan.issues.length ? ' · وما لا يحسمه دفترها: ' + plan.issues.map((x) => `${x.tenant} · ${x.contractNo}: ${x.reason}`).join(' · ') : ''));
-        }
+        // الفحوص نفسها بالحكم نفسه في النسخ (checks.ts): الفرق المحاسبي ملاحظةٌ تُعرض ولا ترفض الاستعادة
+        notes = reviewData(probe).notes;
         incoming = ledgerRepair || paidRecomputed.length || kept.length ? tableCounts(probe) : counted;
         probe.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
       } finally {
@@ -229,7 +231,7 @@ export async function prepareRestore(
     // مرفقات البيانات الحالية بالبنود نفسها · فيُرى ما سيُخسر من الجانبين لا من جانب واحد
     const live = liveBlobs(env.db);
     return {
-      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept,
+      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept, notes,
       current: tableCounts(env.db),
       attachmentsBytes,
       currentAttachments: { count: live.length, bytes: live.reduce((s, b) => s + Number(b.size_bytes), 0) },

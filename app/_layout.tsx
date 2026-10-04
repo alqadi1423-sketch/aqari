@@ -11,6 +11,7 @@ import {
 } from '@expo-google-fonts/ibm-plex-sans-arabic';
 import { AppStateProvider } from '../src/ui/store';
 import { UpgradeGate } from '../src/ui/UpgradeGate';
+import { AuthGate } from '../src/ui/AuthGate';
 import { UiScaleView } from '../src/ui/UiScale';
 import { ToastProvider } from '../src/ui/Toast';
 import { DialogProvider } from '../src/ui/AppDialog';
@@ -95,6 +96,8 @@ export default function RootLayout() {
         <DialogProvider>
           <StatusBar style="dark" />
           <UiScaleView>
+            {/* الدخول إلزامي · لا شاشة من التطبيق قبل حساب (AuthGate) */}
+            <AuthGate>
             {/* لحظة بدء كل لمسة تُلتقط هنا لقياس زمن الانتقال · لا تحجز اللمسة */}
             <View
               style={{ flex: 1 }}
@@ -105,6 +108,7 @@ export default function RootLayout() {
               {/* القياس أثبت أن إذابة الشاشة المجمدة أبطأ من إبقائها حية (وصول 3.5 ث) · التجميد أُطفئ */}
               <Stack screenOptions={{ headerShown: false, freezeOnBlur: false, contentStyle: { backgroundColor: C.paper } }} />
             </View>
+            </AuthGate>
           </UiScaleView>
         </DialogProvider>
         </ToastProvider>

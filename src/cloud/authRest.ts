@@ -31,6 +31,7 @@ function urls(o: AuthRestOptions) {
   return {
     idp: (e ? `${e}/identitytoolkit.googleapis.com` : 'https://identitytoolkit.googleapis.com') + `/v1/accounts:signInWithIdp?key=${o.apiKey}`,
     token: (e ? `${e}/securetoken.googleapis.com` : 'https://securetoken.googleapis.com') + `/v1/token?key=${o.apiKey}`,
+    del: (e ? `${e}/identitytoolkit.googleapis.com` : 'https://identitytoolkit.googleapis.com') + `/v1/accounts:delete?key=${o.apiKey}`,
   };
 }
 
@@ -73,4 +74,18 @@ export async function refreshIdToken(o: AuthRestOptions, refreshToken: string): 
   if (!res.ok) throw new AuthError(reason(text));
   const j = JSON.parse(text) as { user_id: string; id_token: string; refresh_token: string; expires_in: string };
   return { uid: j.user_id, idToken: j.id_token, refreshToken: j.refresh_token, expiresAt: now + Number(j.expires_in) * 1000 };
+}
+
+/**
+ * حذف حساب Firebase نفسه («حذف حسابي») · يشترط دخولاً حديثاً، فيسبقه دخولٌ جديد بقوقل.
+ */
+export async function deleteFirebaseAccount(o: AuthRestOptions, idToken: string): Promise<void> {
+  const f = o.fetchImpl ?? fetch;
+  const res = await f(urls(o).del, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ idToken }),
+  });
+  if (res.ok) return;
+  const text = await res.text();
+  if (/CREDENTIAL_TOO_OLD|LOGIN_AGAIN/.test(text)) throw new AuthError('يلزم دخول حديث · أعد المحاولة');
+  throw new AuthError(reason(text));
 }

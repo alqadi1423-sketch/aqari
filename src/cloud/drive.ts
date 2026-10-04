@@ -28,6 +28,8 @@ export interface DriveBackup {
   sha256: string;
   /** مشفّرة بكلمة مرور النسخ (encryption.ts) · تُعرض في القائمة فيُعرف أنها ستطلبها */
   encrypted?: boolean;
+  /** فيها ملاحظات محاسبية (checks.ts) */
+  notes?: boolean;
 }
 
 export class DriveError extends Error {
@@ -61,6 +63,7 @@ export async function listDriveBackups(io: DriveIO, token: string): Promise<Driv
     id: f.id, name: f.name, size: Number(f.size ?? 0), createdTime: f.createdTime,
     sha256: (f.sha256Checksum ?? f.appProperties?.sha256 ?? '').toLowerCase(),
     encrypted: f.appProperties?.encrypted === '1',
+    notes: f.appProperties?.notes === '1',
   }));
 }
 
@@ -80,7 +83,7 @@ async function remoteSha(io: DriveIO, token: string, id: string): Promise<{ sha:
  * أي اختلاف يحذف المرفوع ويرفض برسالة تسمّي الملف.
  */
 export async function uploadBackupToDrive(
-  io: DriveIO, token: string, path: string, name: string, opts: { encrypted?: boolean } = {},
+  io: DriveIO, token: string, path: string, name: string, opts: { encrypted?: boolean; notes?: boolean } = {},
 ): Promise<DriveBackup> {
   const local = (await io.sha256OfFile(path)).toLowerCase();
   const size = io.sizeOf(path);
@@ -91,7 +94,7 @@ export async function uploadBackupToDrive(
       'X-Upload-Content-Type': 'application/octet-stream',
       'X-Upload-Content-Length': String(size),
     }),
-    body: JSON.stringify({ name, parents: ['appDataFolder'], appProperties: { app: 'aqari', sha256: local, ...(opts.encrypted ? { encrypted: '1' } : {}) } }),
+    body: JSON.stringify({ name, parents: ['appDataFolder'], appProperties: { app: 'aqari', sha256: local, ...(opts.encrypted ? { encrypted: '1' } : {}), ...(opts.notes ? { notes: '1' } : {}) } }),
   });
   if (init.status === 401 || init.status === 403) throw new DriveError('رُفض الوصول عند بدء الرفع · سجّل الدخول من جديد');
   const session = init.headers.get('Location') ?? init.headers.get('location');
@@ -117,5 +120,19 @@ export async function downloadBackupFromDrive(io: DriveIO, token: string, b: Dri
   const local = (await io.sha256OfFile(path)).toLowerCase();
   if (!b.sha256 || local !== b.sha256) {
     throw new DriveError(`بصمة «${b.name}» بعد التنزيل لا تطابق بصمتها على Drive · رُفضت الاستعادة`);
+  }
+}
+
+/** «حذف حسابي»: كل ملفات التطبيق في مجلده الخاص على Drive · يعيد عددها */
+export async function deleteAllAppDataFiles(io: DriveIO, token: string): Promise<number> {
+  let n = 0;
+  for (;;) {
+    const list = await listDriveBackups(io, token);
+    if (!list.length) return n;
+    for (const b of list) {
+      const res = await io.fetch(`${API}/files/${b.id}`, { method: 'DELETE', headers: auth(token) });
+      if (res.status !== 204 && res.status !== 404) throw new DriveError(`تعذّر حذف نسخة من Drive (${res.status})`);
+      n++;
+    }
   }
 }

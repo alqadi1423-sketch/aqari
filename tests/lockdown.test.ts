@@ -182,7 +182,7 @@ describe('ج · لا نسخة بلا تحقق كامل', () => {
     env.closeLive();
   });
 
-  test('فحص سلامة مختلّ: يُرفض إنشاء النسخة ويُسمّى الفحص وقيمته', async () => {
+  test('فرق محاسبي في التأمينات: النسخة تُنشأ موسومة «فيها ملاحظات» بالفحص وأرقامه · واستعادتها تمرّ بالملاحظة نفسها', async () => {
     const env = makeBackupEnv(newDir());
     // تأمين على عقد سارٍ بلا قيده: «التأمينات المحتجزة» لا تطابق رصيد 2400
     env.db.run(`INSERT INTO properties (id,name,created_at) VALUES ('P','ع','x')`);
@@ -190,11 +190,16 @@ describe('ج · لا نسخة بلا تحقق كامل', () => {
     env.db.run(`INSERT INTO contracts (id,contract_no,tenant_name,unit_id,value_halalas,start,end,deposit_halalas,status,created_at)
                 VALUES ('C','EJ-1','ف','U',100,'2026-01-01','2026-12-31',5000,'سارٍ','x')`);
     const out = path.join(env.root, 'x.aqbk');
-    const err = await createBackup(env, out).catch((e) => e);
-    expect(err).toBeInstanceOf(BackupIntegrityError);
-    expect(err.message).toContain('يُرفض إنشاء النسخة · فحص السلامة مختلّ');
-    expect(err.message).toContain('«تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة)» (0.00 / 50.00)');
-    expect(fs.existsSync(out)).toBe(false);
+    const m = await createBackup(env, out);
+    expect(fs.existsSync(out)).toBe(true);
+    expect(m.complete).toBe(true);
+    expect(m.notes).toEqual(['«تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة)» (0.00 / 50.00)']);
+    // الحكم نفسه في الاستعادة: تمرّ وتعرض الملاحظة نفسها
+    const target = makeBackupEnv(newDir());
+    const plan = await prepareRestore(target, out);
+    expect(plan.notes).toEqual(m.notes);
+    abortRestore(target, plan.stagingDir);
+    target.closeLive();
     env.closeLive();
   });
 
@@ -304,7 +309,7 @@ describe('د · القيد المرحّل', () => {
     db.close();
   });
 
-  test('استعادة نسخة فيها قيد مرحّل غير متوازن: تُرفض كاملة ويُسمّى القيد والبيانات الحالية كما هي', async () => {
+  test('استعادة نسخة فيها قيد مرحّل غير متوازن: تمرّ بملاحظة تسمّي القيد · فرقٌ محاسبي لا تلف', async () => {
     const archive = await craftArchive((db) => {
       dropLockTriggers(db);
       db.exec('PRAGMA foreign_keys = OFF');
@@ -313,11 +318,10 @@ describe('د · القيد المرحّل', () => {
     });
     const target = makeBackupEnv(newDir());
     const before = tableCounts(target.db);
-    const err = await prepareRestore(target, archive).catch((e) => e);
-    expect(err).toBeInstanceOf(RestoreError);
-    expect(err.message).toContain('النسخة مرفوضة');
-    expect(err.message).toContain('قيد مرحّل غير متوازن: JE-9001 (الفرق 50.00)');
-    expect(tableCounts(target.db)).toEqual(before);
+    const plan = await prepareRestore(target, archive);
+    expect(plan.notes.join(' ')).toContain('قيد مرحّل غير متوازن: JE-9001 (الفرق 50.00)');
+    expect(tableCounts(target.db)).toEqual(before); // التجهيز لا يمسّ البيانات الحالية
+    abortRestore(target, plan.stagingDir);
     target.closeLive();
   });
 });

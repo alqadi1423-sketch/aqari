@@ -2,6 +2,7 @@ import { joinPath } from '../../files/fsAdapter';
 import { zipYielding, unzipYielding, yieldUi, archiveFailureText, type ZipEntry } from './zipStream';
 import { liveBlobs } from '../../files/store';
 import { integrityChecks, type IntegrityCheck } from '../accounting/integrity';
+import { reviewData } from './checks';
 import { allAccounts, accountBalance } from '../accounting/ledger';
 import { currentSchemaVersion } from '../../db/migrations';
 import { libSizeLabel } from '../library';
@@ -205,9 +206,19 @@ export async function createBackup(
     // بنية أقدم من أعمدة الفحوص · يُكتب ذلك في البيان والقاعدة تُحفظ كما هي
     integrity = [{ name: 'فحوص الدفتر', ok: false, value: 'بنية الإصدار ' + currentSchemaVersion(env.db) + ' أقدم من أن تُفحص قبل ترقيتها' }];
   }
-  // أي فحص مختلّ يمنع النسخة كلها · لا نسخة «ناقصة» ولا موسومة «كاملة» على خلل
-  const failedChecks = integrity.filter((c) => !c.ok);
-  if (failedChecks.length && !opts.preUpgrade) throw new BackupIntegrityError(failedChecks.map((c) => `«${c.name}» (${c.value})`));
+  // الحكم نفسه في الاستعادة (checks.ts): التلف يمنع النسخة، والفرق المحاسبي يُكتب فيها «ملاحظات» ولا يمنع حفظ البيانات
+  let notes: string[] = [];
+  if (!opts.preUpgrade) {
+    let review: ReturnType<typeof reviewData>;
+    try {
+      review = reviewData(env.db);
+    } catch {
+      // بنية أقدم من أعمدة الفحوص (نسخة أمان لقاعدة لم تُرقَّ) · تُحفظ كما هي وتُذكر في ملاحظاتها
+      review = { blocking: [], notes: ['تعذّر فحص الدفتر على بنية الإصدار ' + currentSchemaVersion(env.db)] };
+    }
+    if (review.blocking.length) throw new BackupIntegrityError(review.blocking);
+    notes = review.notes;
+  }
   const counts = tableCounts(env.db);
   let ledger: BackupManifest['ledger'];
   try {
@@ -298,7 +309,8 @@ export async function createBackup(
       table_counts: counts,
       ledger,
       integrity,
-      complete: missing.length === 0 && failedChecks.length === 0,
+      complete: missing.length === 0,
+      notes,
     };
     zipEntries.push({ name: 'manifest.json', bytes: enc.encode(JSON.stringify(manifest, null, 1)), level: 6 });
 

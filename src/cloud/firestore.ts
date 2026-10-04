@@ -174,6 +174,40 @@ export class FirestoreRemote implements RemoteStore {
     throw new Error('تعذّر تسجيل حرف الجهاز · أعد المحاولة');
   }
 
+  /**
+   * «حذف حسابي»: يُكتب طلب الحذف بوقت الخادم فتأذن القواعد ساعةً بحذف الصفوف (firestore.rules) ·
+   * ثم تُحذف الصفوف دفعاتٍ، ثم مستندات meta، ثم مستند الحساب، وطلب الحذف آخراً. يعيد عدد الصفوف المحذوفة.
+   */
+  async deleteAllData(onProgress?: (deleted: number) => void): Promise<number> {
+    await this.call(`${this.root}:commit`, {
+      writes: [{
+        update: { name: `${this.userPath}/meta/deletion`, fields: {} },
+        updateTransforms: [{ fieldPath: 'at', setToServerValue: 'REQUEST_TIME' }],
+      }],
+    });
+    const list = async (collection: string): Promise<string[]> => {
+      const token = await this.o.idToken();
+      const res = await this.f(`${this.root}/users/${this.o.uid}/${collection}?pageSize=300&mask.fieldPaths=u`,
+        { headers: { Authorization: 'Bearer ' + token } });
+      const text = await res.text();
+      if (!res.ok) throw new FirestoreHttpError(res.status, text);
+      return ((text ? JSON.parse(text) : {}).documents ?? []).map((d: { name: string }) => d.name);
+    };
+    let deleted = 0;
+    for (;;) {
+      const names = await list('rows');
+      if (!names.length) break;
+      await this.call(`${this.root}:commit`, { writes: names.map((name) => ({ delete: name })) });
+      deleted += names.length;
+      onProgress?.(deleted);
+    }
+    const meta = (await list('meta')).filter((n) => !n.endsWith('/meta/deletion'));
+    await this.call(`${this.root}:commit`, {
+      writes: [...meta.map((name) => ({ delete: name })), { delete: this.userPath }, { delete: `${this.userPath}/meta/deletion` }],
+    });
+    return deleted;
+  }
+
   async pull(cursor: Cursor | null, limit: number): Promise<{ docs: RemoteDoc[]; next: Cursor | null }> {
     const structuredQuery: Record<string, unknown> = {
       from: [{ collectionId: 'rows' }],

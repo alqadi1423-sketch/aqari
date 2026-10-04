@@ -24,6 +24,8 @@ export interface BackupManifest {
   };
   integrity: IntegrityCheck[];
   complete: boolean;
+  /** «فيها ملاحظات»: فروق محاسبية بأسماء فحوصها وأرقامها · لا تمنع النسخة (checks.ts) · غائبة في نسخ أقدم */
+  notes?: string[];
 }
 
 export interface BackupEnv {
@@ -59,10 +61,10 @@ export class BackupVerificationError extends Error {
   }
 }
 
-/** فحص سلامة مختلّ يمنع إنشاء النسخة · الرسالة تسمّي كل فحص فشل وقيمته */
+/** بيانات تالفة تمنع إنشاء النسخة (checks.ts) · والفرق المحاسبي لا يمنعها، يُكتب ملاحظةً فيها */
 export class BackupIntegrityError extends Error {
   constructor(public failed: string[]) {
-    super('يُرفض إنشاء النسخة · فحص السلامة مختلّ: ' + failed.join('، '));
+    super('يُرفض إنشاء النسخة · بيانات تالفة: ' + failed.join('، '));
     this.name = 'BackupIntegrityError';
   }
 }

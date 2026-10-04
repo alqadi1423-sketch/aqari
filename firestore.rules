@@ -74,8 +74,21 @@ service cloud.firestore {
         && after.d.reversed_by is string;
     }
 
+    // «حذف حسابي» بطلب صاحبه وحده: يكتب meta/deletion بوقت الخادم، ولساعةٍ بعده فقط يحذف صفوفه كلها ·
+    // وبلا هذا الطلب لا يُحذف صفٌّ أبداً كما كان (القيد المرحّل وسجل العمليات خاصةً)
+    function deletionOpen(uid) {
+      let p = /databases/$(database)/documents/users/$(uid)/meta/deletion;
+      return exists(p) && request.time < get(p).data.at + duration.value(1, 'h');
+    }
+
     match /users/{uid} {
       allow read, write: if isOwner(uid);
+
+      match /meta/deletion {
+        allow read, delete: if isOwner(uid);
+        allow create, update: if isOwner(uid)
+          && request.resource.data.keys().hasOnly(['at']) && request.resource.data.at == request.time;
+      }
 
       match /rows/{rowId} {
         allow read: if isOwner(uid);
@@ -83,12 +96,14 @@ service cloud.firestore {
         allow update: if isOwner(uid) && validRow(rowId)
           && resource.data.t != 'audit_log'
           && (!isPostedEntry(resource.data) || onlyLinksReversal());
-        allow delete: if false;
+        allow delete: if isOwner(uid) && deletionOpen(uid);
       }
 
       // ما سوى الصفوف (حالة المزامنة مثلاً) لصاحبه وحده
       match /{other}/{docId} {
-        allow read, write: if isOwner(uid) && other != 'rows';
+        allow read: if isOwner(uid) && other != 'rows';
+        // طلب الحذف لا يُكتب من هنا · له قاعدته بوقت الخادم أعلاه
+        allow write: if isOwner(uid) && other != 'rows' && !(other == 'meta' && docId == 'deletion');
       }
     }
   }
