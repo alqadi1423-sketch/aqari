@@ -169,7 +169,7 @@ describe('المحرّك المحاسبي — الأساس', () => {
     });
     postContractDeposit(db, c);
     const checks = integrityChecks(db);
-    expect(checks).toHaveLength(8);
+    expect(checks).toHaveLength(9);
     for (const ch of checks) expect(ch.ok).toBe(true);
     db.close();
   });

@@ -5,6 +5,7 @@
 import type { DB } from '../db/adapter';
 import type { FirestoreRemote } from '../cloud/firestore';
 import { getSyncState, setSyncState, seedOutbox } from '../sync/engine';
+import { hasUserData } from '../domain/backup/upgrade';
 import { memberTokens } from '../sync/acl';
 import { SECTION_KEYS, type Level, type Perms } from '../domain/access/sections';
 import { readMembership, saveMembership, type Membership } from './access';
@@ -143,3 +144,50 @@ export async function refreshMembership(db: DB, remote: FirestoreRemote): Promis
 
 /** مغادرة العضو المنشأة بنفسه · تُحذف عضويته من الخادم، ومسح الجهاز على المستدعي */
 export const leaveOrg = (remote: FirestoreRemote, org: string, uid: string) => remote.deleteDoc(`orgs/${org}/members/${uid}`);
+
+/* ─── المسح الشامل (توجيه المالك ٢٠٢٦-١٠-٠٤) ─── */
+
+/** عهد المسح في المنشأة · ٠ ما لم تُمسح أبداً */
+export async function readEpoch(remote: FirestoreRemote, org: string): Promise<number> {
+  const d = await remote.getDoc(`orgs/${org}/meta/epoch`);
+  return d && typeof d.n === 'number' ? d.n : 0;
+}
+
+/**
+ * مسح سحابة المنشأة: العهد يُرفع أولاً (فكل جهاز يفرّغ نسخته عند أول مزامنة ولا يرفع قديمه)، ثم تُحذف
+ * الصفوف كلها، ثم يُعاد الحذف مرة لما رفعه جهازٌ في أثناء ذلك. يعيد العهد الجديد.
+ */
+export async function wipeOrgCloud(remote: FirestoreRemote, org: string, onProgress?: (m: string) => void): Promise<number> {
+  const n = (await readEpoch(remote, org)) + 1;
+  await remote.setDoc(`orgs/${org}/meta/epoch`, { n, at: new Date().toISOString() });
+  onProgress?.('جاري مسح بيانات المنشأة من السحابة');
+  await remote.deleteRowsOnly((k) => onProgress?.('جاري مسح بيانات المنشأة من السحابة · ' + k));
+  await remote.deleteRowsOnly();
+  return n;
+}
+
+/**
+ * قبل كل مزامنة: هل مُسحت المنشأة بعد آخر ما يعرفه الجهاز؟ 'wipe' يُفرَّغ الجهاز ثم يسحب ·
+ * 'adopt' جهاز لا يعرف عهداً ولا بيانات عليه (تثبيت جديد) فيأخذه · 'same' كما هو.
+ */
+export function epochAction(local: number | null, remote: number, hasData: boolean): 'wipe' | 'adopt' | 'same' {
+  if (local === null) return remote > 0 && hasData ? 'wipe' : (remote > 0 ? 'adopt' : 'same');
+  return remote > local ? 'wipe' : 'same';
+}
+
+/**
+ * فحص العهد قبل المزامنة ثم العمل به · wipe يفرّغ الجهاز (بنسخة أمان) ويستدعيه المستدعي بما يناسب منصته
+ */
+export async function checkEpoch(db: DB, remote: FirestoreRemote, org: string, wipe: () => Promise<DB | void>): Promise<'wipe' | 'adopt' | 'same'> {
+  const remoteEpoch = await readEpoch(remote, org);
+  const raw = getSyncState(db, 'wipe_epoch');
+  const act = epochAction(raw === null ? null : Number(raw), remoteEpoch, hasUserData(db));
+  // القاعدة بعد التفريغ قد تكون غير التي قبله (تُفتح من جديد) · فالكتابة على ما يعيده التفريغ
+  let live = db;
+  if (act === 'wipe') {
+    live = (await wipe()) ?? db;
+    setSyncState(live, 'joining', '1');
+  }
+  if (act !== 'same') setSyncState(live, 'wipe_epoch', String(remoteEpoch));
+  return act;
+}

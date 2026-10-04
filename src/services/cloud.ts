@@ -38,12 +38,15 @@ import { getBackupPassword } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
 import { SYNC_TABLES } from '../db/syncTables';
 import { memberTokens, fullReadTables } from '../sync/acl';
-import { setCapture, outboxCount } from '../sync/engine';
+import { setCapture, outboxCount, seedOutbox } from '../sync/engine';
+import { wipeAllData } from '../domain/wipe';
+import { makeSafetyBackup } from '../domain/backup/create';
+import { appDataRoot } from '../files/expoFs';
 import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
-  moveOwnerToOrg, refreshMembership, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
+  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
   type MemberDoc, type MemberSpec,
 } from './org';
 
@@ -208,6 +211,15 @@ export async function syncNow(): Promise<void> {
       enableSync(db, uid);
       // المالك ينتقل إلى منشأته مرة (صلاحيات الأقسام) · حروف أجهزته تنتقل كما هي
       await moveOwnerToOrg(db, remoteOf(db, uid, idToken, true), new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid }), uid);
+    }
+    // عهد المسح: مُسحت المنشأة بعد آخر ما يعرفه الجهاز ← يُفرَّغ (بنسخة أمان) ثم يسحب · فلا يرجع ممسوح
+    const org = member?.org ?? (getSyncState(db, 'org') === uid ? uid : null);
+    if (org) {
+      const act = await checkEpoch(db, remoteOf(db, uid, idToken), org, async () => {
+        patch({ progress: 'مُسحت بيانات المنشأة · جاري تفريغ هذا الجهاز' });
+        await wipeLocal(db as AppDB);
+      });
+      if (act === 'wipe') onData();
     }
     const rep = await syncOnce(db, remoteOf(db, uid, idToken), ensureDeviceId(db), (msg) => patch({ progress: msg }));
     setSyncState(db, 'last_error', null);
@@ -513,6 +525,57 @@ export function bindRestoredToCurrentAccount(db: AppDB): void {
   if (!state.user) return;
   setSyncState(db, 'uid', state.user.uid);
   setSyncState(db, 'email', state.user.email);
+}
+
+/* ═══════════ مسح كل البيانات ═══════════ */
+
+/** تفريغ الجهاز: القاعدة والمرفقات والمصغّرات ولقطة الودجت · بنسخة أمان، ويبقى الحساب وهوية الجهاز */
+async function wipeLocal(db: AppDB, onProgress?: (m: string) => void, safety?: string): Promise<string> {
+  const env = appBackupEnv(db);
+  const path = await wipeAllData(env, onProgress, safety);
+  for (const d of ['thumbs', 'widget.json']) {
+    try { env.fs.remove(joinPath(appDataRoot(), d)); } catch { /* غير موجود */ }
+  }
+  return path;
+}
+
+/**
+ * «امسح كل البيانات» للمالك (توجيه ٢٠٢٦-١٠-٠٤): بعده التطبيق كأنه مثبَّت جديداً على هذا الجهاز
+ * وعلى كل جهاز آخر وبعد إعادة التثبيت. نسخة الأمان أولاً، ثم السحابة (عهد المسح وحذف الصفوف)، ثم الجهاز.
+ * يحتاج اتصالاً ومزامنةً سابقة إلى المنشأة · وبلا إعداد سحابي (بيئة التطوير) يُمسح الجهاز وحده.
+ */
+export async function wipeEverything(db: AppDB, onProgress?: (m: string) => void): Promise<string> {
+  const s = getSession();
+  const cfg = cloudConfig();
+  const user = state.user;
+  const cloud = !!(s && cfg && user);
+  if (cloud) {
+    if (!state.online) throw new Error('المسح يحتاج اتصالاً ليصل إلى السحابة وكل الأجهزة');
+    if (getSyncState(db, 'org') !== user!.uid) throw new Error('أكمل مزامنة واحدة أولاً ثم امسح');
+  }
+  await pauseSync();
+  try {
+    const env = appBackupEnv(db);
+    await ensureFreeSpace(env);
+    const safety = await makeSafetyBackup(env, 'pre-wipe', onProgress);
+    let epoch: number | null = null;
+    if (cloud) {
+      const sess = s!;
+      const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.idToken(), org: user!.uid });
+      epoch = await wipeOrgCloud(remote, user!.uid, onProgress);
+    }
+    await wipeLocal(db, onProgress, safety);
+    if (epoch !== null) {
+      setSyncState(db, 'wipe_epoch', String(epoch));
+      // ما زُرع في القاعدة الجديدة (الدليل والقوالب) يُرفع إلى السحابة الفارغة
+      seedOutbox(db);
+    }
+    patch({ sync: syncStatus(db), lastError: null });
+    onData();
+    return safety;
+  } finally {
+    resumeSync();
+  }
 }
 
 /* ═══════════ المنشأة والأعضاء ═══════════ */

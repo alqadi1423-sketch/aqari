@@ -18,6 +18,7 @@ const CHECKS = [
   'الأصول = الالتزامات + حقوق الملكية + صافي الدخل',
   'لا قيود يتيمة لمصادر محذوفة',
   'كل دفعة محصَّلة لها قيد مرحّل',
+  'لا سجل يتيم: دفعة أو قسط بلا عقد، أو عقد بلا وحدة',
 ];
 
 const check = (db: ReturnType<typeof memDb>, name: string) => {
@@ -49,7 +50,7 @@ describe('فحوص المطابقة الثمانية · خلل مزروع لكل
   test('القاعدة السليمة: الفحوص الثمانية كلها تمر', () => {
     const { db } = seededDb();
     const results = integrityChecks(db);
-    expect(results.length).toBe(8);
+    expect(results.length).toBe(9);
     for (const r of results) expect({ name: r.name, ok: r.ok }).toEqual({ name: r.name, ok: true });
     for (const n of CHECKS) expect(results.some((r) => r.name === n)).toBe(true);
     db.close();
@@ -135,6 +136,14 @@ describe('فحوص المطابقة الثمانية · خلل مزروع لكل
             VALUES (?,?,?,?,?,?,?,?,?,?)`,
       [uid(), cid, 'خلل', '2026-03-01', 50000, 0, 50000, 'نقداً', '', new Date().toISOString()]);
     expect(check(db, CHECKS[7]).ok).toBe(false);
+    db.close();
+  });
+  test('٩ · عقد في السلة ودفعاته وأقساطه قائمة ← يسقط فحص السجل اليتيم (توجيه المالك)', () => {
+    const { db, cid } = seededDb();
+    db.run(`UPDATE contracts SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), cid]);
+    const c = check(db, CHECKS[8]);
+    expect(c.ok).toBe(false);
+    expect(c.value).toMatch(/^1 دفعة · [0-9]+ قسط · 0 عقد$/);
     db.close();
   });
 });

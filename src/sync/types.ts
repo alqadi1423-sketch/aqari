@@ -38,6 +38,8 @@ export interface RemoteDoc {
   companions?: RemoteDoc[];
 }
 
+export interface PullPage { docs: RemoteDoc[]; next: Cursor | null; more?: boolean }
+
 export interface Cursor {
   ts: string;
   id: string;
@@ -54,7 +56,11 @@ export interface WriteResult {
 
 export interface RemoteStore {
   /** المستندات التي كُتبت بعد المؤشر بترتيب وقت الخادم ثم المعرّف */
-  pull(cursor: Cursor | null, limit: number): Promise<{ docs: RemoteDoc[]; next: Cursor | null }>;
+  /**
+   * المستندات التي كُتبت بعد المؤشر بترتيب وقت الخادم ثم المعرّف · more: بقي بعدها ما يُسحب
+   * (الصفحة قد تقصر عن الحد وقد بقي شيء حين يُهمل منها ما ليس للجهاز، كالإسقاط عند المالك)
+   */
+  pull(cursor: Cursor | null, limit: number): Promise<PullPage>;
   /** كتابة غير ذرية · نتيجة لكل مستند */
   write(docs: RemoteDoc[]): Promise<WriteResult[]>;
   /** المنشأة: يزيّن المستند الخارج بحقول الرؤية وإسقاطه قبل الكتابة (sync/acl.ts) */

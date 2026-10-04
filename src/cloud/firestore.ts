@@ -5,7 +5,7 @@
  * الأعداد الصحيحة تُرسل integerValue (نصّاً بأرقامه) وتعود أعداداً صحيحة · فالمبالغ بالهللات
  * تبقى صحيحة لا كسرية في Firestore كما هي في القاعدة المحلية.
  */
-import type { Cursor, RemoteDoc, RemoteStore, RowData, WriteResult } from '../sync/types';
+import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, WriteResult } from '../sync/types';
 import { nextDeviceLetter } from '../domain/numbering';
 import type { DB } from '../db/adapter';
 import { OWNER_ACCESS, type Access } from '../domain/access/access';
@@ -213,6 +213,33 @@ export class FirestoreRemote implements RemoteStore {
    * «حذف حسابي»: يُكتب طلب الحذف بوقت الخادم فتأذن القواعد ساعةً بحذف الصفوف (firestore.rules) ·
    * ثم تُحذف الصفوف دفعاتٍ، ثم مستندات meta، ثم مستند الحساب، وطلب الحذف آخراً. يعيد عدد الصفوف المحذوفة.
    */
+  /**
+   * «مسح كل البيانات»: صفوف المسار كلها تُحذف بنافذة الحذف نفسها (طلبٌ بوقت الخادم يأذن ساعة) ·
+   * ويبقى الحساب والمنشأة وأعضاؤها ودعواتها وحروف الأجهزة. يعيد عدد الصفوف المحذوفة.
+   */
+  async deleteRowsOnly(onProgress?: (deleted: number) => void): Promise<number> {
+    await this.call(`${this.root}:commit`, {
+      writes: [{
+        update: { name: `${this.userPath}/meta/deletion`, fields: {} },
+        updateTransforms: [{ fieldPath: 'at', setToServerValue: 'REQUEST_TIME' }],
+      }],
+    });
+    let deleted = 0;
+    for (;;) {
+      const token = await this.o.idToken();
+      const res = await this.f(`${this.root}/${this.relPath}/rows?pageSize=300&mask.fieldPaths=u`, { headers: { Authorization: 'Bearer ' + token } });
+      const text = await res.text();
+      if (!res.ok) throw new FirestoreHttpError(res.status, text);
+      const names = ((text ? JSON.parse(text) : {}).documents ?? []).map((d: { name: string }) => d.name);
+      if (!names.length) break;
+      await this.call(`${this.root}:commit`, { writes: names.map((name: string) => ({ delete: name })) });
+      deleted += names.length;
+      onProgress?.(deleted);
+    }
+    await this.call(`${this.root}:commit`, { writes: [{ delete: `${this.userPath}/meta/deletion` }] });
+    return deleted;
+  }
+
   async deleteAllData(onProgress?: (deleted: number) => void): Promise<number> {
     await this.call(`${this.root}:commit`, {
       writes: [{
@@ -323,17 +350,20 @@ export class FirestoreRemote implements RemoteStore {
     return docs;
   }
 
-  async pull(cursor: Cursor | null, limit: number): Promise<{ docs: RemoteDoc[]; next: Cursor | null }> {
+  async pull(cursor: Cursor | null, limit: number): Promise<PullPage> {
     const tokens = this.o.memberTokens?.() ?? null;
     if (!tokens) {
       const docs = await this.page(cursor, limit, null);
       const last = docs[docs.length - 1];
-      return { docs, next: last && last.ts ? { ts: last.ts, id: last.id } : cursor };
+      // المالك يقرأ المستندات الكاملة · والإسقاط بلا مبالغ (t~pub) للأعضاء وحدهم فلا يُطبَّق عنده
+      // (كان يُرفض «جدولاً خارج المزامنة» فيظهر مرفوضاً على كل تثبيت جديد)
+      return { docs: docs.filter((d) => !d.t.endsWith('~pub')), next: last && last.ts ? { ts: last.ts, id: last.id } : cursor, more: docs.length >= limit };
     }
     // العضو: استعلام لكل ٣٠ رمزاً بمؤشره · والإسقاط يُحوَّل إلى جدوله ما لم يقرأ العضو المستند الكامل
     const full = this.o.fullReadTables?.() ?? new Set<string>();
     const parts: Record<string, Cursor> = { ...(cursor?.parts ?? {}) };
     const out: RemoteDoc[] = [];
+    let more = false;
     for (let i = 0; i * 30 < Math.max(tokens.length, 1); i++) {
       const chunk = tokens.slice(i * 30, i * 30 + 30);
       if (!chunk.length) break;
@@ -341,6 +371,7 @@ export class FirestoreRemote implements RemoteStore {
       const docs = await this.page(parts[key] ?? null, limit, chunk);
       const last = docs[docs.length - 1];
       if (last && last.ts) parts[key] = { ts: last.ts, id: last.id };
+      if (docs.length >= limit) more = true;
       for (const d of docs) {
         const pub = d.t.endsWith('~pub');
         if (!pub) { out.push(d); continue; }
@@ -350,6 +381,6 @@ export class FirestoreRemote implements RemoteStore {
       }
     }
     const last = out[out.length - 1];
-    return { docs: out, next: { ts: last?.ts ?? cursor?.ts ?? '', id: last?.id ?? cursor?.id ?? '', parts } };
+    return { docs: out, next: { ts: last?.ts ?? cursor?.ts ?? '', id: last?.id ?? cursor?.id ?? '', parts }, more };
   }
 }

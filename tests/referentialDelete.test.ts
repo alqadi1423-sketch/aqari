@@ -148,11 +148,10 @@ describe('لا يُحذف شيء مرتبط بغيره', () => {
     await expect(wipeAllData(failingEnv as never)).rejects.toThrow();
     expect(env.db.get(`SELECT id FROM properties WHERE deleted_at IS NULL`)).toBeTruthy();
 
-    // النجاح: نسخة موجودة على القرص ثم كل شيء في السلة
+    // النجاح: نسخة موجودة على القرص ثم لا شيء على الجهاز ولا في السلة
     const safety = await wipeAllData(env);
     expect(env.fs.exists(safety)).toBe(true);
-    expect(env.db.get(`SELECT id FROM properties WHERE deleted_at IS NULL`)).toBeFalsy();
-    expect(env.db.get(`SELECT id FROM properties WHERE deleted_at IS NOT NULL`)).toBeTruthy();
+    expect(env.db.get(`SELECT id FROM properties`)).toBeFalsy();
     env.closeLive();
   });
 

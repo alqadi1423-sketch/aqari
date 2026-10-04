@@ -273,7 +273,7 @@ describe('د · القيد المرحّل', () => {
     db.close();
   });
 
-  test('مسح كل البيانات: لا قيد مرحّل في السلة · كل قيد يُعكس والأرصدة صفر', async () => {
+  test('مسح كل البيانات: لا قيد ولا عكس ولا شيء في السلة · الأرصدة صفر (توجيه ٢٠٢٦-١٠-٠٤)', async () => {
     const env = makeBackupEnv(newDir());
     const db = env.db;
     const k = contractWithInstallments(db);
@@ -284,11 +284,14 @@ describe('د · القيد المرحّل', () => {
       amortize: false, amortizeMonths: null, exempt: true, excludeFromVat: true,
       subtotalHalalas: 7000, taxHalalas: 0, totalHalalas: 7000,
     });
-    const before = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries WHERE status='مرحّل'`)!.n);
+    expect(Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries WHERE status='مرحّل'`)!.n)).toBeGreaterThan(0);
     await wipeAllData(env);
     const live = env.live();
-    expect(Number(live.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries WHERE status='مرحّل' AND deleted_at IS NOT NULL`)!.n)).toBe(0);
-    expect(Number(live.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries WHERE status='مرحّل'`)!.n)).toBe(before * 2);
+    // كأنه مثبَّت جديداً: لا قيد أصلاً (ولا قيود عكس تُظهر أرقاماً سالبة في الفترة)
+    expect(Number(live.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries`)!.n)).toBe(0);
+    for (const t of ['contracts', 'contract_installments', 'contract_payments', 'purchases', 'tenants', 'units', 'properties']) {
+      expect([t, Number(live.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${t}`)!.n)]).toEqual([t, 0]);
+    }
     const nonZero = live.all(`SELECT l.account_code FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
       WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL GROUP BY l.account_code HAVING SUM(l.debit_halalas - l.credit_halalas) != 0`);
     expect(nonZero).toEqual([]);

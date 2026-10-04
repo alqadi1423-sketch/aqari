@@ -171,6 +171,12 @@ ${writesFns()}
           && request.resource.data.letters.diff(resource.data.letters).removedKeys().size() == 0);
       }
 
+      // عهد المسح: يرفعه المالك عند «مسح كل البيانات» فيفرّغ كل جهاز نسخته عند أول مزامنة
+      match /meta/epoch {
+        allow read: if orgOwner(org) || isMember(org);
+        allow write: if orgOwner(org) && request.resource.data.keys().hasOnly(['n', 'at']) && request.resource.data.n is int;
+      }
+
       match /meta/deletion {
         allow read, delete: if orgOwner(org);
         allow create, update: if orgOwner(org)

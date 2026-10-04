@@ -135,5 +135,26 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     value: Number(unposted.n) + ' بلا قيد',
   });
 
+  // ٩) لا سجل يتيم (توجيه المالك): لا دفعة ولا قسط بلا عقد قائم، ولا عقد بلا وحدة قائمة
+  const strays = orphanCounts(db);
+  out.push({
+    name: 'لا سجل يتيم: دفعة أو قسط بلا عقد، أو عقد بلا وحدة',
+    ok: strays.payments + strays.installments + strays.contracts === 0,
+    value: strays.payments + ' دفعة · ' + strays.installments + ' قسط · ' + strays.contracts + ' عقد',
+  });
+
   return out;
+}
+
+/** السجلات اليتيمة: أبوها غائب أو في السلة وهي قائمة */
+export function orphanCounts(db: DB): { payments: number; installments: number; contracts: number } {
+  const n = (sql: string) => Number(db.get<{ n: number }>(sql)!.n);
+  return {
+    payments: n(`SELECT COUNT(*) AS n FROM contract_payments p
+      WHERE NOT EXISTS (SELECT 1 FROM contracts c WHERE c.id = p.contract_id AND c.deleted_at IS NULL)`),
+    installments: n(`SELECT COUNT(*) AS n FROM contract_installments i
+      WHERE NOT EXISTS (SELECT 1 FROM contracts c WHERE c.id = i.contract_id AND c.deleted_at IS NULL)`),
+    contracts: n(`SELECT COUNT(*) AS n FROM contracts c WHERE c.deleted_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM units u WHERE u.id = c.unit_id AND u.deleted_at IS NULL)`),
+  };
 }

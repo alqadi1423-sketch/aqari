@@ -1,43 +1,54 @@
 /**
- * «امسح كل البيانات» بنسخة أمان إلزامية: تُنشأ النسخة أولاً في مجلد دائم لا يُكنس،
- * وفشلُها يلغي المسح كله قبل أن يُمسّ صف واحد · ثم يُنقل كل شيء لسلة المحذوفات
- * إلا القيود المرحّلة: لا تدخل السلة ولا تُحذف، بل يُعكس كل قيد قائم أثره فتصير الأرصدة صفراً.
+ * «امسح كل البيانات» (توجيه المالك ٢٠٢٦-١٠-٠٤): بعده يكون التطبيق كأنه مثبَّت جديداً في كل شاشة وتقرير ·
+ * لا حركات ولا أرقام ولا دفعات ولا أسماء. فالمسح لا يعكس القيود ولا ينقل إلى السلة (ما يبقى في السلة يبقى
+ * أثره في الدفتر)، بل:
+ *  ١) نسخة أمان إلزامية في مجلد النسخ الدائم · فشلُها يلغي المسح قبل أن يُمسّ شيء، وهي طريق الاسترجاع.
+ *  ٢) القاعدة تُغلق ويُحذف ملفها والمرفقات، ثم تُفتح قاعدة جديدة بالهجرات والزرع.
+ *  ٣) يبقى ما يخص الجهاز والحساب وحده: هوية الجهاز وحرفه، والحساب والمنشأة وعهد المسح.
+ * والسحابة تُمسح قبله بمسار المنشأة (services/org.ts wipeOrgCloud) فلا يرجع شيء على جهاز آخر أو تثبيت جديد.
  */
 import { makeSafetyBackup, ensureFreeSpace } from './backup/create';
 import { logAudit } from './audit';
-import { reverseAllPostedEntries } from './accounting/post';
 import type { BackupEnv } from './backup/types';
+import { migrate } from '../db/migrations';
+import { seed } from '../db/seed';
 
-export const WIPE_TABLES = [
-  'contracts', 'reservations', 'claims', 'key_money_deals', 'invoices', 'purchases',
-  'bank_tx', 'banks', 'units', 'properties', 'tenants', 'suppliers', 'message_scripts',
-  'handovers', 'company_docs', 'attachments',
-] as const;
+/** ما يبقى بعد المسح: هوية الجهاز في meta، والحساب والمنشأة في sync_state */
+const KEEP_META = ['device_id', 'device_letter'];
+const KEEP_SYNC = ['uid', 'email', 'org', 'org_name', 'membership', 'wipe_epoch'];
 
 /**
- * يعيد مسار نسخة الأمان بعد نجاح المسح · وأي فشل في النسخة يوقف كل شيء
- * والبيانات كما هي (الاستثناء يحمل السبب).
+ * يعيد مسار نسخة الأمان بعد نجاح المسح · وأي فشل في النسخة يوقف كل شيء والبيانات كما هي.
+ * قاعدة الجهاز بعدها جديدة: الاستدعاء يعيد قراءة env.db (القاعدة الحية تبدّلت).
  */
-export async function wipeAllData(
-  env: BackupEnv,
-  onProgress?: (msg: string) => void
-): Promise<string> {
-  await ensureFreeSpace(env); // القرص يسع النسخة · وإلا فلا يبدأ المسح أصلاً
-  // فشلها يرمي قبل أي مساس بالبيانات · وواحدة تبقى وما قبلها يُحذف
-  const safetyPath = await makeSafetyBackup(env, 'pre-wipe', onProgress);
+export async function wipeAllData(env: BackupEnv, onProgress?: (msg: string) => void, madeSafety?: string): Promise<string> {
+  let safetyPath = madeSafety ?? '';
+  if (!safetyPath) {
+    await ensureFreeSpace(env); // القرص يسع النسخة · وإلا فلا يبدأ المسح أصلاً
+    safetyPath = await makeSafetyBackup(env, 'pre-wipe', onProgress);
+  }
 
-  onProgress?.('جاري نقل البيانات إلى سلة المحذوفات');
-  const db = env.db;
+  onProgress?.('جاري مسح البيانات');
+  const old = env.db;
+  const meta = old.all<{ key: string; value: string }>(
+    `SELECT key, value FROM meta WHERE key IN (${KEEP_META.map(() => '?').join(',')})`, KEEP_META);
+  const hasSync = !!old.get(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sync_state'`);
+  const sync = hasSync ? old.all<{ k: string; v: string | null }>(
+    `SELECT k, v FROM sync_state WHERE k IN (${KEEP_SYNC.map(() => '?').join(',')})`, KEEP_SYNC) : [];
+  const capture = hasSync ? Number(old.get<{ v: number }>(`SELECT v FROM sync_ctl WHERE k = 'capture'`)?.v ?? 0) : 0;
+
+  env.closeLive();
+  for (const s of ['', '-wal', '-shm']) {
+    try { if (env.fs.exists(env.dbPath + s)) env.fs.remove(env.dbPath + s); } catch { /* التالي */ }
+  }
+  try { if (env.fs.exists(env.attachmentsDir)) env.fs.remove(env.attachmentsDir); } catch { /* يكنسه الإقلاع */ }
+  const db = env.reopenLive();
+  migrate(db);
+  seed(db);
   db.transaction(() => {
-    const now = new Date().toISOString();
-    for (const t of WIPE_TABLES) {
-      db.run(`UPDATE "${t}" SET deleted_at = COALESCE(deleted_at, ?)`, [now]);
-    }
-    onProgress?.('جاري عكس القيود المرحّلة');
-    const reversed = reverseAllPostedEntries(db, 'مسح كل البيانات');
-    // المسودات وحدها تدخل السلة
-    db.run(`UPDATE journal_entries SET deleted_at = COALESCE(deleted_at, ?) WHERE status != 'مرحّل'`, [now]);
-    logAudit(db, 'الإعدادات', 'update', 'عكس القيود عند المسح', String(reversed) + ' قيداً');
+    for (const m of meta) db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [m.key, m.value]);
+    for (const r of sync) db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [r.k, r.v]);
+    db.run(`UPDATE sync_ctl SET v = ? WHERE k = 'capture'`, [capture]);
     logAudit(db, 'الإعدادات', 'delete', 'مسح كل البيانات', 'نسخة الأمان: ' + safetyPath.split('/').pop());
   });
   return safetyPath;

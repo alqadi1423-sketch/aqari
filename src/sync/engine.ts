@@ -23,7 +23,7 @@ import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
 import { deviceLetterAssigned, setDeviceLetter } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
-import type { Cursor, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
+import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 
 const nowIso = () => new Date().toISOString();
 
@@ -509,12 +509,12 @@ export async function readCloud(remote: RemoteStore, onProgress?: (msg: string) 
   const last = new Map<string, RemoteDoc>();
   for (;;) {
     onProgress?.('جاري قراءة ما في السحابة' + (last.size ? ' · ' + last.size : ''));
-    const { docs, next } = await remote.pull(cursor, PLAN_PAGE);
+    const { docs, next, more } = await remote.pull(cursor, PLAN_PAGE);
     for (const d of docs) {
       last.set(d.id, SNAPSHOT_FULL.has(d.t) ? d : { id: d.id, t: d.t, k: d.k, u: d.u, dev: d.dev, del: d.del, d: null });
     }
     if (next) cursor = next;
-    if (docs.length < PLAN_PAGE) break;
+    if (!(more ?? docs.length >= PLAN_PAGE)) break;
   }
   return { cursor, docs: [...last.values()] };
 }
@@ -699,6 +699,9 @@ export async function syncOnce(
     throw new SyncBusyError(pushed, total, until);
   };
 
+  // إسقاطات الأعضاء التي رفضها جهاز المالك قبل إصلاح السحب ليست بيانات ناقصة · تُرفع من سجل المرفوض
+  db.run(`DELETE FROM sync_rejects WHERE tbl LIKE '%~pub'`);
+
   // ٠) حرف الجهاز في ترقيم الحساب قبل أي كتابة · مرة واحدة (numbering.ts)
   if (remote.registerDevice && !deviceLetterAssigned(db)) {
     setDeviceLetter(db, await retrying(() => remote.registerDevice!(deviceId)));
@@ -710,16 +713,16 @@ export async function syncOnce(
   let cursor: Cursor | null = saved ? (JSON.parse(saved) as Cursor) : null;
   for (;;) {
     onProgress?.('جاري سحب التغييرات' + (pulled ? ' · ' + pulled : ''));
-    let page: { docs: RemoteDoc[]; next: Cursor | null };
+    let page: PullPage;
     try { page = await retrying(() => remote.pull(cursor, PULL_PAGE)); }
     catch (e) { if (isTransientRemoteError(e)) giveUp(0, outboxCount(db)); throw e; }
-    const { docs, next } = page!;
+    const { docs, next, more } = page!;
     if (docs.length) {
       stageInbox(db, docs);
       pulled += docs.length;
     }
     if (next) { cursor = next; setSyncState(db, 'cursor', JSON.stringify(next)); }
-    if (docs.length < PULL_PAGE) break;
+    if (!(more ?? docs.length >= PULL_PAGE)) break;
   }
 
   // ٢) التطبيق · ثم ينتهي الانضمام بعد أول تطبيق كامل لما في الحساب

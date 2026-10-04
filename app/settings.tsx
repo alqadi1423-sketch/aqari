@@ -22,7 +22,6 @@ import { C, TYPE } from '../src/ui/theme';
 import { exportStatus } from '../src/domain/reminders';
 import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash } from '../src/domain/trash';
 import { createAndShareBackup, pickAndPrepareRestore, commitPreparedRestore, abortPreparedRestore, appBackupEnv } from '../src/services/backupService';
-import { wipeAllData } from '../src/domain/wipe';
 import { fingerprintData } from '../src/domain/backup/create';
 import {
   planLedgerRepair, applyLedgerRepair, unbookedDiscounts, bookDiscount, contractSurpluses, settleSurplus,
@@ -40,7 +39,7 @@ import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
   pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
   restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
-  leaveOrgNow, bindRestoredToCurrentAccount,
+  leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything,
 } from '../src/services/cloud';
 import { TeamSheet } from '../src/ui/TeamSheet';
 import { getSyncState } from '../src/sync/engine';
@@ -535,7 +534,7 @@ export default function Settings() {
     setBusy(true);
     const before = fingerprintData(appBackupEnv(db));
     try {
-      await wipeAllData(appBackupEnv(db), setProgress);
+      await wipeEverything(db, setProgress);
     } catch (e) {
       setBusy(false);
       setProgress(null);
@@ -550,7 +549,7 @@ export default function Settings() {
     setProgress(null);
     setBusy(false);
     bump();
-    toast('أُنشئت نسخة أمان ثم تم المسح · كل شيء في سلة المحذوفات طوال مدة الاحتفاظ');
+    toast('أُنشئت نسخة أمان ثم مُسح كل شيء من الجهاز والسحابة · تستعيده من النسخة متى شئت');
   };
 
   const storage = storageBreakdown(db);
@@ -744,7 +743,7 @@ export default function Settings() {
       {admin ? <Card style={{ borderColor: C.rose, borderWidth: 1.4, backgroundColor: C.roseSoft }}>
         <CardTitle>مسح كل البيانات</CardTitle>
         <T size={TYPE.body} color={C.rose} style={{ marginBottom: 10 }}>
-          المسح ينقل كل شيء إلى سلة المحذوفات ويبقى قابلاً للاسترجاع طوال مدة الاحتفاظ، وتسبقه نسخة أمان.
+          المسح يحذف كل البيانات من هذا الجهاز ومن السحابة ومن كل جهاز يدخل بحسابك أو بعضوية في منشأتك، فيصير التطبيق كأنه مثبَّت جديداً. تسبقه نسخة أمان تبقى على هذا الجهاز وتستعيده منها متى شئت.
         </T>
         <BtnGhost danger icon="trash" title="امسح كل البيانات" onPress={() => setWipeConfirm('')} />
       </Card> : null}
@@ -1212,7 +1211,7 @@ export default function Settings() {
               <View style={{ flex: 1 }}><BtnPrimary danger title="تنفيذ المسح" onPress={doWipe} /></View>
             </>
           }>
-          <Note tone="danger">هذا الإجراء سيمسح كل البيانات. للتأكيد، اكتب كلمة «مسح» بالضبط ثم اضغط تنفيذ.</Note>
+          <Note tone="danger">يُمسح كل شيء من هذا الجهاز ومن السحابة ومن كل جهاز آخر في منشأتك، وتبقى نسخة أمان على هذا الجهاز. للتأكيد، اكتب كلمة «مسح» بالضبط ثم اضغط تنفيذ.</Note>
           <Field label="اكتب «مسح» للتأكيد" value={wipeConfirm} onChange={setWipeConfirm} />
         </Sheet>
       )}

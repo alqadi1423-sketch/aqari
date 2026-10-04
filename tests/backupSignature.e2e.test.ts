@@ -97,9 +97,8 @@ describe('الثلاث على أرشيف فيه مرفق يحمل التوقيع
     const safety = await wipeAllData(env);
     expect(fs.existsSync(safety)).toBe(true);
 
-    // البيانات صارت في السلة
-    const after = Number(env.db.get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM attachments WHERE deleted_at IS NULL`)!.n);
+    // لا شيء على الجهاز بعد المسح · ولا في السلة
+    const after = Number(env.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM attachments`)!.n);
     expect(after).toBe(0);
 
     // ونسخة الأمان نفسها صالحة تُفكّ وتُتحقّق
