@@ -5,7 +5,7 @@
 import type { DB } from '../db/adapter';
 import { allAccounts, accountMovement, accountPeriodChange } from './accounting/ledger';
 import { fmt } from './money';
-import { dfmt } from './dates';
+import { dfmt, addDays } from './dates';
 import type { ReportBlock, Cell } from './officeBuild';
 
 const M = (h: number): Cell => ({ money: Number(h) });
@@ -95,10 +95,8 @@ export function financialStatementBlock(db: DB, tab: FinStatement, from: string 
   const capIn = mv('3100').credit;
   const capOut = mv('3100').debit;
   const eqAll = accounts.filter((a) => a.type === 'حقوق ملكية');
-  const dayBefore = (d: string) => {
-    const t = new Date(d + 'T00:00:00');
-    return new Date(t.getTime() - 86400000).toISOString().slice(0, 10);
-  };
+  // اليوم السابق بالتقويم المحلي · كان يُحوَّل إلى UTC فيرجع يومين بتوقيت الرياض (المراجعة ٤.٧)
+  const dayBefore = (d: string) => addDays(d, -1);
   const eqOpen = eqAll.reduce((s2, a) => s2 + (from ? balAt(a, dayBefore(from)) : 0), 0);
   return {
     heading: 'قائمة التغيّرات في حقوق الملكية',

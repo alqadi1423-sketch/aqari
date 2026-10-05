@@ -47,7 +47,7 @@ import {
 import { keyMoneyBlockReason } from '../../src/domain/contracts/rules';
 import { recordKeyMoneyDeal } from '../../src/domain/keymoney';
 import { generateInstallments } from '../../src/domain/contracts/installments';
-import { today, dfmt, addDays, approxMonths, periodLabel, daysBetween, contractEndFromDuration } from '../../src/domain/dates';
+import { today, dfmt, addDays, approxMonths, periodLabel, daysBetween, contractEndFromDuration, periodBounds } from '../../src/domain/dates';
 import { fmt, toHalalas } from '../../src/domain/money';
 import { naturalCompare } from '../../src/domain/sortKey';
 import { rescheduleAllNotifications } from '../../src/services/notifications';
@@ -122,11 +122,8 @@ export default function Contracts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, ready, fProp]);
 
-  const T60 = useMemo(() => {
-    const d = new Date(today() + 'T00:00:00');
-    d.setDate(d.getDate() + 60);
-    return d.toISOString().slice(0, 10);
-  }, []);
+  // بعد ستين يوماً بالتقويم المحلي (المراجعة ٤.١٤)
+  const T60 = useMemo(() => addDays(today(), 60), []);
 
   const { rows, totalRows, allRows } = useMemo(() => {
     if (!ready) return { rows: [] as ContractRow[], totalRows: 0, allRows: 0 };
@@ -147,18 +144,8 @@ export default function Contracts() {
     if (fUnit) { where.push('c.unit_id = ?'); args.push(fUnit); }
     if (fCycle) { where.push('c.cycle = ?'); args.push(fCycle); }
     if (fPeriod) {
-      const now = new Date();
-      const y = now.getFullYear();
-      let fromD = y + '-01-01';
-      let toD = y + '-12-31';
-      if (fPeriod === 'month') {
-        fromD = new Date(y, now.getMonth(), 1).toISOString().slice(0, 10);
-        toD = new Date(y, now.getMonth() + 1, 0).toISOString().slice(0, 10);
-      } else if (fPeriod === 'quarter') {
-        const qs = Math.floor(now.getMonth() / 3) * 3;
-        fromD = new Date(y, qs, 1).toISOString().slice(0, 10);
-        toD = new Date(y, qs + 3, 0).toISOString().slice(0, 10);
-      }
+      // حدود الفترة بالتقويم المحلي (المراجعة ٤.١٤)
+      const { from: fromD, to: toD } = periodBounds(fPeriod === 'month' || fPeriod === 'quarter' ? fPeriod : 'year');
       where.push('c.start <= ? AND c.end >= ?');
       args.push(toD, fromD);
     }

@@ -22,6 +22,7 @@ import {
 import { useDialog } from '../src/ui/AppDialog';
 import { appFilesEnv } from '../src/services/filesEnv';
 import { putAttachment, softDeleteAttachment } from '../src/files/store';
+import { dfmt } from '../src/domain/dates';
 import { FileViewer, type ViewerFile } from '../src/ui/FileViewer';
 import { thumbUri, existingThumbUri } from '../src/services/thumbs';
 import { pickFromGallery, captureWithCamera } from '../src/ui/attach';
@@ -105,7 +106,7 @@ const FileCard = React.memo(function FileCard({
       <View style={{ padding: 7 }}>
         {/* بطاقة ضيقة · اسم الملف سطران بأكثر تقدير ثم قصّ · لا حرف تحت حرف */}
         <T size={11.5} bold numberOfLines={2}>{name}</T>
-        <Num size={10} color={C.muted}>{libSizeLabel(sizeBytes)} · {createdAt.slice(0, 10)}</Num>
+        <Num size={10} color={C.muted}>{libSizeLabel(sizeBytes)} · {dfmt(createdAt)}</Num>
       </View>
     </Pressable>
   );

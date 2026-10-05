@@ -490,7 +490,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
                 ['الحجم', libSizeLabel(cur.sizeBytes)],
                 ['التصنيف', libCat(cur.cat).label],
                 ['مرتبط بـ', cur.linked],
-                ['أُضيف', dfmt(cur.createdAt.slice(0, 10))],
+                ['أُضيف', dfmt(cur.createdAt)],
               ] as Array<[string, string]>).filter(([, v]) => v != null && v !== '').map(([k, v]) => (
                 <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
                   <T size={12.5} color={C.muted}>{k}</T>

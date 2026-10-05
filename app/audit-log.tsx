@@ -10,7 +10,7 @@ import { useDeferredReady } from '../src/ui/useDeferredReady';
 import { Skeleton } from '../src/ui/Skeleton';
 import { useApp } from '../src/ui/store';
 import { C, TYPE } from '../src/ui/theme';
-import { dfmt } from '../src/domain/dates';
+import { dfmt, localDateOf, localTimeOf } from '../src/domain/dates';
 
 const ACTION_LABELS: Record<string, string> = { create: 'إنشاء', update: 'تعديل', delete: 'حذف', login: 'تسجيل دخول' };
 const ACTION_CLS: Record<string, string> = { create: 'paid', update: 'due', delete: 'overdue', login: 'draft' };
@@ -20,9 +20,10 @@ const PERIOD_LABELS: Record<string, string> = {
   month: 'هذا الشهر', '90': 'آخر 90 يوماً', year: 'هذه السنة',
 };
 const PERIOD_SQL: Record<string, string> = {
-  month: `strftime('%Y-%m', ts) = strftime('%Y-%m','now','localtime')`,
-  '90': `date(ts) >= date('now','localtime','-90 day')`,
-  year: `strftime('%Y', ts) = strftime('%Y','now','localtime')`,
+  // ts لحظة UTC بلا علامة · تُقارن بيومها المحلي (المراجعة ٤.١٤)
+  month: `strftime('%Y-%m', ts, 'localtime') = strftime('%Y-%m','now','localtime')`,
+  '90': `date(ts, 'localtime') >= date('now','localtime','-90 day')`,
+  year: `strftime('%Y', ts, 'localtime') = strftime('%Y','now','localtime')`,
 };
 const PERIOD_OPTIONS = [{ value: '', label: 'كل الفترات' },
   ...Object.entries(PERIOD_LABELS).map(([value, label]) => ({ value, label }))];
@@ -57,7 +58,7 @@ const AuditCard = React.memo(function AuditCard({
       </Row>
       <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
         <T size={TYPE.caption} color={C.muted}>{module} · {userName}</T>
-        <Num size={TYPE.caption} color={C.muted}>{dfmt(ts.slice(0, 10))} {ts.slice(11, 16)}</Num>
+        <Num size={TYPE.caption} color={C.muted}>{dfmt(localDateOf(ts))} {localTimeOf(ts)}</Num>
       </Row>
     </Card>
   );

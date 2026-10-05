@@ -10,6 +10,7 @@ import { saveErrorLogNative } from './intents';
 import { appDataRoot, expoFs } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { redactForReport } from '../domain/redact';
+import { toLocalISODate } from '../domain/dates';
 
 export { redactForReport };
 
@@ -17,7 +18,9 @@ const enc = new TextEncoder();
 
 /** بادئة الاسم وشكله · تطابقهما الشاشة الأصلية حرفاً بحرف قبل أن تنقل الملف */
 function reportName(at: Date): string {
-  const stamp = at.toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  // بالساعة المحلية وبالشكل نفسه yyyy-mm-dd-hh-mm-ss (المراجعة ٤.١٤)
+  const p2 = (n: number) => String(n).padStart(2, '0');
+  const stamp = toLocalISODate(at) + '-' + p2(at.getHours()) + '-' + p2(at.getMinutes()) + '-' + p2(at.getSeconds());
   return `عقاري · خطأ · ${stamp}.txt`;
 }
 
