@@ -13,7 +13,8 @@ import { useApp } from './store';
 import { useToast } from './Toast';
 import { useDialog } from './AppDialog';
 import { C, TYPE } from './theme';
-import { type HandoverSection, sectionsFromTemplate, HANDOVER_LEGAL_FOOTER } from '../domain/handover/build';
+import { type HandoverSection, sectionsFromTemplate, HANDOVER_LEGAL_FOOTER, NO_HANDOVER_SOURCE } from '../domain/handover/build';
+import { NeedsTemplate } from './NeedsTemplate';
 import {
   getContractHandover, createHandoverForContract, updateHandover, lockHandover,
 } from '../domain/handover/service';
@@ -105,7 +106,7 @@ export function HandoverSheet({
   const [sections, setSections] = useState<HandoverSection[]>(() =>
     record
       ? (JSON.parse(record.sections_json) as HandoverSection[])
-      : sectionsFromTemplate(db, templateId ?? 'FT-HANDOVER')
+      : sectionsFromTemplate(db, templateId ?? null)
   );
 
   const setItem = (si: number, ii: number, field: 'count' | 'receiveCondition' | 'deliverCondition' | 'notes', v: string) => {
@@ -178,6 +179,15 @@ export function HandoverSheet({
       ],
     });
   };
+
+  // عقدٌ بلا نموذج ولا ما يُبنى منه: السبب ورابط القالب مكان نموذجٍ فارغ
+  if (contractId && !record) {
+    return (
+      <Sheet visible onClose={onClose} title="نموذج استلام وتسليم">
+        <NeedsTemplate reason={NO_HANDOVER_SOURCE} linkLabel="أنشئ قالب استلام وتسليم" route="/form-templates" onNavigate={onClose} />
+      </Sheet>
+    );
+  }
 
   return (
     <Sheet visible onClose={onClose}

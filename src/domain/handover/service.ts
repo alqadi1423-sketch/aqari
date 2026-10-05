@@ -55,7 +55,9 @@ export function createHandoverForContract(db: DB, contractId: string): string | 
     ? db.get<{ unit_no: string; property_id: string }>(`SELECT unit_no, property_id FROM units WHERE id = ?`, [c.unit_id])
     : undefined;
   const p = u ? db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [u.property_id]) : undefined;
-  const sections = buildHandoverSections(db, c.unit_id, 'FT-HANDOVER');
+  // لا قالب ولا تفاصيل للوحدة: لا نموذج فارغاً · ويظهر مكانه السبب ورابط إنشاء القالب (HandoverSheet)
+  const sections = buildHandoverSections(db, c.unit_id, null);
+  if (!sections.length) return null;
   const id = uid();
   db.run(
     `INSERT INTO handovers (id, contract_id, unit_id, type, tenant_name, id_number, phone, address,

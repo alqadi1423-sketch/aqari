@@ -158,9 +158,11 @@ describe('نماذج الحكم البصري · خمسة ملفات HTML للت�
     if (!outDir) { expect(true).toBe(true); return; }
     fs.mkdirSync(outDir, { recursive: true });
     const db = memDb();
-    const tpl = db.get<{ sections_json: string }>(`SELECT sections_json FROM form_templates WHERE id = 'FT-HANDOVER'`);
+    // القالب المرجعي القديم نصاً للنموذج · لا قالب يُزرع في القاعدة
+    const { LEGACY_HANDOVER_TEMPLATE } = require('@/db/seed') as { LEGACY_HANDOVER_TEMPLATE: Array<{ section: string; items: string[] }> };
+    const tpl = LEGACY_HANDOVER_TEMPLATE;
     const sections: HandoverSection[] = tpl
-      ? (JSON.parse(tpl.sections_json) as Array<{ section: string; items: string[] }>).map((s) => ({
+      ? tpl.map((s) => ({
           section: s.section,
           items: s.items.map((n) => ({ name: n, count: '1', receiveCondition: 'سليم', deliverCondition: '', notes: '' })),
         }))

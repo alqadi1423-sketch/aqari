@@ -1,6 +1,7 @@
 /**
  * أعطال اختبار الإصدار (المالك ٢٠٢٦-١٠-٠٥) · كل اختبار يثبت ما ظهر على الهاتف ولا يعود. بيانات مصطنعة.
  */
+import type { DB } from '@/db/adapter';
 import { memDb } from './helpers/testDb';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { confirmContract } from '@/domain/contracts/service';
@@ -70,5 +71,71 @@ describe('المزامنة لا تحجب الواجهة · وأول سحب يظ�
     expect(plan).toMatch(/ix_jl_entry_account/);
     // والإحصاءات تبقى بعد إعادة الفتح والهجرة
     expect(Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sqlite_stat1 WHERE idx = 'ix_jl_account'`)!.n)).toBe(1);
+  });
+});
+
+describe('لا محتوى مزروعاً (قرار المالك ٢٠٢٦-١٠-٠٥)', () => {
+  test('قاعدة جديدة بلا قوالب رسائل ولا قالب استلام · ودليل الحسابات والإعدادات والمنشأة باقية', () => {
+    const db = memDb();
+    const n = (t: string) => Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${t}`)!.n);
+    expect([n('message_scripts'), n('form_templates')]).toEqual([0, 0]);
+    expect(n('accounts')).toBeGreaterThan(10);
+    expect(n('settings')).toBeGreaterThan(5);
+    expect(n('company')).toBe(1);
+  });
+
+  test('الهجرة ٢٦: ما زُرع ولم يُعدَّل يُحذف ويُرفع حذفه · وما عُدّل يبقى · وجهاز العضو لا يحذف', async () => {
+    const { openNodeDb } = await import('@/db/nodeAdapter');
+    const { MIGRATIONS } = await import('@/db/schema');
+    const { migrate } = await import('@/db/migrations');
+    const { LEGACY_SEED_SCRIPTS, LEGACY_HANDOVER_TEMPLATE } = await import('@/db/seed');
+    const at25 = (member: boolean, editHandover: boolean) => {
+      const db = openNodeDb(':memory:');
+      db.exec('PRAGMA foreign_keys = OFF');
+      for (let v = 0; v < 25; v++) db.exec(MIGRATIONS[v]);
+      db.exec('PRAGMA user_version = 25');
+      db.exec('PRAGMA foreign_keys = ON');
+      // ما كان يزرعه الإصدار السابق · بمعرّفاته الثابتة وبمعرّف عشوائي قديم
+      LEGACY_SEED_SCRIPTS.forEach((s, i) => db.run(`INSERT INTO message_scripts (id, audience, category, title, body, created_at) VALUES (?,?,?,?,?,?)`,
+        [i === 3 ? 'old-random-id' : 'MS-SEED-' + (i + 1), s.audience, 'عام', s.title, i === 1 ? s.body + ' (عدّلها المستخدم)' : s.body, 'x']));
+      db.run(`INSERT INTO message_scripts (id, audience, category, title, body, created_at) VALUES ('mine','مستأجرون','عام','قالبي','نص كتبه المستخدم','x')`);
+      const tpl = editHandover ? [...LEGACY_HANDOVER_TEMPLATE, { section: 'قسم أضافه المستخدم', items: ['بند'] }] : LEGACY_HANDOVER_TEMPLATE;
+      db.run(`INSERT INTO form_templates (id, name, is_system, sections_json, created_at) VALUES ('FT-HANDOVER','نموذج استلام وتسليم',1,?,'x')`, [JSON.stringify(tpl)]);
+      db.run(`INSERT INTO sync_state (k, v) VALUES ('uid', 'u1')`);
+      if (member) db.run(`INSERT INTO sync_state (k, v) VALUES ('membership', '{}')`);
+      db.run(`UPDATE sync_ctl SET v = 1 WHERE k = 'capture'`);
+      return db;
+    };
+    const ids = (db: DB, t: string) => db.all<{ id: string }>(`SELECT id FROM ${t} ORDER BY id`).map((r) => r.id);
+
+    const owner = at25(false, false);
+    migrate(owner);
+    // «تذكير بالدفعة» من الهجرة ١٥ يُحذف أيضاً · والمعدَّل وقالب المستخدم يبقيان
+    expect(ids(owner, 'message_scripts')).toEqual(['MS-SEED-2', 'mine']);
+    expect(ids(owner, 'form_templates')).toEqual([]);
+    const tomb = owner.all<{ tbl: string; pk: string; op: string }>(`SELECT tbl, pk, op FROM sync_outbox WHERE op = 'delete' ORDER BY tbl, pk`);
+    expect(tomb.map((r) => r.tbl + ':' + r.pk)).toEqual(['form_templates:FT-HANDOVER', 'message_scripts:MS-SEED-1', 'message_scripts:MS-SEED-3', 'message_scripts:ms-reminder-default', 'message_scripts:old-random-id']);
+
+    const edited = at25(false, true);
+    migrate(edited);
+    expect(ids(edited, 'form_templates')).toEqual(['FT-HANDOVER']);
+
+    const member = at25(true, false);
+    migrate(member);
+    expect(ids(member, 'message_scripts')).toHaveLength(6);
+    expect(ids(member, 'form_templates')).toEqual(['FT-HANDOVER']);
+  });
+
+  test('عقدٌ ولا قالب ولا تفاصيل للوحدة: لا نموذج فارغاً · وبقالبٍ أنشأه المستخدم يُنشأ منه', async () => {
+    const { getContractHandover } = await import('@/domain/handover/service');
+    const db = memDb();
+    const p = addProperty(db, { name: 'عقار النماذج' });
+    const c1 = confirmContract(db, contractInput(addUnit(db, p, { unit_no: 'H-1' }), { tenant: 'مستأجر نموذج أول', idNumber: '1000005001', phone: '0500005001' }));
+    expect(getContractHandover(db, c1)).toBeUndefined();
+    db.run(`INSERT INTO form_templates (id, name, is_system, sections_json, created_at) VALUES ('tpl-mine','قالبي',0,?,'2026-01-01')`,
+      [JSON.stringify([{ section: 'الصالة', items: ['كنب', 'ستائر'] }])]);
+    const c2 = confirmContract(db, contractInput(addUnit(db, p, { unit_no: 'H-2' }), { tenant: 'مستأجر نموذج ثانٍ', idNumber: '1000005002', phone: '0500005002' }));
+    const h = getContractHandover(db, c2)!;
+    expect(JSON.parse(h.sections_json).map((s: { section: string }) => s.section)).toEqual(['الصالة']);
   });
 });

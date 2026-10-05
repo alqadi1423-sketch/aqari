@@ -149,7 +149,7 @@ test('دورة الاستخدام الكاملة تعمل من الطرف للط
   expect(msg).toContain('A-1');
 
   /* ═══ ٨) نموذج الاستلام يُبنى من تفاصيل الوحدة ═══ */
-  const sections = buildHandoverSections(db, unit1, 'FT-HANDOVER');
+  const sections = buildHandoverSections(db, unit1, null);
   expect(sections.map((s) => s.section)).toContain('الصالة');
   expect(sections.map((s) => s.section)).toContain('مشترك: المدخل الرئيسي');
 

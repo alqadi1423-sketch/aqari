@@ -19,7 +19,6 @@ import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
-import { SEED_SCRIPTS, seedScriptId } from '../db/seed';
 import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
 import { deviceLetterAssigned, setDeviceLetter } from '../domain/numbering';
@@ -56,7 +55,6 @@ export function enableSync(db: DB, uid: string): { seeded: boolean } {
       db.run(`DELETE FROM sync_inbox`);
       setSyncState(db, 'cursor', null);
       setSyncState(db, 'uid', uid);
-      unifySeedIds(db);
       seedOutbox(db);
       // الانضمام: ما في الحساب يغلب ما يقابله على هذا الجهاز في أول دورة، وما انفرد به الجهاز يُرفع ·
       // فجهاز ثانٍ فارغ لا يكتب قيمه الافتراضية فوق بيانات الأول
@@ -65,21 +63,6 @@ export function enableSync(db: DB, uid: string): { seeded: boolean } {
     }
     setCapture(db, true);
     return { seeded };
-  });
-}
-
-/**
- * القوالب الافتراضية زُرعت في الإصدارات السابقة بمعرّفات عشوائية · فتُوحَّد إلى المعرّف الثابت
- * ما دام القالب كما زُرع، فيلتقي قالب الجهازين في صف واحد لا صفين.
- */
-function unifySeedIds(db: DB): void {
-  SEED_SCRIPTS.forEach((s, i) => {
-    const target = seedScriptId(i);
-    if (db.get(`SELECT id FROM message_scripts WHERE id = ?`, [target])) return;
-    const row = db.get<{ id: string }>(
-      `SELECT id FROM message_scripts WHERE audience = ? AND title = ? AND body = ? AND deleted_at IS NULL
-       ORDER BY created_at LIMIT 1`, [s.audience, s.title, s.body]);
-    if (row) db.run(`UPDATE message_scripts SET id = ? WHERE id = ?`, [target, row.id]);
   });
 }
 
@@ -716,7 +699,8 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, e
     setSyncState(db, 'restored_unadopted', null);
     // عهد المسح الحالي في السحابة يُسجَّل مع الاعتماد ذرياً (قاعدة المالك ٢٠٢٦-١٠-٠٥) · فلا يُفرَّغ الجهاز بعدها
     if (epoch !== undefined) { setSyncState(db, 'wipe_epoch', String(epoch)); setSyncState(db, 'epoch_pending', null); }
-    unifySeedIds(db);
+    // كل شيء يُرفع برموز الرؤية الحالية
+    setSyncState(db, 'acl_version', String(ACL_VERSION));
     for (const t of SYNC_TABLES) {
       db.run(
         `INSERT INTO sync_outbox (tbl, pk, op, changed_at)

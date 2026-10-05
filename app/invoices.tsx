@@ -29,7 +29,6 @@ import { usePerm } from '../src/ui/access';
 import { rowBy } from '../src/services/access';
 
 const STATUS_MAP: Record<string, string> = { 'مدفوعة': 'paid', 'مستحقة': 'due', 'متأخرة': 'overdue', 'مسودة': 'draft' };
-const DEFAULT_NOTES = 'يتم سداد المبلغ خلال 30 يوماً من تاريخ الإصدار. تُضاف غرامة تأخير بنسبة 1.5٪ شهرياً على المبالغ المتأخرة.';
 
 const ALL_STATUSES = ['مسودة', 'مستحقة', 'مدفوعة', 'متأخرة'] as const;
 const STATUS_CHIPS: Array<[string, string]> = [['', 'الكل'], ...ALL_STATUSES.map((s): [string, string] => [s, s])];
@@ -108,7 +107,7 @@ export default function Invoices() {
   const [customer, setCustomer] = useState('');
   const [issue, setIssue] = useState(today());
   const [due, setDue] = useState(addDays(today(), 30));
-  const [notes, setNotes] = useState(DEFAULT_NOTES);
+  const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<LineState[]>([{ descr: '', qty: '1', price: '', tax: '15' }]);
   const [statusFor, setStatusFor] = useState<string | null>(null);
   const [depositFor, setDepositFor] = useState<number | null>(null);
@@ -176,7 +175,7 @@ export default function Invoices() {
 
   const openNew = () => {
     setEditingId(null); setCustomer(''); setIssue(today()); setDue(addDays(today(), 30));
-    setNotes(DEFAULT_NOTES); setLines([{ descr: '', qty: '1', price: '', tax: defTax }]); setFormOpen(true);
+    setNotes(''); setLines([{ descr: '', qty: '1', price: '', tax: defTax }]); setFormOpen(true);
   };
   const openEdit = useCallback((id: string) => {
     const v = db.get<{ customer_name: string; issue: string; due: string; notes: string }>(

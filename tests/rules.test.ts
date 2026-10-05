@@ -18,6 +18,14 @@ import { replaceMeters, utilitySuppliers, supplierMeters, metersForPurchase } fr
 import { uid } from '@/domain/ids';
 import { today, addDays } from '@/domain/dates';
 
+
+/** قالب استلام وتسليم ينشئه المستخدم · بنص القالب المرجعي القديم */
+function addTemplate(db: import('@/db/adapter').DB): void {
+  const { LEGACY_HANDOVER_TEMPLATE } = require('@/db/seed');
+  db.run(`INSERT INTO form_templates (id, name, is_system, sections_json, created_at) VALUES ('tpl-test','قالب اختبار',0,?,'2026-01-01')`,
+    [JSON.stringify(LEGACY_HANDOVER_TEMPLATE)]);
+}
+
 describe('قواعد العمل الثلاث عشرة', () => {
   // ── القاعدة ١: نشاط العقار وفئته وفئة الطابق تقيّد عقود وحداته ──
   test('١ — نشاط العقار وفئته وفئة الطابق تقيّد العقود', () => {
@@ -275,13 +283,16 @@ describe('قواعد العمل الثلاث عشرة', () => {
   });
 
   // ── القاعدة ١٢: نماذج الاستلام تُبنى آلياً من تفاصيل الوحدة والعقار ──
-  test('١٢ — نموذج الاستلام يُبنى من غرف الوحدة وأقسام العقار، وإلا فالقالب الافتراضي', () => {
+  test('١٢ — نموذج الاستلام يُبنى من غرف الوحدة وأقسام العقار، وإلا فقالب المستخدم', () => {
     const db = memDb();
     const p = addProperty(db);
     const u = addUnit(db, p);
-    // بلا تفاصيل ← القالب الافتراضي بأقسامه السبعة
+    // بلا تفاصيل ولا قالب ← لا أقسام (لا قالب يُزرع · قرار المالك ٢٠٢٦-١٠-٠٥)
     expect(buildSectionsFromUnit(db, u)).toBeNull();
-    const fromTemplate = buildHandoverSections(db, u, 'FT-HANDOVER');
+    expect(buildHandoverSections(db, u, null)).toEqual([]);
+    // بقالبٍ أنشأه المستخدم ← أقسامه
+    addTemplate(db);
+    const fromTemplate = buildHandoverSections(db, u, null);
     expect(fromTemplate).toHaveLength(7);
     expect(fromTemplate[0].section).toBe('المدخل / الصالة الرئيسية');
     // بتفاصيل ← تُبنى منها + قسما العدادات والحالة العامة
@@ -372,15 +383,16 @@ describe('قواعد العمل الثلاث عشرة', () => {
 describe('النموذج المرجعي للاستلام والتسليم', () => {
   test('القالب: ٧ أقسام و٨٣ بنداً بأربعة أعمدة لكل بند', () => {
     const db = memDb();
+    addTemplate(db);
     const raw = db.get<{ sections_json: string }>(
-      `SELECT sections_json FROM form_templates WHERE id = 'FT-HANDOVER'`
+      `SELECT sections_json FROM form_templates WHERE id = 'tpl-test'`
     )!;
     const sections = JSON.parse(raw.sections_json) as Array<{ section: string; items: string[] }>;
     expect(sections.length).toBe(7);
     expect(sections.reduce((s, x) => s + x.items.length, 0)).toBe(83);
     // البناء من القالب: كل بند بأعمدته الأربعة
     const { sectionsFromTemplate } = require('@/domain/handover/build');
-    const built = sectionsFromTemplate(db, 'FT-HANDOVER');
+    const built = sectionsFromTemplate(db, 'tpl-test');
     const item = built[0].items[0];
     for (const k of ['count', 'receiveCondition', 'deliverCondition', 'notes']) expect(k in item).toBe(true);
     db.close();
@@ -394,7 +406,8 @@ describe('النموذج المرجعي للاستلام والتسليم', () =
     db.run(`INSERT INTO unit_rooms (id, unit_id, room_name, sort) VALUES (?,?,?,0)`, [roomId, uidd, 'المطبخ']);
     db.run(`INSERT INTO unit_room_items (id, room_id, name, descr, sort) VALUES (?,?,?,?,0)`, ['I_' + uidd, roomId, 'ثلاجة', '']);
     const { buildHandoverSections } = require('@/domain/handover/build');
-    const secs = buildHandoverSections(db, uidd, 'FT-HANDOVER') as Array<{ section: string }>;
+    addTemplate(db);
+    const secs = buildHandoverSections(db, uidd, null) as Array<{ section: string }>;
     // قسم الوحدة المدخل أولاً، وأقسام القالب غير المغطاة (كالحمامات) تلحق به
     expect(secs[0].section).toBe('المطبخ');
     expect(secs.some((s) => s.section === 'الحمامات')).toBe(true);

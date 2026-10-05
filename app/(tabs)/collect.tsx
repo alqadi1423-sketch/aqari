@@ -12,6 +12,7 @@ import {
   SearchBox, BtnPrimary, BtnGhost, Field,
 } from '../../src/ui/components';
 import { Sheet, SelectField, PickerSheet } from '../../src/ui/Sheet';
+import { NeedsTemplate } from '../../src/ui/NeedsTemplate';
 import { useDialog } from '../../src/ui/AppDialog';
 import { usePager, Pager } from '../../src/ui/Pager';
 import { useDeferredReady } from '../../src/ui/useDeferredReady';
@@ -504,13 +505,19 @@ export default function Collect() {
       )}
 
       {/* اختيار نص رسالة الواتساب: التذكير التلقائي أو قالب جاهز (رموزه تتعبأ بالبيانات) */}
-      {waFor && (
+      {/* لا قالب للمستأجرين: السبب ورابط إنشائه مكان قائمةٍ فارغة (لا قوالب مزروعة) */}
+      {waFor && !scripts.length && (
+        <Sheet visible onClose={() => setWaFor(null)} title="اختر نص الرسالة">
+          <NeedsTemplate reason="لا قالب رسالة للمستأجرين بعد · نص الرسالة قالبٌ تكتبه برموزٍ تتعبأ من بيانات القسط"
+            linkLabel="أنشئ قالب رسالة" route="/scripts" onNavigate={() => setWaFor(null)} />
+        </Sheet>
+      )}
+      {waFor && scripts.length > 0 && (
         <PickerSheet
           visible
           onClose={() => setWaFor(null)}
           title="اختر نص الرسالة"
           options={scripts.map((s) => ({ value: s.id, label: s.title, sub: fillScript(s.body, waFor.x).slice(0, 70) + '…' }))}
-          emptyText="لا قوالب للمستأجرين · أضف قالباً من الإعدادات ثم قوالب الرسائل"
           onPick={(v) => {
             const tpl = scripts.find((s2) => s2.id === v);
             if (tpl) openChannel(waFor.x, waFor.via, fillScript(tpl.body, waFor.x));

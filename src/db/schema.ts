@@ -4,8 +4,9 @@
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
 import { buildSyncMigration } from './syncTables';
+import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 25;
+export const SCHEMA_VERSION = 26;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1291,5 +1292,25 @@ CREATE INDEX IF NOT EXISTS ix_sync_inbox_apply ON sync_inbox(del, rank, updated_
 CREATE INDEX IF NOT EXISTS ix_pay_journal ON contract_payments(journal_entry_id);
 `;
 
+const sq = (s: string) => "'" + s.replace(/'/g, "''") + "'";
+/** نص التذكير الذي زرعته الهجرة ١٥ · حرفياً */
+const LEGACY_REMINDER_BODY = 'السلام عليكم {الاسم}، نذكّركم بدفعة الإيجار المستحقة بتاريخ {تاريخ الاستحقاق} بمبلغ {المبلغ} عن وحدة {الوحدة}. شاكرين تعاونكم.';
+/** جهاز العضو لا يحذف ما لا يملكه · يصله حذف المالك بالمزامنة */
+const NOT_MEMBER = `NOT EXISTS (SELECT 1 FROM sync_state WHERE k = 'membership' AND v IS NOT NULL)`;
+
+/**
+ * الهجرة ٢٦ · لا محتوى مزروعاً (قرار المالك ٢٠٢٦-١٠-٠٥): يُحذف ما زرعته الإصدارات السابقة ولم يُعدَّل ·
+ * قالب الاستلام والتسليم، وقوالب الرسائل الأربعة، و«تذكير بالدفعة» · وما عُدّل يبقى كما هو.
+ * والحذف يُلتقط فيُرفع شاهده، فيُحذف من السحابة ومن بقية الأجهزة.
+ */
+export const MIGRATION_26 = `
+DELETE FROM message_scripts WHERE ${NOT_MEMBER} AND (
+  ${LEGACY_SEED_SCRIPTS.map((s) => `(audience = ${sq(s.audience)} AND title = ${sq(s.title)} AND body = ${sq(s.body)})`).join('\n  OR ')}
+  OR (title = 'تذكير بالدفعة' AND body = ${sq(LEGACY_REMINDER_BODY)})
+);
+DELETE FROM form_templates WHERE ${NOT_MEMBER} AND id = 'FT-HANDOVER' AND name = 'نموذج استلام وتسليم'
+  AND sections_json = ${sq(JSON.stringify(LEGACY_HANDOVER_TEMPLATE))};
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26];

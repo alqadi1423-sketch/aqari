@@ -60,13 +60,24 @@ export function buildSectionsFromUnit(db: DB, unitId: string): HandoverSection[]
   return secs;
 }
 
-/** أقسام القالب (الافتراضي أو مخصص) كبنود فارغة للتعبئة */
-export function sectionsFromTemplate(db: DB, templateId: string): HandoverSection[] {
-  const row = db.get<{ sections_json: string }>(
-    `SELECT sections_json FROM form_templates WHERE id = ? AND deleted_at IS NULL`, [templateId]
-  ) ?? db.get<{ sections_json: string }>(
-    `SELECT sections_json FROM form_templates WHERE id = 'FT-HANDOVER'`
-  );
+/**
+ * القالب الذي يكمّل النموذج الآلي · لا قالب يُزرع (قرار المالك ٢٠٢٦-١٠-٠٥): قالب الإصدارات السابقة إن عدّله
+ * المستخدم فبقي، وإلا أقدم قوالب المستخدم · وإلا لا قالب.
+ */
+export function defaultHandoverTemplate(db: DB): string | null {
+  return db.get<{ id: string }>(
+    `SELECT id FROM form_templates WHERE deleted_at IS NULL ORDER BY (id = 'FT-HANDOVER') DESC, created_at, id LIMIT 1`
+  )?.id ?? null;
+}
+
+/** سبب تعذّر نموذج الاستلام والتسليم لعقدٍ لا نموذج له ولا ما يُبنى منه */
+export const NO_HANDOVER_SOURCE = 'لا يُنشأ نموذج الاستلام والتسليم: لا قالب له، ولا غرف ولا بنود في تفاصيل الوحدة';
+
+/** أقسام القالب (المختار أو الأول) كبنود فارغة للتعبئة · بلا قالب: لا أقسام */
+export function sectionsFromTemplate(db: DB, templateId: string | null): HandoverSection[] {
+  const pick = (id: string | null) => id ? db.get<{ sections_json: string }>(
+    `SELECT sections_json FROM form_templates WHERE id = ? AND deleted_at IS NULL`, [id]) : undefined;
+  const row = pick(templateId) ?? pick(defaultHandoverTemplate(db));
   const raw = row ? (JSON.parse(row.sections_json) as Array<{ section: string; items: string[] }>) : [];
   return raw.map((s) => ({ section: s.section, items: s.items.map(blank) }));
 }
@@ -75,7 +86,7 @@ export function sectionsFromTemplate(db: DB, templateId: string): HandoverSectio
  * أقسام نموذج جديد: يُبنى من غرف الوحدة المُدخلة ويُكمَّل بالقالب المرجعي ·
  * أقسام القالب التي لا يقابلها قسم من الوحدة تُلحق بعده، فلا يسقط بند من الفحص المتبادل.
  */
-export function buildHandoverSections(db: DB, unitId: string | null, templateId: string): HandoverSection[] {
+export function buildHandoverSections(db: DB, unitId: string | null, templateId: string | null): HandoverSection[] {
   const template = sectionsFromTemplate(db, templateId);
   const auto = unitId ? buildSectionsFromUnit(db, unitId) : null;
   if (!auto) return template;
