@@ -13,6 +13,14 @@ export class MemoryRemote implements RemoteStore {
   private clock = 0;
   /** محاكاة انقطاع الاتصال */
   offline = false;
+  /** فرق ساعة الجهاز الكاتب عن الخادم · لاختبار حسم التعارض بساعة الخادم */
+  deviceSkewMs = 0;
+  private sample: { serverMs: number; localMs: number } | null = null;
+  clockSample(): { serverMs: number; localMs: number } | null {
+    const s = this.sample;
+    this.sample = null;
+    return s;
+  }
   writes = 0;
 
   private stamp(): string {
@@ -36,6 +44,8 @@ export class MemoryRemote implements RemoteStore {
 
   async write(docs: RemoteDoc[]): Promise<WriteResult[]> {
     if (this.offline) throw new Error('Network request failed');
+    const now = Date.now();
+    this.sample = { serverMs: now, localMs: now + this.deviceSkewMs };
     return docs.map((d) => {
       const prev = this.docs.get(d.id);
       if (!this.allowed(prev, d)) return { ok: false, code: 'PERMISSION_DENIED', message: 'Missing or insufficient permissions.' };

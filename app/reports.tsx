@@ -103,7 +103,7 @@ export default function Reports() {
     if (finYear === 'custom') return { from: customFrom || null, to: customTo || T };
     if (finQ !== 0) { const r = quarterRange(finYear, finQ); return { from: r.from as string | null, to: r.to }; }
     return { from: (finYear + '-01-01') as string | null, to: finYear + '-12-31' };
-  }, [finYear, finQ, customFrom, customTo]);
+  }, [finYear, finQ, customFrom, customTo, version]); // «اليوم» نهاية الفترة · يتجدد بتغيّره (المراجعة ٤.١٥)
 
   // الفترة السابقة المساوية طولاً · للمقارنة في كل قائمة
   const prev = useMemo(() => {
@@ -260,7 +260,7 @@ export default function Reports() {
     if (dRange === 'all') return { from: null as string | null, to: T };
     if (dRange === 'custom') return { from: (dFrom || null) as string | null, to: dTo || T };
     return { from: toLocalISODate(new Date(now.getFullYear(), now.getMonth(), 1)) as string | null, to: T };
-  }, [dRange, dFrom, dTo]);
+  }, [dRange, dFrom, dTo, version]); // «اليوم» نهاية الفترة · يتجدد بتغيّره (المراجعة ٤.١٥)
 
   const detailEntities = useMemo(() => {
     if (detailKind === 'unit') {

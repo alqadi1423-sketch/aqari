@@ -123,7 +123,9 @@ export default function Contracts() {
   }, [db, version, ready, fProp]);
 
   // بعد ستين يوماً بالتقويم المحلي (المراجعة ٤.١٤)
-  const T60 = useMemo(() => addDays(today(), 60), []);
+  // يُعاد بتغيّر اليوم (المراجعة ٤.١٥ · مراقب اليوم يرفع النسخة)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const T60 = useMemo(() => addDays(today(), 60), [version]);
 
   const { rows, totalRows, allRows } = useMemo(() => {
     if (!ready) return { rows: [] as ContractRow[], totalRows: 0, allRows: 0 };

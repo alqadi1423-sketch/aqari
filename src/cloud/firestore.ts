@@ -153,16 +153,27 @@ export class FirestoreRemote implements RemoteStore {
    * إن رفضت القواعد كتابةً في الدفعة رُفضت الدفعة كلها · فتُقسم نصفين حتى يُعرف المرفوض بعينه
    * ويمرّ الباقي، فلا يحبس قيدٌ مرحّل نسخته في السحابة نهائية بقيةَ الطابور.
    */
+  /** وقت الالتزام في الخادم مقابل منتصف زمن الطلب على الجهاز · لفرق الساعة (المراجعة ٤.١٦) */
+  private lastClock: { serverMs: number; localMs: number } | null = null;
+  clockSample(): { serverMs: number; localMs: number } | null {
+    const s = this.lastClock;
+    this.lastClock = null;
+    return s;
+  }
+
   async write(docs: RemoteDoc[]): Promise<WriteResult[]> {
     if (!docs.length) return [];
     try {
-      await this.call(`${this.root}:commit`, {
+      const t0 = Date.now();
+      const res = await this.call(`${this.root}:commit`, {
         // المستند وإسقاطه بلا مبالغ (companions) في دفعة واحدة ذرّية
         writes: docs.flatMap((d) => [d, ...(d.companions ?? [])]).map((d) => ({
           update: { name: this.docName(d.id), fields: docToFields(d) },
           updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
         })),
-      });
+      }) as { commitTime?: string };
+      const commit = res && typeof res.commitTime === 'string' ? Date.parse(res.commitTime) : NaN;
+      if (Number.isFinite(commit)) this.lastClock = { serverMs: commit, localMs: Math.round((t0 + Date.now()) / 2) };
       return docs.map(() => ({ ok: true, code: 'OK' }));
     } catch (e) {
       if (!(e instanceof FirestoreHttpError) || e.status !== 403) throw e;

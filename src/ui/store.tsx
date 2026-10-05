@@ -4,6 +4,8 @@
  * وتُحفظ في القاعدة عند ترك الشريط فتبقى بعد الإغلاق وإعادة التشغيل.
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { AppState as RNAppState } from 'react-native';
+import { startDayWatch } from '../services/dayWatch';
 import { appDb, type AppDB } from '../db/expoAdapter';
 import { readAccess } from '../services/access';
 import { getAllSettings, setSetting, type AppSettings } from '../repos/settings';
@@ -113,6 +115,22 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     }, 3000);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [db, bump]);
+
+  // اليوم الجديد (منتصف الليل أو العودة من الخلفية في يوم آخر) تغيّرٌ كتغيّر البيانات (المراجعة ٤.١٥):
+  // حالات العقود تُحدَّث على جهاز المالك، وكل حساب مرتبط بالنسخة يُعاد فتتحدث المتأخرات وأيامها
+  useEffect(() => startDayWatch({
+    now: () => new Date(),
+    onNewDay: (d) => {
+      try { if (readAccess(db).owner) refreshContractStatuses(db, d); } catch { /* لا يعطّل */ }
+      bump();
+    },
+    onActive: (cb) => {
+      const sub = RNAppState.addEventListener('change', (st) => { if (st === 'active') cb(); });
+      return () => sub.remove();
+    },
+    setTimer: (fn, ms) => setTimeout(fn, ms),
+    clearTimer: (id) => clearTimeout(id as ReturnType<typeof setTimeout>),
+  }), [db, bump]);
 
   // الربط بقوقل طبقة مضافة · تبدأ بعد الإقلاع ولا تؤخره، ولا تفعل شيئاً بلا دخول
   // وما يصل بالمزامنة يُعيد رسم الشاشات

@@ -6,7 +6,8 @@
  *
  * القواعد:
  *  - التعارض يُحلّ على مستوى الصف: الأحدث تغييراً يغلب (وقت التغيير ثم هوية الجهاز عند التساوي)،
- *    ويُسجَّل في سجل العمليات إن اختلف المضمون فعلاً.
+ *    ويُسجَّل في سجل العمليات إن اختلف المضمون فعلاً. ووقت التغيير بساعة الخادم: كل جهاز يقيس فرق ساعته
+ *    من وقت الالتزام في كل كتابة، فيكتب u مصحَّحاً ويصحّح به تعديله المعلّق عند المقارنة (المراجعة ٤.١٦).
  *  - القيد المرحّل إضافة فقط: لا يُعدَّل ولا يُحذف بالمزامنة · يُسمح بربطه بقيده العكسي مرة واحدة.
  *  - كل صف وارد يُكتب داخل نقطة حفظ ثم يمرّ بفحصين قبل اعتماده: محفّزات القاعدة (توازن القيد ·
  *    سقف القسط · المفاتيح) ثم فحص الاستعادة نفسه semanticIssues محصوراً في الصف وما يمسّه
@@ -126,8 +127,31 @@ export function stripDerived(table: string, row: RowData): RowData {
   return rest;
 }
 
+/** فرق ساعة هذا الجهاز عن الخادم بالمللي ثانية (الخادم ناقص الجهاز) · صفر ما لم يُقس */
+export function clockSkewMs(db: DB): number {
+  const v = Number(getSyncState(db, 'clock_skew_ms'));
+  return Number.isFinite(v) ? v : 0;
+}
+
+/** وقتٌ بساعة الجهاز إلى ساعة الخادم */
+export function toServerClock(db: DB, iso: string): string {
+  const skew = clockSkewMs(db);
+  const t = Date.parse(iso);
+  return skew && Number.isFinite(t) ? new Date(t + skew).toISOString() : iso;
+}
+
+/** فرقٌ دون ثانية ضجيجُ شبكة لا ساعة منحرفة · فلا يُحفظ */
+const SKEW_NOISE_MS = 1000;
+function recordClockSample(db: DB, remote: RemoteStore): void {
+  const s = remote.clockSample?.();
+  if (!s || !Number.isFinite(s.serverMs) || !Number.isFinite(s.localMs)) return;
+  const skew = Math.round(s.serverMs - s.localMs);
+  setSyncState(db, 'clock_skew_ms', Math.abs(skew) < SKEW_NOISE_MS ? null : String(skew));
+}
+
 export function buildDoc(db: DB, table: string, key: string, op: 'upsert' | 'delete', changedAt: string, deviceId: string): RemoteDoc {
-  const base = { id: docId(table, key), t: table, k: key, u: changedAt, dev: deviceId };
+  // u بساعة الخادم · فيقارنه كل جهاز بتعديله المصحَّح مثله (المراجعة ٤.١٦)
+  const base = { id: docId(table, key), t: table, k: key, u: toServerClock(db, changedAt), dev: deviceId };
   const row = op === 'upsert' ? readRow(db, table, key) : undefined;
   if (!row) return { ...base, d: null, del: true };
   const doc: RemoteDoc = { ...base, d: stripDerived(table, row), del: false };
@@ -356,9 +380,11 @@ function applyOne(
       db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]); // الطرفان متفقان
       return 'skipped';
     }
-    const localWins = !joining && (pending.changed_at > doc.u || (pending.changed_at === doc.u && deviceId > doc.dev));
+    // الطرفان بساعة الخادم: تعديل هذا الجهاز مصحَّحاً بفرق ساعته، والوارد مكتوب مصحَّحاً من جهازه
+    const mine = toServerClock(db, pending.changed_at);
+    const localWins = !joining && (mine > doc.u || (mine === doc.u && deviceId > doc.dev));
     if (localWins) {
-      logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', `${doc.t} · ${doc.k} · غلب تعديل هذا الجهاز (${pending.changed_at}) على الوارد (${doc.u})`);
+      logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', `${doc.t} · ${doc.k} · غلب تعديل هذا الجهاز (${mine}) على الوارد (${doc.u})`);
       return 'conflict-local';
     }
     conflict = 'conflict-remote';
@@ -778,6 +804,7 @@ export async function syncOnce(
     try {
       const sendIdx = results0.map((x, i) => (x ? -1 : i)).filter((i) => i >= 0);
       const sent = sendIdx.length ? await remote.write(sendIdx.map((i) => docs[i])) : [];
+      recordClockSample(db, remote);
       results = results0.map((x) => x ?? { ok: false });
       sendIdx.forEach((i, j) => { results[i] = sent[j]; });
       failures = 0;

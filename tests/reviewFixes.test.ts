@@ -651,3 +651,37 @@ describe('٤.١٣ المبلغ بالحروف صحيح نحوياً', () => {
     expect(moneyToArabicWords(riyals * 100)).toBe(words);
   });
 });
+
+describe('٤.١٦ حسم التعارض بساعة الخادم لا ساعة الجهاز', () => {
+  test('جهاز ساعته متقدمة عشر دقائق لا يغلب تعديلاً أحدث منه فعلاً', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addUnit, contractInput } = await import('./helpers/fixtures');
+    const { MemoryRemote } = await import('./helpers/memoryRemote');
+    const { enableSync, syncOnce, getSyncState } = await import('@/sync/engine');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const { getMeta } = await import('@/repos/settings');
+    type DBT = ReturnType<typeof memDb>;
+    const r = new MemoryRemote();
+    const a = memDb(); const b = memDb();
+    const sync = (db: DBT) => syncOnce(db, r, getMeta(db, 'device_id')!);
+    enableSync(a, 'u-skew'); enableSync(b, 'u-skew');
+    confirmContract(a, contractInput(addUnit(a, addProperty(a)), { tenant: 'مستأجر الساعة', start: '2026-01-01', end: '2026-12-31' }));
+    // أ ساعته متقدمة عشر دقائق: تقيسها كتابته الأولى من وقت الالتزام في الخادم
+    r.deviceSkewMs = 10 * 60_000;
+    await sync(a);
+    r.deviceSkewMs = 0;
+    expect(Number(getSyncState(a, 'clock_skew_ms'))).toBeLessThan(-9 * 60_000);
+    await sync(b);
+    const tid = a.get<{ id: string }>(`SELECT id FROM tenants`)!.id;
+    // أ يعدّل أولاً فعلاً، وساعته تختم التعديل بعد عشر دقائق
+    a.run(`UPDATE tenants SET phone = '0511111111' WHERE id = ?`, [tid]);
+    a.run(`UPDATE sync_outbox SET changed_at = ? WHERE tbl = 'tenants' AND pk = ?`, [new Date(Date.now() + 10 * 60_000).toISOString(), tid]);
+    await new Promise((res) => setTimeout(res, 5));
+    b.run(`UPDATE tenants SET phone = '0522222222' WHERE id = ?`, [tid]); // الأحدث فعلاً
+    await sync(b);
+    await sync(a);
+    await sync(b);
+    for (const db of [a, b]) expect(db.get<{ p: string }>(`SELECT phone AS p FROM tenants WHERE id = ?`, [tid])!.p).toBe('0522222222');
+    a.close(); b.close();
+  });
+});

@@ -63,6 +63,11 @@ export interface RemoteStore {
   pull(cursor: Cursor | null, limit: number): Promise<PullPage>;
   /** كتابة غير ذرية · نتيجة لكل مستند */
   write(docs: RemoteDoc[]): Promise<WriteResult[]>;
+  /**
+   * آخر عيّنة لساعة الخادم مقابل ساعة الجهاز من آخر كتابة ناجحة (وقت الالتزام) · يُحسب منها فرق الساعة
+   * فيُحسم التعارض بساعة الخادم (المراجعة ٤.١٦). تُقرأ مرة ثم تُمسح.
+   */
+  clockSample?(): { serverMs: number; localMs: number } | null;
   /** المنشأة: يزيّن المستند الخارج بحقول الرؤية وإسقاطه قبل الكتابة (sync/acl.ts) */
   annotate?(db: import('../db/adapter').DB, doc: RemoteDoc): RemoteDoc;
   /**
