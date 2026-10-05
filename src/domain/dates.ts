@@ -47,10 +47,11 @@ export function addDays(iso: string, n: number): string {
 
 /** مدة العقد: بداية + أشهر - يوم واحد (العقد ينتهي بآخر يوم بالمدة) */
 export function contractEndFromDuration(start: string, months: number): string {
-  const d = new Date(start + 'T00:00:00');
-  d.setMonth(d.getMonth() + months);
-  d.setDate(d.getDate() - 1);
-  return toLocalISODate(d);
+  // المراجعة ٤.٨: الذكرى تُثبَّت على آخر الشهر · فإن ثُبّتت (يوم البداية بعد آخر أيام شهر الذكرى)
+  // فالنهاية آخر ذلك الشهر نفسه، وإلا فاليوم الذي قبل الذكرى. ٣١ يناير بشهر ← ٢٨ فبراير، و٣١ يناير بسنة ← ٣٠ يناير
+  const day = Number(start.slice(8, 10));
+  const anniversary = addMonthsClamped(start, months);
+  return Number(anniversary.slice(8, 10)) < day ? anniversary : addDays(anniversary, -1);
 }
 
 /** عدد الأشهر التقريبي بين تاريخين · نفس ثابت النموذج 2629800000 مللي ثانية */

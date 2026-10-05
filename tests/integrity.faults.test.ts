@@ -8,6 +8,9 @@ import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { integrityChecks } from '@/domain/accounting/integrity';
 import { confirmContract, recordRentPayment } from '@/domain/contracts/service';
 import { uid } from '@/domain/ids';
+import { saveInvoice } from '@/domain/invoices';
+import { createReservation } from '@/domain/reservations';
+import { today, addDays } from '@/domain/dates';
 
 const CHECKS = [
   'مجموع المدين = مجموع الدائن',
@@ -19,6 +22,8 @@ const CHECKS = [
   'لا قيود يتيمة لمصادر محذوفة',
   'كل دفعة محصَّلة لها قيد مرحّل',
   'لا سجل يتيم: دفعة أو قسط بلا عقد، أو عقد بلا وحدة',
+  'ذمم الفواتير = الفواتير المصدرة غير المحصّلة',
+  'عربون الحجوزات = العربون المحتجز غير المسوّى',
 ];
 
 const check = (db: ReturnType<typeof memDb>, name: string) => {
@@ -50,7 +55,7 @@ describe('فحوص المطابقة الثمانية · خلل مزروع لكل
   test('القاعدة السليمة: الفحوص الثمانية كلها تمر', () => {
     const { db } = seededDb();
     const results = integrityChecks(db);
-    expect(results.length).toBe(9);
+    expect(results.length).toBe(11);
     for (const r of results) expect({ name: r.name, ok: r.ok }).toEqual({ name: r.name, ok: true });
     for (const n of CHECKS) expect(results.some((r) => r.name === n)).toBe(true);
     db.close();
@@ -144,6 +149,28 @@ describe('فحوص المطابقة الثمانية · خلل مزروع لكل
     const c = check(db, CHECKS[8]);
     expect(c.ok).toBe(false);
     expect(c.value).toMatch(/^1 دفعة · [0-9]+ قسط · 0 عقد$/);
+    db.close();
+  });
+
+  test('١٠ · فاتورة «مدفوعة» بلا قيد تحصيل ← يسقط فحص ذمم الفواتير (المراجعة ٤.٢)', () => {
+    const { db } = seededDb();
+    const id = saveInvoice(db, { customer: 'عميل خلل', customerVat: '', issue: '2026-03-01', due: '2026-03-31', notes: '',
+      lines: [{ descr: 'خدمة', qty: 1, priceHalalas: 10000, taxPct: 0 }] }, 'مستحقة');
+    expect(check(db, CHECKS[9]).ok).toBe(true);
+    db.run(`UPDATE invoices SET status = 'مدفوعة' WHERE id = ?`, [id]);
+    const c = check(db, CHECKS[9]);
+    expect(c.ok).toBe(false);
+    expect(c.value).toMatch(/1 مدفوعة بلا تحصيل/);
+    db.close();
+  });
+
+  test('١١ · حجز يُلغى بتعديل الجدول وعربونه باقٍ في الدفتر ← يسقط فحص العربون (المراجعة ٤.٥)', () => {
+    const { db } = seededDb();
+    const unit = addUnit(db, addProperty(db, { name: 'عقار العربون' }), { unit_no: 'R-1' });
+    const rid = createReservation(db, { unitId: unit, name: 'حاجز تجريبي', phone: '', depositHalalas: 40000, expiryDate: addDays(today(), 20) });
+    expect(check(db, CHECKS[10]).ok).toBe(true);
+    db.run(`UPDATE reservations SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), rid]);
+    expect(check(db, CHECKS[10]).ok).toBe(false);
     db.close();
   });
 });

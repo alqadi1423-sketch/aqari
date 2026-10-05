@@ -1,4 +1,4 @@
-import { toLocalISODate } from '../dates';
+import { toLocalISODate, addMonthsClamped } from '../dates';
 import { uid } from '../ids';
 
 /** حساب الخصومات الممنوحة · بنوع مصروف */
@@ -82,13 +82,13 @@ export function generateInstallments(
   const count = Math.max(1, Math.round(totalMonths / stepMonths));
   const amountPer = Math.round(valueHalalas / count);
   const out: GeneratedInstallment[] = [];
-  let cursor = new Date(startD);
   let allocated = 0;
   for (let i = 0; i < count; i++) {
     const amt = i === count - 1 ? valueHalalas - allocated : amountPer;
     allocated += amt;
-    out.push({ id: uid(), dueDate: toLocalISODate(cursor), amountHalalas: amt });
-    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + stepMonths, cursor.getDate());
+    // كل قسط من تاريخ البداية لا من القسط قبله، وآخر الشهر يُثبَّت (مراجعة ٤.١):
+    // عقد يبدأ ٣١ يناير قسطه الثاني ٢٨ فبراير ثم ٣١ مارس، فلا ينزلق قسط ولا يسقط شهر
+    out.push({ id: uid(), dueDate: addMonthsClamped(start, i * stepMonths), amountHalalas: amt });
   }
   return out;
 }

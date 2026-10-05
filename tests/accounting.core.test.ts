@@ -102,8 +102,9 @@ describe('المحرّك المحاسبي — الأساس', () => {
 
     const rv2 = { id: 'R2', name: 'خالد', deposit: 80000 };
     postReservationDeposit(db, rv2);
-    postReservationConvert(db, rv2, 'EJ-2026-004');                    // 2450/1200
+    postReservationConvert(db, { id: 'R2', amount: 80000, tenant: 'خالد', date: '2026-03-01' }, 'EJ-2026-004'); // 2450/4200 (المراجعة ٤.٤)
     expect(accountBalance(db, '2450')).toBe(0);
+    expect(accountBalance(db, '1200')).toBe(0);
 
     const cl = { id: 'CL1', amount: 30000, reason: 'أضرار' };
     postClaim(db, cl);                                                 // 1250/4300
@@ -115,7 +116,7 @@ describe('المحرّك المحاسبي — الأساس', () => {
       contractId: 'C1', contractNo: 'EJ-2026-001', tenant: 'محمد',
       net: 250000, date: '2026-02-01', period: 'فبر 2026', srcId: 'I1',
     });                                                                // 1100/4200
-    expect(accountBalance(db, '4200')).toBe(250000);
+    expect(accountBalance(db, '4200')).toBe(80000 + 250000);           // العربون المحوَّل إيرادُ إيجار
 
     postKeyMoneyCommission(db, {
       id: 'K1', unitLabel: 'B-12', outgoing: 'أ', incoming: 'ب', commission: 50000,
@@ -169,7 +170,7 @@ describe('المحرّك المحاسبي — الأساس', () => {
     });
     postContractDeposit(db, c);
     const checks = integrityChecks(db);
-    expect(checks).toHaveLength(9);
+    expect(checks).toHaveLength(11);
     for (const ch of checks) expect(ch.ok).toBe(true);
     db.close();
   });

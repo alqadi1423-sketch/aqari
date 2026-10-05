@@ -47,7 +47,7 @@ import {
 import { keyMoneyBlockReason } from '../../src/domain/contracts/rules';
 import { recordKeyMoneyDeal } from '../../src/domain/keymoney';
 import { generateInstallments } from '../../src/domain/contracts/installments';
-import { today, dfmt, addDays, approxMonths, periodLabel, daysBetween } from '../../src/domain/dates';
+import { today, dfmt, addDays, approxMonths, periodLabel, daysBetween, contractEndFromDuration } from '../../src/domain/dates';
 import { fmt, toHalalas } from '../../src/domain/money';
 import { naturalCompare } from '../../src/domain/sortKey';
 import { rescheduleAllNotifications } from '../../src/services/notifications';
@@ -206,6 +206,8 @@ export default function Contracts() {
       ejarNo: c.ejar_no, services: c.services, furnished: c.furnished,
       typeSpecific: JSON.parse(c.type_specific || '{}'),
       pendingFile: null,
+      // تحويل الحجز يُختار عند التوثيق صراحةً ولا يُحفظ في المسودة
+      reservationId: '',
     });
     setEditingDraftId(c.id);
     setFormOpen(true);
@@ -977,7 +979,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
 
   const end = durMonths === 'custom'
     ? customEnd
-    : start ? (() => { const d = new Date(start + 'T00:00:00'); d.setMonth(d.getMonth() + Number(durMonths)); d.setDate(d.getDate() - 1); const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), dd = String(d.getDate()).padStart(2, '0'); return `${y}-${m}-${dd}`; })() : '';
+    : start ? contractEndFromDuration(start, Number(durMonths)) : '';
   const valueH = toHalalas(value);
   const totalDep = (carry ? Number(c.deposit_halalas) : 0) + toHalalas(extraDeposit);
   const ins = start && end && valueH ? generateInstallments(start, end, valueH, cycle) : [];

@@ -1,10 +1,11 @@
 /**
- * الحجوزات بعربون · الإنشاء يرحّل (1100/2450)، والإلغاء مع مصادرة اختيارية (2450/4300).
+ * الحجوزات بعربون · الإنشاء يرحّل (1100/2450)، والإلغاء يسوّي العربون: مصادرةً (2450/4300) أو ردّاً (2450/1100)،
+ * والتحويل لعقد يسدّد به أقساطه (contracts/service). ولكل عربون مآلٌ واحد في deposit_outcome.
  */
 import type { DB } from '../db/adapter';
 import { uid } from './ids';
 import { today, dfmt } from './dates';
-import { postReservationDeposit, postReservationForfeit } from './accounting/post';
+import { postReservationDeposit, postReservationForfeit, postReservationRefund } from './accounting/post';
 import { unitActiveReservation, unitCurrentContract } from './contracts/rules';
 import { logAudit } from './audit';
 
@@ -38,17 +39,40 @@ export function createReservation(db: DB, input: ReservationInput): string {
   });
 }
 
-/** إلغاء الحجز · مع خيار مصادرة العربون إيراداً */
-export function cancelReservation(db: DB, id: string, forfeitDeposit: boolean): void {
+/**
+ * إلغاء الحجز أو تسوية عربون حجزٍ انتهى · مصادرةً إيراداً أو ردّاً لصاحبه، وكلاهما بقيد بتاريخه (المراجعة ٤.٥).
+ * العربون يُسوّى مرة واحدة: المحوَّل لعقد أو المسوّى قبلُ يُرفض.
+ */
+export function cancelReservation(db: DB, id: string, forfeitDeposit: boolean, date: string = today()): void {
   db.transaction(() => {
-    const r = db.get<{ name: string; deposit_halalas: number; status: string }>(
-      `SELECT name, deposit_halalas, status FROM reservations WHERE id = ?`, [id]
+    const r = db.get<{ name: string; deposit_halalas: number; status: string; deposit_outcome: string | null }>(
+      `SELECT name, deposit_halalas, status, deposit_outcome FROM reservations WHERE id = ?`, [id]
     );
     if (!r) return;
-    db.run(`UPDATE reservations SET status = 'منتهي' WHERE id = ?`, [id]);
-    if (forfeitDeposit && Number(r.deposit_halalas) > 0) {
-      postReservationForfeit(db, { id, name: r.name, deposit: Number(r.deposit_halalas) });
+    if (r.status === 'محوَّل لعقد') throw new Error('الحجز محوَّل لعقد · عربونه سُدّد به العقد');
+    if (r.deposit_outcome) throw new Error('عربون هذا الحجز ' + r.deposit_outcome + ' من قبل');
+    const deposit = Number(r.deposit_halalas);
+    const outcome = deposit > 0 ? (forfeitDeposit ? 'مصادَر' : 'مردود') : null;
+    db.run(`UPDATE reservations SET status = 'منتهي', deposit_outcome = ?, deposit_settled_date = ? WHERE id = ?`,
+      [outcome, outcome ? date : null, id]);
+    if (deposit > 0) {
+      if (forfeitDeposit) postReservationForfeit(db, { id, name: r.name, deposit, date });
+      else postReservationRefund(db, { id, name: r.name, deposit, date });
     }
-    logAudit(db, 'العقارات', 'update', 'إلغاء حجز', r.name);
+    logAudit(db, 'العقارات', 'update', 'إلغاء حجز', r.name, null, outcome ? { deposit_outcome: outcome, date } : undefined);
   });
+}
+
+/**
+ * حجوزاتٌ انتهت وعربونها محتجز بلا تسوية (المراجعة ٤.٥) · منها ما رُدّ فعلاً في نسخة سابقة بلا قيد،
+ * ولا تميّزه البيانات عن المحتجز، فتُعرض للمالك ليقرّر لكلٍّ: ردّاً بتاريخه أو مصادرة.
+ */
+export function heldExpiredDeposits(db: DB): Array<{ id: string; name: string; unit_id: string; deposit_halalas: number; expiry_date: string }> {
+  return db.all(
+    `SELECT id, name, unit_id, deposit_halalas, expiry_date FROM reservations
+     WHERE deleted_at IS NULL AND status = 'منتهي' AND deposit_outcome IS NULL AND deposit_halalas > 0
+       AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'reservation_forfeit' AND e.src_id = reservations.id
+                       AND e.deleted_at IS NULL AND e.reversed_by IS NULL)
+     ORDER BY expiry_date`
+  );
 }

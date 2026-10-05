@@ -5,7 +5,7 @@
  */
 import { buildSyncMigration } from './syncTables';
 
-export const SCHEMA_VERSION = 22;
+export const SCHEMA_VERSION = 23;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1256,5 +1256,19 @@ BEGIN
 END;`).join('\n')}
 `;
 
+/**
+ * الهجرة ٢٣ · تحصيل فاتورة المبيعات (المراجعة ٤.٢): كانت «مدفوعة» تُغيّر الحالة وحدها بلا قيد، فتتراكم الذمم 1200
+ * ولا يزيد النقد. الآن التحصيل قيدٌ (مدين النقد أو البنك / دائن الذمم) يُحفظ معرّفه وتاريخه وطريقته كسداد المشتريات.
+ */
+export const MIGRATION_23 = `
+ALTER TABLE invoices ADD COLUMN paid_date TEXT;
+ALTER TABLE invoices ADD COLUMN payment_method TEXT;
+ALTER TABLE invoices ADD COLUMN payment_bank_id TEXT;
+ALTER TABLE invoices ADD COLUMN payment_journal_entry_id TEXT;
+-- مآل العربون (المراجعة ٤.٤ و٤.٥): محوَّل · مصادَر · مردود، وتاريخ التسوية · والفارغ محتجزٌ بعد
+ALTER TABLE reservations ADD COLUMN deposit_outcome TEXT;
+ALTER TABLE reservations ADD COLUMN deposit_settled_date TEXT;
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23];

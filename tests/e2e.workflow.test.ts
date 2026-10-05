@@ -17,7 +17,7 @@ import {
 } from '@/domain/contracts/service';
 import { getContract, contractDisplayId, unitCurrentContract, unitActiveReservation } from '@/domain/contracts/rules';
 import { saveClaim, collectClaim } from '@/domain/claims';
-import { saveInvoice, setInvoiceStatus, deleteInvoice } from '@/domain/invoices';
+import { saveInvoice, setInvoiceStatus, payInvoice, deleteInvoice } from '@/domain/invoices';
 import { savePurchase, payPurchase, unmarkPurchasePaid } from '@/domain/purchases';
 import { recordKeyMoneyDeal } from '@/domain/keymoney';
 import { buildHandoverSections } from '@/domain/handover/build';
@@ -81,7 +81,7 @@ test('دورة الاستخدام الكاملة تعمل من الطرف للط
     [bankId, 'الراجحي', 1000000, T, new Date().toISOString()]);
 
   /* ═══ ٤) حجز بعربون يمنع الغير ثم يتحول لعقد لصاحبه ═══ */
-  createReservation(db, {
+  const rsvId = createReservation(db, {
     unitId: unit1, name: 'فيصل الاسمري', phone: '0501111111',
     depositHalalas: 100000, expiryDate: addDays(T, 30),
   });
@@ -97,7 +97,7 @@ test('دورة الاستخدام الكاملة تعمل من الطرف للط
   };
   const contractId = saveDraft(db, input);
   expect(contractDisplayId(getContract(db, contractId)!)).toBe('لا يوجد');
-  confirmContract(db, input, contractId);
+  confirmContract(db, { ...input, reservationId: rsvId }, contractId); // التحويل بمعرّف الحجز (المراجعة ٤.٤)
   const c = getContract(db, contractId)!;
   expect(c.contract_no).toMatch(/^EJ-\d{4}-001$/);
   expect(c.status).toBe('سارٍ');
@@ -112,12 +112,15 @@ test('دورة الاستخدام الكاملة تعمل من الطرف للط
   expect(unitActiveReservation(db, unit1)).toBeNull();
   expect(unitCurrentContract(db, unit1)?.id).toBe(contractId);
 
+  // العربون (١٠٠٠) سدّد من القسط الأول بتاريخ العقد (المراجعة ٤.٤)
+  expect(db.get<{ p: number }>(`SELECT paid_halalas AS p FROM contract_installments WHERE id = ?`, [insts[0].id])!.p).toBe(100000);
+
   /* ═══ ٦) تحصيل متعدد الطرق: جزئي ثم إكمال ═══ */
   recordRentPayment(db, contractId, {
     installmentId: insts[0].id, period: 'الشهر الأول', date: T,
     lines: [
       { method: 'bank', bankId, amountHalalas: 100000 },
-      { method: 'cash', amountHalalas: 50000 },
+      { method: 'cash', amountHalalas: 20000 },
     ],
     discountHalalas: 0, notes: '',
   });
@@ -126,7 +129,7 @@ test('دورة الاستخدام الكاملة تعمل من الطرف للط
   expect(inst0.status).toBe('مدفوعة جزئياً');
   recordRentPayment(db, contractId, {
     installmentId: insts[0].id, period: 'الشهر الأول', date: T,
-    lines: [{ method: 'cash', amountHalalas: Number(insts[0].amount_halalas) - 150000 }],
+    lines: [{ method: 'cash', amountHalalas: Number(insts[0].amount_halalas) - 120000 - 100000 }],
     discountHalalas: 0, notes: 'إكمال',
   });
   inst0 = db.get<{ status: string; paid_halalas: number }>(
@@ -195,7 +198,8 @@ test('دورة الاستخدام الكاملة تعمل من الطرف للط
   expect(accountBalance(db, '1200')).toBeGreaterThan(0);
   const invEntry1 = db.get<{ journal_entry_id: string }>(
     `SELECT journal_entry_id FROM invoices WHERE id = ?`, [invId])!.journal_entry_id;
-  setInvoiceStatus(db, invId, 'مدفوعة');
+  payInvoice(db, invId, { method: 'cash', bankId: null, date: T }); // التحصيل بقيد (المراجعة ٤.٢)
+  expect(() => setInvoiceStatus(db, invId, 'مدفوعة')).toThrow();
   setInvoiceStatus(db, invId, 'مسودة'); // يعكس القيد بقيد مرآة ولا يخفيه
   const ar = accountBalance(db, '1200');
   setInvoiceStatus(db, invId, 'مستحقة'); // يعيد الترحيل
@@ -318,7 +322,7 @@ test('دورة الاستخدام الكاملة تعمل من الطرف للط
 
   /* ═══ ١٩) الفحوص الثمانية كلها تمر بعد كل هذا النشاط ═══ */
   const checks = integrityChecks(db);
-  for (const ch of checks) expect(ch.ok).toBe(true);
+  for (const ch of checks) expect({ n: ch.name, v: ch.value, ok: ch.ok }).toEqual({ n: ch.name, v: ch.value, ok: true });
 
   /* ═══ ٢٠) نسخة احتياطية موثَّقة ← استعادة على جهاز نظيف ← تطابق كامل ═══ */
   const archive = path.join(env.root, 'full.aqbk');

@@ -17,7 +17,7 @@ import {
 } from '@/domain/contracts/service';
 import { cancelPayment } from '@/domain/contracts/cancelPayment';
 import { saveClaim, collectClaim, deleteClaim } from '@/domain/claims';
-import { saveInvoice, setInvoiceStatus, deleteInvoice } from '@/domain/invoices';
+import { saveInvoice, setInvoiceStatus, payInvoice, deleteInvoice } from '@/domain/invoices';
 import { savePurchase, payPurchase, unmarkPurchasePaid, deletePurchase } from '@/domain/purchases';
 import { recordKeyMoneyDeal } from '@/domain/keymoney';
 import { depositCashToBank, transferBetweenBanks, pettyCashExpense, ownerCashIn, ownerCashOut } from '@/domain/cashOps';
@@ -97,8 +97,7 @@ test('كل عملية تكتب ما يجيزه جدول OP_WRITES لقسمها �
     start: T, end: addDays(T, 364), depositHalalas: 300000, ejarNo: '', services: '', furnished: 'غير مؤثثة', typeSpecific: {},
   };
   const contractId = track('contracts', () => saveDraft(db, input));
-  track('contracts', () => confirmContract(db, input, contractId));
-  void resId;
+  track('contracts', () => confirmContract(db, { ...input, reservationId: resId }, contractId));
   const insts = db.all<{ id: string; amount_halalas: number }>(`SELECT id, amount_halalas FROM contract_installments WHERE contract_id = ? ORDER BY due_date`, [contractId]);
   const pay1 = track('collect', () => recordRentPayment(db, contractId, {
     installmentId: insts[0].id, period: 'الأول', date: T, lines: [{ method: 'bank', bankId, amountHalalas: 100000 }], discountHalalas: 0, notes: '',
@@ -135,7 +134,7 @@ test('كل عملية تكتب ما يجيزه جدول OP_WRITES لقسمها �
   // الفواتير
   const invId = track('invoices', () => saveInvoice(db, { customer: 'عميل تجريبي', customerVat: '', issue: T, due: addDays(T, 30), notes: '', lines: [{ descr: 'خدمة', qty: 1, priceHalalas: 50000, taxPct: 15 }] }, 'مسودة'));
   track('invoices', () => setInvoiceStatus(db, invId, 'مستحقة'));
-  track('invoices', () => setInvoiceStatus(db, invId, 'مدفوعة'));
+  track('invoices', () => payInvoice(db, invId, { method: 'bank', bankId, date: T }));
   const inv2 = track('invoices', () => saveInvoice(db, { customer: 'عميل تجريبي', customerVat: '', issue: T, due: T, notes: '', lines: [{ descr: 'خدمة', qty: 1, priceHalalas: 1000, taxPct: 0 }] }, 'مسودة'));
   track('invoices', () => deleteInvoice(db, inv2));
 

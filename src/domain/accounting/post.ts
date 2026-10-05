@@ -330,10 +330,10 @@ export const postReservationDeposit = (db: DB, rv: { id: string; name: string; d
       })
     : null;
 
-export const postReservationForfeit = (db: DB, rv: { id: string; name: string; deposit: number }) =>
+export const postReservationForfeit = (db: DB, rv: { id: string; name: string; deposit: number; date?: string }) =>
   rv.deposit > 0
     ? postEntry(db, {
-        date: today(),
+        date: rv.date ?? today(),
         memo: 'مصادرة عربون · ' + rv.name,
         lines: [
           { account: '2450', descr: 'إطفاء التزام العربون', debit: rv.deposit, credit: 0 },
@@ -344,16 +344,39 @@ export const postReservationForfeit = (db: DB, rv: { id: string; name: string; d
       })
     : null;
 
-export const postReservationConvert = (db: DB, rv: { id: string; deposit: number }, contractNo: string) =>
-  rv.deposit > 0
+/**
+ * تحويل العربون إلى عقد (المراجعة ٤.٤) · العربون إيجارٌ مقبوض مقدَّماً يُسدَّد به القسط: مدين 2450 / دائن إيراد الإيجار،
+ * بتاريخ العقد · قيدٌ لكل قسط يغطيه ومعه دفعته. (كان دائنه 1200 والإيجار لا يمر على الذمم، فبقي رصيدها سالباً)
+ */
+export const postReservationConvert = (
+  db: DB,
+  rv: { id: string; amount: number; tenant: string; date: string; period?: string },
+  contractNo: string
+) =>
+  rv.amount > 0
     ? postEntry(db, {
-        date: today(),
-        memo: 'تحويل عربون إلى عقد ' + contractNo,
+        date: rv.date,
+        memo: 'تحويل عربون إلى عقد ' + contractNo + ' · ' + rv.tenant + (rv.period ? ' · ' + rv.period : ''),
         lines: [
-          { account: '2450', descr: 'إطفاء التزام العربون', debit: rv.deposit, credit: 0 },
-          { account: '1200', descr: 'خصم من ذمة المستأجر', debit: 0, credit: rv.deposit },
+          { account: '2450', descr: 'إطفاء التزام العربون', debit: rv.amount, credit: 0 },
+          { account: '4200', descr: 'إيراد إيجار من العربون', debit: 0, credit: rv.amount },
         ],
         srcType: 'reservation_convert',
+        srcId: rv.id,
+      })
+    : null;
+
+/** ردّ العربون لصاحبه عند إلغاء الحجز (المراجعة ٤.٥): مدين 2450 / دائن النقد · كان الإلغاء بلا قيد */
+export const postReservationRefund = (db: DB, rv: { id: string; name: string; deposit: number; date: string }) =>
+  rv.deposit > 0
+    ? postEntry(db, {
+        date: rv.date,
+        memo: 'ردّ عربون حجز · ' + rv.name,
+        lines: [
+          { account: '2450', descr: 'إطفاء التزام العربون', debit: rv.deposit, credit: 0 },
+          { account: CASH, descr: 'عربون مردود', debit: 0, credit: rv.deposit },
+        ],
+        srcType: 'reservation_refund',
         srcId: rv.id,
       })
     : null;
@@ -520,6 +543,24 @@ export const postPurchaseToLedger = (
     srcId: p.id,
   });
 };
+
+/** تحصيل فاتورة مبيعات (المراجعة ٤.٢): مدين 1100 / دائن 1200 بالإجمالي */
+export const postInvoicePayment = (
+  db: DB,
+  v: { id: string; no: string; customer: string; total: number },
+  payDate: string,
+  cash: boolean
+) =>
+  postEntry(db, {
+    date: payDate,
+    memo: 'تحصيل فاتورة ' + v.no + ' · ' + v.customer + (cash ? ' (نقداً)' : ''),
+    lines: [
+      { account: CASH, debit: v.total, credit: 0 },
+      { account: '1200', debit: 0, credit: v.total },
+    ],
+    srcType: 'invoice_pay',
+    srcId: v.id,
+  });
 
 /** سداد فاتورة شراء: مدين 2100 / دائن 1100 */
 export const postPurchasePayment = (

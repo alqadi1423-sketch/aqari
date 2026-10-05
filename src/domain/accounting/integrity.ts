@@ -1,5 +1,5 @@
 import type { DB } from '../../db/adapter';
-import { accountBalance, allAccounts } from './ledger';
+import { accountBalance, allAccounts, ledgerNet } from './ledger';
 import { KEPT_REVIEW_ENTITY, markedNetOn } from './orphans';
 import { fmt } from '../money';
 
@@ -133,6 +133,35 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     name: 'كل دفعة محصَّلة لها قيد مرحّل',
     ok: Number(unposted.n) === 0,
     value: Number(unposted.n) + ' بلا قيد',
+  });
+
+  // ١٠) ذمم الفواتير (المراجعة ٤.٢): لا فاتورة «مدفوعة» بلا قيد تحصيل، وحركة 1200 = المصدرة غير المحصّلة
+  // قاعدة ما قبل الهجرة ٢٣ (نسخة ما قبل الترقية تُفحص بإصدارها) لا عمود تحصيل فيها: كل «مدفوعة» فيها بلا قيد
+  const hasPay = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'payment_journal_entry_id');
+  const inv = db.get<{ due: number; paidNoEntry: number }>(
+    `SELECT COALESCE(SUM(CASE WHEN status <> 'مدفوعة' THEN total_halalas ELSE 0 END),0) AS due,
+            COALESCE(SUM(CASE WHEN status = 'مدفوعة' AND ${hasPay ? 'payment_journal_entry_id' : 'NULL'} IS NULL THEN 1 ELSE 0 END),0) AS paidNoEntry
+     FROM invoices WHERE deleted_at IS NULL AND journal_entry_id IS NOT NULL`)!;
+  const ar = ledgerNet(db, '1200');
+  out.push({
+    name: 'ذمم الفواتير = الفواتير المصدرة غير المحصّلة',
+    ok: ar === Number(inv.due) && Number(inv.paidNoEntry) === 0,
+    value: fmt(ar) + ' / ' + fmt(Number(inv.due)) + (Number(inv.paidNoEntry) ? ' · ' + inv.paidNoEntry + ' مدفوعة بلا تحصيل' : ''),
+  });
+
+  // ١١) عربون الحجوزات (المراجعة ٤.٤ و٤.٥): رصيد 2450 = عربون الحجوزات القائمة غير المسوّاة · المحوَّل والمصادَر
+  // والمردود خرجت منه (والمصادرة قبل عمود المآل تُعرف بقيدها)
+  const hasOutcome = db.all<{ name: string }>(`PRAGMA table_info(reservations)`).some((c) => c.name === 'deposit_outcome');
+  const held = db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(deposit_halalas),0) AS s FROM reservations r
+     WHERE r.deleted_at IS NULL AND r.status <> 'محوَّل لعقد' ${hasOutcome ? 'AND r.deposit_outcome IS NULL' : ''}
+       AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'reservation_forfeit' AND e.src_id = r.id
+                       AND e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.reversed_by IS NULL)`)!;
+  const rsvHeld = -ledgerNet(db, '2450');
+  out.push({
+    name: 'عربون الحجوزات = العربون المحتجز غير المسوّى',
+    ok: rsvHeld === Number(held.s),
+    value: fmt(rsvHeld) + ' / ' + fmt(Number(held.s)),
   });
 
   // ٩) لا سجل يتيم (توجيه المالك): لا دفعة ولا قسط بلا عقد قائم، ولا عقد بلا وحدة قائمة

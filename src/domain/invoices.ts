@@ -4,10 +4,11 @@
  */
 import type { DB } from '../db/adapter';
 import { uid } from './ids';
-import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById } from './accounting/post';
+import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment } from './accounting/post';
 import { mulQty, pctOf } from './money';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
+import { today } from './dates';
 
 export interface InvoiceLineInput {
   descr: string;
@@ -61,6 +62,9 @@ export function saveInvoice(
     let id = existingId ?? uid();
     let no: string;
     if (existingId) {
+      // المحصّلة لا تُعدَّل وتحصيلها قائم · وإلا بقي قيد تحصيلٍ لإجماليٍ تغيّر (المراجعة ٤.٢)
+      if (db.get(`SELECT 1 FROM invoices WHERE id = ? AND payment_journal_entry_id IS NOT NULL`, [existingId]))
+        throw new Error('الفاتورة محصّلة · أعدها «مستحقة» أولاً ليُعكس التحصيل، ثم عدّلها');
       // القيم قبل التعديل تُحفظ لسجل العمليات · «من أي قيمة إلى أي قيمة»
       const v = db.get<{
         no: string; journal_entry_id: string | null; customer_name: string;
@@ -122,7 +126,70 @@ export function saveInvoice(
 }
 
 /** تغيير حالة الفاتورة · العودة لمسودة تلغي القيد، والخروج منها يرحّل */
+export type InvoicePayMethod = 'bank' | 'cash' | 'cheque' | 'card';
+export const INV_PAY_LABEL: Record<InvoicePayMethod, string> = { cash: 'نقداً', bank: 'تحويل بنكي', cheque: 'شيك', card: 'بطاقة' };
+
+type PayRow = { no: string; customer_name: string; total_halalas: number };
+
+/** يرحّل قيد التحصيل وحركة البنك ويعيد معرّف القيد · مشترك بين التحصيل والاسترجاع من السلة */
+function postCollection(db: DB, id: string, v: PayRow, pay: { method: InvoicePayMethod; bankId: string | null; date: string }): string | null {
+  const total = Number(v.total_halalas);
+  const entry = postInvoicePayment(db, { id, no: v.no, customer: v.customer_name, total }, pay.date, pay.method === 'cash');
+  if (pay.method !== 'cash' && pay.bankId) {
+    db.run(
+      `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
+       VALUES (?,?,?,?,?,1,?,?,?)`,
+      [uid(), pay.bankId, pay.date, 'تحصيل فاتورة ' + v.no + ' · ' + v.customer_name, total, entry ? entry.no : '',
+       'تحصيل فاتورة · ' + INV_PAY_LABEL[pay.method], new Date().toISOString()]);
+  }
+  return entry ? entry.id : null;
+}
+
+/**
+ * تحصيل فاتورة مبيعات (المراجعة ٤.٢) · قيد مدين النقد أو البنك / دائن الذمم بإجماليها، وحركة البنك إن لم يكن نقداً،
+ * والفاتورة «مدفوعة» بتاريخ التحصيل وطريقته. فاتورةٌ مسودة لا تُحصَّل (لا ذمة لها بعد).
+ */
+export function payInvoice(db: DB, id: string, pay: { method: InvoicePayMethod; bankId: string | null; date: string }): void {
+  db.transaction(() => {
+    const v = db.get<PayRow & { status: string; journal_entry_id: string | null; payment_journal_entry_id: string | null }>(
+      `SELECT no, customer_name, total_halalas, status, journal_entry_id, payment_journal_entry_id FROM invoices WHERE id = ? AND deleted_at IS NULL`, [id]);
+    if (!v) throw new Error('تعذّر العثور على الفاتورة');
+    if (v.status === 'مسودة' || !v.journal_entry_id) throw new Error('أصدر الفاتورة أولاً · المسودة لا تُحصَّل');
+    if (pay.method !== 'cash' && !pay.bankId) throw new Error('اختر الحساب البنكي (' + INV_PAY_LABEL[pay.method] + ')، أو بدِّل الطريقة لنقداً');
+    if (v.payment_journal_entry_id) reverseInvoicePayment(db, id);
+    const entryId = postCollection(db, id, v, pay);
+    db.run(`UPDATE invoices SET status = 'مدفوعة', paid_date = ?, payment_method = ?, payment_bank_id = ?, payment_journal_entry_id = ? WHERE id = ?`,
+      [pay.date, pay.method, pay.method !== 'cash' ? pay.bankId : null, entryId, id]);
+    logAudit(db, 'الفواتير', 'update', 'تحصيل فاتورة', v.no, { status: v.status }, { status: 'مدفوعة', date: pay.date, method: INV_PAY_LABEL[pay.method] });
+  });
+}
+
+/**
+ * عكس تحصيل فاتورة · القيد يُعكس وحركة البنك تقابلها حركة معاكسة مرتبطة بقيد العكس (كسداد المشتريات).
+ * keepTerms: الحذف إلى السلة يُبقي تاريخ التحصيل وطريقته وبنكه ليعيدها الاسترجاع كما كانت.
+ */
+export function reverseInvoicePayment(db: DB, id: string, keepTerms = false): void {
+  const v = db.get<{ no: string; payment_journal_entry_id: string | null }>(`SELECT no, payment_journal_entry_id FROM invoices WHERE id = ?`, [id]);
+  if (!v || !v.payment_journal_entry_id) return;
+  const je = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [v.payment_journal_entry_id]);
+  const rev = reverseEntryById(db, v.payment_journal_entry_id, 'عكس تحصيل الفاتورة ' + v.no + (je ? ' · القيد ' + je.no : ''));
+  if (je && rev) {
+    for (const t of db.all<{ bank_id: string; amount_halalas: number }>(
+      `SELECT bank_id, amount_halalas FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL`, [je.no])) {
+      db.run(
+        `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
+         VALUES (?,?,?,?,?,1,?,?,?)`,
+        [uid(), t.bank_id, today(), 'عكس تحصيل الفاتورة ' + v.no, -Number(t.amount_halalas), rev.no, 'عكس تحصيل فاتورة', new Date().toISOString()]);
+    }
+  }
+  db.run(keepTerms
+    ? `UPDATE invoices SET payment_journal_entry_id = NULL WHERE id = ?`
+    : `UPDATE invoices SET payment_journal_entry_id = NULL, paid_date = NULL, payment_method = NULL, payment_bank_id = NULL WHERE id = ?`, [id]);
+}
+
 export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | 'مستحقة' | 'مدفوعة' | 'متأخرة'): void {
+  // «مدفوعة» بتحصيلٍ له قيد وحده (payInvoice) · لا تُضبط حالةً مجردة فتبقى الذمة بلا سداد
+  if (newStatus === 'مدفوعة') throw new Error('سجّل التحصيل بتاريخه وطريقته · «مدفوعة» لا تُختار حالةً وحدها');
   db.transaction(() => {
     const v = db.get<{
       no: string; customer_name: string; issue: string;
@@ -131,6 +198,8 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
     }>(`SELECT no, customer_name, issue, subtotal_halalas, tax_halalas, total_halalas, journal_entry_id, status
         FROM invoices WHERE id = ?`, [id]);
     if (!v) return;
+    // الخروج من «مدفوعة» يعكس التحصيل أولاً
+    reverseInvoicePayment(db, id);
     if (newStatus === 'مسودة' && v.journal_entry_id) {
       // العودة لمسودة تُلغي أثر القيد بعكسه لا بإخفائه · فيبقى الحدثان في الدفتر
       if (!reverseEntryById(db, v.journal_entry_id, 'عكس قيد فاتورة ' + v.no + ' · إعادتها مسودة'))
@@ -156,6 +225,8 @@ export function deleteInvoice(db: DB, id: string): void {
       `SELECT no, journal_entry_id FROM invoices WHERE id = ?`, [id]
     );
     if (!v) return;
+    // التحصيل يُعكس قبل الإصدار · بالترتيب كحذف فاتورة الشراء المسددة، وشروطه تبقى للاسترجاع
+    reverseInvoicePayment(db, id, true);
     if (v.journal_entry_id) {
       if (!reverseEntryById(db, v.journal_entry_id)) voidEntryById(db, v.journal_entry_id);
     }
@@ -164,15 +235,25 @@ export function deleteInvoice(db: DB, id: string): void {
   });
 }
 
-/** الاستعادة من السلة: تعاد وترحَّل من جديد إن لم تكن مسودة */
+/**
+ * الاستعادة من السلة (المراجعة ٤.٦): تعاد وترحَّل من جديد إن لم تكن مسودة، والمحصّلة يُعاد تحصيلها بتاريخه
+ * وطريقته وبنكه. فإن كان بنك التحصيل محذوفاً رُفضت الاستعادة بسببها ولم يتغير شيء.
+ */
 export function restoreInvoice(db: DB, id: string): void {
   db.transaction(() => {
-    const v = db.get<{
-      no: string; customer_name: string; issue: string; status: string;
-      subtotal_halalas: number; tax_halalas: number; total_halalas: number;
-    }>(`SELECT no, customer_name, issue, status, subtotal_halalas, tax_halalas, total_halalas
+    const v = db.get<PayRow & {
+      issue: string; status: string; subtotal_halalas: number; tax_halalas: number;
+      paid_date: string | null; payment_method: string | null; payment_bank_id: string | null;
+    }>(`SELECT no, customer_name, issue, status, subtotal_halalas, tax_halalas, total_halalas, paid_date, payment_method, payment_bank_id
         FROM invoices WHERE id = ?`, [id]);
     if (!v) return;
+    const paid = v.status === 'مدفوعة' && !!v.paid_date;
+    const method = (v.payment_method && v.payment_method in INV_PAY_LABEL ? v.payment_method : 'cash') as InvoicePayMethod;
+    if (paid && method !== 'cash') {
+      const bank = db.get<{ name: string; deleted_at: string | null }>(`SELECT name, deleted_at FROM banks WHERE id = ?`, [v.payment_bank_id]);
+      if (!bank || bank.deleted_at)
+        throw new Error('لا تُسترجع الفاتورة ' + v.no + ': البنك الذي حُصّلت فيه' + (bank ? ' «' + bank.name + '»' : '') + ' محذوف · استرجع البنك أولاً');
+    }
     db.run(`UPDATE invoices SET deleted_at = NULL WHERE id = ?`, [id]);
     if (v.status !== 'مسودة') {
       const entry = postInvoiceToLedger(db, {
@@ -180,6 +261,13 @@ export function restoreInvoice(db: DB, id: string): void {
         subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas), total: Number(v.total_halalas),
       });
       db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = ?`, [entry ? entry.id : null, id]);
+    }
+    if (paid) {
+      const entryId = postCollection(db, id, v, { method, bankId: v.payment_bank_id, date: v.paid_date! });
+      db.run(`UPDATE invoices SET payment_journal_entry_id = ? WHERE id = ?`, [entryId, id]);
+    } else if (v.status === 'مدفوعة') {
+      // «مدفوعة» من نسخة سابقة بلا تحصيل مسجّل: تعود مستحقة فلا تُخفى ذمتها
+      db.run(`UPDATE invoices SET status = 'مستحقة' WHERE id = ?`, [id]);
     }
   });
 }

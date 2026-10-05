@@ -277,6 +277,8 @@ export interface ContractInput {
   start: string;
   end: string;
   valueHalalas: number;
+  /** حجز الوحدة المحوَّل لهذا العقد (بمعرّفه) */
+  reservationId?: string | null;
 }
 
 /** الحقل الذي سبّب رفض التحقق · تظلّله الواجهة بالأحمر وتمرّر إليه */
@@ -342,11 +344,12 @@ export function validateConfirmedContract(
   if (conflict) {
     return fail('start', `تعذّر إنشاء العقد · تتداخل مدته مع العقد ${conflict.contract_no} لـ"${conflict.tenant_name}" على نفس الوحدة (من ${dfmt(conflict.start)} إلى ${dfmt(conflict.end)})`);
   }
-  // القاعدة ٤: الحجز بعربون يمنع التأجير لغير صاحبه
+  // القاعدة ٤: الحجز بعربون يمنع التأجير لغير صاحبه · والعقد لصاحبه يحمل معرّف الحجز لا اسمه (المراجعة ٤.٤)
   const activeRsv = unitActiveReservation(db, unitId);
-  if (activeRsv && activeRsv.name.trim() !== tenant.trim()) {
-    return fail('tenant', `تعذّر الحفظ · هذه الوحدة محجوزة بعربون لـ"${activeRsv.name}" حتى ${dfmt(activeRsv.expiry_date)}. لا يمكن تأجيرها لمستأجر آخر قبل انتهاء الحجز، أو أدخل نفس الاسم لتحويل الحجز إلى عقد`);
+  if (activeRsv && input.reservationId !== activeRsv.id) {
+    return fail('tenant', `تعذّر الحفظ · هذه الوحدة محجوزة بعربون لـ"${activeRsv.name}" حتى ${dfmt(activeRsv.expiry_date)}. لا يمكن تأجيرها لمستأجر آخر قبل انتهاء الحجز، أو اختر «تحويل الحجز إلى هذا العقد» إن كان المستأجر صاحبه`);
   }
+  if (!activeRsv && input.reservationId) return fail('tenant', 'تعذّر الحفظ · الحجز المختار لم يعد قائماً على هذه الوحدة');
   return null;
 }
 

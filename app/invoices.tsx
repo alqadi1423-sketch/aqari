@@ -18,7 +18,7 @@ import { Skeleton } from '../src/ui/Skeleton';
 import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
-import { saveInvoice, setInvoiceStatus, deleteInvoice, invoiceTotals, type InvoiceLineInput } from '../src/domain/invoices';
+import { saveInvoice, setInvoiceStatus, payInvoice, deleteInvoice, invoiceTotals, type InvoiceLineInput, type InvoicePayMethod } from '../src/domain/invoices';
 import { today, dfmt, addDays } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
 import { printInvoice } from '../src/services/print';
@@ -109,6 +109,16 @@ export default function Invoices() {
   const [notes, setNotes] = useState(DEFAULT_NOTES);
   const [lines, setLines] = useState<LineState[]>([{ descr: '', qty: '1', price: '', tax: '15' }]);
   const [statusFor, setStatusFor] = useState<string | null>(null);
+  // التحصيل (المراجعة ٤.٢): «مدفوعة» لا تُختار حالةً وحدها، بل بتحصيلٍ بتاريخه وطريقته يرحّل قيده
+  const [collecting, setCollecting] = useState(false);
+  const [payDate, setPayDate] = useState(today());
+  const [payMethod, setPayMethod] = useState<InvoicePayMethod>('cash');
+  const [payBank, setPayBank] = useState('');
+  const banks = useMemo(
+    () => db.all<{ id: string; name: string }>(`SELECT id, name FROM banks WHERE deleted_at IS NULL AND archived = 0 ORDER BY created_at`),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, statusFor]
+  );
   const [viewFor, setViewFor] = useState<string | null>(null);
 
   // البحث أو المرشِّحات تعيد الصفحة للأولى
@@ -241,9 +251,18 @@ export default function Invoices() {
   ];
 
   // حالة الفاتورة التي تُغيَّر حالتها · الحالة القائمة لا يُعرض لها زر (تغييرها إليها لا يصح)
-  const statusNow = statusFor
-    ? db.get<{ status: string }>(`SELECT status FROM invoices WHERE id = ?`, [statusFor])?.status ?? ''
-    : '';
+  const statusRow = statusFor
+    ? db.get<{ status: string; pj: string | null }>(`SELECT status, payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [statusFor])
+    : undefined;
+  const statusNow = statusRow?.status ?? '';
+  // «مدفوعة» من نسخة سابقة بلا قيد تحصيل (المراجعة ٤.٢): يُعرض لها «تسجيل التحصيل» ليقيّدها المالك بتاريخها وطريقته
+  const legacyPaid = statusNow === 'مدفوعة' && !statusRow?.pj;
+  const legacyCount = useMemo(
+    () => Number(db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM invoices WHERE deleted_at IS NULL AND status = 'مدفوعة' AND payment_journal_entry_id IS NULL`)?.n ?? 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version]
+  );
 
   return (
     <Screen title="الفواتير" icon="invoice" scroll={false}
@@ -261,9 +280,19 @@ export default function Invoices() {
           showsVerticalScrollIndicator={false}
           showsHorizontalScrollIndicator={false}
           ListHeaderComponent={
-            <FilterBar chips={chips} onOpen={fsheet.show} onClearAll={clearFilters}
-              resultCount={total} total={totalAll} filtered={total} itemName="فاتورة"
-              search={<SearchBox value={q} onChange={setQ} />} />
+            <>
+              <FilterBar chips={chips} onOpen={fsheet.show} onClearAll={clearFilters}
+                resultCount={total} total={totalAll} filtered={total} itemName="فاتورة"
+                search={<SearchBox value={q} onChange={setQ} />} />
+              {legacyCount > 0 && perm.manage ? (
+                <Card style={{ borderColor: C.gold, borderWidth: 1 }}>
+                  <T size={12.5} bold>{legacyCount} فاتورة «مدفوعة» بلا قيد تحصيل</T>
+                  <T size={12} color={C.muted}>
+                    سُجّلت مدفوعةً في نسخة سابقة دون قيد، فبقيت في ذمم العملاء. افتح كلاً منها ثم «تغيير الحالة» ← «تسجيل التحصيل» بتاريخه وطريقته.
+                  </T>
+                </Card>
+              ) : null}
+            </>
           }
           ListFooterComponent={<Pager pager={pager} total={total} />}
           ListEmptyComponent={<Card><EmptyState>لا توجد فواتير مطابقة</EmptyState></Card>}
@@ -351,17 +380,61 @@ export default function Invoices() {
       </Sheet>
 
       {/* تغيير الحالة */}
-      {statusFor && perm.manage && (
+      {statusFor && perm.manage && !collecting && (
         <Sheet visible onClose={() => setStatusFor(null)} title="تغيير حالة الفاتورة">
-          {ALL_STATUSES.filter((s) => s !== statusNow).map((s) => (
+          {/* المسودة لا تُحصَّل فلا يظهر لها «تسجيل التحصيل» */}
+          {ALL_STATUSES.filter((s) => (s !== statusNow || legacyPaid) && !(s === 'مدفوعة' && statusNow === 'مسودة')).map((s) => (
             <View key={s} style={{ marginBottom: 8 }}>
-              <BtnGhost title={s === 'مسودة' ? 'مسودة (بدون ترحيل محاسبي)' : s}
+              <BtnGhost
+                title={s === 'مدفوعة' ? 'مدفوعة · تسجيل التحصيل'
+                  : (s === 'مسودة' ? 'مسودة (بدون ترحيل محاسبي)' : s) + (statusNow === 'مدفوعة' && !legacyPaid ? ' · يعكس قيد التحصيل' : '')}
                 onPress={() => {
-                  setInvoiceStatus(db, statusFor, s);
-                  setStatusFor(null); bump(); toast('تم تحديث حالة الفاتورة');
+                  if (s === 'مدفوعة') {
+                    setPayDate(today());
+                    setPayMethod(banks.length ? 'bank' : 'cash');
+                    setPayBank(banks[0]?.id ?? '');
+                    setCollecting(true);
+                    return;
+                  }
+                  try {
+                    setInvoiceStatus(db, statusFor, s);
+                    setStatusFor(null); bump(); toast('تم تحديث حالة الفاتورة');
+                  } catch (e) { reportFailure({ title: 'تعذّر تغيير الحالة', e }); }
                 }} />
             </View>
           ))}
+        </Sheet>
+      )}
+      {statusFor && perm.manage && collecting && (
+        <Sheet visible onClose={() => setCollecting(false)} title="تسجيل تحصيل الفاتورة"
+          footer={
+            payMethod === 'cash' || payBank ? (
+              <BtnPrimary title="تأكيد التحصيل" onPress={() => {
+                try {
+                  payInvoice(db, statusFor, { method: payMethod, bankId: payMethod === 'cash' ? null : payBank, date: payDate });
+                  setCollecting(false); setStatusFor(null); bump(); toast('سُجّل التحصيل ورُحّل قيده');
+                } catch (e) { reportFailure({ title: 'تعذّر تسجيل التحصيل', e }); }
+              }} />
+            ) : undefined
+          }>
+          <T size={12} color={C.muted} style={{ marginBottom: 10 }}>
+            يُرحَّل قيد: مدين النقد أو البنك، دائن ذمم العملاء، بإجمالي الفاتورة.
+          </T>
+          <DateField label="تاريخ التحصيل" value={payDate} onChange={setPayDate} />
+          <SelectField label="الطريقة" value={payMethod}
+            options={[
+              { value: 'cash', icon: 'cash', label: 'نقداً' },
+              { value: 'bank', icon: 'bank', label: 'تحويل بنكي' },
+              { value: 'cheque', icon: 'invoice', label: 'شيك' },
+              { value: 'card', icon: 'card', label: 'بطاقة (مدى/ائتمانية)' },
+            ]}
+            onPick={(v) => setPayMethod(v as InvoicePayMethod)} />
+          {payMethod !== 'cash' && (
+            <SelectField label="الحساب البنكي المحصَّل فيه" value={payBank}
+              options={banks.map((b) => ({ value: b.id, label: b.name }))}
+              onPick={setPayBank}
+              placeholder="أضف حساباً بنكياً أولاً" />
+          )}
         </Sheet>
       )}
 

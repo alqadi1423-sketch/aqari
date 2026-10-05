@@ -30,6 +30,7 @@ export const SOURCE_DOC: Record<string, [label: string, tables: string[]]> = {
   reservation: ['حجز', ['reservations']],
   reservation_convert: ['تحويل حجز', ['reservations']],
   reservation_forfeit: ['مصادرة حجز', ['reservations']],
+  reservation_refund: ['ردّ عربون', ['reservations']],
   key_money: ['تقبيل', ['key_money_deals']],
   surplus_refund: ['ردّ فائض', ['contracts']],
   surplus_credit: ['فائض رصيداً', ['contracts']],

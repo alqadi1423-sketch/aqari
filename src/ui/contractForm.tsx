@@ -6,14 +6,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { View, Share, Animated } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
-import { Field, Row, T, Num, BtnGhost, BtnPrimary } from './components';
+import { Field, Row, T, Num, BtnGhost, BtnPrimary, Note, ChipGroup } from './components';
 import { SuggestField } from './editors';
 import { SelectField, Sheet } from './Sheet';
 import { DateField } from './DateField';
 import { useApp } from './store';
 import { C } from './theme';
 import { fmt, toHalalas } from '../domain/money';
-import { contractEndFromDuration } from '../domain/dates';
+import { contractEndFromDuration, today, dfmt } from '../domain/dates';
 import { scanContractFile } from '../services/contractScan';
 import { anchorDiagnostics } from '../domain/pdf/parseEjar';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../domain/contracts/vocab';
@@ -85,6 +85,8 @@ export interface ContractFormState {
   typeSpecific: Record<string, string>;
   /** ملف العقد الأصلي المُلتقط · يُربط بعد الحفظ */
   pendingFile: { uri: string; name: string; mime: string } | null;
+  /** حجز الوحدة المحوَّل لهذا العقد باختيار المستخدم · الربط بالمعرّف لا بالاسم (المراجعة ٤.٤) */
+  reservationId: string;
 }
 
 export const emptyContractForm = (): ContractFormState => ({
@@ -92,6 +94,7 @@ export const emptyContractForm = (): ContractFormState => ({
   start: '', end: '', deposit: '', depositHolder: 'المكتب', depositHolderName: '',
   ejarNo: '', services: '', furnished: 'غير مؤثثة', typeSpecific: {},
   pendingFile: null,
+  reservationId: '',
 });
 
 export function formToInput(s: ContractFormState): ContractDraftInput {
@@ -101,6 +104,7 @@ export function formToInput(s: ContractFormState): ContractDraftInput {
     depositHalalas: toHalalas(s.deposit), depositHolder: s.depositHolder, depositHolderName: s.depositHolderName,
     ejarNo: s.ejarNo, services: s.services,
     furnished: s.furnished, typeSpecific: s.typeSpecific,
+    reservationId: s.reservationId || null,
   };
 }
 
@@ -138,6 +142,17 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
   const selectedUnit = state.unitId
     ? db.get<{ type: string; subtype: string }>(`SELECT type, subtype FROM units WHERE id = ?`, [state.unitId])
     : undefined;
+  // حجز الوحدة القائم · قراءة فقط (الانتهاء يُسجَّل عند الحفظ)
+  const unitRsv = state.unitId
+    ? db.get<{ id: string; name: string; phone: string; deposit_halalas: number; expiry_date: string }>(
+        `SELECT id, name, phone, deposit_halalas, expiry_date FROM reservations
+         WHERE unit_id = ? AND status = 'نشط' AND deleted_at IS NULL AND expiry_date >= ?`, [state.unitId, today()])
+    : undefined;
+  // تغيّرت الوحدة: اختيار حجزٍ ليس لها يسقط
+  useEffect(() => {
+    if (state.reservationId && state.reservationId !== unitRsv?.id) set('reservationId', '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.unitId, unitRsv?.id]);
   const typeFields = selectedUnit ? CONTRACT_TYPE_FIELDS[selectedUnit.type] || [] : [];
 
   const [scanning, setScanning] = useState(false);
@@ -271,6 +286,22 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
           emptyText="أضف وحدة أولاً من نافذة العقار"
           error={form.errorField === 'unitId'}
         />
+      ) : null}
+      {unitRsv ? (
+        <Note>
+          <T size={12.5} bold>الوحدة محجوزة لـ«{unitRsv.name}» حتى {dfmt(unitRsv.expiry_date)}{Number(unitRsv.deposit_halalas) > 0 ? ' · عربون ' + fmt(Number(unitRsv.deposit_halalas)) : ''}</T>
+          <T size={12} color={C.muted} style={{ marginVertical: 6 }}>
+            العقد على الوحدة المحجوزة لصاحب الحجز وحده. بالتحويل يسدّد العربون الأقساط الأولى بتاريخ العقد.
+          </T>
+          <ChipGroup<string>
+            options={[[unitRsv.id, 'تحويل الحجز إلى هذا العقد'], ['', 'لا']]}
+            value={state.reservationId === unitRsv.id ? unitRsv.id : ''}
+            onChange={(v) => {
+              set('reservationId', v);
+              if (v && !state.tenant.trim()) set('tenant', unitRsv.name);
+              if (v && !state.phone.trim() && unitRsv.phone) set('phone', unitRsv.phone);
+            }} />
+        </Note>
       ) : null}
       {typeFields.length ? (
         <View style={{ backgroundColor: C.paper, borderRadius: 9, padding: 10, marginBottom: 12 }}>

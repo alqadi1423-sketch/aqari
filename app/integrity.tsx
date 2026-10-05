@@ -1,20 +1,51 @@
-/** فحص المطابقة · الفحوص الستة تربط الدفتر بالعمليات */
+/** فحص المطابقة · الفحوص تربط الدفتر بالعمليات، وأدوات البيانات السابقة تُعاين ثم تُطبَّق بقرار المالك */
 import React, { useMemo, useState } from 'react';
 import { View } from 'react-native';
 import { Screen } from '../src/ui/Screen';
-import { Card, T, Num, Row, BtnPrimary } from '../src/ui/components';
+import { Card, CardTitle, T, Num, Row, BtnPrimary, BtnGhost } from '../src/ui/components';
 import { useApp } from '../src/ui/store';
 import { C } from '../src/ui/theme';
 import { Icon } from '../src/ui/icons';
+import { useAccess } from '../src/ui/access';
+import { useDialog } from '../src/ui/AppDialog';
+import { useToast } from '../src/ui/Toast';
+import { reportFailure } from '../src/ui/failureDialog';
 import { integrityChecks } from '../src/domain/accounting/integrity';
+import { previewRepairs, applyRepair, type RepairPreview } from '../src/domain/reviewRepairs';
 
 export default function Integrity() {
-  const { db, version } = useApp();
+  const { db, version, bump } = useApp();
+  const access = useAccess();
+  const dialog = useDialog();
+  const toast = useToast();
   const [tick, setTick] = useState(0);
   const checks = useMemo(() => integrityChecks(db),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, tick]);
+  // المعاينة قراءة فقط · والتطبيق للمالك وحده، فالأداة لا تظهر لغيره
+  const repairs = useMemo(() => (access.owner ? previewRepairs(db).filter((r) => r.items.length) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version, tick, access.owner]);
   const ok = checks.every((c) => c.ok);
+
+  const apply = (r: RepairPreview) => {
+    const ready = r.items.filter((i) => !i.blocked).length;
+    dialog({
+      title: r.title,
+      body: 'يُطبَّق على ' + ready + ' من ' + r.items.length + '، بقيود عاكسة وتعديلات مسجّلة في سجل العمليات. هل تطبّقه؟',
+      actions: [
+        { label: 'تراجع', variant: 'ghost' },
+        {
+          label: 'تطبيق', variant: 'primary',
+          onPress: () => {
+            try { const n = applyRepair(db, r.key); bump(); toast('طُبّق على ' + n); }
+            catch (e) { reportFailure({ title: 'تعذّر التطبيق', e }); }
+          },
+        },
+      ],
+    });
+  };
+
   return (
     <Screen title="فحص المطابقة"
       actions={<BtnPrimary small title="أعد الفحص" onPress={() => setTick((t) => t + 1)} />}>
@@ -41,6 +72,22 @@ export default function Integrity() {
           </View>
         ))}
       </Card>
+      {repairs.map((r) => (
+        <Card key={r.key}>
+          <CardTitle>{r.title} · {r.items.length}</CardTitle>
+          <T size={12} color={C.muted} style={{ marginBottom: 8 }}>{r.explain}</T>
+          {r.items.map((i) => (
+            <View key={i.id} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
+              <T size={12.5}>{i.label}</T>
+              <T size={11.5} color={C.muted}>{i.detail}</T>
+              {i.blocked ? <T size={11.5} color={C.rose}>{i.blocked}</T> : null}
+            </View>
+          ))}
+          {r.items.some((i) => !i.blocked) ? (
+            <View style={{ marginTop: 10 }}><BtnGhost title="تطبيق التصحيح" onPress={() => apply(r)} /></View>
+          ) : null}
+        </Card>
+      ))}
     </Screen>
   );
 }

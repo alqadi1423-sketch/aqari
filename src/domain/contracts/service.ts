@@ -4,7 +4,7 @@
  */
 import type { DB } from '../../db/adapter';
 import { uid } from '../ids';
-import { today } from '../dates';
+import { today, dfmt } from '../dates';
 import {
   generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining,
   DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind,
@@ -70,6 +70,8 @@ export interface ContractDraftInput {
   services: string;
   furnished: string;
   typeSpecific: Record<string, string>;
+  /** حجز الوحدة الذي يتحوّل لهذا العقد · الربط بمعرّفه لا بالاسم (المراجعة ٤.٤) */
+  reservationId?: string | null;
 }
 
 function unitLabel(db: DB, unitId: string): string {
@@ -160,6 +162,7 @@ export function confirmContract(db: DB, input: ContractDraftInput, draftId?: str
     {
       tenant: input.tenant, phone: input.phone, unitId: input.unitId,
       start: input.start, end: input.end, valueHalalas: input.valueHalalas,
+      reservationId: input.reservationId ?? null,
     },
     draftId
   );
@@ -219,15 +222,8 @@ export function confirmContract(db: DB, input: ContractDraftInput, draftId?: str
       id, contract_no: contractNo, tenant: input.tenant, start: input.start,
       deposit: input.depositHalalas, holder: input.depositHolder,
     });
-    // تحويل الحجز لعقد (نفس صاحب الحجز)
-    const rsv = unitActiveReservation(db, input.unitId);
-    if (rsv && rsv.name.trim() === input.tenant.trim()) {
-      db.run(
-        `UPDATE reservations SET status = 'محوَّل لعقد', converted_contract_id = ? WHERE id = ?`,
-        [id, rsv.id]
-      );
-      postReservationConvert(db, { id: rsv.id, deposit: Number(rsv.deposit_halalas) }, contractNo);
-    }
+    // تحويل الحجز لعقد · بمعرّف الحجز الذي اختاره المستخدم، والعربون يسدّد الأقساط بالترتيب بتاريخ العقد (المراجعة ٤.٤)
+    if (input.reservationId) convertReservation(db, input.reservationId, id, contractNo, input.tenant, input.start);
     syncTenantToCustomer(db, input.tenant, input.phone);
     // نموذج الاستلام والتسليم يُنشأ تلقائياً من تفاصيل الوحدة · واحد لكل عقد
     createHandoverForContract(db, id);
@@ -236,6 +232,56 @@ export function confirmContract(db: DB, input: ContractDraftInput, draftId?: str
     seedTenantOccupant(db, id);
     return id;
   });
+}
+
+/** أقساط العقد القائمة بمتبقيها بترتيب الاستحقاق · ما يتسع له العربون */
+function openInstallments(db: DB, contractId: string) {
+  return db.all<{ id: string; amount_halalas: number; paid_halalas: number; discount: number; due_date: string }>(
+    `SELECT i.id, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount, i.due_date
+     FROM contract_installments i WHERE i.contract_id = ? AND i.status <> 'ملغية' ORDER BY i.due_date, i.sort`, [contractId])
+    .map((i) => ({ ...i, remaining: installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount)) }));
+}
+
+/** مجموع المتبقي على أقساط العقد القائمة · سقف ما يسدّده العربون */
+export function depositRoom(db: DB, contractId: string): number {
+  return openInstallments(db, contractId).reduce((sum, i) => sum + i.remaining, 0);
+}
+
+/**
+ * العربون إيجارٌ مقبوض مقدَّماً (المراجعة ٤.٤): يُوزَّع على المتبقي من الأقساط بترتيب استحقاقها، لكل قسط دفعةٌ
+ * بتاريخ العقد وقيدها (مدين 2450 / دائن الإيجار) فينقص المتبقي عليه ويظهر في كشف المستأجر. وما زاد يُرفض.
+ */
+export function allocateDeposit(
+  db: DB,
+  a: { rsvId: string; amount: number; contractId: string; contractNo: string; tenant: string; date: string }
+): void {
+  let left = a.amount;
+  const covered: string[] = [];
+  for (const i of openInstallments(db, a.contractId)) {
+    if (left <= 0) break;
+    if (i.remaining <= 0) continue;
+    const amt = Math.min(left, i.remaining);
+    left -= amt;
+    const period = 'قسط ' + dfmt(i.due_date);
+    const entry = postReservationConvert(db, { id: a.rsvId, amount: amt, tenant: a.tenant, date: a.date, period }, a.contractNo);
+    db.run(
+      `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
+        discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
+       VALUES (?,?,?,?,?,?,0,?,?,?,?,?)`,
+      [uid(), a.contractId, i.id, period, a.date, amt, amt, 'من العربون', 'عربون الحجز محوَّل', entry ? entry.id : null, new Date().toISOString()]);
+    covered.push(i.id);
+  }
+  if (left > 0) throw new RuleViolation('العربون (' + fmt(a.amount) + ') يتجاوز المتبقي على أقساط العقد · ردّ الزائد قبل التحويل');
+  if (covered.length) recomputeInstallments(db, covered);
+}
+
+function convertReservation(db: DB, rsvId: string, contractId: string, contractNo: string, tenant: string, date: string): void {
+  const rsv = db.get<{ id: string; deposit_halalas: number }>(
+    `SELECT id, deposit_halalas FROM reservations WHERE id = ? AND status = 'نشط' AND deleted_at IS NULL`, [rsvId]);
+  if (!rsv) throw new RuleViolation('الحجز غير قائم · انتهى أو أُلغي أو تحوّل');
+  allocateDeposit(db, { rsvId: rsv.id, amount: Number(rsv.deposit_halalas), contractId, contractNo, tenant, date });
+  db.run(`UPDATE reservations SET status = 'محوَّل لعقد', converted_contract_id = ?, deposit_outcome = 'محوَّل', deposit_settled_date = ? WHERE id = ?`,
+    [contractId, date, rsv.id]);
 }
 
 export interface CancelInput {

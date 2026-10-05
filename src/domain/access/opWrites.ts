@@ -26,9 +26,10 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
   maintenance: { own: [], create: ['audit_log'], touch: { units: ['under_maintenance'] } },
   contracts: {
     own: ['contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'],
-    // توثيق العقد ينشئ مستأجره ونموذج استلامه، وإلغاؤه بخصم يتجاوز التأمين ينشئ مطالبته
-    create: [...POSTS, 'tenants', 'handovers', 'claims', 'bank_tx'],
-    touch: { ...LINKS_REVERSAL, reservations: ['status', 'converted_contract_id'] },
+    // توثيق العقد ينشئ مستأجره ونموذج استلامه، وتحويل الحجز يسدّد أقساطه بدفعات من العربون (المراجعة ٤.٤)،
+    // وإلغاؤه بخصم يتجاوز التأمين ينشئ مطالبته
+    create: [...POSTS, 'tenants', 'handovers', 'claims', 'bank_tx', 'contract_payments'],
+    touch: { ...LINKS_REVERSAL, reservations: ['status', 'converted_contract_id', 'deposit_outcome', 'deposit_settled_date'] },
   },
   tenants: {
     own: ['tenants'],
@@ -44,7 +45,7 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
   deposits: { own: ['deposit_settlements'], create: [...POSTS, 'bank_tx', 'claims'], touch: LINKS_REVERSAL },
   reservations: { own: ['reservations', 'key_money_deals'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   claims: { own: ['claims'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
-  invoices: { own: ['invoices', 'invoice_lines'], create: POSTS, touch: LINKS_REVERSAL },
+  invoices: { own: ['invoices', 'invoice_lines'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   purchases: {
     own: ['suppliers', 'purchases', 'meter_readings'],
     create: [...POSTS, 'bank_tx'],

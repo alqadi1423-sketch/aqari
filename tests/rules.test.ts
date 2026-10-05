@@ -77,7 +77,7 @@ describe('قواعد العمل الثلاث عشرة', () => {
   });
 
   // ── القاعدة ٤: الحجز بعربون يمنع التأجير لغير صاحبه ──
-  test('٤ — الحجز بعربون يمنع غير صاحبه، ونفس الاسم يحوّل الحجز لعقد بقيده', () => {
+  test('٤ — الحجز بعربون يمنع غير صاحبه، ومعرّف الحجز (لا الاسم) يحوّله لعقد بقيده', () => {
     const db = memDb();
     const p = addProperty(db);
     const u = addUnit(db, p);
@@ -88,9 +88,10 @@ describe('قواعد العمل الثلاث عشرة', () => {
       [rid, u, 'صاحب الحجز', 100000, addDays(today(), 30), today()]
     );
     expect(() => confirmContract(db, contractInput(u, { tenant: 'دخيل' }))).toThrow(/محجوزة بعربون/);
-    // نفس الاسم: يُحوَّل الحجز + قيد 2450→1200
+    // نفس الاسم وحده لا يكفي (المراجعة ٤.٤) · التحويل باختيار الحجز بمعرّفه، وقيده 2450←الإيجار
+    expect(() => confirmContract(db, contractInput(u, { tenant: 'صاحب الحجز' }))).toThrow(/محجوزة بعربون/);
     const before2450 = accountBalance(db, '2450');
-    confirmContract(db, contractInput(u, { tenant: 'صاحب الحجز' }));
+    confirmContract(db, { ...contractInput(u, { tenant: 'صاحب الحجز' }), reservationId: rid });
     const r = db.get<{ status: string }>(`SELECT status FROM reservations WHERE id = ?`, [rid])!;
     expect(r.status).toBe('محوَّل لعقد');
     expect(accountBalance(db, '2450')).toBe(before2450 - 100000);

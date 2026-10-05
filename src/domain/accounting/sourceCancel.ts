@@ -30,7 +30,7 @@ export type SourceAction =
 interface EntryRow { id: string; no: string; auto: number; src_type: string | null; src_id: string | null; status: string; reversed_by: string | null }
 
 const DOCUMENT_SOURCES = ['invoice', 'purchase', 'purchase_pay', 'claim', 'claim_collect', 'contract_deposit',
-  'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', 'reservation', 'reservation_convert', 'reservation_forfeit'];
+  'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', 'reservation', 'reservation_convert', 'reservation_forfeit', 'reservation_refund'];
 
 /** خطوط القيد على حساب · موجبها مدين */
 const net = (db: DB, entryId: string, account: string) => Number(db.get<{ s: number }>(

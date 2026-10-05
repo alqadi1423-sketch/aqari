@@ -12,7 +12,8 @@ import { useDialog } from './AppDialog';
 import { HandoverSheet } from './HandoverSheet';
 import { InstallmentSheet } from './InstallmentSheet';
 import { depositState } from '../domain/contracts/vocab';
-import { Field, Row, T, Num, Money, BtnGhost, BtnPrimary, BtnIcon, Badge, KpiCard } from './components';
+import { Field, Row, T, Num, Money, BtnGhost, BtnPrimary, BtnIcon, Badge, KpiCard, Note } from './components';
+import { DateField } from './DateField';
 import { CollapsibleSection } from './Collapsible';
 import { MetersEditor, SectionsEditor, type SectionData } from './editors';
 import { MeterSheet } from './MeterSheet';
@@ -28,7 +29,7 @@ import {
 } from '../domain/propertiesService';
 import { metersOf, type MeterInput } from '../domain/meters';
 import { unitStatusInfo, unitOccupancyRate365, contractCancelledValue } from '../domain/stats';
-import { cancelReservation } from '../domain/reservations';
+import { cancelReservation, heldExpiredDeposits } from '../domain/reservations';
 import { unitActiveReservation, contractStatusKind, contractStatusLabel } from '../domain/contracts/rules';
 import { fmt, toHalalas } from '../domain/money';
 import { dfmt, today } from '../domain/dates';
@@ -146,6 +147,9 @@ export function UnitDetailSheet({
   const [contractFor, setContractFor] = useState<string | null>(null);
   const [handoverFor, setHandoverFor] = useState<string | null>(null);
   const [instFor, setInstFor] = useState<string | null>(null);
+  // تسوية عربون حجزٍ انتهى ولم يُسوَّ (المراجعة ٤.٥) · بقرار المالك وتاريخه
+  const [settle, setSettle] = useState<{ id: string; name: string; deposit: number } | null>(null);
+  const [settleDate, setSettleDate] = useState(today());
   const u = db.get<{
     id: string; property_id: string; unit_no: string; floor: string; type: string; subtype: string;
     rent_monthly_halalas: number; under_maintenance: number;
@@ -166,6 +170,7 @@ export function UnitDetailSheet({
     const cancelledTotal = cancelled.reduce(
       (s, c) => s + contractCancelledValue(db, { id: c.id, status: c.status, value_halalas: Number(c.value_halalas) }), 0);
     const rsv = unitActiveReservation(db, unitId);
+    const held = heldExpiredDeposits(db).filter((r) => r.unit_id === unitId);
     const one = (sql: string, args: Array<string | number>) => Number(db.get<{ n: number }>(sql, args)?.n ?? 0);
     const counts = {
       occupants: one(
@@ -181,7 +186,7 @@ export function UnitDetailSheet({
       atts: one(`SELECT COUNT(*) AS n FROM attachments WHERE entity_type = 'unit' AND entity_id = ? AND deleted_at IS NULL`, [unitId]),
       cancelledCount: cancelled.length,
     };
-    return { st, rate, cancelledTotal, rsv, counts };
+    return { st, rate, cancelledTotal, rsv, held, counts };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, unitId, version]);
 
@@ -227,8 +232,12 @@ export function UnitDetailSheet({
               actions: [
                 { label: 'تراجع', variant: 'ghost' },
                 {
-                  label: 'إلغاء بلا مصادرة', variant: 'primary',
-                  onPress: () => { cancelReservation(db, rsv.id, false); bump(); toast('أُلغي الحجز'); },
+                  label: Number(rsv.deposit_halalas) > 0 ? `إلغاء وردّ العربون (${fmt(Number(rsv.deposit_halalas))})` : 'إلغاء الحجز',
+                  variant: 'primary',
+                  onPress: () => {
+                    cancelReservation(db, rsv.id, false); bump();
+                    toast(Number(rsv.deposit_halalas) > 0 ? 'أُلغي الحجز ورُحّل قيد ردّ العربون' : 'أُلغي الحجز');
+                  },
                 },
                 // بلا عربون لا مصادرة · الزر لا يُعرض أصلاً
                 ...(Number(rsv.deposit_halalas) > 0 ? [{
@@ -243,6 +252,33 @@ export function UnitDetailSheet({
         <View style={{ flex: 1 }} />
         {perm.add ? <BtnIcon icon="attach" accessibilityLabel="إضافة مستند أو صورة" onPress={addDoc} /> : null}
       </Row>
+      {rsvPerm.manage && data.held.map((h) => (
+        <Note key={h.id}>
+          <T size={12.5} bold>عربون محتجز لحجز منتهٍ: «{h.name}» · {fmt(Number(h.deposit_halalas))}</T>
+          <T size={12} color={C.muted} style={{ marginVertical: 6 }}>
+            انتهى الحجز في {dfmt(h.expiry_date)} وعربونه ما زال التزاماً في الدفتر. إن رددته لصاحبه أو صادرته فسجّل ذلك بتاريخه.
+          </T>
+          <BtnGhost small title="تسوية العربون" onPress={() => {
+            setSettleDate(today());
+            setSettle({ id: h.id, name: h.name, deposit: Number(h.deposit_halalas) });
+          }} />
+        </Note>
+      ))}
+      {settle ? (
+        <Sheet visible onClose={() => setSettle(null)} title={'تسوية عربون «' + settle.name + '»'}>
+          <DateField label="تاريخ الرد أو المصادرة" value={settleDate} onChange={setSettleDate} />
+          <View style={{ marginBottom: 8 }}>
+            <BtnPrimary title={'ردّ العربون لصاحبه (' + fmt(settle.deposit) + ')'} onPress={() => {
+              try { cancelReservation(db, settle.id, false, settleDate); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
+              catch (e) { reportFailure({ title: 'تعذّرت التسوية', e }); }
+            }} />
+          </View>
+          <BtnGhost danger title={'مصادرة العربون إيراداً (' + fmt(settle.deposit) + ')'} onPress={() => {
+            try { cancelReservation(db, settle.id, true, settleDate); setSettle(null); bump(); toast('رُحّل قيد مصادرة العربون'); }
+            catch (e) { reportFailure({ title: 'تعذّرت التسوية', e }); }
+          }} />
+        </Sheet>
+      ) : null}
       <Row style={{ flexWrap: 'wrap', marginBottom: 10 }}>
         <KpiCard label="نسبة التشغيل (آخر 365 يوماً)" tone="neu" value={data.rate + '٪'} />
         <KpiCard label="عقود ملغية لهذه الوحدة" tone="neu" value={<Money halalas={data.cancelledTotal} />}
