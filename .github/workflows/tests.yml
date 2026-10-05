@@ -1,15 +1,20 @@
 # الاختبارات كاملة على لينكس مع كل رفع (قرار المالك ٢٠٢٦-١٠-٠٥) · بيانات الاختبارات مصطنعة كلها،
 # ولا سرّ هنا: محاكي Firestore بمشروع تجريبي demo-aqari لا يصل إلى السحابة.
+# وخلاصة كل تشغيل تُكتب في فرع ci-results (ملف لكل التزام) فتُقرأ بالمفتاح نفسه بلا دخول إلى الموقع.
 name: الاختبارات
 
 on:
   push:
+    branches-ignore: [ci-results, apk]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
     env:
       # توقيت الرياض كجهاز المالك · واختبارات التواريخ تثبّته في ملفاتها أيضاً
       TZ: Asia/Riyadh
@@ -33,4 +38,39 @@ jobs:
         run: npx tsc --noEmit
 
       - name: الاختبارات كاملة مع محاكي Firestore
-        run: npx --yes firebase-tools@15.32.1 emulators:exec --only firestore --project demo-aqari "npx jest -i"
+        run: npx --yes firebase-tools@15.32.1 emulators:exec --only firestore --project demo-aqari "npx jest -i --json --outputFile=jest-results.json"
+
+      - name: نشر الخلاصة في فرع ci-results
+        if: always()
+        run: |
+          node -e '
+            const fs = require("fs");
+            let r = {};
+            try { r = JSON.parse(fs.readFileSync("jest-results.json", "utf8")); } catch {}
+            const failed = (r.testResults || []).filter((t) => t.status !== "passed").map((t) => t.name.replace(process.cwd() + "/", ""));
+            const lines = [
+              "commit " + process.env.GITHUB_SHA,
+              "run " + process.env.GITHUB_SERVER_URL + "/" + process.env.GITHUB_REPOSITORY + "/actions/runs/" + process.env.GITHUB_RUN_ID,
+              "os " + process.env.RUNNER_OS + " · node " + process.version + " · TZ " + process.env.TZ,
+              "success " + (r.success === true),
+              "suites " + (r.numPassedTestSuites ?? "?") + " passed / " + (r.numTotalTestSuites ?? "?") + " total",
+              "tests " + (r.numPassedTests ?? "?") + " passed · " + (r.numFailedTests ?? "?") + " failed · " + (r.numPendingTests ?? "?") + " skipped / " + (r.numTotalTests ?? "?") + " total",
+              ...failed.map((f) => "failed-suite " + f),
+            ];
+            fs.writeFileSync("/tmp/result.txt", lines.join("\n") + "\n");
+          '
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git fetch origin ci-results || true
+          if git rev-parse --verify origin/ci-results >/dev/null 2>&1; then
+            git switch -c ci-results origin/ci-results
+          else
+            git switch --orphan ci-results
+            git rm -rf --quiet . || true
+          fi
+          mkdir -p runs
+          cp /tmp/result.txt "runs/${GITHUB_SHA}.txt"
+          cp /tmp/result.txt latest.txt
+          git add runs latest.txt
+          git commit -q -m "نتيجة الاختبارات ${GITHUB_SHA}"
+          git push -q origin ci-results
