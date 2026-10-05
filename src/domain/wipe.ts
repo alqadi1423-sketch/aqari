@@ -21,7 +21,7 @@ const KEEP_SYNC = ['uid', 'email', 'org', 'org_name', 'membership', 'wipe_epoch'
  * يعيد مسار نسخة الأمان بعد نجاح المسح · وأي فشل في النسخة يوقف كل شيء والبيانات كما هي.
  * قاعدة الجهاز بعدها جديدة: الاستدعاء يعيد قراءة env.db (القاعدة الحية تبدّلت).
  */
-export async function wipeAllData(env: BackupEnv, onProgress?: (msg: string) => void, madeSafety?: string): Promise<string> {
+export async function wipeAllData(env: BackupEnv, onProgress?: (msg: string) => void, madeSafety?: string, reason?: string): Promise<string> {
   let safetyPath = madeSafety ?? '';
   if (!safetyPath) {
     await ensureFreeSpace(env); // القرص يسع النسخة · وإلا فلا يبدأ المسح أصلاً
@@ -49,7 +49,8 @@ export async function wipeAllData(env: BackupEnv, onProgress?: (msg: string) => 
     for (const m of meta) db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [m.key, m.value]);
     for (const r of sync) db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [r.k, r.v]);
     db.run(`UPDATE sync_ctl SET v = ? WHERE k = 'capture'`, [capture]);
-    logAudit(db, 'الإعدادات', 'delete', 'مسح كل البيانات', 'نسخة الأمان: ' + safetyPath.split('/').pop());
+    // كل تفريغ في سجل العمليات بسببه ونسخة أمانه (قاعدة المالك ٢٠٢٦-١٠-٠٥)
+    logAudit(db, 'الإعدادات', 'delete', 'تفريغ الجهاز', (reason ? reason + ' · ' : 'بأمر المستخدم · ') + 'نسخة الأمان: ' + safetyPath.split('/').pop());
   });
   return safetyPath;
 }

@@ -25,6 +25,7 @@ import { readMembership } from '../services/access';
 import { profileIncomplete } from '../domain/access/profile';
 import { MyProfileForm } from './ProfileForm';
 import { getSyncState } from '../sync/engine';
+import { DecisionSheet } from './DecisionSheet';
 
 /** صفحتا الشروط والخصوصية على استضافة المشروع · تُنشران بعد مراجعة المالك لمسودتيهما */
 export function legalUrls(): { terms: string; privacy: string } | null {
@@ -134,7 +135,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           </Shell>
         );
       }
-      return <>{children}</>;
+      // ما ينتظر قرار المستخدم يظهر فوق التطبيق ولا يُنفَّذ بدونه
+      return <>{children}{cloud.decision ? <DecisionSheet decision={cloud.decision} /> : null}</>;
     }
     return spinner();
   }

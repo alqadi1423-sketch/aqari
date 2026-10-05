@@ -413,7 +413,7 @@ export default function Settings() {
           { label: 'إلغاء', variant: 'ghost', onPress: () => resumeSync() },
           { label: 'دمج مع السحابة', variant: 'ghost', onPress: () => {
             const uid = cloudState().user?.uid;
-            if (uid) { clearRestoredUnadopted(db, uid); resumeSync(); syncNow(); bump(); }
+            if (uid) clearRestoredUnadopted(db, uid).then(() => { resumeSync(); syncNow(); bump(); }).catch((e) => reportFailure({ title: 'تعذّر الدمج', e }));
           } },
           { label: 'اعتماد بيانات هذا الجهاز واستبدال بيانات السحابة بها', variant: 'primary', onPress: async () => {
             try {

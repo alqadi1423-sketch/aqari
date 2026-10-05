@@ -633,7 +633,7 @@ export async function planCloudReplace(
  * السحابة، وما في السحابة وليس فيها يُحذف بشاهد حذف، والمؤشر إلى آخر ما قُرئ فلا يعود الوارد
  * القديم فوقها. لا كتابة إلى السحابة هنا · الرفع في دورة المزامنة التالية بعد الاعتماد.
  */
-export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan): { queued: number } {
+export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, epoch?: number): { queued: number } {
   // حزام: القيود المرحّلة في السحابة تُضمّ قبل هذه الخطوة (keepPosted.ts) · فما بقي منها خارج القاعدة يمنع
   const missing = plan.posted.filter((k) => !existsLocally(db, 'journal_entries', k)).length;
   if (missing > 0) throw new CloudReplaceBlockedError(missing);
@@ -654,6 +654,8 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan): 
     setSyncState(db, 'cursor', plan.cursor ? JSON.stringify(plan.cursor) : null);
     setSyncState(db, 'joining', null);
     setSyncState(db, 'restored_unadopted', null);
+    // عهد المسح الحالي في السحابة يُسجَّل مع الاعتماد ذرياً (قاعدة المالك ٢٠٢٦-١٠-٠٥) · فلا يُفرَّغ الجهاز بعدها
+    if (epoch !== undefined) { setSyncState(db, 'wipe_epoch', String(epoch)); setSyncState(db, 'epoch_pending', null); }
     unifySeedIds(db);
     for (const t of SYNC_TABLES) {
       db.run(

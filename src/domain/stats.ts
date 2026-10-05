@@ -232,7 +232,7 @@ function aggregatedStats(db: DB, propertyId: string | null, T: string): Property
   const occupied = Number(db.get<{ n: number }>(
     `SELECT COUNT(DISTINCT c.unit_id) AS n FROM contracts c
      JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL AND c.status NOT IN ('مسودة','ملغى')
+     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL AND c.status NOT IN ('مسودة','ملغى')
        AND c.start <= ? AND c.end >= ? ${unitFilter}`,
     [T, T, ...p]
   )!.n);
@@ -242,14 +242,14 @@ function aggregatedStats(db: DB, propertyId: string | null, T: string): Property
      FROM contract_installments i
      JOIN contracts c ON c.id = i.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL ${unitFilter}`, p
+     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL ${unitFilter}`, p
   )!.s);
   const payOnly = Number(db.get<{ s: number }>(
     `SELECT COALESCE(SUM(pm.net_halalas),0) AS s
      FROM contract_payments pm
      JOIN contracts c ON c.id = pm.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL ${unitFilter}
+     WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL AND u.deleted_at IS NULL ${unitFilter}
        AND NOT EXISTS (SELECT 1 FROM contract_installments i WHERE i.contract_id = c.id)`, p
   )!.s);
   const cancelled = db.get<{ n: number; v: number }>(
@@ -257,7 +257,7 @@ function aggregatedStats(db: DB, propertyId: string | null, T: string): Property
             COALESCE(SUM((SELECT COALESCE(SUM(CASE WHEN i.status='ملغية' THEN i.amount_halalas ELSE 0 END),0)
                           FROM contract_installments i WHERE i.contract_id = c.id)),0) AS v
      FROM contracts c JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL AND c.status = 'ملغى' ${unitFilter}`, p
+     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL AND c.status = 'ملغى' ${unitFilter}`, p
   )!;
   return {
     total,
@@ -295,7 +295,7 @@ export function allPropertyStats(db: DB, T: string = today()): Map<string, Prope
   for (const r of db.all<{ pid: string; n: number }>(
     `SELECT u.property_id AS pid, COUNT(DISTINCT c.unit_id) AS n
      FROM contracts c JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL AND c.status NOT IN ('مسودة','ملغى')
+     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL AND c.status NOT IN ('مسودة','ملغى')
        AND c.start <= ? AND c.end >= ?
      GROUP BY u.property_id`, [T, T]
   )) ensure(r.pid).occupied = Number(r.n);
@@ -305,14 +305,14 @@ export function allPropertyStats(db: DB, T: string = today()): Map<string, Prope
      FROM contract_installments i
      JOIN contracts c ON c.id = i.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL GROUP BY u.property_id`
+     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL GROUP BY u.property_id`
   )) ensure(r.pid).income += Number(r.s);
   for (const r of db.all<{ pid: string; s: number }>(
     `SELECT u.property_id AS pid, COALESCE(SUM(pm.net_halalas),0) AS s
      FROM contract_payments pm
      JOIN contracts c ON c.id = pm.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL
+     WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL AND u.deleted_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM contract_installments i WHERE i.contract_id = c.id)
      GROUP BY u.property_id`
   )) ensure(r.pid).income += Number(r.s);
@@ -321,7 +321,7 @@ export function allPropertyStats(db: DB, T: string = today()): Map<string, Prope
             COALESCE(SUM((SELECT COALESCE(SUM(CASE WHEN i.status='ملغية' THEN i.amount_halalas ELSE 0 END),0)
                           FROM contract_installments i WHERE i.contract_id = c.id)),0) AS v
      FROM contracts c JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL AND c.status = 'ملغى' GROUP BY u.property_id`
+     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL AND c.status = 'ملغى' GROUP BY u.property_id`
   )) { const s = ensure(r.pid); s.cancelledCount = Number(r.n); s.cancelledValue = Number(r.v); }
   for (const s of out.values()) {
     s.vacant = s.total - s.occupied;
@@ -527,7 +527,7 @@ export function computeTopPerformers(db: DB): TopPerformers {
   const unitRevenue: Record<string, number> = {};
   const unitExpense: Record<string, number> = {};
   const unitProp = new Map(
-    db.all<{ id: string; property_id: string }>(`SELECT id, property_id FROM units`).map((u) => [u.id, u.property_id])
+    db.all<{ id: string; property_id: string }>(`SELECT id, property_id FROM units WHERE deleted_at IS NULL`).map((u) => [u.id, u.property_id])
   );
   for (const v of db.all<{ unit_id: string | null; property_id: string | null; total_halalas: number }>(
     `SELECT unit_id, property_id, total_halalas FROM invoices WHERE deleted_at IS NULL`
@@ -549,6 +549,10 @@ export function computeTopPerformers(db: DB): TopPerformers {
       if (pid) propExpense[pid] = (propExpense[pid] || 0) + amt;
     } else if (p.property_id) propExpense[p.property_id] = (propExpense[p.property_id] || 0) + amt;
   }
+  // المحذوف إلى السلة خارج «الأكثر» · عقارٌ في السلة لا يُعرض باسمه (الأعطال ٢٠٢٦-١٠-٠٥)
+  const liveProps = new Set(db.all<{ id: string }>(`SELECT id FROM properties WHERE deleted_at IS NULL`).map((x) => x.id));
+  for (const o of [propRevenue, propExpense]) for (const k of Object.keys(o)) if (!liveProps.has(k)) delete o[k];
+  for (const o of [unitRevenue, unitExpense]) for (const k of Object.keys(o)) if (!unitProp.has(k)) delete o[k];
   const topOf = (obj: Record<string, number>) => {
     const entries = Object.entries(obj);
     if (!entries.length) return null;

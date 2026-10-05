@@ -46,7 +46,7 @@ import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
-  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
+  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, resolveEpoch, readEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
   updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec,
 } from './org';
 import type { MemberProfile } from '../domain/access/profile';
@@ -110,9 +110,14 @@ export interface CloudState {
    * 'unbound' على الجهاز بيانات بلا حساب ينتظر قرار الداخل فيها · 'switching' تُفتح نسخة الحساب
    */
   gate: 'retry' | 'unbound' | 'switching' | null;
+  /**
+   * ما ينتظر قرار المستخدم ولا يُنفَّذ بدونه (قاعدة المالك ٢٠٢٦-١٠-٠٥): 'epoch' مُسحت المنشأة من جهاز آخر
+   * وعلى هذا الجهاز بيانات · 'removed' أُزيلت عضويته وفي طابوره ما لم يُرفع. والمزامنة متوقفة حتى يقرر.
+   */
+  decision: { kind: 'epoch' | 'removed'; pending: number } | null;
 }
 
-let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null, restored: false, invites: null, gate: null };
+let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null, restored: false, invites: null, gate: null, decision: null };
 const listeners = new Set<() => void>();
 function patch(p: Partial<CloudState>): void {
   state = { ...state, ...p };
@@ -215,15 +220,15 @@ export async function syncNow(): Promise<void> {
       // المالك ينتقل إلى منشأته مرة (صلاحيات الأقسام) · حروف أجهزته تنتقل كما هي
       await moveOwnerToOrg(db, remoteOf(db, uid, idToken, true), new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid }), uid);
     }
-    // عهد المسح: مُسحت المنشأة بعد آخر ما يعرفه الجهاز ← يُفرَّغ (بنسخة أمان) ثم يسحب · فلا يرجع ممسوح
+    // عهد المسح: مُسحت المنشأة من جهاز آخر وعلى هذا الجهاز بيانات ← يُسأل المستخدم ولا يُفرَّغ، والمزامنة
+    // متوقفة حتى يقرر (قاعدة المالك ٢٠٢٦-١٠-٠٥) · وما ينتظر قراراً يبقى كذلك في الدورات التالية
     const org = member?.org ?? (getSyncState(db, 'org') === uid ? uid : null);
+    if (getSyncState(db, 'removal_pending') === '1') { patch({ decision: { kind: 'removed', pending: outboxCount(db) } }); return; }
     if (org) {
-      const act = await checkEpoch(db, remoteOf(db, uid, idToken), org, async () => {
-        patch({ progress: 'مُسحت بيانات المنشأة · جاري تفريغ هذا الجهاز' });
-        await wipeLocal(db as AppDB);
-      });
-      if (act === 'wipe') onData();
+      const act = pendingEpoch(db) !== null ? 'ask' : await checkEpoch(db, remoteOf(db, uid, idToken), org);
+      if (act === 'ask') { patch({ decision: { kind: 'epoch', pending: outboxCount(db) } }); return; }
     }
+    patch({ decision: null });
     const rep = await syncOnce(db, remoteOf(db, uid, idToken), ensureDeviceId(db), (msg) => patch({ progress: msg }));
     setSyncState(db, 'last_error', null);
     if (rep.applied || rep.conflicts) onData();
@@ -235,13 +240,20 @@ export async function syncNow(): Promise<void> {
       const moved = await checkUnitMoves(db, remoteOf(db, uid, idToken));
       const r0 = await refreshMembership(db, remoteOf(db, uid, idToken));
       const r = r0 === 'same' && moved === 'lost' ? 'changed' : r0;
+      // لا تفريغ وفي الطابور ما لم يُرفع (قاعدة المالك ٢٠٢٦-١٠-٠٥): المُزال يُسأل، وتغيّر الصلاحية ينتظر الرفع
+      const queued = outboxCount(db);
       if (r === 'removed') {
-        await resetDeviceData(db as AppDB);
-        patch({ lastError: 'أُزيلت عضويتك من المنشأة · فُرّغ هذا الجهاز من بياناتها' });
-        onData();
-      } else if (r === 'changed') {
+        if (queued > 0) {
+          setSyncState(db, 'removal_pending', '1');
+          patch({ decision: { kind: 'removed', pending: queued } });
+        } else {
+          await wipeForRemoval(db as AppDB);
+          patch({ lastError: 'أُزيلت عضويتك من المنشأة · فُرّغ هذا الجهاز من بياناتها بعد نسخة أمان' });
+          onData();
+        }
+      } else if (r === 'changed' && queued === 0) {
         const next = readMembership(db)!;
-        await resetDeviceData(db as AppDB);
+        await wipeLocal(db as AppDB, undefined, undefined, moved === 'lost' ? 'نُقلت وحدةٌ من عقاراتك إلى عقار ليس لك' : 'تغيّرت صلاحيتك في المنشأة');
         bindMember(db, next, state.user.email, getSyncState(db, 'org_name'));
         onData();
       }
@@ -400,9 +412,21 @@ export function markRestoredUnadopted(db: AppDB): void {
   setSyncState(db, 'restored_unadopted', '1');
 }
 
-/** «دمج مع السحابة» بقرار المستخدم · تُرفع العلامة وتعمل المزامنة بقاعدتها المعتادة (الأحدث يغلب) */
-export function clearRestoredUnadopted(db: AppDB, uid: string): void {
-  setSyncState(db, 'restored_unadopted', null);
+/** منشأة هذا الحساب: منشأة العضوية، أو منشأته هو مالكاً */
+function orgOfAccount(db: DB): string {
+  return readMembership(db)?.org ?? state.user!.uid;
+}
+
+/**
+ * «دمج مع السحابة» بقرار المستخدم · تُرفع العلامة وتعمل المزامنة بقاعدتها المعتادة (الأحدث يغلب) ·
+ * وعهد المسح الحالي يُسجَّل معه، فالنسخة المستعادة لا تُفرَّغ بعهدٍ قديم (قاعدة المالك ٢٠٢٦-١٠-٠٥)
+ */
+export async function clearRestoredUnadopted(db: AppDB, uid: string): Promise<void> {
+  const epoch = state.online ? await readEpoch(remoteFor(), orgOfAccount(db)).catch(() => null) : null;
+  db.transaction(() => {
+    setSyncState(db, 'restored_unadopted', null);
+    if (epoch !== null) { setSyncState(db, 'wipe_epoch', String(epoch)); setSyncState(db, 'epoch_pending', null); }
+  });
   enableSync(db, uid);
   patch({ sync: syncStatus(db), lastError: null });
 }
@@ -435,7 +459,9 @@ export async function adoptForCloud(
   db: AppDB, ready?: CloudReplacePlan, onProgress?: (m: string) => void
 ): Promise<{ queued: number; plan: CloudReplacePlan }> {
   const plan = ready ?? await planCloudReplace(db, remoteFor(), onProgress);
-  const res = adoptAsCloudTruth(db, state.user!.uid, plan);
+  // عهد المسح الحالي يُقرأ قبل الاعتماد ويُسجَّل معه في معاملة واحدة (قاعدة المالك ٢٠٢٦-١٠-٠٥)
+  const epoch = await readEpoch(remoteFor(), orgOfAccount(db));
+  const res = adoptAsCloudTruth(db, state.user!.uid, plan, epoch);
   patch({ sync: syncStatus(db), lastError: null });
   return { ...res, plan };
 }
@@ -535,12 +561,40 @@ export function bindRestoredToCurrentAccount(db: AppDB): void {
   setSyncState(db, 'email', state.user.email);
 }
 
+/** أُزيلت العضوية: تفريغ بنسخة أمان وسجل، ثم يعود الجهاز لحساب صاحبه بلا منشأة غيره */
+async function wipeForRemoval(db: AppDB): Promise<void> {
+  await wipeLocal(db, undefined, undefined, 'أُزيلت عضويتك من المنشأة');
+  db.transaction(() => {
+    saveMembership(db, null);
+    for (const k of ['org', 'org_name', 'wipe_epoch', 'epoch_pending', 'removal_pending', 'cursor', 'moves_seen']) setSyncState(db, k, null);
+  });
+}
+
+/**
+ * قرار المستخدم فيما ينتظره (state.decision) · 'keep' يُبقي بياناته: في عهد المسح تُرفع كلها إلى المنشأة من جديد،
+ * وفي الإزالة يبقى الجهاز كما هو والمزامنة متوقفة · 'wipe' تفريغٌ بأمره بنسخة أمان وسجل بسببه.
+ */
+export async function resolveDecision(choice: 'keep' | 'wipe', onProgress?: (m: string) => void): Promise<void> {
+  if (!appDb || !state.decision) return;
+  const db = appDb;
+  if (state.decision.kind === 'epoch') {
+    await resolveEpoch(db, choice, () => wipeLocal(db, onProgress, undefined, 'مُسحت بيانات المنشأة من جهاز آخر · بأمر المستخدم').then(() => db));
+  } else if (choice === 'wipe') {
+    await wipeForRemoval(db);
+  } else {
+    return; // يبقى منتظراً · لا رفع ولا تفريغ
+  }
+  patch({ decision: null, sync: syncStatus(db) });
+  onData();
+  syncNow().catch(() => {});
+}
+
 /* ═══════════ مسح كل البيانات ═══════════ */
 
 /** تفريغ الجهاز: القاعدة والمرفقات والمصغّرات ولقطة الودجت · بنسخة أمان، ويبقى الحساب وهوية الجهاز */
-async function wipeLocal(db: AppDB, onProgress?: (m: string) => void, safety?: string): Promise<string> {
+async function wipeLocal(db: AppDB, onProgress?: (m: string) => void, safety?: string, reason?: string): Promise<string> {
   const env = appBackupEnv(db);
-  const path = await wipeAllData(env, onProgress, safety);
+  const path = await wipeAllData(env, onProgress, safety, reason);
   for (const d of ['thumbs', 'widget.json']) {
     try { env.fs.remove(joinPath(appDataRoot(), d)); } catch { /* غير موجود */ }
   }

@@ -241,27 +241,49 @@ export async function wipeOrgCloud(remote: FirestoreRemote, org: string, onProgr
 }
 
 /**
- * قبل كل مزامنة: هل مُسحت المنشأة بعد آخر ما يعرفه الجهاز؟ 'wipe' يُفرَّغ الجهاز ثم يسحب ·
- * 'adopt' جهاز لا يعرف عهداً ولا بيانات عليه (تثبيت جديد) فيأخذه · 'same' كما هو.
+ * قبل كل مزامنة: هل مُسحت المنشأة بعد آخر ما يعرفه الجهاز؟ (قاعدة المالك ٢٠٢٦-١٠-٠٥: لا يُمسح شيء من الجهاز
+ * إلا بأمر صريح من المستخدم في تلك اللحظة أو بإزالة عضويته) · 'ask' على الجهاز بيانات فيُسأل المستخدم ولا يُفرَّغ،
+ * وتتوقف المزامنة حتى يقرر · 'adopt' جهاز بلا بيانات يأخذ العهد · 'same' كما هو.
  */
-export function epochAction(local: number | null, remote: number, hasData: boolean): 'wipe' | 'adopt' | 'same' {
-  if (local === null) return remote > 0 && hasData ? 'wipe' : (remote > 0 ? 'adopt' : 'same');
-  return remote > local ? 'wipe' : 'same';
+export function epochAction(local: number | null, remote: number, hasData: boolean): 'ask' | 'adopt' | 'same' {
+  if (remote <= (local ?? 0)) return local === null && remote > 0 ? (hasData ? 'ask' : 'adopt') : 'same';
+  return hasData ? 'ask' : 'adopt';
 }
 
-/**
- * فحص العهد قبل المزامنة ثم العمل به · wipe يفرّغ الجهاز (بنسخة أمان) ويستدعيه المستدعي بما يناسب منصته
- */
-export async function checkEpoch(db: DB, remote: FirestoreRemote, org: string, wipe: () => Promise<DB | void>): Promise<'wipe' | 'adopt' | 'same'> {
+/** عهد مسحٍ ينتظر قرار المستخدم · null إن لم يكن */
+export const pendingEpoch = (db: DB): number | null => {
+  const v = getSyncState(db, 'epoch_pending');
+  return v === null ? null : Number(v);
+};
+
+/** فحص العهد قبل المزامنة · لا يفرّغ شيئاً: 'ask' يُحفظ عهدها منتظراً قرار المستخدم (resolveEpoch) */
+export async function checkEpoch(db: DB, remote: FirestoreRemote, org: string): Promise<'ask' | 'adopt' | 'same'> {
   const remoteEpoch = await readEpoch(remote, org);
   const raw = getSyncState(db, 'wipe_epoch');
   const act = epochAction(raw === null ? null : Number(raw), remoteEpoch, hasUserData(db));
-  // القاعدة بعد التفريغ قد تكون غير التي قبله (تُفتح من جديد) · فالكتابة على ما يعيده التفريغ
-  let live = db;
-  if (act === 'wipe') {
-    live = (await wipe()) ?? db;
-    setSyncState(live, 'joining', '1');
-  }
-  if (act !== 'same') setSyncState(live, 'wipe_epoch', String(remoteEpoch));
+  if (act === 'adopt') setSyncState(db, 'wipe_epoch', String(remoteEpoch));
+  if (act === 'ask') setSyncState(db, 'epoch_pending', String(remoteEpoch));
   return act;
+}
+
+/**
+ * قرار المستخدم في عهد مسحٍ منتظر · 'keep' تبقى بياناته ويُرفع كل شيء من جديد إلى المنشأة الممسوحة،
+ * و'wipe' يفرّغ المستدعي الجهاز (بنسخة أمان وسجل) ثم يُسجَّل العهد على القاعدة الجديدة.
+ */
+export async function resolveEpoch(db: DB, choice: 'keep' | 'wipe', wipe: () => Promise<DB | void>): Promise<DB> {
+  const n = pendingEpoch(db);
+  if (n === null) return db;
+  if (choice === 'keep') {
+    db.transaction(() => {
+      setSyncState(db, 'wipe_epoch', String(n));
+      setSyncState(db, 'epoch_pending', null);
+      seedOutbox(db);
+    });
+    return db;
+  }
+  const live = (await wipe()) ?? db;
+  setSyncState(live, 'wipe_epoch', String(n));
+  setSyncState(live, 'epoch_pending', null);
+  setSyncState(live, 'joining', '1');
+  return live;
 }

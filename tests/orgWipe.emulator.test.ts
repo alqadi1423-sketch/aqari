@@ -77,7 +77,7 @@ d('مسح كل البيانات عبر المنشأة', () => {
     const { savePurchase, payPurchase } = await import('@/domain/purchases');
     const { saveClaim } = await import('@/domain/claims');
     const { enableSync, syncOnce, seedOutbox, setSyncState, setCapture } = await import('@/sync/engine');
-    const { moveOwnerToOrg, wipeOrgCloud, checkEpoch, sendInvite, acceptInvite } = await import('@/services/org');
+    const { moveOwnerToOrg, wipeOrgCloud, checkEpoch, resolveEpoch, sendInvite, acceptInvite } = await import('@/services/org');
     const { wipeAllData } = await import('@/domain/wipe');
     const newEnv = () => { const dir = tempDir('aqari-wipe-').replace(/\\/g, '/'); dirs.push(dir); return makeBackupEnv(dir); };
     const legacy = new FirestoreRemote({ projectId: PROJECT, uid: OWNER, idToken: async () => token(OWNER), baseUrl: 'http://' + HOST });
@@ -104,7 +104,7 @@ d('مسح كل البيانات عبر المنشأة', () => {
     const B = newEnv();
     enableSync(B.db, OWNER);
     await moveOwnerToOrg(B.db, legacy, remote(OWNER, B), OWNER);
-    await checkEpoch(B.db, remote(OWNER, B), OWNER, async () => { await wipeAllData(B); return B.db; });
+    await checkEpoch(B.db, remote(OWNER, B), OWNER);
     await syncOnce(B.db, remote(OWNER, B), 'dev-B');
     expect(Number(B.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM contracts`)!.n)).toBe(4);
 
@@ -120,7 +120,7 @@ d('مسح كل البيانات عبر المنشأة', () => {
     setSyncState(M.db, 'uid', MEMBER);
     M.db.run(`DELETE FROM sync_outbox`);
     setCapture(M.db, true);
-    await checkEpoch(M.db, remote(MEMBER, M), OWNER, async () => { await wipeAllData(M); return M.db; });
+    await checkEpoch(M.db, remote(MEMBER, M), OWNER);
     await syncOnce(M.db, remote(MEMBER, M), 'dev-M');
     expect(Number(M.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM contract_payments`)!.n)).toBe(4);
 
@@ -135,13 +135,17 @@ d('مسح كل البيانات عبر المنشأة', () => {
     expect(await visible(A.db)).toEqual(EMPTY);
     expect(A.fs.exists(safety)).toBe(true);
 
-    // الجهاز الثاني: أول مزامنة بعد المسح تفرّغه
-    expect(await checkEpoch(B.db, remote(OWNER, B), OWNER, async () => { await wipeAllData(B); return B.db; })).toBe('wipe');
-    await syncOnce(B.db, remote(OWNER, B), 'dev-B');
+    // الجهاز الثاني: لا يُفرَّغ بلا أمر (قاعدة المالك ٢٠٢٦-١٠-٠٥) · يُسأل وبياناته كما هي، ثم بأمره يُفرَّغ
+    expect(await checkEpoch(B.db, remote(OWNER, B), OWNER)).toBe('ask');
+    expect(Number(B.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM contracts`)!.n)).toBe(4);
+    const B2 = await resolveEpoch(B.db, 'wipe', async () => { await wipeAllData(B); return B.db; });
+    await syncOnce(B2, remote(OWNER, B), 'dev-B');
     expect(await visible(B.db)).toEqual(EMPTY);
 
     // جهاز العضو كذلك
-    expect(await checkEpoch(M.db, remote(MEMBER, M), OWNER, async () => { await wipeAllData(M); return M.db; })).toBe('wipe');
+    expect(await checkEpoch(M.db, remote(MEMBER, M), OWNER)).toBe('ask');
+    expect(Number(M.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM contract_payments`)!.n)).toBe(4);
+    await resolveEpoch(M.db, 'wipe', async () => { await wipeAllData(M); return M.db; });
     await syncOnce(M.db, remote(MEMBER, M), 'dev-M');
     expect(await visible(M.db)).toEqual(EMPTY);
 
@@ -149,7 +153,7 @@ d('مسح كل البيانات عبر المنشأة', () => {
     const C = newEnv();
     enableSync(C.db, OWNER);
     await moveOwnerToOrg(C.db, legacy, remote(OWNER, C), OWNER);
-    expect(await checkEpoch(C.db, remote(OWNER, C), OWNER, async () => { throw new Error('لا يُفرَّغ تثبيت جديد'); })).toBe('adopt');
+    expect(await checkEpoch(C.db, remote(OWNER, C), OWNER)).toBe('adopt');
     await syncOnce(C.db, remote(OWNER, C), 'dev-C');
     expect(await visible(C.db)).toEqual(EMPTY);
     expect(Number(C.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects`)!.n)).toBe(0);
