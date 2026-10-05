@@ -19,6 +19,8 @@ import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
 import { logAudit } from '../src/domain/audit';
 import { usePerm } from '../src/ui/access';
+import { deleteBankTx } from '../src/domain/bankTx';
+import { reportFailure } from '../src/ui/failureDialog';
 
 interface TxRow {
   id: string; bank_id: string; date: string; descr: string; amount_halalas: number;
@@ -190,8 +192,8 @@ export default function Transactions() {
         {
           label: 'حذف', variant: 'danger',
           onPress: () => {
-            db.transaction(() => db.run(`UPDATE bank_tx SET deleted_at=? WHERE id=?`, [new Date().toISOString(), id]));
-            bump(); toast('تم الحذف · يمكن استعادته من الإعدادات');
+            try { deleteBankTx(db, id); bump(); toast('تم الحذف · يمكن استعادته من الإعدادات'); }
+            catch (e) { reportFailure({ title: 'تعذّر الحذف', e }); }
           },
         },
       ],

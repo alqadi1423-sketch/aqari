@@ -395,3 +395,123 @@ describe('٤.٣ الدفعات الملغاة خارج كل قراءة', () => {
     expect(bad).toEqual([]);
   });
 });
+
+describe('٤.٦ الاستعادة من السلة تعيد القيود كما كانت أو ترفض بسبب', () => {
+  const base = async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addUnit, addBank, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const db = memDb();
+    const unit = addUnit(db, addProperty(db));
+    const cid = confirmContract(db, contractInput(unit, { tenant: 'مستأجر سلة', start: '2026-01-01', end: '2026-12-31', valueHalalas: 1200000, cycle: 'شهرية', depositHalalas: 0 }));
+    const bank = addBank(db, 'بنك سلة تجريبي', 5000000);
+    return { db, unit, cid, bank };
+  };
+  /** أرصدة كل الحسابات · لمقارنة الدفتر قبل الحذف وبعد الاستعادة */
+  const balances = async (db: unknown) => {
+    const { allAccountBalances } = await import('@/domain/accounting/ledger');
+    return Object.fromEntries([...allAccountBalances(db as never)].filter(([, v]) => v !== 0));
+  };
+  const allOk = async (db: unknown) => {
+    const { integrityChecks } = await import('@/domain/accounting/integrity');
+    return integrityChecks(db as never).filter((c) => !c.ok).map((c) => c.name + ' ' + c.value);
+  };
+
+  test('مطالبة مفتوحة: تُستعاد بقيدها فتحصيلها بعدها لا يجعل 1250 سالباً', async () => {
+    const { db, cid } = await base();
+    const { saveClaim, deleteClaim, collectClaim } = await import('@/domain/claims');
+    const { restoreFromTrash } = await import('@/domain/trash');
+    const { accountBalance } = await import('@/domain/accounting/ledger');
+    const id = saveClaim(db, { contractId: cid, amountHalalas: 30000, reason: 'كسر', date: '2026-03-01' });
+    const before = await balances(db);
+    deleteClaim(db, id);
+    restoreFromTrash(db, 'claims', id);
+    expect(await balances(db)).toEqual(before);
+    collectClaim(db, id, '2026-03-10');
+    expect(accountBalance(db, '1250')).toBe(0);
+    expect(await allOk(db)).toEqual([]);
+  });
+
+  test('صفقة تقبيل ملغاة: تُستعاد بقيد عمولتها وحركة بنكها', async () => {
+    const { db, unit, bank } = await base();
+    const { recordKeyMoneyDeal } = await import('@/domain/keymoney');
+    const { entrySourceAction } = await import('@/domain/accounting/sourceCancel');
+    const { restoreFromTrash } = await import('@/domain/trash');
+    const { bankBalance } = await import('@/domain/accounting/ledger');
+    const id = recordKeyMoneyDeal(db, { unitId: unit, outgoing: 'مغادر', incoming: 'قادم', amountHalalas: 500000, date: '2026-04-01', commissionHalalas: 25000, method: 'bank', bankId: bank, notes: '' });
+    const before = await balances(db);
+    const bankBefore = bankBalance(db, bank);
+    const e = db.get<{ id: string }>(`SELECT id FROM journal_entries WHERE src_type = 'key_money' AND src_id = ?`, [id])!;
+    const op = entrySourceAction(db, e.id);
+    if (!op || op.kind !== 'op') throw new Error('لا إجراء');
+    op.run('2026-04-05', 'خطأ');
+    restoreFromTrash(db, 'key_money_deals', id);
+    expect(await balances(db)).toEqual(before);
+    expect(bankBalance(db, bank)).toBe(bankBefore);
+    expect(await allOk(db)).toEqual([]);
+  });
+
+  test('فاتورة شراء قابلة للخصم بفرق تقريب ومسدَّدة: تُستعاد بقيدها نفسه وسدادها', async () => {
+    const { db, bank } = await base();
+    const { savePurchase, payPurchaseSplit, deletePurchase, TS_DEDUCTIBLE } = await import('@/domain/purchases');
+    const { restoreFromTrash } = await import('@/domain/trash');
+    const { bankBalance } = await import('@/domain/accounting/ledger');
+    db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES (?,?,?,?)`, ['S_vat', 'مورد ضريبي تجريبي', '300000000000003', '2026-01-01T00:00:00Z']);
+    const id = savePurchase(db, {
+      supplier: 'مورد ضريبي تجريبي', date: '2026-05-01', due: '2026-05-31', category: 'صيانة', incorpItem: '',
+      amortize: false, amortizeMonths: null, exempt: false, excludeFromVat: false, taxStatus: TS_DEDUCTIBLE,
+      subtotalHalalas: 10001, taxHalalas: 1500, totalHalalas: 11502, roundingDiffHalalas: 1,
+    });
+    payPurchaseSplit(db, id, [{ method: 'bank', bankId: bank, amountHalalas: 11502 }], '2026-05-03');
+    const before = await balances(db);
+    const bankBefore = bankBalance(db, bank);
+    expect(before['1270']).toBe(1500);
+    deletePurchase(db, id);
+    restoreFromTrash(db, 'purchases', id);
+    expect(await balances(db)).toEqual(before);
+    expect(bankBalance(db, bank)).toBe(bankBefore);
+    expect(db.get<{ paid: number }>(`SELECT paid FROM purchases WHERE id = ?`, [id])!.paid).toBe(1);
+    expect(await allOk(db)).toEqual([]);
+  });
+
+  test('بنك السداد محذوف: الاستعادة تُرفض بسببها ولا يتغير شيء', async () => {
+    const { db, bank } = await base();
+    const { savePurchase, payPurchaseSplit, deletePurchase } = await import('@/domain/purchases');
+    const { restoreFromTrash } = await import('@/domain/trash');
+    const id = savePurchase(db, {
+      supplier: 'مورد عادي', date: '2026-05-01', due: '2026-05-31', category: 'صيانة', incorpItem: '',
+      amortize: false, amortizeMonths: null, exempt: false, excludeFromVat: false,
+      subtotalHalalas: 20000, taxHalalas: 0, totalHalalas: 20000,
+    });
+    payPurchaseSplit(db, id, [{ method: 'bank', bankId: bank, amountHalalas: 20000 }], '2026-05-03');
+    deletePurchase(db, id);
+    const mid = await balances(db);
+    db.run(`UPDATE banks SET deleted_at = ? WHERE id = ?`, ['2026-05-04T00:00:00Z', bank]);
+    expect(() => restoreFromTrash(db, 'purchases', id)).toThrow(/البنك/);
+    expect(await balances(db)).toEqual(mid);
+    expect(db.get<{ d: string | null }>(`SELECT deleted_at AS d FROM purchases WHERE id = ?`, [id])!.d).toBeTruthy();
+  });
+
+  test('حركة بنكية مرتبطة بقيد لا تُحذف · واليدوية تُحذف وتُستعاد', async () => {
+    const { db, bank } = await base();
+    const { deleteBankTx } = await import('@/domain/bankTx');
+    const { savePurchase, payPurchaseSplit } = await import('@/domain/purchases');
+    const { restoreFromTrash } = await import('@/domain/trash');
+    const { bankBalance } = await import('@/domain/accounting/ledger');
+    const pid = savePurchase(db, {
+      supplier: 'مورد', date: '2026-05-01', due: '2026-05-31', category: 'صيانة', incorpItem: '',
+      amortize: false, amortizeMonths: null, exempt: false, excludeFromVat: false,
+      subtotalHalalas: 1000, taxHalalas: 0, totalHalalas: 1000,
+    });
+    payPurchaseSplit(db, pid, [{ method: 'bank', bankId: bank, amountHalalas: 1000 }], '2026-05-03');
+    const linked = db.get<{ id: string }>(`SELECT id FROM bank_tx WHERE journal_no != '' AND bank_id = ?`, [bank])!;
+    expect(() => deleteBankTx(db, linked.id)).toThrow(/قيد/);
+    db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, source, created_at) VALUES ('T_manual',?,?,?,?,0,'',?)`,
+      [bank, '2026-05-05', 'حركة يدوية', 700, '2026-05-05T00:00:00Z']);
+    const b0 = bankBalance(db, bank);
+    deleteBankTx(db, 'T_manual');
+    expect(bankBalance(db, bank)).toBe(b0 - 700);
+    restoreFromTrash(db, 'bank_tx', 'T_manual');
+    expect(bankBalance(db, bank)).toBe(b0);
+  });
+});

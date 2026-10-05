@@ -8,6 +8,7 @@ import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
 import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount } from './accounting/post';
 import { addMeterReading } from './meters';
+import { repostBlockers, repostCopy } from './accounting/repost';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
 
@@ -169,7 +170,7 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
  * التراجع عن سداد قائم (لتعديل بيانات السداد أو التراجع عنه) ·
  * القيد المرحَّل لا يُمس ولا يُخفى: يُرحَّل قيد عكس مرآة بتاريخ اليوم ويبقى الأصل في الدفتر.
  */
-export function reversePurchasePayment(db: DB, id: string): void {
+export function reversePurchasePayment(db: DB, id: string, keepTerms = false): void {
   const p = db.get<{
     no: string; payment_journal_entry_id: string | null;
     payment_method: string | null; payment_bank_id: string | null; total_halalas: number;
@@ -195,6 +196,8 @@ export function reversePurchasePayment(db: DB, id: string): void {
       );
     }
   }
+  // الحذف إلى السلة يُبقي السداد وربط قيده المعكوس لتعيده الاستعادة كما كان (المراجعة ٤.٦)
+  if (keepTerms) return;
   db.run(
     `UPDATE purchases SET paid = 0, payment_journal_entry_id = NULL, paid_date = NULL,
       payment_method = NULL, payment_bank_id = NULL WHERE id = ?`,
@@ -314,7 +317,7 @@ export function deletePurchase(db: DB, id: string): void {
       `SELECT no, journal_entry_id, paid FROM purchases WHERE id = ?`, [id]
     );
     if (!p) return;
-    if (Number(p.paid)) reversePurchasePayment(db, id);
+    if (Number(p.paid)) reversePurchasePayment(db, id, true); // السداد يبقى مربوطاً بقيده المعكوس لتعيده الاستعادة
     if (p.journal_entry_id) {
       if (!reverseEntryById(db, p.journal_entry_id)) voidEntryById(db, p.journal_entry_id);
     }
@@ -323,25 +326,32 @@ export function deletePurchase(db: DB, id: string): void {
   });
 }
 
-/** الاستعادة من السلة · تُستعاد غير مسدَّدة (كما في النموذج) ويُعاد ترحيل تسجيلها */
+/** قيدٌ مرحّل عكسه الحذف · يُعاد بنسخته */
+const reversedEntry = (db: DB, entryId: string | null) => entryId
+  ? db.get<{ id: string }>(`SELECT id FROM journal_entries WHERE id = ? AND status = 'مرحّل' AND reversed_by IS NOT NULL`, [entryId])?.id ?? null
+  : null;
+
+/**
+ * الاستعادة من السلة (المراجعة ٤.٦) · قيد التسجيل وقيد السداد يُعاد كلٌّ بنسخة سطوره نفسها، فتبقى القابلية للخصم
+ * وفرق التقريب وحركات البنك كما كانت. وما يمنع ذلك (بنك أو حساب محذوف) يرفض الاستعادة بسببه قبل أي تغيير.
+ */
 export function restorePurchase(db: DB, id: string): void {
   db.transaction(() => {
-    const p = db.get<{
-      no: string; supplier_name: string; date: string; category: string;
-      subtotal_halalas: number; tax_halalas: number; total_halalas: number;
-    }>(`SELECT no, supplier_name, date, category, subtotal_halalas, tax_halalas, total_halalas
-        FROM purchases WHERE id = ?`, [id]);
+    const p = db.get<{ no: string; journal_entry_id: string | null; payment_journal_entry_id: string | null; paid: number }>(
+      `SELECT no, journal_entry_id, payment_journal_entry_id, paid FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
-    db.run(
-      `UPDATE purchases SET deleted_at = NULL, paid = 0, payment_journal_entry_id = NULL,
-        paid_date = NULL, payment_method = NULL, payment_bank_id = NULL WHERE id = ?`,
-      [id]
-    );
-    const entry = postPurchaseToLedger(db, {
-      id, no: p.no, supplier: p.supplier_name, date: p.date, category: p.category,
-      subtotal: Number(p.subtotal_halalas), tax: Number(p.tax_halalas), total: Number(p.total_halalas),
-    });
-    db.run(`UPDATE purchases SET journal_entry_id = ? WHERE id = ?`, [entry ? entry.id : null, id]);
+    const reg = reversedEntry(db, p.journal_entry_id);
+    const pay = Number(p.paid) ? reversedEntry(db, p.payment_journal_entry_id) : null;
+    const blockers = [...(reg ? repostBlockers(db, reg) : []), ...(pay ? repostBlockers(db, pay) : [])];
+    if (blockers.length) throw new Error('لا تُستعاد الفاتورة ' + p.no + ': ' + blockers.join('، '));
+    db.run(`UPDATE purchases SET deleted_at = NULL WHERE id = ?`, [id]);
+    if (reg) db.run(`UPDATE purchases SET journal_entry_id = ? WHERE id = ?`, [repostCopy(db, reg, 'استعادة من السلة')?.id ?? null, id]);
+    if (pay) db.run(`UPDATE purchases SET payment_journal_entry_id = ? WHERE id = ?`, [repostCopy(db, pay, 'استعادة من السلة')?.id ?? null, id]);
+    else if (Number(p.paid) && !p.payment_journal_entry_id) {
+      // حُذفت بنسخة سابقة كانت تمحو السداد: تعود غير مسدَّدة كما كانت تلك النسخة
+      db.run(`UPDATE purchases SET paid = 0, paid_date = NULL, payment_method = NULL, payment_bank_id = NULL WHERE id = ?`, [id]);
+    }
+    logAudit(db, 'فواتير الشراء', 'update', 'استعادة فاتورة شراء', p.no);
   });
 }
 

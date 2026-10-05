@@ -6,6 +6,7 @@ import { getSetting } from '../repos/settings';
 import { restoreInvoice } from './invoices';
 import { restorePurchase } from './purchases';
 import { logAudit } from './audit';
+import { lastReversedOf, repostBlockers, repostCopy } from './accounting/repost';
 
 export const TRASH_ENTITY_LABELS: Record<string, string> = {
   suppliers: 'مورد', tenants: 'مستأجر', contracts: 'عقد إيجار',
@@ -74,14 +75,35 @@ export function trashItems(db: DB, now: Date = new Date()): TrashItem[] {
   return out.sort((a, b) => (a.deletedAt < b.deletedAt ? 1 : -1));
 }
 
-/** استعادة عنصر · الفواتير والمشتريات لهما إجراء استعادة خاص يعيد الترحيل */
+/**
+ * قيدٌ عكسه الحذف ويُعاد بنسخته مع الاستعادة (المراجعة ٤.٦) · المطالبة المفتوحة وحدها عُكس قيدها عند حذفها،
+ * وصفقة التقبيل تدخل السلة بإلغاء قيد عمولتها. وغير هذه لا أثر لحذفها في الدفتر فتُستعاد كما هي.
+ */
+function reversedOnDelete(db: DB, table: string, id: string): string | null {
+  if (table === 'claims') {
+    const st = db.get<{ status: string }>(`SELECT status FROM claims WHERE id = ?`, [id])?.status;
+    return st === 'مفتوحة' ? lastReversedOf(db, 'claim', id) : null;
+  }
+  if (table === 'key_money_deals') return lastReversedOf(db, 'key_money', id);
+  return null;
+}
+
+function restoreOne(db: DB, table: string, id: string): void {
+  if (table === 'invoices') { restoreInvoice(db, id); return; }
+  if (table === 'purchases') { restorePurchase(db, id); return; }
+  const entry = reversedOnDelete(db, table, id);
+  if (entry) {
+    const blockers = repostBlockers(db, entry);
+    if (blockers.length) throw new Error('لا يُستعاد العنصر: ' + blockers.join('، '));
+  }
+  const pk = table === 'accounts' ? 'code' : 'id';
+  db.run(`UPDATE "${table}" SET deleted_at = NULL WHERE ${pk} = ?`, [id]);
+  if (entry) repostCopy(db, entry, 'استعادة من السلة');
+}
+
+/** استعادة عنصر · وما عكسه حذفُه من قيود يُعاد بنسخته، أو تُرفض الاستعادة بسببٍ ظاهر */
 export function restoreFromTrash(db: DB, table: string, id: string): void {
-  db.transaction(() => {
-    if (table === 'invoices') { restoreInvoice(db, id); return; }
-    if (table === 'purchases') { restorePurchase(db, id); return; }
-    const pk = table === 'accounts' ? 'code' : 'id';
-    db.run(`UPDATE "${table}" SET deleted_at = NULL WHERE ${pk} = ?`, [id]);
-  });
+  db.transaction(() => restoreOne(db, table, id));
   logAudit(db, 'سلة المحذوفات', 'update', 'استعادة', TRASH_ENTITY_LABELS[table] || table);
 }
 
@@ -216,28 +238,24 @@ export async function purgeExpiredTrash(db: DB, now: Date = new Date()): Promise
 /** يفسح للواجهة بين الدفعات */
 const breathe = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
+/** الاستعادة الجماعية · ما رُفض منها يبقى في السلة بسببه، والباقي يُستعاد */
 export async function restoreAllFromTrash(db: DB, onProgress?: (done: number, total: number) => void): Promise<number> {
   const items = trashItems(db);
   let n = 0;
+  let restored = 0;
   // الاستعادة تعيد ترحيل الفواتير قيداً قيداً · دفعات من ٢٥ مع تنفس بينها
   for (let i = 0; i < items.length; i += 25) {
     const chunk = items.slice(i, i + 25);
-    db.transaction(() => {
-      for (const it of chunk) {
-        if (it.table === 'invoices') restoreInvoice(db, it.id);
-        else if (it.table === 'purchases') restorePurchase(db, it.id);
-        else {
-          const pk = it.table === 'accounts' ? 'code' : 'id';
-          db.run(`UPDATE "${it.table}" SET deleted_at = NULL WHERE ${pk} = ?`, [it.id]);
-        }
-      }
-    });
+    for (const it of chunk) {
+      try { db.transaction(() => restoreOne(db, it.table, it.id)); restored++; }
+      catch { /* يبقى في السلة · سببه يظهر عند استعادته وحده */ }
+    }
     n += chunk.length;
     onProgress?.(n, items.length);
     await breathe();
   }
-  logAudit(db, 'سلة المحذوفات', 'update', 'استعادة جماعية', items.length + ' عنصراً');
-  return items.length;
+  logAudit(db, 'سلة المحذوفات', 'update', 'استعادة جماعية', restored + ' من ' + items.length + ' عنصراً');
+  return restored;
 }
 
 export async function deleteAllFromTrash(db: DB, onProgress?: (done: number, total: number) => void): Promise<number> {
