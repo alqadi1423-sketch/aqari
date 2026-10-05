@@ -12,6 +12,7 @@
  * دائناً له (settleSurplus) · بقيد جديد بتاريخ التنفيذ وطريقته، وفي سجل العمليات.
  */
 import type { DB } from '../db/adapter';
+import { requireCash } from './cashGuard';
 import { uid } from './ids';
 import { logAudit } from './audit';
 import { fmt } from './money';
@@ -427,10 +428,7 @@ export function settleSurplus(db: DB, contractId: string, input: SettleSurplusIn
   const refund = input.action === 'refund';
   if (refund && input.method !== 'cash' && input.method !== 'bank') throw new Error('حدّد طريقة الردّ: نقداً أو تحويلاً بنكياً');
   if (refund && input.method === 'bank' && !input.bankId) throw new Error('اختر الحساب البنكي الذي خرج منه التحويل');
-  if (refund && input.method === 'cash') {
-    const w = walletCashBalance(db);
-    if (amount > w) throw new Error('رصيد المحفظة النقدية ' + fmt(w) + ' لا يكفي لردّ ' + fmt(amount));
-  }
+  if (refund && input.method === 'cash') requireCash(db, amount, 'ردّ الفائض');
   const bank = refund && input.method === 'bank'
     ? db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ? AND deleted_at IS NULL`, [input.bankId!])
     : null;

@@ -5,6 +5,7 @@
  * وما يمنع الإلغاء يُعرض بسببه ولا يظهر زر التأكيد (القاعدة ٧).
  */
 import React, { useMemo, useState } from 'react';
+import { DepositLink } from './CashGate';
 import { View } from 'react-native';
 import { Row, T, Money, BtnGhost, BtnPrimary, Field } from './components';
 import { DateField } from './DateField';
@@ -64,6 +65,7 @@ export function CancelPaymentPanel({ paymentId, onClose, onDone }: {
       {plan.blockers.length || !canCancel ? (
         <>
           {plan.blockers.map((b, k) => <T key={k} size={12} color={C.rose} style={{ marginTop: 6 }}>{b}</T>)}
+          <DepositLink amountHalalas={plan.cashShort} />
           <View style={{ marginTop: 10 }}><BtnGhost small title="رجوع" onPress={onClose} /></View>
         </>
       ) : (

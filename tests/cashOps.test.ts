@@ -48,7 +48,7 @@ describe('التصرف بالنقد', () => {
   test('إيداع أكبر من المحفظة يُرفض برسالة تسمّي الرصيد والمبلغ', () => {
     const { db, bank1 } = seed();
     expect(() => depositCashToBank(db, { bankId: bank1, amountHalalas: 100001, date: '2026-02-02' }))
-      .toThrow(/رصيد المحفظة النقدية 1,000\.00 لا يكفي/);
+      .toThrow(/النقد في المحفظة 1,000\.00 لا يكفي: الإيداع في البنك بمبلغ 1,000\.01 · ينقصه 0\.01/);
     db.close();
   });
 
@@ -93,7 +93,7 @@ describe('التصرف بالنقد', () => {
     ownerCashOut(db, { amountHalalas: 20000, date: '2026-02-07' });
     expect(walletCashBalance(db)).toBe(130000);
     expect(() => ownerCashOut(db, { amountHalalas: 130001, date: '2026-02-07' }))
-      .toThrow(/لا يكفي لـمسحوبات المالك/);
+      .toThrow(/لا يكفي: مسحوبات المالك/);
     db.close();
   });
 

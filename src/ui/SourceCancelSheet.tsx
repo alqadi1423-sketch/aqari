@@ -4,6 +4,7 @@
  * وما له شاشة مستند ← زرّ يفتح المستند ليُلغى منه. وما يمنع يُعرض بسببه ولا يظهر التأكيد.
  */
 import React, { useMemo, useState } from 'react';
+import { DepositLink } from './CashGate';
 import { View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Sheet } from './Sheet';
@@ -75,7 +76,10 @@ export function SourceCancelSheet({ entryId, entryNo, onClose }: { entryId: stri
           <T size={13} bold style={{ marginBottom: 6 }}>{action.label}</T>
           {action.effects.map((x, k) => <T key={k} size={12} style={{ marginBottom: 3 }}>· {x}</T>)}
           {action.blockers.length ? (
-            action.blockers.map((b, k) => <T key={'b' + k} size={12} color={C.rose} style={{ marginTop: 6 }}>{b}</T>)
+            <>
+              {action.blockers.map((b, k) => <T key={'b' + k} size={12} color={C.rose} style={{ marginTop: 6 }}>{b}</T>)}
+              <DepositLink amountHalalas={action.cashShort ?? 0} />
+            </>
           ) : canRun ? (
             <>
               <View style={{ marginTop: 8 }}>

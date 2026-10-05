@@ -4,6 +4,8 @@
  * ما يمنع النسخة (حساب أو بنك محذوف) يُعرف قبل أي كتابة فتُرفض الاستعادة بسببه.
  */
 import type { DB } from '../../db/adapter';
+import { cashShortfall, entryCashEffect } from '../cashGuard';
+import { fmt } from '../money';
 import { uid } from '../ids';
 import { postEntry, type PostedEntry } from './post';
 
@@ -27,6 +29,10 @@ export function repostBlockers(db: DB, entryId: string): string[] {
      WHERE t.journal_no = ? AND t.deleted_at IS NULL`, [e.no])) {
     if (!b.name || b.deleted_at) out.push('البنك' + (b.name ? ' «' + b.name + '»' : '') + ' الذي كانت عليه الحركة محذوف · استرجعه أولاً');
   }
+  // نسخة قيدٍ أخرج نقداً تخرجه ثانية · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+  const out0 = Math.max(0, -entryCashEffect(db, entryId));
+  const short = cashShortfall(db, out0);
+  if (short > 0) out.push('النقد في المحفظة لا يكفي لإعادة صرفٍ بمبلغ ' + fmt(out0) + ' · ينقصه ' + fmt(short) + '، سجّله «إيداع المالك» أولاً');
   return out;
 }
 

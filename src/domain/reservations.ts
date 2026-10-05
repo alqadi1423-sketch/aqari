@@ -3,6 +3,7 @@
  * والتحويل لعقد يسدّد به أقساطه (contracts/service). ولكل عربون مآلٌ واحد في deposit_outcome.
  */
 import type { DB } from '../db/adapter';
+import { requireCash } from './cashGuard';
 import { uid } from './ids';
 import { today, dfmt } from './dates';
 import { postReservationDeposit, postReservationForfeit, postReservationRefund } from './accounting/post';
@@ -52,6 +53,7 @@ export function cancelReservation(db: DB, id: string, forfeitDeposit: boolean, d
     if (r.status === 'محوَّل لعقد') throw new Error('الحجز محوَّل لعقد · عربونه سُدّد به العقد');
     if (r.deposit_outcome) throw new Error('عربون هذا الحجز ' + r.deposit_outcome + ' من قبل');
     const deposit = Number(r.deposit_halalas);
+    if (!forfeitDeposit) requireCash(db, deposit, 'ردّ العربون');
     const outcome = deposit > 0 ? (forfeitDeposit ? 'مصادَر' : 'مردود') : null;
     db.run(`UPDATE reservations SET status = 'منتهي', deposit_outcome = ?, deposit_settled_date = ? WHERE id = ?`,
       [outcome, outcome ? date : null, id]);

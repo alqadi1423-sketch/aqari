@@ -7,6 +7,7 @@
  * وجده اختبار الثوابت العشوائي (tests/fuzz.test.ts) · فيُرفض هنا بسببه، ويُلغى القيد الآلي من مستنده.
  */
 import type { DB } from '../../db/adapter';
+import { requireCash, reversalCashOut } from '../cashGuard';
 import { RuleViolation } from '../contracts/service';
 import { reverseEntryById, type PostedEntry } from './post';
 
@@ -28,5 +29,6 @@ export function journalReversalBlock(db: DB, entryId: string): string {
 export function reverseFromJournal(db: DB, entryId: string): PostedEntry | null {
   const why = journalReversalBlock(db, entryId);
   if (why) throw new RuleViolation(why);
+  requireCash(db, reversalCashOut(db, entryId), 'عكس القيد');
   return reverseEntryById(db, entryId);
 }

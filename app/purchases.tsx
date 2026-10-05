@@ -1,5 +1,7 @@
 /** فواتير الشراء · التسجيل بالفئات وبنود التأسيس والعدادات، والسداد والتراجع */
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import { CashShortNote } from '../src/ui/CashGate';
+import { cashShortfall } from '../src/domain/cashGuard';
 import { useLocalSearchParams } from 'expo-router';
 import { View, Pressable, FlatList, type ListRenderItemInfo } from 'react-native';
 import { Screen } from '../src/ui/Screen';
@@ -20,7 +22,7 @@ import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import { Icon } from '../src/ui/icons';
 import {
-  savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax,
+  savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax, priorPaymentCashOut,
   TAX_STATUSES, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
   type PurchasePayMethod, type TaxStatus,
 } from '../src/domain/purchases';
@@ -841,6 +843,10 @@ export default function Purchases() {
           `SELECT no, supplier_name, total_halalas AS t FROM purchases WHERE id = ?`, [payFor]);
         const total2 = Number(payInfo?.t ?? 0);
         const linesSum = payLines.reduce((s, l) => s + toHalalas(l.amount), 0);
+        // النقد المطلوب: الطرق النقدية ناقص ما يعيده عكس سدادٍ نقدي سابق · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+        const cashNeed = payLines.filter((l) => l.method === 'cash').reduce((s, l) => s + toHalalas(l.amount), 0)
+          - priorPaymentCashOut(db, payFor);
+        const cashOk = cashShortfall(db, cashNeed) <= 0;
         const doPay = () => {
           try {
             payPurchaseSplit(db, payFor,
@@ -879,12 +885,13 @@ export default function Purchases() {
             <>
               {/* المجموع لا يساوي الإجمالي فلا سداد · الزر لا يُعرض بدل أن يُعرض معطَّلاً،
                   والفارق ظاهر في شريط المجموع أسفل النافذة */}
-              {linesSum === total2 ? (
+              {linesSum === total2 && cashOk ? (
                 <View style={{ flex: 1 }}><BtnPrimary title="تأكيد السداد" onPress={askConfirm} /></View>
               ) : null}
             </>
           }>
           <DateField label="تاريخ السداد" value={payDate} onChange={setPayDate} />
+          <CashShortNote needed={cashNeed} what="سداد الفاتورة نقداً" />
           {payLines.map((l, i) => (
             <View key={i} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 9, marginBottom: 8 }}>
               <SelectField label="الطريقة" value={l.method}

@@ -1,4 +1,5 @@
 import type { DB } from '../../db/adapter';
+import { requireCash } from '../cashGuard';
 import { uid } from '../ids';
 import { today } from '../dates';
 import { fmt } from '../money';
@@ -89,6 +90,19 @@ export function postEntry(
     db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [id]);
     return { id, no };
   });
+}
+
+/**
+ * القيد اليدوي من شاشة الدفتر · لا حركة بنك معه، فصافي دائن النقدية 1100 فيه صرفٌ من المحفظة
+ * يتحقق من كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥).
+ */
+export function manualCashOut(lines: EntryLine[]): number {
+  const net = lines.filter((l) => l.account === CASH).reduce((s, l) => s + (l.credit || 0) - (l.debit || 0), 0);
+  return Math.max(0, net);
+}
+export function postManualEntry(db: DB, args: { date: string; memo: string; lines: EntryLine[] }): PostedEntry | null {
+  requireCash(db, manualCashOut(args.lines), 'القيد اليدوي');
+  return postEntry(db, { ...args, auto: false });
 }
 
 /** عكس قيد مصدره معروف (للحذف من السلة ونحوه) */

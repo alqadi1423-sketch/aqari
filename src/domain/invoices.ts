@@ -3,6 +3,7 @@
  * الإصدار يرحّل (1200 / 4100 + 2200)، والعودة لمسودة تعكس القيد.
  */
 import type { DB } from '../db/adapter';
+import { requireCash, reversalCashOut } from './cashGuard';
 import { uid } from './ids';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment } from './accounting/post';
 import { mulQty, pctOf } from './money';
@@ -191,6 +192,7 @@ export function reverseInvoicePayment(db: DB, id: string, keepTerms = false): vo
 export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | 'مستحقة' | 'مدفوعة' | 'متأخرة'): void {
   // «مدفوعة» بتحصيلٍ له قيد وحده (payInvoice) · لا تُضبط حالةً مجردة فتبقى الذمة بلا سداد
   if (newStatus === 'مدفوعة') throw new Error('سجّل التحصيل بتاريخه وطريقته · «مدفوعة» لا تُختار حالةً وحدها');
+  requireCash(db, collectionCashOut(db, id), 'عكس تحصيل الفاتورة');
   db.transaction(() => {
     const v = db.get<{
       no: string; customer_name: string; issue: string;
@@ -219,8 +221,15 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
   });
 }
 
+/** ما يُخرجه عكس تحصيل الفاتورة من المحفظة · صفر إن حُصّلت بنكياً أو لم تُحصَّل */
+export function collectionCashOut(db: DB, id: string): number {
+  const pj = db.get<{ pj: string | null }>(`SELECT payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [id])?.pj;
+  return pj ? reversalCashOut(db, pj) : 0;
+}
+
 /** حذف ناعم · القيد المرحّل يُعكَس بقيد مرآة ولا يُخفى فالتاريخ لا يُمحى */
 export function deleteInvoice(db: DB, id: string): void {
+  requireCash(db, collectionCashOut(db, id), 'عكس تحصيل الفاتورة');
   db.transaction(() => {
     const v = db.get<{ no: string; journal_entry_id: string | null }>(
       `SELECT no, journal_entry_id FROM invoices WHERE id = ?`, [id]

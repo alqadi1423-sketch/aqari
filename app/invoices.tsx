@@ -1,5 +1,7 @@
 /** الفواتير · الإنشاء والإصدار والمسودات وتغيير الحالة والطباعة */
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import { CashShortNote, OwnerCashInSheet } from '../src/ui/CashGate';
+import { cashShortfall } from '../src/domain/cashGuard';
 import { useLocalSearchParams } from 'expo-router';
 import { View, FlatList, Pressable } from 'react-native';
 import { Screen } from '../src/ui/Screen';
@@ -18,7 +20,7 @@ import { Skeleton } from '../src/ui/Skeleton';
 import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
-import { saveInvoice, setInvoiceStatus, payInvoice, deleteInvoice, invoiceTotals, type InvoiceLineInput, type InvoicePayMethod } from '../src/domain/invoices';
+import { saveInvoice, setInvoiceStatus, payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, type InvoiceLineInput, type InvoicePayMethod } from '../src/domain/invoices';
 import { today, dfmt, addDays } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
 import { printInvoice } from '../src/services/print';
@@ -109,6 +111,8 @@ export default function Invoices() {
   const [notes, setNotes] = useState(DEFAULT_NOTES);
   const [lines, setLines] = useState<LineState[]>([{ descr: '', qty: '1', price: '', tax: '15' }]);
   const [statusFor, setStatusFor] = useState<string | null>(null);
+  const [depositFor, setDepositFor] = useState<number | null>(null);
+  const canDeposit = usePerm('banks').add;
   // التحصيل (المراجعة ٤.٢): «مدفوعة» لا تُختار حالةً وحدها، بل بتحصيلٍ بتاريخه وطريقته يرحّل قيده
   const [collecting, setCollecting] = useState(false);
   const [payDate, setPayDate] = useState(today());
@@ -202,16 +206,25 @@ export default function Invoices() {
     printInvoice(db, id).catch(() => toast('تعذّرت الطباعة'));
   }, [db, toast]);
   const onDelete = useCallback((id: string) => {
+    // تحصيلٌ نقدي يُعكس بالحذف فيخرج من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+    const out = collectionCashOut(db, id);
+    const short = cashShortfall(db, out);
     dialog({
       title: 'حذف الفاتورة',
-      body: 'حذف هذه الفاتورة؟ سيُعكَس أثرها المحاسبي إن وُجد.',
+      body: 'حذف هذه الفاتورة؟ سيُعكَس أثرها المحاسبي إن وُجد.'
+        + (short > 0 ? '\nالنقد في المحفظة لا يكفي لعكس تحصيلها (' + fmt(out) + ') · ينقصه ' + fmt(short) : ''),
       tone: 'danger',
       actions: [
         { label: 'تراجع', variant: 'ghost' },
-        { label: 'حذف', variant: 'danger', onPress: () => { deleteInvoice(db, id); bump(); toast('تم الحذف · يمكن استعادته من الإعدادات'); } },
+        ...(short > 0
+          ? (canDeposit ? [{ label: 'إيداع المالك · ' + fmt(short), variant: 'primary' as const, onPress: () => setDepositFor(short) }] : [])
+          : [{ label: 'حذف', variant: 'danger' as const, onPress: () => {
+            try { deleteInvoice(db, id); bump(); toast('تم الحذف · يمكن استعادته من الإعدادات'); }
+            catch (e) { reportFailure({ title: 'تعذّر الحذف', e }); }
+          } }]),
       ],
     });
-  }, [db, bump, toast, dialog]);
+  }, [db, bump, toast, dialog, canDeposit]);
 
   // المسودة يعدّلها ويحذفها كاتبها بإدخال · وما سواها كامل (وكامل لا يحتاج كاتب الصف)
   const mayEdit = useCallback(
@@ -382,8 +395,11 @@ export default function Invoices() {
       {/* تغيير الحالة */}
       {statusFor && perm.manage && !collecting && (
         <Sheet visible onClose={() => setStatusFor(null)} title="تغيير حالة الفاتورة">
+          {/* الرجوع عن «مدفوعة» يعكس تحصيلاً نقدياً فيخرج من المحفظة · لا يظهر حين لا يكفي النقد */}
+          {statusNow === 'مدفوعة' && !legacyPaid ? <CashShortNote needed={collectionCashOut(db, statusFor)} what="عكس تحصيل الفاتورة" /> : null}
           {/* المسودة لا تُحصَّل فلا يظهر لها «تسجيل التحصيل» */}
-          {ALL_STATUSES.filter((s) => (s !== statusNow || legacyPaid) && !(s === 'مدفوعة' && statusNow === 'مسودة')).map((s) => (
+          {ALL_STATUSES.filter((s) => (s !== statusNow || legacyPaid) && !(s === 'مدفوعة' && statusNow === 'مسودة'))
+            .filter((s) => s === 'مدفوعة' || statusNow !== 'مدفوعة' || legacyPaid || cashShortfall(db, collectionCashOut(db, statusFor)) <= 0).map((s) => (
             <View key={s} style={{ marginBottom: 8 }}>
               <BtnGhost
                 title={s === 'مدفوعة' ? 'مدفوعة · تسجيل التحصيل'
@@ -438,6 +454,7 @@ export default function Invoices() {
         </Sheet>
       )}
 
+      {depositFor !== null ? <OwnerCashInSheet amountHalalas={depositFor} onClose={() => setDepositFor(null)} /> : null}
       {/* ورقة عرض الفاتورة الكاملة · الضغط على البطاقة يفتحها والتعديل زر داخلها */}
       {viewFor && (
         <InvoiceViewSheet invoiceId={viewFor} onClose={() => setViewFor(null)} onEdit={openEdit} mayEdit={mayEdit} />

@@ -10,6 +10,7 @@
  * والمعاينة planCancelPayment تُعرض قبل التنفيذ: القيود ومبالغها، وكل قسط بمسدَّده قبل وبعد، والبنك والرصيد.
  */
 import type { DB } from '../../db/adapter';
+import { cashShortfall, CashShortfallError } from '../cashGuard';
 import { uid } from '../ids';
 import { today } from '../dates';
 import { logAudit } from '../audit';
@@ -36,6 +37,8 @@ export interface CancelPaymentPlan {
   restoreAmount: { installmentId: string; by: number } | null;
   /** أسباب المنع · فارغة إن جاز الإلغاء */
   blockers: string[];
+  /** ناقص النقد عن إلغائها · لرابط «إيداع المالك» */
+  cashShort: number;
 }
 
 const SURPLUS_SOURCES = ['surplus_refund', 'surplus_credit'];
@@ -87,6 +90,12 @@ export function planCancelPayment(db: DB, paymentId: string, date: string = toda
     `SELECT 1 FROM journal_entries WHERE src_type IN (${SURPLUS_SOURCES.map(() => '?').join(',')}) AND src_id = ?
        AND status = 'مرحّل' AND reversed_by IS NULL LIMIT 1`, [...SURPLUS_SOURCES, p.contract_id]);
   if (settled) blockers.push('للعقد فائضٌ رُدّ أو حُوّل رصيداً · يُلغى الرد أولاً من أداة رد الفائض');
+  // ما دخل المحفظة نقداً بهذه الدفعة يخرج بإلغائها · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+  const cashIn = Number(db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(amount_halalas), 0) AS s FROM payment_lines WHERE payment_id = ? AND method = 'cash'`, [p.id])!.s);
+  const short = cashShortfall(db, cashIn);
+  if (short > 0 && !p.cancelled_at) blockers.push(new CashShortfallError(cashIn, cashIn - short, 'إلغاء الدفعة').message);
+  const cashShort = p.cancelled_at ? 0 : short;
 
   const instIds = installmentsOfPayment(db, p.id);
   const restoreAmount = p.discount_kind === DISCOUNT_REDUCES_INSTALLMENT && p.installment_id
@@ -111,7 +120,7 @@ export function planCancelPayment(db: DB, paymentId: string, date: string = toda
 
   return {
     paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, net: Number(p.net_halalas),
-    entries: liveEntries(db, p), installments, bank, creditReversal: credit, restoreAmount, blockers,
+    entries: liveEntries(db, p), installments, bank, creditReversal: credit, restoreAmount, blockers, cashShort,
   };
 }
 

@@ -5,6 +5,8 @@
  * وضغطه يفتح الخيارات في لوحة سفلية بدل أزرار الاختيار المتراصّة.
  */
 import React, { useEffect, useMemo, useState } from 'react';
+import { CashShortNote } from '../src/ui/CashGate';
+import { cashShortfall } from '../src/domain/cashGuard';
 import { View, Modal, Pressable } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
@@ -20,7 +22,7 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import { exportStatus } from '../src/domain/reminders';
-import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash } from '../src/domain/trash';
+import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash, restoreCashOut } from '../src/domain/trash';
 import { createAndShareBackup, pickAndPrepareRestore, prepareRestoreFromSafety, commitPreparedRestore, abortPreparedRestore, appBackupEnv } from '../src/services/backupService';
 import { fingerprintData } from '../src/domain/backup/create';
 import {
@@ -1078,7 +1080,8 @@ export default function Settings() {
       <Sheet visible={!!settle} onClose={() => setSettle(null)}
         title={settle?.action === 'credit' ? 'تحويل الفائض رصيداً دائناً' : 'ردّ الفائض للمستأجر'}
         footer={settle && toHalalas(settleAmount) > 0 && toHalalas(settleAmount) <= settle.s.amount && !!settleDate
-          && (settle.action === 'credit' || settleMethod === 'cash' || (settleMethod === 'bank' && !!settleBank)) ? (
+          && (settle.action === 'credit' || settleMethod === 'cash' || (settleMethod === 'bank' && !!settleBank))
+          && (settle.action === 'credit' || settleMethod !== 'cash' || cashShortfall(db, toHalalas(settleAmount)) <= 0) ? (
           <View style={{ flex: 1 }}>
             <BtnPrimary title={settle.action === 'credit' ? 'سجّل التحويل' : 'سجّل الردّ'} onPress={() => {
               const cur = settle;
@@ -1107,6 +1110,7 @@ export default function Settings() {
             </T>
             <Field label={'المبلغ (الفائض ' + fmt(settle.s.amount) + ')'} value={settleAmount} onChange={setSettleAmount} keyboard="numeric" ltr />
             <DateField label={settle.action === 'credit' ? 'تاريخ التحويل' : 'تاريخ الردّ'} value={settleDate} onChange={setSettleDate} />
+            {settle.action === 'refund' && settleMethod === 'cash' ? <CashShortNote needed={toHalalas(settleAmount)} what="ردّ الفائض نقداً" /> : null}
             {settle.action === 'refund' ? (
               <>
                 <SelectField<'cash' | 'bank'>
@@ -1192,7 +1196,10 @@ export default function Settings() {
                   <T size={TYPE.cardTitle} med style={{ flex: 1 }}>{t.entityLabel}: {t.label}</T>
                   <Badge kind={t.daysLeft <= 5 ? 'overdue' : 'due'} label={t.daysLeft + ' يوم متبقٍ'} />
                 </Row>
+                {/* استعادةٌ تُعيد صرفاً نقدياً لا تظهر حين لا يكفي النقد · ومكانها السبب والإيداع (قرار المالك ٢٠٢٦-١٠-٠٥) */}
+                <CashShortNote needed={restoreCashOut(db, t.table, t.id)} what="إعادة سداد الفاتورة نقداً" />
                 <Row style={{ justifyContent: 'flex-end', marginTop: 6 }}>
+                  {cashShortfall(db, restoreCashOut(db, t.table, t.id)) <= 0 ? (
                   <BtnGhost small icon="undo" title="استعادة"
                     onPress={() => {
                       try { restoreFromTrash(db, t.table, t.id); toast('تمت الاستعادة بنجاح'); }
@@ -1201,6 +1208,7 @@ export default function Settings() {
                       }
                       bump();
                     }} />
+                  ) : null}
                   <BtnGhost small danger title="حذف نهائي"
                     onPress={() => dialog({
                       title: 'حذف نهائي',

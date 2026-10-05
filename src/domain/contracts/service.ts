@@ -3,6 +3,7 @@
  * كل دالة تتم بمعاملة واحدة، والترحيل المحاسبي عبر مسار postEvent الواحد.
  */
 import type { DB } from '../../db/adapter';
+import { requireCash } from '../cashGuard';
 import type { ScheduleRow } from '../pdf/parseEjar';
 import { uid } from '../ids';
 import { today, dfmt } from '../dates';
@@ -350,6 +351,9 @@ export interface CancelInput {
 }
 
 /** القاعدة ١١: إلغاء العقد · خصم من التأمين، والفائض مطالبة تلقائية */
+/** جهة قبض التأمين · المكتب ما لم يُذكر غيره */
+const depositHolderOf = (c: unknown): string => ((c as { deposit_holder?: string | null }).deposit_holder || 'المكتب');
+
 export function cancelContract(db: DB, contractId: string, input: CancelInput): { excessClaimCreated: boolean } {
   const c = getContract(db, contractId);
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
@@ -379,6 +383,8 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
         refund = 0;
         deduction = deposit; // يُخصم التأمين كاملاً والفائض صار مطالبة
       }
+      // ردّ التأمين نقداً حين يقبضه المكتب · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+      if (depositHolderOf(c) === 'المكتب') requireCash(db, refund, 'ردّ التأمين');
       postDepositDeduct(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, date);
       postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder: (c as unknown as { deposit_holder?: string }).deposit_holder }, refund, date);
     }
@@ -631,6 +637,11 @@ export function saveDepositSettlement(db: DB, contractId: string, input: Deposit
     const prevVals = existing
       ? db.get(`SELECT date, deduction_halalas, refund_halalas FROM deposit_settlements WHERE contract_id = ?`, [contractId])
       : undefined;
+    // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق يُعكس (قرار المالك ٢٠٢٦-١٠-٠٥)
+    if (depositHolderOf(c) === 'المكتب') {
+      const prev = existing ? Number((prevVals as { refund_halalas?: number } | undefined)?.refund_halalas ?? 0) : 0;
+      requireCash(db, input.refundHalalas - prev, 'ردّ التأمين');
+    }
     if (existing) {
       reverseEntryBySource(db, 'deposit_deduct', contractId, 'تعديل تسوية التأمين · عكس الخصم السابق');
       reverseEntryBySource(db, 'deposit_refund', contractId, 'تعديل تسوية التأمين · عكس الرد السابق');

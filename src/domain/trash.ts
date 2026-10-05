@@ -2,6 +2,7 @@
  * سلة المحذوفات · قائمة موحّدة فوق الحذف الناعم، مدتها من الإعدادات (٣٠/٦٠/٩٠).
  */
 import type { DB } from '../db/adapter';
+import { entryCashEffect } from './cashGuard';
 import { getSetting } from '../repos/settings';
 import { restoreInvoice } from './invoices';
 import { restorePurchase } from './purchases';
@@ -99,6 +100,18 @@ function restoreOne(db: DB, table: string, id: string): void {
   const pk = table === 'accounts' ? 'code' : 'id';
   db.run(`UPDATE "${table}" SET deleted_at = NULL WHERE ${pk} = ?`, [id]);
   if (entry) repostCopy(db, entry, 'استعادة من السلة');
+}
+
+/**
+ * ما تُخرجه الاستعادة من المحفظة · فاتورة شراءٍ سُدّدت نقداً يُعاد سدادها، وغيرها لا يُخرج نقداً
+ * (التحصيل والعمولة يُدخلانه). لزرّ الاستعادة حين لا يكفي النقد (قرار المالك ٢٠٢٦-١٠-٠٥).
+ */
+export function restoreCashOut(db: DB, table: string, id: string): number {
+  if (table !== 'purchases') return 0;
+  const p = db.get<{ paid: number; pj: string | null }>(`SELECT paid, payment_journal_entry_id AS pj FROM purchases WHERE id = ?`, [id]);
+  if (!p || !Number(p.paid) || !p.pj) return 0;
+  const reversed = db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NOT NULL`, [p.pj]);
+  return reversed ? Math.max(0, -entryCashEffect(db, p.pj)) : 0;
 }
 
 /** استعادة عنصر · وما عكسه حذفُه من قيود يُعاد بنسخته، أو تُرفض الاستعادة بسببٍ ظاهر */

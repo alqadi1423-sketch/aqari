@@ -1,5 +1,7 @@
 /** القيود اليومية · القائمة وبناء قيد جديد بميزان حي وترحيله */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { CashShortNote, OwnerCashInSheet, useCashOk } from '../src/ui/CashGate';
+import { cashShortfall, reversalCashOut } from '../src/domain/cashGuard';
 import { View, FlatList, Pressable } from 'react-native';
 import { Screen } from '../src/ui/Screen';
 import { EntrySheet, srcTypeLabel } from '../src/ui/EntrySheet';
@@ -14,7 +16,7 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { useDialog } from '../src/ui/AppDialog';
 import { C } from '../src/ui/theme';
-import { postEntry, nextJournalNo, voidEntryById } from '../src/domain/accounting/post';
+import { postManualEntry, manualCashOut, nextJournalNo, voidEntryById } from '../src/domain/accounting/post';
 import { reverseFromJournal, journalReversalBlock } from '../src/domain/accounting/journalReversal';
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { allAccounts } from '../src/domain/accounting/ledger';
@@ -93,6 +95,8 @@ export default function Journal() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [sourceFor, setSourceFor] = useState<{ id: string; no: string } | null>(null);
   const [builderOpen, setBuilderOpen] = useState(false);
+  const [depositFor, setDepositFor] = useState<number | null>(null);
+  const canDeposit = usePerm('banks').add;
   const [date, setDate] = useState(today());
   const [memo, setMemo] = useState('');
   const [lines, setLines] = useState<JeLine[]>([
@@ -142,6 +146,9 @@ export default function Journal() {
   const totalDebit = lines.reduce((s, l) => s + toHalalas(l.debit), 0);
   const totalCredit = lines.reduce((s, l) => s + toHalalas(l.credit), 0);
   const balanced = totalDebit > 0 && totalDebit === totalCredit;
+  // صافي دائن النقدية في القيد اليدوي صرفٌ من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+  const manualOut = manualCashOut(lines.map((l) => ({ account: l.account, debit: toHalalas(l.debit), credit: toHalalas(l.credit) })));
+  const manualOk = useCashOk(manualOut);
 
   const openBuilder = () => {
     setDate(today()); setMemo('');
@@ -156,7 +163,7 @@ export default function Journal() {
       .map((l) => ({ account: l.account, debit: toHalalas(l.debit), credit: toHalalas(l.credit) }));
     if (!validLines.length) { toast('أضف سطراً واحداً على الأقل بحساب صحيح'); return; }
     try {
-      postEntry(db, { date, memo: memo.trim() || 'بدون بيان', lines: validLines, auto: false });
+      postManualEntry(db, { date, memo: memo.trim() || 'بدون بيان', lines: validLines });
       setBuilderOpen(false); bump();
       toast('تم ترحيل القيد بنجاح · تحدَّثت أرصدة الحسابات فعلياً');
     } catch (e) { reportFailure({ title: 'تعذّر الترحيل', e }); }
@@ -168,14 +175,18 @@ export default function Journal() {
   const reverseEntry = useCallback((id: string, no: string) => {
     // القيد الآلي يُلغى من عمليته الأصلية بتأكيدها (sourceCancel.ts) · واليدوي يُعكس هنا
     if (journalReversalBlock(db, id)) { setSourceFor({ id, no }); return; }
+    // عكس قيدٍ أدخل نقداً يُخرجه من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+    const out = reversalCashOut(db, id);
+    const short = cashShortfall(db, out);
     dialog({
       title: 'عكس القيد ' + no,
-      body: 'سيُرحَّل قيد عاكس بتاريخ اليوم يلغي أثره على الأرصدة، ويبقى القيدان معاً في الدفتر.',
+      body: 'سيُرحَّل قيد عاكس بتاريخ اليوم يلغي أثره على الأرصدة، ويبقى القيدان معاً في الدفتر.'
+        + (short > 0 ? '\nالنقد في المحفظة لا يكفي لعكسه (' + fmt(out) + ') · ينقصه ' + fmt(short) : ''),
       tone: 'normal',
       actions: [
         { label: 'تراجع', variant: 'ghost' },
-        {
-          label: 'عكس القيد', variant: 'primary',
+        ...(short > 0 ? (canDeposit ? [{ label: 'إيداع المالك · ' + fmt(short), variant: 'primary' as const, onPress: () => setDepositFor(short) }] : []) : [{
+          label: 'عكس القيد', variant: 'primary' as const,
           onPress: () => {
             try {
               const rev = reverseFromJournal(db, id);
@@ -183,10 +194,10 @@ export default function Journal() {
               toast(rev ? 'رُحّل القيد العاكس ' + rev.no : 'هذا القيد معكوس من قبل');
             } catch (e) { reportFailure({ title: 'تعذّر عكس القيد', e }); }
           },
-        },
+        }]),
       ],
     });
-  }, [db, bump, toast, dialog]);
+  }, [db, bump, toast, dialog, canDeposit]);
 
   const deleteDraft = useCallback((id: string) => {
     dialog({
@@ -247,12 +258,14 @@ export default function Journal() {
       {/* القيد الآلي يُلغى من عمليته الأصلية بتأكيدها */}
       {sourceFor ? <SourceCancelSheet entryId={sourceFor.id} entryNo={sourceFor.no} onClose={() => setSourceFor(null)} /> : null}
 
+      {depositFor !== null ? <OwnerCashInSheet amountHalalas={depositFor} onClose={() => setDepositFor(null)} /> : null}
       <Sheet visible={builderOpen} onClose={() => setBuilderOpen(false)} title="قيد يومية جديد" tall
         footer={
           <>
-            <View style={{ flex: 1 }}><BtnPrimary title="ترحيل القيد" onPress={post} disabled={!balanced} /></View>
+            {manualOk ? <View style={{ flex: 1 }}><BtnPrimary title="ترحيل القيد" onPress={post} disabled={!balanced} /></View> : null}
           </>
         }>
+        <CashShortNote needed={manualOut} what="صرف النقد في القيد" />
         <Row>
           <View style={{ flex: 1 }}><Field label="رقم القيد" value={nextJournalNo(db)} disabled ltr /></View>
           <View style={{ flex: 1 }}><DateField label="التاريخ" value={date} onChange={setDate} /></View>

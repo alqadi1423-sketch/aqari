@@ -12,6 +12,7 @@
  * كلٌّ ذرّي بتاريخ وسبب، وفي سجل العمليات · والقيد اليدوي يُعكس من الدفتر كما هو.
  */
 import type { DB } from '../../db/adapter';
+import { cashShortfall, reversalCashOut, CashShortfallError } from '../cashGuard';
 import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { reverseEntryById } from './post';
@@ -23,7 +24,7 @@ import { isOrphanEntry } from './orphans';
 
 export type SourceAction =
   | { kind: 'payment'; paymentId: string }
-  | { kind: 'op'; label: string; effects: string[]; blockers: string[]; run: (date: string, reason: string) => void }
+  | { kind: 'op'; label: string; effects: string[]; blockers: string[]; cashShort?: number; run: (date: string, reason: string) => void }
   | { kind: 'document' }
   | null;
 
@@ -60,12 +61,18 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
   const pay = db.get<{ id: string }>(`SELECT id FROM contract_payments WHERE journal_entry_id = ? AND cancelled_at IS NULL`, [e.id]);
   if (pay) return { kind: 'payment', paymentId: pay.id };
 
-  const op = (label: string, effects: string[], blockers: string[], run: (date: string, reason: string) => void): SourceAction =>
-    ({ kind: 'op', label, effects, blockers, run: (date, reason) => {
+  // عكسُ قيدٍ أدخل نقداً يُخرجه من المحفظة · كفاية النقد لكل عملية إلغاء (قرار المالك ٢٠٢٦-١٠-٠٥)
+  const cashOut = reversalCashOut(db, e.id);
+  const cashShort = cashShortfall(db, cashOut);
+  const op = (label: string, effects: string[], blockers0: string[], run: (date: string, reason: string) => void): SourceAction => {
+    const blockers = cashShort > 0 && !blockers0.some((b) => b.includes('لا يكفي'))
+      ? [...blockers0, new CashShortfallError(cashOut, cashOut - cashShort, label).message] : blockers0;
+    return ({ kind: 'op', label, effects, blockers, cashShort, run: (date, reason) => {
       if (!reason.trim()) throw new RuleViolation('اكتب سبب الإلغاء');
       if (blockers.length) throw new RuleViolation(blockers.join(' · '));
       db.transaction(() => run(date, reason.trim()));
     } });
+  };
 
   if (isOrphanEntry(db, e.id)) {
     const cashIn = net(db, e.id, '1100');

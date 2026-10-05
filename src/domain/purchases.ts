@@ -3,6 +3,7 @@
  * التسجيل: مصروف الفئة + ضريبة / ذمم دائنة. السداد: 2100 / 1100 + حركة بنكية.
  */
 import type { DB } from '../db/adapter';
+import { requireCash, entryCashEffect } from './cashGuard';
 import { uid } from './ids';
 import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
@@ -170,6 +171,13 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
  * التراجع عن سداد قائم (لتعديل بيانات السداد أو التراجع عنه) ·
  * القيد المرحَّل لا يُمس ولا يُخفى: يُرحَّل قيد عكس مرآة بتاريخ اليوم ويبقى الأصل في الدفتر.
  */
+/** ما أخرجه سداد الفاتورة القائم من المحفظة · يعود بعكسه قبل السداد الجديد */
+export function priorPaymentCashOut(db: DB, id: string): number {
+  const p = db.get<{ paid: number; pj: string | null }>(`SELECT paid, payment_journal_entry_id AS pj FROM purchases WHERE id = ?`, [id]);
+  if (!p || !Number(p.paid) || !p.pj) return 0;
+  return Math.max(0, -entryCashEffect(db, p.pj));
+}
+
 export function reversePurchasePayment(db: DB, id: string, keepTerms = false): void {
   const p = db.get<{
     no: string; payment_journal_entry_id: string | null;
@@ -224,6 +232,8 @@ export function payPurchase(
     }>(`SELECT no, supplier_name, category, total_halalas, paid FROM purchases WHERE id = ?`, [id]);
     if (!p) throw new Error('تعذّر العثور على الفاتورة');
     if (method !== 'cash' && !bankId) throw new Error('اختر الحساب البنكي (' + PAY_LABEL[method] + ')، أو بدِّل الطريقة لنقداً');
+    // كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥) · وسدادٌ سابق يُعكس أولاً يعيد ما أخرجه
+    if (method === 'cash') requireCash(db, Number(p.total_halalas) - priorPaymentCashOut(db, id), 'سداد الفاتورة ' + p.no);
     if (Number(p.paid)) reversePurchasePayment(db, id);
     const entry = postPurchasePayment(
       db,
@@ -276,6 +286,8 @@ export function payPurchaseSplit(db: DB, id: string, lines: PurchasePayLine[], p
     if (sum !== total) {
       throw new Error(`مجموع طرق السداد ${fmtH(sum)} لا يساوي إجمالي الفاتورة ${fmtH(total)} · الفارق ${fmtH(Math.abs(total - sum))}`);
     }
+    const cashPart = valid.filter((l) => l.method === 'cash').reduce((s, l) => s + l.amountHalalas, 0);
+    requireCash(db, cashPart - priorPaymentCashOut(db, id), 'سداد الفاتورة ' + p.no + ' نقداً');
     if (Number(p.paid)) reversePurchasePayment(db, id);
     const allCash = valid.every((l) => l.method === 'cash');
     const entry = postPurchasePayment(

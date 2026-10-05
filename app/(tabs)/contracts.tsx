@@ -4,6 +4,7 @@
  * نماذج الاستلام والتسليم، وقراءة العقد من PDF.
  */
 import React, { useMemo, useState, useEffect } from 'react';
+import { CashShortNote, useCashOk } from '../../src/ui/CashGate';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { View, Pressable, FlatList } from 'react-native';
 import { Screen, BackButton } from '../../src/ui/Screen';
@@ -1117,6 +1118,10 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const excess = dedH > depH ? dedH - depH : 0;
   // «الفارق يُحوَّل تلقائياً إلى مطالبة» · والمسترد يُحتسب تلقائياً
   const autoRefund = dedH > depH ? 0 : depH - dedH;
+  // ردّ التأمين نقداً حين يقبضه المكتب · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+  const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
+  const refundCash = settle && officeHeld ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0;
+  const cashOk = useCashOk(refundCash);
 
   const confirm = () => {
     try {
@@ -1137,9 +1142,10 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
     <Sheet visible onClose={onClose} title="إلغاء العقد" tall
       footer={
         <>
-          <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View>
+          {cashOk ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
         </>
       }>
+      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
       <DateField label="تاريخ إنهاء العقد" value={date} onChange={setDate} />
       <Field label="سبب الإلغاء" value={reason} onChange={setReason} />
       <SelectField
@@ -1248,6 +1254,10 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
   );
   const platformHeld = (c as unknown as { deposit_holder?: string }).deposit_holder === 'منصة إيجار';
   const diff = toHalalas(deduction) + toHalalas(refund) - Number(c.deposit_halalas);
+  // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق (قرار المالك ٢٠٢٦-١٠-٠٥)
+  const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
+  const refundCash = officeHeld ? toHalalas(refund) - Number(existing?.refund_halalas ?? 0) : 0;
+  const cashOk = useCashOk(refundCash);
   const save = () => {
     try {
       saveDepositSettlement(db, contractId, {
@@ -1263,9 +1273,10 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
     <Sheet visible onClose={onClose} title="تفاصيل التصرف بالتأمين" tall
       footer={
         <>
-          <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View>
+          {cashOk ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
         </>
       }>
+      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
       <View style={{ marginBottom: 10 }}>
         <T size={11.5} color={C.muted}>مبلغ التأمين الأصلي</T>
         <Money halalas={Number(c.deposit_halalas)} size={14} bold />

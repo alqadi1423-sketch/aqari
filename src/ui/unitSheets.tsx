@@ -5,6 +5,8 @@
  * إلا عند فتحه، وداخله تقسيم صفحات · فالوحدة ذات المئات لا تُبطئ الورقة.
  */
 import React, { useMemo, useState } from 'react';
+import { CashGate, OwnerCashInSheet } from './CashGate';
+import { cashShortfall } from '../domain/cashGuard';
 import { View, Pressable } from 'react-native';
 import { Sheet, SelectField } from './Sheet';
 import { useRouter } from 'expo-router';
@@ -151,6 +153,9 @@ export function UnitDetailSheet({
   // تسوية عربون حجزٍ انتهى ولم يُسوَّ (المراجعة ٤.٥) · بقرار المالك وتاريخه
   const [settle, setSettle] = useState<{ id: string; name: string; deposit: number } | null>(null);
   const [settleDate, setSettleDate] = useState(today());
+  // «إيداع المالك» بالناقص حين لا يكفي النقد لردّ عربون (قرار المالك ٢٠٢٦-١٠-٠٥)
+  const [depositFor, setDepositFor] = useState<number | null>(null);
+  const canDeposit = usePerm('banks').add;
   const u = db.get<{
     id: string; property_id: string; unit_no: string; floor: string; type: string; subtype: string;
     rent_monthly_halalas: number; under_maintenance: number;
@@ -226,20 +231,28 @@ export function UnitDetailSheet({
         {data.st.key === 'vacant' && rsvPerm.add && <BtnGhost small icon="card" title="حجز بعربون" onPress={onReserve} />}
         {rsv && rsvPerm.manage && (
           <BtnGhost small danger icon="cancel" title="إلغاء الحجز" onPress={() => {
+            const dep = Number(rsv.deposit_halalas);
+            const short = cashShortfall(db, dep);
             dialog({
               title: 'إلغاء الحجز',
-              body: `إلغاء حجز "${rsv.name}"؟`,
+              body: `إلغاء حجز "${rsv.name}"؟` + (short > 0
+                ? '\nالنقد في المحفظة لا يكفي لردّ العربون (' + fmt(dep) + ') · ينقصه ' + fmt(short) : ''),
               tone: 'danger',
               actions: [
                 { label: 'تراجع', variant: 'ghost' },
-                {
+                // الرد لا يظهر حين لا يكفي النقد · ومكانه «إيداع المالك» بالناقص
+                ...(short > 0 ? (canDeposit ? [{
+                  label: 'إيداع المالك · ' + fmt(short), variant: 'primary' as const, onPress: () => setDepositFor(short),
+                }] : []) : [{
                   label: Number(rsv.deposit_halalas) > 0 ? `إلغاء وردّ العربون (${fmt(Number(rsv.deposit_halalas))})` : 'إلغاء الحجز',
-                  variant: 'primary',
+                  variant: 'primary' as const,
                   onPress: () => {
-                    cancelReservation(db, rsv.id, false); bump();
-                    toast(Number(rsv.deposit_halalas) > 0 ? 'أُلغي الحجز ورُحّل قيد ردّ العربون' : 'أُلغي الحجز');
+                    try {
+                      cancelReservation(db, rsv.id, false); bump();
+                      toast(Number(rsv.deposit_halalas) > 0 ? 'أُلغي الحجز ورُحّل قيد ردّ العربون' : 'أُلغي الحجز');
+                    } catch (e) { reportFailure({ title: 'تعذّر الإلغاء', e }); }
                   },
-                },
+                }]),
                 // بلا عربون لا مصادرة · الزر لا يُعرض أصلاً
                 ...(Number(rsv.deposit_halalas) > 0 ? [{
                   label: `مصادرة العربون (${fmt(Number(rsv.deposit_halalas))})`,
@@ -265,14 +278,17 @@ export function UnitDetailSheet({
           }} />
         </Note>
       ))}
+      {depositFor !== null ? <OwnerCashInSheet amountHalalas={depositFor} onClose={() => setDepositFor(null)} /> : null}
       {settle ? (
         <Sheet visible onClose={() => setSettle(null)} title={'تسوية عربون «' + settle.name + '»'}>
           <DateField label="تاريخ الرد أو المصادرة" value={settleDate} onChange={setSettleDate} />
           <View style={{ marginBottom: 8 }}>
-            <BtnPrimary title={'ردّ العربون لصاحبه (' + fmt(settle.deposit) + ')'} onPress={() => {
-              try { cancelReservation(db, settle.id, false, settleDate); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
-              catch (e) { reportFailure({ title: 'تعذّرت التسوية', e }); }
-            }} />
+            <CashGate needed={settle.deposit} what="ردّ العربون">
+              <BtnPrimary title={'ردّ العربون لصاحبه (' + fmt(settle.deposit) + ')'} onPress={() => {
+                try { cancelReservation(db, settle.id, false, settleDate); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
+                catch (e) { reportFailure({ title: 'تعذّرت التسوية', e }); }
+              }} />
+            </CashGate>
           </View>
           <BtnGhost danger title={'مصادرة العربون إيراداً (' + fmt(settle.deposit) + ')'} onPress={() => {
             try { cancelReservation(db, settle.id, true, settleDate); setSettle(null); bump(); toast('رُحّل قيد مصادرة العربون'); }

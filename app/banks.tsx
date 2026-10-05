@@ -3,6 +3,8 @@
  * الضغط على أي حساب يفتح بياناته وكل عملياته بأنواعها، والمحفظة تُحصي الكاش الحاضر.
  */
 import React, { useCallback, useMemo, useState } from 'react';
+import { CashShortNote } from '../src/ui/CashGate';
+import { cashShortfall } from '../src/domain/cashGuard';
 import { View, Pressable, FlatList, type ListRenderItem } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Screen, BackButton } from '../src/ui/Screen';
@@ -489,13 +491,16 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
     const meta = CASH_OPS.find((o) => o.key === op)!;
     const needsOneBank = op === 'deposit' || op === 'withdraw';
     const ready = toHalalas(amount) > 0;
+    // ما يُخرج نقداً من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+    const cashOut = op === 'deposit' || op === 'petty' || op === 'ownerOut' ? toHalalas(amount) : 0;
+    const cashOk = cashShortfall(db, cashOut) <= 0;
     return (
       <Sheet visible onClose={() => setOp(null)} title={meta.label}
         footer={
           <>
             <View style={{ flex: 1, justifyContent: 'center' }}><BackButton onPress={() => setOp(null)} /></View>
             {/* بلا مبلغ لا تنفيذ · الزر لا يُعرض بدل أن يُعرض معطَّلاً */}
-            {ready ? (
+            {ready && cashOk ? (
               <View style={{ flex: 1 }}><BtnPrimary title="تنفيذ العملية" onPress={confirmOp} /></View>
             ) : null}
           </>
@@ -523,6 +528,7 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
           <View style={{ flex: 1 }}><DateField label="التاريخ" value={opDate} onChange={setOpDate} /></View>
         </Row>
         <Field label={op === 'petty' ? 'بيان المصروف' : 'البيان'} value={descr} onChange={setDescr} />
+        <CashShortNote needed={cashOut} what={meta.label} />
       </Sheet>
     );
   }

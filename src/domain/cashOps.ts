@@ -5,6 +5,7 @@
  * لذا الإيداع/السحب/التحويل حركات بنكية فقط بلا قيد، والمصروف والإيداع قيدان.
  */
 import type { DB } from '../db/adapter';
+import { requireCash } from './cashGuard';
 import { uid } from './ids';
 import { fmt } from './money';
 import { logAudit } from './audit';
@@ -25,11 +26,9 @@ function requirePositive(amountHalalas: number): void {
   }
 }
 
+/** كفاية النقد بالدالة الواحدة (cashGuard) · الرسالة نفسها في كل صرف نقدي */
 function requireWalletCovers(db: DB, amountHalalas: number, what: string): void {
-  const w = walletCashBalance(db);
-  if (amountHalalas > w) {
-    throw new Error('رصيد المحفظة النقدية ' + fmt(w) + ' لا يكفي لـ' + what + ' بمبلغ ' + fmt(amountHalalas));
-  }
+  requireCash(db, amountHalalas, what);
 }
 
 function insertBankTx(db: DB, bankId: string, date: string, descr: string, amount: number, source: string): void {
