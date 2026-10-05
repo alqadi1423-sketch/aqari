@@ -5,7 +5,7 @@
  */
 import { buildSyncMigration } from './syncTables';
 
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1280,5 +1280,16 @@ ALTER TABLE contracts ADD COLUMN ejar_schedule TEXT;
 ALTER TABLE contracts ADD COLUMN installments_source TEXT;
 `;
 
+/**
+ * الهجرة ٢٥ · المزامنة لا تحجب الواجهة (أعطال ٢٠٢٦-١٠-٠٥): علامة الحذف عموداً في الصندوق الوارد بفهرسٍ
+ * لترتيب التطبيق، فلا تُفكّ كل الحمولات لكل صفحة · وفهرس قيد الدفعة الذي يقرؤه فحص الأيتام بعد كل تطبيق.
+ */
+export const MIGRATION_25 = `
+ALTER TABLE sync_inbox ADD COLUMN del INTEGER NOT NULL DEFAULT 0;
+UPDATE sync_inbox SET del = COALESCE(json_extract(payload, '$.del'), 0);
+CREATE INDEX IF NOT EXISTS ix_sync_inbox_apply ON sync_inbox(del, rank, updated_at, doc);
+CREATE INDEX IF NOT EXISTS ix_pay_journal ON contract_payments(journal_entry_id);
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25];

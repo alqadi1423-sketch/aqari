@@ -86,12 +86,40 @@ function unifySeedIds(db: DB): void {
 /** كل صف من كل جدول مزامَن إلى الطابور · بلا مسّ لما فيه أصلاً */
 export function seedOutbox(db: DB): void {
   const at = nowIso();
-  for (const t of SYNC_TABLES) {
-    db.run(
-      `INSERT INTO sync_outbox (tbl, pk, op, changed_at)
-       SELECT '${t.name}', ${t.pk(t.name)}, 'upsert', ? FROM "${t.name}"
-       WHERE true ON CONFLICT(tbl, pk) DO NOTHING`, [at]);
-  }
+  for (const t of SYNC_TABLES) enqueueTable(db, t.name, at);
+  // كل شيء يُرفع برموز الرؤية الحالية · فلا يلزمه رفعٌ آخر لها
+  setSyncState(db, 'acl_version', String(ACL_VERSION));
+}
+
+function enqueueTable(db: DB, table: string, at: string): void {
+  const t = syncTable(table)!;
+  db.run(
+    `INSERT INTO sync_outbox (tbl, pk, op, changed_at)
+     SELECT '${t.name}', ${t.pk(t.name)}, 'upsert', ? FROM "${t.name}"
+     WHERE true ON CONFLICT(tbl, pk) DO NOTHING`, [at]);
+}
+
+/**
+ * إصدار قواعد الرؤية (acl.ts) · وما وسّع إصدارٌ قرّاءه من الجداول يُرفع مرة من جهاز المالك ليحمل رموزه الجديدة،
+ * فالرموز تُحسب عند الرفع وما في السحابة يبقى بقديمها.
+ * ٢: قيد المستند يقرؤه كل قسم مالي يقرأ مستنده (أعطال ٢٠٢٦-١٠-٠٥: دفعات عضو العقود تنتظر قيودها بلا نهاية).
+ */
+export const ACL_VERSION = 2;
+const ACL_WIDENED: Record<number, string[]> = { 2: ['journal_entries'] };
+
+/** يعيد عدد الجداول التي أُعيدت إلى الطابور · جهاز المالك في المنشأة وحده: العضو لا يملك تعديل ما لم يكتبه */
+export function requeueForAcl(db: DB): number {
+  if (getSyncState(db, 'membership') || !getSyncState(db, 'org')) return 0;
+  const from = Number(getSyncState(db, 'acl_version') ?? 1);
+  if (from >= ACL_VERSION) return 0;
+  const tables = new Set<string>();
+  for (let v = from + 1; v <= ACL_VERSION; v++) for (const t of ACL_WIDENED[v] ?? []) tables.add(t);
+  db.transaction(() => {
+    const at = nowIso();
+    for (const t of tables) enqueueTable(db, t, at);
+    setSyncState(db, 'acl_version', String(ACL_VERSION));
+  });
+  return tables.size;
 }
 
 /* ═══════════ بناء المستندات من الصفوف ═══════════ */
@@ -178,12 +206,12 @@ export function stageInbox(db: DB, docs: RemoteDoc[]): void {
   db.transaction(() => {
     for (const d of docs) {
       db.run(
-        `INSERT INTO sync_inbox (doc, tbl, pk, rank, payload, updated_at, device_id, attempts, last_error)
-         VALUES (?,?,?,?,?,?,?,0,NULL)
+        `INSERT INTO sync_inbox (doc, tbl, pk, rank, payload, updated_at, device_id, attempts, last_error, del)
+         VALUES (?,?,?,?,?,?,?,0,NULL,?)
          ON CONFLICT(doc) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at,
-           device_id = excluded.device_id, attempts = 0, last_error = NULL
+           device_id = excluded.device_id, attempts = 0, last_error = NULL, del = excluded.del
          WHERE excluded.updated_at >= sync_inbox.updated_at`,
-        [d.id, d.t, d.k, SYNC_RANK[d.t] ?? 999, JSON.stringify(d), d.u, d.dev]);
+        [d.id, d.t, d.k, SYNC_RANK[d.t] ?? 999, JSON.stringify(d), d.u, d.dev, d.del ? 1 : 0]);
       // كاتب المسودة يصل مع مستندها (المنشأة) · فيعرف الجهاز مسودة من هي
       if (d.by && (d.t === 'contracts' || d.t === 'invoices' || d.t === 'journal_entries')) {
         db.run(`INSERT OR IGNORE INTO row_by (tbl, pk, uid) VALUES (?, ?, ?)`, [d.t, d.k, d.by]);
@@ -468,74 +496,106 @@ const ALL_INSTALLMENTS = '*';
  * تطبيق الصندوق الوارد كله · بترتيب الآباء قبل الأبناء، ومرور ثانٍ وثالث لما انتظر أباً
  * وصل في المرور نفسه (قيد عكسي بعد أصله مثلاً). ما بقي ينتظر أباه يبقى للدورة التالية.
  */
-export function applyInbox(db: DB, deviceId: string): { applied: number; conflicts: number; rejected: number; waiting: number } {
+export interface ApplyResult { applied: number; conflicts: number; rejected: number; waiting: number }
+
+/**
+ * التطبيق خطوات (أعطال ٢٠٢٦-١٠-٠٥: المزامنة لا تحجب الواجهة) · كل صفحة في معاملتها، والالتقاط مطفأ داخلها وحدها،
+ * فما يكتبه المستخدم بين الصفحات يُلتقط ويُرفع كالمعتاد. تُعطي بعد كل صفحة عدد ما طُبّق.
+ */
+function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: number): Generator<number, void> {
   const cache = new Map<string, Set<string>>();
   const money = moneyColumns(db); // مرة لكل تطبيق لا لكل صف
   const joining = getSyncState(db, 'joining') === '1';
-  let applied = 0, conflicts = 0, rejected = 0;
-  const wasOn = captureOn(db);
-  setCapture(db, false); // الوارد لا يرتدّ صداه إلى الطابور الصادر
-  // دفعةٌ سُجّلت على جهاز آخر لا يرفضها فحص «المتبقي» المحلي · يُحدّ المسدَّد بعد التطبيق ويظهر الزائد فائضاً
-  setApplying(db, true);
   const touched = new Set<string>();
-  try {
-    for (let pass = 0; pass < 4; pass++) {
-      let progress = 0;
-      // شواهد الحذف أولاً والأبناء قبل الآباء (المفتاح الأجنبي يمنع حذف أبٍ له أبناء) · ثم الصفوف
-      // والآباء قبل الأبناء · وإلا وصل صفٌّ جديد يحمل رقماً فريداً قبل حذف من كان يحمله فرُفض بلا رجعة
-      // (وجده اختبار الثوابت: عقد حُذف باستعادة ثم أُنشئ غيره بالرقم نفسه)
-      for (const deletes of [true, false]) {
-        const key = deletes ? '(1000 - rank)' : 'rank';
-        let lastKey = -1, lastU = '', lastDoc = '';
-        for (;;) {
-          const page = db.all<{ doc: string; k: number; updated_at: string; payload: string; attempts: number }>(
-            `SELECT doc, ${key} AS k, updated_at, payload, attempts FROM sync_inbox
-             WHERE COALESCE(json_extract(payload, '$.del'), 0) = ? AND (${key}, updated_at, doc) > (?, ?, ?)
-             ORDER BY ${key}, updated_at, doc LIMIT 300`, [deletes ? 1 : 0, lastKey, lastU, lastDoc]);
-          if (!page.length) break;
-          db.transaction(() => {
-            for (const r of page) {
-              const doc = JSON.parse(r.payload) as RemoteDoc;
-              const out = applyOne(db, doc, deviceId, cache, money, joining);
-              if (out === 'retry') {
-                if (r.attempts + 1 >= MAX_ATTEMPTS) {
-                  reject(db, doc, 'سجل أب غير موجود بعد محاولات متكررة');
-                  db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
-                  rejected++;
-                } else {
-                  db.run(`UPDATE sync_inbox SET attempts = attempts + 1, last_error = 'بانتظار سجل أب' WHERE doc = ?`, [r.doc]);
-                }
-                continue;
+  /** معاملةٌ والوارد لا يرتدّ صداه إلى الطابور، ودفعةٌ سُجّلت على جهاز آخر لا يرفضها فحص «المتبقي» المحلي */
+  const quiet = (fn: () => void) => db.transaction(() => {
+    const wasOn = captureOn(db);
+    setCapture(db, false);
+    setApplying(db, true);
+    try { fn(); } finally { setApplying(db, false); setCapture(db, wasOn); }
+  });
+  for (let pass = 0; pass < 4; pass++) {
+    let progress = 0;
+    // شواهد الحذف أولاً والأبناء قبل الآباء (المفتاح الأجنبي يمنع حذف أبٍ له أبناء) · ثم الصفوف
+    // والآباء قبل الأبناء · وإلا وصل صفٌّ جديد يحمل رقماً فريداً قبل حذف من كان يحمله فرُفض بلا رجعة
+    // (وجده اختبار الثوابت: عقد حُذف باستعادة ثم أُنشئ غيره بالرقم نفسه)
+    for (const deletes of [true, false]) {
+      const key = deletes ? '(1000 - rank)' : 'rank';
+      let lastKey = -1, lastU = '', lastDoc = '';
+      for (;;) {
+        // علامة الحذف عمودٌ مفهرس (الهجرة ٢٥) · فلا تُفكّ الحمولات لكل صفحة
+        const page = db.all<{ doc: string; k: number; updated_at: string; payload: string; attempts: number }>(
+          `SELECT doc, ${key} AS k, updated_at, payload, attempts FROM sync_inbox
+           WHERE del = ? AND (${key}, updated_at, doc) > (?, ?, ?)
+           ORDER BY ${key}, updated_at, doc LIMIT ${pageSize}`, [deletes ? 1 : 0, lastKey, lastU, lastDoc]);
+        if (!page.length) break;
+        quiet(() => {
+          for (const r of page) {
+            const doc = JSON.parse(r.payload) as RemoteDoc;
+            const res = applyOne(db, doc, deviceId, cache, money, joining);
+            if (res === 'retry') {
+              if (r.attempts + 1 >= MAX_ATTEMPTS) {
+                reject(db, doc, 'سجل أب غير موجود بعد محاولات متكررة');
+                db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
+                out.rejected++;
+              } else {
+                db.run(`UPDATE sync_inbox SET attempts = attempts + 1, last_error = 'بانتظار سجل أب' WHERE doc = ?`, [r.doc]);
               }
-              db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
-              progress++;
-              if (out === 'applied' || out === 'conflict-remote') markTouched(db, doc, touched);
-              if (out === 'applied') applied++;
-              else if (out === 'conflict-local' || out === 'conflict-remote') { conflicts++; if (out === 'conflict-remote') applied++; }
-              else if (out === 'rejected') rejected++;
+              continue;
             }
-          });
-          const last = page[page.length - 1];
-          lastKey = last.k; lastU = last.updated_at; lastDoc = last.doc;
-        }
+            db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
+            progress++;
+            if (res === 'applied' || res === 'conflict-remote') markTouched(db, doc, touched);
+            if (res === 'applied') out.applied++;
+            else if (res === 'conflict-local' || res === 'conflict-remote') { out.conflicts++; if (res === 'conflict-remote') out.applied++; }
+            else if (res === 'rejected') out.rejected++;
+          }
+        });
+        const last = page[page.length - 1];
+        lastKey = last.k; lastU = last.updated_at; lastDoc = last.doc;
+        yield out.applied + out.rejected;
       }
-      if (!progress) break;
-      const left = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
-      if (!left) break;
     }
-    resolvePendingReversals(db);
-  } finally {
-    setApplying(db, false);
-    // المسدَّد والحالة من الدفعات للأقساط التي مسّها الوارد · وما حُسب لا يرتدّ إلى الطابور
-    try { recomputeInstallments(db, touched.has(ALL_INSTALLMENTS) ? undefined : [...touched]); }
-    finally { setCapture(db, wasOn); }
+    if (!progress) break;
+    const left = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
+    if (!left) break;
   }
-  const waiting = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
+  // المسدَّد والحالة من الدفعات للأقساط التي مسّها الوارد · وما حُسب لا يرتدّ إلى الطابور
+  quiet(() => {
+    resolvePendingReversals(db);
+    recomputeInstallments(db, touched.has(ALL_INSTALLMENTS) ? undefined : [...touched]);
+  });
+  out.waiting = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
   // قيدٌ وصل ومستنده لا يصل (حذفته استعادة على جهاز آخر) يبقى ويُعلَّم للمراجعة (orphans.ts) ·
   // بعد اكتمال الوارد لا قبله، فالقيد يسبق مستنده في ترتيب التطبيق
   // جهاز العضو يحمل جزءاً من الدفتر بصلاحيته · فلا يُعلَّم ما غاب مصدره عنه يتيماً
-  if ((applied || rejected) && !waiting && !getSyncState(db, 'membership')) markOrphans(db, 'وصل بالمزامنة');
-  return { applied, conflicts, rejected, waiting };
+  if ((out.applied || out.rejected) && !out.waiting && !getSyncState(db, 'membership')) markOrphans(db, 'وصل بالمزامنة');
+}
+
+/** التطبيق كله في نداءٍ واحد · للاختبارات والأدوات */
+export function applyInbox(db: DB, deviceId: string): ApplyResult {
+  const out: ApplyResult = { applied: 0, conflicts: 0, rejected: 0, waiting: 0 };
+  for (const _ of applySteps(db, deviceId, out, 300)) { /* حتى النهاية */ }
+  return out;
+}
+
+/** يفسح للواجهة بين صفحتين · مهلة صفرية تسمح للرسم واللمس */
+const yieldToUi = () => new Promise<void>((r) => setTimeout(r, 0));
+
+/**
+ * التطبيق بصفحات صغيرة يفسح للواجهة بينها (أعطال ٢٠٢٦-١٠-٠٥) · onStep بعد كل صفحة بعدد ما طُبّق ومجموعه،
+ * فيظهر التقدم وتتحدث الشاشات تدريجياً.
+ */
+export async function applyInboxAsync(
+  db: DB, deviceId: string, onStep?: (done: number, total: number) => void, pause: () => Promise<void> = yieldToUi,
+): Promise<ApplyResult> {
+  const out: ApplyResult = { applied: 0, conflicts: 0, rejected: 0, waiting: 0 };
+  const total = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
+  for (const done of applySteps(db, deviceId, out, 60)) {
+    onStep?.(done, total);
+    await pause();
+  }
+  return out;
 }
 
 /* ═══════════ اعتماد نسخة مستعادة واستبدال السحابة بها ═══════════ */
@@ -697,6 +757,10 @@ export interface SyncOptions {
   maxRetries?: number;
   /** أول مهلة · تتضاعف حتى دقيقة */
   baseDelayMs?: number;
+  /** يُستدعى أثناء تطبيق الوارد (كل بضع ثوان) فتتحدث الشاشات بما وصل */
+  onApplied?: () => void;
+  /** للاختبار: الإفساح بين صفحات التطبيق */
+  pause?: () => Promise<void>;
 }
 
 const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -757,6 +821,7 @@ export async function syncOnce(
 
   // إسقاطات الأعضاء التي رفضها جهاز المالك قبل إصلاح السحب ليست بيانات ناقصة · تُرفع من سجل المرفوض
   db.run(`DELETE FROM sync_rejects WHERE tbl LIKE '%~pub'`);
+  requeueForAcl(db);
 
   // ٠) حرف الجهاز في ترقيم الحساب قبل أي كتابة · مرة واحدة (numbering.ts)
   if (remote.registerDevice && !deviceLetterAssigned(db)) {
@@ -781,9 +846,14 @@ export async function syncOnce(
     if (!(more ?? docs.length >= PULL_PAGE)) break;
   }
 
-  // ٢) التطبيق · ثم ينتهي الانضمام بعد أول تطبيق كامل لما في الحساب
+  // ٢) التطبيق بصفحات يفسح للواجهة بينها، والتقدم ظاهر، والشاشات تتحدث تدريجياً · ثم ينتهي الانضمام
   onProgress?.('جاري تطبيق الوارد');
-  const a = applyInbox(db, deviceId);
+  let lastShown = 0;
+  const a = await applyInboxAsync(db, deviceId, (done, total) => {
+    onProgress?.('جاري تطبيق الوارد · ' + done + ' من ' + total);
+    const now = Date.now();
+    if (opts.onApplied && now - lastShown > 2500) { lastShown = now; opts.onApplied(); }
+  }, opts.pause);
   if (getSyncState(db, 'joining') === '1') setSyncState(db, 'joining', null);
 
   // ٣) الدفع · على دفعات بتقدّم ظاهر «ن من م»، والدفعة تصغر عند الانشغال

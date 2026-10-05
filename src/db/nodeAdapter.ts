@@ -11,18 +11,24 @@ export function openNodeDb(path: string): DB {
     exec: (sql: string) => raw.exec(sql),
   };
   const transaction = makeTransactionRunner(base);
+  // العبارات المحضَّرة تُحفظ كما في expoAdapter
+  const cache = new Map<string, ReturnType<typeof raw.prepare>>();
+  const prep = (sql: string) => {
+    let s = cache.get(sql);
+    if (!s) { s = raw.prepare(sql); cache.set(sql, s); if (cache.size > 96) cache.delete(cache.keys().next().value as string); }
+    return s;
+  };
   const db: DB = {
     exec: base.exec,
     run(sql: string, params: SqlParams = []) {
-      raw.prepare(sql).run(...(params as never[]));
+      prep(sql).run(...(params as never[]));
     },
     get<T>(sql: string, params: SqlParams = []): T | undefined {
-      const row = raw.prepare(sql).get(...(params as never[]));
+      const row = prep(sql).get(...(params as never[]));
       return row === undefined ? undefined : ({ ...(row as object) } as T);
     },
     all<T>(sql: string, params: SqlParams = []): T[] {
-      return raw
-        .prepare(sql)
+      return prep(sql)
         .all(...(params as never[]))
         .map((r: unknown) => ({ ...(r as object) })) as T[];
     },

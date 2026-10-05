@@ -1,5 +1,6 @@
 import type { DB } from './adapter';
 import { MIGRATIONS, SCHEMA_VERSION } from './schema';
+import { applyPlannerStats } from './plannerStats';
 
 export class NewerSchemaError extends Error {
   constructor(public found: number, public supported: number) {
@@ -29,7 +30,8 @@ export function currentSchemaVersion(db: DB): number {
 export function migrate(db: DB, afterStep?: (version: number) => void): void {
   const found = currentSchemaVersion(db);
   if (found > SCHEMA_VERSION) throw new NewerSchemaError(found, SCHEMA_VERSION);
-  if (found === SCHEMA_VERSION) return;
+  // إحصاءات المخطِّط بعد كل فتح وهجرة · فهارسها قائمة الآن (plannerStats.ts)
+  if (found === SCHEMA_VERSION) { applyPlannerStats(db); return; }
   // بعض الهجرات تعيد بناء جداول لها أبناء بمفاتيح أجنبية · نعطل الفحص أثناءها فقط
   // (والأمر لا أثر له داخل معاملة، فيُقدَّم عليها)
   db.exec('PRAGMA foreign_keys = OFF');
@@ -44,4 +46,5 @@ export function migrate(db: DB, afterStep?: (version: number) => void): void {
   } finally {
     db.exec('PRAGMA foreign_keys = ON');
   }
+  applyPlannerStats(db);
 }

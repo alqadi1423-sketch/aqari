@@ -28,29 +28,57 @@ export interface AppDB extends DB {
   reopen(): void;
 }
 
+/** حدّ العبارات المحضَّرة المحفوظة · الأقدم استعمالاً يُنهى أولاً */
+const STATEMENT_CACHE_MAX = 96;
+
 export function openExpoDb(name: string = DB_NAME): AppDB {
   let raw = SQLite.openDatabaseSync(name);
   const base = { exec: (sql: string) => raw.execSync(sql) };
   const transaction = makeTransactionRunner(base);
 
+  // العبارات المحضَّرة تُحفظ (أعطال ٢٠٢٦-١٠-٠٥: تحضير نصّ الخصم الطويل في كل نداء كان أكثر كلفة المزامنة) ·
+  // والمكتبة تعيد ضبط العبارة وتمسح قيمها قبل كل تشغيل، وتُعاد هنا بعده فلا تبقى قراءة معلّقة
+  const cache = new Map<string, SQLite.SQLiteStatement>();
+  const stmt = (sql: string): SQLite.SQLiteStatement => {
+    let s = cache.get(sql);
+    if (s) { cache.delete(sql); cache.set(sql, s); return s; }
+    s = raw.prepareSync(sql);
+    cache.set(sql, s);
+    if (cache.size > STATEMENT_CACHE_MAX) {
+      const [k, old] = cache.entries().next().value as [string, SQLite.SQLiteStatement];
+      cache.delete(k);
+      try { old.finalizeSync(); } catch { /* أُنهيت */ }
+    }
+    return s;
+  };
+  const dropCache = () => {
+    for (const s of cache.values()) { try { s.finalizeSync(); } catch { /* أُنهيت */ } }
+    cache.clear();
+  };
+  const execute = <T, R>(sql: string, params: SqlParams, read: (r: SQLite.SQLiteExecuteSyncResult<T>) => R): R => {
+    const r = stmt(sql).executeSync<T>(params as SQLite.SQLiteBindParams);
+    try { return read(r); } finally { try { r.resetSync(); } catch { /* لا شيء معلّق */ } }
+  };
+
   const db: AppDB = {
     exec: (sql) => timed(sql, () => raw.execSync(sql)),
     run(sql: string, params: SqlParams = []) {
-      timed(sql, () => raw.runSync(sql, params as SQLite.SQLiteBindParams));
+      timed(sql, () => execute(sql, params, () => undefined));
     },
     get<T>(sql: string, params: SqlParams = []): T | undefined {
-      const row = timed(sql, () => raw.getFirstSync<T>(sql, params as SQLite.SQLiteBindParams));
+      const row = timed(sql, () => execute<T, T | null>(sql, params, (r) => r.getFirstSync()));
       return row === null ? undefined : (row as T);
     },
     all<T>(sql: string, params: SqlParams = []): T[] {
-      return timed(sql, () => raw.getAllSync<T>(sql, params as SQLite.SQLiteBindParams));
+      return timed(sql, () => execute<T, T[]>(sql, params, (r) => r.getAllSync()));
     },
     transaction,
     // على خيط القاعدة الأصلي · للعبارات الثقيلة كـ VACUUM INTO فلا يُحتجز خيط الواجهة
     execAsync: (sql) => raw.execAsync(sql),
-    close: () => raw.closeSync(),
+    close: () => { dropCache(); raw.closeSync(); },
     databasePath: raw.databasePath,
     reopen() {
+      dropCache();
       try { raw.closeSync(); } catch { /* مغلقة بالفعل */ }
       raw = SQLite.openDatabaseSync(name);
       db.databasePath = raw.databasePath;

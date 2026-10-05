@@ -112,7 +112,8 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
 
   /* ١) القيود المرحّلة */
   const e = within('e.id', scope ? scope.entryIds ?? [] : undefined);
-  const unbalanced = db.all<{ no: string; diff: number }>(
+  const none = (w: { sql: string }) => w.sql === '0';
+  const unbalanced = none(e) ? [] : db.all<{ no: string; diff: number }>(
     `SELECT e.no, SUM(l.debit_halalas - l.credit_halalas) AS diff
      FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
      WHERE e.status = 'مرحّل' AND ${e.sql}
@@ -124,7 +125,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
       unbalanced.length));
   }
 
-  const lineless = db.all<{ no: string }>(
+  const lineless = none(e) ? [] : db.all<{ no: string }>(
     `SELECT e.no FROM journal_entries e
      WHERE e.status = 'مرحّل' AND ${e.sql}
        AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = e.id)
@@ -137,7 +138,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
   /* ٢) سقف القسط بخصم الدفتر · النص نفسه الذي تقرأ به الشاشات ومحفّزات السقف، ومحصور في النطاق */
   const ids = scope ? scope.installmentIds ?? [] : undefined;
   const inst = within('i.id', ids);
-  const over = db.all<{ tenant: string | null; contract_no: string | null; due: string; amount: number; paid: number; disc: number }>(
+  const over = none(inst) ? [] : db.all<{ tenant: string | null; contract_no: string | null; due: string; amount: number; paid: number; disc: number }>(
     `SELECT tenant, contract_no, due, amount, paid, disc FROM (
        SELECT c.tenant_name AS tenant, c.contract_no, i.due_date AS due,
               i.amount_halalas AS amount, i.paid_halalas AS paid, ${INSTALLMENT_DISCOUNT_SQL} AS disc
@@ -156,7 +157,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
 
   /* ٣) دفعات سالبة */
   const pay = within('p.id', scope ? scope.paymentIds ?? [] : undefined);
-  const negative = db.all<{ tenant: string | null; date: string }>(
+  const negative = none(pay) ? [] : db.all<{ tenant: string | null; date: string }>(
     `SELECT c.tenant_name AS tenant, p.date FROM contract_payments p
      LEFT JOIN contracts c ON c.id = p.contract_id
      WHERE p.installment_id IS NOT NULL AND p.cancelled_at IS NULL AND (p.net_halalas < 0 OR p.discount_halalas < 0) AND ${pay.sql}
@@ -169,7 +170,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
 
   /* ٣ب) دفعة بنوع خصم تتجاوز وحدها مبلغ قسطها · وهو أول ما يفحصه محفّز إدراج الدفعة، فلا تمرّ
      الاستعادة بما ترفضه المزامنة · و«تنزيل من القسط» نزل من المبلغ فلا يُضاف خصمه ثانية */
-  const big = db.all<{ tenant: string | null; date: string; total: number; amount: number }>(
+  const big = none(pay) ? [] : db.all<{ tenant: string | null; date: string; total: number; amount: number }>(
     `SELECT c.tenant_name AS tenant, p.date,
             p.net_halalas + (CASE WHEN p.discount_kind = '${DISCOUNT_AFTER_DUE}' THEN p.discount_halalas ELSE 0 END) AS total,
             i.amount_halalas AS amount
@@ -190,7 +191,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
   /* ٥) نوع الخصم · معروف ولا يكون بلا خصم، وخصم «بعد الاستحقاق» له سطر 4900 بقيمته في الدفتر:
      في قيد الدفعة نفسه أو في قيد خصم مربوط بها · كما يشترط الحارس عند الحفظ */
   const kinds = DISCOUNT_KINDS.map(() => '?').join(',');
-  const badKind = db.all<{ tenant: string | null; date: string }>(
+  const badKind = none(pay) ? [] : db.all<{ tenant: string | null; date: string }>(
     `SELECT c.tenant_name AS tenant, p.date FROM contract_payments p
      LEFT JOIN contracts c ON c.id = p.contract_id
      WHERE p.discount_kind IS NOT NULL AND p.cancelled_at IS NULL AND (p.discount_kind NOT IN (${kinds}) OR p.discount_halalas <= 0) AND ${pay.sql}
@@ -200,7 +201,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
     out.push('دفعة بنوع خصم غير معروف أو بلا خصم: ' + listOf(
       badKind.slice(0, SHOW).map((r) => `${r.tenant || 'بلا مستأجر'} · ${r.date}`), badKind.length));
   }
-  const unbooked = db.all<{ tenant: string | null; date: string; disc: number; booked: number }>(
+  const unbooked = none(pay) ? [] : db.all<{ tenant: string | null; date: string; disc: number; booked: number }>(
     `SELECT tenant, date, disc, booked FROM (
        SELECT c.tenant_name AS tenant, p.date, p.discount_halalas AS disc,
               COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)

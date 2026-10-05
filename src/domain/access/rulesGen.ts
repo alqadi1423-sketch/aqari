@@ -126,6 +126,11 @@ ${writesFns()}
         && after.d.reversed_by is string;
     }
 
+    // وجهاز المالك يعيد كتابة حقول الرؤية وحدها على قيد مرحّل حين يتسع قرّاؤه (engine.requeueForAcl) · ومحتواه كما هو
+    function orgOnlyVisibility() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['u', 'dev', 'ts', 'op', 'g', 'pids']);
+    }
+
     // «حذف حسابي» للمالك: نافذة ساعة بطلبٍ بوقت الخادم كما في users/{uid}
     function orgDeletionOpen(org) {
       let p = /databases/$(database)/documents/orgs/$(org)/meta/deletion;
@@ -140,7 +145,7 @@ ${writesFns()}
         allow create: if validOrgRow(rowId) && (orgOwner(org) || memberCreates(org));
         allow update: if validOrgRow(rowId)
           && resource.data.t != 'audit_log'
-          && (!isPostedEntry(resource.data) || orgOnlyLinksReversal())
+          && (!isPostedEntry(resource.data) || orgOnlyLinksReversal() || (orgOwner(org) && orgOnlyVisibility()))
           && (orgOwner(org) || memberUpdates(org));
         allow delete: if orgOwner(org) && orgDeletionOpen(org);
       }

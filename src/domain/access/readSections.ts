@@ -106,10 +106,20 @@ export function journalSection(srcType: string | null | undefined): SectionKey {
 }
 
 /** الأقسام التي تقرأ صفاً بعينه */
+/** جدول المستند الذي يُنشئ قيود كل قسم · قارئ المستند المالي يقرأ قيده */
+const JOURNAL_SOURCE: Partial<Record<SectionKey, string>> = {
+  collect: 'contract_payments', deposits: 'deposit_settlements', reservations: 'reservations', claims: 'claims',
+  invoices: 'invoices', purchases: 'purchases', banks: 'bank_tx',
+};
+
 export function readSectionsOf(table: string, row: Record<string, unknown> | null): SectionKey[] {
   if (table === 'journal_entries') {
+    // القيد يقرؤه الدفتر والتقارير وقسم مصدره، وكل قسم مالي يقرأ مستنده (أعطال ٢٠٢٦-١٠-٠٥: عضو العقود
+    // يقرأ الدفعة ولا يصله قيدها، فتنتظر الدفعة أباها بلا نهاية ويظهر القسط غير مسدَّد والخصم متبقياً)
     const own = journalSection(row?.src_type as string | null);
-    return [...new Set<SectionKey>([...MONEY_BOOKS, own])];
+    const src = JOURNAL_SOURCE[own];
+    const viaSource = src ? (READ_TABLE[src] ?? []).filter((x) => MONEY_SECTIONS.has(x)) : [];
+    return [...new Set<SectionKey>([...MONEY_BOOKS, own, ...viaSource])];
   }
   return READ_TABLE[table] ?? [];
 }

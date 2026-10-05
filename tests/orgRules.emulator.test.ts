@@ -99,8 +99,12 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     expect(ids.has('properties__P2')).toBe(false);
     expect(docs.some((x) => x.t === 'audit_log')).toBe(false); // ليس له سجل العمليات
     expect(docs.some((x) => x.t === 'purchases')).toBe(false);
-    // قيود التحصيل والتأمين ليست له: الدفتر والتقارير ليست من أقسامه، والتأمين ليس له
-    expect(docs.filter((x) => x.t === 'journal_entries').every((x) => x.g!.includes('collect|P1'))).toBe(true);
+    // القيود: ما يقرأ مستنده من أقسامه وحده (قيد الدفعة للتحصيل والعقود، وقيد تأمين العقد للعقود) ·
+    // لا قيد من عقار آخر ولا قيدٌ للدفتر وحده (أعطال ٢٠٢٦-١٠-٠٥: قارئ المستند المالي يقرأ قيده)
+    const entries = docs.filter((x) => x.t === 'journal_entries');
+    expect(entries.length).toBeGreaterThan(0);
+    expect(entries.every((x) => x.g!.includes('collect|P1') || x.g!.includes('contracts|P1'))).toBe(true);
+    expect(entries.some((x) => x.pids!.includes('P2'))).toBe(false);
   });
 
   test('المحصِّل بلا عضوية لا يقرأ شيئاً · والاستعلام الأوسع من رموزه يُرفض', async () => {
