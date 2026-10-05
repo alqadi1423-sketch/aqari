@@ -25,13 +25,26 @@ function triplet(n: number): string {
   return parts.join(' و');
 }
 
-/** كلمة المرتبة بعدد أصحابها: ألف/ألفان/آلاف/ألفاً */
+/** المئات مضافةً إلى ما بعدها: «مئتا ألف» لا «مئتان ألف» */
+const HUNDREDS_CONSTRUCT = HUNDREDS.map((h) => (h === 'مئتان' ? 'مئتا' : h));
+
+/**
+ * كلمة المرتبة بعدد أصحابها (المراجعة ٤.١٣) · المعدود يتبع آخر ما يليه من العدد:
+ * ١ ألف · ٢ ألفان · ٣–١٠ آلاف · ١١–٩٩ ألفاً · والمئات الصحيحة تضاف إليه مفرداً «مئة ألف، مئتا ألف»،
+ * وما زاد عليها بواحد أو اثنين «مئة ألف وألف، مئتا ألف وألفان».
+ */
 function scaled(n: number, one: string, two: string, few: string, many: string): string {
-  if (n === 1) return one;
-  if (n === 2) return two;
-  const t = triplet(n);
-  if (n >= 3 && n <= 10) return t + ' ' + few;
-  return t + ' ' + many;
+  const h = Math.floor(n / 100);
+  const r = n % 100;
+  const small = (k: number): string => {
+    if (k === 1) return one;
+    if (k === 2) return two;
+    return triplet(k) + ' ' + (k <= 10 ? few : many);
+  };
+  if (!h) return small(r);
+  if (!r) return HUNDREDS_CONSTRUCT[h] + ' ' + one;
+  if (r <= 2) return HUNDREDS_CONSTRUCT[h] + ' ' + one + ' و' + small(r);
+  return HUNDREDS[h] + ' و' + small(r);
 }
 
 /** عدد صحيح ٠ فأكثر بالحروف */
