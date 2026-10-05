@@ -1,0 +1,36 @@
+# الاختبارات كاملة على لينكس مع كل رفع (قرار المالك ٢٠٢٦-١٠-٠٥) · بيانات الاختبارات مصطنعة كلها،
+# ولا سرّ هنا: محاكي Firestore بمشروع تجريبي demo-aqari لا يصل إلى السحابة.
+name: الاختبارات
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # توقيت الرياض كجهاز المالك · واختبارات التواريخ تثبّته في ملفاتها أيضاً
+      TZ: Asia/Riyadh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: تثبيت الحزم
+        run: npm ci
+
+      - name: فحص الأنواع
+        run: npx tsc --noEmit
+
+      - name: الاختبارات كاملة مع محاكي Firestore
+        run: npx --yes firebase-tools@15.32.1 emulators:exec --only firestore --project demo-aqari "npx jest -i"
