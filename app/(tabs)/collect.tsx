@@ -65,7 +65,8 @@ const InstCard = React.memo(function InstCard({ x, onPay, onWa, onSms, onReceipt
   onSms: (x: RowItem) => void;
   onReceipt: (x: RowItem) => void;
 }) {
-  const payable = canPay && x.remaining > 0 && x.status !== 'ملغية' && x.contractStatus !== 'ملغى';
+  // متأخرات العقد الملغى تُحصَّل (المراجعة ٤.٩) · والقسط الملغى معه لا
+  const payable = canPay && x.remaining > 0 && x.status !== 'ملغية';
   /**
    * ميزان الحالة: الاتصال يصح ما دام هناك جوال · والمطالبة برسالة لا تصح
    * لقسط مسدَّد أو ملغى (نصّها يحمل المتبقي) · وسند القبض لا يُعرض لقسط لم يُدفع منه شيء.

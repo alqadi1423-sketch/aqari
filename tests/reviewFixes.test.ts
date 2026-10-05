@@ -515,3 +515,57 @@ describe('٤.٦ الاستعادة من السلة تعيد القيود كما 
     expect(bankBalance(db, bank)).toBe(b0);
   });
 });
+
+describe('٤.٩ و٤.١٠ و٤.١١ المتبقي والتأخير بدالة واحدة مع شاشة التحصيل', () => {
+  const T = '2026-06-15';
+  const setup = async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const db = memDb();
+    const cid = confirmContract(db, contractInput(addUnit(db, addProperty(db)), { tenant: 'مستأجر متأخرات', start: '2026-01-01', end: '2026-12-31', valueHalalas: 1200000, cycle: 'شهرية', depositHalalas: 0 }));
+    const insts = db.all<{ id: string; due_date: string }>(`SELECT id, due_date FROM contract_installments WHERE contract_id = ? ORDER BY due_date`, [cid]);
+    return { db, cid, insts };
+  };
+  const late = async (db: unknown) => {
+    const { computeReminders } = await import('@/domain/reminders');
+    return computeReminders(db as never, T).filter((r) => r.kind === 'دفعة متأخرة').map((r) => r.entityId);
+  };
+
+  test('٤.٩ عقد ملغى: متأخراته تظهر في التنبيهات وتُحصَّل', async () => {
+    const { db, cid, insts } = await setup();
+    const { cancelContract, recordRentPayment } = await import('@/domain/contracts/service');
+    cancelContract(db, cid, { date: '2026-03-10', reason: 'مغادرة', installmentsFate: 'cancel', settle: false, deductionHalalas: 0, refundHalalas: 0, deductionReason: '' });
+    // يناير وفبراير ومارس قبل الإلغاء باقية دَيناً
+    expect(await late(db)).toEqual([insts[0].id, insts[1].id, insts[2].id]);
+    recordRentPayment(db, cid, { installmentId: insts[0].id, period: 'يناير', date: T, lines: [{ method: 'cash', amountHalalas: 100000 }], discountHalalas: 0, notes: '' });
+    expect(await late(db)).toEqual([insts[1].id, insts[2].id]);
+    // بلا قسط محدد لا دفعة على عقد ملغى
+    expect(() => recordRentPayment(db, cid, { period: 'عام', date: T, lines: [{ method: 'cash', amountHalalas: 1000 }], discountHalalas: 0, notes: '' })).toThrow(/ملغى/);
+  });
+
+  test('٤.١٠ قسط سُدّد مع خصم ليس متأخراً · و{المبلغ} يطرح الخصم', async () => {
+    const { db, cid, insts } = await setup();
+    const { recordRentPayment } = await import('@/domain/contracts/service');
+    const { templateContext } = await import('@/domain/templates');
+    const { DISCOUNT_AFTER_DUE } = await import('@/domain/contracts/installments');
+    for (const i of insts.slice(0, 5)) {
+      recordRentPayment(db, cid, { installmentId: i.id, period: i.due_date, date: i.due_date, lines: [{ method: 'cash', amountHalalas: 90000 }], discountHalalas: 10000, discountKind: DISCOUNT_AFTER_DUE, notes: '' });
+    }
+    // يونيو: نصفه مسدَّد وله خصم ١٠٠
+    recordRentPayment(db, cid, { installmentId: insts[5].id, period: 'يونيو', date: T, lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 10000, discountKind: DISCOUNT_AFTER_DUE, notes: '' });
+    expect(await late(db)).toEqual([insts[5].id]); // يونيو وحده: بقي عليه ٤٠٠ بعد الخصم
+    expect(templateContext(db, cid)['{المبلغ}']).toBe('400.00');
+  });
+
+  test('٤.١١ الموعد المتفق عليه والمهلة: لا «دفعة متأخرة» قبلهما · والإشعار بالموعد المتفق عليه', async () => {
+    const { db, insts } = await setup();
+    const { computeSchedule } = await import('@/domain/reminders');
+    for (const i of insts.slice(0, 5)) db.run(`UPDATE contract_installments SET paid_halalas = amount_halalas, status = 'مدفوعة' WHERE id = ?`, [i.id]);
+    db.run(`UPDATE contract_installments SET agreed_date = '2026-06-25' WHERE id = ?`, [insts[5].id]); // يونيو أُجّل
+    db.run(`UPDATE contract_installments SET grace_until = '2026-07-05' WHERE id = ?`, [insts[6].id]);
+    expect(await late(db)).toEqual([]);
+    const fire = computeSchedule(db, T).find((s) => s.entityId === insts[5].id);
+    expect(fire?.body).toContain('25/06/2026');
+  });
+});

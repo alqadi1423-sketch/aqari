@@ -4,7 +4,7 @@
 import type { DB } from '../db/adapter';
 import { today, daysBetween } from './dates';
 import { unitActiveReservation, unitCurrentContract, expireOldReservations } from './contracts/rules';
-import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining } from './contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentState } from './contracts/installments';
 
 export interface InstallmentView {
   installmentId: string;
@@ -57,21 +57,9 @@ export function allInstallments(db: DB, T: string = today()): InstallmentView[] 
     const amount = Number(r.amount);
     const paid = Number(r.paid);
     const discount = Number(r.discount);
-    // المتبقّي = القسط ناقص المسدَّد ناقص الخصم · قسطٌ خُصم بقيته ليس متأخراً
-    const remaining = installmentRemaining(amount, paid, discount);
-    // الموعد المتفق عليه يحل محل الاستحقاق · والمهلة تمنع احتساب التأخر قبلها
-    const effectiveDue = r.agreedDate || r.dueDate;
-    let daysLate = effectiveDue ? daysBetween(T, effectiveDue) : 0;
-    if (r.graceUntil && T <= r.graceUntil) daysLate = Math.min(daysLate, 0);
-    let displayStatus: string;
-    let cls: InstallmentView['cls'];
-    if (r.status === 'ملغية') { displayStatus = 'ملغاة'; cls = 'mut'; }
-    else if (remaining <= 0) { displayStatus = 'مدفوعة'; cls = 'paid'; }
-    else if (paid > 0 && daysLate > 0) { displayStatus = 'مدفوعة جزئياً · متأخرة ' + daysLate + ' يوماً'; cls = 'late'; }
-    else if (paid > 0) { displayStatus = 'مدفوعة جزئياً'; cls = 'due'; }
-    else if (daysLate > 0) { displayStatus = 'متأخرة ' + daysLate + ' يوماً'; cls = 'late'; }
-    else { displayStatus = 'مستحقة'; cls = 'due'; }
-    return { ...r, amount, paid, discount, remaining, daysLate, displayStatus, cls, effectiveDue };
+    // الدالة الواحدة مع التنبيهات والرسائل (المراجعة ٤.١٠ و٤.١١)
+    const st = installmentState({ dueDate: r.dueDate, agreedDate: r.agreedDate, graceUntil: r.graceUntil, amount, paid, discount, status: r.status }, T);
+    return { ...r, amount, paid, discount, ...st };
   });
 }
 

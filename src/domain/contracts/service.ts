@@ -467,7 +467,8 @@ export interface RentPaymentInput {
 export function recordRentPayment(db: DB, contractId: string, input: RentPaymentInput): string {
   const c = getContract(db, contractId);
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
-  if (c.status === 'ملغى') throw new RuleViolation('العقد ملغى');
+  // العقد الملغى تبقى أقساطه السابقة لإلغائه دَيناً يُحصَّل بقسطه المحدد (المراجعة ٤.٩)
+  if (c.status === 'ملغى' && !input.installmentId) throw new RuleViolation('العقد ملغى · التحصيل على أقساطه القائمة وحدها، فاختر القسط');
   const rawLines = input.lines.filter((l) => (l.amountHalalas || 0) > 0);
   if (!rawLines.length) throw new RuleViolation('أدخل مبلغاً واحداً على الأقل');
   for (const l of rawLines) {
@@ -485,12 +486,13 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
   if (kind === DISCOUNT_REDUCES_INSTALLMENT && !input.installmentId)
     throw new RuleViolation('التنزيل من قيمة القسط يحتاج قسطاً محدداً');
   if (input.installmentId) {
-    const cur = db.get<{ amount_halalas: number; paid_halalas: number; discount: number }>(
-      `SELECT i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount
+    const cur = db.get<{ amount_halalas: number; paid_halalas: number; discount: number; status: string }>(
+      `SELECT i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount, i.status
        FROM contract_installments i WHERE i.id = ? AND i.contract_id = ?`,
       [input.installmentId, contractId]
     );
     if (!cur) throw new RuleViolation('القسط غير موجود على هذا العقد');
+    if (cur.status === 'ملغية') throw new RuleViolation('القسط ملغى مع العقد · لا تحصيل عليه');
     const remaining = installmentRemaining(Number(cur.amount_halalas), Number(cur.paid_halalas), Number(cur.discount));
     if (remaining <= 0) throw new RuleViolation('القسط مسدَّد بالكامل · لا متبقّي عليه');
     if (received + discountIn > remaining)
@@ -666,7 +668,7 @@ export function recordBulkRentPayment(
 ): string {
   const c = getContract(db, contractId);
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
-  if (c.status === 'ملغى') throw new RuleViolation('العقد ملغى');
+  // العقد الملغى: التوزيع على أقساطه القائمة غير الملغاة وحدها (المراجعة ٤.٩)
   const rawLines = input.lines.filter((l) => (l.amountHalalas || 0) > 0);
   if (!rawLines.length) throw new RuleViolation('أدخل مبلغاً واحداً على الأقل');
   for (const l of rawLines) {

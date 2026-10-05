@@ -617,8 +617,10 @@ function ContractDetailSheet({
     ).map((r) => r.iid)
   );
   // القسمان: المستحق غير المسدَّد أولاً · ثم سجل المسدَّد كلياً والملغى
-  const dueInsts = insts.filter((i) => Number(i.amount_halalas) - Number(i.paid_halalas) > 0 && i.status !== 'ملغية');
-  const historyInsts = insts.filter((i) => Number(i.amount_halalas) - Number(i.paid_halalas) <= 0 || i.status === 'ملغية');
+  // المتبقي يطرح الخصم (المراجعة ٤.١٠) · فالمسدَّد مع خصم في السجل لا في المستحق
+  const instRem = (i: (typeof insts)[number]) => installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount));
+  const dueInsts = insts.filter((i) => instRem(i) > 0 && i.status !== 'ملغية');
+  const historyInsts = insts.filter((i) => instRem(i) <= 0 || i.status === 'ملغية');
   const occupants = occupantsOf(db, contractId);
   const settlement = db.get<{ date: string; deduction_halalas: number; deduction_reason: string; refund_halalas: number; notes: string }>(
     `SELECT * FROM deposit_settlements WHERE contract_id = ?`, [contractId]
@@ -648,7 +650,8 @@ function ContractDetailSheet({
   const renderInst = (i: (typeof insts)[number]) => {
     const remaining = installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount));
     // زر «تحصيل» تسجيل دفعة · لصاحب الإضافة في التحصيل
-    const payable = collectPerm.add && remaining > 0 && i.status !== 'ملغية' && c.status !== 'ملغى';
+    // متأخرات العقد الملغى تُحصَّل (المراجعة ٤.٩)
+    const payable = collectPerm.add && remaining > 0 && i.status !== 'ملغية';
     return (
       <Pressable key={i.id} onPress={() => setInstFor(i.id)}
         style={{ paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.line }}>

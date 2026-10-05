@@ -6,6 +6,7 @@ import type { DB } from '../db/adapter';
 import { getSetting } from '../repos/settings';
 import { expiryLabel } from './contracts/rules';
 import { today, daysBetween, dfmt } from './dates';
+import { INSTALLMENT_DISCOUNT_SQL, COLLECTIBLE_INSTALLMENT_SQL, installmentState } from './contracts/installments';
 
 export interface Reminder {
   kind: 'دفعة متأخرة' | 'دفعة تقترب' | 'عقد يقارب الانتهاء' | 'مستند ينتهي';
@@ -18,6 +19,22 @@ export interface Reminder {
 }
 
 /** التنبيهات المستحقة الآن وما سيستحق ضمن المهل · منطق dueReminders في النموذج */
+/** أقساط قائمة للتحصيل بوقائعها · للتنبيهات والإشعارات */
+function installmentFacts(db: DB) {
+  return db.all<{
+    id: string; dueDate: string; agreedDate: string | null; graceUntil: string | null; amount: number; paid: number;
+    discount: number; status: string; tenant: string; unitNo: string | null; prop: string | null; contractNo: string | null;
+  }>(
+    `SELECT i.id, i.due_date AS dueDate, i.agreed_date AS agreedDate, i.grace_until AS graceUntil,
+            i.amount_halalas AS amount, i.paid_halalas AS paid, ${INSTALLMENT_DISCOUNT_SQL} AS discount, i.status,
+            c.tenant_name AS tenant, u.unit_no AS unitNo, p.name AS prop, c.contract_no AS contractNo
+     FROM contract_installments i JOIN contracts c ON c.id = i.contract_id
+     LEFT JOIN units u ON u.id = c.unit_id LEFT JOIN properties p ON p.id = u.property_id
+     WHERE ${COLLECTIBLE_INSTALLMENT_SQL}
+     ORDER BY COALESCE(i.agreed_date, i.due_date)`
+  ).map((r) => ({ ...r, amount: Number(r.amount), paid: Number(r.paid), discount: Number(r.discount) }));
+}
+
 export function computeReminders(db: DB, T: string = today()): Reminder[] {
   const out: Reminder[] = [];
   if (!getSetting(db, 'remindersOn')) return out;
@@ -25,20 +42,18 @@ export function computeReminders(db: DB, T: string = today()): Reminder[] {
   const remindContract = getSetting(db, 'remindContract');
   const remindDoc = getSetting(db, 'remindDoc');
 
-  const insts = db.all<{
-    id: string; due_date: string; amount_halalas: number; paid_halalas: number;
-    tenant_name: string; status: string;
-  }>(
-    `SELECT i.id, i.due_date, i.amount_halalas, i.paid_halalas, c.tenant_name, i.status
-     FROM contract_installments i JOIN contracts c ON c.id = i.contract_id
-     WHERE c.status NOT IN ('مسودة','ملغى') AND c.deleted_at IS NULL AND i.status != 'ملغية'`
-  );
-  for (const i of insts) {
-    const rem = Number(i.amount_halalas) - Number(i.paid_halalas);
-    if (rem <= 0 || !i.due_date) continue;
-    const d = daysBetween(i.due_date, T);
-    if (d < 0) out.push({ kind: 'دفعة متأخرة', subject: i.tenant_name + ' · ' + dfmt(i.due_date), days: d, date: i.due_date, entityId: i.id });
-    else if (d <= remindPayment) out.push({ kind: 'دفعة تقترب', subject: i.tenant_name + ' · ' + dfmt(i.due_date), days: d, date: i.due_date, entityId: i.id });
+  // حالة القسط من الدالة الواحدة مع شاشة التحصيل: الخصم والموعد المتفق عليه والمهلة (المراجعة ٤.١٠ و٤.١١)،
+  // ومتأخرات العقد الملغى دَينٌ يُنبَّه عنه (٤.٩)
+  for (const i of installmentFacts(db)) {
+    if (!i.dueDate) continue;
+    const st = installmentState(i, T);
+    if (st.remaining <= 0) continue;
+    const subject = i.tenant + ' · ' + dfmt(st.effectiveDue);
+    if (st.daysLate > 0) out.push({ kind: 'دفعة متأخرة', subject, days: -st.daysLate, date: st.effectiveDue, entityId: i.id });
+    else {
+      const d = daysBetween(st.effectiveDue, T);
+      if (d >= 0 && d <= remindPayment) out.push({ kind: 'دفعة تقترب', subject, days: d, date: st.effectiveDue, entityId: i.id });
+    }
   }
 
   const contracts = db.all<{ id: string; contract_no: string | null; end: string }>(
@@ -114,21 +129,15 @@ export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[
   // التنبيه يظهر على شاشة القفل · فلا اسم مستأجر فيه (القرار ٧): الوحدة وعقارها يدلّان ولا يكشفان أحداً
   const place = (u: string | null, p: string | null, no: string | null) =>
     u ? 'وحدة ' + u + (p ? ' · ' + p : '') : (no || 'عقد');
-  const insts = db.all<{ id: string; due_date: string; amount_halalas: number; paid_halalas: number; unit_no: string | null; prop: string | null; contract_no: string | null }>(
-    `SELECT i.id, i.due_date, i.amount_halalas, i.paid_halalas, u.unit_no, p.name AS prop, c.contract_no
-     FROM contract_installments i JOIN contracts c ON c.id = i.contract_id
-     LEFT JOIN units u ON u.id = c.unit_id LEFT JOIN properties p ON p.id = u.property_id
-     WHERE c.status NOT IN ('مسودة','ملغى') AND c.deleted_at IS NULL AND i.status != 'ملغية'
-       AND i.due_date >= ?`,
-    [T]
-  );
-  for (const i of insts) {
-    if (Number(i.amount_halalas) - Number(i.paid_halalas) <= 0) continue;
-    const fire = shift(i.due_date, remindPayment);
+  // الإشعار بالموعد المتفق عليه إن وُجد · والمتبقي بعد الخصم (المراجعة ٤.١٠ و٤.١١)
+  for (const i of installmentFacts(db)) {
+    const st = installmentState(i, T);
+    if (st.remaining <= 0 || !st.effectiveDue || st.effectiveDue < T) continue;
+    const fire = shift(st.effectiveDue, remindPayment);
     if (fire >= T)
       out.push({
         kind: 'payment', entityId: i.id, fireDate: fire,
-        title: 'دفعة تقترب', body: place(i.unit_no, i.prop, i.contract_no) + ' · تستحق ' + dfmt(i.due_date),
+        title: 'دفعة تقترب', body: place(i.unitNo, i.prop, i.contractNo) + ' · تستحق ' + dfmt(st.effectiveDue),
       });
   }
   const cs = db.all<{ id: string; contract_no: string | null; end: string; unit_no: string | null; prop: string | null }>(

@@ -14,6 +14,7 @@ import { InstallmentSheet } from './InstallmentSheet';
 import { depositState } from '../domain/contracts/vocab';
 import { Field, Row, T, Num, Money, BtnGhost, BtnPrimary, BtnIcon, Badge, KpiCard, Note } from './components';
 import { DateField } from './DateField';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining } from '../domain/contracts/installments';
 import { CollapsibleSection } from './Collapsible';
 import { MetersEditor, SectionsEditor, type SectionData } from './editors';
 import { MeterSheet } from './MeterSheet';
@@ -474,11 +475,13 @@ function ContractQuickSheet({ contractId, onClose, onOpenInstallment, onOpenFull
         </View>
       ) : null}
       <CollapsibleSection title="جدول الدفعات" count={instCount} icon="calendar" pageKey="quickInstallments">
-        {(page) => db.all<{ id: string; due_date: string; amount_halalas: number; paid_halalas: number; status: string; agreed_date: string | null }>(
-          `SELECT id, due_date, amount_halalas, paid_halalas, status, agreed_date FROM contract_installments
-           WHERE contract_id = ? ORDER BY due_date LIMIT ? OFFSET ?`, [contractId, page.limit, page.offset]
+        {(page) => db.all<{ id: string; due_date: string; amount_halalas: number; paid_halalas: number; discount: number; status: string; agreed_date: string | null }>(
+          `SELECT i.id, i.due_date, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount, i.status, i.agreed_date
+           FROM contract_installments i
+           WHERE i.contract_id = ? ORDER BY i.due_date LIMIT ? OFFSET ?`, [contractId, page.limit, page.offset]
         ).map((i) => {
-          const remaining = Math.max(0, Number(i.amount_halalas) - Number(i.paid_halalas));
+          // المتبقي يطرح الخصم (المراجعة ٤.١٠)
+          const remaining = installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount));
           return (
             <Pressable key={i.id} onPress={() => onOpenInstallment(i.id)}>
               <Row style={{ justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.line }}>

@@ -4,7 +4,7 @@
 import type { DB } from '../db/adapter';
 import { today, dfmt } from './dates';
 import { fmt } from './money';
-import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentState } from './contracts/installments';
 
 export const TEMPLATE_TOKENS: Array<{ k: string; d: string }> = [
   { k: '{المستأجر}', d: 'اسم المستأجر' },
@@ -47,11 +47,12 @@ export function templateContext(db: DB, contractId: string | null, name?: string
   );
   const p = u ? db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [u.property_id]) : undefined;
   // القسط التالي هو أول قسط بقي عليه شيء بعد المسدَّد والخصم · لا ما حالته المخزَّنة تقول
-  const due = db.get<{ due_date: string; amount_halalas: number; paid_halalas: number }>(
-    `SELECT i.due_date, i.amount_halalas, i.paid_halalas FROM contract_installments i
+  const due = db.get<{ due_date: string; agreed_date: string | null; grace_until: string | null; amount_halalas: number; paid_halalas: number; discount: number; status: string }>(
+    `SELECT i.due_date, i.agreed_date, i.grace_until, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount, i.status
+     FROM contract_installments i
      WHERE i.contract_id = ? AND i.status != 'ملغية'
        AND i.amount_halalas - i.paid_halalas - ${INSTALLMENT_DISCOUNT_SQL} > 0
-     ORDER BY i.due_date LIMIT 1`,
+     ORDER BY COALESCE(i.agreed_date, i.due_date) LIMIT 1`,
     [contractId]
   );
   const remain = db.get<{ s: number }>(
@@ -60,6 +61,11 @@ export function templateContext(db: DB, contractId: string | null, name?: string
     [contractId]
   );
   const T = today();
+  // المبلغ والموعد والتأخير من الدالة الواحدة مع شاشة التحصيل (المراجعة ٤.١٠ و٤.١١)
+  const st = due ? installmentState({
+    dueDate: due.due_date, agreedDate: due.agreed_date, graceUntil: due.grace_until,
+    amount: Number(due.amount_halalas), paid: Number(due.paid_halalas), discount: Number(due.discount), status: due.status,
+  }, T) : null;
   Object.assign(ctx, {
     '{المستأجر}': c.tenant_name || name || '',
     '{الجوال}': c.phone || '',
@@ -70,15 +76,10 @@ export function templateContext(db: DB, contractId: string | null, name?: string
     '{نهاية_العقد}': c.end ? dfmt(c.end) : '',
     '{قيمة_العقد}': fmt(Number(c.value_halalas)),
     '{التأمين}': fmt(Number(c.deposit_halalas)),
-    '{المبلغ}': due
-      ? fmt(Math.max(0, Number(due.amount_halalas) - Number(due.paid_halalas)))
-      : fmt(Number(c.value_halalas)),
+    '{المبلغ}': st ? fmt(st.remaining) : fmt(Number(c.value_halalas)),
     '{المتبقي}': fmt(remain ? Number(remain.s) : Number(c.value_halalas)),
-    '{التاريخ}': due ? dfmt(due.due_date) : c.end ? dfmt(c.end) : 'لا يوجد',
-    '{أيام_التأخير}':
-      due && due.due_date < T
-        ? String(Math.floor((new Date(T).getTime() - new Date(due.due_date).getTime()) / 864e5))
-        : '0',
+    '{التاريخ}': st ? dfmt(st.effectiveDue) : c.end ? dfmt(c.end) : 'لا يوجد',
+    '{أيام_التأخير}': st ? String(Math.max(0, st.daysLate)) : '0',
   });
   return ctx;
 }

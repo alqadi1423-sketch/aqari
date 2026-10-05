@@ -1,4 +1,4 @@
-import { toLocalISODate, addMonthsClamped } from '../dates';
+import { toLocalISODate, addMonthsClamped, daysBetween } from '../dates';
 import { uid } from '../ids';
 
 /** حساب الخصومات الممنوحة · بنوع مصروف */
@@ -46,6 +46,54 @@ export const INSTALLMENT_DISCOUNT_SQL = `(COALESCE((SELECT SUM(l.debit_halalas -
 export function installmentRemaining(amountHalalas: number, paidHalalas: number, discountHalalas: number): number {
   return Math.max(0, Number(amountHalalas) - Number(paidHalalas) - Number(discountHalalas));
 }
+
+/** وقائع القسط التي تُشتق منها حالته · من استعلام فيه INSTALLMENT_DISCOUNT_SQL */
+export interface InstallmentFacts {
+  dueDate: string;
+  agreedDate?: string | null;
+  graceUntil?: string | null;
+  amount: number;
+  paid: number;
+  discount: number;
+  status: string;
+}
+
+export interface InstallmentState {
+  remaining: number;
+  /** الموعد المتفق عليه إن وُجد وإلا الاستحقاق */
+  effectiveDue: string;
+  /** أيام التأخير (موجب = متأخر) · صفرٌ ما دامت المهلة قائمة */
+  daysLate: number;
+  displayStatus: string;
+  cls: 'paid' | 'due' | 'late' | 'mut';
+}
+
+/**
+ * حالة القسط في يومٍ ما · الدالة الواحدة لشاشة التحصيل والتنبيهات والإشعارات والرسائل والجداول
+ * (المراجعة ٤.١٠ و٤.١١): المتبقي يطرح الخصم، والموعد المتفق عليه يحل محل الاستحقاق، ولا تأخير قبل نهاية المهلة.
+ */
+export function installmentState(f: InstallmentFacts, T: string): InstallmentState {
+  const paid = Number(f.paid);
+  const remaining = installmentRemaining(Number(f.amount), paid, Number(f.discount));
+  const effectiveDue = f.agreedDate || f.dueDate;
+  let daysLate = effectiveDue ? daysBetween(T, effectiveDue) : 0;
+  if (f.graceUntil && T <= f.graceUntil) daysLate = Math.min(daysLate, 0);
+  let displayStatus: string;
+  let cls: InstallmentState['cls'];
+  if (f.status === 'ملغية') { displayStatus = 'ملغاة'; cls = 'mut'; }
+  else if (remaining <= 0) { displayStatus = 'مدفوعة'; cls = 'paid'; }
+  else if (paid > 0 && daysLate > 0) { displayStatus = 'مدفوعة جزئياً · متأخرة ' + daysLate + ' يوماً'; cls = 'late'; }
+  else if (paid > 0) { displayStatus = 'مدفوعة جزئياً'; cls = 'due'; }
+  else if (daysLate > 0) { displayStatus = 'متأخرة ' + daysLate + ' يوماً'; cls = 'late'; }
+  else { displayStatus = 'مستحقة'; cls = 'due'; }
+  return { remaining, effectiveDue, daysLate, displayStatus, cls };
+}
+
+/**
+ * أقساط قائمة للتحصيل · العقد موثَّق غير محذوف (والملغى منه تبقى أقساطه السابقة لإلغائه دَيناً يُحصَّل ·
+ * المراجعة ٤.٩)، والقسط غير ملغى. يُضمَّن بعد FROM contract_installments i JOIN contracts c
+ */
+export const COLLECTIBLE_INSTALLMENT_SQL = `c.status != 'مسودة' AND c.deleted_at IS NULL AND i.status != 'ملغية'`;
 
 /** الحالة المخزَّنة بعد دفعة · «مدفوعة» متى ما غطّى المسدَّدُ والخصمُ القسطَ */
 export function installmentStoredStatus(amountHalalas: number, paidHalalas: number, discountHalalas: number): 'مدفوعة' | 'مدفوعة جزئياً' {
