@@ -292,3 +292,21 @@ d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦
     expect((await push('عقد')).ok).toBe(false);
   });
 });
+
+d('«هذا جهازي الأول» على الخادم', () => {
+  test('الجهاز الثاني يرث الفراغ والأول القديم يأخذ حرفاً جديداً', async () => {
+    const r = remoteFor(ORG, null);
+    const first = await r.registerDevice('dev-first-x');
+    const second = await r.registerDevice('dev-second-x');
+    expect(second).not.toBe('');
+    const prev = await r.claimFirstDevice('dev-second-x');
+    expect(await r.registerDevice('dev-second-x')).toBe('');
+    if (first === '') {
+      expect(prev).toBe('dev-first-x');
+      expect(await r.registerDevice('dev-first-x')).not.toBe('');
+    }
+    // العضو لا يغيّر حرفاً قائماً
+    const a = member('U-VIEW', { props: 1 }, 'all');
+    await expect(remoteFor('U-VIEW', a).claimFirstDevice('dev-x')).rejects.toBeTruthy();
+  });
+});

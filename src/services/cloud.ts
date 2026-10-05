@@ -51,6 +51,7 @@ import {
 } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
+import { deviceLetter, setDeviceLetter } from '../domain/numbering';
 
 /* ═══════════ الجلسة ═══════════ */
 
@@ -660,6 +661,22 @@ function logProfileEdit(db: DB, label: string, before: MemberProfile | null, aft
     الهوية: !p.nid ? '' : other && other.nid && other.nid !== p.nid ? 'قديمة' : 'مُدخلة',
   } : null;
   logAudit(db, 'الأعضاء', before ? 'update' : 'create', 'بيانات عضو', label, mask(before, after), mask(after, before));
+}
+
+/**
+ * «هذا جهازي الأول» للمالك (قراره ٢٠٢٦-١٠-٠٥) · هذا الجهاز يأخذ الترقيم بلا حرف، والأول القديم حرفاً جديداً.
+ * الأرقام القائمة كما هي، وأرقام هذا الجهاز الجديدة تكمل من أعلى رقمٍ بلا حرف.
+ */
+export async function claimFirstDeviceNow(db: DB): Promise<void> {
+  const t = teamRemote();
+  const deviceId = db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_id'`)?.value;
+  if (!deviceId) throw new Error('الجهاز بلا معرّف');
+  const before = deviceLetter(db);
+  await t.remote.claimFirstDevice(deviceId);
+  db.transaction(() => {
+    setDeviceLetter(db, '');
+    logAudit(db, 'الإعدادات', 'update', 'حرف الجهاز', 'هذا الجهاز هو الأول', { letter: before }, { letter: '' });
+  });
 }
 
 /** المالك يعدّل بيانات عضو */

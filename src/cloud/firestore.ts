@@ -6,7 +6,7 @@
  * تبقى صحيحة لا كسرية في Firestore كما هي في القاعدة المحلية.
  */
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, WriteResult } from '../sync/types';
-import { nextDeviceLetter } from '../domain/numbering';
+import { nextDeviceLetter, claimFirstLetter } from '../domain/numbering';
 import type { DB } from '../db/adapter';
 import { OWNER_ACCESS, type Access } from '../domain/access/access';
 import { annotate as aclAnnotate } from '../sync/acl';
@@ -218,6 +218,36 @@ export class FirestoreRemote implements RemoteStore {
       }
     }
     throw new Error('تعذّر تسجيل حرف الجهاز · أعد المحاولة');
+  }
+
+  /**
+   * «هذا جهازي الأول» (numbering.claimFirstLetter) · بشرط ألا يكون السجل تغيّر منذ قُرئ، كتسجيل الحرف.
+   * يعيد معرّف الجهاز الذي كان بلا حرف (null إن كان هذا الجهاز هو الأول أصلاً).
+   */
+  async claimFirstDevice(deviceId: string): Promise<string | null> {
+    const url = `${this.root}/${this.relPath}/meta/devices`;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const token = await this.o.idToken();
+      const res = await this.f(url, { headers: { Authorization: 'Bearer ' + token } });
+      if (res.status !== 200) throw new FirestoreHttpError(res.status, await res.text());
+      const doc = (await res.json()) as { fields?: Record<string, FsValue>; updateTime?: string };
+      const letters = (decodeFields(doc.fields ?? {}).letters ?? {}) as Record<string, string>;
+      const r = claimFirstLetter(letters, deviceId);
+      if (r.previous === null && letters[deviceId] === '') return null;
+      try {
+        await this.call(`${this.root}:commit`, {
+          writes: [{
+            update: { name: `${this.userPath}/meta/devices`, fields: encodeFields({ letters: r.letters }) },
+            currentDocument: { updateTime: doc.updateTime },
+          }],
+        });
+        return r.previous;
+      } catch (e) {
+        if (e instanceof FirestoreHttpError && [400, 409].includes(e.status)) continue;
+        throw e;
+      }
+    }
+    throw new Error('تعذّر تحديث حروف الأجهزة · أعد المحاولة');
   }
 
   /**

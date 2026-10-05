@@ -51,3 +51,17 @@ export function ownNumbersSql(column: string, glob: string, letter: string): { s
 export function withLetter(no: string, letter: string): string {
   return letter ? no + '-' + letter : no;
 }
+
+/**
+ * «هذا جهازي الأول» (قرار المالك ٢٠٢٦-١٠-٠٥: جواله الحالي هو جهازه الأول فيرث الحرف الفارغ) ·
+ * هذا الجهاز يأخذ الفراغ، وصاحب الفراغ السابق يأخذ حرفاً جديداً فلا يتصادم إن عاد. الأرقام القائمة لا تُمسّ.
+ */
+export function claimFirstLetter(letters: Record<string, string>, deviceId: string): { letters: Record<string, string>; previous: string | null } {
+  const next = { ...letters };
+  if (next[deviceId] === '') return { letters: next, previous: null };
+  const previous = Object.keys(next).find((d) => next[d] === '') ?? null;
+  delete next[deviceId];
+  if (previous) next[previous] = nextDeviceLetter(Object.entries(next).filter(([d]) => d !== previous).map(([, l]) => l).concat(['']));
+  next[deviceId] = '';
+  return { letters: next, previous };
+}
