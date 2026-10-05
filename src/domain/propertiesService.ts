@@ -2,6 +2,7 @@
  * حفظ العقارات والوحدات · التفاصيل (الأقسام/الغرف) والعدادات وفئات الطوابق.
  */
 import type { DB } from '../db/adapter';
+import { retagUnitTree } from './unitMove';
 import { uid } from './ids';
 import { naturalKey } from './sortKey';
 import { replaceMeters, type MeterInput } from './meters';
@@ -128,10 +129,13 @@ export function saveUnit(db: DB, input: UnitInput, existingId?: string): string 
       input.subtype.trim(), input.rentMonthlyHalalas,
     ];
     if (existingId) {
+      const before = db.get<{ p: string }>(`SELECT property_id AS p FROM units WHERE id = ?`, [existingId])?.p;
       db.run(
         `UPDATE units SET property_id=?, unit_no=?, unit_no_key=?, floor=?, type=?, subtype=?, rent_monthly_halalas=? WHERE id = ?`,
         [...fields, existingId]
       );
+      // نُقلت إلى عقار آخر: كل ما تحتها يُعاد وسمه ورفعه (المراجعة ٤.١٢)
+      if (before && before !== input.propertyId) retagUnitTree(db, existingId, input.propertyId);
     } else {
       db.run(
         `INSERT INTO units (id, property_id, unit_no, unit_no_key, floor, type, subtype, rent_monthly_halalas, created_at)

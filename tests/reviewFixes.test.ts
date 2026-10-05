@@ -569,3 +569,64 @@ describe('٤.٩ و٤.١٠ و٤.١١ المتبقي والتأخير بدالة �
     expect(fire?.body).toContain('25/06/2026');
   });
 });
+
+describe('٤.١٢ نقل وحدة إلى عقار آخر يعيد وسم كل ما تحتها', () => {
+  test('كل صف صار من العقار الجديد يُعاد رفعه · وما يحمل العقار نصاً يُحدَّث', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addBank, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract, recordRentPayment, recordBulkRentPayment } = await import('@/domain/contracts/service');
+    const { saveClaim } = await import('@/domain/claims');
+    const { savePurchase } = await import('@/domain/purchases');
+    const { saveInvoice, payInvoice } = await import('@/domain/invoices');
+    const { recordKeyMoneyDeal } = await import('@/domain/keymoney');
+    const { saveUnit } = await import('@/domain/propertiesService');
+    const { SYNC_TABLES } = await import('@/db/syncTables');
+    const { rowPids } = await import('@/sync/acl');
+    const db = memDb();
+    const A = addProperty(db, { name: 'عقار أ' });
+    const B = addProperty(db, { name: 'عقار ب' });
+    const unitInput = (p: string) => ({ propertyId: p, unitNo: 'N-1', floor: '', type: 'سكني', subtype: '', rentMonthlyHalalas: 0,
+      rooms: [{ name: 'غرفة', items: [{ name: 'باب', descr: '' }] }], meters: [{ kind: 'كهرباء', number: '100' }] });
+    const unit = saveUnit(db, unitInput(A));
+    const bank = addBank(db, 'بنك نقل', 1000000);
+    const cid = confirmContract(db, contractInput(unit, { tenant: 'مستأجر نقل', start: '2026-01-01', end: '2026-12-31', valueHalalas: 1200000, cycle: 'شهرية', depositHalalas: 50000 }));
+    const insts = db.all<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date`, [cid]);
+    recordRentPayment(db, cid, { installmentId: insts[0].id, period: 'يناير', date: '2026-01-05', lines: [{ method: 'bank', bankId: bank, amountHalalas: 100000 }], discountHalalas: 0, notes: '' });
+    recordBulkRentPayment(db, cid, { installmentIds: [insts[1].id, insts[2].id], date: '2026-02-05', lines: [{ method: 'cash', amountHalalas: 200000 }], notes: '' });
+    saveClaim(db, { contractId: cid, amountHalalas: 5000, reason: 'تلف', date: '2026-02-10' });
+    recordKeyMoneyDeal(db, { unitId: unit, contractId: cid, outgoing: 'أ', incoming: 'ب', amountHalalas: 100000, date: '2026-02-11', commissionHalalas: 5000, method: 'cash', notes: '' });
+    const pur = savePurchase(db, { supplier: 'مورد نقل', date: '2026-02-12', due: '2026-02-28', category: 'صيانة', incorpItem: '', amortize: false, amortizeMonths: null, exempt: false, excludeFromVat: false, subtotalHalalas: 3000, taxHalalas: 0, totalHalalas: 3000, unitId: unit, propertyId: A });
+    const inv = saveInvoice(db, { customer: 'عميل نقل', customerVat: '', issue: '2026-02-13', due: '2026-02-28', notes: '', unitId: unit, propertyId: A, lines: [{ descr: 'خدمة', qty: 1, priceHalalas: 1000, taxPct: 0 }] } as never, 'مستحقة');
+    payInvoice(db, inv, { method: 'cash', bankId: null, date: '2026-02-14' });
+
+    // وسم كل صف قبل النقل · المرجع هو rowPids نفسها التي يرفع بها المحرّك
+    const tagsNow = () => {
+      const m = new Map<string, string>();
+      for (const t of SYNC_TABLES) {
+        for (const r of db.all<Record<string, unknown>>(`SELECT *, ${t.pk(`"${t.name}"`)} AS __pk FROM "${t.name}"`)) {
+          m.set(t.name + '|' + r.__pk, rowPids(db, t.name, r as never).sort().join(','));
+        }
+      }
+      return m;
+    };
+    const before = tagsNow();
+    db.run(`UPDATE sync_ctl SET v = 1 WHERE k = 'capture'`);
+    db.run(`DELETE FROM sync_outbox`);
+    const meterId = db.get<{ id: string }>(`SELECT id FROM meters WHERE owner_id = ?`, [unit])!.id;
+    saveUnit(db, { ...unitInput(B), meters: [{ id: meterId, kind: 'كهرباء', number: '100' }] }, unit);
+
+    expect(db.get<{ p: string }>(`SELECT property_id AS p FROM purchases WHERE id = ?`, [pur])!.p).toBe(B);
+    expect(db.get<{ p: string }>(`SELECT property_id AS p FROM invoices WHERE id = ?`, [inv])!.p).toBe(B);
+    const queued = new Set(db.all<{ k: string }>(`SELECT tbl || '|' || pk AS k FROM sync_outbox`).map((r) => r.k));
+    const missing: string[] = [];
+    let changed = 0;
+    for (const [k, tags] of tagsNow()) {
+      if (before.get(k) === tags) continue;
+      changed++;
+      if (!queued.has(k)) missing.push(k.split('|')[0]);
+    }
+    expect([...new Set(missing)]).toEqual([]);
+    expect(changed).toBeGreaterThan(20);
+    expect(queued.size).toBeGreaterThan(20);
+  });
+});
