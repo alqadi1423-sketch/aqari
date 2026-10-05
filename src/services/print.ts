@@ -24,6 +24,7 @@ import { occupantsOf } from '../domain/occupants';
 import { depositState } from '../domain/contracts/vocab';
 import { contractStatusLabel } from '../domain/contracts/rules';
 import { tenantStatementRows } from '../domain/statement';
+import { isTempInvoiceNo } from '../domain/invoices';
 
 export function companyInfo(db: DB): CompanyInfo {
   const co = db.get<{ name: string; vatno: string; cr: string; phone: string; address: string; vat_enabled: number }>(
@@ -144,6 +145,8 @@ export async function printInvoice(db: DB, invoiceId: string): Promise<void> {
     subtotal_halalas: number; tax_halalas: number; total_halalas: number; notes: string;
   }>(`SELECT * FROM invoices WHERE id = ?`, [invoiceId]);
   if (!v) return;
+  // الرقم المؤقت لا يُطبع على فاتورة (قرار المالك ٢٠٢٦-١٠-٠٥)
+  if (isTempInvoiceNo(v.no)) throw new Error('المسودة لا تُطبع · أصدرها أولاً فتأخذ رقمها');
   const lines = db.all<{ descr: string; qty: number; price_halalas: number; tax_pct: number }>(
     `SELECT descr, qty, price_halalas, tax_pct FROM invoice_lines WHERE invoice_id = ? ORDER BY sort`,
     [invoiceId]

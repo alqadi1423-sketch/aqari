@@ -4,7 +4,7 @@
  */
 import type { Cursor, RemoteDoc, RemoteStore, WriteResult } from '@/sync/types';
 import { syncTable } from '@/db/syncTables';
-import { nextDeviceLetter } from '@/domain/numbering';
+import { planBlocks, planInvoiceSeq, type BlockRequest, type ReservedBlock } from '@/domain/numbering';
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
@@ -64,12 +64,19 @@ export class MemoryRemote implements RemoteStore {
     return { docs: page, next: last ? { ts: last.ts, id: last.id } : cursor };
   }
 
-  /** حروف الأجهزة كسجل users/{uid}/meta/devices */
-  letters: Record<string, string> = {};
-  async registerDevice(deviceId: string): Promise<string> {
+  /** عدّاد الترقيم كسجل meta/counters */
+  counters: Record<string, number> = {};
+  async reserveBlocks(req: BlockRequest[]): Promise<ReservedBlock[]> {
     if (this.offline) throw new Error('Network request failed');
-    if (!(deviceId in this.letters)) this.letters[deviceId] = nextDeviceLetter(Object.values(this.letters));
-    return this.letters[deviceId];
+    const { next, out } = planBlocks(this.counters, req);
+    this.counters = { ...this.counters, ...next };
+    return out;
+  }
+  async takeInvoiceSeq(floor: number): Promise<number> {
+    if (this.offline) throw new Error('Network request failed');
+    const { next, out } = planInvoiceSeq(this.counters, floor);
+    this.counters = { ...this.counters, ...next };
+    return out;
   }
 
   /** كتابة مباشرة كما يفعل جهاز آخر أو عابث · لاختبار ما يرد */

@@ -16,7 +16,7 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { useDialog } from '../src/ui/AppDialog';
 import { C } from '../src/ui/theme';
-import { postManualEntry, manualCashOut, nextJournalNo, voidEntryById } from '../src/domain/accounting/post';
+import { postManualEntry, manualCashOut, peekJournalNo, voidEntryById } from '../src/domain/accounting/post';
 import { reverseFromJournal, journalReversalBlock } from '../src/domain/accounting/journalReversal';
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { allAccounts } from '../src/domain/accounting/ledger';
@@ -267,7 +267,7 @@ export default function Journal() {
         }>
         <CashShortNote needed={manualOut} what="صرف النقد في القيد" />
         <Row>
-          <View style={{ flex: 1 }}><Field label="رقم القيد" value={nextJournalNo(db)} disabled ltr /></View>
+          <View style={{ flex: 1 }}><Field label="رقم القيد" value={peekJournalNo(db)} disabled ltr /></View>
           <View style={{ flex: 1 }}><DateField label="التاريخ" value={date} onChange={setDate} /></View>
         </Row>
         <Field label="البيان" value={memo} onChange={setMemo} />

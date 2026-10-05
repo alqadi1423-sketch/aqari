@@ -13,8 +13,8 @@ import type { BackupEnv } from './backup/types';
 import { migrate } from '../db/migrations';
 import { seed } from '../db/seed';
 
-/** ما يبقى بعد المسح: هوية الجهاز في meta، والحساب والمنشأة في sync_state */
-const KEEP_META = ['device_id', 'device_letter'];
+/** ما يبقى بعد المسح: هوية الجهاز وكتل أرقامه ورقم فاتورته المحجوز في meta، والحساب والمنشأة في sync_state */
+const KEEP_META = ['device_id', 'device_letter', 'number_blocks', 'inv_reserved'];
 const KEEP_SYNC = ['uid', 'email', 'org', 'org_name', 'membership', 'wipe_epoch'];
 
 /**

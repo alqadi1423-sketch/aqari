@@ -6,7 +6,7 @@
  * تبقى صحيحة لا كسرية في Firestore كما هي في القاعدة المحلية.
  */
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, WriteResult } from '../sync/types';
-import { nextDeviceLetter, claimFirstLetter } from '../domain/numbering';
+import { planBlocks, planInvoiceSeq, type BlockRequest, type ReservedBlock } from '../domain/numbering';
 import type { DB } from '../db/adapter';
 import { OWNER_ACCESS, type Access } from '../domain/access/access';
 import { annotate as aclAnnotate } from '../sync/acl';
@@ -184,70 +184,50 @@ export class FirestoreRemote implements RemoteStore {
   }
 
   /**
-   * حرف هذا الجهاز في ترقيم الحساب (numbering.ts) · سجل واحد users/{uid}/meta/devices فيه حرف كل جهاز،
-   * يُكتب بشرط ألا يكون تغيّر منذ قُرئ (أو ألا يكون موجوداً) فلا يأخذ جهازان الحرف نفسه أبداً.
+   * عدّاد الترقيم (numbering.ts) · سجلٌ واحد meta/counters فيه آخر رقمٍ محجوز لكل سلسلة، يُكتب بشرط ألا يكون
+   * تغيّر منذ قُرئ (أو ألا يكون موجوداً) فلا يأخذ جهازان الكتلة نفسها ولا الرقم نفسه أبداً.
    */
-  async registerDevice(deviceId: string): Promise<string> {
-    const url = `${this.root}/${this.relPath}/meta/devices`;
-    for (let attempt = 0; attempt < 6; attempt++) {
+  private async bumpCounters<T>(fn: (cur: Record<string, number>) => { next: Record<string, number>; out: T }): Promise<T> {
+    const url = `${this.root}/${this.relPath}/meta/counters`;
+    for (let attempt = 0; attempt < 8; attempt++) {
       const token = await this.o.idToken();
       const res = await this.f(url, { headers: { Authorization: 'Bearer ' + token } });
-      let letters: Record<string, string> = {};
+      let cur: Record<string, number> = {};
       let updateTime: string | null = null;
       if (res.status === 200) {
         const doc = (await res.json()) as { fields?: Record<string, FsValue>; updateTime?: string };
-        letters = (decodeFields(doc.fields ?? {}).letters ?? {}) as Record<string, string>;
+        cur = decodeFields(doc.fields ?? {}) as Record<string, number>;
         updateTime = doc.updateTime ?? null;
       } else if (res.status !== 404) {
         throw new FirestoreHttpError(res.status, await res.text());
       }
-      if (deviceId in letters) return letters[deviceId];
-      const letter = nextDeviceLetter(Object.values(letters));
+      const { next, out } = fn(cur);
       try {
         await this.call(`${this.root}:commit`, {
           writes: [{
-            update: { name: `${this.userPath}/meta/devices`, fields: encodeFields({ letters: { ...letters, [deviceId]: letter } }) },
+            update: { name: `${this.userPath}/meta/counters`, fields: encodeFields({ ...cur, ...next }) },
             currentDocument: updateTime ? { updateTime } : { exists: false },
           }],
         });
-        return letter;
+        return out;
       } catch (e) {
-        // جهاز آخر سجّل في اللحظة نفسها · يُعاد القراءة والاختيار
+        // جهاز آخر حجز في اللحظة نفسها · يُعاد القراءة والحساب
         if (e instanceof FirestoreHttpError && [400, 409].includes(e.status)) continue;
         throw e;
       }
     }
-    throw new Error('تعذّر تسجيل حرف الجهاز · أعد المحاولة');
+    throw new Error('تعذّر حجز أرقام المستندات · أعد المحاولة');
   }
 
-  /**
-   * «هذا جهازي الأول» (numbering.claimFirstLetter) · بشرط ألا يكون السجل تغيّر منذ قُرئ، كتسجيل الحرف.
-   * يعيد معرّف الجهاز الذي كان بلا حرف (null إن كان هذا الجهاز هو الأول أصلاً).
-   */
-  async claimFirstDevice(deviceId: string): Promise<string | null> {
-    const url = `${this.root}/${this.relPath}/meta/devices`;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const token = await this.o.idToken();
-      const res = await this.f(url, { headers: { Authorization: 'Bearer ' + token } });
-      if (res.status !== 200) throw new FirestoreHttpError(res.status, await res.text());
-      const doc = (await res.json()) as { fields?: Record<string, FsValue>; updateTime?: string };
-      const letters = (decodeFields(doc.fields ?? {}).letters ?? {}) as Record<string, string>;
-      const r = claimFirstLetter(letters, deviceId);
-      if (r.previous === null && letters[deviceId] === '') return null;
-      try {
-        await this.call(`${this.root}:commit`, {
-          writes: [{
-            update: { name: `${this.userPath}/meta/devices`, fields: encodeFields({ letters: r.letters }) },
-            currentDocument: { updateTime: doc.updateTime },
-          }],
-        });
-        return r.previous;
-      } catch (e) {
-        if (e instanceof FirestoreHttpError && [400, 409].includes(e.status)) continue;
-        throw e;
-      }
-    }
-    throw new Error('تعذّر تحديث حروف الأجهزة · أعد المحاولة');
+  /** كتلٌ لكل سلسلة بعد أعلى ما في العدّاد وما يعرفه الجهاز · وأول إنشاءٍ للسلسلة بعد أرضيته بفجوة */
+  async reserveBlocks(req: BlockRequest[]): Promise<ReservedBlock[]> {
+    if (!req.length) return [];
+    return this.bumpCounters((cur) => planBlocks(cur, req));
+  }
+
+  /** رقم الفاتورة الضريبية التالي · العدّاد يتقدم واحداً فلا فجوة */
+  async takeInvoiceSeq(floor: number): Promise<number> {
+    return this.bumpCounters((cur) => planInvoiceSeq(cur, floor));
   }
 
   /**

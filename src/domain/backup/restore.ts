@@ -16,6 +16,8 @@ import { planLedgerRepair, applyLedgerRepair, type LedgerRepairPlan } from '../l
 import { seed, ensureDeviceId } from '../../db/seed';
 import { recomputeInstallments, type PaidChange } from '../contracts/paid';
 import { planKeepPosted, applyKeepPosted, type KeptEntry } from './keepPosted';
+import { readBlocks, writeBlocks, mergeBlocks, type Blocks } from '../numbering';
+import { INV_RESERVED_KEY, INV_PENDING_KEY, pendingIssues } from '../invoiceIssue';
 import type { RemoteDoc } from '../../sync/types';
 import { isEncryptedArchive, decryptArchive, PasswordRequiredError, WrongPasswordError } from './encryption';
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
@@ -250,6 +252,18 @@ function carryDeviceLetter(from: DB, to: DB): void {
   const v = from.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_letter'`)?.value;
   if (v === undefined) to.run(`DELETE FROM meta WHERE key = 'device_letter'`);
   else to.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [v]);
+  // وكتل أرقام هذا الجهاز لا كتل النسخة (numbering.ts) · فضمّ القيود يرقّم منها ولا يعيد رقماً أُخذ
+  writeBlocks(to, readBlocks(from));
+}
+
+/** ترقيم هذا التثبيت بعد التبديل: كتله الحية مع ما استهلكه الضمّ، ورقم فاتورته المحجوز، وما ينتظر إصداره */
+function carryNumbering(live: { blocks: Blocks; reserved: string | null; pending: string[] }, to: DB): void {
+  writeBlocks(to, mergeBlocks(live.blocks, readBlocks(to)));
+  const put = (k: string, v: string | null) => v === null
+    ? to.run(`DELETE FROM meta WHERE key = ?`, [k])
+    : to.run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [k, v]);
+  put(INV_RESERVED_KEY, live.reserved);
+  put(INV_PENDING_KEY, live.pending.length ? JSON.stringify(live.pending) : null);
 }
 
 /** فكّ نسخةٍ مشفّرة بكلمة مرورها · تُعاد المحاولة ما دام المستخدم يكتب، والإلغاء يرمي PasswordRequiredError */
@@ -307,6 +321,12 @@ export async function commitRestore(
   onProgress?.('جاري التبديل إلى النسخة');
   const deviceId = env.db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_id'`)?.value ?? null;
   const letter = env.db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_letter'`)?.value;
+  // ترقيم هذا التثبيت لا يأتي مع النسخة · فرقمٌ أُخذ بعدها لا يُعاد
+  const liveNumbering = {
+    blocks: readBlocks(env.db),
+    reserved: env.db.get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [INV_RESERVED_KEY])?.value ?? null,
+    pending: pendingIssues(env.db),
+  };
   const preSwap = env.dbPath + '.pre-restore';
   env.closeLive();
   for (const suffix of ['-wal', '-shm']) {
@@ -334,6 +354,7 @@ export async function commitRestore(
     ensureDeviceId(fresh, deviceId);
     if (letter === undefined) fresh.run(`DELETE FROM meta WHERE key = 'device_letter'`);
     else fresh.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [letter]);
+    carryNumbering(liveNumbering, fresh);
 
     // دمج المرفقات من staging بالنقل لا بالقراءة · الذاكرة لا تُحمَّل
     env.fs.mkdirp(env.attachmentsDir);

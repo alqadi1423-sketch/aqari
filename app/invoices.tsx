@@ -20,7 +20,9 @@ import { Skeleton } from '../src/ui/Skeleton';
 import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
-import { saveInvoice, setInvoiceStatus, payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, type InvoiceLineInput, type InvoicePayMethod } from '../src/domain/invoices';
+import { payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, invoiceNoLabel, type InvoiceLineInput, type InvoicePayMethod } from '../src/domain/invoices';
+import { isIssuePending } from '../src/domain/invoiceIssue';
+import { saveInvoiceNow, setInvoiceStatusNow } from '../src/services/cloud';
 import { today, dfmt, addDays } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
 import { printInvoice } from '../src/services/print';
@@ -54,9 +56,11 @@ const EMPTY_PAGE: { rows: InvoiceRow[]; total: number } = { rows: [], total: 0 }
 /** بطاقة فاتورة واحدة · خارج الشاشة ومحفوظة كي لا يُعاد رسمها بلا داعٍ ·
  * الضغط عليها يفتح ورقة العرض لا التعديل · والمدفوعة لا زر تعديل لها (التصحيح بتغيير الحالة) */
 const InvoiceCard = React.memo(function InvoiceCard({
-  id, no, customerName, issue, due, status, totalHalalas, canEdit, canManage, onView, onEdit, onStatus, onPrint, onDelete,
+  id, no, pending, customerName, issue, due, status, totalHalalas, canEdit, canManage, onView, onEdit, onStatus, onPrint, onDelete,
 }: {
   id: string; no: string; customerName: string; issue: string; due: string; status: string; totalHalalas: number;
+  /** طُلب إصدارها بلا اتصال · تصدر برقمها عند عودته */
+  pending: boolean;
   /** كامل، أو مسودة كاتبها بإدخال · للتعديل والحذف */
   canEdit: boolean;
   /** كامل · لتغيير الحالة */
@@ -73,7 +77,7 @@ const InvoiceCard = React.memo(function InvoiceCard({
           <T size={TYPE.sectionTitle} bold style={{ flex: 1 }}>{customerName}</T>
           <Row gap={8}>
             <Badge kind={STATUS_MAP[status] || 'draft'} label={status} />
-            <ActionMenuButton title={no} actions={[
+            <ActionMenuButton title={invoiceNoLabel(no)} actions={[
               { icon: 'eye', label: 'عرض الفاتورة', onPress: () => onView(id) },
               status !== 'مدفوعة' && canEdit ? { icon: 'edit', label: 'تعديل الفاتورة', onPress: () => onEdit(id) } : null,
               canManage ? { icon: 'swap', label: 'تغيير الحالة', onPress: () => onStatus(id) } : null,
@@ -83,7 +87,7 @@ const InvoiceCard = React.memo(function InvoiceCard({
           </Row>
         </Row>
         <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
-          <Num size={TYPE.caption} color={C.muted}>{no} · {dfmt(issue)} إلى {dfmt(due)}</Num>
+          <Num size={TYPE.caption} color={C.muted}>{invoiceNoLabel(no) + (pending ? ' · تصدر عند عودة الاتصال' : '')} · {dfmt(issue)} إلى {dfmt(due)}</Num>
           <Money halalas={totalHalalas} size={TYPE.number} bold />
         </Row>
       </Card>
@@ -234,7 +238,7 @@ export default function Invoices() {
 
   const keyExtractor = useCallback((it: InvoiceRow) => it.id, []);
   const renderItem = useCallback(({ item }: { item: InvoiceRow }) => (
-    <InvoiceCard id={item.id} no={item.no} customerName={item.customer_name} issue={item.issue}
+    <InvoiceCard id={item.id} no={item.no} pending={isIssuePending(db, item.id)} customerName={item.customer_name} issue={item.issue}
       due={item.due} status={item.status} totalHalalas={Number(item.total_halalas)}
       canEdit={mayEdit(item.id, item.status)} canManage={perm.manage}
       onView={onView} onEdit={openEdit} onStatus={onStatus} onPrint={onPrint} onDelete={onDelete} />
@@ -243,14 +247,16 @@ export default function Invoices() {
   const toInputs = (): InvoiceLineInput[] =>
     lines.map((l) => ({ descr: l.descr, qty: parseFloat(l.qty) || 0, priceHalalas: toHalalas(l.price), taxPct: parseFloat(l.tax) || 0 }));
 
-  const doSave = (status: 'مسودة' | 'مستحقة') => {
+  // الإصدار يأخذ رقم الفاتورة من عدّاد السحابة · وبلا اتصال تُحفظ مسودةً تصدر برقمها عند عودته
+  const doSave = async (status: 'مسودة' | 'مستحقة') => {
     try {
       const cust = tenants.find((t) => t.name === customer.trim());
-      saveInvoice(db, {
+      const r = await saveInvoiceNow(db, {
         customer: customer.trim(), customerVat: cust?.vat ?? '', issue, due, notes, lines: toInputs(),
       }, status, editingId ?? undefined);
       setFormOpen(false); bump();
-      toast(status === 'مسودة' ? 'تم حفظ الفاتورة كمسودة' : 'تم إصدار الفاتورة وترحيلها محاسبياً');
+      toast(r.pending ? 'لا اتصال · حُفظت مسودة وتصدر برقمها عند عودة الاتصال'
+        : status === 'مسودة' ? 'تم حفظ الفاتورة كمسودة' : 'تم إصدار الفاتورة وترحيلها محاسبياً');
     } catch (e) { reportFailure({ title: 'تعذّر الحفظ', e }); }
   };
 
@@ -411,10 +417,10 @@ export default function Invoices() {
                     setCollecting(true);
                     return;
                   }
-                  try {
-                    setInvoiceStatus(db, statusFor, s);
-                    setStatusFor(null); bump(); toast('تم تحديث حالة الفاتورة');
-                  } catch (e) { reportFailure({ title: 'تعذّر تغيير الحالة', e }); }
+                  setInvoiceStatusNow(db, statusFor, s as 'مسودة' | 'مستحقة' | 'متأخرة').then((r) => {
+                    setStatusFor(null); bump();
+                    toast(r.pending ? 'لا اتصال · تبقى مسودة وتصدر برقمها عند عودة الاتصال' : 'تم تحديث حالة الفاتورة');
+                  }).catch((e) => reportFailure({ title: 'تعذّر تغيير الحالة', e }));
                 }} />
             </View>
           ))}
@@ -490,7 +496,7 @@ function InvoiceViewSheet({ invoiceId, onClose, onEdit, mayEdit }: {
   // الخانة الواحدة لكل بطاقة تفاصيل · تغيب بعنوانها إن غابت قيمتها
   const cell = (label: string, val: React.ReactNode) => <KV label={label} v={val} flex />;
   return (
-    <Sheet visible onClose={onClose} title={'فاتورة ' + v.no} tall>
+    <Sheet visible onClose={onClose} title={'فاتورة ' + invoiceNoLabel(v.no)} tall>
       <Row style={{ justifyContent: 'space-between', marginBottom: 10 }}>
         <Badge kind={STATUS_MAP[v.status] || 'draft'} label={v.status} />
         {v.status !== 'مدفوعة' && mayEdit(v.id, v.status) ? (

@@ -1,15 +1,141 @@
 /**
- * ترقيم لا يتصادم بين الأجهزة (قرار المالك ٢٠٢٦-١٠-٠٣):
- * كل جهاز يأخذ حرفاً لاتينياً عند أول دخول بالحساب، والجهاز الأول بلا حرف ·
- * الحرف بعد الرقم: JE-0042 · JE-0042-B · EJ-2026-007-B · INV-2026-0103-B · PUR-012-B.
- * والتسلسل لكل جهاز من أرقامه وحده، فلا يعطي جهازان الرقم نفسه ولو عملا شهراً بلا اتصال.
- * لاتيني لا عربي: الحرف العربي داخل رقم لاتيني ينقلب اتجاهه في الطباعة والعرض.
- * والأرقام القائمة لا تُمسّ.
+ * ترقيم المستندات بين الأجهزة (قرار المالك ٢٠٢٦-١٠-٠٥):
+ *  - القيود والعقود والمشتريات: كتل أرقام يحجزها كل جهاز من عدّاد السحابة (meta/counters)، بلا لاحقة،
+ *    والفجوات فيها مقبولة. يُعاد ملء الكتلة في المزامنة حين يبقى منها أقل من نصفها، فيعمل الجهاز بلا اتصال.
+ *  - الفواتير الضريبية: بلا فجوات، رقمها من العدّاد لحظة إصدارها (invoices.ts و services/cloud.ts).
+ *  - الأرقام الصادرة سابقاً بحرف جهاز تبقى كما هي، ولا يرى المستخدم حروف الأجهزة.
+ * والكتل تخصّ التثبيت لا البيانات: تبقى مع المسح، ولا تأتي مع نسخة مستعادة (restore.ts).
+ * وما لا كتلة له (جهاز بلا مزامنة، أو نفدت كتلته بلا اتصال) يُرقِّم كما كان: بحرفه القديم إن كان له حرف،
+ * وإلا بعد أعلى رقم بلا لاحقة.
  */
 import type { DB } from '../db/adapter';
 
+/* ═══════════ الكتل ═══════════ */
+
+export type Series = 'JE' | 'EJ' | 'PUR';
+export const SERIES: Series[] = ['JE', 'EJ', 'PUR'];
+/** حجم الكتلة · نصفها يكفي أياماً بلا اتصال (كل دفعة قيدٌ أو اثنان)، والفجوة عند إعادة التثبيت مقبولة */
+export const BLOCK_SIZE: Record<Series, number> = { JE: 500, EJ: 50, PUR: 100 };
+/** أول إنشاءٍ للعدّاد يبدأ بعد أعلى رقمٍ معروف بهذه الفجوة · فلا يصطدم بما كتبه جهازٌ بالترقيم القديم ولم يُرفع بعد */
+export const FIRST_GAP: Record<Series, number> = { JE: 1000, EJ: 100, PUR: 100 };
+
+const BLOCKS_KEY = 'number_blocks';
+export interface Block { lo: number; hi: number; next: number }
+export type Blocks = Partial<Record<Series, Block[]>>;
+
+export function readBlocks(db: DB): Blocks {
+  const v = db.get<{ value: string }>(`SELECT value FROM meta WHERE key = ?`, [BLOCKS_KEY])?.value;
+  if (!v) return {};
+  try { return JSON.parse(v) as Blocks; } catch { return {}; }
+}
+
+export function writeBlocks(db: DB, b: Blocks): void {
+  db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [BLOCKS_KEY, JSON.stringify(b)]);
+}
+
+/** ما بقي في كتل السلسلة */
+export function blockRemaining(db: DB, s: Series): number {
+  return (readBlocks(db)[s] ?? []).reduce((n, b) => n + Math.max(0, b.hi - b.next + 1), 0);
+}
+
+/** الكتلة تحتاج ملئاً: بقي أقل من نصفها */
+export function wantsBlock(db: DB, s: Series): boolean {
+  return blockRemaining(db, s) < BLOCK_SIZE[s] / 2;
+}
+
+/** الرقم التالي من الكتل دون استهلاكه · للعرض قبل الحفظ */
+export function peekNumber(db: DB, s: Series): number | null {
+  const b = (readBlocks(db)[s] ?? []).find((x) => x.next <= x.hi);
+  return b ? b.next : null;
+}
+
+/** يأخذ الرقم التالي من الكتل ويستهلكه · null إن لم تبق كتلة */
+export function takeNumber(db: DB, s: Series): number | null {
+  const all = readBlocks(db);
+  const list = (all[s] ?? []).filter((x) => x.next <= x.hi);
+  if (!list.length) return null;
+  const n = list[0].next;
+  list[0] = { ...list[0], next: n + 1 };
+  all[s] = list.filter((x) => x.next <= x.hi);
+  writeBlocks(db, all);
+  return n;
+}
+
+export function addBlock(db: DB, s: Series, lo: number, hi: number): void {
+  if (!(Number.isInteger(lo) && Number.isInteger(hi) && lo <= hi)) throw new Error('كتلة أرقام غير صالحة');
+  const all = readBlocks(db);
+  all[s] = [...(all[s] ?? []), { lo, hi, next: lo }].sort((a, b) => a.lo - b.lo);
+  writeBlocks(db, all);
+}
+
+/** كتل جهازٍ واحد من قاعدتين (الحية وما بعد الاستعادة) · الأبعد استهلاكاً يغلب، فلا يُعاد رقمٌ أُخذ */
+export function mergeBlocks(a: Blocks, b: Blocks): Blocks {
+  const out: Blocks = {};
+  for (const s of SERIES) {
+    const byLo = new Map<number, Block>();
+    for (const x of [...(a[s] ?? []), ...(b[s] ?? [])]) {
+      const cur = byLo.get(x.lo);
+      byLo.set(x.lo, cur ? { ...x, next: Math.max(cur.next, x.next) } : x);
+    }
+    const list = [...byLo.values()].filter((x) => x.next <= x.hi).sort((p, q) => p.lo - q.lo);
+    if (list.length) out[s] = list;
+  }
+  return out;
+}
+
+/** أعلى رقمٍ بلا لاحقة في السلسلة على هذا الجهاز · يبدأ منه العدّاد أول مرة */
+export function localMaxNumber(db: DB, s: Series | 'INV'): number {
+  const q = (sql: string) => Number(db.get<{ mx: number }>(sql)?.mx ?? 0);
+  const plain = (col: string) => `NOT (${col} GLOB '*-[A-Z]' OR ${col} GLOB '*-[A-Z][A-Z]')`;
+  switch (s) {
+    case 'JE': return q(`SELECT COALESCE(MAX(CAST(substr(no, 4) AS INTEGER)), 0) AS mx FROM journal_entries WHERE no GLOB 'JE-[0-9]*' AND ${plain('no')}`);
+    case 'PUR': return q(`SELECT COALESCE(MAX(CAST(substr(no, 5) AS INTEGER)), 0) AS mx FROM purchases WHERE no GLOB 'PUR-[0-9]*' AND ${plain('no')}`);
+    case 'EJ': return q(`SELECT COALESCE(MAX(CAST(substr(contract_no, 9) AS INTEGER)), 0) AS mx FROM contracts WHERE contract_no GLOB 'EJ-[0-9][0-9][0-9][0-9]-[0-9]*' AND ${plain('contract_no')}`);
+    // الفاتورة: كل رقمٍ صدر بحرفٍ أو بدونه · فالتسلسل الجديد يكمل فوقها كلها بلا فجوة
+    case 'INV': return q(`SELECT COALESCE(MAX(CAST(substr(no, 10) AS INTEGER)), 0) AS mx FROM invoices WHERE no GLOB 'INV-[0-9][0-9][0-9][0-9]-[0-9]*'`);
+  }
+}
+
+export interface BlockRequest { series: Series; size: number; floor: number; gap: number }
+export interface ReservedBlock { series: Series; lo: number; hi: number }
+
+/**
+ * حساب الحجز على العدّاد (آخر رقمٍ محجوز لكل سلسلة) · بعد أعلى ما فيه وما يعرفه الجهاز،
+ * وأول إنشاءٍ للسلسلة بعد أرضيته بفجوة · يعيد العدّاد الجديد والكتل.
+ */
+export function planBlocks(cur: Record<string, number>, req: BlockRequest[]): { next: Record<string, number>; out: ReservedBlock[] } {
+  const next: Record<string, number> = {};
+  const out: ReservedBlock[] = [];
+  for (const r of req) {
+    const have = Number.isInteger(cur[r.series]) ? cur[r.series] : null;
+    const base = have === null ? r.floor + r.gap : Math.max(have, r.floor);
+    next[r.series] = base + r.size;
+    out.push({ series: r.series, lo: base + 1, hi: base + r.size });
+  }
+  return { next, out };
+}
+
+/** رقم الفاتورة التالي على العدّاد · بعد أعلى ما فيه وما يعرفه الجهاز، بلا فجوة */
+export function planInvoiceSeq(cur: Record<string, number>, floor: number): { next: Record<string, number>; out: number } {
+  const have = Number.isInteger(cur.INV) ? cur.INV : 0;
+  const n = Math.max(have, floor) + 1;
+  return { next: { INV: n }, out: n };
+}
+
+/** حاجة هذا الجهاز من الكتل في المزامنة · السلسلة وحجمها وأرضيتها: أعلى رقمٍ يعرفه أو في كتله */
+export function blockRequests(db: DB): BlockRequest[] {
+  const blocks = readBlocks(db);
+  return SERIES.filter((s) => wantsBlock(db, s))
+    .map((s) => ({
+      series: s, size: BLOCK_SIZE[s], gap: FIRST_GAP[s],
+      floor: Math.max(localMaxNumber(db, s), ...(blocks[s] ?? []).map((b) => b.hi)),
+    }));
+}
+
+/* ═══════════ الترقيم القديم بحرف الجهاز · لما لا كتلة له ═══════════ */
+
 const LETTER_KEY = 'device_letter';
-/** «'» = بلا حرف بعد التسجيل · والغياب = لم يُسجَّل الجهاز بعد (جهاز وحيد بلا مزامنة: بلا حرف) */
+/** «'» = بلا حرف بعد التسجيل · والغياب = لم يُسجَّل الجهاز (لا حرف) */
 const NONE = "'";
 
 export function deviceLetter(db: DB): string {
@@ -26,20 +152,8 @@ export function setDeviceLetter(db: DB, letter: string): void {
   db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [LETTER_KEY, letter || NONE]);
 }
 
-/** الحرف التالي لجهاز جديد · الأول بلا حرف، ثم B وC … Z ثم AA … */
-export function nextDeviceLetter(taken: string[]): string {
-  const used = new Set(taken);
-  if (!used.has('')) return '';
-  const all: string[] = [];
-  for (let c = 66; c <= 90; c++) all.push(String.fromCharCode(c));
-  for (let a = 65; a <= 90; a++) for (let b = 65; b <= 90; b++) all.push(String.fromCharCode(a) + String.fromCharCode(b));
-  const free = all.find((l) => !used.has(l));
-  if (!free) throw new Error('نفدت حروف الأجهزة');
-  return free;
-}
-
 /**
- * شرط SQL لأرقام هذا الجهاز وحده · `glob` نمط الرقم بلا لاحقة (مثل 'JE-[0-9]*').
+ * شرط SQL لأرقام هذا الجهاز بالترقيم القديم · `glob` نمط الرقم بلا لاحقة (مثل 'JE-[0-9]*').
  * بلا حرف: ما لا لاحقة له · وبحرف: ما ينتهي بـ «-حرف».
  */
 export function ownNumbersSql(column: string, glob: string, letter: string): { sql: string; params: string[] } {
@@ -50,18 +164,4 @@ export function ownNumbersSql(column: string, glob: string, letter: string): { s
 /** الرقم بحرف الجهاز إن كان له حرف */
 export function withLetter(no: string, letter: string): string {
   return letter ? no + '-' + letter : no;
-}
-
-/**
- * «هذا جهازي الأول» (قرار المالك ٢٠٢٦-١٠-٠٥: جواله الحالي هو جهازه الأول فيرث الحرف الفارغ) ·
- * هذا الجهاز يأخذ الفراغ، وصاحب الفراغ السابق يأخذ حرفاً جديداً فلا يتصادم إن عاد. الأرقام القائمة لا تُمسّ.
- */
-export function claimFirstLetter(letters: Record<string, string>, deviceId: string): { letters: Record<string, string>; previous: string | null } {
-  const next = { ...letters };
-  if (next[deviceId] === '') return { letters: next, previous: null };
-  const previous = Object.keys(next).find((d) => next[d] === '') ?? null;
-  delete next[deviceId];
-  if (previous) next[previous] = nextDeviceLetter(Object.entries(next).filter(([d]) => d !== previous).map(([, l]) => l).concat(['']));
-  next[deviceId] = '';
-  return { letters: next, previous };
 }

@@ -208,6 +208,22 @@ ${writesFns()}
         allow write: if orgOwner(org) && request.resource.data.keys().hasOnly(['moves']) && request.resource.data.moves is list;
       }
 
+      // عدّاد الترقيم (numbering.ts): آخر رقمٍ محجوز لكل سلسلة · يحجز منه المالك والعضو كتلاً، وتأخذ منه الفاتورة
+      // الضريبية رقمها · ولا ينقص عددٌ ولا يُحذف أبداً، فلا يُعطى رقمٌ مرتين
+      function counterOk(d, b, k) {
+        return !(k in d) || (d[k] is int && d[k] >= 0 && (b == null || !(k in b) || d[k] >= b[k]));
+      }
+      function countersOk(d, b) {
+        return d.keys().hasOnly(['JE', 'EJ', 'PUR', 'INV'])
+          && counterOk(d, b, 'JE') && counterOk(d, b, 'EJ') && counterOk(d, b, 'PUR') && counterOk(d, b, 'INV')
+          && (b == null || d.keys().hasAll(b.keys()));
+      }
+      match /meta/counters {
+        allow read: if orgOwner(org) || isMember(org);
+        allow create: if (orgOwner(org) || isMember(org)) && countersOk(request.resource.data, null);
+        allow update: if (orgOwner(org) || isMember(org)) && countersOk(request.resource.data, resource.data);
+      }
+
       match /meta/deletion {
         allow read, delete: if orgOwner(org);
         allow create, update: if orgOwner(org)

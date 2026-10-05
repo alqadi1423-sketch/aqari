@@ -41,9 +41,8 @@ import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
   pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
   restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
-  leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything, claimFirstDeviceNow,
+  leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything,
 } from '../src/services/cloud';
-import { deviceLetter } from '../src/domain/numbering';
 import { TeamSheet } from '../src/ui/TeamSheet';
 import { MyProfileSheet } from '../src/ui/ProfileForm';
 import { readMembership } from '../src/services/access';
@@ -600,20 +599,6 @@ export default function Settings() {
             {/* الأعضاء والصلاحيات للمالك · والعضو يرى منشأته ويغادرها (docs/PERMISSIONS.md) */}
             {admin && cloud.online ? (
               <ValueRow icon="collect" title="الأعضاء والصلاحيات" value="الدعوة والأقسام والعقارات" onPress={() => setTeamOpen(true)} />
-            ) : null}
-            {/* حرف الجهاز في الترقيم · للمالك على جهازٍ له حرف: يجعله الأول بلا حرف (قراره ٢٠٢٦-١٠-٠٥) */}
-            {admin && cloud.online && deviceLetter(db) ? (
-              <ValueRow icon="settings" title="هذا جهازي الأول" value={'أرقامه الآن بالحرف ' + deviceLetter(db)} onPress={() => dialog({
-                title: 'هذا جهازي الأول',
-                body: 'تصير أرقام هذا الجهاز الجديدة بلا حرف (JE-0042 لا JE-0042-' + deviceLetter(db) + ') وتكمل من أعلى رقم بلا حرف، ويأخذ جهازك الأول القديم حرفاً جديداً. الأرقام القائمة كما هي. اختره إن لم تعد تستعمل جهازك الأول القديم.',
-                actions: [
-                  { label: 'تراجع', variant: 'ghost' },
-                  { label: 'اجعله الأول', variant: 'primary', onPress: async () => {
-                    try { await claimFirstDeviceNow(db); bump(); toast('صار هذا الجهاز الأول · أرقامه الجديدة بلا حرف'); }
-                    catch (e) { await reportFailure({ title: 'تعذّر التحديث', where: 'حرف الجهاز', db, e }); }
-                  } },
-                ],
-              })} />
             ) : null}
             {/* العضو يكمل بياناته ويعدّلها (توجيه المالك ٢٠٢٦-١٠-٠٥) */}
             {!admin && readMembership(db) ? (

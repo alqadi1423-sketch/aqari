@@ -63,9 +63,6 @@ d('رحلة المنشأة', () => {
     enableSync(owner, OWNER);
     const legacy = new FirestoreRemote(base(OWNER, 'owner@example.test'));
     await syncOnce(owner, legacy, 'dev-owner-1');
-    const { deviceLetter } = await import('@/domain/numbering');
-    const letterBefore = deviceLetter(owner);
-    expect(letterBefore).toBe(''); // أول جهاز بلا حرف
     void getSyncState;
     // الانتقال
     const orgR = new FirestoreRemote({ ...base(OWNER, 'owner@example.test'), org: OWNER });
@@ -74,8 +71,10 @@ d('رحلة المنشأة', () => {
     const r = await syncOnce(owner, deviceRemote(owner, OWNER, 'owner@example.test'), 'dev-owner-1');
     expect(r.pending).toBe(0);
     expect(r.pushed).toBeGreaterThan(10);
-    const letters = await orgR.getDoc(`orgs/${OWNER}/meta/devices`);
-    expect((letters!.letters as Record<string, string>)['dev-owner-1']).toBe(letterBefore);
+    // عدّاد الترقيم انتقل كما هو · فكتلة المنشأة الجديدة بعد كتلة المسار القديم لا فوقها
+    const legacyCounters = await legacy.getDoc(`users/${OWNER}/meta/counters`);
+    const orgCounters = await orgR.getDoc(`orgs/${OWNER}/meta/counters`);
+    expect(Number(orgCounters!.JE)).toBeGreaterThanOrEqual(Number(legacyCounters!.JE));
   });
 
   test('الدعوة والقبول: العضو يرى عقاره وأقسامه وحدها', async () => {

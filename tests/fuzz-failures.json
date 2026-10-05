@@ -58,5 +58,301 @@
  {
   "seed": 848,
   "failure": "خصم بعد الاستحقاق وصل على قسطٍ سدّده جهاز آخر · فحص الوارد قرأ المسدَّد المخزَّن قبل إعادة حسابه فرفض صفاً صحيحاً · أُصلح: مسدَّد القسط الذي يمسّه الصف يُحسب قبل فحصه"
+ },
+ {
+  "seed": 1,
+  "failure": "A: 5 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 5,
+  "failure": "A: 4 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 13,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 21,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 22,
+  "failure": "A: 4 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 23,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: contracts.contract_no | Error: UNIQUE constraint failed: journal_entries.no | Error: خصم بعد الاستحقاق بلا سطر خصم مساوٍ له في الدفتر"
+ },
+ {
+  "seed": 24,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 25,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 26,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 28,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 29,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 30,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 42,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 43,
+  "failure": "A: 4 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 44,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 50,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 52,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 57,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 63,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 66,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 70,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 71,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 73,
+  "failure": "بعد «وصل الاتصال ومزامنة» على A: فحص الدفتر: تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة) (0.00 / 1,300.00)"
+ },
+ {
+  "seed": 74,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 75,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 77,
+  "failure": "A: 4 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 80,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 86,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 87,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 88,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 90,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 93,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 94,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 97,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 98,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 104,
+  "failure": "بعد «مزامنة» على B: فحص الدفتر: تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة) (3,500.00 / 0.00)"
+ },
+ {
+  "seed": 111,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 112,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 116,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 120,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 123,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 124,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 126,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 127,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 130,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 131,
+  "failure": "A: 6 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 132,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 135,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 142,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 148,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 149,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 150,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: خصم بعد الاستحقاق بلا سطر خصم مساوٍ له في الدفتر"
+ },
+ {
+  "seed": 151,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 154,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 157,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 158,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 163,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 165,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 166,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 167,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 168,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 170,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 172,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 175,
+  "failure": "بعد «مزامنة» على B: فحص الدفتر: تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة) (2,400.00 / 0.00) | فحص الدفتر: لا قيود يتيمة لمصادر محذوفة (1 يتيم)"
+ },
+ {
+  "seed": 177,
+  "failure": "A: 4 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 178,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 182,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 184,
+  "failure": "A: 3 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 186,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 188,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 192,
+  "failure": "A: 1 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 193,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 195,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: contracts.contract_no"
+ },
+ {
+  "seed": 196,
+  "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
  }
 ]

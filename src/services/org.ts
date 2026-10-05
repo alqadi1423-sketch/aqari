@@ -114,7 +114,7 @@ export const removeMember = (remote: FirestoreRemote, org: string, uid: string) 
 export const revokeInvite = (remote: FirestoreRemote, org: string, email: string) => remote.deleteDoc(`orgs/${org}/invites/${normEmail(email)}`);
 
 /**
- * انتقال المالك إلى منشأته (orgs/{uid}) مرة · حروف الأجهزة تُنقل كما هي فيبقى أول جهاز بلا حرف،
+ * انتقال المالك إلى منشأته (orgs/{uid}) مرة · حروف الأجهزة وعدّاد الترقيم يُنقلان كما هما فلا يُعطى رقمٌ مرتين،
  * وكل الصفوف تدخل الطابور ويُصفَّر مؤشر السحب كما في الانضمام. المسار القديم يبقى للقراءة ولا يُكتب.
  */
 export async function moveOwnerToOrg(db: DB, legacy: FirestoreRemote, org: FirestoreRemote, uid: string): Promise<boolean> {
@@ -123,6 +123,10 @@ export async function moveOwnerToOrg(db: DB, legacy: FirestoreRemote, org: Fires
   if (!letters) {
     const old = await legacy.getDoc(`users/${uid}/meta/devices`);
     if (old) await org.setDoc(`orgs/${uid}/meta/devices`, old);
+  }
+  if (!(await org.getDoc(`orgs/${uid}/meta/counters`))) {
+    const old = await legacy.getDoc(`users/${uid}/meta/counters`);
+    if (old) await org.setDoc(`orgs/${uid}/meta/counters`, old);
   }
   db.transaction(() => {
     db.run(`DELETE FROM sync_inbox`);

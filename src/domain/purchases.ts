@@ -11,7 +11,7 @@ import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryB
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
 import { logAudit } from './audit';
-import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
+import { deviceLetter, ownNumbersSql, withLetter, takeNumber } from './numbering';
 
 export interface PurchaseInput {
   supplier: string;
@@ -68,7 +68,9 @@ export function purchaseTax(subtotalHalalas: number, exempt: boolean): number {
 }
 
 export function nextPurchaseNo(db: DB): string {
-  // تسلسل هذا الجهاز وحده (numbering.ts)
+  // من كتلة هذا الجهاز (numbering.ts) · وبلا كتلة: الترقيم القديم بتسلسل هذا الجهاز وحده
+  const n = takeNumber(db, 'PUR');
+  if (n !== null) return 'PUR-' + String(n).padStart(3, '0');
   const letter = deviceLetter(db);
   const own = ownNumbersSql('no', 'PUR-[0-9]*', letter);
   const row = db.get<{ mx: number }>(

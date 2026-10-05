@@ -75,8 +75,10 @@ export interface RemoteStore {
    * إلى سجل المرفوض · فالحالة المشتقة محلياً (عقد انتهى، حجز سقط) لا تحبس الطابور، ويكتبها جهاز المالك
    */
   memberMode?: boolean;
-  /** حرف الجهاز في ترقيم الحساب · يُسجَّل مرة ويبقى (numbering.ts) */
-  registerDevice?(deviceId: string): Promise<string>;
+  /** كتل أرقام المستندات من عدّاد الحساب (numbering.ts) */
+  reserveBlocks?(req: import('../domain/numbering').BlockRequest[]): Promise<import('../domain/numbering').ReservedBlock[]>;
+  /** رقم الفاتورة الضريبية التالي بلا فجوة */
+  takeInvoiceSeq?(floor: number): Promise<number>;
 }
 
 export interface SyncReport {

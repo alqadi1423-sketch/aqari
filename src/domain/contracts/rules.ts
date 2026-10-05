@@ -5,7 +5,7 @@
 import type { DB } from '../../db/adapter';
 import { dfmt, today, daysBetween } from '../dates';
 import { normalizePhone } from '../phone';
-import { deviceLetter, withLetter } from '../numbering';
+import { deviceLetter, withLetter, takeNumber } from '../numbering';
 
 export const RENEW_WINDOW_DAYS = 60;
 
@@ -356,11 +356,14 @@ export function validateConfirmedContract(
 /** رقم العقد التالي EJ-YYYY-### · المسودات لا تستهلك رقماً من التسلسل */
 export function nextContractNo(db: DB, dateStr?: string): string {
   const yr = new Date((dateStr || today()) + 'T00:00:00').getFullYear();
+  // من كتلة هذا الجهاز (numbering.ts) · والتسلسل واحد عبر السنين، والسنة من تاريخ العقد
+  const n = takeNumber(db, 'EJ');
+  if (n !== null) return 'EJ-' + yr + '-' + String(n).padStart(3, '0');
   const rows = db.all<{ contract_no: string }>(
     `SELECT contract_no FROM contracts
      WHERE contract_no IS NOT NULL AND status != 'مسودة' AND deleted_at IS NULL`
   );
-  // تسلسل هذا الجهاز وحده (numbering.ts) · بلا حرف أو بحرفه بعد الرقم
+  // بلا كتلة: الترقيم القديم · تسلسل هذا الجهاز وحده بلا حرف أو بحرفه بعد الرقم
   const letter = deviceLetter(db);
   const own = new RegExp('^EJ-\\d{4}-(\\d+)' + (letter ? '-' + letter : '') + '$');
   let max = 0;

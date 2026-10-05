@@ -51,7 +51,8 @@ import {
 } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
-import { deviceLetter, setDeviceLetter } from '../domain/numbering';
+import { saveInvoiceIssued, setInvoiceStatusIssued, issuePendingInvoices, type InvoiceNumberSource, type IssueResult } from '../domain/invoiceIssue';
+import type { InvoiceInput } from '../domain/invoices';
 
 /* ═══════════ الجلسة ═══════════ */
 
@@ -233,6 +234,8 @@ export async function syncNow(): Promise<void> {
     const rep = await syncOnce(db, remoteOf(db, uid, idToken), ensureDeviceId(db), (msg) => patch({ progress: msg }), { onApplied: () => onData() });
     setSyncState(db, 'last_error', null);
     if (rep.applied || rep.conflicts) onData();
+    // الفواتير التي طُلب إصدارها بلا اتصال تصدر الآن برقمها من العدّاد (قرار المالك ٢٠٢٦-١٠-٠٥)
+    if (await issuePendingInvoices(db, remoteOf(db, uid, idToken))) onData();
     // المالك ينشر نقل الوحدات بعد رفع صفوفها بوسمها الجديد (ملاحظة المالك على ٤.١٢)
     if (!member && org === uid) await publishUnitMoves(db, remoteOf(db, uid, idToken), org);
     if (member) {
@@ -723,22 +726,6 @@ function logProfileEdit(db: DB, label: string, before: MemberProfile | null, aft
   logAudit(db, 'الأعضاء', before ? 'update' : 'create', 'بيانات عضو', label, mask(before, after), mask(after, before));
 }
 
-/**
- * «هذا جهازي الأول» للمالك (قراره ٢٠٢٦-١٠-٠٥) · هذا الجهاز يأخذ الترقيم بلا حرف، والأول القديم حرفاً جديداً.
- * الأرقام القائمة كما هي، وأرقام هذا الجهاز الجديدة تكمل من أعلى رقمٍ بلا حرف.
- */
-export async function claimFirstDeviceNow(db: DB): Promise<void> {
-  const t = teamRemote();
-  const deviceId = db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_id'`)?.value;
-  if (!deviceId) throw new Error('الجهاز بلا معرّف');
-  const before = deviceLetter(db);
-  await t.remote.claimFirstDevice(deviceId);
-  db.transaction(() => {
-    setDeviceLetter(db, '');
-    logAudit(db, 'الإعدادات', 'update', 'حرف الجهاز', 'هذا الجهاز هو الأول', { letter: before }, { letter: '' });
-  });
-}
-
 /** المالك يعدّل بيانات عضو */
 export async function updateMemberProfileNow(db: DB, uid: string, label: string, profile: MemberProfile) {
   const t = teamRemote();
@@ -832,4 +819,28 @@ export async function prepareRestoreFromDrive(
     try { env.fs.remove(archiveTmp); } catch { /* يكنسه الإقلاع */ }
     throw e;
   }
+}
+
+/**
+ * مصدر رقم الفاتورة الضريبية (invoiceIssue.ts) · جهازٌ يزامن يأخذه من عدّاد السحابة، وبلا اتصال أو جلسة
+ * يُرفض الطلب فتبقى الفاتورة مسودةً بانتظار الإصدار · وجهازٌ لا يزامن: null فيُرقِّم من تسلسله.
+ */
+function invoiceSource(db: DB): InvoiceNumberSource | null {
+  if (!getSyncState(db, 'uid')) return null;
+  const s = getSession();
+  if (!state.online || !s || !state.user || !cloudConfig()) {
+    return { takeInvoiceSeq: () => Promise.reject(new Error('لا اتصال')) };
+  }
+  const sess = s;
+  return remoteOf(db, state.user.uid, () => sess.idToken());
+}
+
+/** حفظ فاتورة من الشاشة · الإصدار برقم العدّاد، وبلا اتصال مسودةٌ تصدر عند عودته */
+export function saveInvoiceNow(db: DB, input: InvoiceInput, status: 'مسودة' | 'مستحقة', existingId?: string): Promise<IssueResult> {
+  return saveInvoiceIssued(db, invoiceSource(db), input, status, existingId);
+}
+
+/** تغيير حالة فاتورة من الشاشة · الخروج من المسودة يأخذ رقم العدّاد */
+export function setInvoiceStatusNow(db: DB, id: string, status: 'مسودة' | 'مستحقة' | 'متأخرة'): Promise<IssueResult> {
+  return setInvoiceStatusIssued(db, invoiceSource(db), id, status);
 }

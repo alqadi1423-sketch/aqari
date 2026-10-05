@@ -39,6 +39,28 @@ export function invoiceTotals(lines: InvoiceLineInput[]): { subtotal: number; ta
   return { subtotal, tax, total: subtotal + tax };
 }
 
+/**
+ * الفاتورة الضريبية بلا فجوات (قرار المالك ٢٠٢٦-١٠-٠٥): المسودة برقم مؤقت لا يُطبع، ورقمها الحقيقي يُعطى
+ * لحظة إصدارها · من عدّاد السحابة على جهازٍ يزامن (services/cloud.ts)، ومن تسلسل الجهاز على جهازٍ وحده.
+ */
+export const INVOICE_TEMP_PREFIX = 'TMP-';
+export const isTempInvoiceNo = (no: string | null | undefined): boolean => !!no && no.startsWith(INVOICE_TEMP_PREFIX);
+export const tempInvoiceNo = (): string => INVOICE_TEMP_PREFIX + uid().slice(-6).toUpperCase();
+/** رقم الفاتورة من تسلسلها · السنة من تاريخ إصدارها */
+export function invoiceNoFor(seq: number, issue?: string): string {
+  const yr = /^\d{4}-/.test(issue ?? '') ? issue!.slice(0, 4) : today().slice(0, 4);
+  return `INV-${yr}-` + String(seq).padStart(4, '0');
+}
+/** رقم الفاتورة كما يُعرض · المؤقت لا يُعرض رقماً */
+export const invoiceNoLabel = (no: string): string => (isTempInvoiceNo(no) ? 'مسودة بلا رقم' : no);
+/** الإصدار يحتاج رقماً: فاتورة جديدة تصدر، أو مسودةٌ برقم مؤقت تخرج من المسودة */
+export function needsIssueNumber(db: DB, id: string | null | undefined, status: string): boolean {
+  if (status === 'مسودة') return false;
+  if (!id) return true;
+  return isTempInvoiceNo(db.get<{ no: string }>(`SELECT no FROM invoices WHERE id = ?`, [id])?.no);
+}
+
+/** تسلسل الجهاز وحده · لجهازٍ لا يزامن */
 export function nextInvoiceNo(db: DB, issue?: string): string {
   // السنة من تاريخ الإصدار لا من تاريخ الجهاز · ففاتورة ديسمبر المدخلة في يناير بسنتها (المراجعة ٤.١٧)
   const yr = /^\d{4}-/.test(issue ?? '') ? issue!.slice(0, 4) : today().slice(0, 4);
@@ -56,7 +78,9 @@ export function saveInvoice(
   db: DB,
   input: InvoiceInput,
   status: 'مسودة' | 'مستحقة',
-  existingId?: string
+  existingId?: string,
+  /** رقم الإصدار من عدّاد السحابة · وبدونه تسلسل الجهاز */
+  issuedNo?: string,
 ): string {
   return db.transaction(() => {
     const { subtotal, tax, total } = invoiceTotals(input.lines);
@@ -83,6 +107,11 @@ export function saveInvoice(
       }
       if (!v) throw new Error('تعذّر العثور على الفاتورة');
       no = v.no;
+      // مسودةٌ برقم مؤقت تصدر الآن: رقمها الحقيقي لحظة إصدارها
+      if (status !== 'مسودة' && isTempInvoiceNo(no)) {
+        no = issuedNo ?? nextInvoiceNo(db, input.issue);
+        db.run(`UPDATE invoices SET no = ? WHERE id = ?`, [no, existingId]);
+      }
       // القيد المرحّل لا يُخفى · يُعكس بقيد مرآة يبقى في الدفتر ثم يُرحَّل قيد القيم الجديدة
       if (v.journal_entry_id) {
         if (!reverseEntryById(db, v.journal_entry_id, 'عكس قيد فاتورة ' + no + ' · تعديل الفاتورة'))
@@ -97,7 +126,7 @@ export function saveInvoice(
       );
       db.run(`DELETE FROM invoice_lines WHERE invoice_id = ?`, [existingId]);
     } else {
-      no = nextInvoiceNo(db, input.issue);
+      no = status === 'مسودة' ? tempInvoiceNo() : (issuedNo ?? nextInvoiceNo(db, input.issue));
       db.run(
         `INSERT INTO invoices (id, no, customer_name, customer_vat, issue, due, status,
           subtotal_halalas, tax_halalas, total_halalas, notes, unit_id, property_id, created_at)
@@ -189,7 +218,7 @@ export function reverseInvoicePayment(db: DB, id: string, keepTerms = false): vo
     : `UPDATE invoices SET payment_journal_entry_id = NULL, paid_date = NULL, payment_method = NULL, payment_bank_id = NULL WHERE id = ?`, [id]);
 }
 
-export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | 'مستحقة' | 'مدفوعة' | 'متأخرة'): void {
+export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | 'مستحقة' | 'مدفوعة' | 'متأخرة', issuedNo?: string): void {
   // «مدفوعة» بتحصيلٍ له قيد وحده (payInvoice) · لا تُضبط حالةً مجردة فتبقى الذمة بلا سداد
   if (newStatus === 'مدفوعة') throw new Error('سجّل التحصيل بتاريخه وطريقته · «مدفوعة» لا تُختار حالةً وحدها');
   requireCash(db, collectionCashOut(db, id), 'عكس تحصيل الفاتورة');
@@ -201,6 +230,11 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
     }>(`SELECT no, customer_name, issue, subtotal_halalas, tax_halalas, total_halalas, journal_entry_id, status
         FROM invoices WHERE id = ?`, [id]);
     if (!v) return;
+    // مسودةٌ برقم مؤقت تصدر الآن: رقمها الحقيقي لحظة إصدارها
+    if (newStatus !== 'مسودة' && isTempInvoiceNo(v.no)) {
+      v.no = issuedNo ?? nextInvoiceNo(db, v.issue);
+      db.run(`UPDATE invoices SET no = ? WHERE id = ?`, [v.no, id]);
+    }
     // الخروج من «مدفوعة» يعكس التحصيل أولاً
     reverseInvoicePayment(db, id);
     if (newStatus === 'مسودة' && v.journal_entry_id) {

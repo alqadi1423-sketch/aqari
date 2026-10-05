@@ -167,7 +167,7 @@ d('قواعد Firestore · users/{uid}', () => {
   test('«حذف حسابي»: الحذف ممنوع بلا طلب · والطلب بوقت الخادم يفتح ساعةً يحذف فيها صاحبه كل شيء ولا يفتحها غيره', async () => {
     const owner = client('DEL1');
     await owner.write([entry('مرحّل'), { id: 'audit_log__AX', t: 'audit_log', k: 'AX', u: 'x', dev: 'd', del: false, d: { id: 'AX', entity_name: 'أ' } }]);
-    await owner.registerDevice('devA');
+    await owner.reserveBlocks([{ series: 'JE', size: 10, floor: 0, gap: 0 }]);
     const base = 'http://' + HOST + '/v1/projects/' + PROJECT + '/databases/(default)/documents';
     const commit = (uid: string, asUid: string, writes: unknown[]) => fetch(base + ':commit', {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(asUid) },

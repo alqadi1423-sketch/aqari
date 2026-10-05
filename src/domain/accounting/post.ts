@@ -4,7 +4,7 @@ import { uid } from '../ids';
 import { today } from '../dates';
 import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
-import { deviceLetter, ownNumbersSql, withLetter } from '../numbering';
+import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
 
 export interface EntryLine {
   account: string;
@@ -31,16 +31,25 @@ export class MissingAccountsError extends Error {
   }
 }
 
-/** آخر رقم قيد لهذا الجهاز · من أرقامه وحده (numbering.ts) */
+/** آخر رقم قيد لهذا الجهاز بالترقيم القديم · من أرقامه وحده (numbering.ts) */
 function lastJournalSeq(db: DB): number {
   const own = ownNumbersSql('no', 'JE-[0-9]*', deviceLetter(db));
   return Number(db.get<{ mx: number }>(
     `SELECT COALESCE(MAX(CAST(substr(no, 4) AS INTEGER)), 0) AS mx FROM journal_entries WHERE ${own.sql}`, own.params)?.mx ?? 0);
 }
 
-/** الرقم التالي للقيد JE-#### · وبحرف الجهاز إن كان له حرف: JE-####-B */
+const journalNo = (n: number) => 'JE-' + String(n).padStart(4, '0');
+
+/** الرقم التالي للقيد JE-#### من كتلة هذا الجهاز · وبلا كتلة بالترقيم القديم (numbering.ts) · يُستهلك مع معاملته */
 export function nextJournalNo(db: DB): string {
-  return withLetter('JE-' + String(lastJournalSeq(db) + 1).padStart(4, '0'), deviceLetter(db));
+  const n = takeNumber(db, 'JE');
+  return n !== null ? journalNo(n) : withLetter(journalNo(lastJournalSeq(db) + 1), deviceLetter(db));
+}
+
+/** الرقم الذي سيأخذه القيد التالي · للعرض قبل الحفظ ولا يُستهلك */
+export function peekJournalNo(db: DB): string {
+  const n = peekNumber(db, 'JE');
+  return n !== null ? journalNo(n) : withLetter(journalNo(lastJournalSeq(db) + 1), deviceLetter(db));
 }
 
 /**
@@ -193,16 +202,13 @@ export function reverseAllPostedEntries(db: DB, reason: string, date: string = t
          AND NOT EXISTS (SELECT 1 FROM journal_entries o WHERE o.reversed_by = e.id)
        ORDER BY e.created_at, e.id`
     );
-    let n = lastJournalSeq(db);
-    const letter = deviceLetter(db);
     const now = new Date().toISOString();
     for (const t of targets) {
       const id = uid();
-      n += 1;
       db.run(
         `INSERT INTO journal_entries (id, no, date, memo, status, auto, src_type, src_id, created_at)
          VALUES (?,?,?,?,'قيد الإنشاء',1,?,?,?)`,
-        [id, withLetter('JE-' + String(n).padStart(4, '0'), letter), date, 'عكس قيد ' + t.no + ' · ' + reason,
+        [id, nextJournalNo(db), date, 'عكس قيد ' + t.no + ' · ' + reason,
          (t.src_type ?? 'manual') + '_rev', t.src_id ?? t.id, now]
       );
       db.run(

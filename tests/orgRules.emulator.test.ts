@@ -239,10 +239,18 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     expect(await putDoc(`orgs/${ORG}/members/${COLLECTOR.uid}`, { email: 'u-col@example.test', perm: { collect: 3 }, all: true, props: [], tokens: ['collect|@'] }, COLLECTOR.uid!)).toBe(403);
   });
 
-  test('حروف الأجهزة: العضو يضيف حرفه ولا يغيّر حرفاً قائماً', async () => {
-    const letter = await remoteFor(COLLECTOR.uid!, COLLECTOR).registerDevice('dev-col');
-    expect(letter).toBeTruthy();
-    expect(await putDoc(`orgs/${ORG}/meta/devices`, { letters: { 'dev-owner': 'Z', 'dev-col': letter } }, COLLECTOR.uid!)).toBe(403);
+  test('عدّاد الترقيم: العضو يحجز كتلةً ورقم فاتورة · ولا يُنقص عدداً ولا يضيف سلسلةً غريبة', async () => {
+    const r = remoteFor(COLLECTOR.uid!, COLLECTOR);
+    const [b] = await r.reserveBlocks([{ series: 'JE', size: 20, floor: 0, gap: 0 }]);
+    expect(b.hi - b.lo + 1).toBe(20);
+    const n = await r.takeInvoiceSeq(0);
+    expect(await r.takeInvoiceSeq(0)).toBe(n + 1);
+    // العدّاد كما هو مع تعديلٍ واحد · وحذف سلسلة قائمة مرفوض أيضاً
+    const cur = (await remoteFor(ORG, null).getDoc(`orgs/${ORG}/meta/counters`))!;
+    expect(await putDoc(`orgs/${ORG}/meta/counters`, { ...cur, JE: 1 }, COLLECTOR.uid!)).toBe(403);
+    expect(await putDoc(`orgs/${ORG}/meta/counters`, { ...cur, JE: b.hi + 5, X: 1 }, COLLECTOR.uid!)).toBe(403);
+    expect(await putDoc(`orgs/${ORG}/meta/counters`, { JE: b.hi + 5 }, COLLECTOR.uid!)).toBe(403);
+    expect(await putDoc(`orgs/${ORG}/meta/counters`, { ...cur, JE: b.hi + 5 }, COLLECTOR.uid!)).toBe(200);
   });
 });
 
@@ -297,20 +305,18 @@ d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦
   });
 });
 
-d('«هذا جهازي الأول» على الخادم', () => {
-  test('الجهاز الثاني يرث الفراغ والأول القديم يأخذ حرفاً جديداً', async () => {
-    const r = remoteFor(ORG, null);
-    const first = await r.registerDevice('dev-first-x');
-    const second = await r.registerDevice('dev-second-x');
-    expect(second).not.toBe('');
-    const prev = await r.claimFirstDevice('dev-second-x');
-    expect(await r.registerDevice('dev-second-x')).toBe('');
-    if (first === '') {
-      expect(prev).toBe('dev-first-x');
-      expect(await r.registerDevice('dev-first-x')).not.toBe('');
-    }
-    // العضو لا يغيّر حرفاً قائماً
-    const a = member('U-VIEW', { props: 1 }, 'all');
-    await expect(remoteFor('U-VIEW', a).claimFirstDevice('dev-x')).rejects.toBeTruthy();
+d('عدّاد الترقيم على الخادم (قرار المالك ٢٠٢٦-١٠-٠٥)', () => {
+  test('أجهزةٌ تحجز معاً فلا تتداخل كتلها · والفاتورة تتقدم واحداً بلا فجوة ولو طلبها جهازان معاً', async () => {
+    const devs = [remoteFor(ORG, null), remoteFor(ORG, null), remoteFor(ORG, null)];
+    const got = (await Promise.all(devs.map((r) => r.reserveBlocks([{ series: 'PUR', size: 25, floor: 3, gap: 100 }])))).map((x) => x[0]);
+    const sorted = [...got].sort((p, q) => p.lo - q.lo);
+    for (let i = 1; i < sorted.length; i++) expect(sorted[i].lo).toBe(sorted[i - 1].hi + 1);
+    expect(sorted[0].lo).toBeGreaterThan(3);
+    const seqs = (await Promise.all(devs.map((r) => r.takeInvoiceSeq(0)))).sort((p, q) => p - q);
+    expect(seqs[1] - seqs[0]).toBe(1);
+    expect(seqs[2] - seqs[1]).toBe(1);
+    // الكتلة القائمة لا تُعاد: حجزٌ بأرضيةٍ أدنى يبدأ بعد آخرها
+    const [again] = await devs[0].reserveBlocks([{ series: 'PUR', size: 25, floor: 0, gap: 100 }]);
+    expect(again.lo).toBe(sorted[2].hi + 1);
   });
 });

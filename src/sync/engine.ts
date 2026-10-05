@@ -21,7 +21,7 @@ import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
 import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
-import { deviceLetterAssigned, setDeviceLetter } from '../domain/numbering';
+import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 
@@ -807,9 +807,13 @@ export async function syncOnce(
   db.run(`DELETE FROM sync_rejects WHERE tbl LIKE '%~pub'`);
   requeueForAcl(db);
 
-  // ٠) حرف الجهاز في ترقيم الحساب قبل أي كتابة · مرة واحدة (numbering.ts)
-  if (remote.registerDevice && !deviceLetterAssigned(db)) {
-    setDeviceLetter(db, await retrying(() => remote.registerDevice!(deviceId)));
+  // ٠) كتل أرقام المستندات قبل أي كتابة · ما بقي منه أقل من نصفه يُملأ، فيعمل الجهاز بعدها بلا اتصال (numbering.ts)
+  if (remote.reserveBlocks) {
+    const req = blockRequests(db);
+    if (req.length) {
+      const got = await retrying(() => remote.reserveBlocks!(req));
+      db.transaction(() => { for (const b of got) addBlock(db, b.series, b.lo, b.hi); });
+    }
   }
 
   // ١) السحب إلى الصندوق الوارد · المؤشر يُحفظ بعد حفظ كل صفحة

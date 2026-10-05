@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { openNodeDb } from '@/db/nodeAdapter';
 import { migrate } from '@/db/migrations';
 import { seed, ensureDeviceId } from '@/db/seed';
+import { setDeviceLetter } from '@/domain/numbering';
 import type { DB } from '@/db/adapter';
 import { confirmContract, recordRentPayment, recordBulkRentPayment, RuleViolation } from '@/domain/contracts/service';
 import { DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, INSTALLMENT_DISCOUNT_SQL } from '@/domain/contracts/installments';
@@ -24,7 +25,6 @@ import { integrityChecks } from '@/domain/accounting/integrity';
 import { semanticIssues } from '@/domain/backup/semantic';
 import { DERIVED_PAID_SQL } from '@/domain/contracts/paid';
 import { cancelPayment } from '@/domain/contracts/cancelPayment';
-import { setDeviceLetter } from '@/domain/numbering';
 import { enableSync, syncOnce, outboxCount, readCloud, planFromSnapshot, adoptAsCloudTruth } from '@/sync/engine';
 import { planKeepPosted, applyKeepPosted } from '@/domain/backup/keepPosted';
 import { recomputeInstallments } from '@/domain/contracts/paid';
@@ -98,9 +98,8 @@ function openDevice(dir: string, name: 'A' | 'B', inner: MemoryRemote, seedNo: n
   fs.copyFileSync(templateFile(dir), file);
   const db = openNodeDb(file);
   const dev = ensureDeviceId(db, 'dev-' + name + '-' + seedNo);
-  // حرف الجهاز في ترقيم الحساب (numbering.ts) · الأول بلا حرف والثاني B كما يسجّلهما الحساب
+  // جهازان من عهد الحروف (numbering.ts): ما يكتبانه قبل أول حجزٍ لكتلة يُرقَّم بحرفه، وبعده من كتلته بلا لاحقة
   setDeviceLetter(db, name === 'A' ? '' : 'B');
-  inner.letters[dev] = name === 'A' ? '' : 'B';
   enableSync(db, UID);
   return { name, file, db, dev, remote: new DeviceRemote(inner), backup: null };
 }
