@@ -109,7 +109,55 @@ export interface EjarParseResult {
   durationSelect?: string;
   /** الاسم خرج بلا مسافات (مستخرج يبتلعها) · يجب مراجعته يدوياً قبل الحفظ */
   nameNeedsReview?: boolean;
+  /** جدول الدفعات كما في الملف · غيابه = تعذّرت قراءته فتُحسب الأقساط وينبَّه عليها */
+  schedule?: ScheduleRow[];
   found: string[];
+}
+
+/** صفّ من جدول دفعات إيجار: تاريخ الاستحقاق الميلادي ومبلغه بالهللات */
+export interface ScheduleRow { dueDate: string; amountHalalas: number }
+
+const GREG = /(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])/g;
+const HIJRI = /1[34]\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|30)/g;
+const AMOUNT = /\d{1,3}(?:,\d{3})+\.\d{2}|\d+\.\d{2}/;
+/** عنوان الجدول بالعربية أو الإنجليزية · بعد نزع المسافات، وبالترتيبين */
+const SCHEDULE_ANCHORS = [/rentpayments?schedule/i, /payments?schedule/i, /جدولسدادالدفعات/, /جدولالدفعات/, /جدولسداد/];
+
+/**
+ * جدول الدفعات من نصّ ملف إيجار (قرار المالك ٢٠٢٦-١٠-٠٥) · يبدأ بعد عنوان الجدول، وكل صفّ سطرٌ فيه تاريخ ميلادي
+ * ومبلغ عشري: أول تاريخ ميلادي فيه هو الاستحقاق، وأول مبلغ بعد نزع التواريخ (الميلادية والهجرية) هو قيمته، فلا
+ * يختلط يومٌ ملتصق بمبلغ. ينتهي الجدول بأول سطر نصّي بعد صفوفه. يُرفض كله إن خرج تاريخ عن مدة العقد أو لم يتصاعد،
+ * فالجدول المقروء خطأً أسوأ من المحسوب.
+ */
+export function parseEjarSchedule(raw: string): ScheduleRow[] | null {
+  const t = String(raw || '');
+  const tf = flatLatin(t);
+  const st = tf.match(/TenancyStartDate:?(\d{4}-\d{2}-\d{2})/i)?.[1];
+  const en = tf.match(/TenancyEndDate:?(\d{4}-\d{2}-\d{2})/i)?.[1];
+  const lines = t.split('\n').map((l) => l.normalize('NFKC').replace(/\s+/g, ''));
+  const isAnchor = (l: string) => SCHEDULE_ANCHORS.some((re) => re.test(l) || re.test([...l].reverse().join('')));
+  const from = lines.findIndex(isAnchor);
+  if (from < 0) return null;
+  const rows: ScheduleRow[] = [];
+  for (let i = from + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    const gregs = [...line.matchAll(GREG)].map((m) => m[0]);
+    const rest = line.replace(GREG, '|').replace(HIJRI, '|');
+    const amt = rest.match(AMOUNT);
+    if (gregs.length && amt) {
+      const v = parseFloat(amt[0].replace(/,/g, ''));
+      if (!(v > 0)) return null;
+      rows.push({ dueDate: gregs[0], amountHalalas: Math.round(v * 100) });
+    } else if (rows.length && /[A-Za-z\u0600-\u06FF]{3,}/.test(line)) break; // نهاية الجدول: أول نصّ بعد صفوفه
+  }
+  if (!rows.length) return null;
+  for (let i = 0; i < rows.length; i++) {
+    const d = rows[i].dueDate;
+    if ((st && d < st) || (en && d > en)) return null;
+    if (i && d < rows[i - 1].dueDate) return null;
+  }
+  return rows;
 }
 
 /**
@@ -139,6 +187,10 @@ export function anchorDiagnostics(raw: string): AnchorCheck[] {
     probe('تاريخ النهاية', /TenancyEndDate:?(\d{4}-\d{2}-\d{2})/i),
     probe('قيمة العقد', /Total(?:Contract|rent)value:?([\d,\.]+)/i),
     probe('التأمين', /SecurityDeposit[\s\S]{0,200}?(?:([\d,]+\.\d{2})|(-):)/i),
+    (() => {
+      const sch = parseEjarSchedule(String(raw || ''));
+      return { label: 'جدول الدفعات', ok: !!sch, sample: sch ? sch.length + ' قسطاً · أولها ' + sch[0].dueDate : '' };
+    })(),
   ];
 }
 
@@ -248,6 +300,9 @@ export function parseEjarContract(raw: string): EjarParseResult {
       for (const [re, val] of map) if (re.test(c)) { pick('cycle', val); break outer; }
     }
   }
+
+  const sch = parseEjarSchedule(t);
+  if (sch) { out.schedule = sch; found.push('schedule'); }
 
   if (out.start && out.end) {
     const months = Math.round(

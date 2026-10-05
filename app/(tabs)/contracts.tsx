@@ -197,6 +197,12 @@ export default function Contracts() {
       pendingFile: null,
       // تحويل الحجز يُختار عند التوثيق صراحةً ولا يُحفظ في المسودة
       reservationId: '',
+      // جدول الدفعات المقروء من ملف إيجار محفوظٌ مع المسودة (الهجرة ٢٤)
+      schedule: (() => {
+        const raw = (c as unknown as { ejar_schedule?: string | null }).ejar_schedule;
+        try { return raw ? JSON.parse(raw) : undefined; } catch { return undefined; }
+      })(),
+      fromEjarFile: (c as unknown as { installments_source?: string | null }).installments_source ? true : undefined,
     });
     setEditingDraftId(c.id);
     setFormOpen(true);
@@ -896,6 +902,10 @@ function ContractDetailSheet({
       <T size={13.5} bold color={C.ink} style={{ marginTop: 14, marginBottom: 8 }}>
         جدول الدفعات المستحقة ({dueInsts.length})
       </T>
+      {/* عقد قُرئ من ملف إيجار وتعذّر جدول دفعاته: التواريخ محسوبة لا مقروءة (قرار المالك ٢٠٢٦-١٠-٠٥) */}
+      {(c as unknown as { installments_source?: string | null }).installments_source === 'محسوبة' ? (
+        <Note>تواريخ الأقساط محسوبة لا مقروءة: تعذّرت قراءة جدول الدفعات من ملف إيجار · طابقها بالجدول في الملف.</Note>
+      ) : null}
       {dueInsts.length ? dueInsts.map(renderInst) : <T size={12} color={C.muted}>لا دفعات مستحقة</T>}
 
       <T size={13.5} bold color={C.ink} style={{ marginTop: 14, marginBottom: 8 }}>

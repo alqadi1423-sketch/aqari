@@ -5,7 +5,7 @@
  */
 import { buildSyncMigration } from './syncTables';
 
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1270,5 +1270,15 @@ ALTER TABLE reservations ADD COLUMN deposit_outcome TEXT;
 ALTER TABLE reservations ADD COLUMN deposit_settled_date TEXT;
 `;
 
+/**
+ * الهجرة ٢٤ · أقساط عقود إيجار من جدول ملفها (قرار المالك ٢٠٢٦-١٠-٠٥): الجدول المقروء يُحفظ مع المسودة
+ * فيُبنى منه جدول الأقساط عند التوثيق، ومصدر التواريخ يُحفظ مع العقد: «ملف» قُرئت من جدوله، و«محسوبة» قُرئ
+ * العقد من ملف وتعذّر جدوله فحُسبت وينبَّه عليها، والفارغ عقدٌ أُدخل يدوياً.
+ */
+export const MIGRATION_24 = `
+ALTER TABLE contracts ADD COLUMN ejar_schedule TEXT;
+ALTER TABLE contracts ADD COLUMN installments_source TEXT;
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24];

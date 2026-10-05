@@ -12,6 +12,9 @@ import { useToast } from '../src/ui/Toast';
 import { reportFailure } from '../src/ui/failureDialog';
 import { integrityChecks } from '../src/domain/accounting/integrity';
 import { previewRepairs, applyRepair, type RepairPreview } from '../src/domain/reviewRepairs';
+import { previewEjarSchedules, applyEjarSchedules, contractsWithLease, type EjarScheduleDiff } from '../src/domain/ejarScheduleRepair';
+import { readLeaseText } from '../src/services/contractScan';
+import { dfmt } from '../src/domain/dates';
 
 export default function Integrity() {
   const { db, version, bump } = useApp();
@@ -27,6 +30,12 @@ export default function Integrity() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, tick, access.owner]);
   const ok = checks.every((c) => c.ok);
+  // أقساط عقود إيجار مقابل جدول ملفها (قرار المالك ٢٠٢٦-١٠-٠٥) · القراءة من الملفات بطلب لا عند الفتح
+  const leaseCount = useMemo(() => (access.owner ? contractsWithLease(db).length : 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version, access.owner]);
+  const [ejar, setEjar] = useState<EjarScheduleDiff[] | null>(null);
+  const [reading, setReading] = useState(false);
 
   const apply = (r: RepairPreview) => {
     const ready = r.items.filter((i) => !i.blocked).length;
@@ -72,6 +81,51 @@ export default function Integrity() {
           </View>
         ))}
       </Card>
+      {access.owner && leaseCount ? (
+        <Card>
+          <CardTitle>أقساط عقود إيجار مقابل جدول ملفها</CardTitle>
+          <T size={12} color={C.muted} style={{ marginBottom: 8 }}>
+            {'يقرأ جدول الدفعات من ملف كل عقد مرفق (' + leaseCount + ') ويقارنه بتواريخ أقساطه · المبالغ والمسدَّد لا تُمسّ، والتطبيق بضغطتك.'}
+          </T>
+          {ejar === null ? (
+            <BtnGhost title={reading ? 'جاري قراءة الملفات' : 'اقرأ الملفات وقارن'} onPress={async () => {
+              if (reading) return;
+              setReading(true);
+              try { setEjar(await previewEjarSchedules(db, (id) => readLeaseText(db, id))); }
+              catch (e) { reportFailure({ title: 'تعذّرت المقارنة', e }); }
+              setReading(false);
+            }} />
+          ) : !ejar.length ? (
+            <T size={12.5} color={C.emerald}>كل الأقساط تطابق جداول ملفاتها</T>
+          ) : (
+            <>
+              {ejar.map((d) => (
+                <View key={d.contractId} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
+                  <T size={12.5}>{d.label}</T>
+                  {d.blocked ? <T size={11.5} color={C.rose}>{d.blocked}</T> : (
+                    <T size={11.5} color={C.muted}>{d.changes.length + ' قسط · مثل ' + dfmt(d.changes[0].from) + ' ← ' + dfmt(d.changes[0].to)}</T>
+                  )}
+                </View>
+              ))}
+              {ejar.some((d) => !d.blocked) ? (
+                <View style={{ marginTop: 10 }}>
+                  <BtnGhost title="طبّق تواريخ الملفات" onPress={() => dialog({
+                    title: 'تواريخ الأقساط من ملفات إيجار',
+                    body: 'تُصحَّح تواريخ استحقاق ' + ejar.filter((d) => !d.blocked).length + ' عقداً كما في جداول ملفاتها، والمبالغ والمسدَّد كما هي. هل تطبّقه؟',
+                    actions: [
+                      { label: 'تراجع', variant: 'ghost' },
+                      { label: 'تطبيق', variant: 'primary', onPress: () => {
+                        try { const n = applyEjarSchedules(db, ejar); setEjar(null); bump(); toast('طُبّق على ' + n + ' عقداً'); }
+                        catch (e) { reportFailure({ title: 'تعذّر التطبيق', e }); }
+                      } },
+                    ],
+                  })} />
+                </View>
+              ) : null}
+            </>
+          )}
+        </Card>
+      ) : null}
       {repairs.map((r) => (
         <Card key={r.key}>
           <CardTitle>{r.title} · {r.items.length}</CardTitle>

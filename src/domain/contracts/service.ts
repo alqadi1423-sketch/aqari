@@ -3,6 +3,7 @@
  * كل دالة تتم بمعاملة واحدة، والترحيل المحاسبي عبر مسار postEvent الواحد.
  */
 import type { DB } from '../../db/adapter';
+import type { ScheduleRow } from '../pdf/parseEjar';
 import { uid } from '../ids';
 import { today, dfmt } from '../dates';
 import {
@@ -72,6 +73,44 @@ export interface ContractDraftInput {
   typeSpecific: Record<string, string>;
   /** حجز الوحدة الذي يتحوّل لهذا العقد · الربط بمعرّفه لا بالاسم (المراجعة ٤.٤) */
   reservationId?: string | null;
+  /** جدول الدفعات كما قُرئ من ملف إيجار · null = قُرئ الملف وتعذّر جدوله */
+  schedule?: ScheduleRow[] | null;
+  /** العقد قُرئ من ملف إيجار · فإن تعذّر جدوله حُسبت الأقساط ونُبّه عليها */
+  fromEjarFile?: boolean;
+}
+
+/** مصدر تواريخ الأقساط (الهجرة ٢٤) */
+export const SOURCE_FILE = 'ملف';
+export const SOURCE_COMPUTED = 'محسوبة';
+
+/**
+ * الجدول صالحٌ لعقدٍ بمدته · كل تاريخ داخلها ومتصاعد. المبالغ من الملف إن طابق مجموعها قيمة العقد،
+ * وإلا قُسمت القيمة على عدد صفوفه بالهللات (الأخير يمتص الفرق) فتبقى التواريخ من الملف.
+ */
+export function scheduleInstallments(schedule: ScheduleRow[] | null | undefined, start: string, end: string, valueHalalas: number):
+  Array<{ dueDate: string; amountHalalas: number }> | null {
+  if (!schedule || !schedule.length || !start || !end) return null;
+  for (let i = 0; i < schedule.length; i++) {
+    const d = schedule[i].dueDate;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < start || d > end || (i && d < schedule[i - 1].dueDate)) return null;
+  }
+  const sum = schedule.reduce((s, r) => s + Number(r.amountHalalas || 0), 0);
+  if (sum === valueHalalas) return schedule.map((r) => ({ dueDate: r.dueDate, amountHalalas: Number(r.amountHalalas) }));
+  const n = schedule.length;
+  const per = Math.floor(valueHalalas / n);
+  return schedule.map((r, i) => ({ dueDate: r.dueDate, amountHalalas: i === n - 1 ? valueHalalas - per * (n - 1) : per }));
+}
+
+/** قاعدة ما قبل الهجرة ٢٤ (نسخة تُراجَع قبل ترقيتها) بلا عمودي الجدول والمصدر · فتُحسب أقساطها كما كانت */
+function hasEjarColumns(db: DB): boolean {
+  return db.all<{ name: string }>(`PRAGMA table_info(contracts)`).some((c) => c.name === 'installments_source');
+}
+
+/** ما يُحفظ مع المسودة من قراءة الملف · فلا يضيع الجدول إن أُغلق النموذج ثم وُثّق العقد لاحقاً */
+function ejarColumns(input: ContractDraftInput): { schedule: string | null; source: string | null } | null {
+  if (input.schedule === undefined && input.fromEjarFile === undefined) return null;
+  const schedule = input.schedule && input.schedule.length ? JSON.stringify(input.schedule) : null;
+  return { schedule, source: schedule ? SOURCE_FILE : input.fromEjarFile ? SOURCE_COMPUTED : null };
 }
 
 function unitLabel(db: DB, unitId: string): string {
@@ -134,6 +173,8 @@ export function saveDraft(db: DB, input: ContractDraftInput, draftId?: string): 
     }
     db.run(`UPDATE contracts SET deposit_holder = ?, deposit_holder_name = ? WHERE id = ?`,
       [input.depositHolder || 'المكتب', input.depositHolderName || '', id]);
+    const ej = hasEjarColumns(db) ? ejarColumns(input) : null;
+    if (ej) db.run(`UPDATE contracts SET ejar_schedule = ?, installments_source = ? WHERE id = ?`, [ej.schedule, ej.source, id]);
     syncTenantToCustomer(db, input.tenant, input.phone);
     linkContractTenant(db, id);
     seedTenantOccupant(db, id);
@@ -206,7 +247,18 @@ export function confirmContract(db: DB, input: ContractDraftInput, draftId?: str
       `SELECT id FROM contract_installments WHERE contract_id = ? LIMIT 1`, [id]
     );
     if (!hasInstallments) {
-      const insts = generateInstallments(input.start, input.end, input.valueHalalas, input.cycle);
+      // عقد إيجار من ملفه: التواريخ من جدول الدفعات فيه دائماً (قرار المالك ٢٠٢٦-١٠-٠٥) · وإن تعذّر
+      // جدوله حُسبت بالدالة ووُسم العقد «محسوبة» فينبَّه عليه
+      const cols = hasEjarColumns(db);
+      const stored = cols ? db.get<{ s: string | null; src: string | null }>(
+        `SELECT ejar_schedule AS s, installments_source AS src FROM contracts WHERE id = ?`, [id]) : undefined;
+      const ej = ejarColumns(input) ?? { schedule: stored?.s ?? null, source: stored?.src ?? null };
+      let parsed: ScheduleRow[] | null = null;
+      try { parsed = ej.schedule ? (JSON.parse(ej.schedule) as ScheduleRow[]) : null; } catch { parsed = null; }
+      const fromFile = scheduleInstallments(parsed, input.start, input.end, input.valueHalalas);
+      const insts = fromFile
+        ? fromFile.map((x) => ({ id: uid(), ...x }))
+        : generateInstallments(input.start, input.end, input.valueHalalas, input.cycle);
       insts.forEach((inst, i) => {
         db.run(
           `INSERT INTO contract_installments (id, contract_id, due_date, amount_halalas, sort)
@@ -214,6 +266,8 @@ export function confirmContract(db: DB, input: ContractDraftInput, draftId?: str
           [inst.id, id, inst.dueDate, inst.amountHalalas, i]
         );
       });
+      const source = fromFile ? SOURCE_FILE : (ej.source ? SOURCE_COMPUTED : null);
+      if (cols) db.run(`UPDATE contracts SET ejar_schedule = ?, installments_source = ? WHERE id = ?`, [ej.schedule, source, id]);
     }
     // استلام التأمين
     db.run(`UPDATE contracts SET deposit_holder = ?, deposit_holder_name = ? WHERE id = ?`,

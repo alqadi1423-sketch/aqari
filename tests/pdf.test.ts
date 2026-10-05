@@ -210,8 +210,10 @@ Rent paym ent cycle يرهش
 
   test('تشخيص الأنكرات: الثمانية تطابق على النص المبعثر', () => {
     const diag = anchorDiagnostics(SCATTERED);
-    expect(diag).toHaveLength(8);
-    for (const d of diag) expect(d.label + ': ' + d.ok).toBe(d.label + ': true');
+    // التاسع «جدول الدفعات» (قرار المالك ٢٠٢٦-١٠-٠٥) · هذا النص بلا جدول فيبلّغ بغيابه
+    expect(diag).toHaveLength(9);
+    for (const d of diag.slice(0, 8)) expect(d.label + ': ' + d.ok).toBe(d.label + ': true');
+    expect(diag[8]).toEqual({ label: 'جدول الدفعات', ok: false, sample: '' });
   });
 
   test('رقم العقد بمسافة قبل الشرطة المائلة يخرج كاملاً موصولاً', () => {

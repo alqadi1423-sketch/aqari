@@ -18,6 +18,7 @@ import { scanContractFile } from '../services/contractScan';
 import { anchorDiagnostics } from '../domain/pdf/parseEjar';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../domain/contracts/vocab';
 import type { ContractDraftInput } from '../domain/contracts/service';
+import type { ScheduleRow } from '../domain/pdf/parseEjar';
 import type { ContractField } from '../domain/contracts/rules';
 import { reportFailure } from './failureDialog';
 
@@ -87,6 +88,9 @@ export interface ContractFormState {
   pendingFile: { uri: string; name: string; mime: string } | null;
   /** حجز الوحدة المحوَّل لهذا العقد باختيار المستخدم · الربط بالمعرّف لا بالاسم (المراجعة ٤.٤) */
   reservationId: string;
+  /** جدول الدفعات من ملف إيجار · null = قُرئ الملف وتعذّر جدوله، undefined = لم يُقرأ ملف */
+  schedule?: ScheduleRow[] | null;
+  fromEjarFile?: boolean;
 }
 
 export const emptyContractForm = (): ContractFormState => ({
@@ -95,6 +99,8 @@ export const emptyContractForm = (): ContractFormState => ({
   ejarNo: '', services: '', furnished: 'غير مؤثثة', typeSpecific: {},
   pendingFile: null,
   reservationId: '',
+  schedule: undefined,
+  fromEjarFile: undefined,
 });
 
 export function formToInput(s: ContractFormState): ContractDraftInput {
@@ -105,6 +111,8 @@ export function formToInput(s: ContractFormState): ContractDraftInput {
     ejarNo: s.ejarNo, services: s.services,
     furnished: s.furnished, typeSpecific: s.typeSpecific,
     reservationId: s.reservationId || null,
+    schedule: s.schedule,
+    fromEjarFile: s.fromEjarFile,
   };
 }
 
@@ -190,9 +198,13 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
       if (result.end) set('end', result.end);
       if (result.contractNo) set('ejarNo', result.contractNo);
       if (result.cycle) set('cycle', result.cycle);
+      // تواريخ الأقساط من جدول الملف دائماً (قرار المالك ٢٠٢٦-١٠-٠٥) · وإن تعذّر تُحسب وينبَّه عليها
+      set('schedule', result.schedule ?? null);
+      set('fromEjarFile', true);
       const n = result.found.length;
       setScanStatus(n
         ? `قُرئ ${n} حقلاً` + (result.months ? ` · المدة ${result.months} شهراً` : '')
+          + (result.schedule ? ` · جدول الدفعات ${result.schedule.length} قسطاً من الملف` : ' · تعذّرت قراءة جدول الدفعات فستُحسب تواريخه')
           + (result.nameNeedsReview ? ' · راجع الاسم · مسافاته لم تُسترجع من الملف' : '')
         : 'لم تُقرأ حقول واضحة · اعرض النص المستخرج لتشخيص السبب');
       // ملف العقد نفسه يُرفق تلقائياً بالعقد عند الحفظ ويظهر في المكتبة

@@ -4,6 +4,9 @@
  */
 import { parseEjarContract, type EjarParseResult } from '../domain/pdf/parseEjar';
 import { extractPdfText, PdfEncrypted } from '../domain/pdf/miniPdfText';
+import type { DB } from '../db/adapter';
+import { attachmentsFor, attachmentPath } from '../files/store';
+import { appFilesEnv } from './filesEnv';
 
 /**
  * استخراج نص PDF بتجميع الأسطر بفارق عمودي > 3 (منطق النموذج).
@@ -48,4 +51,16 @@ export async function scanContractFile(file: {
     text = await readImageText(file.uri);
   }
   return { text, result: parseEjarContract(text) };
+}
+
+/**
+ * نصّ ملف عقد إيجار المرفق بعقدٍ قائم · لأداة مقارنة الأقساط بجدول الملف (ejarScheduleRepair) ·
+ * null إن لم يكن له ملف PDF أو تعذّرت قراءته.
+ */
+export async function readLeaseText(db: DB, contractId: string): Promise<string | null> {
+  const env = appFilesEnv(db);
+  const att = attachmentsFor(db, 'contract', contractId, 'lease')
+    .find((a) => /pdf/i.test(a.mime || '') || /\.pdf$/i.test(a.original_name || ''));
+  if (!att) return null;
+  try { return await readPdfText(env.fs.read(attachmentPath(env, att))); } catch { return null; }
 }
