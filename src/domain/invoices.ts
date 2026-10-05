@@ -38,8 +38,9 @@ export function invoiceTotals(lines: InvoiceLineInput[]): { subtotal: number; ta
   return { subtotal, tax, total: subtotal + tax };
 }
 
-export function nextInvoiceNo(db: DB): string {
-  const yr = new Date().getFullYear();
+export function nextInvoiceNo(db: DB, issue?: string): string {
+  // السنة من تاريخ الإصدار لا من تاريخ الجهاز · ففاتورة ديسمبر المدخلة في يناير بسنتها (المراجعة ٤.١٧)
+  const yr = /^\d{4}-/.test(issue ?? '') ? issue!.slice(0, 4) : today().slice(0, 4);
   // تسلسل هذا الجهاز وحده (numbering.ts) · الرقم بعد السنة، وبحرف الجهاز بعده
   const letter = deviceLetter(db);
   const own = ownNumbersSql('no', 'INV-[0-9]*', letter);
@@ -95,7 +96,7 @@ export function saveInvoice(
       );
       db.run(`DELETE FROM invoice_lines WHERE invoice_id = ?`, [existingId]);
     } else {
-      no = nextInvoiceNo(db);
+      no = nextInvoiceNo(db, input.issue);
       db.run(
         `INSERT INTO invoices (id, no, customer_name, customer_vat, issue, due, status,
           subtotal_halalas, tax_halalas, total_halalas, notes, unit_id, property_id, created_at)

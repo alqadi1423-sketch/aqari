@@ -685,3 +685,40 @@ describe('٤.١٦ حسم التعارض بساعة الخادم لا ساعة ا
     a.close(); b.close();
   });
 });
+
+describe('٤.١٧ بنود صغرى', () => {
+  test('سنة رقم الفاتورة من تاريخ إصدارها لا من تاريخ الجهاز', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { saveInvoice } = await import('@/domain/invoices');
+    const db = memDb();
+    const id = saveInvoice(db, { customer: 'عميل ديسمبر', customerVat: '', issue: '2019-12-30', due: '2020-01-15', notes: '',
+      lines: [{ descr: 'خدمة', qty: 1, priceHalalas: 1000, taxPct: 0 }] }, 'مستحقة');
+    expect(db.get<{ no: string }>(`SELECT no FROM invoices WHERE id = ?`, [id])!.no).toMatch(/^INV-2019-0001/);
+  });
+
+  test('تعديل تاريخ المطالبة المفتوحة وحده ينقل تاريخ قيدها', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const { saveClaim } = await import('@/domain/claims');
+    const { accountBalance } = await import('@/domain/accounting/ledger');
+    const db = memDb();
+    const cid = confirmContract(db, contractInput(addUnit(db, addProperty(db)), { tenant: 'مستأجر مطالبة' }));
+    const id = saveClaim(db, { contractId: cid, amountHalalas: 7000, reason: 'تلف', date: '2026-03-01' });
+    saveClaim(db, { contractId: cid, amountHalalas: 7000, reason: 'تلف', date: '2026-04-15' }, id);
+    const live = db.all<{ date: string }>(`SELECT date FROM journal_entries WHERE src_type = 'claim' AND src_id = ? AND reversed_by IS NULL AND memo NOT LIKE 'عكس%' AND memo NOT LIKE 'تعديل%'`, [id]);
+    expect(live.map((e) => e.date)).toEqual(['2026-04-15']);
+    expect(accountBalance(db, '1250')).toBe(7000);
+  });
+
+  test('كفاية النقد: الإيداع في البنك والمصروف النثري يُرفضان بما يتجاوز المحفظة (قائمٌ قبل المراجعة)', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addBank } = await import('./helpers/fixtures');
+    const { depositCashToBank, pettyCashExpense, ownerCashIn } = await import('@/domain/cashOps');
+    const db = memDb();
+    const bank = addBank(db, 'بنك الإيداع');
+    ownerCashIn(db, { amountHalalas: 5000, date: '2026-05-01' });
+    expect(() => depositCashToBank(db, { bankId: bank, amountHalalas: 6000, date: '2026-05-02' })).toThrow(/لا يكفي/);
+    expect(() => pettyCashExpense(db, { amountHalalas: 6000, descr: 'قرطاسية', date: '2026-05-02' })).toThrow(/لا يكفي/);
+  });
+});

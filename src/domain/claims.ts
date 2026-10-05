@@ -18,12 +18,12 @@ export function saveClaim(db: DB, input: ClaimInput, existingId?: string): strin
   if (!input.contractId || !input.amountHalalas) throw new Error('اختر العقد وأدخل المبلغ');
   return db.transaction(() => {
     if (existingId) {
-      const cl = db.get<{ amount_halalas: number; status: string }>(
-        `SELECT amount_halalas, status FROM claims WHERE id = ?`, [existingId]
+      const cl = db.get<{ amount_halalas: number; status: string; date: string }>(
+        `SELECT amount_halalas, status, date FROM claims WHERE id = ?`, [existingId]
       );
       if (!cl) throw new Error('تعذّر العثور على المطالبة');
-      // تعديل مطالبة مفتوحة بمبلغ مختلف: عكس القيد القديم وترحيل الجديد
-      if (cl.status === 'مفتوحة' && Number(cl.amount_halalas) !== input.amountHalalas) {
+      // تعديل مطالبة مفتوحة بمبلغ أو تاريخ مختلف: عكس القيد القديم وترحيل الجديد بتاريخه (المراجعة ٤.١٧)
+      if (cl.status === 'مفتوحة' && (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date)) {
         reverseEntryBySource(db, 'claim', existingId, 'تعديل مطالبة · عكس القيد السابق');
         postClaim(db, { id: existingId, amount: input.amountHalalas, reason: input.reason, date: input.date });
       }

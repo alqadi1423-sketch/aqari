@@ -14,9 +14,11 @@ import type { FS } from '@/files/fsAdapter';
 
 const mkroot = () => fsNode.mkdtempSync(path.join(os.tmpdir(), 'aq-bkpath-')).replace(/\\/g, '/');
 
+/** نزع file:// وحده كما يفعل الجهاز · فيبقى /tmp مطلقاً على لينكس وC:/ على ويندوز (المراجعة ٤.١٧) */
+const strip = (p: string) => (p.startsWith('file://') ? p.slice('file://'.length) : p);
+
 /** يحاكي expoFs: يقبل مسارات بـfile:// وينزعها قبل القرص */
 const schemeFs = (inner: FS): FS => {
-  const strip = (p: string) => (p.startsWith('file://') ? p.slice('file://'.length) : p);
   return {
     read: (p) => inner.read(strip(p)),
     write: (p, b) => inner.write(strip(p), b),
@@ -40,8 +42,8 @@ function deviceLikeEnv() {
     tmpDir: 'file://' + (base as unknown as { tmpDir: string }).tmpDir,
     attachmentsDir: 'file://' + base.attachmentsDir,
     fs: schemeFs(base.fs),
-    // فاتح القاعدة على ويندوز: نزع file:/// كما يفعل openNodeDbCompat على الجهاز
-    openDb: (p) => base.openDb(p.startsWith('file:///') ? p.slice('file:///'.length) : p.startsWith('file://') ? p.slice('file://'.length) : p),
+    // فاتح القاعدة بالنزع نفسه
+    openDb: (p) => base.openDb(strip(p)),
   };
   return { env, base };
 }
