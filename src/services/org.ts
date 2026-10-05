@@ -10,6 +10,7 @@ import { memberTokens } from '../sync/acl';
 import { SECTION_KEYS, type Level, type Perms } from '../domain/access/sections';
 import { readMembership, saveMembership, type Membership } from './access';
 import { EMPTY_PROFILE, type MemberProfile } from '../domain/access/profile';
+import { pendingUnitMoves, PENDING_MOVES_KEY, type UnitMove } from '../domain/unitMove';
 
 export interface MemberSpec {
   email: string;
@@ -179,6 +180,44 @@ export async function refreshMembership(db: DB, remote: FirestoreRemote): Promis
 
 /** مغادرة العضو المنشأة بنفسه · تُحذف عضويته من الخادم، ومسح الجهاز على المستدعي */
 export const leaveOrg = (remote: FirestoreRemote, org: string, uid: string) => remote.deleteDoc(`orgs/${org}/members/${uid}`);
+
+/* ─── نقل الوحدات بين العقارات (ملاحظة المالك ٢٠٢٦-١٠-٠٥ على ٤.١٢) ─── */
+
+/** آخر ما يُحفظ من سجل النقل في المنشأة · يكفي لجهازٍ غاب أشهراً، والأقدم منه لم يعد يؤثر بعد إعادة السحب */
+const MOVES_KEEP = 300;
+
+/** المالك ينشر ما نقله من وحدات بعد رفع صفوفها بوسمها الجديد · فيعرف كل عضو هل خرجت من عقاراته */
+export async function publishUnitMoves(db: DB, remote: FirestoreRemote, org: string): Promise<number> {
+  const pending = pendingUnitMoves(db);
+  if (!pending.length) return 0;
+  const cur = await remote.getDoc(`orgs/${org}/meta/moves`);
+  const prev = Array.isArray(cur?.moves) ? (cur!.moves as UnitMove[]) : [];
+  await remote.setDoc(`orgs/${org}/meta/moves`, { moves: [...prev, ...pending].slice(-MOVES_KEEP) });
+  setSyncState(db, PENDING_MOVES_KEY, null);
+  return pending.length;
+}
+
+/**
+ * العضو يقرأ سجل النقل · 'lost' إن خرجت وحدةٌ من عقاراته إلى عقار ليس له (فيُفرَّغ جهازه ويُعاد سحبه بصلاحيته
+ * كما يحدث عند تغيّرها)، وما دخل عقاراته يصله بالسحب العادي لأن صفوفه رُفعت من جديد. أول قراءة تحفظ الموضع ولا تفرّغ.
+ */
+export async function checkUnitMoves(db: DB, remote: FirestoreRemote): Promise<'lost' | 'none'> {
+  const m = readMembership(db);
+  if (!m) return 'none';
+  const cur = await remote.getDoc(`orgs/${m.org}/meta/moves`);
+  const moves = Array.isArray(cur?.moves) ? (cur!.moves as UnitMove[]) : [];
+  const seen = getSyncState(db, 'moves_seen');
+  // الموضع يُحفظ من أول قراءة ولو كان السجل فارغاً · «0» قبل أي تاريخ، فأول نقلٍ بعدها يُحتسب
+  if (!moves.length) {
+    if (seen == null) setSyncState(db, 'moves_seen', '0');
+    return 'none';
+  }
+  const last = moves.reduce((mx, x) => (x.at > mx ? x.at : mx), '');
+  setSyncState(db, 'moves_seen', last);
+  if (seen == null || m.allProps) return 'none';
+  const lost = moves.some((x) => x.at > seen && m.props.includes(x.from) && !m.props.includes(x.to));
+  return lost ? 'lost' : 'none';
+}
 
 /* ─── المسح الشامل (توجيه المالك ٢٠٢٦-١٠-٠٤) ─── */
 

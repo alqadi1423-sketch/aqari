@@ -47,7 +47,7 @@ import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
   moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
-  updateMemberProfile, type MemberDoc, type MemberSpec,
+  updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec,
 } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
@@ -227,9 +227,14 @@ export async function syncNow(): Promise<void> {
     const rep = await syncOnce(db, remoteOf(db, uid, idToken), ensureDeviceId(db), (msg) => patch({ progress: msg }));
     setSyncState(db, 'last_error', null);
     if (rep.applied || rep.conflicts) onData();
+    // المالك ينشر نقل الوحدات بعد رفع صفوفها بوسمها الجديد (ملاحظة المالك على ٤.١٢)
+    if (!member && org === uid) await publishUnitMoves(db, remoteOf(db, uid, idToken), org);
     if (member) {
-      // العضوية في الخادم: أُزيلت فيُفرَّغ الجهاز · تغيّرت فيُعاد السحب من أوله بصلاحيته الجديدة
-      const r = await refreshMembership(db, remoteOf(db, uid, idToken));
+      // العضوية في الخادم: أُزيلت فيُفرَّغ الجهاز · تغيّرت فيُعاد السحب من أوله بصلاحيته الجديدة،
+      // وكذلك إن نُقلت وحدةٌ من عقاراته إلى عقار ليس له
+      const moved = await checkUnitMoves(db, remoteOf(db, uid, idToken));
+      const r0 = await refreshMembership(db, remoteOf(db, uid, idToken));
+      const r = r0 === 'same' && moved === 'lost' ? 'changed' : r0;
       if (r === 'removed') {
         await resetDeviceData(db as AppDB);
         patch({ lastError: 'أُزيلت عضويتك من المنشأة · فُرّغ هذا الجهاز من بياناتها' });

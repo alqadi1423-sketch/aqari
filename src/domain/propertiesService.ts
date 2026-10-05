@@ -135,7 +135,7 @@ export function saveUnit(db: DB, input: UnitInput, existingId?: string): string 
         [...fields, existingId]
       );
       // نُقلت إلى عقار آخر: كل ما تحتها يُعاد وسمه ورفعه (المراجعة ٤.١٢)
-      if (before && before !== input.propertyId) retagUnitTree(db, existingId, input.propertyId);
+      if (before && before !== input.propertyId) retagUnitTree(db, existingId, before, input.propertyId);
     } else {
       db.run(
         `INSERT INTO units (id, property_id, unit_no, unit_no_key, floor, type, subtype, rent_monthly_halalas, created_at)

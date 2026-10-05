@@ -1,7 +1,9 @@
 /**
  * نقل وحدة إلى عقار آخر (المراجعة ٤.١٢) · كل صفٍّ يُرفع موسوماً بعقاره المشتق من سلسلة
  * «الدفعة ← العقد ← الوحدة ← العقار» (sync/acl.ts)، فتغيير عقار الوحدة يعيد رفع كل ما تحتها بوسمه الجديد،
- * وما يحمل العقار نصاً بجانب الوحدة (المشتريات والفواتير) يُحدَّث. فيراها عضو العقار الجديد ولا يتلقّى القديمُ تحديثها.
+ * وما يحمل العقار نصاً بجانب الوحدة (المشتريات والفواتير) يُحدَّث. فيراها عضو العقار الجديد كاملة،
+ * ويُسجَّل النقل (الوحدة ومن أي عقار إلى أي عقار) فيُنشر في المنشأة: العضو الذي لم يعد له حقٌّ فيها يُفرَّغ جهازه
+ * ويُعاد سحبه بصلاحيته عند أول اتصال (ملاحظة المالك ٢٠٢٦-١٠-٠٥).
  */
 import type { DB } from '../db/adapter';
 
@@ -13,10 +15,21 @@ function capturing(db: DB): boolean {
 const ids = (db: DB, sql: string, p: unknown[]): string[] => db.all<{ id: string }>(sql, p as never).map((r) => r.id);
 const marks = (n: number) => Array(n).fill('?').join(',');
 
-export function retagUnitTree(db: DB, unitId: string, newPropertyId: string): void {
+/** نقل وحدة بانتظار النشر في المنشأة · يقرؤه services/org.publishUnitMoves */
+export interface UnitMove { unit: string; from: string; to: string; at: string }
+export const PENDING_MOVES_KEY = 'unit_moves_pending';
+
+export function pendingUnitMoves(db: DB): UnitMove[] {
+  try { return JSON.parse(db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = ?`, [PENDING_MOVES_KEY])?.v || '[]') as UnitMove[]; }
+  catch { return []; }
+}
+
+export function retagUnitTree(db: DB, unitId: string, oldPropertyId: string, newPropertyId: string): void {
   db.run(`UPDATE purchases SET property_id = ? WHERE unit_id = ?`, [newPropertyId, unitId]);
   db.run(`UPDATE invoices SET property_id = ? WHERE unit_id = ?`, [newPropertyId, unitId]);
   if (!capturing(db)) return;
+  const moves = [...pendingUnitMoves(db), { unit: unitId, from: oldPropertyId, to: newPropertyId, at: new Date().toISOString() }];
+  db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [PENDING_MOVES_KEY, JSON.stringify(moves)]);
 
   const at = new Date().toISOString();
   const queue = (table: string, keys: string[]) => {

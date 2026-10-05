@@ -197,6 +197,12 @@ ${writesFns()}
         allow write: if orgOwner(org) && request.resource.data.keys().hasOnly(['n', 'at']) && request.resource.data.n is int;
       }
 
+      // سجل نقل الوحدات بين العقارات · العضو يقرؤه ليعرف هل خرجت وحدةٌ من عقاراته
+      match /meta/moves {
+        allow read: if orgOwner(org) || isMember(org);
+        allow write: if orgOwner(org) && request.resource.data.keys().hasOnly(['moves']) && request.resource.data.moves is list;
+      }
+
       match /meta/deletion {
         allow read, delete: if orgOwner(org);
         allow create, update: if orgOwner(org)
