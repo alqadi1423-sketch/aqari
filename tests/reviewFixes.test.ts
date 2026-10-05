@@ -301,3 +301,97 @@ describe('أدوات البيانات السابقة · معاينة ثم تطب
     expect(previewRepairs(db).find((r) => r.key === 'installment_drift')!.items).toHaveLength(0);
   });
 });
+
+describe('٤.٣ الدفعات الملغاة خارج كل قراءة', () => {
+  const setup = async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract, recordRentPayment } = await import('@/domain/contracts/service');
+    const { cancelPayment } = await import('@/domain/contracts/cancelPayment');
+    const db = memDb();
+    const prop = addProperty(db);
+    const unit = addUnit(db, prop);
+    const cid = confirmContract(db, contractInput(unit, { tenant: 'مستأجر إلغاء', start: '2026-01-01', end: '2026-12-31', valueHalalas: 1200000, cycle: 'شهرية', depositHalalas: 0 }));
+    const insts = db.all<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date`, [cid]);
+    const pay = (iid: string, d: string) => recordRentPayment(db, cid, { installmentId: iid, period: d, date: d, lines: [{ method: 'cash', amountHalalas: 100000 }], discountHalalas: 0, notes: '' });
+    pay(insts[0].id, '2026-01-05');
+    const bad = pay(insts[1].id, '2026-02-05');
+    cancelPayment(db, bad, { reason: 'سُجّلت خطأً', date: '2026-02-06' });
+    expect(db.get<{ c: string | null }>(`SELECT cancelled_at AS c FROM contract_payments WHERE id = ?`, [bad])!.c).toBeTruthy();
+    return { db, cid, unit, prop };
+  };
+
+  test('الإقرار الضريبي: الإيجار المعفى وكشفه بلا الملغاة', async () => {
+    const { db } = await setup();
+    const { vatReturnData } = await import('@/domain/vatReturn');
+    const r = vatReturnData(db, 2026, 1);
+    expect(r.schedules.exemptSales.map((x) => x.net)).toEqual([100000]);
+    expect(r.items.some((i) => i.amountHalalas === 200000)).toBe(false);
+    expect(r.items.some((i) => i.amountHalalas === 100000)).toBe(true);
+  });
+
+  test('كشف حساب المستأجر: الملغاة لا تظهر سداداً', async () => {
+    const { db, cid } = await setup();
+    const { tenantStatementRows } = await import('@/domain/statement');
+    const credits = tenantStatementRows(db, cid).filter((r) => r.creditHalalas > 0).map((r) => r.creditHalalas);
+    expect(credits).toEqual([100000]);
+  });
+
+  test('تقرير الوحدة والعقار: التحصيل بلا الملغاة', async () => {
+    const { db, unit, prop } = await setup();
+    const { unitReportData, propertyReportData } = await import('@/domain/reportData');
+    const u = unitReportData(db, unit, null, '2026-12-31')!;
+    expect(u.payments.map((p) => p.net_halalas)).toEqual([100000]);
+    expect(u.totals.income).toBe(100000);
+    const p = propertyReportData(db, prop, null, '2026-12-31')!;
+    expect(p.payments.map((x) => x.net_halalas)).toEqual([100000]);
+  });
+
+  test('دخل العقد بلا أقساط: بلا الملغاة', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract, recordRentPayment } = await import('@/domain/contracts/service');
+    const { cancelPayment } = await import('@/domain/contracts/cancelPayment');
+    const { contractCollectedValue } = await import('@/domain/stats');
+    const db = memDb();
+    const cid = confirmContract(db, contractInput(addUnit(db, addProperty(db)), { tenant: 'عقد بلا جدول', start: '2026-01-01', end: '2026-12-31', valueHalalas: 1200000, cycle: 'شهرية', depositHalalas: 0 }));
+    db.run(`DELETE FROM contract_installments WHERE contract_id = ?`, [cid]); // عقد قديم بلا جدول أقساط
+    const pay = (d: string) => recordRentPayment(db, cid, { period: d, date: d, lines: [{ method: 'cash', amountHalalas: 100000 }], discountHalalas: 0, notes: '' });
+    pay('2026-01-05');
+    cancelPayment(db, pay('2026-02-05'), { reason: 'خطأ', date: '2026-02-06' });
+    expect(contractCollectedValue(db, cid)).toBe(100000);
+  });
+
+  test('كل استعلام يقرأ الدفعات يستبعد الملغاة أو يعلّل شمولها', () => {
+    // جرد ثابت: نص SQL يقرأ من contract_payments (FROM أو JOIN) إما فيه cancelled_at، أو يجلب صفاً بمعرّفه،
+    // أو فيه تعليل «/* تشمل الملغاة: ... */» · فلا يُضاف استعلام جديد ينسى الملغاة
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('path') as typeof import('path');
+    const root = path.join(__dirname, '..');
+    const walk = (d: string, out: string[] = []): string[] => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p, out);
+        else if (/\.(ts|tsx)$/.test(e.name)) out.push(p);
+      }
+      return out;
+    };
+    const bad: string[] = [];
+    for (const f of [...walk(path.join(root, 'src')), ...walk(path.join(root, 'app'))]) {
+      const s = fs.readFileSync(f, 'utf8');
+      const re = /`[^`]*`/g;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(s))) {
+        const q = m[0];
+        if (!/\b(FROM|JOIN)\s+contract_payments/i.test(q)) continue;
+        if (/^`\s*(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)/i.test(q)) continue;
+        if (/cancelled_at/.test(q) || /\/\* تشمل الملغاة:/.test(q)) continue;
+        if (/WHERE\s+(\w+\.)?id\s*=\s*\?/i.test(q)) continue;
+        bad.push(path.relative(root, f) + ':' + s.slice(0, m.index).split('\n').length);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+});

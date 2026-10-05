@@ -108,7 +108,7 @@ export function planLedgerRepair(db: DB): LedgerRepairPlan {
     const insts = db.all<InstRow>(
       `SELECT i.id, i.due_date, i.amount_halalas AS amount, i.paid_halalas AS paid, i.status,
               ${INSTALLMENT_DISCOUNT_SQL} AS disc, ${DERIVED_PAID_SQL} AS derived,
-              COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p WHERE p.installment_id = i.id), 0) AS rows_disc
+              COALESCE((SELECT SUM(p.discount_halalas) FROM contract_payments p WHERE p.installment_id = i.id AND p.cancelled_at IS NULL), 0) AS rows_disc
        FROM contract_installments i WHERE i.contract_id = ? ORDER BY i.due_date, i.sort, i.id`, [cid]
     ).map((r) => ({ ...r, amount: Number(r.amount), paid: Number(r.paid), derived: Number(r.derived), disc: Number(r.disc), rows_disc: Number(r.rows_disc) }));
     const live = insts.filter((i) => i.status !== 'ملغية');
@@ -137,6 +137,7 @@ export function planLedgerRepair(db: DB): LedgerRepairPlan {
       if (toPaid === i.paid) continue;
       const discountEntries = db.all<{ no: string }>(
         `SELECT DISTINCT e.no FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '${DISCOUNT_ACCOUNT}'
+         /* تشمل الملغاة: قيودها معكوسة فيستبعدها reversed_by */
          WHERE e.status = 'مرحّل' AND e.reversed_by IS NULL AND (
            (e.src_type = '${DISCOUNT_ENTRY_SRC}' AND e.src_id = ?)
            OR e.id IN (SELECT journal_entry_id FROM contract_payments WHERE installment_id = ?)
@@ -250,7 +251,7 @@ const CANDIDATES = `
   LEFT JOIN contracts c ON c.id = p.contract_id
   LEFT JOIN contract_installments i ON i.id = p.installment_id
   LEFT JOIN journal_entries e ON e.id = p.journal_entry_id
-  WHERE p.discount_kind IS NULL AND p.discount_halalas > 0
+  WHERE p.discount_kind IS NULL AND p.discount_halalas > 0 AND p.cancelled_at IS NULL
     AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = p.journal_entry_id AND l.account_code = '${DISCOUNT_ACCOUNT}')
     AND NOT EXISTS (SELECT 1 FROM journal_entries d WHERE d.src_type = '${DISCOUNT_ENTRY_SRC}' AND d.src_id = p.id)
   ORDER BY c.tenant_name, p.date, p.created_at`;
@@ -369,6 +370,7 @@ export function contractSurpluses(db: DB): ContractSurplus[] {
     cash: number; live_paid: number; dead_paid: number; settled: number;
   }>(
     `SELECT c.id, c.contract_no, c.tenant_name, c.tenant_id,
+            /* تشمل الملغاة: قيودها معكوسة فيستبعدها reversed_by */
             COALESCE((SELECT SUM(CASE WHEN l.account_code IN ('4200', '${DISCOUNT_ACCOUNT}') THEN l.credit_halalas - l.debit_halalas ELSE 0 END)
                       FROM contract_payments p
                       JOIN journal_entries e ON e.id = p.journal_entry_id AND e.status = 'مرحّل' AND e.reversed_by IS NULL

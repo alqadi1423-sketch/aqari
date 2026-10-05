@@ -178,6 +178,7 @@ export default function Collect() {
     const recent = db.all<{ id: string; date: string; period: string; net_halalas: number; tenant_name: string }>(
       `SELECT p.id, p.date, p.period, p.net_halalas, c.tenant_name
        FROM contract_payments p JOIN contracts c ON c.id = p.contract_id AND c.deleted_at IS NULL
+       WHERE p.cancelled_at IS NULL
        ORDER BY p.date DESC, p.created_at DESC LIMIT 8`
     );
     const props = db.all<{ id: string; name: string }>(
@@ -236,7 +237,7 @@ export default function Collect() {
     return db.all<{ id: string; date: string; net_halalas: number; tenant_name: string; contract_id: string; period: string }>(
       `SELECT p.id, p.date, p.net_halalas, p.period, c.tenant_name, c.id AS contract_id
        FROM contract_payments p JOIN contracts c ON c.id = p.contract_id AND c.deleted_at IS NULL
-       WHERE substr(p.date, 1, 7) = ?
+       WHERE substr(p.date, 1, 7) = ? AND p.cancelled_at IS NULL
        ORDER BY p.date DESC`, [mo]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, paidSheet]);

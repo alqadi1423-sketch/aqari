@@ -786,14 +786,14 @@ export function setInstallmentSchedule(
 /** آخر دفعة سدّدت قسطاً بعينه · لفتح سند القبض من جدول الأقساط */
 export function paymentForInstallment(db: DB, installmentId: string): string | null {
   const direct = db.get<{ id: string }>(
-    `SELECT id FROM contract_payments WHERE installment_id = ? ORDER BY created_at DESC LIMIT 1`,
+    `SELECT id FROM contract_payments WHERE installment_id = ? AND cancelled_at IS NULL ORDER BY created_at DESC LIMIT 1`,
     [installmentId]
   );
   if (direct) return direct.id;
   const alloc = db.get<{ payment_id: string }>(
     `SELECT pa.payment_id FROM payment_allocations pa
      JOIN contract_payments p ON p.id = pa.payment_id
-     WHERE pa.installment_id = ? ORDER BY p.created_at DESC LIMIT 1`,
+     WHERE pa.installment_id = ? AND p.cancelled_at IS NULL ORDER BY p.created_at DESC LIMIT 1`,
     [installmentId]
   );
   return alloc ? alloc.payment_id : null;

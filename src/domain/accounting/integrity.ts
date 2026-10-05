@@ -13,6 +13,11 @@ export interface IntegrityCheck {
  * فحوص المطابقة الستة · تُعرض في «فحص المطابقة» وتُشغَّل قبل كل نسخة احتياطية
  * وتُكتب نتائجها في بيان النسخة.
  */
+/** النسخة قبل الترقية تُفحص بإصدارها القديم · فالعمود الذي أضافته هجرة لاحقة يُتحقق من وجوده */
+function hasCol(db: DB, table: string, col: string): boolean {
+  return db.all<{ name: string }>(`PRAGMA table_info(${table})`).some((c) => c.name === col);
+}
+
 export function integrityChecks(db: DB): IntegrityCheck[] {
   const out: IntegrityCheck[] = [];
 
@@ -110,6 +115,7 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     `SELECT COUNT(*) AS n FROM journal_entries e
      WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.auto = 1
        AND e.reversed_by IS NULL AND e.src_type = 'rent'
+       /* تشمل الملغاة: قيد الملغاة معكوس فلا يبلغ هذا الشرط، وصفّها باقٍ مستنداً له */
        AND NOT EXISTS (SELECT 1 FROM contract_payments p WHERE p.journal_entry_id = e.id)
        -- قيدٌ بقي بالاستعادة ومستنده ليس في النسخة · معروفٌ في أداة المراجعة لا مستندٌ حُذف (keepPosted.ts)
        AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.entity_type = ? AND json_extract(a.after_json, '$.id') = e.id)`,
@@ -124,7 +130,7 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
   // ٨) كل دفعة إيجار محصَّلة لها قيدها المرحّل (الربط بين التحصيل والدفتر)
   const unposted = db.get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM contract_payments p
-     WHERE p.net_halalas > 0 AND NOT EXISTS (
+     WHERE p.net_halalas > 0 ${hasCol(db, 'contract_payments', 'cancelled_at') ? 'AND p.cancelled_at IS NULL' : ''} AND NOT EXISTS (
        SELECT 1 FROM journal_entries e
        WHERE e.id = p.journal_entry_id AND e.status = 'مرحّل' AND e.deleted_at IS NULL
      )`
@@ -137,7 +143,7 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
 
   // ١٠) ذمم الفواتير (المراجعة ٤.٢): لا فاتورة «مدفوعة» بلا قيد تحصيل، وحركة 1200 = المصدرة غير المحصّلة
   // قاعدة ما قبل الهجرة ٢٣ (نسخة ما قبل الترقية تُفحص بإصدارها) لا عمود تحصيل فيها: كل «مدفوعة» فيها بلا قيد
-  const hasPay = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'payment_journal_entry_id');
+  const hasPay = hasCol(db, 'invoices', 'payment_journal_entry_id');
   const inv = db.get<{ due: number; paidNoEntry: number }>(
     `SELECT COALESCE(SUM(CASE WHEN status <> 'مدفوعة' THEN total_halalas ELSE 0 END),0) AS due,
             COALESCE(SUM(CASE WHEN status = 'مدفوعة' AND ${hasPay ? 'payment_journal_entry_id' : 'NULL'} IS NULL THEN 1 ELSE 0 END),0) AS paidNoEntry
@@ -151,7 +157,7 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
 
   // ١١) عربون الحجوزات (المراجعة ٤.٤ و٤.٥): رصيد 2450 = عربون الحجوزات القائمة غير المسوّاة · المحوَّل والمصادَر
   // والمردود خرجت منه (والمصادرة قبل عمود المآل تُعرف بقيدها)
-  const hasOutcome = db.all<{ name: string }>(`PRAGMA table_info(reservations)`).some((c) => c.name === 'deposit_outcome');
+  const hasOutcome = hasCol(db, 'reservations', 'deposit_outcome');
   const held = db.get<{ s: number }>(
     `SELECT COALESCE(SUM(deposit_halalas),0) AS s FROM reservations r
      WHERE r.deleted_at IS NULL AND r.status <> 'محوَّل لعقد' ${hasOutcome ? 'AND r.deposit_outcome IS NULL' : ''}
@@ -180,6 +186,7 @@ export function orphanCounts(db: DB): { payments: number; installments: number; 
   const n = (sql: string) => Number(db.get<{ n: number }>(sql)!.n);
   return {
     payments: n(`SELECT COUNT(*) AS n FROM contract_payments p
+      /* تشمل الملغاة: الصف الباقي بلا عقده يتيمٌ ملغىً كان أو حيّاً */
       WHERE NOT EXISTS (SELECT 1 FROM contracts c WHERE c.id = p.contract_id AND c.deleted_at IS NULL)`),
     installments: n(`SELECT COUNT(*) AS n FROM contract_installments i
       WHERE NOT EXISTS (SELECT 1 FROM contracts c WHERE c.id = i.contract_id AND c.deleted_at IS NULL)`),

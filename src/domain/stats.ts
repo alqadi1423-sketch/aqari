@@ -205,7 +205,7 @@ export function contractCollectedValue(db: DB, contractId: string): number {
   )!;
   if (Number(inst.n) > 0) return Number(inst.s);
   const pay = db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ?`,
+    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
     [contractId]
   )!;
   return Number(pay.s);
@@ -261,7 +261,7 @@ function aggregatedStats(db: DB, propertyId: string | null, T: string): Property
      FROM contract_payments pm
      JOIN contracts c ON c.id = pm.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL ${unitFilter}
+     WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL ${unitFilter}
        AND NOT EXISTS (SELECT 1 FROM contract_installments i WHERE i.contract_id = c.id)`, p
   )!.s);
   const cancelled = db.get<{ n: number; v: number }>(
@@ -324,7 +324,7 @@ export function allPropertyStats(db: DB, T: string = today()): Map<string, Prope
      FROM contract_payments pm
      JOIN contracts c ON c.id = pm.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL
+     WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM contract_installments i WHERE i.contract_id = c.id)
      GROUP BY u.property_id`
   )) ensure(r.pid).income += Number(r.s);

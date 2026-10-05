@@ -140,7 +140,7 @@ export function libraryFiles(env: FilesEnv): LibraryFile[] {
     ).map((o) => [o.id, o])
   );
   const paymentsMap = new Map(
-    db.all<{ id: string; contract_id: string }>(`SELECT id, contract_id FROM contract_payments`).map((p) => [p.id, p])
+    db.all<{ id: string; contract_id: string }>(`SELECT id, contract_id FROM contract_payments /* تشمل الملغاة: مرفق الدفعة يبقى في المكتبة */`).map((p) => [p.id, p])
   );
   const suppliersMap = new Map(
     db.all<{ id: string; name: string }>(`SELECT id, name FROM suppliers`).map((s) => [s.id, s])

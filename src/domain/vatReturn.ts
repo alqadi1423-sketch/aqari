@@ -49,7 +49,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
 
   // ٥ · المبيعات المعفاة = إيرادات الإيجار السكني المحصَّلة
   const rent = db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(p.net_halalas),0) AS s FROM contract_payments p${inPeriod('p.date').replace(' AND', ' WHERE')}`
+    `SELECT COALESCE(SUM(p.net_halalas),0) AS s FROM contract_payments p WHERE p.cancelled_at IS NULL${inPeriod('p.date')}`
   )!;
 
   // ٧ · المشتريات الخاضعة باسمنا وحدها · لبّ الطلب
@@ -113,7 +113,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
   const exemptSales = db.all<{ date: string; tenant: string; contractNo: string; unitLabel: string; net: number }>(
     `SELECT p.date, c.tenant_name AS tenant, COALESCE(c.contract_no,'لا يوجد') AS contractNo,
             c.unit_label AS unitLabel, p.net_halalas AS net
-     FROM contract_payments p JOIN contracts c ON c.id = p.contract_id${inPeriod('p.date').replace(' AND', ' WHERE')} ORDER BY p.date`
+     FROM contract_payments p JOIN contracts c ON c.id = p.contract_id WHERE p.cancelled_at IS NULL${inPeriod('p.date')} ORDER BY p.date`
   );
   const transfers = db.all<{ date: string; amount: number; party: string; purpose: string; bankRef: string; invoiceNo: string }>(
     `SELECT pu.paid_date AS date, pu.total_halalas AS amount, pu.supplier_name AS party,

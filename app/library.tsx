@@ -59,6 +59,7 @@ const LIB_JOINS = `FROM attachments a
   LEFT JOIN purchases p ON a.entity_type = 'purchase' AND p.id = a.entity_id
   LEFT JOIN handovers h ON a.entity_type = 'handover' AND h.id = a.entity_id
   LEFT JOIN occupants o ON a.entity_type = 'occupant' AND o.id = a.entity_id
+  /* تشمل الملغاة: مرفق الدفعة يبقى في المكتبة */
   LEFT JOIN contract_payments cp ON a.entity_type = 'payment' AND cp.id = a.entity_id
   LEFT JOIN contracts c3 ON c3.id = cp.contract_id
   LEFT JOIN units u ON u.id = ${UNIT_EXPR}`;

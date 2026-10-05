@@ -54,7 +54,7 @@ export default function PropMap() {
        FROM contract_payments pm
        JOIN contracts c ON c.id = pm.contract_id
        JOIN units u ON u.id = c.unit_id
-       WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL AND substr(pm.date, 1, 7) = ?
+       WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL AND u.deleted_at IS NULL AND substr(pm.date, 1, 7) = ?
        GROUP BY u.property_id`,
       [month]
     )) income.set(r.pid, Number(r.s));

@@ -205,7 +205,7 @@ function accrualReductions(db: DB): AccrualReduction[] {
      FROM contract_payments p
      JOIN contract_installments i ON i.id = p.installment_id
      JOIN contracts c ON c.id = i.contract_id
-     WHERE p.discount_kind = '${DISCOUNT_REDUCES_INSTALLMENT}' AND p.discount_halalas > 0
+     WHERE p.discount_kind = '${DISCOUNT_REDUCES_INSTALLMENT}' AND p.discount_halalas > 0 AND p.cancelled_at IS NULL
        AND c.deleted_at IS NULL AND c.status != 'مسودة'`
   );
   const out: AccrualReduction[] = [];

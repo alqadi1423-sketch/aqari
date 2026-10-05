@@ -15,7 +15,8 @@ export function journalReversalBlock(db: DB, entryId: string): string {
   const e = db.get<{ auto: number; src_type: string | null }>(
     `SELECT auto, src_type FROM journal_entries WHERE id = ?`, [entryId]);
   if (!e) return '';
-  const paid = db.get(`SELECT 1 FROM contract_payments WHERE journal_entry_id = ? LIMIT 1`, [entryId]);
+  // تشمل الملغاة: قيد الدفعة يُعكس من شاشة الدفعة وحدها، ملغاةً كانت أو حيّة
+  const paid = db.get(`SELECT 1 FROM contract_payments WHERE journal_entry_id = ? LIMIT 1 /* تشمل الملغاة: ربط القيد بمستنده */`, [entryId]);
   if (paid) return 'قيد دفعة إيجار مربوط بمسدَّد قسطها · عكسه من الدفتر وحده يترك القسط مسدَّداً بلا نقد يقابله';
   if (Number(e.auto) === 1 && e.src_type) {
     return 'قيد آلي من مستنده · عكسه من الدفتر وحده يترك المستند قائماً بلا أثر في الأرصدة، فيُلغى من المستند نفسه';

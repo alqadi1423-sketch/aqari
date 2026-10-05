@@ -46,7 +46,7 @@ export function linkedRefs(db: DB, kind: RefKind, id: string): LinkedRef[] {
     add('مرفقاً', att('unit'), '/library');
   } else if (kind === 'contract') {
     add('قسطاً', n(db, `SELECT COUNT(*) c FROM contract_installments WHERE contract_id = ?`, [id]));
-    add('دفعة محصَّلة', n(db, `SELECT COUNT(*) c FROM contract_payments WHERE contract_id = ?`, [id]));
+    add('دفعة محصَّلة', n(db, `SELECT COUNT(*) c FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [id]));
     add('قيداً محاسبياً', n(db, `SELECT COUNT(*) c FROM journal_entries
       WHERE src_id = ? AND deleted_at IS NULL`, [id]), '/journal');
     add('مطالبة', n(db, `SELECT COUNT(*) c FROM claims WHERE contract_id = ? AND deleted_at IS NULL`, [id]), '/claims');

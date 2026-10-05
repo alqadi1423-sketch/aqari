@@ -443,7 +443,7 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
       `SELECT COUNT(*) AS n FROM payment_lines pl
        JOIN contract_payments p ON p.id = pl.payment_id
        JOIN contracts c ON c.id = p.contract_id
-       WHERE pl.method = 'cash'`)?.n ?? 0),
+       WHERE pl.method = 'cash' AND p.cancelled_at IS NULL`)?.n ?? 0),
     cashOut: Number(db.get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM purchases
        WHERE deleted_at IS NULL AND paid = 1 AND (payment_method = 'cash' OR payment_method LIKE '%نقد%')`)?.n ?? 0),
@@ -557,7 +557,7 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
            FROM payment_lines pl
            JOIN contract_payments p ON p.id = pl.payment_id
            JOIN contracts c ON c.id = p.contract_id
-           WHERE pl.method = 'cash' ORDER BY p.date DESC, p.created_at DESC LIMIT ? OFFSET ?`,
+           WHERE pl.method = 'cash' AND p.cancelled_at IS NULL ORDER BY p.date DESC, p.created_at DESC LIMIT ? OFFSET ?`,
           [page.limit, page.offset]
         ).map((r) => (
           <Row key={r.id} style={{ justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.line }}>

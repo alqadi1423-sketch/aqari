@@ -36,7 +36,7 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
   const payments = db.all<UnitReport['payments'][number]>(
     `SELECT p.date, p.period, p.method_label, p.net_halalas, c.tenant_name
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE c.unit_id = ?${period('p.date', from, to)}
+     WHERE p.cancelled_at IS NULL AND c.unit_id = ?${period('p.date', from, to)}
      ORDER BY p.date DESC`, [unitId]
   );
   const expenses = db.all<UnitReport['expenses'][number]>(
@@ -98,7 +98,7 @@ export function propertyReportData(db: DB, propertyId: string, from: string | nu
     `SELECT p.date, p.period, p.net_halalas, c.tenant_name, c.unit_label, u.unit_no
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE u.property_id = ?${period('p.date', from, to)}
+     WHERE u.property_id = ? AND p.cancelled_at IS NULL${period('p.date', from, to)}
      ORDER BY p.date DESC`, [propertyId]
   );
   const sharedExpenses = db.all<PropertyReport['sharedExpenses'][number]>(

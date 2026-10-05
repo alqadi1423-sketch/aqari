@@ -14,7 +14,7 @@ import { dfmt, today } from '../domain/dates';
 import {
   PRINT_CSS, letterhead, esc, type CompanyInfo, type CopyKind,
   buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc,
-  buildHandoverDoc, buildClaimDoc, type StatementRow,
+  buildHandoverDoc, buildClaimDoc,
 } from '../domain/printDocs';
 import type { HandoverSection } from '../domain/handover/build';
 import { HANDOVER_LEGAL_FOOTER } from '../domain/handover/build';
@@ -23,6 +23,7 @@ import { appFilesEnv } from './filesEnv';
 import { occupantsOf } from '../domain/occupants';
 import { depositState } from '../domain/contracts/vocab';
 import { contractStatusLabel } from '../domain/contracts/rules';
+import { tenantStatementRows } from '../domain/statement';
 
 export function companyInfo(db: DB): CompanyInfo {
   const co = db.get<{ name: string; vatno: string; cr: string; phone: string; address: string; vat_enabled: number }>(
@@ -164,21 +165,8 @@ export async function printTenantStatement(db: DB, contractId: string): Promise<
     `SELECT id, tenant_name, contract_no, unit_label, start, end FROM contracts WHERE id = ?`, [contractId]
   );
   if (!c) return;
-  const rows: StatementRow[] = [];
-  for (const i of db.all<{ due_date: string; amount_halalas: number; status: string }>(
-    `SELECT due_date, amount_halalas, status FROM contract_installments
-     WHERE contract_id = ? AND status != 'ملغية' ORDER BY due_date`, [contractId])) {
-    rows.push({ date: i.due_date, descr: 'قسط إيجار مستحق', debitHalalas: Number(i.amount_halalas), creditHalalas: 0 });
-  }
-  for (const p of db.all<{ date: string; period: string; net_halalas: number; method_label: string }>(
-    `SELECT date, period, net_halalas, method_label FROM contract_payments WHERE contract_id = ? ORDER BY date`, [contractId])) {
-    rows.push({ date: p.date, descr: 'سداد' + (p.period ? ' · ' + p.period : '') + ' · ' + p.method_label, debitHalalas: 0, creditHalalas: Number(p.net_halalas) });
-  }
-  for (const cl of db.all<{ date: string; amount_halalas: number; reason: string }>(
-    `SELECT date, amount_halalas, reason FROM claims WHERE contract_id = ? AND deleted_at IS NULL ORDER BY date`, [contractId])) {
-    rows.push({ date: cl.date, descr: 'مطالبة · ' + (cl.reason || ''), debitHalalas: Number(cl.amount_halalas), creditHalalas: 0 });
-  }
-  rows.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  // الملغاة خارج الكشف (المراجعة ٤.٣)
+  const rows = tenantStatementRows(db, contractId);
   const body = buildStatementDoc(companyInfo(db), {
     tenantName: c.tenant_name, contractNo: c.contract_no || '', unitLabel: c.unit_label,
     start: c.start, end: c.end, rows,

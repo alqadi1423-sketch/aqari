@@ -40,7 +40,8 @@ export const SOURCE_DOC: Record<string, [label: string, tables: string[]]> = {
 
 /** شرط SQL: القيد (بالاسم e) مستنده غائب · قيد الدفعة بدفعته، وغيره بجدول مستنده */
 function orphanSql(): string {
-  const parts = [`(e.src_type = 'rent' AND NOT EXISTS (SELECT 1 FROM contract_payments p WHERE p.journal_entry_id = e.id))`];
+  // تشمل الملغاة: صفّها باقٍ مستنداً لقيدها المعكوس
+  const parts = [`(e.src_type = 'rent' AND NOT EXISTS (SELECT 1 FROM contract_payments p WHERE p.journal_entry_id = e.id /* تشمل الملغاة: مستند لقيدها المعكوس */))`];
   for (const [type, [, tables]] of Object.entries(SOURCE_DOC)) {
     if (!tables.length) continue;
     parts.push(`(e.src_type = '${type}' AND ${tables.map((t) => `NOT EXISTS (SELECT 1 FROM "${t}" x WHERE x.id = e.src_id)`).join(' AND ')})`);

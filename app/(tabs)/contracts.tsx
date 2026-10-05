@@ -622,10 +622,10 @@ function ContractDetailSheet({
   const receiptIds = new Set(
     db.all<{ iid: string }>(
       `SELECT DISTINCT p.installment_id AS iid FROM contract_payments p
-       WHERE p.contract_id = ? AND p.installment_id IS NOT NULL
+       WHERE p.contract_id = ? AND p.installment_id IS NOT NULL AND p.cancelled_at IS NULL
        UNION
        SELECT DISTINCT a.installment_id AS iid FROM payment_allocations a
-       JOIN contract_payments p ON p.id = a.payment_id WHERE p.contract_id = ?`,
+       JOIN contract_payments p ON p.id = a.payment_id WHERE p.contract_id = ? AND p.cancelled_at IS NULL`,
       [contractId, contractId]
     ).map((r) => r.iid)
   );
@@ -640,7 +640,7 @@ function ContractDetailSheet({
     `SELECT * FROM tenant_ratings WHERE contract_id = ?`, [contractId]
   );
   const totalPaid = Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ?`, [contractId]
+    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [contractId]
   )!.s);
   const ended = contractEnded(c);
   const overall = rating
@@ -725,7 +725,7 @@ function ContractDetailSheet({
       {/* دخل العقد ومصاريفه */}
       {(() => {
         const income = db.get<{ s: number }>(
-          `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ?`,
+          `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
           [contractId]
         )!.s;
         const expenses = c.unit_id
@@ -986,7 +986,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const warns = renewWarnings(db, contractId, { start, end, valueHalalas: valueH });
   const block = renewBlockReason(c);
   const paid = db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ?`, [contractId]
+    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [contractId]
   )!.s;
   const due = Math.max(0, Number(c.value_halalas) - Number(paid));
 
