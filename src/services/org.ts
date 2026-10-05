@@ -9,12 +9,15 @@ import { hasUserData } from '../domain/backup/upgrade';
 import { memberTokens } from '../sync/acl';
 import { SECTION_KEYS, type Level, type Perms } from '../domain/access/sections';
 import { readMembership, saveMembership, type Membership } from './access';
+import { EMPTY_PROFILE, type MemberProfile } from '../domain/access/profile';
 
 export interface MemberSpec {
   email: string;
   perms: Perms;
   allProps: boolean;
   props: string[];
+  /** بيانات العضو · يملؤها المالك عند الدعوة أو بعدها، ويكملها العضو (موحَّدة بـ validateProfile) */
+  profile?: MemberProfile;
 }
 
 /** مستند العضوية/الدعوة · الحقول نفسها في الاثنين (القواعد تشترط أن تُنسخ الدعوة حرفياً) */
@@ -26,7 +29,17 @@ export interface MemberDoc {
   tokens: string[];
   /** اسم المنشأة يُعرض للمدعوّ */
   orgName: string;
+  /** بيانات العضو · الهوية nid لا يقرؤها إلا المالك والعضو (مستند العضوية لا يقرؤه غيرهما) */
+  name: string;
+  phone: string;
+  nid: string;
+  title: string;
 }
+
+/** مفاتيح بيانات العضو · العضو يعدّل هذه وحدها في مستند عضويته (القواعد) */
+export const PROFILE_KEYS = ['name', 'phone', 'nid', 'title'] as const;
+
+export const profileOf = (d: MemberDoc): MemberProfile => ({ name: d.name, phone: d.phone, nid: d.nid, title: d.title });
 
 export const normEmail = (e: string) => e.trim().toLowerCase();
 
@@ -37,6 +50,7 @@ export function memberDoc(spec: MemberSpec, orgName: string): MemberDoc {
     email: normEmail(spec.email), perm, all: spec.allProps, props: spec.allProps ? [] : [...spec.props].sort(),
     tokens: memberTokens({ owner: false, perms: perm, allProps: spec.allProps, props: spec.allProps ? [] : spec.props }),
     orgName,
+    ...(spec.profile ?? EMPTY_PROFILE),
   };
 }
 
@@ -45,6 +59,7 @@ function asMemberDoc(d: Record<string, unknown>): MemberDoc {
     email: String(d.email ?? ''), perm: (d.perm ?? {}) as Perms, all: d.all === true,
     props: Array.isArray(d.props) ? (d.props as string[]) : [], tokens: Array.isArray(d.tokens) ? (d.tokens as string[]) : [],
     orgName: String(d.orgName ?? ''),
+    name: String(d.name ?? ''), phone: String(d.phone ?? ''), nid: String(d.nid ?? ''), title: String(d.title ?? ''),
   };
 }
 
@@ -73,9 +88,25 @@ export async function listTeam(remote: FirestoreRemote, org: string): Promise<{
   };
 }
 
-/** تعديل صلاحية عضو · يُكتب المستند كاملاً برموزه الجديدة */
+/** تعديل صلاحية عضو · يُكتب المستند كاملاً برموزه الجديدة، وبياناته كما هي ما لم تُمرَّر */
 export async function updateMember(remote: FirestoreRemote, org: string, uid: string, spec: MemberSpec, orgName: string): Promise<void> {
-  await remote.setDoc(`orgs/${org}/members/${uid}`, memberDoc(spec, orgName) as unknown as Record<string, unknown>);
+  const cur = spec.profile ? null : await remote.getDoc(`orgs/${org}/members/${uid}`);
+  const profile = spec.profile ?? (cur ? profileOf(asMemberDoc(cur)) : EMPTY_PROFILE);
+  await remote.setDoc(`orgs/${org}/members/${uid}`, memberDoc({ ...spec, profile }, orgName) as unknown as Record<string, unknown>);
+}
+
+/**
+ * بيانات عضو · يعدّلها المالك أو العضو نفسه، والمستند كما هو عدا مفاتيحها (القواعد تفرض ذلك على العضو).
+ * يعيد ما قبل التعديل وما بعده لسجل العمليات.
+ */
+export async function updateMemberProfile(
+  remote: FirestoreRemote, org: string, uid: string, profile: MemberProfile,
+): Promise<{ before: MemberProfile; after: MemberProfile }> {
+  const cur = await remote.getDoc(`orgs/${org}/members/${uid}`);
+  if (!cur) throw new Error('العضوية لم تعد قائمة');
+  const before = profileOf(asMemberDoc(cur));
+  await remote.setDoc(`orgs/${org}/members/${uid}`, { ...cur, ...profile });
+  return { before, after: profile };
 }
 
 export const removeMember = (remote: FirestoreRemote, org: string, uid: string) => remote.deleteDoc(`orgs/${org}/members/${uid}`);
@@ -115,7 +146,7 @@ export async function acceptInvite(db: DB, remote: FirestoreRemote, org: string,
   await remote.setDoc(`orgs/${org}/members/${uid}`, raw);
   await remote.deleteDoc(`orgs/${org}/invites/${invite.email}`);
   const doc = asMemberDoc(raw);
-  const m: Membership = { org, uid, perms: doc.perm, allProps: doc.all, props: doc.props };
+  const m: Membership = { org, uid, perms: doc.perm, allProps: doc.all, props: doc.props, profile: profileOf(doc) };
   db.transaction(() => {
     saveMembership(db, m);
     setSyncState(db, 'org', org);
@@ -135,9 +166,13 @@ export async function refreshMembership(db: DB, remote: FirestoreRemote): Promis
   const raw = await remote.getDoc(`orgs/${m.org}/members/${m.uid}`);
   if (!raw) return 'removed';
   const doc = asMemberDoc(raw);
-  const next: Membership = { org: m.org, uid: m.uid, perms: doc.perm, allProps: doc.all, props: doc.props };
+  const next: Membership = { org: m.org, uid: m.uid, perms: doc.perm, allProps: doc.all, props: doc.props, profile: profileOf(doc) };
   const same = JSON.stringify([m.perms, m.allProps, [...m.props].sort()]) === JSON.stringify([next.perms, next.allProps, [...next.props].sort()]);
-  if (same) return 'same';
+  // تغيّر البيانات وحدها لا يعيد السحب · تُحفظ فقط
+  if (same) {
+    if (JSON.stringify(m.profile ?? null) !== JSON.stringify(next.profile)) saveMembership(db, next);
+    return 'same';
+  }
   saveMembership(db, next);
   return 'changed';
 }

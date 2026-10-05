@@ -7,6 +7,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.view.View
 import android.widget.RemoteViews
 import org.json.JSONObject
 import java.io.File
@@ -32,7 +33,12 @@ internal data class Snapshot(
     val dueThisMonth: String = "0.00",
     val paidThisMonth: String = "0.00",
     val monthPct: Int = 0,
-    val empty: Boolean = true
+    val empty: Boolean = true,
+    /** صلاحية العضو لا تشمل التحصيل · لا مبالغ في الملف أصلاً */
+    val noCollect: Boolean = false,
+    val canCollect: Boolean = true,
+    val canInvoices: Boolean = true,
+    val canClaims: Boolean = true
 )
 
 internal fun readSnapshot(context: Context): Snapshot {
@@ -46,7 +52,11 @@ internal fun readSnapshot(context: Context): Snapshot {
             dueThisMonth = o.optString("dueThisMonth", "0.00"),
             paidThisMonth = o.optString("paidThisMonth", "0.00"),
             monthPct = o.optInt("monthPct", 0),
-            empty = o.optBoolean("empty", true)
+            empty = o.optBoolean("empty", true),
+            noCollect = o.optBoolean("noCollect", false),
+            canCollect = o.optJSONObject("can")?.optBoolean("collect", true) ?: true,
+            canInvoices = o.optJSONObject("can")?.optBoolean("invoices", true) ?: true,
+            canClaims = o.optJSONObject("can")?.optBoolean("claims", true) ?: true
         )
     } catch (e: Exception) {
         Snapshot()
@@ -91,7 +101,10 @@ class TodayStripWidget : AppWidgetProvider() {
         val s = readSnapshot(context)
         for (id in ids) {
             val v = RemoteViews(context.packageName, R.layout.widget_today_strip)
-            if (s.empty) {
+            if (s.noCollect) {
+                v.setTextViewText(R.id.strip_title, context.getString(R.string.widget_no_access))
+                v.setTextViewText(R.id.strip_amount, "")
+            } else if (s.empty) {
                 v.setTextViewText(R.id.strip_title, context.getString(R.string.widget_empty_title))
                 v.setTextViewText(R.id.strip_amount, context.getString(R.string.widget_empty_hint))
             } else if (s.lateCount == 0) {
@@ -120,8 +133,13 @@ class TodayStripWidget : AppWidgetProvider() {
 /** ٨ · أزرار سريعة · 4×1 · بلا بيانات إطلاقاً */
 class QuickActionsWidget : AppWidgetProvider() {
     override fun onUpdate(context: Context, mgr: AppWidgetManager, ids: IntArray) {
+        val s = readSnapshot(context)
         for (id in ids) {
             val v = RemoteViews(context.packageName, R.layout.widget_quick_actions)
+            // ما لا تجيزه صلاحية العضو لا يظهر زره
+            v.setViewVisibility(R.id.qa_collect, if (s.canCollect) View.VISIBLE else View.GONE)
+            v.setViewVisibility(R.id.qa_invoice, if (s.canInvoices) View.VISIBLE else View.GONE)
+            v.setViewVisibility(R.id.qa_claim, if (s.canClaims) View.VISIBLE else View.GONE)
             v.setOnClickPendingIntent(R.id.qa_collect, deepLink(context, "/collect", 201))
             v.setOnClickPendingIntent(R.id.qa_invoice, deepLink(context, "/invoices", 202))
             v.setOnClickPendingIntent(R.id.qa_claim, deepLink(context, "/claims", 203))
@@ -137,7 +155,13 @@ class CollectionPanelWidget : AppWidgetProvider() {
         val s = readSnapshot(context)
         for (id in ids) {
             val v = RemoteViews(context.packageName, R.layout.widget_collection_panel)
-            if (s.empty) {
+            if (s.noCollect) {
+                v.setTextViewText(R.id.panel_amount, context.getString(R.string.widget_no_access))
+                v.setTextViewText(R.id.panel_sub, "")
+                v.setTextViewText(R.id.panel_pct, "")
+                v.setTextViewText(R.id.panel_late, "")
+                v.setProgressBar(R.id.panel_bar, 100, 0, false)
+            } else if (s.empty) {
                 v.setTextViewText(R.id.panel_amount, context.getString(R.string.widget_empty_title))
                 v.setTextViewText(R.id.panel_sub, context.getString(R.string.widget_empty_hint))
                 v.setTextViewText(R.id.panel_pct, "")

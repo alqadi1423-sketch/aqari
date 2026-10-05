@@ -3,6 +3,7 @@
  * بلا عضوية: الجهاز للمالك، كامل في كل قسم.
  */
 import type { DB } from '../db/adapter';
+import type { MemberProfile } from '../domain/access/profile';
 import { getSyncState, setSyncState } from '../sync/engine';
 import { OWNER_ACCESS, type Access } from '../domain/access/access';
 import { SECTION_KEYS, type Level, type Perms } from '../domain/access/sections';
@@ -14,6 +15,8 @@ export interface Membership {
   perms: Perms;
   allProps: boolean;
   props: string[];
+  /** بيانات العضو نفسه · لشاشة الإكمال وإعداداته، واسمه منفّذاً في سجل العمليات */
+  profile?: MemberProfile;
 }
 
 const KEY = 'membership';
@@ -38,6 +41,9 @@ export function readMembership(db: DB): Membership | null {
       org: m.org, uid: m.uid, perms: cleanPerms(m.perms),
       allProps: m.allProps === true,
       props: Array.isArray(m.props) ? m.props.filter((x): x is string => typeof x === 'string') : [],
+      profile: m.profile && typeof m.profile === 'object'
+        ? { name: String(m.profile.name ?? ''), phone: String(m.profile.phone ?? ''), nid: String(m.profile.nid ?? ''), title: String(m.profile.title ?? '') }
+        : undefined,
     };
   } catch {
     return null;

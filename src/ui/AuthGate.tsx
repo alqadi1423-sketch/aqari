@@ -6,6 +6,7 @@
  *  - البيانات ملك الحساب لا الجهاز (توجيه المالك): الخروج يركن نسخة الحساب مقفلةً، والدخول بأي حساب
  *    يفتح نسخته هو أو يسحبها من سحابته · ولا يرث حسابٌ شيئاً من غيره، ولا زرّ يمسح ما لم يُرفع.
  *  - الداخل بنسخة جديدة يُتحقق من دعواته أولاً: المدعوّ يرى دعوته وحدها، ولا منشأة له قبل قراره.
+ *  - العضو الذي ينقصه الاسم أو الجوال تظهر له شاشة الإكمال بعد قبوله الدعوة (توجيه المالك ٢٠٢٦-١٠-٠٥).
  * والبناء بلا إعداد Firebase (بيئة التطوير) يمرّ كما هو.
  */
 import React, { useEffect, useState } from 'react';
@@ -20,6 +21,10 @@ import {
   acceptInviteNow, declineInvites, bindUnboundToAccount, keepUnboundAside,
 } from '../services/cloud';
 import { activeAccount } from '../services/accountSlots';
+import { readMembership } from '../services/access';
+import { profileIncomplete } from '../domain/access/profile';
+import { MyProfileForm } from './ProfileForm';
+import { getSyncState } from '../sync/engine';
 
 /** صفحتا الشروط والخصوصية على استضافة المشروع · تُنشران بعد مراجعة المالك لمسودتيهما */
 export function legalUrls(): { terms: string; privacy: string } | null {
@@ -115,7 +120,22 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         </Shell>
       );
     }
-    if (active === cloud.user.uid) return <>{children}</>;
+    if (active === cloud.user.uid) {
+      const m = readMembership(db);
+      if (m && profileIncomplete(m.profile)) {
+        return (
+          <Shell>
+            <T size={TYPE.cardTitle} bold style={{ textAlign: 'center', marginBottom: 6 }}>أكمل بياناتك</T>
+            <T size={TYPE.body} color={C.muted} style={{ textAlign: 'center', marginBottom: 12 }}>
+              {'يطلبها صاحب «' + (getSyncState(db, 'org_name') || 'المنشأة') + '» · الاسم والجوال إلزاميان'}
+            </T>
+            {!cloud.online ? <Note>حفظ بياناتك يحتاج اتصالاً بالإنترنت.</Note> : null}
+            <MyProfileForm submitTitle="حفظ والمتابعة" />
+          </Shell>
+        );
+      }
+      return <>{children}</>;
+    }
     return spinner();
   }
 

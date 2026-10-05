@@ -107,3 +107,36 @@ describe('لقطة الودجت', () => {
     db.close();
   });
 });
+
+describe('الودجت تتبع صلاحية الأقسام (توجيه المالك ٢٠٢٦-١٠-٠٥)', () => {
+  test('عضو بلا قسم التحصيل: لا مبالغ في الملف ولا زر تحصيل', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const { setSyncState } = await import('@/sync/engine');
+    const { buildWidgetSnapshot } = await import('@/services/widgetSnapshot');
+    const db = memDb();
+    confirmContract(db, contractInput(addUnit(db, addProperty(db)), { start: '2026-01-01', end: '2026-12-31' }));
+    setSyncState(db, 'uid', 'M1');
+    setSyncState(db, 'membership', JSON.stringify({ org: 'O1', uid: 'M1', perms: { props: 1, contracts: 1 }, allProps: true, props: [] }));
+    const s = buildWidgetSnapshot(db, '2026-06-15');
+    expect(s.noCollect).toBe(true);
+    expect([s.lateSum, s.dueThisMonth, s.paidThisMonth, s.cash]).toEqual(['', '', '', '']);
+    expect([s.lateCount, s.monthPct]).toEqual([0, 0]);
+    expect(s.can).toEqual({ collect: false, invoices: false, claims: false });
+    expect(JSON.stringify({ ...s, at: null })).not.toMatch(/[1-9][0-9]*\.[0-9]{2}/);
+  });
+
+  test('المالك يرى كل شيء', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const { buildWidgetSnapshot } = await import('@/services/widgetSnapshot');
+    const db = memDb();
+    confirmContract(db, contractInput(addUnit(db, addProperty(db)), { start: '2026-01-01', end: '2026-12-31' }));
+    const s = buildWidgetSnapshot(db, '2026-06-15');
+    expect(s.noCollect).toBe(false);
+    expect(s.lateCount).toBeGreaterThan(0);
+    expect(s.can).toEqual({ collect: true, invoices: true, claims: true });
+  });
+});

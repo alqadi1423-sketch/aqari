@@ -11,7 +11,7 @@ import type { Access } from '../domain/access/access';
 import { level } from '../domain/access/access';
 import { SECTION_KEYS, type SectionKey } from '../domain/access/sections';
 import { CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
-import { OP_WRITES } from '../domain/access/opWrites';
+import { OP_WRITES, SELF_OP, SELF_AUDIT_ENTITY } from '../domain/access/opWrites';
 
 export const ORG_WIDE = '*';
 export const ANY_PROP = '@';
@@ -117,7 +117,8 @@ export function annotate(db: DB, doc: RemoteDoc, a: Access): AclDocs {
   const { full, pub } = moneySplit(row as Record<string, unknown> | null, readers);
   const extra: Partial<RemoteDoc> = { pids, g: tokensFor(full, pids) };
   if (!a.owner) {
-    const op = chooseOp(a, doc.t);
+    const self = doc.t === 'audit_log' && (row as Record<string, unknown> | null)?.entity_type === SELF_AUDIT_ENTITY;
+    const op = chooseOp(a, doc.t) ?? (self ? SELF_OP : null);
     if (op) extra.op = op;
   }
   if (DRAFT_TABLES.has(doc.t)) {

@@ -47,8 +47,10 @@ import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
   moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
-  type MemberDoc, type MemberSpec,
+  updateMemberProfile, type MemberDoc, type MemberSpec,
 } from './org';
+import type { MemberProfile } from '../domain/access/profile';
+import { logAudit } from '../domain/audit';
 
 /* ═══════════ الجلسة ═══════════ */
 
@@ -641,7 +643,47 @@ function teamRemote(): { remote: FirestoreRemote; org: string } {
 const orgNameOf = (db: DB) => db.get<{ name: string }>('SELECT name FROM company WHERE id = 1')?.name || 'منشأة عقاري';
 
 export async function listTeamNow() { const t = teamRemote(); return listTeam(t.remote, t.org); }
-export async function inviteMemberNow(db: DB, spec: MemberSpec) { const t = teamRemote(); return sendInvite(t.remote, t.org, spec, orgNameOf(db), state.user!.email); }
+export async function inviteMemberNow(db: DB, spec: MemberSpec) {
+  const t = teamRemote();
+  const doc = await sendInvite(t.remote, t.org, spec, orgNameOf(db), state.user!.email);
+  if (spec.profile && (spec.profile.name || spec.profile.phone)) logProfileEdit(db, doc.email, null, spec.profile);
+  return doc;
+}
+
+/**
+ * تعديل بيانات عضو في سجل العمليات بمنفّذه · الهوية لا تُكتب فيه (يقرؤه غير المالك والعضو) بل يُذكر
+ * أنها أُدخلت أو تغيّرت أو حُذفت.
+ */
+function logProfileEdit(db: DB, label: string, before: MemberProfile | null, after: MemberProfile): void {
+  const mask = (p: MemberProfile | null, other: MemberProfile | null) => p ? {
+    الاسم: p.name, الجوال: p.phone, 'المسمى الوظيفي': p.title,
+    الهوية: !p.nid ? '' : other && other.nid && other.nid !== p.nid ? 'قديمة' : 'مُدخلة',
+  } : null;
+  logAudit(db, 'الأعضاء', before ? 'update' : 'create', 'بيانات عضو', label, mask(before, after), mask(after, before));
+}
+
+/** المالك يعدّل بيانات عضو */
+export async function updateMemberProfileNow(db: DB, uid: string, label: string, profile: MemberProfile) {
+  const t = teamRemote();
+  const r = await updateMemberProfile(t.remote, t.org, uid, profile);
+  logProfileEdit(db, profile.name || label, r.before, r.after);
+}
+
+/** العضو يكمل بياناته أو يعدّلها · القواعد لا تجيز له غير مفاتيحها في مستند عضويته */
+export async function updateMyProfileNow(db: DB, profile: MemberProfile) {
+  const m = readMembership(db);
+  const s = getSession();
+  const cfg = cloudConfig();
+  if (!m || !s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
+  if (!state.online) throw new Error('حفظ بياناتك يحتاج اتصالاً بالإنترنت');
+  const sess = s;
+  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.idToken(), org: m.org });
+  const r = await updateMemberProfile(remote, m.org, m.uid, profile);
+  db.transaction(() => {
+    saveMembership(db, { ...m, profile });
+    logProfileEdit(db, profile.name, r.before, r.after);
+  });
+}
 export async function updateMemberNow(db: DB, uid: string, spec: MemberSpec) { const t = teamRemote(); return updateMember(t.remote, t.org, uid, spec, orgNameOf(db)); }
 export async function removeMemberNow(uid: string) { const t = teamRemote(); return removeMember(t.remote, t.org, uid); }
 export async function revokeInviteNow(email: string) { const t = teamRemote(); return revokeInvite(t.remote, t.org, email); }

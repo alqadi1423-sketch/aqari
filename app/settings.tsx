@@ -42,6 +42,8 @@ import {
   leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything,
 } from '../src/services/cloud';
 import { TeamSheet } from '../src/ui/TeamSheet';
+import { MyProfileSheet } from '../src/ui/ProfileForm';
+import { readMembership } from '../src/services/access';
 import { getSyncState } from '../src/sync/engine';
 import type { CloudReplacePlan, CloudSnapshot } from '../src/sync/engine';
 import type { PrepareOptions } from '../src/domain/backup/restore';
@@ -120,6 +122,7 @@ export default function Settings() {
   const [displayOpen, setDisplayOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [teamOpen, setTeamOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [delTyped, setDelTyped] = useState('');
   const [busy, setBusy] = useState(false);
   const [wipeConfirm, setWipeConfirm] = useState<string | null>(null);
@@ -595,6 +598,12 @@ export default function Settings() {
             {admin && cloud.online ? (
               <ValueRow icon="collect" title="الأعضاء والصلاحيات" value="الدعوة والأقسام والعقارات" onPress={() => setTeamOpen(true)} />
             ) : null}
+            {/* العضو يكمل بياناته ويعدّلها (توجيه المالك ٢٠٢٦-١٠-٠٥) */}
+            {!admin && readMembership(db) ? (
+              <ValueRow icon="clipboard" title="بياناتي"
+                value={(() => { const p = readMembership(db)?.profile; return p?.name ? p.name + (p.title ? ' · ' + p.title : '') : 'لم تكتمل'; })()}
+                onPress={cloud.online ? () => setProfileOpen(true) : undefined} />
+            ) : null}
             {!admin && cloud.online ? (
               <ValueRow icon="trash" title="مغادرة المنشأة" value="تُمسح بياناتها من الجهاز" tone="danger" onPress={() => dialog({
                 title: 'مغادرة المنشأة',
@@ -752,6 +761,7 @@ export default function Settings() {
       </Card> : null}
 
       {teamOpen ? <TeamSheet visible onClose={() => setTeamOpen(false)} /> : null}
+      {profileOpen ? <MyProfileSheet visible onClose={() => setProfileOpen(false)} /> : null}
 
       {/* اختيار القيمة · لوحة سفلية واحدة لكل صفوف القيم */}
       <PickerSheet

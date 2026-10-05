@@ -15,6 +15,7 @@
   <string name="widget_month_pct">%1$d٪ من مستحق الشهر</string>
   <string name="widget_empty_title">لا بيانات بعد</string>
   <string name="widget_empty_hint">افتح التطبيق وأضف أول عقار</string>
+  <string name="widget_no_access">لا تشمل صلاحيتك التحصيل</string>
 
   <string name="widget_desc_strip">كم دفعة متأخرة وبكم · بضغطة تفتح التحصيل</string>
   <string name="widget_desc_actions">اختصارات التحصيل والفاتورة والمطالبة · بلا بيانات</string>

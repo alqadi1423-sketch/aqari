@@ -241,3 +241,54 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     expect(await putDoc(`orgs/${ORG}/meta/devices`, { letters: { 'dev-owner': 'Z', 'dev-col': letter } }, COLLECTOR.uid!)).toBe(403);
   });
 });
+
+d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦-١٠-٠٥)', () => {
+  const VIEWER = member('U-VIEW', { props: 1 }, 'all');
+  const OTHER = member('U-OTH', { props: 1 }, 'all');
+  const base = (a: Access) => ({
+    email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
+    orgName: 'منشأة تجريبية', name: '', phone: '', nid: '', title: '',
+  });
+  beforeAll(async () => {
+    for (const a of [VIEWER, OTHER]) expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, base(a), ORG)).toBe(200);
+  });
+
+  test('العضو يكمل بياناته بنفسه', async () => {
+    expect(await putDoc(`orgs/${ORG}/members/U-VIEW`, { ...base(VIEWER), name: 'عضو تجريبي', phone: '0500000101', nid: '1000000017', title: 'محاسب' }, 'U-VIEW')).toBe(200);
+  });
+
+  test('ولا يغيّر صلاحيته ولا يكتب صيغة خاطئة ولا يترك الإلزامي', async () => {
+    const ok = { ...base(VIEWER), name: 'عضو تجريبي', phone: '0500000101', nid: '', title: '' };
+    expect(await putDoc(`orgs/${ORG}/members/U-VIEW`, { ...ok, perm: { props: 3, ledger: 3 } }, 'U-VIEW')).toBe(403);
+    expect(await putDoc(`orgs/${ORG}/members/U-VIEW`, { ...ok, phone: '0400000000' }, 'U-VIEW')).toBe(403);
+    expect(await putDoc(`orgs/${ORG}/members/U-VIEW`, { ...ok, nid: '3000000000' }, 'U-VIEW')).toBe(403);
+    expect(await putDoc(`orgs/${ORG}/members/U-VIEW`, { ...ok, name: '' }, 'U-VIEW')).toBe(403);
+  });
+
+  test('ولا يكتب مستند عضو غيره ولا يقرؤه', async () => {
+    expect(await putDoc(`orgs/${ORG}/members/U-OTH`, { ...base(OTHER), name: 'متطفل', phone: '0500000102' }, 'U-VIEW')).toBe(403);
+    const res = await fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/members/U-OTH`, { headers: { Authorization: 'Bearer ' + token('U-VIEW') } });
+    expect(res.status).toBe(403);
+  });
+
+  test('المالك يملأ البيانات عند الدعوة بصيغة صحيحة وحدها', async () => {
+    const inv = { ...base(OTHER), email: 'new@example.test' };
+    expect(await putDoc(`orgs/${ORG}/invites/new@example.test`, { ...inv, name: 'مدعو تجريبي', phone: '0500000103' }, ORG)).toBe(200);
+    expect(await putDoc(`orgs/${ORG}/invites/new@example.test`, { ...inv, nid: '12345' }, ORG)).toBe(403);
+  });
+
+  test('صفّ سجل العمليات لتعديل بياناته يُرفع بلا قسم إدخال · وغيره لا', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { logAudit } = await import('@/domain/audit');
+    const { buildDoc } = await import('@/sync/engine');
+    const mdb = memDb();
+    const push = async (entity: string) => {
+      logAudit(mdb, 'الأعضاء', 'update', entity, 'عضو تجريبي');
+      const k = mdb.get<{ id: string }>(`SELECT id FROM audit_log ORDER BY rowid DESC LIMIT 1`)!.id;
+      const doc = annotate(mdb, buildDoc(mdb, 'audit_log', k, 'upsert', new Date().toISOString(), 'dev-view'), VIEWER).doc;
+      return (await remoteFor('U-VIEW', VIEWER).write([doc]))[0];
+    };
+    expect((await push('بيانات عضو')).ok).toBe(true);
+    expect((await push('عقد')).ok).toBe(false);
+  });
+});

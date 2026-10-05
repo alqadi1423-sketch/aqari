@@ -59,6 +59,13 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
   reports: { own: [], create: ['audit_log'] },
 };
 
+/**
+ * عمليةٌ ليست قسماً: تعديل العضو بياناته (توجيه المالك ٢٠٢٦-١٠-٠٥) · ينشئ صفّ سجل عمليات واحداً من نوعٍ واحد،
+ * ولو لم يُجز للعضو قسمٌ إدخالاً. القواعد تحصرها في ذلك وحده (rulesGen).
+ */
+export const SELF_OP = 'self';
+export const SELF_AUDIT_ENTITY = 'بيانات عضو';
+
 export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update' | 'delete', cols: string[] = []): boolean {
   const w = OP_WRITES[op];
   if (!w) return false;

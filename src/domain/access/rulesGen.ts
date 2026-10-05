@@ -5,6 +5,7 @@
  */
 import { OP_WRITES } from './opWrites';
 import type { SectionKey } from './sections';
+import { SELF_OP, SELF_AUDIT_ENTITY } from './opWrites';
 
 export const BEGIN = '    // <org:generated> · لا تُعدَّل باليد: src/domain/access/rulesGen.ts';
 export const END = '    // </org:generated>';
@@ -93,8 +94,10 @@ ${writesFns()}
 
     function memberCreates(org) {
       let r = request.resource.data;
-      return isMember(org) && r.op is string && lvl(org, r.op) >= 2 && opCreates(r.op, baseT(r.t))
-        && propsOk(org, r) && (!('by' in r) || r.by == request.auth.uid);
+      return isMember(org) && r.op is string && (
+        (lvl(org, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(org, r) && (!('by' in r) || r.by == request.auth.uid))
+        // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
+        || (r.op == '${SELF_OP}' && r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*']));
     }
 
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
@@ -142,14 +145,31 @@ ${writesFns()}
         allow delete: if orgOwner(org) && orgDeletionOpen(org);
       }
 
-      // العضوية: يكتبها المالك · والعضو ينشئ عضويته مرة من دعوةٍ بإيميله وبنصّها حرفياً، ويغادر بحذفها
+      // بيانات العضو (توجيه المالك ٢٠٢٦-١٠-٠٥): الجوال سعودي موحَّد والهوية عشرة أرقام أولها ١ أو ٢،
+      // ويجوز تركها فارغة عند الدعوة ليكملها العضو · والهوية لا تُقرأ إلا من مستند العضوية (المالك والعضو وحدهما)
+      function profileShape(d) {
+        return (!('name' in d) || (d.name is string && d.name.size() <= 80))
+          && (!('phone' in d) || (d.phone is string && (d.phone == '' || d.phone.matches('^05[0-9]{8}$'))))
+          && (!('nid' in d) || (d.nid is string && (d.nid == '' || d.nid.matches('^[12][0-9]{9}$'))))
+          && (!('title' in d) || (d.title is string && d.title.size() <= 60));
+      }
+      // ما يكمله العضو بنفسه: الاسم والجوال إلزاميان
+      function profileComplete(d) {
+        return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$');
+      }
+
+      // العضوية: يكتبها المالك · والعضو ينشئ عضويته مرة من دعوةٍ بإيميله وبنصّها حرفياً، ويعدّل بياناته وحدها،
+      // ويغادر بحذفها
       match /members/{uid} {
         allow read: if orgOwner(org) || (request.auth != null && request.auth.uid == uid);
-        allow create: if orgOwner(org) || (
+        allow create: if (orgOwner(org) && profileShape(request.resource.data)) || (
           request.auth != null && request.auth.uid == uid && request.auth.token.email_verified == true
           && exists(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email))
           && request.resource.data == get(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email)).data);
-        allow update: if orgOwner(org);
+        allow update: if (orgOwner(org) && profileShape(request.resource.data)) || (
+          request.auth != null && request.auth.uid == uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'nid', 'title'])
+          && profileComplete(request.resource.data));
         allow delete: if orgOwner(org) || (request.auth != null && request.auth.uid == uid);
       }
 
@@ -157,7 +177,7 @@ ${writesFns()}
         allow read: if orgOwner(org) || (request.auth != null && request.auth.token.email == email);
         // لا دعوة لإيميل المالك نفسه
         allow create, update: if orgOwner(org) && request.resource.data.email == email
-          && email != request.auth.token.email;
+          && email != request.auth.token.email && profileShape(request.resource.data);
         allow delete: if orgOwner(org) || (request.auth != null && request.auth.token.email == email);
       }
 

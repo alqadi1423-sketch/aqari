@@ -9,12 +9,17 @@
  * والنصوص تُكتب **جاهزةً منسَّقة** لا أرقاماً خاماً: التنسيق العربي والفواصل
  * والنِّسب كلها تخرج من دوال التطبيق نفسها، فلا يُعاد بناؤها في كوتلن
  * ولا تختلف الودجت عن الشاشة في فاصلة.
+ *
+ * والودجت تتبع صلاحية الأقسام (توجيه المالك ٢٠٢٦-١٠-٠٥): عضوٌ بلا قسم التحصيل لا تُكتب له مبالغه في الملف
+ * أصلاً، وبلا البنوك والنقد لا رصيد نقد، وأزرار الاختصار لما لا يفتحه لا تظهر.
  */
 import type { DB } from '../db/adapter';
 import { allInstallments, collectKpis, occupancySummary } from '../domain/stats';
 import { cashOnHand } from '../domain/accounting/ledger';
 import { today } from '../domain/dates';
 import { fmt } from '../domain/money';
+import { canView, canAdd, type Access } from '../domain/access/access';
+import { readAccess } from './access';
 
 /** ما تقرؤه الودجت · حقولها نصوص جاهزة للعرض إلا العدّادات والنِّسب */
 export interface WidgetSnapshot {
@@ -33,36 +38,44 @@ export interface WidgetSnapshot {
   cash: string;
   /** لا بيانات بعد · الودجت تعرض سطر ترحيب لا أصفاراً */
   empty: boolean;
+  /** صلاحيته لا تشمل التحصيل · فلا مبالغ ولا أعداد تحصيل، وسطرٌ يقول ذلك */
+  noCollect: boolean;
+  /** أزرار الاختصار الظاهرة · ما لا يفتحه لا يظهر */
+  can: { collect: boolean; invoices: boolean; claims: boolean };
 }
 
-const EMPTY: Omit<WidgetSnapshot, 'at' | 'day'> = {
+const EMPTY: Omit<WidgetSnapshot, 'at' | 'day' | 'noCollect' | 'can'> = {
   lateCount: 0, lateSum: '0.00', dueThisMonth: '0.00', paidThisMonth: '0.00',
   monthPct: 0, occupancyPct: 0, occupiedUnits: 0, totalUnits: 0, cash: '0.00', empty: true,
 };
 
 /** بناء اللقطة من القاعدة · دالّة خالصة تُختبر بلا ملفات ولا جهاز */
-export function buildWidgetSnapshot(db: DB, T: string = today()): WidgetSnapshot {
+export function buildWidgetSnapshot(db: DB, T: string = today(), access: Access = readAccess(db)): WidgetSnapshot {
   const at = new Date().toISOString();
+  const collect = canView(access, 'collect');
+  const can = { collect: canAdd(access, 'collect'), invoices: canView(access, 'invoices'), claims: canView(access, 'claims') };
   const units = Number(db.get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM units WHERE deleted_at IS NULL`)?.n ?? 0);
-  if (!units) return { at, day: T, ...EMPTY };
+  if (!units) return { at, day: T, ...EMPTY, noCollect: !collect, can };
 
-  const insts = allInstallments(db, T);
-  const k = collectKpis(insts, T);
-  const occ = occupancySummary(db, T.slice(0, 8) + '01', T, T);
+  const k = collect ? collectKpis(allInstallments(db, T), T) : null;
+  const props = canView(access, 'props');
+  const occ = props ? occupancySummary(db, T.slice(0, 8) + '01', T, T) : null;
   return {
     at,
     day: T,
-    lateCount: k.lateCount,
-    lateSum: fmt(k.lateSum),
-    dueThisMonth: fmt(k.dueThisMonth),
-    paidThisMonth: fmt(k.paidThisMonth),
-    monthPct: k.dueThisMonth > 0 ? Math.round((k.paidThisMonth / k.dueThisMonth) * 100) : 0,
-    occupancyPct: occ.now.pct,
-    occupiedUnits: occ.now.occupied,
-    totalUnits: occ.now.total,
-    cash: fmt(cashOnHand(db)),
+    lateCount: k ? k.lateCount : 0,
+    lateSum: k ? fmt(k.lateSum) : '',
+    dueThisMonth: k ? fmt(k.dueThisMonth) : '',
+    paidThisMonth: k ? fmt(k.paidThisMonth) : '',
+    monthPct: k && k.dueThisMonth > 0 ? Math.round((k.paidThisMonth / k.dueThisMonth) * 100) : 0,
+    occupancyPct: occ ? occ.now.pct : 0,
+    occupiedUnits: occ ? occ.now.occupied : 0,
+    totalUnits: occ ? occ.now.total : 0,
+    cash: canView(access, 'banks') ? fmt(cashOnHand(db)) : '',
     empty: false,
+    noCollect: !collect,
+    can,
   };
 }
 

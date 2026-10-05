@@ -2,6 +2,7 @@
  * الأعضاء والصلاحيات (الدراسة ب المعتمدة · docs/PERMISSIONS.md) · للمالك وحده:
  * الأعضاء والدعوات المعلّقة، ودعوة عضو بإيميل قوقل، وصلاحيته قسماً قسماً بأربعة مستويات
  * (والقوالب تعبّئها ثم تُعدَّل)، وعقاراته (الكل أو تحديد)، والتعديل والإزالة.
+ * وبيانات العضو (الاسم والجوال والهوية والمسمى) يملؤها المالك عند الدعوة أو بعدها، ويكملها العضو.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Linking, Pressable, View } from 'react-native';
@@ -17,8 +18,9 @@ import { canView, level, type Access } from '../domain/access/access';
 import { routeAllowed } from '../domain/access/routes';
 import { MONEY_SECTIONS } from '../domain/access/readSections';
 import { MORE_SCREENS } from './moreScreens';
-import type { MemberDoc, MemberSpec } from '../services/org';
-import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow } from '../services/cloud';
+import { profileOf, type MemberDoc, type MemberSpec } from '../services/org';
+import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow, updateMemberProfileNow } from '../services/cloud';
+import { validateProfile, type MemberProfile } from '../domain/access/profile';
 
 type Team = Awaited<ReturnType<typeof listTeamNow>>;
 
@@ -45,6 +47,8 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
   useEffect(() => { if (visible) load(); }, [visible, load]);
 
   const props = (doc: MemberDoc) => (doc.all ? 'كل العقارات' : doc.props.length + ' عقار');
+  // القائمة بالاسم والمسمى · والإيميل سطراً ثانياً، وبلا اسم يُعرض الإيميل وحده
+  const who = (doc: MemberDoc) => (doc.name ? doc.name + (doc.title ? ' · ' + doc.title : '') : doc.email);
 
   return (
     <>
@@ -55,10 +59,11 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
             {team.members.length || team.invites.length ? null : <EmptyState>لا أعضاء بعد · ادعُ عضواً بإيميل قوقل الخاص به</EmptyState>}
             {team.members.map((m) => (
               <View key={m.uid} style={{ paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: C.line }}>
-                <T size={TYPE.body} bold>{m.doc.email}</T>
+                <T size={TYPE.body} bold>{who(m.doc)}</T>
+                {m.doc.name ? <T size={TYPE.caption} color={C.muted}>{m.doc.email}</T> : <T size={TYPE.caption} color={C.gold}>لم يكمل بياناته بعد</T>}
                 <T size={TYPE.caption} color={C.muted} style={{ marginTop: 2 }}>{props(m.doc) + ' · ' + permSummary(m.doc.perm)}</T>
                 <Row style={{ marginTop: 6 }}>
-                  <BtnGhost small title="تعديل الصلاحية" onPress={() => setEdit({ uid: m.uid, doc: m.doc })} />
+                  <BtnGhost small title="البيانات والصلاحية" onPress={() => setEdit({ uid: m.uid, doc: m.doc })} />
                   <BtnGhost small danger title="إزالة" onPress={() => dialog({
                     title: 'إزالة العضو',
                     body: 'تُلغى عضوية ' + m.doc.email + ' فوراً، ويُفرَّغ جهازه من بيانات المنشأة عند أول اتصال.',
@@ -76,7 +81,8 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
             ))}
             {team.invites.map((inv) => (
               <View key={inv.email} style={{ paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: C.line }}>
-                <T size={TYPE.body} bold>{inv.email}</T>
+                <T size={TYPE.body} bold>{who(inv)}</T>
+                {inv.name ? <T size={TYPE.caption} color={C.muted}>{inv.email}</T> : null}
                 <T size={TYPE.caption} color={C.gold} style={{ marginTop: 2 }}>بانتظار القبول</T>
                 <T size={TYPE.caption} color={C.muted}>{props(inv) + ' · ' + permSummary(inv.perm)}</T>
                 <Row style={{ marginTop: 6 }}>
@@ -98,7 +104,15 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
           onClose={() => setEdit(null)}
           onSave={async (spec) => {
             try {
-              if (edit.uid) { await updateMemberNow(db, edit.uid, spec); toast('حُفظت الصلاحية · تسري على جهازه عند أول اتصال'); }
+              if (edit.uid) {
+                // البيانات أولاً بسجلها، ثم الصلاحية بالمستند كاملاً ومعه البيانات نفسها
+                const before = edit.doc ? profileOf(edit.doc) : null;
+                if (spec.profile && JSON.stringify(spec.profile) !== JSON.stringify(before)) {
+                  await updateMemberProfileNow(db, edit.uid, edit.doc?.email ?? '', spec.profile);
+                }
+                await updateMemberNow(db, edit.uid, spec);
+                toast('حُفظت · تسري على جهازه عند أول اتصال');
+              }
               else { const doc = await inviteMemberNow(db, spec); shareInvite(doc); }
               setEdit(null);
               load();
@@ -126,31 +140,52 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
 }) {
   const { db } = useApp();
   const [email, setEmail] = useState(initial?.email ?? '');
-  const [perms, setPerms] = useState<Perms>(initial?.perm ?? {});
-  const [allProps, setAllProps] = useState(initial?.all ?? true);
-  const [props, setProps] = useState<string[]>(initial?.props ?? []);
+  const [perms, setPermsRaw] = useState<Perms>(initial?.perm ?? {});
+  const [allProps, setAllPropsRaw] = useState(initial?.all ?? true);
+  const [props, setPropsRaw] = useState<string[]>(initial?.props ?? []);
+  const [profile, setProfile] = useState<MemberProfile>(initial ? profileOf(initial) : { name: '', phone: '', nid: '', title: '' });
+  // القالب المختار يبقى مظلَّلاً حتى يتغيّر أي اختيار بعده (توجيه المالك ٢٠٢٦-١٠-٠٥)
+  const [tpl, setTpl] = useState<string | null>(null);
+  const setPerms: typeof setPermsRaw = (v) => { setTpl(null); setPermsRaw(v); };
+  const setAllProps: typeof setAllPropsRaw = (v) => { setTpl(null); setAllPropsRaw(v); };
+  const setProps: typeof setPropsRaw = (v) => { setTpl(null); setPropsRaw(v); };
+  const pv = validateProfile(profile, false);
   const [saving, setSaving] = useState(false);
   const [openKey, setOpenKey] = useState<SectionKey | null>(null);
   const properties = useMemo(() => db.all<{ id: string; name: string }>(
     `SELECT id, name FROM properties WHERE deleted_at IS NULL ORDER BY name`), [db]);
   const any = GRANTABLE.some((s) => (perms[s.key] ?? 0) > 0);
-  const ready = (!isNew || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) && any && (allProps || props.length > 0);
+  const ready = (!isNew || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim())) && any && (allProps || props.length > 0) && pv.ok;
 
   return (
-    <Sheet visible onClose={onClose} title={isNew ? 'دعوة عضو' : 'صلاحية ' + (initial?.email ?? '')} tall
+    <Sheet visible onClose={onClose} title={isNew ? 'دعوة عضو' : (initial?.name || initial?.email || 'عضو')} tall
       footer={ready ? (
         <BtnPrimary title={isNew ? 'إرسال الدعوة' : 'حفظ الصلاحية'} loading={saving} onPress={async () => {
           setSaving(true);
-          await onSave({ email: isNew ? email : initial!.email, perms, allProps, props });
+          await onSave({ email: isNew ? email : initial!.email, perms, allProps, props, profile: pv.ok ? pv.profile : undefined });
           setSaving(false);
         }} />
       ) : null}>
       {isNew ? <Field label="إيميل قوقل للعضو" value={email} onChange={setEmail} ltr placeholder="name@gmail.com" /> : null}
 
+      <T size={TYPE.cardTitle} bold style={{ marginTop: 6, marginBottom: 2 }}>بيانات العضو</T>
+      <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>
+        الاسم والجوال يلزمانه ويكملهما بنفسه إن تركتهما · والهوية لا يراها غيرك وغيره
+      </T>
+      <Field label="الاسم الكامل" value={profile.name} onChange={(v) => setProfile((p) => ({ ...p, name: v }))}
+        error={!pv.ok && pv.field === 'name'} />
+      <Field label="الجوال" value={profile.phone} onChange={(v) => setProfile((p) => ({ ...p, phone: v }))} keyboard="phone-pad" ltr
+        placeholder="05XXXXXXXX" error={!pv.ok && pv.field === 'phone'} />
+      <Field label="الهوية أو الإقامة (اختياري)" value={profile.nid} onChange={(v) => setProfile((p) => ({ ...p, nid: v }))} keyboard="numeric" ltr
+        error={!pv.ok && pv.field === 'nid'} />
+      <Field label="المسمى الوظيفي (اختياري)" value={profile.title} onChange={(v) => setProfile((p) => ({ ...p, title: v }))}
+        error={!pv.ok && pv.field === 'title'} />
+      {!pv.ok ? <Note tone="danger">{pv.error}</Note> : null}
+
       <T size={TYPE.cardTitle} bold style={{ marginTop: 6, marginBottom: 4 }}>قالب سريع</T>
       <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>يعبّئ الاختيارات أدناه ثم تعدّلها · والعضو الجديد يبدأ بلا شيء</T>
       <Row style={{ flexWrap: 'wrap', marginBottom: 6 }}>
-        {TEMPLATES.map((t) => <Chip key={t.key} label={t.label} onPress={() => setPerms({ ...t.perms })} />)}
+        {TEMPLATES.map((t) => <Chip key={t.key} label={t.label} active={tpl === t.key} onPress={() => { setPermsRaw({ ...t.perms }); setTpl(t.key); }} />)}
       </Row>
 
       {SECTION_GROUPS.map((g) => (
