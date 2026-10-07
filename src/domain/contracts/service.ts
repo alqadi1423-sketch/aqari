@@ -89,17 +89,19 @@ export const SOURCE_COMPUTED = 'محسوبة';
  * وإلا قُسمت القيمة على عدد صفوفه بالهللات (الأخير يمتص الفرق) فتبقى التواريخ من الملف.
  */
 export function scheduleInstallments(schedule: ScheduleRow[] | null | undefined, start: string, end: string, valueHalalas: number):
-  Array<{ dueDate: string; amountHalalas: number }> | null {
+  Array<{ dueDate: string; deadline: string | null; amountHalalas: number }> | null {
   if (!schedule || !schedule.length || !start || !end) return null;
   for (let i = 0; i < schedule.length; i++) {
     const d = schedule[i].dueDate;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < start || d > end || (i && d < schedule[i - 1].dueDate)) return null;
   }
   const sum = schedule.reduce((s, r) => s + Number(r.amountHalalas || 0), 0);
-  if (sum === valueHalalas) return schedule.map((r) => ({ dueDate: r.dueDate, amountHalalas: Number(r.amountHalalas) }));
+  // آخر مهلة السداد إلى مهلة القسط (grace_until) · لا تسبق الاستحقاق
+  const dl = (r: ScheduleRow) => (r.deadline && r.deadline > r.dueDate ? r.deadline : null);
+  if (sum === valueHalalas) return schedule.map((r) => ({ dueDate: r.dueDate, deadline: dl(r), amountHalalas: Number(r.amountHalalas) }));
   const n = schedule.length;
   const per = Math.floor(valueHalalas / n);
-  return schedule.map((r, i) => ({ dueDate: r.dueDate, amountHalalas: i === n - 1 ? valueHalalas - per * (n - 1) : per }));
+  return schedule.map((r, i) => ({ dueDate: r.dueDate, deadline: dl(r), amountHalalas: i === n - 1 ? valueHalalas - per * (n - 1) : per }));
 }
 
 /** قاعدة ما قبل الهجرة ٢٤ (نسخة تُراجَع قبل ترقيتها) بلا عمودي الجدول والمصدر · فتُحسب أقساطها كما كانت */
@@ -257,14 +259,14 @@ export function confirmContract(db: DB, input: ContractDraftInput, draftId?: str
       let parsed: ScheduleRow[] | null = null;
       try { parsed = ej.schedule ? (JSON.parse(ej.schedule) as ScheduleRow[]) : null; } catch { parsed = null; }
       const fromFile = scheduleInstallments(parsed, input.start, input.end, input.valueHalalas);
-      const insts = fromFile
+      const insts: Array<{ id: string; dueDate: string; amountHalalas: number; deadline?: string | null }> = fromFile
         ? fromFile.map((x) => ({ id: uid(), ...x }))
         : generateInstallments(input.start, input.end, input.valueHalalas, input.cycle);
       insts.forEach((inst, i) => {
         db.run(
-          `INSERT INTO contract_installments (id, contract_id, due_date, amount_halalas, sort)
-           VALUES (?,?,?,?,?)`,
-          [inst.id, id, inst.dueDate, inst.amountHalalas, i]
+          `INSERT INTO contract_installments (id, contract_id, due_date, amount_halalas, sort, grace_until)
+           VALUES (?,?,?,?,?,?)`,
+          [inst.id, id, inst.dueDate, inst.amountHalalas, i, inst.deadline ?? null]
         );
       });
       const source = fromFile ? SOURCE_FILE : (ej.source ? SOURCE_COMPUTED : null);

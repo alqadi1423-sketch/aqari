@@ -53,6 +53,19 @@ describe('جدول الدفعات من ملف إيجار', () => {
     expect(parseEjarSchedule(HEAD + arOnly)?.length).toBe(6);
   });
 
+  test('أعمدة الصف بترتيب الرسم (المهلة قبل الاستحقاق): الأبكر استحقاق والأبعد آخر المهلة · كلٌّ في خانته', () => {
+    // كما يخرج من ملفٍ يرسم الجدول من اليمين: المبلغ ثم المهلة الهجرية ثم الاستحقاق الهجري ثم الفترة ثم المهلة الميلادية ثم الاستحقاق ثم الرقم
+    const visual = `\nRent Payments Schedule\n` + DATES.map((d, i) => {
+      const dl = ['2026-02-10', '2026-03-10', '2026-04-10', '2026-05-10', '2026-06-10', '2026-07-10'][i];
+      return `1,000.00 1448-01-0${i + 1} 1447-12-2${i + 1} يوم ${dl} ${d} ${i + 1}`;
+    }).join('\n') + '\nObligations by Parties\n';
+    const r = parseEjarSchedule(HEAD + visual)!;
+    expect(r.map((x) => x.dueDate)).toEqual(DATES);
+    expect(r.map((x) => x.deadline)).toEqual(['2026-02-10', '2026-03-10', '2026-04-10', '2026-05-10', '2026-06-10', '2026-07-10']);
+    // والترتيب المنطقي يعطي الشيء نفسه
+    expect(parseEjarSchedule(HEAD + SCHEDULE)!.map((x) => [x.dueDate, x.deadline])[0]).toEqual(['2026-01-31', '2026-03-01']);
+  });
+
   test('لا جدول في الملف: لا شيء يُقرأ', () => {
     const r = parseEjarContract(HEAD);
     expect(r.schedule).toBeUndefined();
@@ -84,6 +97,16 @@ describe('التوثيق من جدول الملف', () => {
     const cid = confirmContract(db, { ...input, schedule, fromEjarFile: true });
     expect(dues(db, cid).map((x) => x.d)).toEqual(schedule.map((x) => x.dueDate));
     expect(db.get<{ s: string }>(`SELECT installments_source AS s FROM contracts WHERE id = ?`, [cid])!.s).toBe('ملف');
+  });
+
+  test('آخر مهلة السداد من الجدول إلى مهلة القسط · لا إلى استحقاقه', async () => {
+    const { db, input } = await setup();
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const schedule = DATES.map((d, i) => ({ dueDate: d, deadline: ['2026-02-10', '2026-03-10', '2026-04-10', '2026-05-10', '2026-06-10', '2026-07-10'][i], amountHalalas: 100000 }));
+    const cid = confirmContract(db, { ...input, schedule, fromEjarFile: true });
+    const r = db.all<{ d: string; g: string | null }>(`SELECT due_date AS d, grace_until AS g FROM contract_installments WHERE contract_id = ? ORDER BY sort`, [cid]);
+    expect(r.map((x) => x.d)).toEqual(DATES);
+    expect(r.map((x) => x.g)).toEqual(schedule.map((x) => x.deadline));
   });
 
   test('تعذّر الجدول: تُحسب الأقساط والمصدر «محسوبة» للتنبيه', async () => {
@@ -141,10 +164,13 @@ describe('أداة مقارنة العقود القائمة بجدول ملفه�
     const { previewEjarSchedules, applyEjarSchedules } = await import('@/domain/ejarScheduleRepair');
     const diffs = await previewEjarSchedules(db, async () => fileText);
     expect(diffs).toHaveLength(1);
-    expect(diffs[0].changes.map((c) => [c.from, c.to])).toEqual([['2026-02-28', '2026-02-25'], ['2026-03-31', '2026-03-25']]);
+    expect(diffs[0].changes.filter((c) => c.from !== c.to).map((c) => [c.from, c.to])).toEqual([['2026-02-28', '2026-02-25'], ['2026-03-31', '2026-03-25']]);
+    // وآخر المهلة من الملف لكل قسط · العقد المحسوب بلا مهلة
+    expect(diffs[0].changes.map((c) => [c.graceFrom, c.graceTo])).toEqual([[null, '2026-03-01'], [null, '2026-03-30'], [null, '2026-04-30'], [null, '2026-05-30'], [null, '2026-06-30'], [null, '2026-07-30']]);
     expect(db.get<{ d: string }>(`SELECT due_date AS d FROM contract_installments WHERE contract_id = ? AND sort = 1`, [cid])!.d).toBe('2026-02-28');
     expect(applyEjarSchedules(db, diffs)).toBe(1);
     expect(db.get<{ d: string }>(`SELECT due_date AS d FROM contract_installments WHERE contract_id = ? AND sort = 1`, [cid])!.d).toBe('2026-02-25');
+    expect(db.get<{ g: string }>(`SELECT grace_until AS g FROM contract_installments WHERE contract_id = ? AND sort = 1`, [cid])!.g).toBe('2026-03-30');
     expect(db.get<{ s: string }>(`SELECT installments_source AS s FROM contracts WHERE id = ?`, [cid])!.s).toBe('ملف');
     expect(await previewEjarSchedules(db, async () => fileText)).toEqual([]);
   });

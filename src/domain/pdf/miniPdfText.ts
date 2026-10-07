@@ -165,7 +165,7 @@ function decodeLiteral(s: string): number[] {
   return out;
 }
 
-interface TextItem {
+export interface TextItem {
   str: string;
   y: number;
   /** الموضع الأفقي عند بدء العرض (من آخر أمر تموضع) · null إن جُهل */
@@ -177,7 +177,9 @@ interface TextItem {
 /** تفكيك أوامر النص في مجرى محتوى */
 function extractTextItems(
   content: string,
-  fontNameToCMap: Map<string, CMap | null>
+  fontNameToCMap: Map<string, CMap | null>,
+  /** المسافات المرسومة قطعاً مستقلة · تُبقى للتجميع بدل تقدير الفجوات */
+  keepSpaces = false,
 ): TextItem[] {
   const items: TextItem[] = [];
   let x: number | null = null;
@@ -239,7 +241,7 @@ function extractTextItems(
     if (m[0] === 'T*') { y -= leading || 12; continue; }
     if (m[13] !== undefined) { // (..) Tj
       const s = decodeLit(m[13]);
-      if (s.trim()) items.push({ str: s, y, x, size });
+      if (s.trim() || (keepSpaces && s)) items.push({ str: s, y, x, size });
       continue;
     }
     if (m[14] !== undefined) { // [ .. ] TJ · الإزاحة السالبة الكبيرة فجوةٌ مقصودة = مسافة
@@ -255,12 +257,12 @@ function extractTextItems(
         }
         s += pm[1] !== undefined ? decodeLit(pm[1]) : decodeHex(pm[2]);
       }
-      if (s.trim()) items.push({ str: s, y, x, size });
+      if (s.trim() || (keepSpaces && s)) items.push({ str: s, y, x, size });
       continue;
     }
     if (m[15] !== undefined) { // <hex> Tj
       const s = decodeHex(m[15]);
-      if (s.trim()) items.push({ str: s, y, x, size });
+      if (s.trim() || (keepSpaces && s)) items.push({ str: s, y, x, size });
     }
   }
   return items;
@@ -271,8 +273,8 @@ export class PdfEncrypted extends Error {
   constructor() { super('pdf-encrypted'); this.name = 'PdfEncrypted'; }
 }
 
-/** استخراج النص الكامل من بايتات PDF · تجميع سطري بفارق عمودي > 3 */
-export function extractPdfText(bytes: Uint8Array): string {
+/** قطع النص لكل صفحة بمواضعها · قبل التجميع (للاستخراج وللتشخيص) */
+export function extractPdfPages(bytes: Uint8Array, keepSpaces = false): TextItem[][] {
   let raw = latin1(bytes);
   // ملف مشفّر: كل المجاري والنصوص مرمّزة ولن يخرج منها شيء مفهوم
   if (/\/Encrypt\s+\d+\s+\d+\s+R/.test(raw) || /\/Encrypt\s*<</.test(raw)) throw new PdfEncrypted();
@@ -323,27 +325,42 @@ export function extractPdfText(bytes: Uint8Array): string {
     if (/\/Type\s*\/ObjStm/.test(s.dict)) continue;
     const text = latin1(s.data);
     if (!/\bBT\b/.test(text) || !/(Tj|TJ|')/.test(text)) continue;
-    const items = extractTextItems(text, fontNameToCMap);
+    const items = extractTextItems(text, fontNameToCMap, keepSpaces);
     if (items.length) pages.push(items);
   }
+  return pages;
+}
 
-  // التجميع: نبني نصّين · هندسي يحسب الفجوات الأفقية، وبديل يفصل بين كل قطعتين ·
-  // ثم نختار الأقرب لكلام عربي طبيعي (كلمات ٢-٨ أحرف تنتهي بمسافة)
+/** استخراج النص الكامل من بايتات PDF · تجميع سطري بفارق عمودي > 3 */
+export function extractPdfText(bytes: Uint8Array): string {
+  const pages = extractPdfPages(bytes, true);
+
+  // التجميع (أعطال قراءة عقد إيجار ٢٠٢٦-١٠-٠٧): الصفحة التي ترسم مسافاتها حروفاً تُجمَّع بمسافاتها هي وحدها ·
+  // تقدير الفجوات بعرضٍ ثابت للحرف أزاح المسافة حرفاً في الأسماء العربية (الألف ضيّقة فتخفي الفجوة، والياء
+  // الأخيرة عريضة فتصنع فجوةً كاذبة) · وما لا يرسم مسافاته يبقى على النصّين: هندسي بالفجوات، وبديل يفصل
+  // بين كل قطعتين، ويُختار الأقرب لكلام عربي طبيعي
   const arabicScore = (t: string): number => (t.match(/[\u0600-\u06FF]{2,8}(?=\s|$)/g) || []).length;
   const estWidth = (it: TextItem): number => it.str.length * it.size * 0.5;
+  const isSpace = (it: TextItem) => !it.str.trim();
   let all = '';
   for (const items of pages) {
+    const drawn = items.filter(isSpace).length;
+    const explicit = drawn >= 8 && drawn * 25 >= items.length;
     let geo = '';
     let alt = '';
     let last: TextItem | null = null;
     for (const it of items) {
+      if (isSpace(it)) {
+        if (explicit && last !== null && Math.abs(it.y - last.y) <= 3 && !geo.endsWith(' ')) geo += ' ';
+        continue;
+      }
       if (last !== null && Math.abs(it.y - last.y) > 3) {
         geo += '\n';
         alt += '\n';
       } else if (last !== null) {
         alt += ' ';
         // فجوة أفقية بين قطعتين على نفس السطر ⇒ مسافة (العرض مقدَّر: حرف ≈ نصف حجم الخط)
-        if (it.x !== null && last.x !== null && !geo.endsWith(' ')) {
+        if (!explicit && it.x !== null && last.x !== null && !geo.endsWith(' ')) {
           const gap = Math.abs(it.x - last.x) - estWidth(last);
           if (gap > it.size * 0.2) geo += ' ';
         }
@@ -352,8 +369,8 @@ export function extractPdfText(bytes: Uint8Array): string {
       alt += it.str;
       last = it;
     }
-    // البديل لا يفوز إلا بنتيجة أعلى صراحةً · فتبقى الملفات السليمة كما هي
-    all += (arabicScore(alt) > arabicScore(geo) ? alt : geo) + '\n';
+    // البديل لا يفوز إلا بنتيجة أعلى صراحةً · ولا يفوز على مسافاتٍ مرسومة
+    all += (!explicit && arabicScore(alt) > arabicScore(geo) ? alt : geo) + '\n';
   }
   return all;
 }

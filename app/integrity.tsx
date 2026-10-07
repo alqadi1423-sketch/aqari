@@ -15,6 +15,7 @@ import { previewRepairs, applyRepair, type RepairPreview } from '../src/domain/r
 import { previewEjarSchedules, applyEjarSchedules, contractsWithLease, type EjarScheduleDiff } from '../src/domain/ejarScheduleRepair';
 import { readLeaseText } from '../src/services/contractScan';
 import { dfmt } from '../src/domain/dates';
+import { useLang } from '../src/i18n';
 
 export default function Integrity() {
   const { db, version, bump } = useApp();
@@ -35,6 +36,7 @@ export default function Integrity() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, access.owner]);
   const [ejar, setEjar] = useState<EjarScheduleDiff[] | null>(null);
+  const { t } = useLang();
   const [reading, setReading] = useState(false);
 
   const apply = (r: RepairPreview) => {
@@ -103,7 +105,9 @@ export default function Integrity() {
                 <View key={d.contractId} style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
                   <T size={12.5}>{d.label}</T>
                   {d.blocked ? <T size={11.5} color={C.rose}>{d.blocked}</T> : (
-                    <T size={11.5} color={C.muted}>{d.changes.length + ' قسط · مثل ' + dfmt(d.changes[0].from) + ' ← ' + dfmt(d.changes[0].to)}</T>
+                    <>{d.changes.map((ch) => (
+                      <T key={ch.id} size={11.5} color={C.muted}>{t('lease.cmpRow', { from: dfmt(ch.from), to: dfmt(ch.to), gfrom: ch.graceFrom ? dfmt(ch.graceFrom) : '—', gto: ch.graceTo ? dfmt(ch.graceTo) : '—' })}</T>
+                    ))}</>
                   )}
                 </View>
               ))}
@@ -111,7 +115,7 @@ export default function Integrity() {
                 <View style={{ marginTop: 10 }}>
                   <BtnGhost title="طبّق تواريخ الملفات" onPress={() => dialog({
                     title: 'تواريخ الأقساط من ملفات إيجار',
-                    body: 'تُصحَّح تواريخ استحقاق ' + ejar.filter((d) => !d.blocked).length + ' عقداً كما في جداول ملفاتها، والمبالغ والمسدَّد كما هي. هل تطبّقه؟',
+                    body: t('lease.applyBody', { n: ejar.filter((d) => !d.blocked).length }),
                     actions: [
                       { label: 'تراجع', variant: 'ghost' },
                       { label: 'تطبيق', variant: 'primary', onPress: () => {

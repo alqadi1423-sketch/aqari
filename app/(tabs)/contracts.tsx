@@ -517,6 +517,7 @@ import type { ContractFormState } from '../../src/ui/contractForm';
 import { reportFailure } from '../../src/ui/failureDialog';
 
 import { CostCenterField } from '../../src/ui/CostCenters';
+import { ScheduleReview } from '../../src/ui/ScheduleReview';
 import { GENERAL_COST_CENTER, withCostCenter } from '../../src/domain/accounting/dimensions';
 function ReviewSheet({
   visible, form, onBack, onConfirm, db, cc, onCc,
@@ -561,6 +562,7 @@ function ReviewSheet({
         </Row>
       ))}
       <View style={{ marginTop: 12 }}>
+        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} />
         <CostCenterField value={cc} onChange={onCc} />
         <Note>بعد الإنشاء لا يمكن تعديل العقد أو حذفه · يُلغى فقط.</Note>
       </View>

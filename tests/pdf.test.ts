@@ -310,3 +310,10 @@ Rent payment cycle ${toVisual('شهري')}
     expect(r.found.length).toBeGreaterThanOrEqual(10);
   });
 });
+
+test('تسمية «الاسم» مقسومةً على كلمتين لا تلتصق بآخر الاسم (أعطال قراءة العقد ٢٠٢٦-١٠-٠٧)', async () => {
+  const { cleanArabicName } = await import('@/domain/pdf/parseEjar');
+  expect(cleanArabicName('مستأجر مصطنع للاختبار الا سم', false)).toBe('مستأجر مصطنع للاختبار');
+  expect(cleanArabicName('ال اسم مستأجر مصطنع', false)).toBe('مستأجر مصطنع');
+  expect(cleanArabicName('قاسم الاسمري', false)).toBe('قاسم الاسمري');
+});

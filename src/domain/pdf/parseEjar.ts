@@ -88,8 +88,15 @@ export function cleanArabicName(s: string, force?: boolean): string {
   v = v.replace(/[اإآ]?الاسم\s*$/, '').replace(/^\s*[اإآ]?الاسم/, '');
   const toks = v.split(/\s+/).filter(Boolean);
   const isLabel = (w: string) => /^[اإآ]*ل?[اإآ]*سم$/.test(w);
-  while (toks.length && isLabel(toks[0])) toks.shift();
-  while (toks.length && isLabel(toks[toks.length - 1])) toks.pop();
+  // التسمية مقسومةً على كلمتين («الا سم») تُنزع معاً · ظهرت ملتصقة بآخر الاسم (أعطال قراءة العقد ٢٠٢٦-١٠-٠٧)
+  const isLabel2 = (a?: string, b?: string) => !!a && !!b && isLabel(a + b);
+  for (;;) {
+    if (isLabel2(toks[0], toks[1])) toks.splice(0, 2);
+    else if (toks.length && isLabel(toks[0])) toks.shift();
+    else if (isLabel2(toks[toks.length - 2], toks[toks.length - 1])) toks.splice(-2, 2);
+    else if (toks.length && isLabel(toks[toks.length - 1])) toks.pop();
+    else break;
+  }
   return toks.join(' ').trim();
 }
 
@@ -114,8 +121,11 @@ export interface EjarParseResult {
   found: string[];
 }
 
-/** صفّ من جدول دفعات إيجار: تاريخ الاستحقاق الميلادي ومبلغه بالهللات */
-export interface ScheduleRow { dueDate: string; amountHalalas: number }
+/**
+ * صفّ من جدول دفعات إيجار: تاريخ الاستحقاق الميلادي، وآخر مهلة السداد إن كانت في الصف، ومبلغه بالهللات ·
+ * (أعطال قراءة العقد ٢٠٢٦-١٠-٠٧: كانت المهلة تُقرأ استحقاقاً)
+ */
+export interface ScheduleRow { dueDate: string; deadline?: string | null; amountHalalas: number }
 
 const GREG = /(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])/g;
 const HIJRI = /1[34]\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|30)/g;
@@ -125,8 +135,9 @@ const SCHEDULE_ANCHORS = [/rentpayments?schedule/i, /payments?schedule/i, /جد�
 
 /**
  * جدول الدفعات من نصّ ملف إيجار (قرار المالك ٢٠٢٦-١٠-٠٥) · يبدأ بعد عنوان الجدول، وكل صفّ سطرٌ فيه تاريخ ميلادي
- * ومبلغ عشري: أول تاريخ ميلادي فيه هو الاستحقاق، وأول مبلغ بعد نزع التواريخ (الميلادية والهجرية) هو قيمته، فلا
- * يختلط يومٌ ملتصق بمبلغ. ينتهي الجدول بأول سطر نصّي بعد صفوفه. يُرفض كله إن خرج تاريخ عن مدة العقد أو لم يتصاعد،
+ * ومبلغ عشري. في الصف تاريخان ميلاديان: الاستحقاق ونهاية مهلة السداد، وترتيب أعمدتهما في النص المستخرج يتبع
+ * الرسم لا القراءة (ظهرت المهلة أولاً) · فالأبكر هو الاستحقاق والأبعد آخر المهلة، أياً كان ترتيبهما. وأول مبلغ بعد
+ * نزع التواريخ (الميلادية والهجرية) هو قيمته، فلا يختلط يومٌ ملتصق بمبلغ. ينتهي الجدول بأول سطر نصّي بعد صفوفه. يُرفض كله إن خرج تاريخ عن مدة العقد أو لم يتصاعد،
  * فالجدول المقروء خطأً أسوأ من المحسوب.
  */
 export function parseEjarSchedule(raw: string): ScheduleRow[] | null {
@@ -148,7 +159,10 @@ export function parseEjarSchedule(raw: string): ScheduleRow[] | null {
     if (gregs.length && amt) {
       const v = parseFloat(amt[0].replace(/,/g, ''));
       if (!(v > 0)) return null;
-      rows.push({ dueDate: gregs[0], amountHalalas: Math.round(v * 100) });
+      const sorted = [...gregs].sort();
+      const due = sorted[0];
+      const deadline = sorted.length > 1 && sorted[sorted.length - 1] > due ? sorted[sorted.length - 1] : null;
+      rows.push({ dueDate: due, deadline, amountHalalas: Math.round(v * 100) });
     } else if (rows.length && /[A-Za-z\u0600-\u06FF]{3,}/.test(line)) break; // نهاية الجدول: أول نصّ بعد صفوفه
   }
   if (!rows.length) return null;

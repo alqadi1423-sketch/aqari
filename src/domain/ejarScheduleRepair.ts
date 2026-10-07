@@ -12,7 +12,8 @@ import { dfmt } from './dates';
 export interface EjarScheduleDiff {
   contractId: string;
   label: string;
-  changes: Array<{ id: string; from: string; to: string }>;
+  /** الاستحقاق وآخر المهلة كلاهما (أعطال قراءة العقد ٢٠٢٦-١٠-٠٧) */
+  changes: Array<{ id: string; from: string; to: string; graceFrom: string | null; graceTo: string | null }>;
   /** سبب عدم التطبيق إن وُجد */
   blocked?: string;
 }
@@ -37,13 +38,15 @@ export async function previewEjarSchedules(
     if (!text) { out.push({ contractId: c.id, label: c.label, changes: [], blocked: 'تعذّر فتح ملف العقد' }); continue; }
     const sch = parseEjarSchedule(text);
     if (!sch) { out.push({ contractId: c.id, label: c.label, changes: [], blocked: 'تعذّرت قراءة جدول الدفعات من الملف' }); continue; }
-    const insts = db.all<{ id: string; due_date: string }>(
-      `SELECT id, due_date FROM contract_installments WHERE contract_id = ? ORDER BY sort, due_date`, [c.id]);
+    const insts = db.all<{ id: string; due_date: string; grace_until: string | null }>(
+      `SELECT id, due_date, grace_until FROM contract_installments WHERE contract_id = ? ORDER BY sort, due_date`, [c.id]);
     if (insts.length !== sch.length) {
       out.push({ contractId: c.id, label: c.label, changes: [], blocked: 'أقساطه ' + insts.length + ' والجدول في الملف ' + sch.length + ' · يحتاج قراراً منك' });
       continue;
     }
-    const changes = insts.map((x, i) => ({ id: x.id, from: x.due_date, to: sch[i].dueDate })).filter((x) => x.from !== x.to);
+    const changes = insts.map((x, i) => ({
+      id: x.id, from: x.due_date, to: sch[i].dueDate, graceFrom: x.grace_until ?? null, graceTo: sch[i].deadline ?? x.grace_until ?? null,
+    })).filter((x) => x.from !== x.to || x.graceFrom !== x.graceTo);
     if (changes.length) out.push({ contractId: c.id, label: c.label, changes });
   }
   return out;
@@ -55,11 +58,12 @@ export function applyEjarSchedules(db: DB, diffs: EjarScheduleDiff[]): number {
     let n = 0;
     for (const d of diffs) {
       if (d.blocked || !d.changes.length) continue;
-      for (const ch of d.changes) db.run(`UPDATE contract_installments SET due_date = ? WHERE id = ?`, [ch.to, ch.id]);
+      for (const ch of d.changes) db.run(`UPDATE contract_installments SET due_date = ?, grace_until = ? WHERE id = ?`, [ch.to, ch.graceTo, ch.id]);
       recomputeInstallments(db, d.changes.map((c) => c.id));
       db.run(`UPDATE contracts SET installments_source = 'ملف' WHERE id = ?`, [d.contractId]);
       logAudit(db, 'العقود', 'update', 'تواريخ الأقساط من ملف إيجار', d.label,
-        { due_dates: d.changes.map((c) => dfmt(c.from)) }, { due_dates: d.changes.map((c) => dfmt(c.to)) });
+        { due_dates: d.changes.map((c) => dfmt(c.from)), grace: d.changes.map((c) => (c.graceFrom ? dfmt(c.graceFrom) : '')) },
+        { due_dates: d.changes.map((c) => dfmt(c.to)), grace: d.changes.map((c) => (c.graceTo ? dfmt(c.graceTo) : '')) });
       n++;
     }
     return n;

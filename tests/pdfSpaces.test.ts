@@ -27,6 +27,24 @@ trailer << /Root 1 0 R >>
 %%EOF`;
 
 describe('استرجاع المسافات هندسياً', () => {
+  test('الصفحة التي ترسم مسافاتها حروفاً تُجمَّع بها وحدها · لا بتقدير العرض (أعطال قراءة العقد ٢٠٢٦-١٠-٠٧)', () => {
+    // حرفٌ عريض (W بتقدّم ١٤) يصنع فجوةً كاذبة بالتقدير الثابت، والمسافات مرسومة قطعاً مستقلة
+    let x = 100;
+    const parts: string[] = [];
+    for (let w = 0; w < 9; w++) {
+      parts.push(`1 0 0 1 ${x} 700 Tm (W) Tj`); x += 14;
+      parts.push(`1 0 0 1 ${x} 700 Tm (a) Tj`); x += 5;
+      parts.push(`1 0 0 1 ${x} 700 Tm ( ) Tj`); x += 3;
+    }
+    const text = extractPdfText(toBytes(pdfWith('BT /F1 10 Tf ' + parts.join(' ') + ' ET')));
+    expect(text.trim()).toBe(Array(9).fill('Wa').join(' '));
+  });
+
+  test('بلا مسافات مرسومة يبقى التقدير كما كان', () => {
+    const text = extractPdfText(toBytes(pdfWith('BT /F1 10 Tf 1 0 0 1 100 700 Tm (Deeds) Tj 1 0 0 1 160 700 Tm (No7) Tj ET')));
+    expect(text.trim()).toBe('Deeds No7');
+  });
+
   test('إزاحة TJ سالبة كبيرة = مسافة، والصغيرة تقنين حروف لا يفصل', () => {
     const text = extractPdfText(toBytes(pdfWith(
       'BT /F1 10 Tf 100 700 Td [(Ranim) -250 (Zain) -40 (i)] TJ ET'

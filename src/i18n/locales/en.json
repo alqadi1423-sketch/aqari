@@ -34,6 +34,17 @@
     "pickBank": "Bank account",
     "failed": "The operation failed"
   },
+  "lease": {
+    "scheduleTitle": "Payment schedule ({{n}})",
+    "scheduleRead": "Read from the Ejar file · review it before creating; creating the contract approves it.",
+    "scheduleComputedFromFile": "Warning: the payment schedule couldn't be read from the Ejar file · the dates below are computed, not read; match them to the file's schedule before creating.",
+    "scheduleComputed": "Computed from the contract term and payment cycle.",
+    "due": "Due",
+    "deadline": "Last day",
+    "amount": "Amount",
+    "cmpRow": "Due {{from}} → {{to}} · last day {{gfrom}} → {{gto}}",
+    "applyBody": "Due dates and last payment days in {{n}} contract(s) will be corrected to their files' schedules; amounts and payments stay as they are. Apply?"
+  },
   "dataLabels": {
     "table": {
       "assets": "Assets",

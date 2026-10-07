@@ -26,11 +26,6 @@ import { reportFailure } from './failureDialog';
  * تاريخ الحقول: ما كتبه المستخدم في العمود نفسه من قبل، الأحدث أولاً ·
  * ولا يُقترح نص لم يكتبه، وبلا تاريخ لا يظهر اقتراح إطلاقاً.
  */
-const TENANT_NAME_SQL =
-  `SELECT tenant_name AS v FROM contracts
-   WHERE deleted_at IS NULL AND TRIM(tenant_name) != ''
-   GROUP BY tenant_name ORDER BY MAX(created_at) DESC LIMIT 40`;
-
 const SERVICES_SQL =
   `SELECT services AS v FROM contracts
    WHERE deleted_at IS NULL AND TRIM(services) != ''
@@ -265,9 +260,9 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
       )}
       <Row style={{ alignItems: 'flex-start' }}>
         <View style={{ flex: 1 }}>
-          {/* الاقتراحات من أسماء المستأجرين التي كتبها المستخدم من قبل وحدها */}
-          <SuggestField label="اسم المستأجر" value={state.tenant} onChange={(v) => set('tenant', v)}
-            error={form.errorField === 'tenant'} sql={TENANT_NAME_SQL} />
+          {/* بلا اقتراحات من أسماء مستأجرين سابقين (أعطال قراءة العقد ٢٠٢٦-١٠-٠٧) */}
+          <Field label="اسم المستأجر" value={state.tenant} onChange={(v) => set('tenant', v)}
+            error={form.errorField === 'tenant'} />
         </View>
         <View style={{ flex: 1 }}>
           <Field label="رقم الجوال" value={state.phone} onChange={(v) => set('phone', v)} keyboard="phone-pad" ltr placeholder="05XXXXXXXX" error={form.errorField === 'phone'} />
