@@ -4,7 +4,7 @@
  * وملخص «ما سيحدث») ثم تنفيذ (نسخة أمان في مجلد دائم لا يُكنس، تبديل ذرّي برجوع فوري).
  * الذاكرة لا تحمل الأرشيف والمرفقات معاً أثناء نسخة الأمان · هذا ما كان يقتل التطبيق.
  */
-import { throwIfCancelled, type CancelSignal, type ProgressFn } from '../progress';
+import { throwIfCancelled, isCancelled, type CancelSignal, type ProgressFn } from '../progress';
 import { joinPath } from '../../files/fsAdapter';
 import { liveBlobs, isSafeBlobName } from '../../files/store';
 import { unzipYielding, yieldUi, archiveFailureText } from './zipStream';
@@ -120,9 +120,13 @@ export async function prepareRestore(
     // نسخةٌ مشفّرة بكلمة مرور · تُفكّ في الذاكرة قبل الفك المضغوط ولا تُكتب مفكوكةً على القرص
     if (isEncryptedArchive(raw)) raw = await openEncrypted(env, raw, opts, onProgress);
     try {
-      entries = await unzipYielding(raw);
+      entries = await unzipYielding(raw, undefined, (done, total) => {
+        throwIfCancelled(opts.signal);
+        onProgress?.('جاري فكّ الأرشيف', { done, total, unit: 'bytes' });
+      });
       raw = null;
     } catch (e) {
+      if (isCancelled(e)) throw e;
       console.error('[عقاري] تعذّر فكّ أرشيف الاستعادة · ' + (e instanceof Error ? (e.stack ?? e.message) : String(e)));
       throw new RestoreError(archiveFailureText(e, 'هذا الملف ليس نسخة احتياطية من عقاري'));
     }

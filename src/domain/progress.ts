@@ -126,7 +126,10 @@ export class StallWatch {
 /** الرسالة بلا ذيل «· N من M» · فالمقدار يُعرض في سطره */
 export const progressLabel = (msg: string): string => msg.replace(/\s*·\s*\d+\s*من\s*\d+\s*$/, '');
 
-/** سطر المقدار: «٪٤٢ · ٢٫٤ م.ب من ٥٨ م.ب» · فارغ بلا مقدار */
+/**
+ * سطر المقدار: «٤٢٪، ٢٫٤ م.ب من ٥٨ م.ب» · فارغ بلا مقدار ·
+ * بفاصلةٍ عربية لا بنقطة «·»: النقطة بين رقمين عربيين تُقرأ صفراً («١ · ٣٣» ← «١٠٣٣») كما ظهر على الجهاز
+ */
 export function progressLine(v: ProgressView): string {
-  return [v.pct !== null ? '٪' + ar(String(v.pct)) : null, v.amount].filter(Boolean).join(' · ');
+  return [v.pct !== null ? ar(String(v.pct)) + '٪' : null, v.amount].filter(Boolean).join('، ');
 }

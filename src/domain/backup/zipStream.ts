@@ -19,7 +19,7 @@
  * والتنفّس باقٍ: الخيط الرئيسي لا يُحتجز كتلة واحدة طويلة، بل يُفسح للواجهة
  * دورة رسم بين المداخل · فلا يقتل أندرويد التطبيق مهما كبر الأرشيف.
  */
-import { deflateSync, inflateSync, strToU8, strFromU8 } from 'fflate';
+import { Deflate, Inflate, deflateSync, inflateSync, strToU8, strFromU8 } from 'fflate';
 
 /**
  * يفسح للواجهة دورة رسم بين الأشواط الثقيلة.
@@ -105,9 +105,56 @@ const CRC_TABLE = (() => {
 })();
 
 export function crc32(buf: Uint8Array): number {
-  let c = -1;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 255] ^ (c >>> 8);
-  return (c ^ -1) >>> 0;
+  return crc32Final(crc32Update(-1, buf, 0, buf.length));
+}
+
+/** البصمة على قطع · تبدأ من -1 وتُختم بـ crc32Final */
+function crc32Update(c: number, buf: Uint8Array, start: number, end: number): number {
+  for (let i = start; i < end; i++) c = CRC_TABLE[(c ^ buf[i]) & 255] ^ (c >>> 8);
+  return c;
+}
+const crc32Final = (c: number) => (c ^ -1) >>> 0;
+
+/**
+ * المدخل الكبير على قطعٍ من ميغابايت (الفحص على المحاكي ٢٠٢٦-١٠-٠٧: مرفقٌ بأربعين ميغا جمّد الشاشة
+ * في «ضغط الأرشيف» بلا تقدّم، فالبصمة والضغط كانا على المدخل كله دفعة واحدة) ·
+ * يفسح للواجهة بين القطع ويبلّغ بالبايتات · والضغط بالمجرى نفسه فيخرج كما يخرج دفعة واحدة.
+ */
+const CHUNK = 1 << 20;
+async function prepareEntry(
+  e: ZipEntry, breathe: () => Promise<void>, onBytes: (n: number) => void,
+): Promise<{ data: Uint8Array; crc: number }> {
+  const src = e.bytes;
+  let crc = -1;
+  if (e.level === 0) {
+    for (let at = 0; at < src.length; at += CHUNK) {
+      const end = Math.min(src.length, at + CHUNK);
+      crc = crc32Update(crc, src, at, end);
+      onBytes(end - at);
+      await breathe();
+    }
+    return { data: src, crc: crc32Final(crc) };
+  }
+  if (src.length <= CHUNK) {
+    const data = deflateSync(src, { level: e.level });
+    crc = crc32Update(crc, src, 0, src.length);
+    onBytes(src.length);
+    return { data, crc: crc32Final(crc) };
+  }
+  const parts: Uint8Array[] = [];
+  const z = new Deflate({ level: e.level }, (chunk) => { parts.push(chunk); });
+  for (let at = 0; at < src.length; at += CHUNK) {
+    const end = Math.min(src.length, at + CHUNK);
+    crc = crc32Update(crc, src, at, end);
+    z.push(src.subarray(at, end), end === src.length);
+    onBytes(end - at);
+    await breathe();
+  }
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const data = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { data.set(p, o); o += p.length; }
+  return { data, crc: crc32Final(crc) };
 }
 
 /* ─── قراءة وكتابة أعداد صغيرة الطرف كما يفرض المعيار ─── */
@@ -152,7 +199,8 @@ function dosStamp(): { time: number; date: number } {
  */
 export async function zipYielding(
   entries: ZipEntry[],
-  onFile?: (done: number, total: number) => void
+  /** البايتات المنجزة من مجموع المداخل · ويجوز أن يرمي (الإلغاء) فيتوقف الضغط */
+  onBytes?: (done: number, total: number) => void
 ): Promise<Uint8Array> {
   if (entries.length > 0xFFFF) {
     throw new ZipFormatError('عدد المداخل يتجاوز ما يسعه الأرشيف (' + entries.length + ')');
@@ -163,18 +211,21 @@ export async function zipYielding(
   interface Prepared { name: Uint8Array; data: Uint8Array; method: number; crc: number; size: number }
   const prepared: Prepared[] = [];
   const breatheA = breather();
-  let done = 0;
+  const totalBytes = entries.reduce((n, e) => n + e.bytes.length, 0);
+  let doneBytes = 0;
   for (const e of entries) {
-    const data = e.level === 0 ? e.bytes : deflateSync(e.bytes, { level: e.level });
+    const { data, crc } = await prepareEntry(e, breatheA, (n) => {
+      doneBytes += n;
+      onBytes?.(doneBytes, totalBytes);
+    });
     if (data.length > 0xFFFFFFFF || e.bytes.length > 0xFFFFFFFF) {
       throw new ZipFormatError('مدخل أكبر مما يسعه الأرشيف: ' + e.name);
     }
     prepared.push({
       name: strToU8(e.name), data, method: e.level === 0 ? 0 : 8,
-      crc: crc32(e.bytes), size: e.bytes.length,
+      crc, size: e.bytes.length,
     });
-    done += 1;
-    onFile?.(done, entries.length);
+    if (!e.bytes.length) onBytes?.(doneBytes, totalBytes);
     await breatheA();
   }
 
@@ -287,8 +338,11 @@ function zip64Extra(
  */
 export async function unzipYielding(
   data: Uint8Array,
-  onFile?: (name: string, count: number) => void
+  onFile?: (name: string, count: number) => void,
+  /** البايتات المقروءة من الأرشيف ومجموعها · ويجوز أن يرمي (الإلغاء) */
+  onBytes?: (done: number, total: number) => void,
 ): Promise<Record<string, Uint8Array>> {
+  let readBytes = 0;
   const eocd = findEocd(data);
   if (eocd < 0) throw new ZipFormatError('لا فهرس مركزي في الملف · ليس أرشيفاً');
 
@@ -339,8 +393,28 @@ export async function unzipYielding(
     const raw = data.subarray(start, start + csize);
     if (method === 0) {
       out[name] = raw.slice();
+      readBytes += csize;
+      onBytes?.(readBytes, data.length);
+    } else if (method === 8 && csize <= CHUNK) {
+      out[name] = inflateSync(raw, usize ? { out: new Uint8Array(usize) } : undefined);
+      readBytes += csize;
+      onBytes?.(readBytes, data.length);
     } else if (method === 8) {
-      const inflated = inflateSync(raw, usize ? { out: new Uint8Array(usize) } : undefined);
+      // المضغوط الكبير (القاعدة) على قطع يفسح بينها ويبلّغ · فلا تتجمد الشاشة في «فكّ الأرشيف»
+      const parts: Uint8Array[] = [];
+      const z = new Inflate((chunk) => { parts.push(chunk); });
+      for (let at = 0; at < csize; at += CHUNK) {
+        const end = Math.min(csize, at + CHUNK);
+        z.push(raw.subarray(at, end), end === csize);
+        readBytes += end - at;
+        onBytes?.(readBytes, data.length);
+        await breathe();
+      }
+      const total = parts.reduce((s, x) => s + x.length, 0);
+      const inflated = new Uint8Array(total);
+      let o = 0;
+      for (const x of parts) { inflated.set(x, o); o += x.length; }
+      if (usize && total !== usize) throw new ZipFormatError('حجم «' + name + '» بعد الفك لا يطابق الفهرس');
       out[name] = inflated;
     } else {
       throw new ZipFormatError('طريقة ضغط غير مدعومة (' + method + ') في «' + name + '»');

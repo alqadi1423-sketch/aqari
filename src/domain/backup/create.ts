@@ -327,7 +327,7 @@ export async function createBackup(
     throwIfCancelled(opts.signal);
     const zipped = await zipYielding(zipEntries, (done, total) => {
       throwIfCancelled(opts.signal);
-      onProgress?.(`جاري ضغط الأرشيف · ${done} من ${total}`);
+      onProgress?.('جاري ضغط الأرشيف', { done, total, unit: 'bytes' });
     });
     env.fs.write(tmpArchive, zipped);
     throwIfCancelled(opts.signal);
@@ -355,14 +355,15 @@ export async function verifyArchiveAt(
   env: BackupEnv,
   archivePath: string,
   expected?: BackupManifest,
-  onProgress?: (msg: string) => void
+  onProgress?: ProgressFn
 ): Promise<{ manifest: BackupManifest; entries: Record<string, Uint8Array> }> {
   if (!env.hasher) throw new HashingUnavailableError();
   const hasher = env.hasher;
   const bytes = env.fs.read(archivePath);
   let entries: Record<string, Uint8Array>;
   try {
-    entries = await unzipYielding(bytes);
+    entries = await unzipYielding(bytes, undefined, (done, total) =>
+      onProgress?.('جاري التحقق من الأرشيف الناتج', { done, total, unit: 'bytes' }));
   } catch (e) {
     // المسار كاملاً إلى السجل · ولا تُنسب العلّة إلى ملف لم يثبت تلفه
     console.error('[عقاري] تعذّر فكّ الأرشيف أثناء التحقق · ' + (e instanceof Error ? (e.stack ?? e.message) : String(e)));

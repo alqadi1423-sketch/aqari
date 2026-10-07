@@ -40,7 +40,7 @@ describe('العرض والتوقّف', () => {
     expect(fmtBytes(2.5 * 1024 * 1024)).toBe('٢٫٥ م.ب');
     const v = progressView('جاري التنزيل من Google Drive', { done: 3 * 1024 * 1024, total: 12 * 1024 * 1024, unit: 'bytes' });
     expect(v).toEqual({ pct: 25, amount: '٣٫٠ م.ب من ١٢٫٠ م.ب' });
-    expect(progressLine(v)).toBe('٪٢٥ · ٣٫٠ م.ب من ١٢٫٠ م.ب');
+    expect(progressLine(v)).toBe('٢٥٪، ٣٫٠ م.ب من ١٢٫٠ م.ب');
     expect(progressView('جاري نسخ المرفقات · 3 من 12')).toEqual({ pct: 25, amount: '٣ من ١٢' });
     expect(progressLabel('جاري نسخ المرفقات · 3 من 12')).toBe('جاري نسخ المرفقات');
     expect(progressView('جاري أخذ لقطة قاعدة البيانات')).toEqual({ pct: null, amount: null });
@@ -160,15 +160,53 @@ describe('Google Drive: الحجم المنجز من الكلي والإلغاء
   });
 });
 
+describe('الضغط على قطع', () => {
+  test('مدخلٌ كبير مخزَّن وآخر مضغوط: تقدّمٌ بالبايت داخل المدخل الواحد · والأرشيف يُفكّ كما هو بأداتنا وبأداة أخرى', async () => {
+    const { zipYielding, unzipYielding } = await import('@/domain/backup/zipStream');
+    const { unzipSync } = await import('fflate');
+    const big = new Uint8Array(3 * 1024 * 1024 + 123).map((_, k) => (k * 31) % 256);
+    const text = new TextEncoder().encode('سطر مصطنع للضغط '.repeat(200000));
+    const steps: Array<[number, number]> = [];
+    const arch = await zipYielding([
+      { name: 'big.bin', bytes: big, level: 0 },
+      { name: 'data.db', bytes: text, level: 6 },
+    ], (d, t) => steps.push([d, t]));
+    expect(steps.length).toBeGreaterThan(5);
+    expect(steps[steps.length - 1]).toEqual([big.length + text.length, big.length + text.length]);
+    expect(steps.filter(([d]) => d < big.length).length).toBeGreaterThan(1); // داخل المدخل الأول
+    const ours = await unzipYielding(arch);
+    expect(Buffer.from(ours['big.bin']).equals(Buffer.from(big))).toBe(true);
+    expect(Buffer.from(ours['data.db']).equals(Buffer.from(text))).toBe(true);
+    const theirs = unzipSync(arch);
+    expect(Buffer.from(theirs['data.db']).equals(Buffer.from(text))).toBe(true);
+
+    // مضغوطٌ يتجاوز الميغابايت بعد ضغطه · يُفكّ على قطع ويبلّغ بالبايتات
+    const noisy = new Uint8Array(require('node:crypto').randomBytes(3 * 1024 * 1024));
+    const arch2 = await zipYielding([{ name: 'data.db', bytes: noisy, level: 6 }]);
+    const read: number[] = [];
+    const back = await unzipYielding(arch2, undefined, (d) => read.push(d));
+    expect(Buffer.from(back['data.db']).equals(Buffer.from(noisy))).toBe(true);
+    expect(read.length).toBeGreaterThan(2);
+    expect(Buffer.from(unzipSync(arch2)['data.db']).equals(Buffer.from(noisy))).toBe(true);
+  });
+});
+
 describe('النسخ والاستعادة: الحجم والإلغاء بلا أثر', () => {
   test('إنشاء النسخة يبلّغ حجم المرفقات المنجز من الكلي · والإلغاء في منتصفه لا يترك أرشيفاً', async () => {
     const env = newEnv();
     const total = await addAttachments(env, 10);
     const seen: ProgressInfo[] = [];
+    const zip: ProgressInfo[] = [];
     const out = path.join(env.root, 'b.aqbk');
-    await createBackup(env, out, (_m, i) => { if (i) seen.push(i); });
+    await createBackup(env, out, (m, i) => {
+      if (i && m.startsWith('جاري نسخ المرفقات')) seen.push(i);
+      if (i && m === 'جاري ضغط الأرشيف') zip.push(i);
+    });
     expect(seen.every((i) => i.total === total && i.unit === 'bytes')).toBe(true);
     expect(seen.map((i) => i.done)).toEqual([...seen.map((i) => i.done)].sort((a, b) => a - b));
+    // والضغط بالبايتات حتى نهايته
+    expect(zip[zip.length - 1].done).toBe(zip[zip.length - 1].total);
+    expect(zip[zip.length - 1].total).toBeGreaterThan(total);
 
     const c = cancelSource();
     const out2 = path.join(env.root, 'c.aqbk');
