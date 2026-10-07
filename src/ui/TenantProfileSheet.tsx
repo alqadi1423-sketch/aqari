@@ -20,6 +20,7 @@ import { tenantProfile, renameTenant, similarTenantGroups, mergeTenants } from '
 import { contractStatusKind, contractStatusLabel } from '../domain/contracts/rules';
 import { today, dfmt } from '../domain/dates';
 import { fmt } from '../domain/money';
+import { useLang } from '../i18n';
 import { reportFailure } from './failureDialog';
 import { useAccess, usePerm } from './access';
 import { routeAllowed } from '../domain/access/routes';
@@ -37,6 +38,7 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState('');
   const renameTry = useSaveAttempt();
+  const { t } = useLang();
   const p = useMemo(() => tenantProfile(db, tenantId, today()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, tenantId]);
@@ -99,6 +101,10 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 <Money halalas={Number(c.total_halalas)} size={TYPE.cardTitle} bold />
+                {/* التفصيل حين يكون في العقد خدمات أو مواقف (المراجعة #5) */}
+                {Number(c.services_halalas) || Number(c.parking_halalas) ? (
+                  <T size={TYPE.caption} color={C.muted}>{t('lease.splitLine', { rent: fmt(Number(c.value_halalas)), services: fmt(Number(c.services_halalas)), parking: fmt(Number(c.parking_halalas)) })}</T>
+                ) : null}
                 {/* الحالة محسوبة من التواريخ لا مخزّنة · فعقد يبدأ غداً «موثَّق ولم يبدأ» لا «سارٍ» */}
                 <Badge kind={contractStatusKind(c)} label={contractStatusLabel(c)} />
               </View>

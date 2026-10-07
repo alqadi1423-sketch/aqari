@@ -160,7 +160,7 @@ export default function Contracts() {
     }
     const w = where.join(' AND ');
     const order = sortKey === 'start' ? 'c.start DESC'
-      : sortKey === 'value_halalas' ? 'c.value_halalas DESC'
+      : sortKey === 'value_halalas' ? `${contractTotalSql(db, 'c.')} DESC`
       : sortKey === 'tenant_name' ? 'c.tenant_name'
       : 'c.contract_no';
     const total = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM contracts c WHERE ${w}`, args)?.n ?? 0);
@@ -538,7 +538,7 @@ import { LeaseCompare, useLeaseDiffs } from '../../src/ui/LeaseCompare';
 import { applyExtras, type ExtraDiff, type ExtraKey } from '../../src/domain/pdf/ejarExtras';
 import { useLang } from '../../src/i18n';
 import { GENERAL_COST_CENTER, withCostCenter } from '../../src/domain/accounting/dimensions';
-import { contractTotalOf } from '../../src/domain/accounting/rentSplit';
+import { contractTotalOf, contractTotalSql } from '../../src/domain/accounting/rentSplit';
 function ReviewSheet({
   visible, form, onBack, onConfirm, db, cc, onCc, leaseDiffs, approved, onApproved,
 }: { visible: boolean; form: ContractFormState; onBack: () => void; onConfirm: () => void; db: DB; cc: string; onCc: (v: string) => void;

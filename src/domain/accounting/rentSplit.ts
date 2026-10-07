@@ -34,7 +34,8 @@ function postedRevenue(db: DB, contractId: string): { rent: number; services: nu
   let has = lineDimCache.get(k);
   if (has === undefined) {
     has = db.all<{ name: string }>(`PRAGMA table_info(journal_lines)`).some((c) => c.name === 'contract_id');
-    lineDimCache.set(k, has);
+    // النتيجة الإيجابية وحدها تُحفظ · فقاعدة تُرقّى وهي مفتوحة تُفحص من جديد
+    if (has) lineDimCache.set(k, has);
   }
   if (!has) return null;
   const rows = db.all<{ a: string; n: number }>(

@@ -57,6 +57,7 @@ function xlsxDoc(db: DB, report: string, period: string, criteria: Array<[string
 function unitBlock(db: DB, unitId: string, from: string | null, to: string): ReportBlock | null {
   const d = unitReportData(db, unitId, from, to);
   if (!d) return null;
+  const splitCols = d.contracts.some((c) => Number(c.services_halalas) || Number(c.parking_halalas));
   return {
     heading: `وحدة ${d.unit.unit_no} · ${d.propertyName}`,
     meta: [
@@ -66,8 +67,9 @@ function unitBlock(db: DB, unitId: string, from: string | null, to: string): Rep
       ['نماذج الاستلام', String(d.handoversCount)],
     ],
     sections: [
-      { title: `العقود (${d.contracts.length})`, header: ['رقم العقد', 'المستأجر', 'من', 'إلى', 'القيمة', 'الحالة'],
-        rows: d.contracts.map((c) => [c.contract_no ?? 'لا يوجد', c.tenant_name, c.start ? dfmt(c.start) : 'لا يوجد', c.end ? dfmt(c.end) : 'لا يوجد', M(c.total_halalas), c.status]) },
+      // إجمالي العقد، وتفصيله بأعمدة حين يكون في عقد منها خدمات أو مواقف (المراجعة #5)
+      { title: `العقود (${d.contracts.length})`, header: [...['رقم العقد', 'المستأجر', 'من', 'إلى'], ...(splitCols ? [t('lease.print.rent'), t('lease.print.services'), t('lease.print.parking')] : []), t('lease.contractTotal'), 'الحالة'],
+        rows: d.contracts.map((c) => [c.contract_no ?? 'لا يوجد', c.tenant_name, c.start ? dfmt(c.start) : 'لا يوجد', c.end ? dfmt(c.end) : 'لا يوجد', ...(splitCols ? [M(c.value_halalas), M(c.services_halalas), M(c.parking_halalas)] : []), M(c.total_halalas), c.status]) },
       { title: 'الأقساط', header: ['عدد الأقساط', 'المستحق حتى نهاية المدة', 'المحصَّل', 'المتبقي'],
         rows: [[d.installments.count, M(d.installments.due), M(d.installments.collected), M(d.installments.outstanding)]] },
       { title: `المقبوضات خلال المدة (${d.payments.length})`, header: ['التاريخ', 'الفترة', 'المستأجر', 'الطريقة', 'الصافي'],
@@ -428,6 +430,7 @@ export async function exportCostCenterReport(db: DB, from: string | null, to: st
 
 /* القوائم المالية الأربع · المنطق النقي في src/domain/finStatements.ts */
 import { financialStatementBlock, FIN_TITLES, type FinStatement } from '../domain/finStatements';
+import { t } from '../i18n';
 export type { FinStatement };
 
 /**

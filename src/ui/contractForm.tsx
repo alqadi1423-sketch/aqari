@@ -97,7 +97,8 @@ export interface ContractFormState {
 
 /** الخدمات والمواقف في النموذج: من الملف المقروء، وإلا مما حُفظ مع المسودة */
 export function formSplit(s: Pick<ContractFormState, 'extras' | 'split'>): { servicesHalalas?: number; parkingHalalas?: number } {
-  return s.extras ? revenueSplitOf(s.extras) : s.split ?? {};
+  if (s.split) return s.split;
+  return s.extras ? revenueSplitOf(s.extras) : {};
 }
 
 export const emptyContractForm = (): ContractFormState => ({
@@ -141,6 +142,14 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
   const { db } = useApp();
   const { t } = useLang();
   const { state, set } = form;
+  const amountText = (h?: number) => (h ? fmt(h).replace(/,/g, '') : '');
+  const [servicesText, setServicesText] = useState(() => amountText(formSplit(state).servicesHalalas));
+  const [parkingText, setParkingText] = useState(() => amountText(formSplit(state).parkingHalalas));
+  useEffect(() => {
+    setServicesText(amountText(formSplit(state).servicesHalalas));
+    setParkingText(amountText(formSplit(state).parkingHalalas));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.extras]);
   const [scanStatus, setScanStatus] = useState('');
   const [propertyId, setPropertyId] = useState<string>(() => {
     if (!state.unitId) return '';
@@ -214,6 +223,7 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
       // البنود التي لها خانة: التأثيث في العقد مباشرة، والوحدة برقمها داخل العقار المختار، والباقي يُقارن في المراجعة
       const extras = parseEjarExtras(text);
       set('extras', extras);
+      { const sp = revenueSplitOf(extras); set('split', { servicesHalalas: sp.servicesHalalas ?? 0, parkingHalalas: sp.parkingHalalas ?? 0 }); }
       if (extras.unit.furnished) set('furnished', extras.unit.furnished);
       if (propertyId && extras.unit.unitNo) {
         const uidByNo = unitByNumber(db, propertyId, extras.unit.unitNo);
@@ -354,6 +364,16 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
           <SelectField label="دورية الدفعات" value={state.cycle}
             options={CYCLE_OPTIONS.map((v) => ({ value: v, label: v }))}
             onPick={(v) => set('cycle', v)} />
+        </View>
+      </Row>
+      <Row>
+        <View style={{ flex: 1 }}>
+          <Field label={t('lease.renewServices')} keyboard="numeric" ltr value={servicesText}
+            onChange={(v) => { setServicesText(v); set('split', { ...formSplit(state), servicesHalalas: toHalalas(v) }); }} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Field label={t('lease.renewParking')} keyboard="numeric" ltr value={parkingText}
+            onChange={(v) => { setParkingText(v); set('split', { ...formSplit(state), parkingHalalas: toHalalas(v) }); }} />
         </View>
       </Row>
       <Row>

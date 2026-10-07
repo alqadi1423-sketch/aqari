@@ -14,7 +14,7 @@ const period = (col: string, from: string | null, to: string) =>
 export interface UnitReport {
   unit: { unit_no: string; floor: string; type: string; subtype: string; rent_monthly_halalas: number };
   propertyName: string;
-  contracts: Array<{ contract_no: string | null; tenant_name: string; start: string | null; end: string | null; value_halalas: number; total_halalas: number; status: string }>;
+  contracts: Array<{ contract_no: string | null; tenant_name: string; start: string | null; end: string | null; value_halalas: number; total_halalas: number; services_halalas: number; parking_halalas: number; status: string }>;
   payments: Array<{ date: string; period: string; method_label: string; net_halalas: number; tenant_name: string }>;
   expenses: Array<{ date: string; supplier_name: string; category: string; total_halalas: number; paid: number }>;
   handoversCount: number;
@@ -31,7 +31,8 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
   const propertyName = db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [unit.property_id])?.name ?? 'لا يوجد';
   // حالة العقد في التقرير محسوبة كما تظهر في الشاشات · لا المخزّنة الخام
   const contracts = db.all<UnitReport['contracts'][number]>(
-    `SELECT contract_no, tenant_name, start, end, value_halalas, ${contractTotalSql(db)} AS total_halalas, status FROM contracts
+    `SELECT contract_no, tenant_name, start, end, value_halalas, ${contractTotalSql(db)} AS total_halalas,
+            ${contractTotalSql(db) === 'value_halalas' ? '0 AS services_halalas, 0 AS parking_halalas' : 'services_halalas, parking_halalas'}, status FROM contracts
      WHERE unit_id = ? AND deleted_at IS NULL ORDER BY COALESCE(start,'') DESC`, [unitId]
   ).map((c) => ({ ...c, status: contractStatusLabel(c) }));
   const payments = db.all<UnitReport['payments'][number]>(

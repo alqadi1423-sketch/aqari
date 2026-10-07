@@ -331,8 +331,7 @@ export function allPropertyStats(db: DB, T: string = today()): Map<string, Prope
   )) ensure(r.pid).income += Number(r.s);
   for (const r of db.all<{ pid: string; n: number; v: number }>(
     `SELECT u.property_id AS pid, COUNT(*) AS n,
-            COALESCE(SUM((SELECT COALESCE(SUM(CASE WHEN i.status='ملغية' THEN i.amount_halalas ELSE 0 END),0)
-                          FROM contract_installments i WHERE i.contract_id = c.id)),0) AS v
+            COALESCE(SUM(${cancelledValueSql(db, 'c')}),0) AS v
      FROM contracts c JOIN units u ON u.id = c.unit_id
      WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL AND c.status = 'ملغى' GROUP BY u.property_id`
   )) { const s = ensure(r.pid); s.cancelledCount = Number(r.n); s.cancelledValue = Number(r.v); }

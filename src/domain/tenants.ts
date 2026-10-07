@@ -72,7 +72,7 @@ export function backfillTenantLinks(db: DB): number {
 
 export interface TenantProfile {
   tenant: { id: string; name: string; national_id: string; phone: string; notes: string };
-  contracts: Array<{ id: string; contract_no: string | null; unit_label: string; start: string | null; end: string | null; value_halalas: number; total_halalas: number; status: string }>;
+  contracts: Array<{ id: string; contract_no: string | null; unit_label: string; start: string | null; end: string | null; value_halalas: number; total_halalas: number; services_halalas: number; parking_halalas: number; status: string }>;
   totals: { dueToDate: number; collected: number; outstanding: number };
   claims: { count: number; amountHalalas: number };
   /** نسبة الأقساط المسدَّدة في وقتها من المستحقة */
@@ -85,7 +85,8 @@ export function tenantProfile(db: DB, tenantId: string, today: string): TenantPr
     `SELECT id, name, national_id, phone, notes FROM tenants WHERE id = ?`, [tenantId]);
   if (!tenant) return null;
   const contracts = db.all<TenantProfile['contracts'][number]>(
-    `SELECT id, contract_no, unit_label, start, "end", value_halalas, ${contractTotalSql(db)} AS total_halalas, status FROM contracts
+    `SELECT id, contract_no, unit_label, start, "end", value_halalas, ${contractTotalSql(db)} AS total_halalas,
+            ${contractTotalSql(db) === 'value_halalas' ? '0 AS services_halalas, 0 AS parking_halalas' : 'services_halalas, parking_halalas'}, status FROM contracts
      WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY COALESCE(start,'') DESC`, [tenantId]);
   const inst = db.get<{ due: number; collected: number; total: number; paidOnTime: number; dueCount: number }>(
     `SELECT

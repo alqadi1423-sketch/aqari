@@ -17,7 +17,7 @@ import { buildContractDoc } from '@/domain/printDocs';
 import { templateContext } from '@/domain/templates';
 import { unitReportData } from '@/domain/reportData';
 import { tenantProfile } from '@/domain/tenants';
-import { contractCancelledValue, contractRemainingHalalas, propertyStats } from '@/domain/stats';
+import { contractCancelledValue, contractRemainingHalalas, propertyStats, allPropertyStats } from '@/domain/stats';
 
 const credit = (db: DB, code: string) => { const m = accountMovement(db, code, null, null); return m.credit - m.debit; };
 const insts = (db: DB, c: string) => db.all<{ id: string; due_date: string; amount_halalas: number }>(
@@ -116,6 +116,7 @@ test('#7 قيمة الملغى = المتبقي من الأقساط الملغا
   const v = contractCancelledValue(db, { id: cid, status: 'ملغى', value_halalas: 48000 });
   expect(v).toBe(60000 - 4000);
   expect(propertyStats(db, pid, '2026-03-01').cancelledValue).toBe(v);
+  expect(allPropertyStats(db, '2026-03-01').get(pid)?.cancelledValue).toBe(v);
 });
 
 test('#8 المتبقي على العقد من الأقساط الحيّة: يطرح الخصم ولا يحسب الملغاة', () => {
@@ -141,4 +142,14 @@ test('#10 فصل الإيراد تراكمي على مستوى العقد: لا 
   for (const i of rows) for (let k = 0; k < 3; k++) { pay(db, cid, i, 7); paid += 7; }
   expect(credit(db, '4210')).toBe(Math.floor((paid * 3333) / 13333));
   expect(credit(db, '4200') + credit(db, '4210')).toBe(paid);
+});
+
+test('#10 جهة العكس: إلغاء الدفعات يعيد الحسابات الثلاثة إلى الصفر بلا بقايا هللات', async () => {
+  const { cancelPayment } = await import('@/domain/contracts/cancelPayment');
+  const { db, base } = world();
+  const cid = confirmContract(db, { ...base, valueHalalas: 10000, servicesHalalas: 3333, parkingHalalas: 1111 });
+  const rows = insts(db, cid);
+  const ids = [pay(db, cid, rows[0], 7), pay(db, cid, rows[0], 11), pay(db, cid, rows[1], 13)];
+  for (const id of ids.reverse()) cancelPayment(db, id, { date: '2026-03-01', reason: 'اختبار' });
+  expect([credit(db, '4200'), credit(db, '4210'), credit(db, '4220')]).toEqual([0, 0, 0]);
 });
