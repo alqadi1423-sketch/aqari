@@ -84,14 +84,18 @@ export interface ContractDraftInput {
   parkingHalalas?: number;
 }
 
-/** مبلغا الخدمات والمواقف في العقد · لا يتجاوزان قيمته (وإلا بقي الإيراد كله إيجاراً) */
+/** مبلغا الخدمات والمواقف في العقد · فوق قيمته («كامل قيمة الإيجار»)، وإجمالي العقد مجموع الثلاثة */
 function saveRevenueSplit(db: DB, id: string, input: ContractDraftInput): void {
   if (input.servicesHalalas === undefined && input.parkingHalalas === undefined) return;
   if (!db.all<{ name: string }>(`PRAGMA table_info(contracts)`).some((c) => c.name === 'services_halalas')) return;
   const s = Math.max(0, input.servicesHalalas ?? 0);
   const p = Math.max(0, input.parkingHalalas ?? 0);
-  const ok = s + p <= input.valueHalalas;
-  db.run(`UPDATE contracts SET services_halalas = ?, parking_halalas = ? WHERE id = ?`, [ok ? s : 0, ok ? p : 0, id]);
+  db.run(`UPDATE contracts SET services_halalas = ?, parking_halalas = ? WHERE id = ?`, [s, p, id]);
+}
+
+/** إجمالي العقد من مدخله: الإيجار والخدمات والمواقف · منه تُولَّد الأقساط ويُطابَق جدول إيجار */
+export function draftTotal(input: Pick<ContractDraftInput, 'valueHalalas' | 'servicesHalalas' | 'parkingHalalas'>): number {
+  return input.valueHalalas + Math.max(0, input.servicesHalalas ?? 0) + Math.max(0, input.parkingHalalas ?? 0);
 }
 
 /** مصدر تواريخ الأقساط (الهجرة ٢٤) */
@@ -273,10 +277,10 @@ export function confirmContract(db: DB, input: ContractDraftInput, draftId?: str
       const ej = ejarColumns(input) ?? { schedule: stored?.s ?? null, source: stored?.src ?? null };
       let parsed: ScheduleRow[] | null = null;
       try { parsed = ej.schedule ? (JSON.parse(ej.schedule) as ScheduleRow[]) : null; } catch { parsed = null; }
-      const fromFile = scheduleInstallments(parsed, input.start, input.end, input.valueHalalas);
+      const fromFile = scheduleInstallments(parsed, input.start, input.end, draftTotal(input));
       const insts: Array<{ id: string; dueDate: string; amountHalalas: number; deadline?: string | null }> = fromFile
         ? fromFile.map((x) => ({ id: uid(), ...x }))
-        : generateInstallments(input.start, input.end, input.valueHalalas, input.cycle);
+        : generateInstallments(input.start, input.end, draftTotal(input), input.cycle);
       insts.forEach((inst, i) => {
         db.run(
           `INSERT INTO contract_installments (id, contract_id, due_date, amount_halalas, sort, grace_until)

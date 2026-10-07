@@ -24,13 +24,14 @@ export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFil
   const { t } = useLang();
   const rows = useMemo(() => {
     if (!start || !end) return null;
-    const v = toHalalas(value);
+    // الأقساط من إجمالي العقد: الإيجار والخدمات والمواقف
+    const v = toHalalas(value) + (split?.servicesHalalas ?? 0) + (split?.parkingHalalas ?? 0);
     const read = scheduleInstallments(schedule ?? null, start, end, v);
     if (read) return { read: true, rows: read.map((r) => ({ due: r.dueDate, deadline: r.deadline, amount: r.amountHalalas })) };
     try {
       return { read: false, rows: generateInstallments(start, end, v, cycle).map((r) => ({ due: r.dueDate, deadline: null as string | null, amount: r.amountHalalas })) };
     } catch { return null; }
-  }, [start, end, value, cycle, schedule]);
+  }, [start, end, value, cycle, schedule, split?.servicesHalalas, split?.parkingHalalas]);
   if (!rows || !rows.rows.length) return null;
   return (
     <View style={{ marginTop: 12 }}>
@@ -39,7 +40,7 @@ export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFil
         ? <Note tone="ok">{t('lease.scheduleRead')}</Note>
         : fromEjarFile ? <Note tone="danger">{t('lease.scheduleComputedFromFile')}</Note> : <Note>{t('lease.scheduleComputed')}</Note>}
       {split && (split.servicesHalalas || split.parkingHalalas) ? (
-        <T size={TYPE.caption} color={C.muted}>{t('lease.splitLine', { rent: fmt(toHalalas(value) - (split.servicesHalalas ?? 0) - (split.parkingHalalas ?? 0)), services: fmt(split.servicesHalalas ?? 0), parking: fmt(split.parkingHalalas ?? 0) })}</T>
+        <T size={TYPE.caption} color={C.muted}>{t('lease.splitLine', { rent: fmt(toHalalas(value)), services: fmt(split.servicesHalalas ?? 0), parking: fmt(split.parkingHalalas ?? 0) })}</T>
       ) : null}
       {rows.read && financial ? scheduleChecks(schedule, financial).map((c) => (
         <Note key={c.code} tone="danger">{t('lease.check.' + c.code, { expected: c.code === 'count' ? c.expected : fmt(c.expected), actual: c.code === 'count' ? c.actual : fmt(c.actual) })}</Note>

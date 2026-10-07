@@ -1014,7 +1014,9 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const paid = db.get<{ s: number }>(
     `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [contractId]
   )!.s;
-  const due = Math.max(0, Number(c.value_halalas) - Number(paid));
+  // المتبقي من إجمالي العقد: الإيجار والخدمات والمواقف
+  const cx = c as ContractRow & { services_halalas?: number; parking_halalas?: number };
+  const due = Math.max(0, Number(c.value_halalas) + Number(cx.services_halalas ?? 0) + Number(cx.parking_halalas ?? 0) - Number(paid));
 
   const applyRaise = (r: string) => {
     setRaise(r);

@@ -281,7 +281,8 @@ export function parseEjarContract(raw: string): EjarParseResult {
   const en = tf.match(/TenancyEndDate:?(\d{4}-\d{2}-\d{2})/i);
   pick('end', en ? en[1] : null);
 
-  const v = tf.match(/TotalContractvalue:?([\d,\.]+)/i) || tf.match(/Totalrentvalue:?([\d,\.]+)/i);
+  // قيمة العقد «كامل قيمة الإيجار» لا «إجمالي قيمة العقد» (قرار المالك ٢٠٢٦-١٠-٠٧) · والخدمات والمواقف فوقها
+  const v = tf.match(/Totalrentvalue:?([\d,\.]+)/i) || tf.match(/TotalContractvalue:?([\d,\.]+)/i);
   const vNum = v ? num(v[1]) : null;
   // المبالغ أعداد موجبة · غير ذلك رقم مكسور لا يُلتقط
   pick('valueHalalas', vNum != null && vNum > 0 ? Math.round(vNum * 100) : null);

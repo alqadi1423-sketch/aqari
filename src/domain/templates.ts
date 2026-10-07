@@ -5,6 +5,7 @@ import type { DB } from '../db/adapter';
 import { today, dfmt } from './dates';
 import { fmt } from './money';
 import { INSTALLMENT_DISCOUNT_SQL, installmentState } from './contracts/installments';
+import { contractTotalSql } from './accounting/rentSplit';
 
 export const TEMPLATE_TOKENS: Array<{ k: string; d: string }> = [
   { k: '{المستأجر}', d: 'اسم المستأجر' },
@@ -38,8 +39,9 @@ export function templateContext(db: DB, contractId: string | null, name?: string
   const c = db.get<{
     id: string; contract_no: string | null; tenant_name: string; phone: string;
     unit_id: string; unit_label: string; start: string | null; end: string | null;
-    value_halalas: number; deposit_halalas: number;
-  }>(`SELECT id, contract_no, tenant_name, phone, unit_id, unit_label, start, end, value_halalas, deposit_halalas
+    value_halalas: number; deposit_halalas: number; total_halalas: number;
+  }>(`SELECT id, contract_no, tenant_name, phone, unit_id, unit_label, start, end, value_halalas, deposit_halalas,
+      ${contractTotalSql(db)} AS total_halalas
       FROM contracts WHERE id = ?`, [contractId]);
   if (!c) return ctx;
   const u = db.get<{ unit_no: string; property_id: string }>(
@@ -76,8 +78,8 @@ export function templateContext(db: DB, contractId: string | null, name?: string
     '{نهاية_العقد}': c.end ? dfmt(c.end) : '',
     '{قيمة_العقد}': fmt(Number(c.value_halalas)),
     '{التأمين}': fmt(Number(c.deposit_halalas)),
-    '{المبلغ}': st ? fmt(st.remaining) : fmt(Number(c.value_halalas)),
-    '{المتبقي}': fmt(remain ? Number(remain.s) : Number(c.value_halalas)),
+    '{المبلغ}': st ? fmt(st.remaining) : fmt(Number(c.total_halalas)),
+    '{المتبقي}': fmt(remain ? Number(remain.s) : Number(c.total_halalas)),
     '{التاريخ}': st ? dfmt(st.effectiveDue) : c.end ? dfmt(c.end) : 'لا يوجد',
     '{أيام_التأخير}': st ? String(Math.max(0, st.daysLate)) : '0',
   });

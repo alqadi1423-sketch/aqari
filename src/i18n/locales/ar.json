@@ -74,7 +74,8 @@
     },
     "revServices": "إيراد خدمات (غاز وكهرباء ومياه)",
     "revParking": "إيراد مواقف",
-    "splitLine": "منها إيجار {{rent}} · خدمات {{services}} · مواقف {{parking}}"
+    "splitLine": "منها إيجار {{rent}} · خدمات {{services}} · مواقف {{parking}}",
+    "valueField": "قيمة الإيجار الإجمالية"
   },
   "dataLabels": {
     "table": {

@@ -74,7 +74,8 @@
     },
     "revServices": "Services revenue (gas, electricity, water)",
     "revParking": "Parking revenue",
-    "splitLine": "Of which rent {{rent}} · services {{services}} · parking {{parking}}"
+    "splitLine": "Of which rent {{rent}} · services {{services}} · parking {{parking}}",
+    "valueField": "Total rent value"
   },
   "dataLabels": {
     "table": {

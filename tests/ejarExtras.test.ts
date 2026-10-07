@@ -118,3 +118,13 @@ test('جدول الغرف والمكيفات على هيئته: أزواج «ن�
   expect(db.all<{ n: string }>(`SELECT room_name AS n FROM unit_rooms WHERE unit_id = ? ORDER BY sort`, [u]).map((r) => r.n)).toEqual(['صالة', 'غرفة نوم 1', 'غرفة نوم 2']);
   expect(db.get(`SELECT 1 FROM unit_room_items WHERE id = 'i1'`)).toBeTruthy();
 });
+
+test('قيمة العقد «كامل قيمة الإيجار» لا «إجمالي قيمة العقد» · والخدمات والمواقف فوقها', async () => {
+  const { parseEjarContract } = await import('@/domain/pdf/parseEjar');
+  const { revenueSplitOf } = await import('@/domain/pdf/ejarExtras');
+  const r = parseEjarContract(TEXT);
+  expect(r.valueHalalas).toBe(600000);
+  // الإيجار والخدمات والمواقف = إجمالي قيمة العقد
+  const sp = revenueSplitOf(parseEjarExtras(TEXT));
+  expect(600000 + (sp.servicesHalalas ?? 0) + (sp.parkingHalalas ?? 0)).toBe(690000);
+});

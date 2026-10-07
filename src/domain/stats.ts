@@ -5,6 +5,7 @@ import type { DB } from '../db/adapter';
 import { today, daysBetween } from './dates';
 import { unitActiveReservation, unitCurrentContract, expireOldReservations } from './contracts/rules';
 import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentState } from './contracts/installments';
+import { contractTotalSql } from './accounting/rentSplit';
 
 export interface InstallmentView {
   installmentId: string;
@@ -208,7 +209,8 @@ export function contractCancelledValue(db: DB, c: { id: string; status: string; 
   )!;
   if (Number(inst.n) > 0) return Number(inst.s);
   const collected = contractCollectedValue(db, c.id);
-  return Math.max(0, Number(c.value_halalas) - collected);
+  const total = db.get<{ v: number }>(`SELECT ${contractTotalSql(db)} AS v FROM contracts WHERE id = ?`, [c.id])?.v ?? c.value_halalas;
+  return Math.max(0, Number(total) - collected);
 }
 
 export interface PropertyStats {

@@ -23,6 +23,7 @@ import type { ContractDraftInput } from '../domain/contracts/service';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
 import type { ContractField } from '../domain/contracts/rules';
 import { reportFailure } from './failureDialog';
+import { useLang } from '../i18n';
 
 /**
  * تاريخ الحقول: ما كتبه المستخدم في العمود نفسه من قبل، الأحدث أولاً ·
@@ -131,6 +132,7 @@ export function useContractForm() {
 
 export function ContractFormFields({ form }: { form: ReturnType<typeof useContractForm> }) {
   const { db } = useApp();
+  const { t } = useLang();
   const { state, set } = form;
   const [scanStatus, setScanStatus] = useState('');
   const [propertyId, setPropertyId] = useState<string>(() => {
@@ -339,7 +341,7 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
       ) : null}
       <Row>
         <View style={{ flex: 1 }}>
-          <Field label="قيمة العقد الإجمالية" value={state.value} onChange={(v) => set('value', v)} keyboard="numeric" ltr error={form.errorField === 'value'} />
+          <Field label={t('lease.valueField')} value={state.value} onChange={(v) => set('value', v)} keyboard="numeric" ltr error={form.errorField === 'value'} />
         </View>
         <View style={{ flex: 1 }}>
           <SelectField label="دورية الدفعات" value={state.cycle}

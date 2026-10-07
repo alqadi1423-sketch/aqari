@@ -1,7 +1,8 @@
 /**
  * فصل إيراد العقد (قرار المالك ٢٠٢٦-١٠-٠٧): الأقساط تبقى مطابقة لجدول إيجار بالضبط، والإيراد في الدفتر يُقسم
  * بالنسبة: «إيرادات الإيجار» 4200، و«إيرادات الخدمات (غاز وكهرباء ومياه)» 4210، و«إيرادات المواقف» 4220.
- * النسبة من مبالغ الخدمات والمواقف المحفوظة في العقد (الهجرة ٣٢) إلى قيمته · والعقد بلا تفصيل يبقى كله إيجاراً.
+ * قيمة العقد هي «كامل قيمة الإيجار» (قرار المالك ٢٠٢٦-١٠-٠٧)، ومبلغا الخدمات والمواقف فوقها (الهجرة ٣٢)، وإجمالي العقد
+ * مجموع الثلاثة وهو مجموع الأقساط. النسبة من إجمالي العقد · والعقد بلا تفصيل يبقى كله إيجاراً.
  * كل مسارٍ يقيّد إيراد إيجار يمرّ من هنا: التحصيل، والتحصيل الجماعي، وتحويل العربون، والخصم بعد الاستحقاق،
  * وردّ الفائض وتحويله.
  */
@@ -35,10 +36,16 @@ export function rentSplit(db: DB, contractId: string | null | undefined, amount:
   const v = Number(c?.v ?? 0);
   const s = Number(c?.s ?? 0);
   const p = Number(c?.p ?? 0);
-  if (!v || (!s && !p) || s + p > v) return { rent: amount, services: 0, parking: 0 };
-  const services = Math.floor((amount * s) / v);
-  const parking = Math.floor((amount * p) / v);
+  if (!v || (!s && !p) || s < 0 || p < 0) return { rent: amount, services: 0, parking: 0 };
+  const total = v + s + p;
+  const services = Math.floor((amount * s) / total);
+  const parking = Math.floor((amount * p) / total);
   return { rent: amount - services - parking, services, parking };
+}
+
+/** إجمالي العقد بعبارة SQL: الإيجار والخدمات والمواقف · ما يدفعه المستأجر ومجموع أقساطه · a بادئة الجدول إن وُجدت */
+export function contractTotalSql(db: DB, a = ''): string {
+  return hasSplitColumns(db) ? `(${a}value_halalas + ${a}services_halalas + ${a}parking_halalas)` : `${a}value_halalas`;
 }
 
 /** سطور إيراد العقد لمبلغٍ في جهةٍ واحدة (دائن للإيراد، ومدين لعكسه) · وصف سطر الإيجار كما يمرّره المسار */

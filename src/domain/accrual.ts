@@ -15,6 +15,7 @@ import type { DB } from '../db/adapter';
 import { daysBetween, addDays, contractEndFromDuration } from './dates';
 import { TS_DEDUCTIBLE } from './purchases';
 import { DISCOUNT_REDUCES_INSTALLMENT } from './contracts/installments';
+import { contractTotalSql } from './accounting/rentSplit';
 
 /** أساس القياس المعروض · نص صريح تستعمله الشاشات في الأزرار والعناوين */
 export type Basis = 'استحقاق' | 'نقدي';
@@ -235,7 +236,7 @@ function accrualContracts(db: DB): ContractAccrualRow[] {
     id: string; value_halalas: number; start: string | null; end: string | null;
     status: string; cancel_date: string | null;
   }>(
-    `SELECT id, value_halalas, start, end, status, cancel_date
+    `SELECT id, ${contractTotalSql(db)} AS value_halalas, start, end, status, cancel_date
      FROM contracts
      WHERE deleted_at IS NULL AND status != 'مسودة'
        AND start IS NOT NULL AND end IS NOT NULL AND start != '' AND end != ''`
