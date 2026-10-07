@@ -3,10 +3,10 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-import { buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES } from './syncTables';
+import { ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 29;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1379,5 +1379,91 @@ BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُعدَّل'); END;
 ${buildSyncTriggers(DIMENSION_SYNC_TABLES)}
 `;
 
+/**
+ * الهجرة ٢٩ · الأصول (قرار المالك ٢٠٢٦-١٠-٠٤ على موجز الأصول · src/domain/assets):
+ *  - حسابات الفئات السبع 1410–1470، ومجمع الإهلاك 1490، ومصروفه 5600، وخسارة الاستبعاد 5700، وأرباح البيع 4400.
+ *  - سجل الأصول وأحداثها، وبنود فواتير الشراء (الفاتورة بلا بنود تبقى كما هي)، وأشهر الإهلاك المرحّلة.
+ *  - الحالات والمصادر وأنواع الأحداث رموزٌ ثابتة تُترجم عند العرض.
+ *  - تكلفة الأصل NULL = «بانتظار تكلفة»: بلا قيد ولا إهلاك.
+ */
+// i18n-exempt: أسماء حسابات النظام وأنواعها كما تُخزَّن في الدليل حتى ترحيلة الرموز الثابتة
+export const MIGRATION_29 = `
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('1410', 'مكيفات وتبريد', 'أصل', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('1420', 'أجهزة منزلية كبيرة', 'أصل', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('1430', 'أثاث ومفروشات', 'أصل', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('1440', 'ستائر وسجاد وإنارة', 'أصل', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('1450', 'أجهزة إلكترونية وأمنية', 'أصل', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('1460', 'أدوات صحية وتجهيزات ثابتة', 'أصل', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('1470', 'معدات وأدوات صيانة', 'أصل', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('1490', 'مجمع الإهلاك', 'أصل', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('4400', 'أرباح بيع أصول', 'إيراد', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('5600', 'مصروف الإهلاك', 'مصروف', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('5700', 'خسارة استبعاد أصول', 'مصروف', NULL, 0, 1, datetime('now'));
+CREATE TABLE IF NOT EXISTS purchase_lines (
+  id             TEXT PRIMARY KEY,
+  purchase_id    TEXT NOT NULL,
+  descr          TEXT NOT NULL DEFAULT '',
+  qty            INTEGER NOT NULL DEFAULT 1,
+  amount_halalas INTEGER NOT NULL,
+  is_asset       INTEGER NOT NULL DEFAULT 0,
+  asset_category TEXT,
+  life_months    INTEGER,
+  unit_id        TEXT,
+  room           TEXT NOT NULL DEFAULT '',
+  sort           INTEGER NOT NULL DEFAULT 0,
+  created_at     TEXT NOT NULL,
+  deleted_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_purchase_lines_purchase ON purchase_lines(purchase_id);
+CREATE TABLE IF NOT EXISTS assets (
+  id               TEXT PRIMARY KEY,
+  name             TEXT NOT NULL,
+  category         TEXT NOT NULL,
+  property_id      TEXT,
+  unit_id          TEXT,
+  room             TEXT NOT NULL DEFAULT '',
+  model            TEXT NOT NULL DEFAULT '',
+  serial           TEXT NOT NULL DEFAULT '',
+  purchase_date    TEXT,
+  cost_halalas     INTEGER,
+  salvage_halalas  INTEGER NOT NULL DEFAULT 0,
+  life_months      INTEGER NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'in_service' CHECK (status IN ('in_service','maintenance','disposed','sold')),
+  source           TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual','purchase','convert','contents')),
+  purchase_id      TEXT,
+  purchase_line_id TEXT,
+  warranty_end     TEXT,
+  notes            TEXT NOT NULL DEFAULT '',
+  end_date         TEXT,
+  end_reason       TEXT NOT NULL DEFAULT '',
+  end_entry_id     TEXT,
+  sale_halalas     INTEGER,
+  created_at       TEXT NOT NULL,
+  deleted_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_assets_unit ON assets(unit_id);
+CREATE INDEX IF NOT EXISTS ix_assets_purchase ON assets(purchase_id);
+CREATE TABLE IF NOT EXISTS asset_events (
+  id           TEXT PRIMARY KEY,
+  asset_id     TEXT NOT NULL,
+  kind         TEXT NOT NULL,
+  date         TEXT NOT NULL,
+  from_unit_id TEXT,
+  to_unit_id   TEXT,
+  from_room    TEXT NOT NULL DEFAULT '',
+  to_room      TEXT NOT NULL DEFAULT '',
+  note         TEXT NOT NULL DEFAULT '',
+  entry_id     TEXT,
+  created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_asset_events_asset ON asset_events(asset_id);
+CREATE TABLE IF NOT EXISTS depreciation_runs (
+  month      TEXT PRIMARY KEY,
+  entry_id   TEXT,
+  created_at TEXT NOT NULL
+);
+${buildSyncTriggers(ASSET_SYNC_TABLES)}
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29];

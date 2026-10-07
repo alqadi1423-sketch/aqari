@@ -51,14 +51,21 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
   claims: { own: ['claims'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   invoices: { own: ['invoices', 'invoice_lines'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   purchases: {
-    own: ['suppliers', 'purchases', 'meter_readings'],
-    create: [...POSTS, 'bank_tx'],
+    // بنود الفاتورة، والأصول التي تُنشئها بنودها (الهجرة ٢٩)
+    own: ['suppliers', 'purchases', 'meter_readings', 'purchase_lines'],
+    create: [...POSTS, 'bank_tx', 'assets', 'asset_events'],
     touch: { ...LINKS_REVERSAL, meters: ['supplier_id'] },
   },
   handover: { own: ['handovers'], create: ['audit_log'] },
   banks: { own: ['banks', 'bank_tx'], create: POSTS, touch: LINKS_REVERSAL },
   ledger: { own: ['journal_entries', 'accounts', 'cost_centers'], create: ['audit_log'] },
   library: { own: [], create: ['audit_log'] },
+  assets: {
+    own: ['assets', 'asset_events', 'depreciation_runs'],
+    // تحويل الفاتورة القديمة يكتب بنودها · والبيع ببنك حركته
+    create: [...POSTS, 'bank_tx', 'purchase_lines'],
+    touch: LINKS_REVERSAL,
+  },
   company: { own: ['company', 'company_docs', 'message_scripts', 'form_templates'], create: ['audit_log'] },
   reports: { own: [], create: ['audit_log'] },
 };

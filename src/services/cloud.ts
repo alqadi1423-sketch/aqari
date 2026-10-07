@@ -44,6 +44,8 @@ import { sealBackupFile } from '../domain/backup/seal';
 import { SYNC_TABLES } from '../db/syncTables';
 import { memberTokens, fullReadTables } from '../sync/acl';
 import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engine';
+import { autoDepreciate } from '../domain/assets/auto';
+import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
 import { makeSafetyBackup } from '../domain/backup/create';
 import { appDataRoot } from '../files/expoFs';
@@ -244,6 +246,8 @@ export async function syncNow(): Promise<void> {
     if (rep.applied || rep.conflicts) onData();
     // الفواتير التي طُلب إصدارها بلا اتصال تصدر الآن برقمها من العدّاد (قرار المالك ٢٠٢٦-١٠-٠٥)
     if (await issuePendingInvoices(db, remoteOf(db, uid, idToken))) onData();
+    // الإهلاك الشهري الآلي على جهاز المالك بعد دورةٍ لم يبقَ بعدها ما ينتظر الرفع (موجز الأصول §٣ب)
+    if (!member && autoDepreciate(db, today(), { owner: true, afterSync: true })) onData();
     // الملفات الجديدة تُرفع في الخلفية بعد البيانات · ولا تُنتظر
     pumpFilesInBackground(db).catch(() => {});
     // المالك ينشر نقل الوحدات بعد رفع صفوفها بوسمها الجديد (ملاحظة المالك على ٤.١٢)

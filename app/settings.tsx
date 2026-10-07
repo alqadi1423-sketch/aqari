@@ -60,6 +60,8 @@ import { useLang, langName, resolveLang, type LangPref } from '../src/i18n';
 import { readLangPref, changeLanguage, deviceLocale } from '../src/i18n/device';
 import { CostCentersSheet, DimsBackfillSheet, CostCenterField } from '../src/ui/CostCenters';
 import { costCenters, planDimsBackfill, GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
+import { duplicateDepreciation } from '../src/domain/assets/depreciation';
+import { reverseEntryById } from '../src/domain/accounting/post';
 import { reviewData } from '../src/domain/backup/checks';
 import { useAccess } from '../src/ui/access';
 import { canView, isAdmin } from '../src/domain/access/access';
@@ -154,7 +156,10 @@ export default function Settings() {
   const setProgress = task.report;
   // مراجعة الأقساط من الدفتر · قراءة عند كل تغيير، ولا يُطبَّق شيء إلا بموافقة المستخدم
   const [reviewOpen, setReviewOpen] = useState(false);
-  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db), kept: keptForReview(db), checks: reviewData(db).notes, dims: planDimsBackfill(db) }),
+  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db), kept: keptForReview(db), checks: reviewData(db).notes, dims: planDimsBackfill(db),
+    // الأصول: ما بانتظار تكلفة، والإهلاك المكرر من جهازين (الهجرة ٢٩)
+    pendingAssets: Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM assets WHERE deleted_at IS NULL AND cost_halalas IS NULL AND status NOT IN ('disposed', 'sold')`)?.n ?? 0),
+    dupDep: duplicateDepreciation(db) }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   // تسوية فائض: ردّ للمستأجر بتاريخه وطريقته، أو تحويله رصيداً دائناً
@@ -180,7 +185,7 @@ export default function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   const reviewCount = review.surpluses.length + review.plan.changes.length + review.plan.issues.length
-    + review.unbooked.items.length + review.unbooked.ambiguous.length + review.kept.length + review.checks.length + review.dims.known.length + review.dims.unknown.length;
+    + review.unbooked.items.length + review.unbooked.ambiguous.length + review.kept.length + review.checks.length + review.dims.known.length + review.dims.unknown.length + review.pendingAssets + review.dupDep.length;
   // مراكز التكلفة وأبعاد القيود القديمة
   const [ccOpen, setCcOpen] = useState(false);
   const [dimsOpen, setDimsOpen] = useState(false);
@@ -724,6 +729,7 @@ export default function Settings() {
           ['remindPayment', 'قبل استحقاق الدفعة', 'collect', PAYMENT_LEADS],
           ['remindContract', 'قبل انتهاء العقد', 'contract', CONTRACT_LEADS],
           ['remindDoc', 'قبل انتهاء المستند', 'claim', DOC_LEADS],
+          ['remindWarranty', t('assets.ui.warranty'), 'wrench', DOC_LEADS],
         ] as const).map(([key, title, icon, opts]) => (
           <ValueRow key={key} icon={icon} title={title}
             value={opts.find(([n]) => n === settings[key])?.[1] ?? String(settings[key])}
@@ -1088,6 +1094,25 @@ export default function Settings() {
             ))}
           </>
         ) : null}
+        {review.pendingAssets ? (
+          <>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>{t('review.pending')}</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>{t('review.pendingNote', { n: review.pendingAssets })}</T>
+            <BtnGhost title={t('review.open')} onPress={() => { setReviewOpen(false); router.push('/assets?status=pending' as never); }} />
+          </>
+        ) : null}
+        {review.dupDep.map((d) => (
+          <View key={d.month}>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>{t('review.dup')}</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>{t('review.dupNote', { month: d.month, n: d.entries.length })}</T>
+            {d.entries.slice(1).map((e) => (
+              <BtnGhost key={e.id} danger title={t('review.reverseExtra', { no: e.no })} onPress={() => {
+                try { reverseEntryById(db, e.id, t('review.reverseMemo', { month: d.month, lng: 'ar' })); bump(); toast(t('review.reversed')); }
+                catch (err) { reportFailure({ title: t('common.failed'), e: err }); }
+              }} />
+            ))}
+          </View>
+        ))}
         {review.dims.known.length + review.dims.unknown.length ? (
           <>
             <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>أبعاد القيود القديمة</T>

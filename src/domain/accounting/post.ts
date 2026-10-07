@@ -574,16 +574,20 @@ export const postInvoiceToLedger = (
  */
 export const postPurchaseToLedger = (
   db: DB,
-  p: { id: string; no: string; supplier: string; date: string; category: string; subtotal: number; tax: number; total: number; roundingDiff?: number; deductible?: boolean }
+  p: { id: string; no: string; supplier: string; date: string; category: string; subtotal: number; tax: number; total: number; roundingDiff?: number; deductible?: boolean },
+  /** بنود الفاتورة التي صارت أصولاً (الهجرة ٢٩): مدين حسابات الفئات بأبعاد كل أصل، فيقلّ المصروف بقدرها */
+  assetLines: EntryLine[] = [],
 ) => {
   const diff = p.roundingDiff ?? 0;
+  const assetSum = assetLines.reduce((s, l) => s + (l.debit || 0), 0);
   // «خاضعة باسمنا» وحدها تفصل ضريبتها أصلاً قابلاً للاسترداد (1270) · الباقي بالتكلفة الكاملة
   const dedTax = p.deductible ? p.tax : 0;
   return postEntry(db, {
     date: p.date,
     memo: 'فاتورة شراء ' + p.no + ' · ' + p.supplier,
     lines: [
-      { account: purchaseExpenseAccount(p.category), debit: p.subtotal + p.tax - dedTax, credit: 0 },
+      { account: purchaseExpenseAccount(p.category), debit: p.subtotal + p.tax - dedTax - assetSum, credit: 0 },
+      ...assetLines,
       ...(dedTax ? [{ account: '1270', descr: 'ضريبة مدخلات قابلة للاسترداد', debit: dedTax, credit: 0 }] : []),
       ...(diff > 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: diff, credit: 0 }] : []),
       { account: '2100', debit: 0, credit: p.total },

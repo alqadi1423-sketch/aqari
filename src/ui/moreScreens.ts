@@ -2,12 +2,14 @@
  * فهرس «المزيد» · الشاشات مرتّبة أقساماً · يقرؤه «المزيد» نفسه ومعاينة الصلاحيات («ما سيظهر لهذا العضو»)
  */
 import type { IconName } from './icons';
+import { t } from '../i18n';
 
 export const MORE_SCREENS: Array<{ title: string; items: Array<[string, string, string, IconName]> }> = [
   {
     title: 'العقار والتشغيل',
     items: [
       ['/units', 'الوحدات', 'كل الوحدات بحالتها وإيجارها', 'home'],
+      ['/assets', '@assets.title', '@assets.menuSub', 'building'],
       ['/propmap', 'خريطة العقارات', 'مواقع العقارات بحالة إشغالها', 'map'],
       ['/form-templates', 'إنشاء النماذج', 'قوالب الاستلام والتسليم', 'clipboard'],
       ['/library', 'المكتبة', 'كل الملفات والصور مصنَّفة', 'library'],
@@ -50,3 +52,6 @@ export const MORE_SCREENS: Array<{ title: string; items: Array<[string, string, 
     ],
   },
 ];
+
+/** نصّ عنصرٍ في الفهرس · «@مفتاح» يُترجم (الشاشات الجديدة بمفاتيح الترجمة) والقديم كما كُتب */
+export const screenText = (s: string): string => (s.startsWith('@') ? t(s.slice(1)) : s);

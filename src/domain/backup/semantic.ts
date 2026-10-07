@@ -15,6 +15,7 @@
 import type { DB, SqlValue } from '../../db/adapter';
 import { fmt } from '../money';
 import { INSTALLMENT_DISCOUNT_SQL, DISCOUNT_AFTER_DUE, DISCOUNT_KINDS } from '../contracts/installments';
+import { t as tr } from '../../i18n';
 
 const SHOW = 5;
 
@@ -49,8 +50,10 @@ const COLUMN_AR: Record<string, string> = {
   lease_value_halalas: 'قيمة الاستئجار', default_amount_halalas: 'المبلغ الافتراضي',
   rent_monthly_halalas: 'الإيجار الشهري',
 };
-export const tableLabel = (t: string) => TABLE_AR[t] ?? 'جدول مالي';
-export const columnLabel = (c: string) => COLUMN_AR[c] ?? 'عمود مالي';
+// الجداول والأعمدة الجديدة بأسمائها في ملفات الترجمة (dataLabels) · والقديمة كما كانت حتى مرحلة النقل
+const keyed = (k: string): string | null => { const v = tr(k); return v === k ? null : v; };
+export const tableLabel = (t: string) => TABLE_AR[t] ?? keyed('dataLabels.table.' + t) ?? 'جدول مالي';
+export const columnLabel = (c: string) => COLUMN_AR[c] ?? keyed('dataLabels.column.' + c) ?? 'عمود مالي';
 
 function listOf(items: string[], total: number): string {
   return items.join('، ') + (total > items.length ? ` و${total - items.length} غيرها` : '');

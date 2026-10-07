@@ -12,6 +12,7 @@ import { getAllSettings, setSetting, type AppSettings } from '../repos/settings'
 import { backfillHandovers } from '../domain/handover/service';
 import { refreshContractStatuses } from '../domain/contracts/rules';
 import { sweepCache, ensureAppDirs } from '../services/storageOps';
+import { autoDepreciate } from '../domain/assets/auto';
 import { backfillTenantLinks } from '../domain/tenants';
 import { purgeExpiredTrash } from '../domain/trash';
 import { gcBlobs } from '../files/store';
@@ -95,6 +96,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         if (owner) backfillHandovers(db);
         backfillSortKeys(db);
         if (owner) backfillTenantLinks(db);
+        // الإهلاك الشهري الآلي · بلا مزامنةٍ مفعّلة هنا، ومعها بعد دورةٍ نظيفة (services/cloud)
+        autoDepreciate(db, today(), { owner, afterSync: false });
         // المسدَّد يُحسب من الدفعات منذ الهجرة ٢١ · يُعاد حسابه مرة لكل قاعدة رُقّيت إليها
         if (owner && !db.get(`SELECT 1 FROM meta WHERE key = 'paid_derived_v21'`)) {
           const changed = recomputeInstallments(db);

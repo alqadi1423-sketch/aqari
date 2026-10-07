@@ -7,9 +7,12 @@ import { getSetting } from '../repos/settings';
 import { expiryLabel } from './contracts/rules';
 import { today, daysBetween, dfmt } from './dates';
 import { INSTALLMENT_DISCOUNT_SQL, COLLECTIBLE_INSTALLMENT_SQL, installmentState } from './contracts/installments';
+import { warrantyEnding } from './assets/service';
+import { t } from '../i18n';
 
 export interface Reminder {
-  kind: 'دفعة متأخرة' | 'دفعة تقترب' | 'عقد يقارب الانتهاء' | 'مستند ينتهي';
+  /** warranty: ضمان أصلٍ ينتهي (الهجرة ٢٩) · رمزٌ يُترجم عند العرض */
+  kind: 'دفعة متأخرة' | 'دفعة تقترب' | 'عقد يقارب الانتهاء' | 'مستند ينتهي' | 'warranty';
   subject: string;
   /** أيام حتى الموعد (سالب = متأخر) */
   days: number;
@@ -84,6 +87,10 @@ export function computeReminders(db: DB, T: string = today()): Reminder[] {
     const d = daysBetween(co.cr_exp, T);
     if (d >= 0 && d <= remindDoc)
       out.push({ kind: 'مستند ينتهي', subject: 'السجل التجاري · ' + dfmt(co.cr_exp), days: d, date: co.cr_exp, entityId: 'company-cr' });
+  }
+  // ضمان الأصول · الاسم والوحدة وحدهما
+  for (const w of warrantyEnding(db, T, getSetting(db, 'remindWarranty'))) {
+    out.push({ kind: 'warranty', subject: w.name + (w.unit_no ? ' · ' + w.unit_no : '') + ' · ' + dfmt(w.warranty_end), days: daysBetween(w.warranty_end, T), date: w.warranty_end, entityId: w.id });
   }
   return out.sort((a, b) => a.days - b.days);
 }
@@ -165,6 +172,15 @@ export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[
       out.push({
         kind: 'document', entityId: x.id, fireDate: fire,
         title: 'مستند ينتهي', body: x.name + ' · ينتهي ' + dfmt(x.expiry),
+      });
+  }
+  const remindWarranty = getSetting(db, 'remindWarranty');
+  for (const w of warrantyEnding(db, T, 3650)) {
+    const fire = shift(w.warranty_end, remindWarranty);
+    if (fire >= T)
+      out.push({
+        kind: 'warranty', entityId: w.id, fireDate: fire,
+        title: t('assets.ui.warrantyHome'), body: t('assets.ui.warrantyRow', { name: w.name, unit: w.unit_no ?? '', date: dfmt(w.warranty_end) }),
       });
   }
   return out;

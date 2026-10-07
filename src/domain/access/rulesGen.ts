@@ -118,13 +118,16 @@ ${writesFns()}
       let before = resource.data;
       let after = request.resource.data;
       let op = after.op;
+      // يُحسبان مرة · سلسلة الجداول والمستوى تُعدّ في حدّ الألف تعبير للطلب
+      let owns = op is string && opOwns(op, baseT(after.t));
+      let level = op is string ? lvl(org, op) : 0;
       return isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)
         && (
-          (opOwns(op, baseT(after.t)) && lvl(org, op) >= 3 && propsOk(org, after))
-          || (opOwns(op, baseT(after.t)) && lvl(org, op) >= 2 && isDraft(before)
+          (owns && level >= 3 && propsOk(org, after))
+          || (owns && level >= 2 && isDraft(before)
               && before.get('by', '') == request.auth.uid && propsOk(org, after))
-          || (lvl(org, op) >= 2 && after.del == false && before.d != null && propsTouch(org, before, after)
+          || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(org, before, after)
               && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
         );
     }

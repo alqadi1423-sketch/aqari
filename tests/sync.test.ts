@@ -351,7 +351,12 @@ describe('قواعد Firestore والمحرّك على قائمة واحدة', (
     const money = moneyColumns(db);
     const cols = [...new Set([...money.values()].flat())].sort();
     expect(cols.length).toBeGreaterThanOrEqual(22);
-    for (const c of cols) expect(rules).toContain(`intOrAbsent(r.d, '${c}')`);
+    // كل جدولٍ مزامَن يُفحص بأعمدته في فرعه (حدّ الألف تعبير) · وسطور القيد تسافر داخل مستنده لا صفوفاً
+    const synced = new Set(SYNC_TABLES.map((t) => t.name));
+    for (const [t, cs] of money) {
+      if (!synced.has(t)) continue;
+      for (const c of cs) expect(rules).toMatch(new RegExp(`r\\.t == '${t}' &&[^\\n]*intOrAbsent\\(r\\.d, '${c}'\\)`));
+    }
     for (const [t, cs] of money) {
       expect(tableLabel(t)).not.toBe('جدول مالي');
       for (const c of cs) expect(columnLabel(c)).not.toBe('عمود مالي');

@@ -28,7 +28,7 @@ function contractProp(db: DB, contractId: unknown): string | null {
 }
 
 /** المصدر الذي يحمله القيد · يُبحث معرّفه في جداول المصادر بالترتيب */
-const SOURCE_TABLES = ['contract_payments', 'contracts', 'claims', 'reservations', 'key_money_deals', 'purchases', 'invoices', 'contract_installments'];
+const SOURCE_TABLES = ['contract_payments', 'contracts', 'claims', 'reservations', 'key_money_deals', 'purchases', 'invoices', 'contract_installments', 'assets'];
 
 /** عقارات الصف · فارغة لا تكون: ما لا عقار له صفٌّ عام */
 export function rowPids(db: DB, table: string, row: RowData | null, depth = 0): string[] {
@@ -56,6 +56,14 @@ export function rowPids(db: DB, table: string, row: RowData | null, depth = 0): 
     if (!src || !r.entity_id) return [ORG_WIDE];
     const ent = db.get<RowData>(`SELECT * FROM "${src}" WHERE id = ?`, [r.entity_id as string]);
     return ent ? rowPids(db, src, ent, depth + 1) : [ORG_WIDE];
+  } else if (table === 'asset_events') {
+    if (depth > 0) return [ORG_WIDE];
+    const a = db.get<RowData>(`SELECT * FROM assets WHERE id = ?`, [r.asset_id as string]);
+    return a ? rowPids(db, 'assets', a, depth + 1) : [ORG_WIDE];
+  } else if (table === 'purchase_lines') {
+    if (depth > 0) return [ORG_WIDE];
+    const pu = db.get<RowData>(`SELECT * FROM purchases WHERE id = ?`, [r.purchase_id as string]);
+    return pu ? rowPids(db, 'purchases', pu, depth + 1) : [ORG_WIDE];
   } else if (r.property_id) p = String(r.property_id);
   else if (r.unit_id) p = unitProp(db, r.unit_id);
   else if (r.contract_id) p = contractProp(db, r.contract_id);

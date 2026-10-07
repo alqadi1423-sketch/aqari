@@ -37,6 +37,8 @@ import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm } from '../src/ui/access';
 
 import { CostCenterField } from '../src/ui/CostCenters';
+import { PurchaseLinesSection, loadLineDrafts } from '../src/ui/PurchaseLines';
+import { toLineInput, type LineDraft } from '../src/ui/AssetSheets';
 import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 const CATEGORIES = ['كهرباء', 'مياه', 'اتصالات وإنترنت', 'إيجار', 'رواتب', 'تكلفة مبيعات', 'مصروفات تأسيس', 'مصروفات أخرى'];
 const INCORP_ITEMS = ['رسوم حكومية', 'ديكور وتجهيزات', 'معدات', 'تسويق افتتاحي', 'استشارات'];
@@ -347,6 +349,8 @@ export default function Purchases() {
     setSubtotal(b); setTaxStr(x); setTotalStr(g); setTouched(t);
   };
 
+  // بنود الفاتورة (الهجرة ٢٩) · اختيارية
+  const [lines, setLines] = useState<LineDraft[]>([]);
   const openNew = () => {
     if (!suppliers.length) { toast('أضف مورداً أولاً'); return; }
     setEditingId(null);
@@ -356,6 +360,7 @@ export default function Purchases() {
     setTouched({ base: false, tax: false, total: false });
     setTaxStatus(TS_EXCLUDED); setExcludeReason(EXCLUDE_REASONS[0]); setExcludeOther(''); setConfirmOurs(false);
     setPendingFile(null);
+    setLines([]);
     setFormOpen(true);
   };
   const openEdit = useCallback((id: string) => {
@@ -383,6 +388,7 @@ export default function Purchases() {
     setConfirmOurs(ts === TS_DEDUCTIBLE);
     if (EXCLUDE_REASONS.includes(p.exclude_reason)) { setExcludeReason(p.exclude_reason); setExcludeOther(''); }
     else { setExcludeReason('أخرى'); setExcludeOther(p.exclude_reason || ''); }
+    setLines(loadLineDrafts(db, id));
     setFormOpen(true);
   }, [db]);
 
@@ -417,6 +423,7 @@ export default function Purchases() {
         taxHalalas: taxH2, totalHalalas: totalH2, roundingDiffHalalas: roundingDiff,
         meterId: meterId || null,
         meterReading: meterReading.trim() ? parseFloat(meterReading) : null,
+        lines: lines.length ? lines.map(toLineInput) : undefined,
       }, editingId ?? undefined);
       if (pendingFile) {
         attachPicked(db, pendingFile, 'purchase', savedId, 'purchase').catch((e) => reportFailure({ title: 'تعذّر رفع الملف', e }));
@@ -644,6 +651,7 @@ export default function Purchases() {
         </Row>
         <CostCenterField value={cc} onChange={setCc} />
         <Field label="الفئة" value={category} onChange={setCategory} placeholder={CATEGORIES.join(' / ')} />
+        <PurchaseLinesSection lines={lines} onChange={setLines} baseHalalas={toHalalas(subtotal)} />
         <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
           {categoryOptions.map((c) => <BtnGhost key={c} small title={c} onPress={() => setCategory(c)} />)}
         </Row>

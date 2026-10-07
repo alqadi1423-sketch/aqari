@@ -26,7 +26,8 @@ service cloud.firestore {
         'meter_readings', 'company', 'company_docs', 'message_scripts', 'form_templates', 'journal_entries',
         'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'reservations', 'key_money_deals',
         'contract_payments', 'payment_lines', 'payment_allocations', 'deposit_settlements', 'tenant_ratings', 'claims',
-        'invoices', 'invoice_lines', 'purchases', 'bank_tx', 'handovers', 'blobs', 'attachments', 'cost_centers', 'audit_log'
+        'invoices', 'invoice_lines', 'purchases', 'bank_tx', 'handovers', 'blobs', 'attachments', 'cost_centers',
+        'purchase_lines', 'assets', 'asset_events', 'depreciation_runs', 'audit_log'
       ];
     }
 
@@ -52,19 +53,31 @@ service cloud.firestore {
     function intOrAbsent(m, f) {
       return !(f in m) || m[f] == null || m[f] is int;
     }
+    // مبالغ الصف أعداد صحيحة · بأعمدة جدوله وحده (حدّ الألف تعبير في الطلب الواحد) · والإسقاط بلا مبالغ
     function amountsAreIntegers(r) {
-      return r.del == true || (
-        intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'paid_halalas')
-        && intOrAbsent(r.d, 'value_halalas') && intOrAbsent(r.d, 'deposit_halalas')
-        && intOrAbsent(r.d, 'gross_halalas') && intOrAbsent(r.d, 'net_halalas')
-        && intOrAbsent(r.d, 'discount_halalas') && intOrAbsent(r.d, 'total_halalas')
-        && intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas')
-        && intOrAbsent(r.d, 'debit_halalas') && intOrAbsent(r.d, 'credit_halalas')
-        && intOrAbsent(r.d, 'opening_halalas') && intOrAbsent(r.d, 'price_halalas')
-        && intOrAbsent(r.d, 'commission_halalas') && intOrAbsent(r.d, 'deduction_halalas')
-        && intOrAbsent(r.d, 'refund_halalas') && intOrAbsent(r.d, 'cancel_deduction_halalas')
-        && intOrAbsent(r.d, 'cancel_refund_halalas') && intOrAbsent(r.d, 'lease_value_halalas')
-        && intOrAbsent(r.d, 'default_amount_halalas') && intOrAbsent(r.d, 'rent_monthly_halalas'));
+      return r.del == true || !(r.t in ['accounts', 'assets', 'bank_tx', 'banks', 'claims', 'contract_installments', 'contract_payments', 'contracts', 'deposit_settlements', 'invoice_lines', 'invoices', 'key_money_deals', 'meter_readings', 'payment_allocations', 'payment_lines', 'properties', 'purchase_lines', 'purchases', 'reservations', 'suppliers', 'tenants', 'units'])
+        || (r.t == 'accounts' && intOrAbsent(r.d, 'opening_halalas'))
+        || (r.t == 'assets' && intOrAbsent(r.d, 'cost_halalas') && intOrAbsent(r.d, 'salvage_halalas') && intOrAbsent(r.d, 'sale_halalas'))
+        || (r.t == 'bank_tx' && intOrAbsent(r.d, 'amount_halalas'))
+        || (r.t == 'banks' && intOrAbsent(r.d, 'opening_halalas'))
+        || (r.t == 'claims' && intOrAbsent(r.d, 'amount_halalas'))
+        || (r.t == 'contract_installments' && intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'paid_halalas'))
+        || (r.t == 'contract_payments' && intOrAbsent(r.d, 'gross_halalas') && intOrAbsent(r.d, 'discount_halalas') && intOrAbsent(r.d, 'net_halalas'))
+        || (r.t == 'contracts' && intOrAbsent(r.d, 'value_halalas') && intOrAbsent(r.d, 'deposit_halalas') && intOrAbsent(r.d, 'cancel_deduction_halalas') && intOrAbsent(r.d, 'cancel_refund_halalas'))
+        || (r.t == 'deposit_settlements' && intOrAbsent(r.d, 'deduction_halalas') && intOrAbsent(r.d, 'refund_halalas'))
+        || (r.t == 'invoice_lines' && intOrAbsent(r.d, 'price_halalas'))
+        || (r.t == 'invoices' && intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas') && intOrAbsent(r.d, 'total_halalas'))
+        || (r.t == 'key_money_deals' && intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'commission_halalas'))
+        || (r.t == 'meter_readings' && intOrAbsent(r.d, 'amount_halalas'))
+        || (r.t == 'payment_allocations' && intOrAbsent(r.d, 'amount_halalas'))
+        || (r.t == 'payment_lines' && intOrAbsent(r.d, 'amount_halalas'))
+        || (r.t == 'properties' && intOrAbsent(r.d, 'lease_value_halalas'))
+        || (r.t == 'purchase_lines' && intOrAbsent(r.d, 'amount_halalas'))
+        || (r.t == 'purchases' && intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas') && intOrAbsent(r.d, 'total_halalas'))
+        || (r.t == 'reservations' && intOrAbsent(r.d, 'deposit_halalas'))
+        || (r.t == 'suppliers' && intOrAbsent(r.d, 'default_amount_halalas'))
+        || (r.t == 'tenants' && intOrAbsent(r.d, 'credit_halalas'))
+        || (r.t == 'units' && intOrAbsent(r.d, 'rent_monthly_halalas'));
     }
 
     function isPostedEntry(data) {
@@ -166,11 +179,12 @@ service cloud.firestore {
         || (op == 'reservations' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'reservations', 'key_money_deals'])
         || (op == 'claims' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'claims'])
         || (op == 'invoices' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'invoices', 'invoice_lines'])
-        || (op == 'purchases' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'suppliers', 'purchases', 'meter_readings'])
+        || (op == 'purchases' && t in ['journal_entries', 'audit_log', 'bank_tx', 'assets', 'asset_events', 'blobs', 'attachments', 'suppliers', 'purchases', 'meter_readings', 'purchase_lines'])
         || (op == 'handover' && t in ['audit_log', 'blobs', 'attachments', 'handovers'])
         || (op == 'banks' && t in ['journal_entries', 'audit_log', 'blobs', 'attachments', 'banks', 'bank_tx'])
         || (op == 'ledger' && t in ['audit_log', 'journal_entries', 'accounts', 'cost_centers'])
         || (op == 'library' && t in ['audit_log', 'blobs', 'attachments'])
+        || (op == 'assets' && t in ['journal_entries', 'audit_log', 'bank_tx', 'purchase_lines', 'assets', 'asset_events', 'depreciation_runs'])
         || (op == 'company' && t in ['audit_log', 'blobs', 'attachments', 'company', 'company_docs', 'message_scripts', 'form_templates'])
         || (op == 'reports' && t in ['audit_log']);
     }
@@ -184,18 +198,19 @@ service cloud.firestore {
         || (op == 'reservations' && t in ['reservations', 'key_money_deals'])
         || (op == 'claims' && t in ['claims'])
         || (op == 'invoices' && t in ['invoices', 'invoice_lines'])
-        || (op == 'purchases' && t in ['suppliers', 'purchases', 'meter_readings'])
+        || (op == 'purchases' && t in ['suppliers', 'purchases', 'meter_readings', 'purchase_lines'])
         || (op == 'handover' && t in ['handovers'])
         || (op == 'banks' && t in ['banks', 'bank_tx'])
         || (op == 'ledger' && t in ['journal_entries', 'accounts', 'cost_centers'])
         || (op == 'library' && t in ['attachments'])
+        || (op == 'assets' && t in ['assets', 'asset_events', 'depreciation_runs'])
         || (op == 'company' && t in ['company', 'company_docs', 'message_scripts', 'form_templates']);
     }
     // حقولٌ بعينها في جداول أقسام أخرى تمسّها العملية جانبياً بإدخال
     function opTouches(op, t, keys) {
       return (t == 'attachments' && op in ['props', 'contracts', 'tenants', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'handover', 'banks', 'company'] && keys.hasOnly(['display_name', 'note', 'cat_override', 'deleted_at', 'entity_type', 'entity_id', 'thumb']))
         || (op == 'maintenance' && t == 'units' && keys.hasOnly(['under_maintenance']))
-        || (t == 'journal_entries' && op in ['contracts', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'banks'] && keys.hasOnly(['reversed_by']))
+        || (t == 'journal_entries' && op in ['contracts', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'banks', 'assets'] && keys.hasOnly(['reversed_by']))
         || (op == 'contracts' && t == 'reservations' && keys.hasOnly(['status', 'converted_contract_id', 'deposit_outcome', 'deposit_settled_date']))
         || (op == 'tenants' && t == 'contracts' && keys.hasOnly(['tenant_id', 'tenant_name']))
         || (op == 'collect' && t == 'contract_installments' && keys.hasOnly(['paid_halalas', 'status']))
@@ -229,13 +244,16 @@ service cloud.firestore {
       let before = resource.data;
       let after = request.resource.data;
       let op = after.op;
+      // يُحسبان مرة · سلسلة الجداول والمستوى تُعدّ في حدّ الألف تعبير للطلب
+      let owns = op is string && opOwns(op, baseT(after.t));
+      let level = op is string ? lvl(org, op) : 0;
       return isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)
         && (
-          (opOwns(op, baseT(after.t)) && lvl(org, op) >= 3 && propsOk(org, after))
-          || (opOwns(op, baseT(after.t)) && lvl(org, op) >= 2 && isDraft(before)
+          (owns && level >= 3 && propsOk(org, after))
+          || (owns && level >= 2 && isDraft(before)
               && before.get('by', '') == request.auth.uid && propsOk(org, after))
-          || (lvl(org, op) >= 2 && after.del == false && before.d != null && propsTouch(org, before, after)
+          || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(org, before, after)
               && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
         );
     }

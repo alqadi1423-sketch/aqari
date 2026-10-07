@@ -24,6 +24,7 @@ export const ROUTE_SECTION: Record<string, SectionKey | null> = {
   '/banks': 'banks',
   '/transactions': 'banks',
   '/reports': 'reports',
+  '/assets': 'assets',
   '/accounts': 'ledger',
   '/journal': 'ledger',
   '/integrity': 'ledger',

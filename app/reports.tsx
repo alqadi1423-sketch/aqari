@@ -19,6 +19,8 @@ import { useToast } from '../src/ui/Toast';
 import { C } from '../src/ui/theme';
 import { allAccounts, accountMovement, allAccountMovements, accountPeriodChange, trialBalance, costCenterReport, dimConds, hasDimFilter, type DimFilter } from '../src/domain/accounting/ledger';
 import { costCenters, dimsLabel } from '../src/domain/accounting/dimensions';
+import { cashFlowFigures } from '../src/domain/finStatements';
+import { useLang } from '../src/i18n';
 import { vatReturnData } from '../src/domain/vatReturn';
 import { dataYears, dataQuarters, defaultPeriod, quarterRange, QUARTER_AR } from '../src/domain/periods';
 import { useRouter } from 'expo-router';
@@ -66,6 +68,7 @@ export default function Reports() {
   // التصفية بالأبعاد (قرار المالك ٢٠٢٦-١٠-٠٤): العقار والوحدة والعقد ومركز التكلفة · تسري على كل قائمة
   const [dimF, setDimF] = useState<DimFilter>({});
   const [dimOpen, setDimOpen] = useState(false);
+  const { t } = useLang();
   const filtered = hasDimFilter(dimF);
   const ready = useDeferredReady();
   const fs = useFs();
@@ -160,12 +163,14 @@ export default function Reports() {
     const sumE = eqRows.reduce((s2, r) => s2 + r.v, 0);
     const arChange = accountPeriodChange(db, '1200', from, to, dimF);
     const apChange = accountPeriodChange(db, '2100', from, to, dimF);
-    const faChange = accountPeriodChange(db, '1400', from, to, dimF);
     const net = totalRev - totalExp;
+    // التدفقات من الدالة نفسها التي يصدّر بها التقرير · الإهلاك وقيود الأصول غير النقدية خارج التشغيلي
+    const cf = cashFlowFigures(db, from, to, net, dimF);
+    const faChange = -cf.investing;
     const prevNet = prevRev - prevExp;
-    const opCash = net - arChange + apChange;
-    const prevOpCash = prevNet - (prev.from ? accountPeriodChange(db, '1200', prev.from, prev.to, dimF) : 0)
-      + (prev.from ? accountPeriodChange(db, '2100', prev.from, prev.to, dimF) : 0);
+    const opCash = cf.opCash;
+    const nonCash = cf.nonCash;
+    const prevOpCash = prev.from ? cashFlowFigures(db, prev.from, prev.to, prevNet, dimF).opCash : prevNet;
     // حقوق الملكية: أولها + إضافات المالك - مسحوباته + صافي الربح = آخرها
     const capIn = mv('3100').credit;
     const capOut = mv('3100').debit;
@@ -183,7 +188,7 @@ export default function Reports() {
     return {
       revRows, expRows, totalRev, totalExp, prevRev, prevExp, prevNet,
       assetRows, liabRows, eqRows, sumA, sumL, sumE,
-      arChange, apChange, faChange, net, opCash, prevOpCash,
+      arChange, apChange, faChange, net, opCash, prevOpCash, nonCash,
       equity, prevEquity, trial, trialD, trialC, hasEntries, ccRows,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -448,6 +453,7 @@ export default function Reports() {
         <Card>
           <T size={14} bold color={C.ink} style={{ marginBottom: 4 }}>قائمة التدفقات النقدية · {periodLabel}</T>
           {line('صافي الربح', data.net, false)}
+          {data.nonCash ? line(t('assets.cashflow.nonCash'), data.nonCash, false) : null}
           {line('التغير في الذمم المدينة', -data.arChange, false)}
           {line('التغير في الذمم الدائنة', data.apChange, false)}
           {line('صافي التدفق من الأنشطة التشغيلية', data.opCash, false, true, undefined, data.prevOpCash)}

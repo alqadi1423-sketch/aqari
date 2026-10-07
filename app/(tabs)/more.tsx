@@ -6,7 +6,8 @@ import React from 'react';
 import { useRouter } from 'expo-router';
 import { Screen } from '../../src/ui/Screen';
 import { Card, CardTitle, SetRow } from '../../src/ui/components';
-import { MORE_SCREENS as SECTIONS } from '../../src/ui/moreScreens';
+import { MORE_SCREENS as SECTIONS, screenText } from '../../src/ui/moreScreens';
+import { useLang } from '../../src/i18n';
 import { useAccess } from '../../src/ui/access';
 import { routeAllowed } from '../../src/domain/access/routes';
 
@@ -14,6 +15,7 @@ export default function More() {
   const router = useRouter();
   // يُبنى من صلاحيات العضو وحدها · الشاشة غير المسموحة لا تظهر، والمجموعة الفارغة لا تظهر
   const access = useAccess();
+  useLang(); // يعاد الرسم عند تغيير اللغة
   const visible = SECTIONS
     .map((s) => ({ ...s, items: s.items.filter(([path]) => routeAllowed(access, path)) }))
     .filter((s) => s.items.length);
@@ -23,7 +25,7 @@ export default function More() {
         <Card key={s.title}>
           <CardTitle>{s.title}</CardTitle>
           {s.items.map(([path, title, sub, icon]) => (
-            <SetRow key={path} icon={icon} title={title} sub={sub} onPress={() => router.push(path as never)} />
+            <SetRow key={path} icon={icon} title={screenText(title)} sub={screenText(sub)} onPress={() => router.push(path as never)} />
           ))}
         </Card>
       ))}

@@ -53,6 +53,11 @@ export const READ_TABLE: Record<string, SectionKey[]> = {
   blobs: SECTION_KEYS,
   // أسماء مراكز التكلفة · يحتاجها كل من يُنشئ قيداً أو يقرأ تقريراً (الهجرة ٢٨)
   cost_centers: SECTION_KEYS,
+  // الأصول (الهجرة ٢٩) · الفني ومندوب الاستلام يرون أصل الوحدة بلا تكلفته (إسقاط المبالغ)
+  assets: ['assets', 'props', 'maintenance', 'handover', 'ledger', 'reports', 'purchases'],
+  asset_events: ['assets', 'ledger', 'reports'],
+  purchase_lines: ['purchases', 'assets', 'ledger', 'reports'],
+  depreciation_runs: ['assets', 'ledger', 'reports'],
 };
 
 /** جدول الجهة التي يرتبط بها المرفق · فيقرؤه من يقرأ جهته (READ_TABLE)، والمكتبة دائماً */
@@ -114,6 +119,7 @@ export function journalSection(srcType: string | null | undefined): SectionKey {
   if (s.startsWith('invoice')) return 'invoices';
   if (s.startsWith('purchase') || s === 'vat_refund') return 'purchases';
   if (s === 'cash_op') return 'banks';
+  if (s === 'depreciation' || s.startsWith('asset_')) return 'assets';
   return 'ledger';
 }
 
@@ -121,7 +127,7 @@ export function journalSection(srcType: string | null | undefined): SectionKey {
 /** جدول المستند الذي يُنشئ قيود كل قسم · قارئ المستند المالي يقرأ قيده */
 const JOURNAL_SOURCE: Partial<Record<SectionKey, string>> = {
   collect: 'contract_payments', deposits: 'deposit_settlements', reservations: 'reservations', claims: 'claims',
-  invoices: 'invoices', purchases: 'purchases', banks: 'bank_tx',
+  invoices: 'invoices', purchases: 'purchases', banks: 'bank_tx', assets: 'assets',
 };
 
 export function readSectionsOf(table: string, row: Record<string, unknown> | null): SectionKey[] {

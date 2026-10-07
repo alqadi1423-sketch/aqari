@@ -74,11 +74,20 @@ export const DIMENSION_SYNC_TABLES: SyncTable[] = [
   { name: 'cost_centers', pk: id, pkCols: ['id'] },
 ];
 
+/** الأصول وبنود فواتير الشراء وأشهر الإهلاك (الهجرة ٢٩) · بعد الوحدات والمشتريات التي تشير إليها */
+export const ASSET_SYNC_TABLES: SyncTable[] = [
+  { name: 'purchase_lines', pk: id, pkCols: ['id'] },
+  { name: 'assets', pk: id, pkCols: ['id'] },
+  { name: 'asset_events', pk: id, pkCols: ['id'] },
+  { name: 'depreciation_runs', pk: (a) => `${a}.month`, pkCols: ['month'] },
+];
+
 /** كل جداول المزامنة بترتيب التطبيق · البصمة قبل مرفقها، وسجل العمليات آخراً */
 export const SYNC_TABLES: SyncTable[] = [
   ...BASE_SYNC_TABLES.slice(0, 1),
   ...DIMENSION_SYNC_TABLES,
   ...BASE_SYNC_TABLES.slice(1).filter((t) => t.name !== 'audit_log'),
+  ...ASSET_SYNC_TABLES,
   ...LATER_SYNC_TABLES,
   ...BASE_SYNC_TABLES.filter((t) => t.name === 'audit_log'),
 ];

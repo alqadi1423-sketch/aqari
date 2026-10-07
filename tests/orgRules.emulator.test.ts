@@ -51,8 +51,9 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
   const COLLECTOR = member('U-COL', { collect: 2, contracts: 1, props: 1 }, ['P1']);
   const AGENT = member('U-AGT', { handover: 2, props: 1, tenants: 1 }, 'all');
   const DRAFTER = member('U-DRF', { contracts: 2, props: 1 }, 'all');
+  const ASSETS = member('U-AST', { assets: 3, props: 1 }, ['P1']);
   let db: import('@/db/adapter').DB;
-  let C1 = '', C2 = '', I1 = '';
+  let C1 = '', C2 = '', I1 = '', A1 = '';
 
   beforeAll(async () => {
     await fetch(`http://${HOST}/emulator/v1/projects/${PROJECT}/databases/(default)/documents`, { method: 'DELETE' });
@@ -68,11 +69,15 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     C1 = confirmContract(db, contractInput(u1, { tenant: 'مستأجر أول تجريبي', idNumber: '1000000033', phone: '0500000011' }));
     C2 = confirmContract(db, contractInput(u2, { tenant: 'مستأجر ثانٍ تجريبي', idNumber: '1000000041', phone: '0500000012' }));
     I1 = db.get<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1`, [C1])!.id;
+    // أصلٌ بتكلفته في الوحدة الأولى (الهجرة ٢٩)
+    const { createPendingAsset, setAssetCost } = await import('@/domain/assets/service');
+    A1 = createPendingAsset(db, { name: 'مكيف تجريبي', category: '1410', unitId: u1, room: 'الصالة' });
+    setAssetCost(db, A1, { costHalalas: 84000, purchaseDate: '2026-01-05', today: '2026-02-01' });
     // المالك يرفع كل شيء إلى المنشأة
     enableSync(db, ORG);
     const r = await syncOnce(db, remoteFor(ORG, null), 'dev-owner');
     expect(r.pending).toBe(0);
-    for (const a of [COLLECTOR, AGENT, DRAFTER]) {
+    for (const a of [COLLECTOR, AGENT, DRAFTER, ASSETS]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
       }, ORG)).toBe(200);
@@ -155,6 +160,24 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     const unit: RemoteDoc = { id: 'units__UNX', t: 'units', k: 'UNX', u: 'x', dev: 'dev-col', del: false,
       d: { id: 'UNX', property_id: 'P1', unit_no: 'X-1' } };
     expect(await write(COLLECTOR, unit)).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  });
+
+  test('الأصول: مندوب الاستلام يرى أصل الوحدة بلا تكلفته · وقسم الأصول يكتب في عقاره وحده', async () => {
+    const docs = await pullAll(AGENT);
+    const a = docs.find((x) => x.t === 'assets' && x.k === A1);
+    expect(a).toBeTruthy();
+    expect(a!.d!.name).toBe('مكيف تجريبي');
+    expect(Object.keys(a!.d!).some((k) => k.endsWith('_halalas'))).toBe(false);
+    expect(docs.some((x) => x.t === 'asset_events')).toBe(false);
+    const mine = (await pullAll(ASSETS)).find((x) => x.t === 'assets' && x.k === A1);
+    expect(mine!.d!.cost_halalas).toBe(84000);
+    const asset = (k: string, unit: string, prop: string): RemoteDoc => ({ id: 'assets__' + k, t: 'assets', k, u: 'x', dev: 'dev-ast', del: false,
+      d: { id: k, name: 'أصل عضو تجريبي', category: '1430', unit_id: unit, property_id: prop, room: '', model: '', serial: '', life_months: 60,
+        salvage_halalas: 0, status: 'in_service', source: 'manual', notes: '', end_reason: '', created_at: '2026-02-01T00:00:00.000Z' } });
+    expect(await write(ASSETS, asset('AX1', 'UN1', 'P1'))).toMatchObject({ ok: true });
+    expect(await write(ASSETS, { ...asset('AX1', 'UN1', 'P1'), u: 'y', d: { ...asset('AX1', 'UN1', 'P1').d!, room: 'المطبخ' } })).toMatchObject({ ok: true });
+    expect(await write(ASSETS, asset('AX2', 'UN2', 'P2'))).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect(await write(AGENT, asset('AX3', 'UN1', 'P1'))).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
 
   test('الحقول الجانبية بإدخال: مسدَّد القسط وحالته وحدهما', async () => {

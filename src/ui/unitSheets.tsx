@@ -42,6 +42,7 @@ import { routeAllowed } from '../domain/access/routes';
 
 import { CostCenterField } from './CostCenters';
 import { GENERAL_COST_CENTER, withCostCenter } from '../domain/accounting/dimensions';
+import { UnitAssetsSection } from './UnitAssets';
 export function UnitFormSheet({
   propertyId, unitId, onClose, onSaved,
 }: { propertyId?: string; unitId?: string; onClose: () => void; onSaved: () => void }) {
@@ -349,6 +350,9 @@ export function UnitDetailSheet({
           );
         })}
       </CollapsibleSection>
+
+      {/* أصول الوحدة (الهجرة ٢٩) */}
+      <UnitAssetsSection unitId={unitId} />
 
       <CollapsibleSection title="سجل التقبيل" count={data.counts.keyMoney} icon="swap" pageKey="unitKeyMoney">
         {(page) => db.all<{ id: string; outgoing: string; incoming: string; amount_halalas: number; commission_halalas: number }>(

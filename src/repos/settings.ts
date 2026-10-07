@@ -6,6 +6,8 @@ export interface AppSettings {
   remindPayment: 1 | 3 | 7 | 14;
   remindContract: 15 | 30 | 60 | 90;
   remindDoc: 15 | 30 | 60;
+  /** قبل انتهاء ضمان الأصل (الهجرة ٢٩) */
+  remindWarranty: 15 | 30 | 60;
   backupWeekly: boolean;
   trashRetention: 30 | 60 | 90;
   lastExportAt: string | null;

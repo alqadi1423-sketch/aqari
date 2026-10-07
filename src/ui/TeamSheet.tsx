@@ -17,7 +17,7 @@ import { GRANTABLE, LEVEL_DOES, LEVEL_LABEL, SECTION_GROUPS, TEMPLATES, levelsOf
 import { canView, level, type Access } from '../domain/access/access';
 import { routeAllowed } from '../domain/access/routes';
 import { MONEY_SECTIONS } from '../domain/access/readSections';
-import { MORE_SCREENS } from './moreScreens';
+import { MORE_SCREENS, screenText } from './moreScreens';
 import { profileOf, type MemberDoc, type MemberSpec } from '../services/org';
 import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow, updateMemberProfileNow } from '../services/cloud';
 import { validateProfile, type MemberProfile } from '../domain/access/profile';
@@ -259,7 +259,7 @@ function MemberPreview({ perms, allProps, props, properties }: {
   const a: Access = { owner: false, uid: null, perms, allProps, props };
   const tabs = ['الرئيسية', ...(canView(a, 'props') ? ['العقارات'] : []), ...(canView(a, 'contracts') ? ['العقود'] : []),
     ...(canView(a, 'collect') ? ['التحصيل'] : []), 'المزيد'];
-  const screens = MORE_SCREENS.flatMap((g) => g.items).filter(([p]) => routeAllowed(a, p) && p !== '/settings').map(([, t]) => t);
+  const screens = MORE_SCREENS.flatMap((g) => g.items).filter(([p]) => routeAllowed(a, p) && p !== '/settings').map(([, t]) => screenText(t));
   const money = GRANTABLE.filter((x) => MONEY_SECTIONS.has(x.key) && canView(a, x.key)).map((x) => x.label);
   const adds = GRANTABLE.filter((x) => level(a, x.key) === 2).map((x) => x.label);
   const full = GRANTABLE.filter((x) => level(a, x.key) === 3).map((x) => x.label);

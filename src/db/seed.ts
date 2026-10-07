@@ -36,6 +36,17 @@ export const MIGRATED_SYSTEM_ACCOUNTS: Array<{ code: string; name: string; type:
   { code: '2410', name: 'أرصدة مستأجرين دائنة', type: 'خصم', grp: null },
   { code: '4900', name: 'خصومات ممنوحة', type: 'مصروف', grp: null },
   { code: '5900', name: 'فروق تقريب', type: 'مصروف', grp: null },
+  { code: '1410', name: 'مكيفات وتبريد', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '1420', name: 'أجهزة منزلية كبيرة', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '1430', name: 'أثاث ومفروشات', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '1440', name: 'ستائر وسجاد وإنارة', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '1450', name: 'أجهزة إلكترونية وأمنية', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '1460', name: 'أدوات صحية وتجهيزات ثابتة', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '1470', name: 'معدات وأدوات صيانة', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '1490', name: 'مجمع الإهلاك', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '4400', name: 'أرباح بيع أصول', type: 'إيراد', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '5600', name: 'مصروف الإهلاك', type: 'مصروف', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '5700', name: 'خسارة استبعاد أصول', type: 'مصروف', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
 ];
 
 /**
@@ -66,6 +77,7 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
   remindPayment: 3,
   remindContract: 30,
   remindDoc: 30,
+  remindWarranty: 30,
   backupWeekly: true,
   trashRetention: 30,
   lastExportAt: null,

@@ -8,6 +8,7 @@ import { uid } from './ids';
 import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
 import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount } from './accounting/post';
+import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
 import { logAudit } from './audit';
@@ -40,6 +41,8 @@ export interface PurchaseInput {
   roundingDiffHalalas?: number;
   meterId?: string | null;
   meterReading?: number | null;
+  /** بنود الفاتورة (الهجرة ٢٩) · ما يصير منها أصلاً يُقيَّد على حساب فئته · وبلا بنود تبقى الفاتورة كما كانت */
+  lines?: PurchaseLineInput[];
 }
 
 // بلغة الهيئة: «قابلة للخصم» المصطلح الرسمي · الاسم وحده يكفي بلا شرح
@@ -102,6 +105,7 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
         `الأساس + الضريبة = ${fmtH(input.subtotalHalalas + tax)} والإجمالي المُدخل ${fmtH(total)} · الفرق ${fmtH(Math.abs(total - input.subtotalHalalas - tax))}`
       );
     }
+    if (input.lines?.length) validateLines(input.lines, input.subtotalHalalas, fmtH);
     const id = existingId ?? uid();
     let no: string;
     let beforeSnap: Record<string, unknown> | undefined;
@@ -116,6 +120,9 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
       );
       if (!p) throw new Error('تعذّر العثور على الفاتورة');
       no = p.no;
+      // أصول الفاتورة: المحوّلة لا تُمسّ إلا بعكس تحويلها، وما بدأ إهلاكه يُعدَّل من الأصل نفسه
+      if (purchaseAssets(db, existingId).some((a) => a.source === 'convert')) failPurchaseLocked();
+      clearPurchaseAssets(db, existingId, new Date().toISOString());
       beforeSnap = {
         المورد: p.supplier_name, التاريخ: p.date, الاستحقاق: p.due,
         'قبل الضريبة': Number(p.subtotal_halalas), الضريبة: Number(p.tax_halalas),
@@ -154,11 +161,17 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
         addMeterReading(db, input.meterId, input.meterReading ?? null, total, input.date, no);
       }
     }
+    const deductible = taxStatus === TS_DEDUCTIBLE;
+    const assetLines = input.lines?.length
+      ? writePurchaseLines(db, { id, date: input.date }, input.lines, lineCosts(input.lines, tax, deductible), 'purchase')
+      : [];
     const entry = postPurchaseToLedger(db, {
       id, no, supplier: input.supplier, date: input.date,
       category: input.category, subtotal: input.subtotalHalalas, tax, total,
-      roundingDiff: diff, deductible: taxStatus === TS_DEDUCTIBLE,
-    });
+      roundingDiff: diff, deductible,
+    }, assetLines);
+    // فاتورةٌ بتاريخٍ مضى: إهلاك ما فات لأصولها
+    if (assetLines.length) purchaseCatchUp(db, id, today(), 'catchup', no);
     db.run(`UPDATE purchases SET journal_entry_id = ? WHERE id = ?`, [entry ? entry.id : null, id]);
     logAudit(db, 'فواتير الشراء', existingId ? 'update' : 'create', 'فاتورة شراء', no, beforeSnap,
       existingId ? {
@@ -331,11 +344,15 @@ export function deletePurchase(db: DB, id: string): void {
       `SELECT no, journal_entry_id, paid FROM purchases WHERE id = ?`, [id]
     );
     if (!p) return;
+    // أصولٌ محوّلة أو مُثبتة التكلفة بالفاتورة تبقى مربوطة بها · تُعكس أو تُعدَّل من الأصل قبل حذف الفاتورة
+    const stamp = new Date().toISOString();
+    if (purchaseAssets(db, id).some((a) => a.source !== 'purchase')) failPurchaseLocked();
+    clearPurchaseAssets(db, id, stamp);
     if (Number(p.paid)) reversePurchasePayment(db, id, true); // السداد يبقى مربوطاً بقيده المعكوس لتعيده الاستعادة
     if (p.journal_entry_id) {
       if (!reverseEntryById(db, p.journal_entry_id)) voidEntryById(db, p.journal_entry_id);
     }
-    db.run(`UPDATE purchases SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), id]);
+    db.run(`UPDATE purchases SET deleted_at = ? WHERE id = ?`, [stamp, id]);
     logAudit(db, 'فواتير الشراء', 'delete', 'فاتورة شراء', p.no);
   });
 }
@@ -351,14 +368,15 @@ const reversedEntry = (db: DB, entryId: string | null) => entryId
  */
 export function restorePurchase(db: DB, id: string): void {
   db.transaction(() => {
-    const p = db.get<{ no: string; journal_entry_id: string | null; payment_journal_entry_id: string | null; paid: number }>(
-      `SELECT no, journal_entry_id, payment_journal_entry_id, paid FROM purchases WHERE id = ?`, [id]);
+    const p = db.get<{ no: string; journal_entry_id: string | null; payment_journal_entry_id: string | null; paid: number; deleted_at: string | null }>(
+      `SELECT no, journal_entry_id, payment_journal_entry_id, paid, deleted_at FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
     const reg = reversedEntry(db, p.journal_entry_id);
     const pay = Number(p.paid) ? reversedEntry(db, p.payment_journal_entry_id) : null;
     const blockers = [...(reg ? repostBlockers(db, reg) : []), ...(pay ? repostBlockers(db, pay) : [])];
     if (blockers.length) throw new Error('لا تُستعاد الفاتورة ' + p.no + ': ' + blockers.join('، '));
     db.run(`UPDATE purchases SET deleted_at = NULL WHERE id = ?`, [id]);
+    if (p.deleted_at) restorePurchaseAssets(db, id, p.deleted_at);
     if (reg) db.run(`UPDATE purchases SET journal_entry_id = ? WHERE id = ?`, [repostCopy(db, reg, 'استعادة من السلة')?.id ?? null, id]);
     if (pay) db.run(`UPDATE purchases SET payment_journal_entry_id = ? WHERE id = ?`, [repostCopy(db, pay, 'استعادة من السلة')?.id ?? null, id]);
     else if (Number(p.paid) && !p.payment_journal_entry_id) {

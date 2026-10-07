@@ -3,10 +3,11 @@
  * لا استيراد لأي شيء أصلي فتُختبر آلياً وتُولَّد عيناتها من بيئة الاختبار.
  */
 import type { DB } from '../db/adapter';
-import { allAccounts, accountMovement, accountPeriodChange, hasDimFilter, type DimFilter } from './accounting/ledger';
+import { allAccounts, accountMovement, accountPeriodChange, hasDimFilter, dimConds, type DimFilter } from './accounting/ledger';
 import { fmt } from './money';
 import { dfmt, addDays } from './dates';
 import type { ReportBlock, Cell } from './officeBuild';
+import { t } from '../i18n';
 
 const M = (h: number): Cell => ({ money: Number(h) });
 const periodLabel = (from: string | null, to: string) =>
@@ -17,6 +18,46 @@ const periodLabel = (from: string | null, to: string) =>
 
 
 export type FinStatement = 'income' | 'balance' | 'cash' | 'equity';
+
+/** قيود الأصول التي لا نقد فيها: الإهلاك وإهلاك ما فات وإعادة التصنيف والاستبعاد والنقل وإثبات التكلفة (الهجرة ٢٩) */
+const ASSET_ENTRY_TYPES = ['depreciation', 'asset_dep', 'asset_catchup', 'asset_convert', 'asset_convert_rev', 'asset_dispose', 'asset_sell', 'asset_transfer', 'asset_cost'];
+const FIXED_ASSET_CODES = ['1400', '1410', '1420', '1430', '1440', '1450', '1460', '1470'];
+
+/**
+ * أرقام قائمة التدفقات النقدية · مشتركة بين الشاشة والتصدير:
+ *  - التشغيلي: صافي الربح بلا أثر قيود الأصول غير النقدية (الإهلاك والخسارة والربح وإعادة التصنيف)،
+ *    ناقص تغيّر الذمم المدينة وزائد تغيّر الدائنة.
+ *  - الاستثماري: شراء الأصول الثابتة (حركة حساباتها من غير قيود الأصول) بالسالب، وزائد متحصّل البيع.
+ */
+export function cashFlowFigures(db: DB, from: string | null, to: string | null, net: number, dims?: DimFilter | null) {
+  const dc = dimConds(dims);
+  const where = (extra: string[]) => {
+    const w = [`e.status = 'مرحّل'`, 'e.deleted_at IS NULL', ...extra, ...dc.sql]; // i18n-exempt: حالة القيد المخزّنة
+    const p: string[] = [];
+    if (from) { w.push('e.date >= ?'); p.push(from); }
+    if (to) { w.push('e.date <= ?'); p.push(to); }
+    return { sql: w.join(' AND '), p: [...dc.params, ...p] };
+  };
+  const q = (sql: string, extra: string[], params: string[]) => {
+    const w = where(extra);
+    return Number(db.get<{ v: number }>(sql.replace('{W}', w.sql), [...params, ...w.p])?.v ?? 0);
+  };
+  const types = ASSET_ENTRY_TYPES.map(() => '?').join(',');
+  const codes = FIXED_ASSET_CODES.map(() => '?').join(',');
+  const JOIN = 'FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.code = l.account_code';
+  // أثر قيود الأصول على صافي الربح (دائن الإيراد والمصروف ناقص مدينهما)
+  const nonCashPL = q(`SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS v ${JOIN} WHERE {W}`,
+    [`e.src_type IN (${types})`, `a.type IN ('إيراد', 'مصروف')`], ASSET_ENTRY_TYPES); // i18n-exempt: أنواع الحسابات المخزّنة
+  const bought = q(`SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS v ${JOIN} WHERE {W}`,
+    [`l.account_code IN (${codes})`, `(e.src_type IS NULL OR e.src_type NOT IN (${types}))`], [...FIXED_ASSET_CODES, ...ASSET_ENTRY_TYPES]);
+  const sold = q(`SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS v ${JOIN} WHERE {W}`,
+    [`l.account_code = '1100'`, `e.src_type = 'asset_sell'`], []);
+  const arChange = accountPeriodChange(db, '1200', from, to, dims);
+  const apChange = accountPeriodChange(db, '2100', from, to, dims);
+  const opCash = net - nonCashPL - arChange + apChange;
+  const investing = -bought + sold;
+  return { arChange, apChange, nonCash: -nonCashPL, opCash, investing, bought, sold };
+}
 
 /** قائمة مالية واحدة كتلةً قابلة للعرض بالصيغ الثلاث · نفس أرقام الشاشة حرفياً */
 export function financialStatementBlock(db: DB, tab: FinStatement, from: string | null, to: string, dims?: DimFilter | null): ReportBlock {
@@ -73,10 +114,7 @@ export function financialStatementBlock(db: DB, tab: FinStatement, from: string 
     };
   }
   if (tab === 'cash') {
-    const arChange = accountPeriodChange(db, '1200', from, to);
-    const apChange = accountPeriodChange(db, '2100', from, to);
-    const faChange = accountPeriodChange(db, '1400', from, to);
-    const opCash = net - arChange + apChange;
+    const { arChange, apChange, nonCash, opCash, investing } = cashFlowFigures(db, from, to, net, dims);
     return {
       heading: 'قائمة التدفقات النقدية',
       meta: [['المدة', periodLabel(from, to)]],
@@ -84,13 +122,14 @@ export function financialStatementBlock(db: DB, tab: FinStatement, from: string 
         title: 'التدفقات', sum: false, header: ['البند', 'المبلغ'],
         rows: [
           ['صافي الربح', M(net)],
+          ...(nonCash ? [[t('assets.cashflow.nonCash'), M(nonCash)] as [string, Cell]] : []),
           ['التغير في الذمم المدينة', M(-arChange)],
           ['التغير في الذمم الدائنة', M(apChange)],
           ['صافي التدفق من الأنشطة التشغيلية', M(opCash)],
-          ['شراء وبيع أصول ثابتة', M(-faChange)],
+          ['شراء وبيع أصول ثابتة', M(investing)],
         ],
       }],
-      totals: [['صافي التغير في النقدية', M(opCash - faChange), true]],
+      totals: [['صافي التغير في النقدية', M(opCash + investing), true]],
     };
   }
   const capIn = mv('3100').credit;

@@ -29,6 +29,7 @@ import {
 import { today, toLocalISODate, dfmt, daysBetween, ARABIC_MONTHS_SHORT } from '../../src/domain/dates';
 import { fmt } from '../../src/domain/money';
 import { computeReminders } from '../../src/domain/reminders';
+import { useLang } from '../../src/i18n';
 
 type Range = 'month' | 'quarter' | 'year' | 'all' | 'custom';
 
@@ -515,6 +516,7 @@ export default function Dashboard() {
  */
 function RemindersCard() {
   const { db, version } = useApp();
+  const { t } = useLang();
   const [all, setAll] = useState(false);
   const items = useMemo(
     () => computeReminders(db).filter((r) => r.kind !== 'دفعة متأخرة').sort((a, b) => a.days - b.days),
@@ -523,7 +525,7 @@ function RemindersCard() {
   if (!items.length) return null;
   const line = (r: (typeof items)[number], i: number) => (
     <Row key={i} style={{ justifyContent: 'space-between', paddingVertical: 4, gap: 10 }}>
-      <T size={12.5} style={{ flexShrink: 1 }}>{r.kind} · {r.subject}</T>
+      <T size={12.5} style={{ flexShrink: 1 }}>{r.kind === 'warranty' ? t('assets.ui.warrantyHome') : r.kind} · {r.subject}</T>
       {/* تذكير العقد يحمل مدته في نصّه · فلا تتكرر */}
       {r.kind !== 'عقد يقارب الانتهاء' ? (
         <T size={12} bold color={C.muted}>{r.days === 0 ? 'اليوم' : 'بعد ' + r.days + ' يوماً'}</T>
