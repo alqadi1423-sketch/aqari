@@ -57,7 +57,7 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
   },
   handover: { own: ['handovers'], create: ['audit_log'] },
   banks: { own: ['banks', 'bank_tx'], create: POSTS, touch: LINKS_REVERSAL },
-  ledger: { own: ['journal_entries', 'accounts'], create: ['audit_log'] },
+  ledger: { own: ['journal_entries', 'accounts', 'cost_centers'], create: ['audit_log'] },
   library: { own: [], create: ['audit_log'] },
   company: { own: ['company', 'company_docs', 'message_scripts', 'form_templates'], create: ['audit_log'] },
   reports: { own: [], create: ['audit_log'] },

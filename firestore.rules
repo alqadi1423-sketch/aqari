@@ -26,7 +26,7 @@ service cloud.firestore {
         'meter_readings', 'company', 'company_docs', 'message_scripts', 'form_templates', 'journal_entries',
         'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'reservations', 'key_money_deals',
         'contract_payments', 'payment_lines', 'payment_allocations', 'deposit_settlements', 'tenant_ratings', 'claims',
-        'invoices', 'invoice_lines', 'purchases', 'bank_tx', 'handovers', 'blobs', 'attachments', 'audit_log'
+        'invoices', 'invoice_lines', 'purchases', 'bank_tx', 'handovers', 'blobs', 'attachments', 'cost_centers', 'audit_log'
       ];
     }
 
@@ -169,7 +169,7 @@ service cloud.firestore {
         || (op == 'purchases' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'suppliers', 'purchases', 'meter_readings'])
         || (op == 'handover' && t in ['audit_log', 'blobs', 'attachments', 'handovers'])
         || (op == 'banks' && t in ['journal_entries', 'audit_log', 'blobs', 'attachments', 'banks', 'bank_tx'])
-        || (op == 'ledger' && t in ['audit_log', 'journal_entries', 'accounts'])
+        || (op == 'ledger' && t in ['audit_log', 'journal_entries', 'accounts', 'cost_centers'])
         || (op == 'library' && t in ['audit_log', 'blobs', 'attachments'])
         || (op == 'company' && t in ['audit_log', 'blobs', 'attachments', 'company', 'company_docs', 'message_scripts', 'form_templates'])
         || (op == 'reports' && t in ['audit_log']);
@@ -187,7 +187,7 @@ service cloud.firestore {
         || (op == 'purchases' && t in ['suppliers', 'purchases', 'meter_readings'])
         || (op == 'handover' && t in ['handovers'])
         || (op == 'banks' && t in ['banks', 'bank_tx'])
-        || (op == 'ledger' && t in ['journal_entries', 'accounts'])
+        || (op == 'ledger' && t in ['journal_entries', 'accounts', 'cost_centers'])
         || (op == 'library' && t in ['attachments'])
         || (op == 'company' && t in ['company', 'company_docs', 'message_scripts', 'form_templates']);
     }
@@ -255,6 +255,41 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['u', 'dev', 'ts', 'op', 'g', 'pids']);
     }
 
+    // وجهاز المالك يملأ أبعاد سطور القيد المرحّل القديم (الهجرة ٢٨) · السطور بعددها وبكل حقولها كما هي إلا أبعادها
+    function lineDimsOnly(a, b) {
+      return a.diff(b).affectedKeys().hasOnly(['property_id', 'unit_id', 'contract_id', 'cost_center_id', 'asset_id']);
+    }
+    function orgOnlyLineDims() {
+      let a = request.resource.data.lines;
+      let b = resource.data.lines;
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lines', 'u', 'dev', 'ts', 'op', 'g', 'pids'])
+        && a.size() == b.size() && b.size() <= 24
+        && (b.size() <= 0 || lineDimsOnly(a[0], b[0]))
+        && (b.size() <= 1 || lineDimsOnly(a[1], b[1]))
+        && (b.size() <= 2 || lineDimsOnly(a[2], b[2]))
+        && (b.size() <= 3 || lineDimsOnly(a[3], b[3]))
+        && (b.size() <= 4 || lineDimsOnly(a[4], b[4]))
+        && (b.size() <= 5 || lineDimsOnly(a[5], b[5]))
+        && (b.size() <= 6 || lineDimsOnly(a[6], b[6]))
+        && (b.size() <= 7 || lineDimsOnly(a[7], b[7]))
+        && (b.size() <= 8 || lineDimsOnly(a[8], b[8]))
+        && (b.size() <= 9 || lineDimsOnly(a[9], b[9]))
+        && (b.size() <= 10 || lineDimsOnly(a[10], b[10]))
+        && (b.size() <= 11 || lineDimsOnly(a[11], b[11]))
+        && (b.size() <= 12 || lineDimsOnly(a[12], b[12]))
+        && (b.size() <= 13 || lineDimsOnly(a[13], b[13]))
+        && (b.size() <= 14 || lineDimsOnly(a[14], b[14]))
+        && (b.size() <= 15 || lineDimsOnly(a[15], b[15]))
+        && (b.size() <= 16 || lineDimsOnly(a[16], b[16]))
+        && (b.size() <= 17 || lineDimsOnly(a[17], b[17]))
+        && (b.size() <= 18 || lineDimsOnly(a[18], b[18]))
+        && (b.size() <= 19 || lineDimsOnly(a[19], b[19]))
+        && (b.size() <= 20 || lineDimsOnly(a[20], b[20]))
+        && (b.size() <= 21 || lineDimsOnly(a[21], b[21]))
+        && (b.size() <= 22 || lineDimsOnly(a[22], b[22]))
+        && (b.size() <= 23 || lineDimsOnly(a[23], b[23]));
+    }
+
     // «حذف حسابي» للمالك: نافذة ساعة بطلبٍ بوقت الخادم كما في users/{uid}
     function orgDeletionOpen(org) {
       let p = /databases/$(database)/documents/orgs/$(org)/meta/deletion;
@@ -269,7 +304,7 @@ service cloud.firestore {
         allow create: if validOrgRow(rowId) && (orgOwner(org) || memberCreates(org));
         allow update: if validOrgRow(rowId)
           && resource.data.t != 'audit_log'
-          && (!isPostedEntry(resource.data) || orgOnlyLinksReversal() || (orgOwner(org) && orgOnlyVisibility()))
+          && (!isPostedEntry(resource.data) || orgOnlyLinksReversal() || (orgOwner(org) && (orgOnlyVisibility() || orgOnlyLineDims())))
           && (orgOwner(org) || memberUpdates(org));
         allow delete: if orgOwner(org) && orgDeletionOpen(org);
       }

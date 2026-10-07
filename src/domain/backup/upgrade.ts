@@ -29,6 +29,11 @@ export function hasUserData(db: BackupEnv['db']): boolean {
     `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).map((t) => t.name);
   for (const t of tables) {
     if (SYSTEM_TABLES.has(t) || t.startsWith('sync_')) continue;
+    // مركز «عام» تزرعه الهجرة ٢٨ على كل قاعدة · وما أضافه المستخدم بياناته
+    if (t === 'cost_centers') {
+      if (db.get(`SELECT 1 FROM cost_centers WHERE is_default = 0 LIMIT 1`)) return true;
+      continue;
+    }
     if (db.get(`SELECT 1 FROM "${t}" LIMIT 1`)) return true;
   }
   return false;

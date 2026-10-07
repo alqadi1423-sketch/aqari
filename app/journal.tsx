@@ -26,6 +26,8 @@ import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm } from '../src/ui/access';
 import { rowBy } from '../src/services/access';
 
+import { CostCenterField } from '../src/ui/CostCenters';
+import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 interface JeLine { account: string; debit: string; credit: string }
 
 interface EntryRow {
@@ -156,7 +158,9 @@ export default function Journal() {
     setBuilderOpen(true);
   };
 
-  const post = () => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const post = (...a: Parameters<typeof postIn>) => withCostCenter(cc, () => postIn(...a));
+  const postIn = () => {
     if (!balanced) { toast('لا يمكن ترحيل قيد غير متوازن'); return; }
     const validLines = lines
       .filter((l) => l.account && (toHalalas(l.debit) || toHalalas(l.credit)))
@@ -270,6 +274,7 @@ export default function Journal() {
           <View style={{ flex: 1 }}><Field label="رقم القيد" value={peekJournalNo(db)} disabled ltr /></View>
           <View style={{ flex: 1 }}><DateField label="التاريخ" value={date} onChange={setDate} /></View>
         </Row>
+        <CostCenterField value={cc} onChange={setCc} />
         <Field label="البيان" value={memo} onChange={setMemo} />
         {lines.map((l, i) => (
           <View key={i} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 9, marginBottom: 8 }}>

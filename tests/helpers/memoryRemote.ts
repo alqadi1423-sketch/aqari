@@ -35,8 +35,13 @@ export class MemoryRemote implements RemoteStore {
     if (prev.t === 'audit_log') return false;
     const posted = prev.t === 'journal_entries' && prev.d?.status === 'مرحّل';
     if (!posted) return true;
+    if (!next.d) return false;
+    // أبعاد سطوره وحدها تُملأ (الهجرة ٢٨) · كقاعدة orgOnlyLineDims في firestore.rules
+    const noDims = (ls: unknown) => JSON.stringify(((ls as Array<Record<string, unknown>> | undefined) ?? [])
+      .map(({ property_id, unit_id, contract_id, cost_center_id, asset_id, ...rest }) => rest));
+    if (JSON.stringify(prev.d) === JSON.stringify(next.d) && prev.del === next.del && noDims(prev.lines) === noDims(next.lines)) return true;
     // الربط بالقيد العكسي وحده ومرة واحدة
-    if (!next.d || prev.d!.reversed_by != null || typeof next.d.reversed_by !== 'string') return false;
+    if (prev.d!.reversed_by != null || typeof next.d.reversed_by !== 'string') return false;
     const a = { ...prev.d, reversed_by: null };
     const b = { ...next.d, reversed_by: null };
     return JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(prev.lines) === JSON.stringify(next.lines) && prev.del === next.del;

@@ -34,6 +34,8 @@ import { reportFailure } from '../src/ui/failureDialog';
 import { useAccess, usePerm } from '../src/ui/access';
 import { routeAllowed } from '../src/domain/access/routes';
 
+import { CostCenterField } from '../src/ui/CostCenters';
+import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 interface BankRow {
   id: string; name: string; iban: string; opening_halalas: number; opening_date: string | null;
   archived: number; linked_n: number; balance: number;
@@ -458,7 +460,9 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
     setOp(k);
   };
 
-  const confirmOp = () => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const confirmOp = (...a: Parameters<typeof confirmOpIn>) => withCostCenter(cc, () => confirmOpIn(...a));
+  const confirmOpIn = () => {
     if (!op) return;
     const amountHalalas = toHalalas(amount);
     try {
@@ -527,6 +531,7 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
           <View style={{ flex: 1 }}><Field label="المبلغ" value={amount} onChange={setAmount} keyboard="numeric" ltr /></View>
           <View style={{ flex: 1 }}><DateField label="التاريخ" value={opDate} onChange={setOpDate} /></View>
         </Row>
+        <CostCenterField value={cc} onChange={setCc} />
         <Field label={op === 'petty' ? 'بيان المصروف' : 'البيان'} value={descr} onChange={setDescr} />
         <CashShortNote needed={cashOut} what={meta.label} />
       </Sheet>

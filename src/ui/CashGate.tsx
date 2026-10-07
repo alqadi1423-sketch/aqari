@@ -18,6 +18,8 @@ import { ownerCashIn } from '../domain/cashOps';
 import { fmt, toHalalas } from '../domain/money';
 import { today } from '../domain/dates';
 
+import { CostCenterField } from './CostCenters';
+import { GENERAL_COST_CENTER, withCostCenter } from '../domain/accounting/dimensions';
 /** نافذة «إيداع المالك» معبّأة بمبلغ */
 export function OwnerCashInSheet({ amountHalalas, onClose }: { amountHalalas: number; onClose: () => void }) {
   const { db, bump } = useApp();
@@ -25,11 +27,12 @@ export function OwnerCashInSheet({ amountHalalas, onClose }: { amountHalalas: nu
   const [amount, setAmount] = useState(fmt(amountHalalas).replace(/,/g, ''));
   const [date, setDate] = useState(today());
   const [notes, setNotes] = useState('');
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
   const v = toHalalas(amount);
   return (
     <Sheet visible onClose={onClose} title="إيداع المالك"
       footer={v > 0 ? <BtnPrimary title={'إيداع ' + fmt(v)} onPress={() => {
-        try { ownerCashIn(db, { amountHalalas: v, date, notes }); bump(); toast('أُودع ' + fmt(v) + ' في المحفظة'); onClose(); }
+        try { withCostCenter(cc, () => ownerCashIn(db, { amountHalalas: v, date, notes })); bump(); toast('أُودع ' + fmt(v) + ' في المحفظة'); onClose(); }
         catch (e) { reportFailure({ title: 'تعذّر الإيداع', e }); }
       }} /> : null}>
       <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>
@@ -37,6 +40,7 @@ export function OwnerCashInSheet({ amountHalalas, onClose }: { amountHalalas: nu
       </T>
       <Field label="المبلغ" value={amount} onChange={setAmount} keyboard="numeric" ltr />
       <DateField label="التاريخ" value={date} onChange={setDate} />
+      <CostCenterField value={cc} onChange={setCc} />
       <Field label="ملاحظة" value={notes} onChange={setNotes} />
     </Sheet>
   );

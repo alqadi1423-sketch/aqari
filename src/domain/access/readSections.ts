@@ -51,6 +51,8 @@ export const READ_TABLE: Record<string, SectionKey[]> = {
   journal_entries: MONEY_BOOKS,
   // بصمة الملف وامتداده وحجمه · لا تكشف شيئاً، ويحتاجها كل من يرى مرفقاً
   blobs: SECTION_KEYS,
+  // أسماء مراكز التكلفة · يحتاجها كل من يُنشئ قيداً أو يقرأ تقريراً (الهجرة ٢٨)
+  cost_centers: SECTION_KEYS,
 };
 
 /** جدول الجهة التي يرتبط بها المرفق · فيقرؤه من يقرأ جهته (READ_TABLE)، والمكتبة دائماً */

@@ -28,6 +28,8 @@ import { printClaim } from '../src/services/print';
 import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm } from '../src/ui/access';
 
+import { CostCenterField } from '../src/ui/CostCenters';
+import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 interface ClaimRow {
   id: string; contract_id: string; amount_halalas: number; reason: string; date: string;
   status: string; source: string; contract_no: string | null; tenant_name: string;
@@ -222,7 +224,9 @@ export default function Claims() {
     setPendingFiles((p) => [...p, ...res.assets.map((a) => ({ uri: a.uri, name: a.fileName ?? 'صورة.jpg', mime: a.mimeType ?? 'image/jpeg', kind: 'claim' }))]);
   };
 
-  const save = async () => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const save = (...a: Parameters<typeof saveIn>) => withCostCenter(cc, () => saveIn(...a));
+  const saveIn = async () => {
     try {
       const id = saveClaim(db, { contractId, amountHalalas: toHalalas(amount), reason, date }, editingId ?? undefined);
       const env = appFilesEnv(db);
@@ -315,6 +319,7 @@ export default function Claims() {
             linked="المطالبة" title="صور الضرر وفواتير الإصلاح" />
         ) : null}
         <DateField label="التاريخ" value={date} onChange={setDate} />
+        <CostCenterField value={cc} onChange={setCc} />
         {canSave ? (
           <Row style={{ marginBottom: 8 }}>
             <View style={{ flex: 1 }}><BtnGhost small icon="attach" title="إرفاق فواتير تكاليف" onPress={pickInvoices} /></View>

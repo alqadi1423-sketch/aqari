@@ -30,6 +30,8 @@ import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm } from '../src/ui/access';
 import { rowBy } from '../src/services/access';
 
+import { CostCenterField } from '../src/ui/CostCenters';
+import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 const STATUS_MAP: Record<string, string> = { 'مدفوعة': 'paid', 'مستحقة': 'due', 'متأخرة': 'overdue', 'مسودة': 'draft' };
 
 const ALL_STATUSES = ['مسودة', 'مستحقة', 'مدفوعة', 'متأخرة'] as const;
@@ -248,7 +250,10 @@ export default function Invoices() {
     lines.map((l) => ({ descr: l.descr, qty: parseFloat(l.qty) || 0, priceHalalas: toHalalas(l.price), taxPct: parseFloat(l.tax) || 0 }));
 
   // الإصدار يأخذ رقم الفاتورة من عدّاد السحابة · وبلا اتصال تُحفظ مسودةً تصدر برقمها عند عودته
-  const doSave = async (status: 'مسودة' | 'مستحقة') => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const [payCc, setPayCc] = useState(GENERAL_COST_CENTER);
+  const doSave = (...a: Parameters<typeof doSaveIn>) => withCostCenter(cc, () => doSaveIn(...a));
+  const doSaveIn = async (status: 'مسودة' | 'مستحقة') => {
     try {
       const cust = tenants.find((t) => t.name === customer.trim());
       const r = await saveInvoiceNow(db, {
@@ -347,6 +352,7 @@ export default function Invoices() {
           <View style={{ flex: 1 }}><DateField label="تاريخ الإصدار" value={issue} onChange={setIssue} /></View>
           <View style={{ flex: 1 }}><DateField label="تاريخ الاستحقاق" value={due} onChange={setDue} /></View>
         </Row>
+        <CostCenterField value={cc} onChange={setCc} />
         <T size={13} bold color={C.ink} style={{ marginVertical: 8 }}>بنود الفاتورة</T>
         {lines.map((l, i) => (
           <View key={i} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 9, marginBottom: 8 }}>
@@ -432,7 +438,7 @@ export default function Invoices() {
             payMethod === 'cash' || payBank ? (
               <BtnPrimary title="تأكيد التحصيل" onPress={() => {
                 try {
-                  payInvoice(db, statusFor, { method: payMethod, bankId: payMethod === 'cash' ? null : payBank, date: payDate });
+                  withCostCenter(payCc, () => payInvoice(db, statusFor, { method: payMethod, bankId: payMethod === 'cash' ? null : payBank, date: payDate }));
                   setCollecting(false); setStatusFor(null); bump(); toast('سُجّل التحصيل ورُحّل قيده');
                 } catch (e) { reportFailure({ title: 'تعذّر تسجيل التحصيل', e }); }
               }} />
@@ -442,6 +448,7 @@ export default function Invoices() {
             يُرحَّل قيد: مدين النقد أو البنك، دائن ذمم العملاء، بإجمالي الفاتورة.
           </T>
           <DateField label="تاريخ التحصيل" value={payDate} onChange={setPayDate} />
+          <CostCenterField value={payCc} onChange={setPayCc} />
           <SelectField label="الطريقة" value={payMethod}
             options={[
               { value: 'cash', icon: 'cash', label: 'نقداً' },

@@ -232,7 +232,9 @@ export default function Contracts() {
     setReviewOpen(true);
   };
 
-  const doConfirmCreate = () => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const doConfirmCreate = (...a: Parameters<typeof doConfirmCreateIn>) => withCostCenter(cc, () => doConfirmCreateIn(...a));
+  const doConfirmCreateIn = () => {
     try {
       const id = confirmContract(db, formToInput(form.state), editingDraftId ?? undefined);
       if (form.state.pendingFile) {
@@ -468,6 +470,7 @@ export default function Contracts() {
         form={form.state}
         onBack={() => { setReviewOpen(false); setFormOpen(true); }}
         onConfirm={doConfirmCreate}
+        cc={cc} onCc={setCc}
         db={db}
       />
 
@@ -513,9 +516,11 @@ import type { DB } from '../../src/db/adapter';
 import type { ContractFormState } from '../../src/ui/contractForm';
 import { reportFailure } from '../../src/ui/failureDialog';
 
+import { CostCenterField } from '../../src/ui/CostCenters';
+import { GENERAL_COST_CENTER, withCostCenter } from '../../src/domain/accounting/dimensions';
 function ReviewSheet({
-  visible, form, onBack, onConfirm, db,
-}: { visible: boolean; form: ContractFormState; onBack: () => void; onConfirm: () => void; db: DB }) {
+  visible, form, onBack, onConfirm, db, cc, onCc,
+}: { visible: boolean; form: ContractFormState; onBack: () => void; onConfirm: () => void; db: DB; cc: string; onCc: (v: string) => void }) {
   const u = form.unitId
     ? db.get<{ unit_no: string; property_id: string }>(`SELECT unit_no, property_id FROM units WHERE id = ?`, [form.unitId])
     : undefined;
@@ -556,6 +561,7 @@ function ReviewSheet({
         </Row>
       ))}
       <View style={{ marginTop: 12 }}>
+        <CostCenterField value={cc} onChange={onCc} />
         <Note>بعد الإنشاء لا يمكن تعديل العقد أو حذفه · يُلغى فقط.</Note>
       </View>
     </Sheet>
@@ -999,7 +1005,9 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
     if (!isNaN(pct)) setValue(String(Math.round((Number(c.value_halalas) * (1 + pct / 100))) / 100));
   };
 
-  const confirm = () => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const confirm = (...a: Parameters<typeof confirmIn>) => withCostCenter(cc, () => confirmIn(...a));
+  const confirmIn = () => {
     try {
       renewContract(db, contractId, {
         start, end, valueHalalas: valueH, cycle,
@@ -1030,6 +1038,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
       </View>
       {block ? <Note tone="danger">{block}</Note> : null}
       <DateField label="تاريخ بداية العقد الجديد" value={start} onChange={setStart} />
+      <CostCenterField value={cc} onChange={setCc} />
       <SelectField
         label="مدة العقد الجديد" value={durMonths}
         options={[
@@ -1123,7 +1132,9 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const refundCash = settle && officeHeld ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0;
   const cashOk = useCashOk(refundCash);
 
-  const confirm = () => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const confirm = (...a: Parameters<typeof confirmIn>) => withCostCenter(cc, () => confirmIn(...a));
+  const confirmIn = () => {
     try {
       const { excessClaimCreated } = cancelContract(db, contractId, {
         date, reason, installmentsFate: fate, settle,
@@ -1147,6 +1158,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
       }>
       <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
       <DateField label="تاريخ إنهاء العقد" value={date} onChange={setDate} />
+      <CostCenterField value={cc} onChange={setCc} />
       <Field label="سبب الإلغاء" value={reason} onChange={setReason} />
       <SelectField
         label="الدفعات المتبقية بعد تاريخ الإلغاء" value={fate}
@@ -1258,7 +1270,9 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
   const refundCash = officeHeld ? toHalalas(refund) - Number(existing?.refund_halalas ?? 0) : 0;
   const cashOk = useCashOk(refundCash);
-  const save = () => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const save = (...a: Parameters<typeof saveIn>) => withCostCenter(cc, () => saveIn(...a));
+  const saveIn = () => {
     try {
       saveDepositSettlement(db, contractId, {
         date, deductionHalalas: toHalalas(deduction), deductionReason: dedReason,
@@ -1282,6 +1296,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
         <Money halalas={Number(c.deposit_halalas)} size={14} bold />
       </View>
       <DateField label="تاريخ التسوية" value={date} onChange={setDate} />
+      <CostCenterField value={cc} onChange={setCc} />
       <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="numeric" ltr />
       <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
       {platformHeld && toHalalas(deduction) > 0 ? (
@@ -1320,7 +1335,9 @@ function KeyMoneySheet({ contract, onClose, onDone }: { contract: ContractRow; o
   /** الاتفاق لا يُسجَّل بلا طرفين ومبلغ، ولا بعمولة بنكية بلا حساب · فلا يُعرض زره قبلها */
   const ready = !!outgoing.trim() && !!incoming.trim() && toHalalas(amount) > 0
     && (toHalalas(commission) <= 0 || method === 'cash' || !!bankId);
-  const save = () => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const save = (...a: Parameters<typeof saveIn>) => withCostCenter(cc, () => saveIn(...a));
+  const saveIn = () => {
     try {
       recordKeyMoneyDeal(db, {
         unitId: contract.unit_id, contractId: contract.id,
@@ -1351,6 +1368,7 @@ function KeyMoneySheet({ contract, onClose, onDone }: { contract: ContractRow; o
         <View style={{ flex: 1 }}><Field label="مبلغ التقبيل الإجمالي" value={amount} onChange={setAmount} keyboard="numeric" ltr /></View>
         <View style={{ flex: 1 }}><DateField label="تاريخ الاتفاق" value={date} onChange={setDate} /></View>
       </Row>
+      <CostCenterField value={cc} onChange={setCc} />
       <Field label="عمولة الشركة/المالك" value={commission} onChange={setCommission} keyboard="numeric" ltr />
       {toHalalas(commission) > 0 && (
         <>

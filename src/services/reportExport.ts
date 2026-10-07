@@ -279,7 +279,14 @@ export async function exportInvoicesReport(db: DB, from: string | null, to: stri
 
 import { vatReturnData } from '../domain/vatReturn';
 import { QUARTER_AR } from '../domain/periods';
-import { trialBalance } from '../domain/accounting/ledger';
+import { trialBalance, costCenterReport, type DimFilter } from '../domain/accounting/ledger';
+import { dimsLabel } from '../domain/accounting/dimensions';
+
+/** معيار التصفية بالأبعاد في رأس التقرير وورقة المعايير · لا شيء بلا تصفية */
+const dimsMeta = (db: DB, dims?: DimFilter | null): Array<[string, string]> => {
+  const l = dimsLabel(db, dims);
+  return l ? [['التصفية', l]] : [];
+};
 
 const WATERMARK = '<div style="position:fixed;top:38%;left:0;right:0;text-align:center;transform:rotate(-28deg);font-size:96px;color:rgba(176,141,61,.14);font-weight:800;pointer-events:none">مسودة</div>';
 
@@ -368,13 +375,13 @@ export async function exportVatReturn(
 
 /* ═══════════ ميزان المراجعة ═══════════ */
 
-export async function exportTrialBalance(db: DB, from: string | null, to: string, kind: ExportKind): Promise<void> {
-  const rows = trialBalance(db, from, to);
+export async function exportTrialBalance(db: DB, from: string | null, to: string, kind: ExportKind, dims?: DimFilter | null): Promise<void> {
+  const rows = trialBalance(db, from, to, dims);
   const totD = rows.reduce((s2, r) => s2 + r.debitHalalas, 0);
   const totC = rows.reduce((s2, r) => s2 + r.creditHalalas, 0);
   const block: ReportBlock = {
     heading: 'ميزان المراجعة',
-    meta: [['المدة', periodLabel(from, to)]],
+    meta: [['المدة', periodLabel(from, to)], ...dimsMeta(db, dims)],
     sections: [{
       title: 'الحسابات', sum: true,
       header: ['م', 'اسم الحساب', 'رصيد أول المدة', 'إجمالي الحركة المدينة', 'إجمالي الحركة الدائنة', 'رصيد آخر المدة'],
@@ -391,6 +398,31 @@ export async function exportTrialBalance(db: DB, from: string | null, to: string
     ['عدد الحسابات', String(rows.length)],
     ['مصدر الأرقام', 'قيود دفتر الأستاذ المرحّلة'],
     ['حالة التوازن', totD === totC ? 'متوازن' : 'غير متوازن'],
+    ...dimsMeta(db, dims),
+  ]);
+}
+
+/** الإيرادات والمصروفات حسب مركز التكلفة (قرار المالك ٢٠٢٦-١٠-٠٤) */
+export async function exportCostCenterReport(db: DB, from: string | null, to: string, kind: ExportKind, dims?: DimFilter | null): Promise<void> {
+  const rows = costCenterReport(db, from, to, dims);
+  const block: ReportBlock = {
+    heading: 'حسب مركز التكلفة',
+    meta: [['المدة', periodLabel(from, to)], ...dimsMeta(db, { ...(dims ?? {}), costCenterId: null })],
+    sections: [{
+      title: 'المراكز', sum: true,
+      header: ['مركز التكلفة', 'الإيرادات', 'المصروفات', 'الصافي'],
+      rows: rows.map((r) => [r.name, M(r.revenue), M(r.expense), M(r.net)]),
+    }],
+    totals: [
+      ['إجمالي الإيرادات', { money: rows.reduce((a, r) => a + r.revenue, 0), f: 'SUM({S0C1})' }],
+      ['إجمالي المصروفات', { money: rows.reduce((a, r) => a + r.expense, 0), f: 'SUM({S0C2})' }],
+      ['الصافي', { money: rows.reduce((a, r) => a + r.net, 0), f: '{T0}-{T1}' }, true],
+    ],
+  };
+  await renderBlocks(db, 'الإيرادات والمصروفات حسب مركز التكلفة', 'cost-centers', from, to, [block], kind, [
+    ['عدد المراكز', String(rows.length)],
+    ['مصدر الأرقام', 'قيود دفتر الأستاذ المرحّلة'],
+    ...dimsMeta(db, { ...(dims ?? {}), costCenterId: null }),
   ]);
 }
 
@@ -425,8 +457,9 @@ function withLiveFormulas(tab: FinStatement, b: ReportBlock): ReportBlock {
   return { ...b, totals: totalsWith(['SUM({S0})']) };
 }
 
-export async function exportFinancialStatement(db: DB, tab: FinStatement, from: string | null, to: string, kind: ExportKind): Promise<void> {
-  const block = withLiveFormulas(tab, financialStatementBlock(db, tab, from, to));
+export async function exportFinancialStatement(db: DB, tab: FinStatement, from: string | null, to: string, kind: ExportKind, dims?: DimFilter | null): Promise<void> {
+  const base = financialStatementBlock(db, tab, from, to, dims);
+  const block = withLiveFormulas(tab, { ...base, meta: [...base.meta, ...dimsMeta(db, dims)] });
   await renderBlocks(db, FIN_TITLES[tab], 'fin-' + tab, from, to, [block], kind, [
     ['القائمة', FIN_TITLES[tab]],
     ['مصدر الأرقام', 'قيود دفتر الأستاذ المرحّلة'],

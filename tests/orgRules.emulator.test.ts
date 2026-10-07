@@ -6,7 +6,7 @@
  */
 import { FirestoreRemote, encodeFields } from '@/cloud/firestore';
 import type { RemoteDoc } from '@/sync/types';
-import type { Access } from '@/domain/access/access';
+import { OWNER_ACCESS, type Access } from '@/domain/access/access';
 import { memberTokens, annotate, fullReadTables } from '@/sync/acl';
 import { SYNC_TABLES } from '@/db/syncTables';
 
@@ -90,6 +90,19 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     }
     return out;
   };
+
+  test('القيد المرحّل في السحابة: المالك يملأ أبعاد سطوره وحدها (الهجرة ٢٨) · ولا يغيّر مبلغاً · والعضو لا يمسّه', async () => {
+    const { buildDoc } = await import('@/sync/engine');
+    const e = db.get<{ id: string }>(`SELECT id FROM journal_entries WHERE status = 'مرحّل' LIMIT 1`)!.id;
+    const owner = remoteFor(ORG, null);
+    const base = buildDoc(db, 'journal_entries', e, 'upsert', '2026-10-07T00:00:00.000Z', 'dev-owner');
+    const withDims = { ...base, u: 'dims-1', lines: base.lines!.map((l) => ({ ...l, property_id: 'P1', cost_center_id: 'cc-general' })) };
+    const asOwner = (d: RemoteDoc) => annotate(db, d, OWNER_ACCESS).doc;
+    expect((await owner.write([asOwner(withDims)]))[0]).toMatchObject({ ok: true });
+    const money = { ...withDims, u: 'dims-2', lines: withDims.lines.map((l, i) => (i === 0 ? { ...l, debit_halalas: Number((l as Record<string, unknown>).debit_halalas) + 1 } : l)) };
+    expect((await owner.write([asOwner(money)]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect(await write(COLLECTOR, { ...withDims, u: 'dims-3', lines: withDims.lines.map((l) => ({ ...l, cost_center_id: null })) })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  });
 
   test('المحصِّل يرى عقاره وحده وأقسامه وحدها', async () => {
     const docs = await pullAll(COLLECTOR);

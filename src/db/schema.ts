@@ -3,10 +3,10 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-import { buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, LATER_SYNC_TABLES } from './syncTables';
+import { buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1339,5 +1339,45 @@ INSERT OR IGNORE INTO sync_ctl (k, v) VALUES ('capture_files', 0);
 ${buildSyncTriggers(LATER_SYNC_TABLES, CAPTURE_FILES)}
 `;
 
+/**
+ * الهجرة ٢٨ · أبعاد الدفتر ومراكز التكلفة (قرار المالك ٢٠٢٦-١٠-٠٤):
+ *  - سطر القيد يحمل العقار والوحدة والعقد ومركز التكلفة والأصل (accounting/dimensions.ts).
+ *  - مراكز التكلفة يضيفها المستخدم بأسمائه، ومعها «عام» بمعرّف ثابت على كل جهاز لا يُحذف.
+ *  - سطور القيد المرحّل مجمّدة كما كانت إلا أبعادها: تُملأ للقيود القديمة بأداةٍ بكلمة المالك.
+ */
+export const MIGRATION_28 = `
+ALTER TABLE journal_lines ADD COLUMN property_id TEXT;
+ALTER TABLE journal_lines ADD COLUMN unit_id TEXT;
+ALTER TABLE journal_lines ADD COLUMN contract_id TEXT;
+ALTER TABLE journal_lines ADD COLUMN cost_center_id TEXT;
+ALTER TABLE journal_lines ADD COLUMN asset_id TEXT;
+CREATE INDEX IF NOT EXISTS ix_jl_property ON journal_lines(property_id);
+CREATE INDEX IF NOT EXISTS ix_jl_cost_center ON journal_lines(cost_center_id);
+CREATE TABLE IF NOT EXISTS cost_centers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+INSERT OR IGNORE INTO cost_centers (id, name, is_default, created_at) VALUES ('cc-general', 'عام', 1, '2026-10-07T00:00:00.000Z');
+CREATE TRIGGER IF NOT EXISTS trg_cc_default_keep
+BEFORE UPDATE OF deleted_at ON cost_centers
+WHEN OLD.is_default = 1 AND NEW.deleted_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'مركز «عام» لا يُحذف'); END;
+CREATE TRIGGER IF NOT EXISTS trg_cc_default_nodel
+BEFORE DELETE ON cost_centers
+WHEN OLD.is_default = 1
+BEGIN SELECT RAISE(ABORT, 'مركز «عام» لا يُحذف'); END;
+DROP TRIGGER IF EXISTS trg_jl_frozen_upd;
+CREATE TRIGGER trg_jl_frozen_upd
+BEFORE UPDATE ON journal_lines
+WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) = 'مرحّل'
+  AND (NEW.id IS NOT OLD.id OR NEW.entry_id IS NOT OLD.entry_id OR NEW.account_code IS NOT OLD.account_code
+    OR NEW.descr IS NOT OLD.descr OR NEW.debit_halalas IS NOT OLD.debit_halalas OR NEW.credit_halalas IS NOT OLD.credit_halalas)
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُعدَّل'); END;
+${buildSyncTriggers(DIMENSION_SYNC_TABLES)}
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28];

@@ -36,6 +36,8 @@ import { AttachStrip } from '../src/ui/AttachStrip';
 import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm } from '../src/ui/access';
 
+import { CostCenterField } from '../src/ui/CostCenters';
+import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 const CATEGORIES = ['كهرباء', 'مياه', 'اتصالات وإنترنت', 'إيجار', 'رواتب', 'تكلفة مبيعات', 'مصروفات تأسيس', 'مصروفات أخرى'];
 const INCORP_ITEMS = ['رسوم حكومية', 'ديكور وتجهيزات', 'معدات', 'تسويق افتتاحي', 'استشارات'];
 
@@ -396,7 +398,10 @@ export default function Purchases() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.property]);
 
-  const doSave = (baseH: number, taxH2: number, totalH2: number, roundingDiff: number) => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const [payCc, setPayCc] = useState(GENERAL_COST_CENTER);
+  const doSave = (...a: Parameters<typeof doSaveIn>) => withCostCenter(cc, () => doSaveIn(...a));
+  const doSaveIn = (baseH: number, taxH2: number, totalH2: number, roundingDiff: number) => {
     try {
       const savedId = savePurchase(db, {
         supplier: supplier.trim(), date, due, category: category.trim(),
@@ -637,6 +642,7 @@ export default function Purchases() {
           <View style={{ flex: 1 }}><DateField label="تاريخ الفاتورة" value={date} onChange={setDate} /></View>
           <View style={{ flex: 1 }}><DateField label="تاريخ الاستحقاق" value={due} onChange={setDue} /></View>
         </Row>
+        <CostCenterField value={cc} onChange={setCc} />
         <Field label="الفئة" value={category} onChange={setCategory} placeholder={CATEGORIES.join(' / ')} />
         <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
           {categoryOptions.map((c) => <BtnGhost key={c} small title={c} onPress={() => setCategory(c)} />)}
@@ -849,9 +855,9 @@ export default function Purchases() {
         const cashOk = cashShortfall(db, cashNeed) <= 0;
         const doPay = () => {
           try {
-            payPurchaseSplit(db, payFor,
+            withCostCenter(payCc, () => payPurchaseSplit(db, payFor,
               payLines.map((l) => ({ method: l.method, bankId: l.bankId || null, amountHalalas: toHalalas(l.amount) })),
-              payDate);
+              payDate));
             setPayFor(null); bump(); toast('تم حفظ بيانات السداد بنجاح');
           } catch (e) {
             reportFailure({ title: 'تعذّر السداد', e });
@@ -891,6 +897,7 @@ export default function Purchases() {
             </>
           }>
           <DateField label="تاريخ السداد" value={payDate} onChange={setPayDate} />
+          <CostCenterField value={payCc} onChange={setPayCc} />
           <CashShortNote needed={cashNeed} what="سداد الفاتورة نقداً" />
           {payLines.map((l, i) => (
             <View key={i} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 9, marginBottom: 8 }}>

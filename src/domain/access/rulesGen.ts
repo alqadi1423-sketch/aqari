@@ -10,6 +10,9 @@ import { SELF_OP, SELF_AUDIT_ENTITY } from './opWrites';
 export const BEGIN = '    // <org:generated> · لا تُعدَّل باليد: src/domain/access/rulesGen.ts';
 export const END = '    // </org:generated>';
 
+/** أقصى عدد سطور لقيدٍ مرحّل تُملأ أبعاده في السحابة · قاعدةٌ لكل سطر فلا تبلغ حدّ ألف تعبير */
+const DIM_LINES_MAX = 24;
+
 const q = (xs: string[]) => '[' + xs.map((x) => `'${x}'`).join(', ') + ']';
 
 function writesFns(): string {
@@ -141,6 +144,18 @@ ${writesFns()}
       return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['u', 'dev', 'ts', 'op', 'g', 'pids']);
     }
 
+    // وجهاز المالك يملأ أبعاد سطور القيد المرحّل القديم (الهجرة ٢٨) · السطور بعددها وبكل حقولها كما هي إلا أبعادها
+    function lineDimsOnly(a, b) {
+      return a.diff(b).affectedKeys().hasOnly(['property_id', 'unit_id', 'contract_id', 'cost_center_id', 'asset_id']);
+    }
+    function orgOnlyLineDims() {
+      let a = request.resource.data.lines;
+      let b = resource.data.lines;
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lines', 'u', 'dev', 'ts', 'op', 'g', 'pids'])
+        && a.size() == b.size() && b.size() <= ${DIM_LINES_MAX}
+${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} || lineDimsOnly(a[${i}], b[${i}]))`).join('\n')};
+    }
+
     // «حذف حسابي» للمالك: نافذة ساعة بطلبٍ بوقت الخادم كما في users/{uid}
     function orgDeletionOpen(org) {
       let p = /databases/$(database)/documents/orgs/$(org)/meta/deletion;
@@ -155,7 +170,7 @@ ${writesFns()}
         allow create: if validOrgRow(rowId) && (orgOwner(org) || memberCreates(org));
         allow update: if validOrgRow(rowId)
           && resource.data.t != 'audit_log'
-          && (!isPostedEntry(resource.data) || orgOnlyLinksReversal() || (orgOwner(org) && orgOnlyVisibility()))
+          && (!isPostedEntry(resource.data) || orgOnlyLinksReversal() || (orgOwner(org) && (orgOnlyVisibility() || orgOnlyLineDims())))
           && (orgOwner(org) || memberUpdates(org));
         allow delete: if orgOwner(org) && orgDeletionOpen(org);
       }

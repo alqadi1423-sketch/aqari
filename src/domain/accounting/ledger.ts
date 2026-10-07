@@ -71,14 +71,41 @@ export function allAccountBalances(db: DB): Map<string, number> {
   return out;
 }
 
+/**
+ * تصفية الدفتر بأبعاده (قرار المالك ٢٠٢٦-١٠-٠٤: التقارير والقوائم المالية تقبل الفلترة بكل بُعد) ·
+ * كل بُعدٍ مُعطى شرطٌ على سطر القيد · وبلا تصفية: الدفتر كله كما كان
+ */
+export interface DimFilter {
+  propertyId?: string | null;
+  unitId?: string | null;
+  contractId?: string | null;
+  costCenterId?: string | null;
+  assetId?: string | null;
+}
+const DIM_COL: Record<keyof DimFilter, string> = {
+  propertyId: 'l.property_id', unitId: 'l.unit_id', contractId: 'l.contract_id', costCenterId: 'l.cost_center_id', assetId: 'l.asset_id',
+};
+/** شروط التصفية وقيمها · تُضاف إلى استعلامٍ على journal_lines l */
+export function dimConds(f: DimFilter | null | undefined): { sql: string[]; params: string[] } {
+  const sql: string[] = []; const params: string[] = [];
+  for (const k of Object.keys(DIM_COL) as Array<keyof DimFilter>) {
+    const v = f?.[k];
+    if (v) { sql.push(`${DIM_COL[k]} = ?`); params.push(v); }
+  }
+  return { sql, params };
+}
+export const hasDimFilter = (f: DimFilter | null | undefined): boolean => dimConds(f).sql.length > 0;
+
 /** حركات كل الحسابات خلال فترة دفعة واحدة · بدل استعلامين لكل حساب */
 export function allAccountMovements(
   db: DB,
   from: string | null,
-  to: string | null
+  to: string | null,
+  dims?: DimFilter | null,
 ): Map<string, { debit: number; credit: number }> {
-  const conds = [`e.status = 'مرحّل'`, `e.deleted_at IS NULL`];
-  const params: string[] = [];
+  const dc = dimConds(dims);
+  const conds = [`e.status = 'مرحّل'`, `e.deleted_at IS NULL`, ...dc.sql];
+  const params: string[] = [...dc.params];
   if (from) { conds.push(`e.date >= ?`); params.push(from); }
   if (to) { conds.push(`e.date <= ?`); params.push(to); }
   return new Map(
@@ -96,10 +123,12 @@ export function accountMovement(
   db: DB,
   code: string,
   from: string | null,
-  to: string | null
+  to: string | null,
+  dims?: DimFilter | null,
 ): { debit: number; credit: number } {
-  const conds = [`l.account_code = ?`, `e.status = 'مرحّل'`, `e.deleted_at IS NULL`];
-  const params: (string | number)[] = [code];
+  const dc = dimConds(dims);
+  const conds = [`l.account_code = ?`, `e.status = 'مرحّل'`, `e.deleted_at IS NULL`, ...dc.sql];
+  const params: (string | number)[] = [code, ...dc.params];
   if (from) { conds.push(`e.date >= ?`); params.push(from); }
   if (to) { conds.push(`e.date <= ?`); params.push(to); }
   const row = db.get<{ d: number; c: number }>(
@@ -112,10 +141,10 @@ export function accountMovement(
 }
 
 /** صافي تغيّر حساب خلال فترة باتجاه طبيعته (تغذي قائمة التدفقات) */
-export function accountPeriodChange(db: DB, code: string, from: string | null, to: string | null): number {
+export function accountPeriodChange(db: DB, code: string, from: string | null, to: string | null, dims?: DimFilter | null): number {
   const acc = getAccount(db, code);
   if (!acc) return 0;
-  const m = accountMovement(db, code, from, to);
+  const m = accountMovement(db, code, from, to, dims);
   return DEBIT_NORMAL_TYPES.has(acc.type) ? m.debit - m.credit : m.credit - m.debit;
 }
 
@@ -244,15 +273,16 @@ export interface TrialBalanceRow {
  * ورصيد آخر المدة · والافتتاحي المزروع يدخل أول المدة بطبيعة الحساب.
  * استعلام تجميعي واحد للحركات فلا يثقل بكثرة الحسابات.
  */
-export function trialBalance(db: DB, from: string | null, to: string | null): TrialBalanceRow[] {
+export function trialBalance(db: DB, from: string | null, to: string | null, dims?: DimFilter | null): TrialBalanceRow[] {
   const accounts = allAccounts(db);
+  const dc = dimConds(dims);
   const agg = (cond: string, params: (string | number)[]) => {
     const map = new Map<string, { d: number; c: number }>();
     for (const r of db.all<{ account_code: string; d: number; c: number }>(
       `SELECT l.account_code, COALESCE(SUM(l.debit_halalas),0) AS d, COALESCE(SUM(l.credit_halalas),0) AS c
        FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-       WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL${cond}
-       GROUP BY l.account_code`, params
+       WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL${cond}${dc.sql.map((x) => ' AND ' + x).join('')}
+       GROUP BY l.account_code`, [...params, ...dc.params]
     )) map.set(r.account_code, { d: Number(r.d), c: Number(r.c) });
     return map;
   };
@@ -262,7 +292,8 @@ export function trialBalance(db: DB, from: string | null, to: string | null): Tr
     [...(from ? [from] : []), ...(to ? [to] : [])]
   );
   return accounts.map((a) => {
-    const seeded = Number(a.opening_halalas || 0) * (DEBIT_NORMAL_TYPES.has(a.type) ? 1 : -1);
+    // الافتتاحي المزروع بلا أبعاد · فلا يدخل ميزاناً مصفّى ببُعد
+    const seeded = hasDimFilter(dims) ? 0 : Number(a.opening_halalas || 0) * (DEBIT_NORMAL_TYPES.has(a.type) ? 1 : -1);
     const b = before.get(a.code) ?? { d: 0, c: 0 };
     const m = during.get(a.code) ?? { d: 0, c: 0 };
     const opening = seeded + b.d - b.c;
@@ -274,4 +305,36 @@ export function trialBalance(db: DB, from: string | null, to: string | null): Tr
       closingHalalas: opening + m.d - m.c,
     };
   });
+}
+
+export interface CostCenterRow {
+  id: string;
+  name: string;
+  revenue: number;
+  expense: number;
+  net: number;
+}
+
+/**
+ * الإيرادات والمصروفات حسب مركز التكلفة خلال فترة (قرار المالك ٢٠٢٦-١٠-٠٤) · كل مركز بسطوره، وما لا مركز
+ * لسطره (قيود قديمة لم تُملأ) صفٌّ «بلا مركز» · ويقبل تصفية العقار والوحدة والعقد فوقه
+ */
+export function costCenterReport(db: DB, from: string | null, to: string | null, dims?: DimFilter | null): CostCenterRow[] {
+  const dc = dimConds({ ...(dims ?? {}), costCenterId: null });
+  const conds = [`e.status = 'مرحّل'`, `e.deleted_at IS NULL`, `a.type IN ('إيراد', 'مصروف')`, ...dc.sql];
+  const params: string[] = [...dc.params];
+  if (from) { conds.push(`e.date >= ?`); params.push(from); }
+  if (to) { conds.push(`e.date <= ?`); params.push(to); }
+  const rows = db.all<{ cc: string | null; name: string | null; gone: string | null; rev: number; exp: number }>(
+    `SELECT l.cost_center_id AS cc, c.name AS name, c.deleted_at AS gone,
+            COALESCE(SUM(CASE WHEN a.type = 'إيراد' THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS rev,
+            COALESCE(SUM(CASE WHEN a.type = 'مصروف' THEN l.debit_halalas - l.credit_halalas ELSE 0 END), 0) AS exp
+     FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.code = l.account_code
+     LEFT JOIN cost_centers c ON c.id = l.cost_center_id
+     WHERE ${conds.join(' AND ')}
+     GROUP BY l.cost_center_id ORDER BY (l.cost_center_id IS NULL), c.is_default DESC, c.name`, params);
+  return rows.map((r) => ({
+    id: r.cc ?? '', name: r.cc ? (r.name ? r.name + (r.gone ? ' (محذوف)' : '') : 'مركز محذوف') : 'بلا مركز', revenue: Number(r.rev), expense: Number(r.exp),
+    net: Number(r.rev) - Number(r.exp),
+  }));
 }

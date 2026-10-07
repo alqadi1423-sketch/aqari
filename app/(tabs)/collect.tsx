@@ -38,6 +38,8 @@ import { rescheduleAllNotifications } from '../../src/services/notifications';
 import { printReceipt } from '../../src/services/print';
 import { reportFailure } from '../../src/ui/failureDialog';
 
+import { CostCenterField } from '../../src/ui/CostCenters';
+import { GENERAL_COST_CENTER, withCostCenter } from '../../src/domain/accounting/dimensions';
 const FILTERS: Array<[CollectFilter, string]> = [
   ['due', 'غير مسدَّدة'], ['late', 'متأخرة'], ['month', 'هذا الشهر'],
   ['soon', 'قادمة'], ['paid', 'مسدَّدة'], ['all', 'الكل'],
@@ -260,7 +262,9 @@ export default function Collect() {
   }, [db, T_]);
 
   /** التسجيل الفعلي بعد التأكيد · منطق الترحيل كما هو */
-  const doRecordPayment = () => {
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const doRecordPayment = (...a: Parameters<typeof doRecordPaymentIn>) => withCostCenter(cc, () => doRecordPaymentIn(...a));
+  const doRecordPaymentIn = () => {
     try {
       const lines: RentPaymentLine[] = payLines
         .map((l) => ({ method: l.method, bankId: l.bankId || undefined, amountHalalas: toHalalas(l.amount) }))
@@ -542,6 +546,7 @@ export default function Collect() {
       >
         <Field label="الفترة/الدفعة المستحقة" value={payPeriod} onChange={setPayPeriod} />
         <DateField label="تاريخ الدفعة" value={payDate} onChange={setPayDate} />
+        <CostCenterField value={cc} onChange={setCc} />
         <T size={11.5} color={C.muted} style={{ marginBottom: 6 }}>طرق السداد</T>
         {payLines.map((l, i) => (
           <View key={i} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 9, marginBottom: 8 }}>

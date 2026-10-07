@@ -9,7 +9,7 @@ import { perfScreenShown } from '../src/perf/perf';
 import { Screen } from '../src/ui/Screen';
 import { Card, CardTitle, T, Num, EmptyState, Row, ChipGroup, BtnGhost, BtnPrimary, SetRow, SearchBox } from '../src/ui/components';
 import { Icon } from '../src/ui/icons';
-import { Sheet } from '../src/ui/Sheet';
+import { Sheet, SelectField } from '../src/ui/Sheet';
 import { useDeferredReady } from '../src/ui/useDeferredReady';
 import { Skeleton } from '../src/ui/Skeleton';
 import { DateField } from '../src/ui/DateField';
@@ -17,7 +17,8 @@ import { useApp, useFs } from '../src/ui/store';
 import { EntrySheet, srcTypeLabel } from '../src/ui/EntrySheet';
 import { useToast } from '../src/ui/Toast';
 import { C } from '../src/ui/theme';
-import { allAccounts, accountMovement, allAccountMovements, accountPeriodChange, trialBalance } from '../src/domain/accounting/ledger';
+import { allAccounts, accountMovement, allAccountMovements, accountPeriodChange, trialBalance, costCenterReport, dimConds, hasDimFilter, type DimFilter } from '../src/domain/accounting/ledger';
+import { costCenters, dimsLabel } from '../src/domain/accounting/dimensions';
 import { vatReturnData } from '../src/domain/vatReturn';
 import { dataYears, dataQuarters, defaultPeriod, quarterRange, QUARTER_AR } from '../src/domain/periods';
 import { useRouter } from 'expo-router';
@@ -25,7 +26,7 @@ import { today, toLocalISODate, dfmt } from '../src/domain/dates';
 import { fmt } from '../src/domain/money';
 import {
   exportUnitsReport, exportPropertiesReport, exportSuppliersReport, exportInvoicesReport,
-  exportVatReturn, exportTrialBalance, exportFinancialStatement,
+  exportVatReturn, exportTrialBalance, exportFinancialStatement, exportCostCenterReport,
   type ExportKind,
 } from '../src/services/reportExport';
 import type { IconName } from '../src/ui/icons';
@@ -34,7 +35,7 @@ import { useAccess, usePerm } from '../src/ui/access';
 import { routeAllowed } from '../src/domain/access/routes';
 
 type Range = 'month' | 'quarter' | 'year' | 'all' | 'custom';
-type Tab = 'income' | 'balance' | 'cash' | 'equity' | 'trial';
+type Tab = 'income' | 'balance' | 'cash' | 'equity' | 'trial' | 'cc';
 type DetailKind = 'unit' | 'property' | 'supplier' | 'invoices';
 
 const DETAIL_REPORTS: Array<{ kind: DetailKind; title: string; icon: IconName }> = [
@@ -62,6 +63,10 @@ export default function Reports() {
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
   const [tab, setTab] = useState<Tab>('income');
+  // التصفية بالأبعاد (قرار المالك ٢٠٢٦-١٠-٠٤): العقار والوحدة والعقد ومركز التكلفة · تسري على كل قائمة
+  const [dimF, setDimF] = useState<DimFilter>({});
+  const [dimOpen, setDimOpen] = useState(false);
+  const filtered = hasDimFilter(dimF);
   const ready = useDeferredReady();
   const fs = useFs();
   // أعرضة أعمدة الجداول · تكبر مع مقياس الخط فلا تُقصّ كلمة ولا يُبتر رقم
@@ -74,7 +79,7 @@ export default function Reports() {
     if (tabFirst.current) { tabFirst.current = false; return; }
     const names: Record<Tab, string> = {
       income: 'قائمة الدخل', balance: 'المركز المالي', cash: 'التدفقات النقدية',
-      equity: 'حقوق الملكية', trial: 'ميزان المراجعة',
+      equity: 'حقوق الملكية', trial: 'ميزان المراجعة', cc: 'مراكز التكلفة',
     };
     requestAnimationFrame(() => requestAnimationFrame(() => perfScreenShown('التقارير · ' + names[tab])));
   }, [tab]);
@@ -124,11 +129,11 @@ export default function Reports() {
     const liab = accounts.filter((a) => a.type === 'خصم');
     const eq = accounts.filter((a) => a.type === 'حقوق ملكية');
     // حركات الفترتين وأرصدة التاريخين بأربعة استعلامات تجميعية · لا استعلام لكل حساب
-    const curMap = ready ? allAccountMovements(db, from, to) : new Map<string, { debit: number; credit: number }>();
-    const prevMap = ready && prev.from ? allAccountMovements(db, prev.from, prev.to) : new Map<string, { debit: number; credit: number }>();
+    const curMap = ready ? allAccountMovements(db, from, to, dimF) : new Map<string, { debit: number; credit: number }>();
+    const prevMap = ready && prev.from ? allAccountMovements(db, prev.from, prev.to, dimF) : new Map<string, { debit: number; credit: number }>();
     const ZERO = { debit: 0, credit: 0 };
     const mv = (code: string, f = from, t: string | null = to) =>
-      (f === from && t === to) ? (curMap.get(code) ?? ZERO) : accountMovement(db, code, f, t);
+      (f === from && t === to) ? (curMap.get(code) ?? ZERO) : accountMovement(db, code, f, t, dimF);
     const pv = (code: string) => (prevMap.get(code) ?? ZERO);
     const revRows = rev.map((a) => ({ code: a.code, name: a.name, v: mv(a.code).credit - mv(a.code).debit, p: pv(a.code).credit - pv(a.code).debit }));
     const expRows = exp.map((a) => ({ code: a.code, name: a.name, v: mv(a.code).debit - mv(a.code).credit, p: pv(a.code).debit - pv(a.code).credit }));
@@ -137,30 +142,30 @@ export default function Reports() {
     const prevRev = revRows.reduce((s2, r) => s2 + r.p, 0);
     const prevExp = expRows.reduce((s2, r) => s2 + r.p, 0);
     // المركز: كما في نهاية المدة، والمقارنة كما في نهاية المدة السابقة
-    const balToMap = allAccountMovements(db, null, to);
-    const balPrevMap = prev.to ? allAccountMovements(db, null, prev.to) : new Map<string, { debit: number; credit: number }>();
+    const balToMap = allAccountMovements(db, null, to, dimF);
+    const balPrevMap = prev.to ? allAccountMovements(db, null, prev.to, dimF) : new Map<string, { debit: number; credit: number }>();
     const balFrom = (map: Map<string, { debit: number; credit: number }>, a: { code: string; type: string; opening_halalas: number }) => {
       const m = map.get(a.code) ?? { debit: 0, credit: 0 };
       const net = m.debit - m.credit;
       const oriented = ['أصل', 'مصروف'].includes(a.type) ? net : -net;
-      return oriented + Number(a.opening_halalas || 0);
+      return oriented + (filtered ? 0 : Number(a.opening_halalas || 0));
     };
     const balAt = (a: { code: string; type: string; opening_halalas: number }, at: string | null) =>
-      at === to ? balFrom(balToMap, a) : at === prev.to ? balFrom(balPrevMap, a) : balFrom(allAccountMovements(db, null, at), a);
+      at === to ? balFrom(balToMap, a) : at === prev.to ? balFrom(balPrevMap, a) : balFrom(allAccountMovements(db, null, at, dimF), a);
     const assetRows = asset.map((a) => ({ code: a.code, name: a.name, v: balAt(a, to), p: prev.to ? balAt(a, prev.to) : 0 }));
     const liabRows = liab.map((a) => ({ code: a.code, name: a.name, v: balAt(a, to), p: prev.to ? balAt(a, prev.to) : 0 }));
     const eqRows = eq.map((a) => ({ code: a.code, name: a.name, v: balAt(a, to), p: prev.to ? balAt(a, prev.to) : 0 }));
     const sumA = assetRows.reduce((s2, r) => s2 + r.v, 0);
     const sumL = liabRows.reduce((s2, r) => s2 + r.v, 0);
     const sumE = eqRows.reduce((s2, r) => s2 + r.v, 0);
-    const arChange = accountPeriodChange(db, '1200', from, to);
-    const apChange = accountPeriodChange(db, '2100', from, to);
-    const faChange = accountPeriodChange(db, '1400', from, to);
+    const arChange = accountPeriodChange(db, '1200', from, to, dimF);
+    const apChange = accountPeriodChange(db, '2100', from, to, dimF);
+    const faChange = accountPeriodChange(db, '1400', from, to, dimF);
     const net = totalRev - totalExp;
     const prevNet = prevRev - prevExp;
     const opCash = net - arChange + apChange;
-    const prevOpCash = prevNet - (prev.from ? accountPeriodChange(db, '1200', prev.from, prev.to) : 0)
-      + (prev.from ? accountPeriodChange(db, '2100', prev.from, prev.to) : 0);
+    const prevOpCash = prevNet - (prev.from ? accountPeriodChange(db, '1200', prev.from, prev.to, dimF) : 0)
+      + (prev.from ? accountPeriodChange(db, '2100', prev.from, prev.to, dimF) : 0);
     // حقوق الملكية: أولها + إضافات المالك - مسحوباته + صافي الربح = آخرها
     const capIn = mv('3100').credit;
     const capOut = mv('3100').debit;
@@ -170,7 +175,8 @@ export default function Reports() {
       capIn: pv('3100').credit, capOut: pv('3100').debit, net: prevNet,
     } : { capIn: 0, capOut: 0, net: 0 };
     // ميزان المراجعة
-    const trial = trialBalance(db, from, to);
+    const trial = trialBalance(db, from, to, dimF);
+    const ccRows = tab === 'cc' ? costCenterReport(db, from, to, dimF) : [];
     const trialD = trial.reduce((s2, r) => s2 + r.debitHalalas, 0);
     const trialC = trial.reduce((s2, r) => s2 + r.creditHalalas, 0);
     const hasEntries = !!db.get(`SELECT id FROM journal_entries WHERE status='مرحّل' AND deleted_at IS NULL LIMIT 1`);
@@ -178,10 +184,27 @@ export default function Reports() {
       revRows, expRows, totalRev, totalExp, prevRev, prevExp, prevNet,
       assetRows, liabRows, eqRows, sumA, sumL, sumE,
       arChange, apChange, faChange, net, opCash, prevOpCash,
-      equity, prevEquity, trial, trialD, trialC, hasEntries,
+      equity, prevEquity, trial, trialD, trialC, hasEntries, ccRows,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, version, from, to, prev.from, prev.to, ready]);
+  }, [db, version, from, to, prev.from, prev.to, ready, dimF, tab === 'cc']);
+  const dimText = useMemo(() => dimsLabel(db, dimF), [db, dimF]);
+  // خيارات التصفية · الوحدات من العقار المختار، والعقود من الوحدة أو العقار
+  const dimOptions = useMemo(() => {
+    if (!dimOpen) return { props: [], units: [], contracts: [], centers: [] };
+    const props = db.all<{ id: string; name: string }>(`SELECT id, name FROM properties WHERE deleted_at IS NULL ORDER BY name`);
+    const units = db.all<{ id: string; unit_no: string }>(
+      `SELECT id, unit_no FROM units WHERE deleted_at IS NULL ${dimF.propertyId ? 'AND property_id = ?' : ''} ORDER BY COALESCE(unit_no_key, unit_no), unit_no`,
+      dimF.propertyId ? [dimF.propertyId] : []);
+    const cw: string[] = []; const cp: string[] = [];
+    if (dimF.unitId) { cw.push('c.unit_id = ?'); cp.push(dimF.unitId); }
+    else if (dimF.propertyId) { cw.push('u.property_id = ?'); cp.push(dimF.propertyId); }
+    const contracts = db.all<{ id: string; label: string }>(
+      `SELECT c.id, COALESCE(NULLIF(c.contract_no, ''), c.tenant_name) || ' · ' || c.tenant_name AS label FROM contracts c LEFT JOIN units u ON u.id = c.unit_id
+       WHERE c.deleted_at IS NULL ${cw.length ? 'AND ' + cw.join(' AND ') : ''} ORDER BY c.start DESC`, cp);
+    return { props, units, contracts, centers: costCenters(db) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, version, dimOpen, dimF.propertyId, dimF.unitId]);
 
   const toLabel = dfmt(to);
   const arDigits = (n: number | string) => String(n).replace(/\d/g, (d) => '٠١٢٣٤٥٦٧٨٩'[Number(d)]);
@@ -287,8 +310,10 @@ export default function Reports() {
   // شريط تصدير واحد للقائمة المعروضة أياً كان تبويبها · ميزان المراجعة له مصدِّره الخاص
   const runStatementExport = (kind: ExportKind) =>
     (tab === 'trial'
-      ? exportTrialBalance(db, from, to, kind)
-      : exportFinancialStatement(db, tab, from, to, kind)
+      ? exportTrialBalance(db, from, to, kind, dimF)
+      : tab === 'cc'
+        ? exportCostCenterReport(db, from, to, kind, dimF)
+        : exportFinancialStatement(db, tab, from, to, kind, dimF)
     ).catch(() => toast('تعذّر التصدير'));
 
   const runDetailExport = async (kind: ExportKind) => {
@@ -353,9 +378,37 @@ export default function Reports() {
       <View style={{ marginVertical: 8 }}>
         <T size={11.5} color={C.muted} style={{ marginBottom: 4 }}>نوع القائمة</T>
         <ChipGroup
-          options={[['income', 'قائمة الدخل'], ['balance', 'المركز المالي'], ['cash', 'التدفقات النقدية'], ['equity', 'حقوق الملكية'], ['trial', 'ميزان المراجعة']]}
+          options={[['income', 'قائمة الدخل'], ['balance', 'المركز المالي'], ['cash', 'التدفقات النقدية'], ['equity', 'حقوق الملكية'], ['trial', 'ميزان المراجعة'], ['cc', 'مراكز التكلفة']]}
           value={tab} onChange={setTab} />
       </View>
+      <Row style={{ justifyContent: 'space-between', marginBottom: 8 }} gap={8}>
+        <T size={11.5} color={filtered ? C.ink : C.muted} style={{ flex: 1 }} numberOfLines={2}>{filtered ? dimText : 'كل العقارات والمراكز'}</T>
+        {filtered ? <BtnGhost small title="مسح" onPress={() => setDimF({})} /> : null}
+        <BtnGhost small icon="filter" title="تصفية" onPress={() => setDimOpen(true)} />
+      </Row>
+      {filtered && tab === 'balance' ? <T size={11} color={C.muted} style={{ marginBottom: 6 }}>المصفّاة لا تشمل الأرصدة الافتتاحية · فهي بلا عقار ولا مركز</T> : null}
+      {tab === 'cc' && (
+        <Card>
+          <T size={14} bold color={C.ink} style={{ marginBottom: 6 }}>الإيرادات والمصروفات حسب مركز التكلفة · {periodLabel}</T>
+          <Row style={{ paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: C.line }}>
+            <T size={10.5} bold color={C.muted} style={{ flex: 1 }}>المركز</T>
+            <Num size={10.5} color={C.muted} style={{ width: COL_NUM, textAlign: 'left' }}>الإيرادات</Num>
+            <Num size={10.5} color={C.muted} style={{ width: COL_NUM, textAlign: 'left' }}>المصروفات</Num>
+            <Num size={10.5} color={C.muted} style={{ width: COL_NUM, textAlign: 'left' }}>الصافي</Num>
+          </Row>
+          {data.ccRows.map((r) => (
+            <Pressable key={r.id || 'none'} disabled={!r.id} onPress={() => setDimF({ ...dimF, costCenterId: r.id })}>
+              <Row style={{ paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
+                <T size={12} style={{ flex: 1, minWidth: NAME_MIN }} numberOfLines={2}>{r.name}</T>
+                <Num size={11.5} style={{ width: COL_NUM, textAlign: 'left' }}>{fmt(r.revenue)}</Num>
+                <Num size={11.5} style={{ width: COL_NUM, textAlign: 'left' }}>{fmt(r.expense)}</Num>
+                <Num size={11.5} bold color={r.net < 0 ? C.rose : C.ink} style={{ width: COL_NUM, textAlign: 'left' }}>{fmt(r.net)}</Num>
+              </Row>
+            </Pressable>
+          ))}
+          {!data.ccRows.length ? <T size={11} color={C.muted} style={{ marginTop: 8 }}>لا إيرادات ولا مصروفات في الفترة</T> : null}
+        </Card>
+      )}
 
       {tab === 'income' && (
         <Card>
@@ -473,6 +526,24 @@ export default function Reports() {
         </Row>
       ) : null}
 
+      {dimOpen ? (
+        <Sheet visible onClose={() => setDimOpen(false)} title="التصفية بالأبعاد"
+          footer={<><View style={{ flex: 1 }}><BtnGhost title="مسح الكل" onPress={() => setDimF({})} /></View><View style={{ flex: 1 }}><BtnPrimary title="تم" onPress={() => setDimOpen(false)} /></View></>}>
+          <SelectField label="العقار" value={dimF.propertyId ?? ''} placeholder="كل العقارات"
+            options={[{ value: '', label: 'كل العقارات' }, ...dimOptions.props.map((p) => ({ value: p.id, label: p.name }))]}
+            onPick={(v) => setDimF({ ...dimF, propertyId: v || null, unitId: null, contractId: null })} />
+          <SelectField label="الوحدة" value={dimF.unitId ?? ''} placeholder="كل الوحدات"
+            options={[{ value: '', label: 'كل الوحدات' }, ...dimOptions.units.map((u) => ({ value: u.id, label: u.unit_no }))]}
+            onPick={(v) => setDimF({ ...dimF, unitId: v || null, contractId: null })} />
+          <SelectField label="العقد" value={dimF.contractId ?? ''} placeholder="كل العقود"
+            options={[{ value: '', label: 'كل العقود' }, ...dimOptions.contracts.map((c) => ({ value: c.id, label: c.label }))]}
+            onPick={(v) => setDimF({ ...dimF, contractId: v || null })} />
+          <SelectField label="مركز التكلفة" value={dimF.costCenterId ?? ''} placeholder="كل المراكز"
+            options={[{ value: '', label: 'كل المراكز' }, ...dimOptions.centers.map((c) => ({ value: c.id, label: c.name }))]}
+            onPick={(v) => setDimF({ ...dimF, costCenterId: v || null })} />
+        </Sheet>
+      ) : null}
+
       {/* كشف حركة حساب · من ضغط صف في الميزان · وكل سطر يفتح ورقة تفاصيل قيده */}
       {stmtAccount && (
         <Sheet visible onClose={() => setStmtAccount(null)} title={stmtAccount.code + ' · ' + stmtAccount.name} tall>
@@ -485,7 +556,8 @@ export default function Reports() {
                FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
                WHERE l.account_code = ? AND e.status = 'مرحّل' AND e.deleted_at IS NULL
                  ${from ? "AND e.date >= '" + from + "'" : ''} AND e.date <= '${to}'
-               ORDER BY e.date, e.created_at`, [stmtAccount.code]);
+                 ${dimConds(dimF).sql.map((c) => 'AND ' + c).join(' ')}
+               ORDER BY e.date, e.created_at`, [stmtAccount.code, ...dimConds(dimF).params]);
             let run = 0;
             return lines2.length ? lines2.map((l, i) => {
               run += Number(l.debit_halalas) - Number(l.credit_halalas);

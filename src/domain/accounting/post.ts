@@ -5,12 +5,15 @@ import { today } from '../dates';
 import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
+import { dimsFromSource, hasDimColumns, lineDims, type Dims } from './dimensions';
 
 export interface EntryLine {
   account: string;
   descr?: string;
   debit: number; // هللات
   credit: number; // هللات
+  /** أبعاد هذا السطر وحده · تغلب أبعاد القيد (الإهلاك لكل أصل، والعاكس بأبعاد أصله) */
+  dims?: Dims;
 }
 
 export interface PostedEntry {
@@ -65,6 +68,8 @@ export function postEntry(
     auto?: boolean;
     srcType?: string;
     srcId?: string;
+    /** أبعاد القيد الصريحة · تغلب المشتقة من مصدره (dimensions.ts) */
+    dims?: Dims;
   }
 ): PostedEntry | null {
   const rows = args.lines.filter((l) => Math.abs(l.debit || 0) > 0 || Math.abs(l.credit || 0) > 0);
@@ -88,11 +93,26 @@ export function postEntry(
        VALUES (?,?,?,?,'قيد الإنشاء',?,?,?,?)`,
       [id, no, args.date, args.memo, args.auto === false ? 0 : 1, args.srcType ?? null, args.srcId ?? null, now]
     );
+    // أبعاد كل سطر: من مصدر القيد، والصريح يغلب، ومركز التكلفة من العملية الجارية (قرار المالك ٢٠٢٦-١٠-٠٤) ·
+    // وقاعدةٌ قبل الهجرة ٢٨ (نسخة تُصحَّح قبل ترقيتها) تُرحَّل سطورها بلا أبعاد كما كانت
+    if (!hasDimColumns(db)) {
+      for (const l of rows) {
+        db.run(
+          `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas) VALUES (?,?,?,?,?,?)`,
+          [uid(), id, l.account, l.descr ?? '', l.debit || 0, l.credit || 0]);
+      }
+      db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [id]);
+      return { id, no };
+    }
+    const derived = dimsFromSource(db, args.srcType, args.srcId);
     for (const l of rows) {
+      const d = lineDims(derived, args.dims, l.dims);
       db.run(
-        `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas)
-         VALUES (?,?,?,?,?,?)`,
-        [uid(), id, l.account, l.descr ?? '', l.debit || 0, l.credit || 0]
+        `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas,
+           property_id, unit_id, contract_id, cost_center_id, asset_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        [uid(), id, l.account, l.descr ?? '', l.debit || 0, l.credit || 0,
+         d.propertyId, d.unitId, d.contractId, d.costCenterId, d.assetId]
       );
     }
     // الترقية · المحفّز trg_je_post_balanced يتحقق هنا داخل القاعدة
@@ -156,19 +176,25 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string, date: s
     [entryId]
   );
   if (!e) return null;
-  const lines = db.all<{ account_code: string; descr: string; debit_halalas: number; credit_halalas: number }>(
-    `SELECT account_code, descr, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`,
+  const lines = db.all<{
+    account_code: string; descr: string; debit_halalas: number; credit_halalas: number;
+    property_id: string | null; unit_id: string | null; contract_id: string | null; cost_center_id: string | null; asset_id: string | null;
+  }>(
+    `SELECT account_code, descr, debit_halalas, credit_halalas${hasDimColumns(db) ? ', property_id, unit_id, contract_id, cost_center_id, asset_id' : ''}
+     FROM journal_lines WHERE entry_id = ?`,
     [e.id]
   );
   return db.transaction(() => {
     const posted = postEntry(db, {
       date,
       memo: memo ?? 'عكس قيد ' + e.no,
+      // العاكس بأبعاد أصله سطراً بسطر
       lines: lines.map((l) => ({
         account: l.account_code,
         descr: l.descr,
         debit: Number(l.credit_halalas),
         credit: Number(l.debit_halalas),
+        dims: { propertyId: l.property_id, unitId: l.unit_id, contractId: l.contract_id, costCenterId: l.cost_center_id, assetId: l.asset_id },
       })),
       srcType: (e.src_type ?? 'manual') + '_rev',
       srcId: e.src_id ?? e.id,
@@ -211,9 +237,11 @@ export function reverseAllPostedEntries(db: DB, reason: string, date: string = t
         [id, nextJournalNo(db), date, 'عكس قيد ' + t.no + ' · ' + reason,
          (t.src_type ?? 'manual') + '_rev', t.src_id ?? t.id, now]
       );
+      // المرآة بأبعاد أصلها · وقاعدةٌ قبل الهجرة ٢٨ بلا أبعاد
+      const dc = hasDimColumns(db) ? ', property_id, unit_id, contract_id, cost_center_id, asset_id' : '';
       db.run(
-        `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas)
-         SELECT lower(hex(randomblob(10))), ?, account_code, descr, credit_halalas, debit_halalas
+        `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas${dc})
+         SELECT lower(hex(randomblob(10))), ?, account_code, descr, credit_halalas, debit_halalas${dc}
          FROM journal_lines WHERE entry_id = ?`,
         [id, t.id]
       );

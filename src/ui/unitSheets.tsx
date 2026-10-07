@@ -40,6 +40,8 @@ import { reportFailure } from './failureDialog';
 import { useAccess, usePerm } from './access';
 import { routeAllowed } from '../domain/access/routes';
 
+import { CostCenterField } from './CostCenters';
+import { GENERAL_COST_CENTER, withCostCenter } from '../domain/accounting/dimensions';
 export function UnitFormSheet({
   propertyId, unitId, onClose, onSaved,
 }: { propertyId?: string; unitId?: string; onClose: () => void; onSaved: () => void }) {
@@ -153,6 +155,7 @@ export function UnitDetailSheet({
   // تسوية عربون حجزٍ انتهى ولم يُسوَّ (المراجعة ٤.٥) · بقرار المالك وتاريخه
   const [settle, setSettle] = useState<{ id: string; name: string; deposit: number } | null>(null);
   const [settleDate, setSettleDate] = useState(today());
+  const [cc, setCc] = useState(GENERAL_COST_CENTER);
   // «إيداع المالك» بالناقص حين لا يكفي النقد لردّ عربون (قرار المالك ٢٠٢٦-١٠-٠٥)
   const [depositFor, setDepositFor] = useState<number | null>(null);
   const canDeposit = usePerm('banks').add;
@@ -282,16 +285,17 @@ export function UnitDetailSheet({
       {settle ? (
         <Sheet visible onClose={() => setSettle(null)} title={'تسوية عربون «' + settle.name + '»'}>
           <DateField label="تاريخ الرد أو المصادرة" value={settleDate} onChange={setSettleDate} />
+          <CostCenterField value={cc} onChange={setCc} />
           <View style={{ marginBottom: 8 }}>
             <CashGate needed={settle.deposit} what="ردّ العربون">
               <BtnPrimary title={'ردّ العربون لصاحبه (' + fmt(settle.deposit) + ')'} onPress={() => {
-                try { cancelReservation(db, settle.id, false, settleDate); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
+                try { withCostCenter(cc, () => cancelReservation(db, settle.id, false, settleDate)); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
                 catch (e) { reportFailure({ title: 'تعذّرت التسوية', e }); }
               }} />
             </CashGate>
           </View>
           <BtnGhost danger title={'مصادرة العربون إيراداً (' + fmt(settle.deposit) + ')'} onPress={() => {
-            try { cancelReservation(db, settle.id, true, settleDate); setSettle(null); bump(); toast('رُحّل قيد مصادرة العربون'); }
+            try { withCostCenter(cc, () => cancelReservation(db, settle.id, true, settleDate)); setSettle(null); bump(); toast('رُحّل قيد مصادرة العربون'); }
             catch (e) { reportFailure({ title: 'تعذّرت التسوية', e }); }
           }} />
         </Sheet>

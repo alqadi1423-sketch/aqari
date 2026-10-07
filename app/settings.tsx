@@ -56,6 +56,8 @@ import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orpha
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
 import { EntrySheet } from '../src/ui/EntrySheet';
+import { CostCentersSheet, DimsBackfillSheet, CostCenterField } from '../src/ui/CostCenters';
+import { costCenters, planDimsBackfill, GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 import { reviewData } from '../src/domain/backup/checks';
 import { useAccess } from '../src/ui/access';
 import { canView, isAdmin } from '../src/domain/access/access';
@@ -136,7 +138,7 @@ export default function Settings() {
   const setProgress = task.report;
   // مراجعة الأقساط من الدفتر · قراءة عند كل تغيير، ولا يُطبَّق شيء إلا بموافقة المستخدم
   const [reviewOpen, setReviewOpen] = useState(false);
-  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db), kept: keptForReview(db), checks: reviewData(db).notes }),
+  const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db), kept: keptForReview(db), checks: reviewData(db).notes, dims: planDimsBackfill(db) }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   // تسوية فائض: ردّ للمستأجر بتاريخه وطريقته، أو تحويله رصيداً دائناً
@@ -145,6 +147,7 @@ export default function Settings() {
   const [settleDate, setSettleDate] = useState(today());
   const [settleMethod, setSettleMethod] = useState<'cash' | 'bank' | ''>('');
   const [settleBank, setSettleBank] = useState('');
+  const [surplusCc, setSurplusCc] = useState(GENERAL_COST_CENTER);
   const banks = useMemo(() => db.all<{ id: string; name: string }>(
     `SELECT id, name FROM banks WHERE deleted_at IS NULL AND archived = 0 ORDER BY name`),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -161,7 +164,10 @@ export default function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   const reviewCount = review.surpluses.length + review.plan.changes.length + review.plan.issues.length
-    + review.unbooked.items.length + review.unbooked.ambiguous.length + review.kept.length + review.checks.length;
+    + review.unbooked.items.length + review.unbooked.ambiguous.length + review.kept.length + review.checks.length + review.dims.known.length + review.dims.unknown.length;
+  // مراكز التكلفة وأبعاد القيود القديمة
+  const [ccOpen, setCcOpen] = useState(false);
+  const [dimsOpen, setDimsOpen] = useState(false);
   // قيدٌ من قائمة المراجعة مفتوحٌ بتفاصيله
   const [keptEntry, setKeptEntry] = useState<string | null>(null);
   const [keptCancel, setKeptCancel] = useState<{ id: string; no: string } | null>(null);
@@ -689,6 +695,7 @@ export default function Settings() {
         <ValueRow icon="invoice" title="ضريبة القيمة المضافة" value={vatOn ? 'مفعّلة' : 'مطفأة · لا تُحتسب'}
           onPress={() => openChoice('ضريبة القيمة المضافة', [[0, 'مطفأة · لا تُحتسب'], [1, 'مفعّلة']], vatOn,
             (v) => { db.transaction(() => db.run(`UPDATE company SET vat_enabled = ? WHERE id = 1`, [v])); bump(); })} />
+        <ValueRow icon="chart" title="مراكز التكلفة" value={costCenters(db).length + ' مركز'} onPress={() => setCcOpen(true)} />
       </Card> : null}
 
       {/* ٤ · التنبيهات */}
@@ -984,6 +991,8 @@ export default function Settings() {
         </Row>
       </Sheet>
 
+      {ccOpen ? <CostCentersSheet onClose={() => setCcOpen(false)} /> : null}
+      {dimsOpen ? <DimsBackfillSheet onClose={() => setDimsOpen(false)} /> : null}
       {keptCancel ? <SourceCancelSheet entryId={keptCancel.id} entryNo={keptCancel.no} onClose={() => setKeptCancel(null)} /> : null}
       {keptEntry ? <EntrySheet entryId={keptEntry} onClose={() => setKeptEntry(null)} onLeave={() => { setKeptEntry(null); setReviewOpen(false); }} /> : null}
 
@@ -1061,6 +1070,15 @@ export default function Settings() {
             ))}
           </>
         ) : null}
+        {review.dims.known.length + review.dims.unknown.length ? (
+          <>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>أبعاد القيود القديمة</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>
+              {'قيودٌ قبل الأبعاد بلا عقار ولا وحدة ولا عقد · يُعرف مصدر ' + review.dims.known.length + ' ولا يُعرف مصدر ' + review.dims.unknown.length + ' · تُعرض قبل الملء'}
+            </T>
+            <BtnGhost title="عرض وملء" onPress={() => setDimsOpen(true)} />
+          </>
+        ) : null}
         {review.kept.length ? (
           <>
             <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>قيود بلا مستند بعد الاستعادة</T>
@@ -1121,11 +1139,11 @@ export default function Settings() {
               const cur = settle;
               setSettle(null);
               try {
-                const e = settleSurplus(db, cur.s.contractId, {
+                const e = withCostCenter(surplusCc, () => settleSurplus(db, cur.s.contractId, {
                   action: cur.action, amountHalalas: toHalalas(settleAmount), date: settleDate,
                   method: cur.action === 'refund' ? (settleMethod || undefined) : undefined,
                   bankId: settleMethod === 'bank' ? settleBank : undefined,
-                });
+                }));
                 toast((cur.action === 'credit' ? 'حُوّل الفائض رصيداً دائناً · قيد ' : 'سُجّل ردّ الفائض · قيد ') + e.no);
               } catch (e2) {
                 reportFailure({ title: 'تعذّرت تسوية الفائض', e: e2 });
@@ -1144,6 +1162,7 @@ export default function Settings() {
             </T>
             <Field label={'المبلغ (الفائض ' + fmt(settle.s.amount) + ')'} value={settleAmount} onChange={setSettleAmount} keyboard="numeric" ltr />
             <DateField label={settle.action === 'credit' ? 'تاريخ التحويل' : 'تاريخ الردّ'} value={settleDate} onChange={setSettleDate} />
+            <CostCenterField value={surplusCc} onChange={setSurplusCc} />
             {settle.action === 'refund' && settleMethod === 'cash' ? <CashShortNote needed={toHalalas(settleAmount)} what="ردّ الفائض نقداً" /> : null}
             {settle.action === 'refund' ? (
               <>

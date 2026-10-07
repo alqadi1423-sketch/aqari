@@ -290,17 +290,38 @@ export function resolvePendingReversals(db: DB): number {
   return done;
 }
 
+const DIM_COLS = ['property_id', 'unit_id', 'contract_id', 'cost_center_id', 'asset_id'] as const;
+
+/** أبعاد سطورٍ قائمة من مستند وارد · بمعرّف السطر وحده، ولا مبلغ ولا حساب يُمسّ · يعيد عدد ما تغيّر */
+function applyLineDims(db: DB, entryId: string, lines: RowData[]): number {
+  let n = 0;
+  for (const l of lines) {
+    // مستندٌ من إصدارٍ بلا أبعاد لا يمحو أبعاداً قائمة
+    if (!l.id || !DIM_COLS.some((c) => c in l)) continue;
+    const cur = db.get<Record<string, string | null>>(
+      `SELECT ${DIM_COLS.join(', ')} FROM journal_lines WHERE id = ? AND entry_id = ?`, [l.id as string, entryId]);
+    if (!cur) continue;
+    const next = DIM_COLS.map((c) => (l[c] as string | null | undefined) ?? null);
+    if (DIM_COLS.every((c, i) => (cur[c] ?? null) === next[i])) continue;
+    db.run(`UPDATE journal_lines SET ${DIM_COLS.map((c) => c + ' = ?').join(', ')} WHERE id = ?`, [...next, l.id as string]);
+    n++;
+  }
+  return n;
+}
+
 function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<string> }): 'applied' | 'kept' {
   const d = doc.d!;
   const local = db.get<{ status: string; reversed_by: string | null }>(
     `SELECT status, reversed_by FROM journal_entries WHERE id = ?`, [doc.k]);
   const remoteRev = (d.reversed_by as string | null) ?? null;
   if (local?.status === 'مرحّل') {
+    // أبعاد سطور القيد المرحّل وحدها تصل (ملء القيود القديمة · الهجرة ٢٨) · ولا يتغير فيه غيرها
+    const dimsChanged = cols.l.has('cost_center_id') ? applyLineDims(db, doc.k, doc.lines ?? []) : 0;
     if (remoteRev && !local.reversed_by) {
       linkReversal(db, doc.k, remoteRev);
       return 'applied';
     }
-    return 'kept';
+    return dimsChanged ? 'applied' : 'kept';
   }
   if (local) db.run(`DELETE FROM journal_lines WHERE entry_id = ?`, [doc.k]); // مسودة · سطورها تُستبدل
   const posted = d.status === 'مرحّل';

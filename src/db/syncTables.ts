@@ -69,9 +69,16 @@ export const LATER_SYNC_TABLES: SyncTable[] = [
   { name: 'attachments', pk: id, pkCols: ['id'] },
 ];
 
+/** مراكز التكلفة (الهجرة ٢٨) · بُعدٌ على سطر القيد، ومحفّزاتها في هجرتها بالالتقاط المعتاد */
+export const DIMENSION_SYNC_TABLES: SyncTable[] = [
+  { name: 'cost_centers', pk: id, pkCols: ['id'] },
+];
+
 /** كل جداول المزامنة بترتيب التطبيق · البصمة قبل مرفقها، وسجل العمليات آخراً */
 export const SYNC_TABLES: SyncTable[] = [
-  ...BASE_SYNC_TABLES.filter((t) => t.name !== 'audit_log'),
+  ...BASE_SYNC_TABLES.slice(0, 1),
+  ...DIMENSION_SYNC_TABLES,
+  ...BASE_SYNC_TABLES.slice(1).filter((t) => t.name !== 'audit_log'),
   ...LATER_SYNC_TABLES,
   ...BASE_SYNC_TABLES.filter((t) => t.name === 'audit_log'),
 ];

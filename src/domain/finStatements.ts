@@ -3,7 +3,7 @@
  * لا استيراد لأي شيء أصلي فتُختبر آلياً وتُولَّد عيناتها من بيئة الاختبار.
  */
 import type { DB } from '../db/adapter';
-import { allAccounts, accountMovement, accountPeriodChange } from './accounting/ledger';
+import { allAccounts, accountMovement, accountPeriodChange, hasDimFilter, type DimFilter } from './accounting/ledger';
 import { fmt } from './money';
 import { dfmt, addDays } from './dates';
 import type { ReportBlock, Cell } from './officeBuild';
@@ -19,14 +19,15 @@ const periodLabel = (from: string | null, to: string) =>
 export type FinStatement = 'income' | 'balance' | 'cash' | 'equity';
 
 /** قائمة مالية واحدة كتلةً قابلة للعرض بالصيغ الثلاث · نفس أرقام الشاشة حرفياً */
-export function financialStatementBlock(db: DB, tab: FinStatement, from: string | null, to: string): ReportBlock {
+export function financialStatementBlock(db: DB, tab: FinStatement, from: string | null, to: string, dims?: DimFilter | null): ReportBlock {
   const accounts = allAccounts(db);
-  const mv = (code: string) => accountMovement(db, code, from, to);
+  const mv = (code: string) => accountMovement(db, code, from, to, dims);
   const balAt = (a: { code: string; type: string; opening_halalas: number }, at: string | null) => {
-    const m = accountMovement(db, a.code, null, at);
+    const m = accountMovement(db, a.code, null, at, dims);
     const net = m.debit - m.credit;
     const oriented = ['أصل', 'مصروف'].includes(a.type) ? net : -net;
-    return oriented + Number(a.opening_halalas || 0);
+    // الافتتاحي المزروع بلا أبعاد · فلا يدخل قائمةً مصفّاة ببُعد
+    return oriented + (hasDimFilter(dims) ? 0 : Number(a.opening_halalas || 0));
   };
   const rev = accounts.filter((a) => a.type === 'إيراد').map((a) => ({ name: a.name, v: mv(a.code).credit - mv(a.code).debit }));
   const exp = accounts.filter((a) => a.type === 'مصروف').map((a) => ({ name: a.name, v: mv(a.code).debit - mv(a.code).credit }));
