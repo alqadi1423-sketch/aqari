@@ -356,18 +356,18 @@ export function LinesEditor({ lines, onChange, allowLink }: { lines: LineDraft[]
     <View>
       {lines.map((l, i) => (
         <View key={i} style={{ borderWidth: 1, borderColor: C.paperLine, borderRadius: 8, padding: 10, marginBottom: 8 }}>
-          <Field label={t('convert.descr')} value={l.descr} onChange={(v) => set(i, { descr: v })} />
+          <Field label={t('assets.convert.descr')} value={l.descr} onChange={(v) => set(i, { descr: v })} />
           <Row>
-            <View style={{ flex: 1 }}><Field label={t('convert.amount')} value={l.amount} onChange={(v) => set(i, { amount: v })} keyboard="numeric" ltr /></View>
-            <View style={{ width: 90 }}><Field label={t('convert.qty')} value={l.qty} onChange={(v) => set(i, { qty: v })} keyboard="numeric" ltr /></View>
+            <View style={{ flex: 1 }}><Field label={t('assets.convert.amount')} value={l.amount} onChange={(v) => set(i, { amount: v })} keyboard="numeric" ltr /></View>
+            <View style={{ width: 90 }}><Field label={t('assets.convert.qty')} value={l.qty} onChange={(v) => set(i, { qty: v })} keyboard="numeric" ltr /></View>
           </Row>
-          <ChipGroup<number> options={[[0, t('convert.expenseLine')], [1, t('convert.isAsset')]]} value={l.isAsset ? 1 : 0} onChange={(v) => set(i, { isAsset: !!v })} />
+          <ChipGroup<number> options={[[0, t('assets.convert.expenseLine')], [1, t('assets.convert.isAsset')]]} value={l.isAsset ? 1 : 0} onChange={(v) => set(i, { isAsset: !!v })} />
           {l.isAsset ? (
             <>
               <SelectField label={t('assets.ui.category')} value={l.category} options={cats} onPick={(v) => set(i, { category: v })} />
               {allowLink && pending.length ? (
-                <SelectField label={t('lines.link')} value={l.linkAssetId}
-                  options={[{ value: '', label: t('lines.newAsset') }, ...pending.map((p) => ({ value: p.id, label: p.name + (p.unit_no ? ' · ' + p.unit_no : '') }))]}
+                <SelectField label={t('assets.lines.link')} value={l.linkAssetId}
+                  options={[{ value: '', label: t('assets.lines.newAsset') }, ...pending.map((p) => ({ value: p.id, label: p.name + (p.unit_no ? ' · ' + p.unit_no : '') }))]}
                   onPick={(v) => set(i, { linkAssetId: v, qty: v ? '1' : l.qty })} />
               ) : null}
               {!l.linkAssetId ? (
@@ -378,10 +378,10 @@ export function LinesEditor({ lines, onChange, allowLink }: { lines: LineDraft[]
               ) : null}
             </>
           ) : null}
-          {lines.length > 1 ? <BtnGhost small danger title={t('lines.remove')} onPress={() => onChange(lines.filter((_, k) => k !== i))} /> : null}
+          {lines.length > 1 ? <BtnGhost small danger title={t('assets.lines.remove')} onPress={() => onChange(lines.filter((_, k) => k !== i))} /> : null}
         </View>
       ))}
-      <BtnGhost small icon="plus" title={t('convert.addLine')} onPress={() => onChange([...lines, emptyLine()])} />
+      <BtnGhost small icon="plus" title={t('assets.convert.addLine')} onPress={() => onChange([...lines, emptyLine()])} />
     </View>
   );
 }
@@ -405,13 +405,13 @@ export function ConvertSheet({ onClose }: { onClose: () => void }) {
     catch (e) { reportFailure({ title: t('common.failed'), e }); }
   };
   const doExecute = () => {
-    try { convertPurchase(db, picked!, lines.map(toLineInput), today()); bump(); toast(t('convert.done')); onClose(); }
+    try { convertPurchase(db, picked!, lines.map(toLineInput), today()); bump(); toast(t('assets.convert.done')); onClose(); }
     catch (e) { reportFailure({ title: t('common.failed'), e }); }
   };
   if (!picked || !inv) {
     return (
-      <Sheet visible onClose={onClose} title={t('convert.title')} tall>
-        <T size={TYPE.caption} color={C.muted}>{t('convert.pick')}</T>
+      <Sheet visible onClose={onClose} title={t('assets.convert.title')} tall>
+        <T size={TYPE.caption} color={C.muted}>{t('assets.convert.pick')}</T>
         <SearchBox value={q} onChange={setQ} placeholder={t('common.search')} />
         {list.length ? list.map((p) => (
           <Pressable key={p.id} onPress={() => { setPicked(p.id); setLines([{ ...emptyLine(), amount: fmt(expensedOf(p)).replace(/,/g, ''), descr: p.incorp_item || p.category }]); setPreview(null); }}>
@@ -423,31 +423,31 @@ export function ConvertSheet({ onClose }: { onClose: () => void }) {
               <Money halalas={expensedOf(p)} />
             </Row>
           </Pressable>
-        )) : <EmptyState>{t('convert.none')}</EmptyState>}
+        )) : <EmptyState>{t('assets.convert.none')}</EmptyState>}
       </Sheet>
     );
   }
   return (
     <Sheet visible onClose={onClose} title={inv.no + ' · ' + inv.supplier_name} tall
       footer={preview
-        ? <><View style={{ flex: 1 }}><BtnGhost title={t('common.cancel')} onPress={() => setPreview(null)} /></View><View style={{ flex: 1 }}><BtnPrimary title={t('convert.execute')} onPress={doExecute} /></View></>
-        : <View style={{ flex: 1 }}><BtnPrimary title={t('convert.preview')} onPress={doPreview} /></View>}>
-      <T size={TYPE.caption} color={C.muted}>{t('convert.expensed', { amount: fmt(expensedOf(inv)) })}</T>
+        ? <><View style={{ flex: 1 }}><BtnGhost title={t('common.cancel')} onPress={() => setPreview(null)} /></View><View style={{ flex: 1 }}><BtnPrimary title={t('assets.convert.execute')} onPress={doExecute} /></View></>
+        : <View style={{ flex: 1 }}><BtnPrimary title={t('assets.convert.preview')} onPress={doPreview} /></View>}>
+      <T size={TYPE.caption} color={C.muted}>{t('assets.convert.expensed', { amount: fmt(expensedOf(inv)) })}</T>
       {!preview ? <LinesEditor lines={lines} onChange={setLines} allowLink /> : (
         <View>
-          <Note>{t('convert.previewTitle')}</Note>
-          <T size={TYPE.body} bold>{t('convert.willCreate', { n: preview.assets.length })}</T>
+          <Note>{t('assets.convert.previewTitle')}</Note>
+          <T size={TYPE.body} bold>{t('assets.convert.willCreate', { n: preview.assets.length })}</T>
           {preview.assets.map((x, i) => <InfoRow key={i} k={x.name + ' · ' + t('assets.cat.' + x.category)} v={<Money halalas={x.cost} />} />)}
-          <T size={TYPE.body} bold style={{ marginTop: 10 }}>{t('convert.reclass')}</T>
+          <T size={TYPE.body} bold style={{ marginTop: 10 }}>{t('assets.convert.reclass')}</T>
           {preview.reclass.debit.map((d) => <InfoRow key={d.account} k={d.account + ' ' + t('assets.cat.' + d.account)} v={<Money halalas={d.amount} />} />)}
           <InfoRow k={preview.reclass.credit.account} v={<Money halalas={-preview.reclass.credit.amount} />} />
-          <T size={TYPE.body} bold style={{ marginTop: 10 }}>{t('convert.catchup')}</T>
-          <InfoRow k={t('convert.current')} v={<Money halalas={preview.catchUp.current} />} />
-          <InfoRow k={t('convert.prior')} v={<Money halalas={preview.catchUp.prior} />} />
-          <T size={TYPE.body} bold style={{ marginTop: 10 }}>{t('convert.byYear')}</T>
+          <T size={TYPE.body} bold style={{ marginTop: 10 }}>{t('assets.convert.catchup')}</T>
+          <InfoRow k={t('assets.convert.current')} v={<Money halalas={preview.catchUp.current} />} />
+          <InfoRow k={t('assets.convert.prior')} v={<Money halalas={preview.catchUp.prior} />} />
+          <T size={TYPE.body} bold style={{ marginTop: 10 }}>{t('assets.convert.byYear')}</T>
           {preview.byYear.map((y) => <InfoRow key={y.year} k={String(y.year)} v={<Money halalas={y.amount} />} />)}
-          <InfoRow k={t('convert.bvToday')} v={<Money halalas={preview.bookValueToday} bold />} />
-          <Note>{t('convert.dated')}</Note>
+          <InfoRow k={t('assets.convert.bvToday')} v={<Money halalas={preview.bookValueToday} bold />} />
+          <Note>{t('assets.convert.dated')}</Note>
         </View>
       )}
     </Sheet>
@@ -471,15 +471,15 @@ export function ContentsSheet({ onClose }: { onClose: () => void }) {
   const run = () => {
     try {
       const n = convertContents(db, selected.map((i) => ({ unitId: i.unitId, room: i.room, name: i.name, descr: i.descr, category: chosen[key(i)] })));
-      bump(); toast(t('contents.done', { n })); onClose();
+      bump(); toast(t('assets.contents.done', { n })); onClose();
     } catch (e) { reportFailure({ title: t('common.failed'), e }); }
   };
   let lastUnit = '';
   return (
-    <Sheet visible onClose={onClose} title={t('contents.title')} tall
-      footer={selected.length ? <View style={{ flex: 1 }}><BtnPrimary title={t('contents.execute', { n: selected.length })} onPress={run} /></View> : undefined}>
-      <Note>{t('contents.note')}</Note>
-      {!items.length ? <EmptyState>{t('contents.none')}</EmptyState> : null}
+    <Sheet visible onClose={onClose} title={t('assets.contents.title')} tall
+      footer={selected.length ? <View style={{ flex: 1 }}><BtnPrimary title={t('assets.contents.execute', { n: selected.length })} onPress={run} /></View> : undefined}>
+      <Note>{t('assets.contents.note')}</Note>
+      {!items.length ? <EmptyState>{t('assets.contents.none')}</EmptyState> : null}
       {items.map((i) => {
         const head = i.propertyName + ' · ' + i.unitNo;
         const showHead = head !== lastUnit;
@@ -493,9 +493,9 @@ export function ContentsSheet({ onClose }: { onClose: () => void }) {
                 <T size={TYPE.body}>{i.name}</T>
                 <T size={TYPE.caption} color={C.muted}>{i.room}</T>
               </View>
-              {i.converted ? <Badge kind="paid" label={t('contents.converted')} /> : (
+              {i.converted ? <Badge kind="paid" label={t('assets.contents.converted')} /> : (
                 <View style={{ width: 170 }}>
-                  <SelectField label="" value={chosen[k] ?? ''} placeholder={t('contents.noCategory')}
+                  <SelectField label="" value={chosen[k] ?? ''} placeholder={t('assets.contents.noCategory')}
                     options={[{ value: '', label: t('common.none') }, ...cats]} onPick={(v) => setChosen({ ...chosen, [k]: v })} />
                 </View>
               )}

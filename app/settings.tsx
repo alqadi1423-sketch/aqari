@@ -1096,18 +1096,18 @@ export default function Settings() {
         ) : null}
         {review.pendingAssets ? (
           <>
-            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>{t('review.pending')}</T>
-            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>{t('review.pendingNote', { n: review.pendingAssets })}</T>
-            <BtnGhost title={t('review.open')} onPress={() => { setReviewOpen(false); router.push('/assets?status=pending' as never); }} />
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>{t('assets.review.pending')}</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>{t('assets.review.pendingNote', { n: review.pendingAssets })}</T>
+            <BtnGhost title={t('assets.review.open')} onPress={() => { setReviewOpen(false); router.push('/assets?status=pending' as never); }} />
           </>
         ) : null}
         {review.dupDep.map((d) => (
           <View key={d.month}>
-            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>{t('review.dup')}</T>
-            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>{t('review.dupNote', { month: d.month, n: d.entries.length })}</T>
+            <T size={TYPE.cardTitle} bold style={{ marginTop: 14, marginBottom: 4 }}>{t('assets.review.dup')}</T>
+            <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>{t('assets.review.dupNote', { month: d.month, n: d.entries.length })}</T>
             {d.entries.slice(1).map((e) => (
-              <BtnGhost key={e.id} danger title={t('review.reverseExtra', { no: e.no })} onPress={() => {
-                try { reverseEntryById(db, e.id, t('review.reverseMemo', { month: d.month, lng: 'ar' })); bump(); toast(t('review.reversed')); }
+              <BtnGhost key={e.id} danger title={t('assets.review.reverseExtra', { no: e.no })} onPress={() => {
+                try { reverseEntryById(db, e.id, t('assets.review.reverseMemo', { month: d.month, lng: 'ar' })); bump(); toast(t('assets.review.reversed')); }
                 catch (err) { reportFailure({ title: t('common.failed'), e: err }); }
               }} />
             ))}

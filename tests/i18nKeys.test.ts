@@ -96,3 +96,44 @@ test('النص يتبع اللغة · ومتغيراته تُملأ', () => {
   expect(t('language.title')).toBe('اللغة');
   expect(t('names.en')).toBe('English');
 });
+
+/**
+ * كل مفتاح تستدعيه الشيفرة موجود في الملفين (عطل 2026-10-07: شاشات الأصول عرضت أسماء المفاتيح لأن الاختبار
+ * كان يقارن الملفين ببعضهما ولا يقرأ الشيفرة) · يقرأ كل استدعاء t('…') بنصٍّ ثابت في src وapp،
+ * والبادئة الديناميكية t('…' + x) يلزم أن يكون تحتها مفتاح في اللغتين.
+ */
+test('كل مفتاح مستعمل في الشيفرة موجود في ملفي الترجمة', () => {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const path = require('node:path') as typeof import('node:path');
+  const root = path.join(__dirname, '..');
+  const sources: string[] = [];
+  const walk = (d: string) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); } else if (/\.(ts|tsx)$/.test(e.name)) sources.push(p);
+    }
+  };
+  walk(path.join(root, 'src'));
+  walk(path.join(root, 'app'));
+  const keys = (m: Map<string, string>) => new Set([...m.keys()].map(base));
+  const sets = { ar: keys(files.ar), en: keys(files.en) };
+  const CALL = /(?<![\w.$])t\(\s*(['"`])([^'"`$]+?)\1\s*([,)+])/g;
+  const bad: string[] = [];
+  let seen = 0;
+  for (const f of sources) {
+    const src = fs.readFileSync(f, 'utf8');
+    for (const m of src.matchAll(CALL)) {
+      seen++;
+      const key = m[2];
+      const where = path.relative(root, f).split(path.sep).join('/') + ':' + src.slice(0, m.index).split('\n').length;
+      for (const lang of ['ar', 'en'] as const) {
+        const s = sets[lang];
+        const ok = m[3] === '+' ? [...s].some((k) => k.startsWith(key)) : s.has(key);
+        if (!ok) bad.push(`${where} ${key} [${lang}]`);
+      }
+    }
+  }
+  // الفحص يقرأ فعلاً: أكثر من مئتي استدعاء لا صفر
+  expect(seen).toBeGreaterThan(200);
+  expect(bad).toEqual([]);
+});

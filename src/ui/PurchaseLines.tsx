@@ -29,16 +29,16 @@ export function PurchaseLinesSection({ lines, onChange, baseHalalas }: { lines: 
   const sum = lines.reduce((s, l) => s + toHalalas(l.amount), 0);
   return (
     <View style={{ marginVertical: 8 }}>
-      <T size={TYPE.body} bold>{t('lines.title')}</T>
+      <T size={TYPE.body} bold>{t('assets.lines.title')}</T>
       {!lines.length ? (
         <>
-          <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>{t('lines.note')}</T>
-          <BtnGhost small icon="plus" title={t('convert.addLine')} onPress={() => onChange([{ ...emptyLine(), amount: baseHalalas ? fmt(baseHalalas).replace(/,/g, '') : '' }])} />
+          <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>{t('assets.lines.note')}</T>
+          <BtnGhost small icon="plus" title={t('assets.convert.addLine')} onPress={() => onChange([{ ...emptyLine(), amount: baseHalalas ? fmt(baseHalalas).replace(/,/g, '') : '' }])} />
         </>
       ) : (
         <>
           <LinesEditor lines={lines} onChange={onChange} allowLink />
-          {sum !== baseHalalas ? <Note tone="danger">{t('lines.sum', { sum: fmt(sum), base: fmt(baseHalalas) })}</Note> : null}
+          {sum !== baseHalalas ? <Note tone="danger">{t('assets.lines.sum', { sum: fmt(sum), base: fmt(baseHalalas) })}</Note> : null}
         </>
       )}
     </View>
