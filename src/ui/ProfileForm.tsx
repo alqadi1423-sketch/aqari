@@ -22,7 +22,7 @@ export function ProfileFields({ value, onChange, error }: {
     <>
       <Field label="الاسم الكامل" value={value.name} onChange={(v) => onChange({ ...value, name: v })} error={error === 'name'} />
       <Field label="الجوال" value={value.phone} onChange={(v) => onChange({ ...value, phone: v })} keyboard="phone-pad" ltr
-        placeholder="05XXXXXXXX" error={error === 'phone'} />
+        error={error === 'phone'} />
       <Field label="الهوية أو الإقامة (اختياري)" value={value.nid} onChange={(v) => onChange({ ...value, nid: v })} keyboard="numeric" ltr
         error={error === 'nid'} />
       <Field label="المسمى الوظيفي (اختياري)" value={value.title} onChange={(v) => onChange({ ...value, title: v })} error={error === 'title'} />

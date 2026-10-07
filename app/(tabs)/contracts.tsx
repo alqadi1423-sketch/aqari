@@ -21,19 +21,20 @@ import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining } from '../../src/domain
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../../src/domain/contracts/vocab';
 import { depositState } from '../../src/domain/contracts/vocab';
 import { InstallmentSheet } from '../../src/ui/InstallmentSheet';
+import { OccupantSheet } from '../../src/ui/OccupantSheet';
 import { usePager, Pager } from '../../src/ui/Pager';
 import { useDeferredReady } from '../../src/ui/useDeferredReady';
 import { Skeleton } from '../../src/ui/Skeleton';
 import {
-  addOccupant, updateOccupant, markOccupantLeft, deleteOccupant, occupantsOf,
-  OCCUPANT_RELATIONS, type OccupantRow,
+  markOccupantLeft, deleteOccupant, occupantsOf,
+  type OccupantRow,
 } from '../../src/domain/occupants';
 import { Icon } from '../../src/ui/icons';
 import { useApp } from '../../src/ui/store';
 import { AttachStrip } from '../../src/ui/AttachStrip';
 import { FileViewer, type ViewerFile } from '../../src/ui/FileViewer';
 import { useToast } from '../../src/ui/Toast';
-import { useDialog, confirmDiscard } from '../../src/ui/AppDialog';
+import { useDialog } from '../../src/ui/AppDialog';
 import { C } from '../../src/ui/theme';
 import { useContractForm, ContractFormFields, emptyContractForm, formToInput } from '../../src/ui/contractForm';
 import {
@@ -601,30 +602,10 @@ function ContractDetailSheet({
   const [occEditing, setOccEditing] = useState<OccupantRow | null>(null);
   const [instFor, setInstFor] = useState<string | null>(null);
   const [expOpen, setExpOpen] = useState(false);
+  /** إضافة الساكن وتعديله في ورقته الخاصة فوق العقد (قرار المالك 2026-10-07) */
   const [occOpen, setOccOpen] = useState(false);
-  const [oName, setOName] = useState('');
-  const [oNat, setONat] = useState('');
-  const [oPhone, setOPhone] = useState('');
-  const [oRel, setORel] = useState<string>('زوجة');
-  const [oNationality, setONationality] = useState('');
-  /** ما كتبه المستخدم في نموذج الساكن · الطيّ لا يمحوه بلا إذن */
-  const occDirty = () => !!(oName.trim() || oNat.trim() || oPhone.trim() || oNationality.trim());
-  const closeOcc = () => setOccOpen(false);
-  /** الضغط ثانيةً يطوي النموذج · والمفتوح بإدخال لا يُطوى إلا بتأكيد */
-  const onAddOccupant = () => {
-    if (occOpen) { if (occDirty()) confirmDiscard(dialog, closeOcc); else closeOcc(); return; }
-    setOccEditing(null); setOName(''); setONat(''); setOPhone(''); setORel('زوجة'); setONationality(''); setOccOpen(true);
-  };
-  const onEditOccupant = (o: OccupantRow) => { setOccEditing(o); setOName(o.name); setONat(o.national_id); setOPhone(o.phone); setORel(o.relation); setONationality(o.nationality); setOccOpen(true); };
-  const saveOccupant = () => {
-    try {
-      if (occEditing) updateOccupant(db, occEditing.id, { name: oName, nationalId: oNat, phone: oPhone, relation: oRel, nationality: oNationality });
-      else addOccupant(db, contractId, { name: oName, nationalId: oNat, phone: oPhone, relation: oRel, nationality: oNationality });
-      setOccOpen(false); bump(); toast(occEditing ? 'عُدّل الساكن' : 'أُضيف الساكن');
-    } catch (e) {
-      reportFailure({ title: 'تعذّر الحفظ', e });
-    }
-  };
+  const onAddOccupant = () => { setOccEditing(null); setOccOpen(true); };
+  const onEditOccupant = (o: OccupantRow) => { setOccEditing(o); setOccOpen(true); };
   const c = useMemo(
     () => db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -859,27 +840,7 @@ function ContractDetailSheet({
         {/* العقد الملغى لا يُسكَّن فيه أحد · يبقى سجل ساكنيه للعرض وحده */}
         {c.status === 'ملغى' || !perm.add ? null : <BtnGhost small title="+ إضافة ساكن" onPress={() => onAddOccupant()} />}
       </Row>
-      {/* النموذج تحت الزر مباشرةً · لا يفصل بينهما عنصر · الاسم والهوية إلزاميان */}
-      {occOpen ? (
-        <View style={{ backgroundColor: C.paper, borderRadius: 10, padding: 12, marginBottom: 8, borderWidth: 1, borderColor: C.line }}>
-          <T size={13} bold style={{ marginBottom: 8 }}>{occEditing ? 'تعديل ساكن' : 'إضافة ساكن'}</T>
-          <Field label="الاسم" value={oName} onChange={setOName} error={!oName.trim()} />
-          <Row>
-            <View style={{ flex: 1 }}><Field label="رقم الهوية" value={oNat} onChange={setONat} keyboard="numeric" ltr error={!oNat.trim()} /></View>
-            <View style={{ flex: 1 }}><Field label="الجوال" value={oPhone} onChange={setOPhone} keyboard="phone-pad" ltr /></View>
-          </Row>
-          <SelectField label="صلة القرابة بالمستأجر" value={oRel}
-            options={OCCUPANT_RELATIONS.map((r) => ({ value: r, label: r }))} onPick={setORel} />
-          <Field label="الجنسية" value={oNationality} onChange={setONationality} />
-          <Row>
-            <View style={{ flex: 1 }}><BtnGhost title="تراجع" onPress={() => setOccOpen(false)} /></View>
-            {/* الاسم والهوية إلزاميان · فبدونهما لا حفظ ولا زر حفظ */}
-            {oName.trim() && oNat.trim() ? (
-              <View style={{ flex: 1 }}><BtnPrimary title="حفظ" onPress={saveOccupant} /></View>
-            ) : null}
-          </Row>
-        </View>
-      ) : null}
+      {occOpen ? <OccupantSheet contractId={contractId} editing={occEditing} onClose={() => setOccOpen(false)} /> : null}
       {occupants.length ? occupants.map((o) => (
         <Row key={o.id} style={{ justifyContent: 'space-between', paddingVertical: 5, opacity: o.moved_out ? 0.55 : 1 }}>
           <View style={{ flex: 1 }}>

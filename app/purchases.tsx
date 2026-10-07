@@ -650,14 +650,14 @@ export default function Purchases() {
           <View style={{ flex: 1 }}><DateField label="تاريخ الاستحقاق" value={due} onChange={setDue} /></View>
         </Row>
         <CostCenterField value={cc} onChange={setCc} />
-        <Field label="الفئة" value={category} onChange={setCategory} placeholder={CATEGORIES.join(' / ')} />
+        <Field label="الفئة" value={category} onChange={setCategory} />
         <PurchaseLinesSection lines={lines} onChange={setLines} baseHalalas={toHalalas(subtotal)} />
         <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
           {categoryOptions.map((c) => <BtnGhost key={c} small title={c} onPress={() => setCategory(c)} />)}
         </Row>
         {category.trim() === 'مصروفات تأسيس' && (
           <>
-            <Field label="البند الفرعي" value={incorpItem} onChange={setIncorpItem} placeholder={INCORP_ITEMS.join(' / ')} />
+            <Field label="البند الفرعي" value={incorpItem} onChange={setIncorpItem} />
             <CheckRow checked={amortize} onToggle={() => setAmortize((v) => !v)}
               label="استهلاك على فترة زمنية بدل احتسابه دفعة واحدة" />
             {amortize && <Field label="عدد أشهر الاستهلاك" value={amortizeMonths} onChange={setAmortizeMonths} keyboard="numeric" ltr />}
@@ -788,8 +788,7 @@ export default function Purchases() {
               </View>
             </>
           }>
-          <Field label="الرقم الضريبي للمورد" value={vatFixValue} onChange={setVatFixValue} keyboard="numeric" ltr
-            placeholder="3XXXXXXXXXXXXXX" />
+          <Field label="الرقم الضريبي للمورد" value={vatFixValue} onChange={setVatFixValue} keyboard="numeric" ltr />
         </Sheet>
       )}
 

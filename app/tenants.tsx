@@ -245,10 +245,10 @@ export default function Tenants() {
         }
       >
         <Field label="اسم المستأجر" value={tName} onChange={setTName} />
-        <Field label="الرقم الضريبي" value={tVat} onChange={setTVat} keyboard="numeric" ltr placeholder="300XXXXXXXXXXX" />
+        <Field label="الرقم الضريبي" value={tVat} onChange={setTVat} keyboard="numeric" ltr />
         <Row>
           <View style={{ flex: 1 }}>
-            <Field label="رقم الجوال" value={tPhone} onChange={setTPhone} keyboard="phone-pad" ltr placeholder="05XXXXXXXX" />
+            <Field label="رقم الجوال" value={tPhone} onChange={setTPhone} keyboard="phone-pad" ltr />
           </View>
           {/* الرصيد مبلغ من التحصيل · لمن يرى التحصيل وحده */}
           {seesMoney ? (

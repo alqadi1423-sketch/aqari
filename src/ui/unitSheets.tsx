@@ -109,7 +109,7 @@ export function UnitFormSheet({
         options={properties.map((p) => ({ value: p.id, label: p.name }))}
         onPick={setPropId} />
       <Row>
-        <View style={{ flex: 1 }}><Field label="رقم الوحدة" value={unitNo} onChange={setUnitNo} ltr placeholder="B-14" /></View>
+        <View style={{ flex: 1 }}><Field label="رقم الوحدة" value={unitNo} onChange={setUnitNo} ltr /></View>
         <View style={{ flex: 1 }}>
           <SelectField label="الطابق" value={floor}
             options={[...floorLabels(selectedProp?.floors ?? 0), 'غير محدد'].map((f) => ({ value: f, label: f }))}

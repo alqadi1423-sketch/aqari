@@ -281,7 +281,7 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
             error={form.errorField === 'tenant'} />
         </View>
         <View style={{ flex: 1 }}>
-          <Field label="رقم الجوال" value={state.phone} onChange={(v) => set('phone', v)} keyboard="phone-pad" ltr placeholder="05XXXXXXXX" error={form.errorField === 'phone'} />
+          <Field label="رقم الجوال" value={state.phone} onChange={(v) => set('phone', v)} keyboard="phone-pad" ltr error={form.errorField === 'phone'} />
         </View>
       </Row>
       <Field label="رقم الهوية / السجل" value={state.idNumber} onChange={(v) => set('idNumber', v)} keyboard="numeric" ltr />

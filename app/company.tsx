@@ -174,10 +174,10 @@ function CompanyBody() {
             <View key={d.kind} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 8, padding: 11, marginBottom: 10 }}>
               <T size={12.5} bold style={{ marginBottom: 6 }}>{d.label}</T>
               {d.numberField === 'vatno' && (
-                <Field label={d.numberLabel!} value={vatno} onChange={setVatno} keyboard="numeric" ltr placeholder="300XXXXXXXXXXX" />
+                <Field label={d.numberLabel!} value={vatno} onChange={setVatno} keyboard="numeric" ltr />
               )}
               {d.numberField === 'cr' && (
-                <Field label={d.numberLabel!} value={cr} onChange={setCr} keyboard="numeric" ltr placeholder="1013" />
+                <Field label={d.numberLabel!} value={cr} onChange={setCr} keyboard="numeric" ltr />
               )}
               {d.expField && <DateField label="تاريخ الانتهاء" value={crExp} onChange={setCrExp} />}
               <Row>

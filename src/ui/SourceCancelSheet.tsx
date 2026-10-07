@@ -24,6 +24,7 @@ import { routeAllowed } from '../domain/access/routes';
 import type { SectionKey } from '../domain/access/sections';
 import { today } from '../domain/dates';
 import { reportFailure } from './failureDialog';
+import { useSaveAttempt } from './formAttempt';
 
 /** قسم العملية التي يُلغى منها القيد · الإلغاء كامل فيه وفي الدفتر معاً */
 const SOURCE_SECTION: Record<string, SectionKey> = {
@@ -42,6 +43,7 @@ export function SourceCancelSheet({ entryId, entryNo, onClose }: { entryId: stri
   const access = useAccess();
   const [date, setDate] = useState(today());
   const [reason, setReason] = useState('');
+  const attempt = useSaveAttempt();
   const action = useMemo(() => entrySourceAction(db, entryId),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, entryId]);
@@ -84,18 +86,17 @@ export function SourceCancelSheet({ entryId, entryNo, onClose }: { entryId: stri
             <>
               <View style={{ marginTop: 8 }}>
                 <DateField label="تاريخ الإلغاء" value={date} onChange={setDate} />
-                <Field label="السبب" value={reason} onChange={setReason} error={!reason.trim()} />
+                <Field label="السبب" value={reason} onChange={setReason} error={attempt.missing(reason)} />
               </View>
               <Row>
                 <View style={{ flex: 1 }}><BtnGhost small title="رجوع" onPress={onClose} /></View>
-                {reason.trim() ? (
-                  <View style={{ flex: 1 }}>
-                    <BtnPrimary small danger title={'تأكيد ' + action.label} onPress={() => {
-                      try { action.run(date, reason); bump(); toast('تمّ: ' + action.label); onClose(); }
-                      catch (e) { reportFailure({ title: 'تعذّر ' + action.label, where: action.label, db, e }); }
-                    }} />
-                  </View>
-                ) : null}
+                {/* الزر ظاهر · وبلا سبب يُظلَّل الحقل بعد المحاولة ولا يُنفَّذ شيء (قرار المالك 2026-10-07) */}
+                <View style={{ flex: 1 }}>
+                  <BtnPrimary small danger title={'تأكيد ' + action.label} onPress={() => attempt.attempt(!!reason.trim(), () => {
+                    try { action.run(date, reason); bump(); toast('تمّ: ' + action.label); onClose(); }
+                    catch (e) { reportFailure({ title: 'تعذّر ' + action.label, where: action.label, db, e }); }
+                  })} />
+                </View>
               </Row>
             </>
           ) : null}

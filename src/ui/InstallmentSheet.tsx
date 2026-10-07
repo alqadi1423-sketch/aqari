@@ -18,8 +18,9 @@ import { printReceipt } from '../services/print';
 import { dfmt, today, daysBetween, periodLabel } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
-import { CancelPaymentPanel } from './CancelPaymentPanel';
+import { CancelPaymentSheet } from './CancelPaymentPanel';
 import { usePerm } from './access';
+import { useSaveAttempt } from './formAttempt';
 
 export function InstallmentSheet(props: {
   installmentId: string;
@@ -112,6 +113,8 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, entryFor]);
 
+  const attempt = useSaveAttempt();
+
   if (!data) return null;
   const { i, pays, discount, remaining, status, kind, contractCancelled, fallbackPayment } = data;
   // القسط المسدَّد كلياً أو الملغي لا موعد له يُعدَّل · والعقد الملغى لا يُحصَّل
@@ -158,33 +161,27 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
         </Row>
       ) : null}
 
-      {/* لوحة تعديل الموعد تتصدر المحتوى تحت الملخص مباشرة · السبب إلزامي ويُسجَّل */}
+      {/* تعديل الموعد في ورقته الخاصة فوق ورقة القسط (قرار المالك 2026-10-07) · السبب إلزامي ويُسجَّل */}
       {editOpen ? (
-        <View style={{ backgroundColor: C.paper, borderRadius: 10, padding: 12, marginTop: 6, borderWidth: 1, borderColor: C.line }}>
-          <T size={13} bold color={C.ink} style={{ marginBottom: 8 }}>تعديل الموعد</T>
+        <Sheet visible onClose={() => setEditOpen(false)} title="تعديل الموعد"
+          footer={<View style={{ flex: 1 }}><BtnPrimary title="حفظ" onPress={() => attempt.attempt(!!reason.trim(), saveSchedule)} /></View>}>
           <DateField label="موعد سداد متفق عليه" value={agreed} onChange={setAgreed} />
           <DateField label="مهلة سداد حتى" value={grace} onChange={setGrace} />
-          <Field label="السبب" value={reason} onChange={setReason} error={!reason.trim()} />
-          <Row>
-            <View style={{ flex: 1 }}><BtnGhost small title="إلغاء" onPress={() => setEditOpen(false)} /></View>
-            {/* لا اتفاق قائم فلا شيء يُزال */}
-            {i.agreed_date || i.grace_until ? (
-              <View style={{ flex: 1 }}>
-                <BtnGhost small danger title="إزالة الاتفاق" onPress={() => {
-                  try {
-                    setInstallmentSchedule(db, i.id, { agreedDate: null, graceUntil: null, reason: reason || 'إزالة الاتفاق' });
-                    bump(); setEditOpen(false); toast('أُزيل الاتفاق ورجع القسط لاستحقاقه الأصلي');
-                  } catch (e) { reportFailure({ title: 'تعذّر إزالة الاتفاق', e }); }
-                }} />
-              </View>
-            ) : null}
-            <View style={{ flex: 1 }}><BtnPrimary small title="حفظ" onPress={saveSchedule} /></View>
-          </Row>
-        </View>
+          <Field label="السبب" value={reason} onChange={setReason} error={attempt.missing(reason)} />
+          {/* لا اتفاق قائم فلا شيء يُزال */}
+          {i.agreed_date || i.grace_until ? (
+            <BtnGhost small danger title="إزالة الاتفاق" onPress={() => {
+              try {
+                setInstallmentSchedule(db, i.id, { agreedDate: null, graceUntil: null, reason: reason || 'إزالة الاتفاق' });
+                bump(); setEditOpen(false); toast('أُزيل الاتفاق ورجع القسط لاستحقاقه الأصلي');
+              } catch (e) { reportFailure({ title: 'تعذّر إزالة الاتفاق', e }); }
+            }} />
+          ) : null}
+        </Sheet>
       ) : null}
 
-      {/* قائمة الدفعات تُخفى مؤقتاً حين تكون لوحة التعديل مفتوحة كي تتصدر بلا لبس */}
-      {!editOpen ? (
+      {/* قائمة الدفعات */}
+      {true ? (
         <>
           <T size={13} bold color={C.ink} style={{ marginTop: 6, marginBottom: 6 }}>الدفعات ({pays.length})</T>
           {pays.length ? pays.map((p, idx) => (
@@ -209,7 +206,7 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
                   <BtnGhost small title="عرض القيد" onPress={() => setEntryFor((c) => (c === p.journal_entry_id ? null : p.journal_entry_id))} />
                 ) : null}
               </Row>
-              {cancelFor === p.id ? <CancelPaymentPanel paymentId={p.id} onClose={() => setCancelFor(null)} /> : null}
+              {cancelFor === p.id ? <CancelPaymentSheet paymentId={p.id} onClose={() => setCancelFor(null)} /> : null}
             </View>
           )) : <T size={12} color={C.muted}>لا دفعات على هذا القسط بعد</T>}
 
@@ -221,7 +218,7 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
       ) : null}
 
       {/* القيد داخل الورقة نفسها · الرجوع يعيدك من حيث أتيت */}
-      {entry && !editOpen ? (
+      {entry ? (
         <View style={{ backgroundColor: C.paper, borderRadius: 10, padding: 12, marginTop: 10, borderWidth: 1, borderColor: C.line }}>
           <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
             <T size={12.5} bold>{entry.no} · {dfmt(entry.date)}</T>

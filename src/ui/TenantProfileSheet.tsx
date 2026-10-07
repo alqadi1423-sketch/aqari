@@ -14,7 +14,7 @@ import { useApp } from './store';
 import { AttachStrip } from './AttachStrip';
 import { attachPicked, pickFile } from './attach';
 import { useToast } from './Toast';
-import { useDialog, confirmDiscard } from './AppDialog';
+import { useDialog } from './AppDialog';
 import { C, TYPE } from './theme';
 import { tenantProfile, renameTenant, similarTenantGroups, mergeTenants } from '../domain/tenants';
 import { contractStatusKind, contractStatusLabel } from '../domain/contracts/rules';
@@ -23,6 +23,7 @@ import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
 import { useAccess, usePerm } from './access';
 import { routeAllowed } from '../domain/access/routes';
+import { useSaveAttempt } from './formAttempt';
 
 export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; onClose: () => void }) {
   const { db, version, bump } = useApp();
@@ -35,6 +36,7 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
   const openClaims = routeAllowed(access, '/claims');
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState('');
+  const renameTry = useSaveAttempt();
   const p = useMemo(() => tenantProfile(db, tenantId, today()),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, tenantId]);
@@ -78,11 +80,7 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
       {perm.add ? (
         <Row style={{ justifyContent: 'flex-end', marginBottom: 4 }}>
           {perm.manage ? (
-            <BtnGhost small title="تعديل الاسم" onPress={() => {
-              // الضغط ثانيةً يطوي اللوحة · والاسم المعدَّل لا يُمحى بلا تأكيد
-              if (renaming) { if (newName.trim() && newName !== p.tenant.name) confirmDiscard(dialog, () => setRenaming(false)); else setRenaming(false); return; }
-              setNewName(p.tenant.name); setRenaming(true);
-            }} />
+            <BtnGhost small title="تعديل الاسم" onPress={() => { setNewName(p.tenant.name); renameTry.reset(); setRenaming(true); }} />
           ) : null}
           <BtnIcon icon="attach" accessibilityLabel="إضافة مستند" onPress={addDoc} />
         </Row>
@@ -139,24 +137,20 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
         )}
       </CollapsibleSection>
 
+      {/* تعديل الاسم في ورقته الخاصة (قرار المالك 2026-10-07) · الحفظ ظاهر والأحمر بعد المحاولة */}
       {renaming ? (
-        <View style={{ marginTop: 12, backgroundColor: C.paper, borderRadius: 10, padding: 12 }}>
-          <Field label="الاسم" value={newName} onChange={setNewName} />
-          <Row>
-            <View style={{ flex: 1 }}><BtnGhost title="تراجع" onPress={() => setRenaming(false)} /></View>
-            <View style={{ flex: 1 }}>
-              <BtnPrimary title="حفظ · عقوده تتبعه" onPress={() => {
-                try {
-                  renameTenant(db, tenantId, newName);
-                  setRenaming(false); bump();
-                  toast('عُدّل الاسم في مصدره وتبعته عقوده كلها');
-                } catch (e) {
-                  reportFailure({ title: 'تعذّر تعديل الاسم', e });
-                }
-              }} />
-            </View>
-          </Row>
-        </View>
+        <Sheet visible onClose={() => setRenaming(false)} title="تعديل الاسم"
+          footer={<View style={{ flex: 1 }}><BtnPrimary title="حفظ · عقوده تتبعه" onPress={() => renameTry.attempt(!!newName.trim(), () => {
+            try {
+              renameTenant(db, tenantId, newName);
+              setRenaming(false); bump();
+              toast('عُدّل الاسم في مصدره وتبعته عقوده كلها');
+            } catch (e) {
+              reportFailure({ title: 'تعذّر تعديل الاسم', e });
+            }
+          })} /></View>}>
+          <Field label="الاسم" value={newName} onChange={setNewName} error={renameTry.missing(newName)} />
+        </Sheet>
       ) : null}
       <View style={{ height: 10 }} />
     </Sheet>

@@ -30,7 +30,6 @@ export function DateField({
           <TextInput
             value={value}
             onChangeText={(v) => { markDirty(); onChange(v.replace(/[^\d-]/g, '').slice(0, 10)); }}
-            placeholder="2026-01-01"
             placeholderTextColor="#B9BFC9"
             keyboardType="numbers-and-punctuation"
             autoFocus

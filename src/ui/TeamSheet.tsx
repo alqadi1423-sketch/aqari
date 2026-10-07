@@ -166,7 +166,7 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
           setSaving(false);
         }} />
       ) : null}>
-      {isNew ? <Field label="إيميل قوقل للعضو" value={email} onChange={setEmail} ltr placeholder="name@gmail.com" /> : null}
+      {isNew ? <Field label="إيميل قوقل للعضو" value={email} onChange={setEmail} ltr /> : null}
 
       <T size={TYPE.cardTitle} bold style={{ marginTop: 6, marginBottom: 2 }}>بيانات العضو</T>
       <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>
@@ -175,7 +175,7 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
       <Field label="الاسم الكامل" value={profile.name} onChange={(v) => setProfile((p) => ({ ...p, name: v }))}
         error={!pv.ok && pv.field === 'name'} />
       <Field label="الجوال" value={profile.phone} onChange={(v) => setProfile((p) => ({ ...p, phone: v }))} keyboard="phone-pad" ltr
-        placeholder="05XXXXXXXX" error={!pv.ok && pv.field === 'phone'} />
+        error={!pv.ok && pv.field === 'phone'} />
       <Field label="الهوية أو الإقامة (اختياري)" value={profile.nid} onChange={(v) => setProfile((p) => ({ ...p, nid: v }))} keyboard="numeric" ltr
         error={!pv.ok && pv.field === 'nid'} />
       <Field label="المسمى الوظيفي (اختياري)" value={profile.title} onChange={(v) => setProfile((p) => ({ ...p, title: v }))}

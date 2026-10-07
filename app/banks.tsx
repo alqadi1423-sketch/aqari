@@ -235,7 +235,7 @@ export default function Banks() {
           </>
         }>
         <Field label="اسم الحساب" value={name} onChange={setName} />
-        <Field label="رقم الآيبان" value={iban} onChange={setIban} ltr placeholder="SA0000000000000000000000" />
+        <Field label="رقم الآيبان" value={iban} onChange={setIban} ltr />
         <Row>
           <View style={{ flex: 1 }}><Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr /></View>
           <View style={{ flex: 1 }}><DateField label="تاريخ الافتتاح" value={openingDate} onChange={setOpeningDate} /></View>

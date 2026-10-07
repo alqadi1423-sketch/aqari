@@ -41,6 +41,7 @@ import { attachPicked, pickFile } from '../../src/ui/attach';
 import { LeafletMap } from '../../src/ui/LeafletMap';
 import { useDialog } from '../../src/ui/AppDialog';
 import { reportFailure } from '../../src/ui/failureDialog';
+import { useSaveAttempt } from '../../src/ui/formAttempt';
 
 /** أسماء الشهور كاملةً · لتسمية بطاقة «إشغال أغسطس» */
 const MONTHS_FULL = [
@@ -408,18 +409,17 @@ function PropertyFormSheet({
   };
 
   const fl = floorLabels(floors.trim() ? parseInt(floors, 10) : 0);
+  const attempt = useSaveAttempt();
 
   return (
     <Sheet visible onClose={onClose} title={propertyId ? 'تعديل العقار' : 'عقار جديد'} tall
       footer={
         <>
-          {/* بلا اسم لا يُحفظ العقار · فلا يُعرض زر الحفظ والحقل مظلَّل بسببه */}
-          {name.trim() ? (
-            <View style={{ flex: 1 }}><BtnPrimary title={propertyId ? 'حفظ التعديل' : 'إضافة العقار'} onPress={save} /></View>
-          ) : null}
+          {/* زر الحفظ ظاهر · وبلا اسم لا يُحفظ ويُظلَّل الحقل بعد المحاولة (قرار المالك 2026-10-07) */}
+          <View style={{ flex: 1 }}><BtnPrimary title={propertyId ? 'حفظ التعديل' : 'إضافة العقار'} onPress={() => attempt.attempt(!!name.trim(), save)} /></View>
         </>
       }>
-      <Field label="اسم العقار" value={name} onChange={setName} error={!name.trim()} />
+      <Field label="اسم العقار" value={name} onChange={setName} error={attempt.missing(name)} />
       <Field label="العنوان" value={address} onChange={setAddress} />
       <Row>
         <View style={{ flex: 1 }}><Field label="عدد الطوابق" value={floors} onChange={setFloors} keyboard="numeric" ltr /></View>
@@ -435,7 +435,7 @@ function PropertyFormSheet({
               <T size={12} style={{ width: 80 }}>{f}</T>
               <View style={{ flex: 1 }}>
                 <Field label="" value={floorCats[f] || ''} onChange={(v) => setFloorCats((p) => ({ ...p, [f]: v }))}
-                  placeholder={RESIDENTIAL_SUBTYPES.join(' / ')} />
+                  />
               </View>
             </Row>
           ))}
@@ -504,7 +504,7 @@ function PropertyFormSheet({
       <T size={11.5} color={C.muted} style={{ marginBottom: 4 }}>موقع العقار (GPS)</T>
       <Row style={{ marginBottom: 8 }}>
         <View style={{ flex: 1 }}>
-          <Field label="ابحث بالعنوان" value={geoQuery} onChange={setGeoQuery} placeholder="الرياض · حي..." />
+          <Field label="ابحث بالعنوان" value={geoQuery} onChange={setGeoQuery} />
         </View>
         {/* لا بحث عن عنوان فارغ · فلا يُعرض زره قبل كتابته */}
         {geoQuery.trim() ? <BtnGhost small icon="search" title="بحث" onPress={async () => {
@@ -532,8 +532,8 @@ function PropertyFormSheet({
         <T size={10.5} color={C.muted} style={{ marginTop: 4 }}>انقر على الخريطة لتحديد الموقع</T>
       </View>
       <Row>
-        <View style={{ flex: 1 }}><Field label="خط العرض (Latitude)" value={lat} onChange={setLat} keyboard="numeric" ltr placeholder="24.7136" /></View>
-        <View style={{ flex: 1 }}><Field label="خط الطول (Longitude)" value={lng} onChange={setLng} keyboard="numeric" ltr placeholder="46.6753" /></View>
+        <View style={{ flex: 1 }}><Field label="خط العرض (Latitude)" value={lat} onChange={setLat} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label="خط الطول (Longitude)" value={lng} onChange={setLng} keyboard="numeric" ltr /></View>
       </Row>
       <MetersEditor meters={meters} onChange={setMeters} title="عدادات مشتركة" />
 

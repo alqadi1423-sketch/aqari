@@ -17,6 +17,9 @@ import { dfmt, today } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
 import { usePerm } from './access';
+import { useSaveAttempt } from './formAttempt';
+import { Sheet } from './Sheet';
+import { useLang } from '../i18n';
 
 export function CancelPaymentPanel({ paymentId, onClose, onDone }: {
   paymentId: string;
@@ -29,6 +32,7 @@ export function CancelPaymentPanel({ paymentId, onClose, onDone }: {
   const canCancel = usePerm('collect').manage;
   const [date, setDate] = useState(today());
   const [reason, setReason] = useState('');
+  const attempt = useSaveAttempt();
   const plan = useMemo(() => {
     try { return planCancelPayment(db, paymentId, date || today()); } catch { return null; }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -72,16 +76,25 @@ export function CancelPaymentPanel({ paymentId, onClose, onDone }: {
         <>
           <View style={{ marginTop: 8 }}>
             <DateField label="تاريخ الإلغاء" value={date} onChange={setDate} />
-            <Field label="السبب" value={reason} onChange={setReason} error={!reason.trim()} />
+            <Field label="السبب" value={reason} onChange={setReason} error={attempt.missing(reason)} />
           </View>
           <Row>
             <View style={{ flex: 1 }}><BtnGhost small title="رجوع" onPress={onClose} /></View>
-            {reason.trim() ? (
-              <View style={{ flex: 1 }}><BtnPrimary small danger title="تأكيد الإلغاء" onPress={confirm} /></View>
-            ) : null}
+            {/* الزر ظاهر · وبلا سبب يُظلَّل الحقل بعد المحاولة (قرار المالك 2026-10-07) */}
+            <View style={{ flex: 1 }}><BtnPrimary small danger title="تأكيد الإلغاء" onPress={() => attempt.attempt(!!reason.trim(), confirm)} /></View>
           </Row>
         </>
       )}
     </View>
+  );
+}
+
+/** إلغاء الدفعة في ورقته الخاصة فوق ورقة القسط (قرار المالك 2026-10-07: نماذج التعديل تفتح ورقتها) */
+export function CancelPaymentSheet({ paymentId, onClose, onDone }: { paymentId: string; onClose: () => void; onDone?: () => void }) {
+  const { t } = useLang();
+  return (
+    <Sheet visible onClose={onClose} title={t('payment.cancelTitle')} tall>
+      <CancelPaymentPanel paymentId={paymentId} onClose={onClose} onDone={onDone} />
+    </Sheet>
   );
 }

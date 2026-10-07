@@ -9,7 +9,7 @@ import { usePerm } from './access';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal, View, FlatList, Pressable, useWindowDimensions,
-  TextInput, ActivityIndicator, Image, PanResponder, Text, Platform, I18nManager,
+  ActivityIndicator, Image, PanResponder, Text, Platform, I18nManager,
 } from 'react-native';
 import { DirView } from './DirView';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,8 +20,9 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
-import { T, Num, BtnGhost, BtnPrimary, Row } from './components';
-import { PickerSheet } from './Sheet';
+import { T, Num, BtnGhost, BtnPrimary, Row, Field } from './components';
+import { PickerSheet, Sheet } from './Sheet';
+import { useSaveAttempt } from './formAttempt';
 import { Icon, type IconName } from './icons';
 import { useApp } from './store';
 import { useToast } from './Toast';
@@ -296,6 +297,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
   const [infoOpen, setInfoOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState('');
+  const renameTry = useSaveAttempt();
   const [moveOpen, setMoveOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // ملفٌ نُزّل للتو من الخادم · يُعاد الرسم فيُعرض
@@ -450,7 +452,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
           <Text style={{ flex: 1, color: '#fff', fontSize: 13.5, fontFamily: FONT_BOLD, textAlign: 'right' }} numberOfLines={1}>{cur.name}</Text>
           {canManage ? (
             <>
-              <Pressable onPress={() => { setNewName(cur.name); setRenaming(true); }} style={{ padding: 6 }}>
+              <Pressable onPress={() => { setNewName(cur.name); renameTry.reset(); setRenaming(true); }} style={{ padding: 6 }}>
                 <Icon name="edit" size={17} color="#fff" />
               </Pressable>
               <Pressable onPress={() => setMoveOpen(true)} style={{ padding: 6 }}>
@@ -564,20 +566,12 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
           </Pressable>
         ) : null}
 
-        {/* إعادة التسمية */}
+        {/* إعادة التسمية في ورقتها الخاصة (قرار المالك 2026-10-07) · الحفظ ظاهر والأحمر بعد المحاولة */}
         {renaming ? (
-          <Pressable onPress={() => setRenaming(false)}
-            style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,.5)', justifyContent: 'center', padding: 24 }}>
-            <Pressable onPress={() => {}} style={{ backgroundColor: C.paper, borderRadius: 14, padding: 16 }}>
-              <T size={13.5} bold style={{ marginBottom: 10 }}>إعادة تسمية الملف</T>
-              <TextInput value={newName} onChangeText={setNewName} autoFocus
-                style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 10, textAlign: 'right', fontSize: 13, backgroundColor: '#FAFAF7' }} />
-              <Row style={{ marginTop: 12 }}>
-                <View style={{ flex: 1 }}><BtnGhost title="تراجع" onPress={() => setRenaming(false)} /></View>
-                <View style={{ flex: 1 }}><BtnPrimary title="حفظ" onPress={applyRename} /></View>
-              </Row>
-            </Pressable>
-          </Pressable>
+          <Sheet visible onClose={() => setRenaming(false)} title="إعادة تسمية الملف"
+            footer={<View style={{ flex: 1 }}><BtnPrimary title="حفظ" onPress={() => renameTry.attempt(!!newName.trim(), applyRename)} /></View>}>
+            <Field label="الاسم" value={newName} onChange={setNewName} error={renameTry.missing(newName)} />
+          </Sheet>
         ) : null}
 
         {/* النقل إلى تصنيف */}

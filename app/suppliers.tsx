@@ -300,8 +300,8 @@ export default function Suppliers() {
             linked="المورد" title="فواتيره وعقده" />
         ) : null}
         <Row>
-          <View style={{ flex: 1 }}><Field label="الرقم الضريبي" value={vat} onChange={setVat} keyboard="numeric" ltr placeholder="301XXXXXXXXXXX" /></View>
-          <View style={{ flex: 1 }}><Field label="رقم الجوال" value={phone} onChange={setPhone} keyboard="phone-pad" ltr placeholder="05XXXXXXXX" /></View>
+          <View style={{ flex: 1 }}><Field label="الرقم الضريبي" value={vat} onChange={setVat} keyboard="numeric" ltr /></View>
+          <View style={{ flex: 1 }}><Field label="رقم الجوال" value={phone} onChange={setPhone} keyboard="phone-pad" ltr /></View>
         </Row>
         <Row>
           <View style={{ flex: 1 }}><Field label="الفئة" value={category} onChange={setCategory} /></View>

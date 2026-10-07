@@ -369,7 +369,7 @@ export default function Accounts() {
         <Field label="اسم الحساب" value={name} onChange={setName} />
         <Row>
           <View style={{ flex: 1 }}>
-            <Field label="رمز الحساب" value={code} onChange={setCode} keyboard="numeric" ltr disabled={!!editingCode} placeholder="1013" />
+            <Field label="رمز الحساب" value={code} onChange={setCode} keyboard="numeric" ltr disabled={!!editingCode} />
           </View>
           <View style={{ flex: 1 }}>
             <SelectField label="النوع" value={type}

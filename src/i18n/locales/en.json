@@ -299,5 +299,27 @@
       "purchaseLocked": "This invoice's assets have depreciation or movements · edit the asset or reverse the conversion",
       "notConverted": "The invoice is not converted"
     }
+  },
+  "occupant": {
+    "addTitle": "Add occupant",
+    "editTitle": "Edit occupant",
+    "name": "Name",
+    "nationalId": "ID number",
+    "phone": "Mobile",
+    "relation": "Relation to tenant",
+    "nationality": "Nationality",
+    "added": "Occupant added",
+    "edited": "Occupant updated",
+    "saveFailed": "Could not save"
+  },
+  "payment": {
+    "cancelTitle": "Cancel payment"
+  },
+  "costCenters": {
+    "new": "New centre",
+    "addTitle": "New cost centre",
+    "editTitle": "Edit cost centre",
+    "name": "Name",
+    "add": "Add"
   }
 }

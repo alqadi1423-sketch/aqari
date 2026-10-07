@@ -15,6 +15,8 @@ import { useToast } from './Toast';
 import { useDialog } from './AppDialog';
 import { usePerm } from './access';
 import { reportFailure } from './failureDialog';
+import { useSaveAttempt } from './formAttempt';
+import { useLang } from '../i18n';
 import { uid } from '../domain/ids';
 import { logAudit } from '../domain/audit';
 import { dfmt } from '../domain/dates';
@@ -44,6 +46,10 @@ export function CostCentersSheet({ onClose }: { onClose: () => void }) {
   const perm = usePerm('ledger');
   const [name, setName] = useState('');
   const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
+  const [adding, setAdding] = useState(false);
+  const addTry = useSaveAttempt();
+  const editTry = useSaveAttempt();
+  const { t } = useLang();
   const list = useMemo(() => costCenters(db),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
@@ -53,7 +59,7 @@ export function CostCentersSheet({ onClose }: { onClose: () => void }) {
         addCostCenter(db, 'cc-' + uid(), name);
         logAudit(db, 'مراكز التكلفة', 'create', 'مركز تكلفة', name.trim());
       });
-      setName(''); bump(); toast('أُضيف مركز التكلفة');
+      setName(''); setAdding(false); bump(); toast('أُضيف مركز التكلفة');
     } catch (e) { reportFailure({ title: 'تعذّرت الإضافة', e }); }
   };
   const rename = () => {
@@ -88,25 +94,29 @@ export function CostCentersSheet({ onClose }: { onClose: () => void }) {
           <T size={TYPE.body} bold={!!c.is_default}>{c.name}{c.is_default ? ' · افتراضي' : ''}</T>
           {perm.manage && !c.is_default ? (
             <Row gap={6}>
-              <BtnGhost small title="تعديل" onPress={() => setEditing({ id: c.id, name: c.name })} />
+              <BtnGhost small title="تعديل" onPress={() => { editTry.reset(); setEditing({ id: c.id, name: c.name }); }} />
               <BtnGhost small title="حذف" onPress={() => remove(c.id, c.name)} />
             </Row>
           ) : null}
         </Row>
       ))}
-      {editing ? (
-        <View style={{ marginTop: 10 }}>
-          <Field label="الاسم الجديد" value={editing.name} onChange={(v) => setEditing({ ...editing, name: v })} />
-          <Row gap={8}>
-            <View style={{ flex: 1 }}><BtnGhost title="تراجع" onPress={() => setEditing(null)} /></View>
-            <View style={{ flex: 1 }}><BtnPrimary title="حفظ" onPress={rename} /></View>
-          </Row>
-        </View>
-      ) : perm.add ? (
+      {/* الإضافة والتعديل في ورقتيهما فوق القائمة (قرار المالك 2026-10-07) · الحفظ ظاهر والأحمر بعد المحاولة */}
+      {perm.add ? (
         <View style={{ marginTop: 12 }}>
-          <Field label="مركز جديد" value={name} onChange={setName} placeholder="مثل: تشغيل، تسويق، صيانة" />
-          {name.trim().length >= 2 ? <BtnPrimary title="إضافة" onPress={add} /> : null}
+          <BtnGhost small icon="plus" title={t('costCenters.new')} onPress={() => { setName(''); addTry.reset(); setAdding(true); }} />
         </View>
+      ) : null}
+      {adding ? (
+        <Sheet visible onClose={() => setAdding(false)} title={t('costCenters.addTitle')}
+          footer={<View style={{ flex: 1 }}><BtnPrimary title={t('costCenters.add')} onPress={() => addTry.attempt(name.trim().length >= 2, add)} /></View>}>
+          <Field label={t('costCenters.name')} value={name} onChange={setName} error={addTry.tried && name.trim().length < 2} />
+        </Sheet>
+      ) : null}
+      {editing ? (
+        <Sheet visible onClose={() => setEditing(null)} title={t('costCenters.editTitle')}
+          footer={<View style={{ flex: 1 }}><BtnPrimary title={t('common.save')} onPress={() => editTry.attempt(editing.name.trim().length >= 2, rename)} /></View>}>
+          <Field label={t('costCenters.name')} value={editing.name} onChange={(v) => setEditing({ ...editing, name: v })} error={editTry.tried && editing.name.trim().length < 2} />
+        </Sheet>
       ) : null}
     </Sheet>
   );
