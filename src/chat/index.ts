@@ -10,7 +10,8 @@ import { readMembership } from '../services/access';
 import { getSyncState, setSyncState } from '../sync/engine';
 import { ChatRemote } from './remote';
 import { chatSyncOnce, type ChatSyncResult } from './sync';
-import type { ChatMe } from './types';
+import { CHAT_NAME_MAX, FORMER_MEMBER, type ChatMe } from './types';
+import { applyRemoteThread, getThreadRow } from './store';
 
 export * from './types';
 export {
@@ -73,6 +74,44 @@ export function runChatSync(db: DB, s: ChatSession, ownerName = '', o: { threadI
     for (const l of listeners) { try { l(); } catch { /* عارض المحادثة مغلق */ } }
   });
   return running;
+}
+
+/* ─── قرارات المالك على مراجعة المحادثة (2026-10-07T18:06Z) ─── */
+
+/**
+ * محادثات المنشأة كلها في نافذة الحذف · «حذف حسابي» للمالك (#2) و«مسح كل البيانات» (#28) ·
+ * والمحادثة على هذا الجهاز تُفرَّغ مع قاعدته
+ */
+export async function chatPurgeOrg(s: ChatSession, org: string): Promise<number> {
+  const r = remoteFor(s, org);
+  await r.openDeletionWindow();
+  try { return await r.purgeAll(); } finally { await r.closeDeletionWindow().catch(() => {}); }
+}
+
+/** العضو يحذف حسابه: اسمه في رسائله «عضو سابق»، ويخرج من الدليل (#2) */
+export async function chatForgetMe(s: ChatSession, org: string): Promise<number> {
+  const r = remoteFor(s, org);
+  const n = await r.anonymizeMine(FORMER_MEMBER);
+  await r.deleteIn(`chatDir/${s.uid}`).catch(() => {});
+  return n;
+}
+
+/** المالك يُزيل عضواً: يخرج من كل مجموعاتها ومن الدليل والإشراف (#19) */
+export async function chatRemoveMember(s: ChatSession, org: string, uid: string, email: string): Promise<number> {
+  const r = remoteFor(s, org);
+  const groups = await r.groupsOf(uid);
+  for (const g of groups) await r.updateGroup(g.id, g.p.filter((x) => x !== uid), g.name);
+  await r.deleteIn(`chatDir/${uid}`).catch(() => {});
+  if (email) await r.deleteIn(`chatRoles/${email.trim().toLowerCase()}`).catch(() => {});
+  return groups.length;
+}
+
+/** تعديل أعضاء المجموعة واسمها · للمالك ومنشئها · يحتاج اتصالاً، ثم يُطبَّق على الجهاز (#19) */
+export async function chatUpdateGroup(db: DB, s: ChatSession, org: string, threadId: string, members: string[], name: string): Promise<void> {
+  const all = Array.from(new Set(members.filter(Boolean))).sort();
+  const n = name.trim().slice(0, CHAT_NAME_MAX);
+  await remoteFor(s, org).updateGroup(threadId, all, n);
+  applyRemoteThread(db, { ...(getThreadRow(db, threadId)), id: threadId, k: 'group', p: all, name: n });
 }
 
 /** إشراف عضو بإيميله · للمالك وحده (القواعد) */

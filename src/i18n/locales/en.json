@@ -377,6 +377,9 @@
     "rejected": "The server refused to create this chat · your supervision may have been removed",
     "sendFailed": "Could not send",
     "rejectedMsg": "Refused by the server",
-    "supSaveFailed": "Could not save section supervision · permissions were saved"
+    "supSaveFailed": "Could not save section supervision · permissions were saved",
+    "editGroup": "Group members",
+    "groupSaved": "Group saved",
+    "groupSaveFailed": "Could not save the group"
   }
 }

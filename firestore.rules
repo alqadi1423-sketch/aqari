@@ -444,6 +444,7 @@ service cloud.firestore {
       allow delete: if orgOwner(org) || (request.auth != null && request.auth.uid == uid);
     }
     match /orgs/{org}/chatRoles/{email} {
+      // حذف الإشراف للمالك (إزالة عضو، والمسح) · كما يكتبه
       // الإيميل لا يراه إلا المالك وصاحبه (مراجعة المحادثة #6) · والإشراف يُعرض للأعضاء من الدليل
       allow read: if orgOwner(org) || (chatIn(org) && request.auth.token.email == email);
       allow write: if orgOwner(org)
@@ -452,7 +453,8 @@ service cloud.firestore {
       allow delete: if orgOwner(org);
     }
     match /orgs/{org}/chats/{chatId} {
-      allow read: if chatIn(org) && request.auth.uid in resource.data.p;
+      // المالك يقرأ مستند المحادثة (أطرافها واسمها) ليدير المجموعات ويُزيل المُزال · لا رسائلها (#19)
+      allow read: if (chatIn(org) && request.auth.uid in resource.data.p) || orgOwner(org);
       allow create: if chatIn(org)
         && request.resource.data.keys().hasOnly(['k', 'p', 'name', 'by', 'at'])
         && request.resource.data.by == request.auth.uid
@@ -464,10 +466,18 @@ service cloud.firestore {
               && chatId == 'd_' + request.resource.data.p[0] + '_' + request.resource.data.p[1])
             || (request.resource.data.k == 'group' && chatId.matches('^g_[A-Za-z0-9_-]{6,64}$')
               && (orgOwner(org) || chatSup(org).size() > 0)));
-      allow update, delete: if false;
+      // المجموعة يعدّل أعضاءها واسمها المالك ومنشئها · لا نوعها ولا منشئها ولا وقتها (#19)
+      allow update: if chatIn(org) && resource.data.k == 'group'
+        && (orgOwner(org) || resource.data.by == request.auth.uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['p', 'name'])
+        && request.resource.data.p is list && request.resource.data.p.size() >= 1 && request.resource.data.p.size() <= 100
+        && request.resource.data.name is string && request.resource.data.name.size() <= 80;
+      // حذف المحادثة للمالك في نافذة الحذف وحدها: «حذف حسابي» (#2) و«مسح كل البيانات» (#28)
+      allow delete: if orgOwner(org) && orgDeletionOpen(org);
 
       match /msgs/{msgId} {
-        allow read: if chatIn(org) && chatParty(org, chatId);
+        // والمالك في نافذة الحذف وحدها ليسرد الرسائل فيحذفها (#2 و#28) · والحذف يطلب أسماءها لا محتواها
+        allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && orgDeletionOpen(org));
         allow create: if chatIn(org) && chatParty(org, chatId)
           && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts'])
           && request.resource.data.from == request.auth.uid
@@ -480,7 +490,11 @@ service cloud.firestore {
               && request.resource.data.link.id is string && request.resource.data.link.id.size() <= 64
               && request.resource.data.link.label is string && request.resource.data.link.label.size() <= 200))
           && request.resource.data.att == null;
-        allow update, delete: if false;
+        // العضو يحذف حسابه: اسمه في رسائله «عضو سابق» وحده · رسائله وحده ولا حقل غيره (#2)
+        allow update: if chatIn(org) && resource.data.from == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
+          && request.resource.data.name == 'عضو سابق';
+        allow delete: if orgOwner(org) && orgDeletionOpen(org);
       }
     }
     // </chat>

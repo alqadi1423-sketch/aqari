@@ -199,3 +199,15 @@ test('المحادثة المرفوضة تحجز رسائلها وتوسَم · 
   }) as typeof base, MEMBER, { force: true });
   expect(sent).toEqual([MEMBER.name]);
 });
+
+test('الدليل يُستبدل كاملاً فمن خرج منه لا يبقى باسمه · وتعديل المجموعة للمالك ومنشئها (#2 و#19)', async () => {
+  const { savePeople, listPeople } = await import('@/chat/store');
+  const { canEditGroup } = await import('@/chat');
+  const a = memDb();
+  savePeople(a, [{ uid: 'u1', name: 'أ', sup: [] }, { uid: 'u2', name: 'ب', sup: [] }]);
+  savePeople(a, [{ uid: 'u1', name: 'أ', sup: [] }]);
+  expect(listPeople(a).map((p) => p.uid)).toEqual(['u1']);
+  expect(canEditGroup(OWNER, 'someone')).toBe(true);
+  expect(canEditGroup(MEMBER, MEMBER.uid)).toBe(true);
+  expect(canEditGroup(MEMBER, 'someone')).toBe(false);
+});

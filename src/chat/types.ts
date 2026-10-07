@@ -78,6 +78,14 @@ export interface ChatMe {
   owner: boolean;
 }
 
+/** اسم من حذف حسابه في رسائله (قرار المالك 2026-10-07: #2) · مطابق لقواعد الخادم */
+export const FORMER_MEMBER = 'عضو سابق'; // i18n-exempt: قيمة مخزّنة تطابقها القواعد
+
+/** من يعدّل المجموعة: المالك ومنشئها (#19) */
+export function canEditGroup(me: ChatMe, createdBy: string): boolean {
+  return me.owner || me.uid === createdBy;
+}
+
 /** أقصى طول للرسالة · مطابق لقواعد الخادم */
 export const CHAT_BODY_MAX = 4000;
 export const CHAT_NAME_MAX = 80;

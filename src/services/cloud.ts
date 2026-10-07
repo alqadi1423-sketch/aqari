@@ -46,7 +46,7 @@ import { memberTokens, fullReadTables } from '../sync/acl';
 import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engine';
 import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning } from '../chat';
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatUpdateGroup } from '../chat';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
@@ -557,6 +557,11 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
     // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
     // ملفات المنشأة في الخادم مع صفوفها
     await deleteOrgFiles(uid, onProgress);
+    // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
+    const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.idToken() };
+    const mem = readMembership(db);
+    if (mem) await chatForgetMe(chatS, mem.org);
+    else await chatPurgeOrg(chatS, uid);
     for (const remote of [
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() }),
@@ -672,6 +677,8 @@ export async function wipeEverything(db: AppDB, onProgress?: (m: string) => void
       const sess = s!;
       const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.idToken(), org: user!.uid });
       epoch = await wipeOrgCloud(remote, user!.uid, onProgress);
+      // المسح يشمل المحادثة (قرار المالك 2026-10-07: #28)
+      await chatPurgeOrg({ projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.idToken() }, user!.uid);
       await deleteOrgFiles(user!.uid, onProgress);
     }
     await wipeLocal(db, onProgress, safety);
@@ -805,7 +812,22 @@ export async function setChatSupervisorNow(email: string, sections: string[]): P
   if (!s || !cfg || !state.user) { teamRemote(); return; }
   await setSupervisor({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email, sections);
 }
-export async function removeMemberNow(uid: string) { const t = teamRemote(); return removeMember(t.remote, t.org, uid); }
+export async function removeMemberNow(uid: string, email = '') {
+  const t = teamRemote();
+  await removeMember(t.remote, t.org, uid);
+  // يخرج من مجموعات المحادثة ودليلها وإشرافها (قرار المالك 2026-10-07: #19)
+  const s = getSession(); const cfg = cloudConfig();
+  if (s && cfg && state.user) await chatRemoveMember({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, t.org, uid, email);
+}
+
+/** تعديل أعضاء مجموعة واسمها (#19) · للمالك ومنشئها */
+export async function chatUpdateGroupNow(threadId: string, members: string[], name: string): Promise<void> {
+  const s = getSession(); const cfg = cloudConfig(); const db = appDb;
+  if (!s || !cfg || !state.user || !db) { teamRemote(); return; }
+  if (!state.online) teamRemote();
+  const org = readMembership(db)?.org ?? state.user.uid;
+  await chatUpdateGroup(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, members, name);
+}
 export async function revokeInviteNow(email: string) { const t = teamRemote(); return revokeInvite(t.remote, t.org, email); }
 
 /* ═══════════ Google Drive ═══════════ */

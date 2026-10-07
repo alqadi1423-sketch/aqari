@@ -73,7 +73,7 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
                     actions: [
                       { label: 'تراجع', variant: 'ghost' },
                       { label: 'أزِل', variant: 'danger', onPress: async () => {
-                        try { await removeMemberNow(m.uid); toast('أُزيل العضو'); load(); }
+                        try { await removeMemberNow(m.uid, m.doc.email); toast('أُزيل العضو'); load(); }
                         catch (e) { await reportFailure({ title: 'تعذّرت الإزالة', where: 'الأعضاء', db, e }); }
                       } },
                     ],

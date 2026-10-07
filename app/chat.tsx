@@ -13,7 +13,8 @@ import { useApp, useFs } from '../src/ui/store';
 import { useAccess } from '../src/ui/access';
 import { useLang } from '../src/i18n';
 import { dfmt } from '../src/domain/dates';
-import { cloudState, subscribeCloud, chatSyncNow, chatOwnerName } from '../src/services/cloud';
+import { cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatUpdateGroupNow } from '../src/services/cloud';
+import { useToast } from '../src/ui/Toast';
 import { sectionDef } from '../src/domain/access/sections';
 import { UnitDetailSheet } from '../src/ui/unitSheets';
 import { AssetSheet } from '../src/ui/AssetSheets';
@@ -21,7 +22,8 @@ import { useSaveAttempt } from '../src/ui/formAttempt';
 import { reportFailure } from '../src/ui/failureDialog';
 import {
   chatMe, canCreateGroup, createGroup, getThread, linkCandidates, linkTarget, listMessages, listPeople, listThreads,
-  markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, type ChatLink, type ChatMe, type ChatPerson,
+  markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup,
+  type ChatLink, type ChatMe, type ChatPerson, type ChatThread,
 } from '../src/chat';
 
 /** دورة المحادثة كل بضع ثوانٍ ما دامت الشاشة مفتوحة · ومعها تجديد العرض بعد كل دورة */
@@ -181,11 +183,14 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const people = useMemo(() => listPeople(db), [db, tick]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { markRead(db, id); }, [db, id, msgs.length]);
   const other = people.find((p) => p.uid === thread?.members.find((u) => u !== me.uid));
-  const title = thread?.kind === 'group' ? thread.name : other?.name || t('chat.member');
+  const otherUid = thread?.members.find((u) => u !== me.uid);
+  const title = thread?.kind === 'group' ? thread.name : other?.name || (otherUid && people.length ? FORMER_MEMBER : t('chat.member'));
+  const [editOpen, setEditOpen] = useState(false);
   const sub = thread?.kind === 'group' ? undefined
     : other?.uid === me.org ? t('chat.owner') : other?.sup.length ? t('chat.supervisorOf', { sections: supLabel(other.sup) }) : undefined;
   const senderOf = (uid: string, fallback: string) => {
     const p = people.find((x) => x.uid === uid);
+    if (!p && people.length) return FORMER_MEMBER;
     const sup = uid === me.org ? t('chat.owner') : p?.sup.length ? t('chat.supervisorOf', { sections: supLabel(p.sup) }) : '';
     return (p?.name || fallback || t('chat.member')) + (sup ? ' · ' + sup : '');
   };
@@ -212,7 +217,15 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
 
   return (
     <Screen title={title} sub={sub} icon="chat" scroll={false}
-      actions={<BtnGhost small title={t('chat.back')} onPress={onBack} />}>
+      actions={(
+        <Row gap={6}>
+          {/* تعديل أعضاء المجموعة للمالك ومنشئها وحدهما (قرار المالك 2026-10-07: #19) · ولغيرهما لا يظهر الزر */}
+          {thread?.kind === 'group' && canEditGroup(me, thread.createdBy) ? (
+            <BtnGhost small title={t('chat.groupMembers')} onPress={() => setEditOpen(true)} />
+          ) : null}
+          <BtnGhost small title={t('chat.back')} onPress={onBack} />
+        </Row>
+      )}>
       <FlatList
         style={{ flex: 1 }}
         data={msgs}
@@ -252,12 +265,44 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
             borderRadius: 10, paddingHorizontal: 10, backgroundColor: '#FAFAF7', textAlign: 'right' }} />
         <BtnPrimary small title={t('chat.send')} onPress={send} />
       </Row>
+      {editOpen && thread ? (
+        <GroupEditSheet me={me} people={people} thread={thread} onClose={() => setEditOpen(false)} />
+      ) : null}
       {linkOpen ? <LinkSheet onClose={() => setLinkOpen(false)} onPick={(l) => { setLink(l); setLinkOpen(false); }} /> : null}
       {unitFor ? <UnitDetailSheet unitId={unitFor} onClose={() => setUnitFor(null)}
         onEdit={() => { setUnitFor(null); router.push('/units' as never); }}
         onReserve={() => { setUnitFor(null); router.push('/units' as never); }} /> : null}
       {assetFor ? <AssetSheet id={assetFor} onClose={() => setAssetFor(null)} /> : null}
     </Screen>
+  );
+}
+
+/** أعضاء المجموعة واسمها · تعديلٌ يحتاج اتصالاً (#19) */
+function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: ChatPerson[]; thread: ChatThread; onClose: () => void }) {
+  const { t } = useLang();
+  const { bump } = useApp();
+  const toast = useToast();
+  const f = useSaveAttempt();
+  const [name, setName] = useState(thread.name);
+  const [picked, setPicked] = useState<string[]>(thread.members.filter((u) => u !== me.uid));
+  const others = people.filter((p) => p.uid !== me.uid);
+  const save = async () => {
+    try {
+      await chatUpdateGroupNow(thread.id, [me.uid, ...picked], name);
+      bump(); toast(t('chat.groupSaved')); onClose();
+    } catch (e) { reportFailure({ title: t('chat.groupSaveFailed'), e }); }
+  };
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.editGroup')} tall
+      footer={<View style={{ flex: 1 }}><BtnPrimary title={t('common.save')} onPress={() => f.attempt(!!name.trim() && picked.length > 0, save)} /></View>}>
+      <Field label={t('chat.groupName')} value={name} onChange={setName} error={f.missing(name)} />
+      <T size={TYPE.cardTitle} bold style={{ marginTop: 6 }}>{t('chat.groupMembers')}</T>
+      {f.tried && !picked.length ? <T size={TYPE.caption} color={C.rose}>{t('chat.pickMembers')}</T> : null}
+      {others.map((p) => (
+        <PersonRow key={p.uid} p={p} me={me} active={picked.includes(p.uid)}
+          onPress={() => setPicked((x) => (x.includes(p.uid) ? x.filter((u) => u !== p.uid) : [...x, p.uid]))} />
+      ))}
+    </Sheet>
   );
 }
 

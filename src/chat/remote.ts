@@ -133,6 +133,117 @@ export class ChatRemote {
     return out;
   }
 
+  /* ─── تعديل المجموعة والحذف (قرارات المالك 2026-10-07 على مراجعة المحادثة) ─── */
+
+  /** أعضاء المجموعة واسمها · للمالك ومنشئها (القواعد) · #19 */
+  async updateGroup(threadId: string, p: string[], name: string): Promise<void> {
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [{
+        update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}`)}`, fields: encodeFields({ p, name }) },
+        updateMask: { fieldPaths: ['p', 'name'] },
+        currentDocument: { exists: true },
+      }],
+    });
+  }
+
+  /** مجموعات المنشأة التي فيها عضو · للمالك (يقرأ مستندات المحادثات دون رسائلها) · #19 */
+  async groupsOf(uid: string): Promise<Array<{ id: string; p: string[]; name: string }>> {
+    const rows = (await this.req('POST', `${this.root}/orgs/${this.o.org}:runQuery`, {
+      structuredQuery: {
+        from: [{ collectionId: 'chats' }],
+        where: { fieldFilter: { field: { fieldPath: 'p' }, op: 'ARRAY_CONTAINS', value: { stringValue: uid } } },
+      },
+    })) as Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
+    const out: Array<{ id: string; p: string[]; name: string }> = [];
+    for (const r of rows) {
+      if (!r.document) continue;
+      const d = decodeFields(r.document.fields);
+      if (d.k !== 'group') continue;
+      out.push({ id: tail(r.document.name), p: Array.isArray(d.p) ? (d.p as string[]) : [], name: String(d.name ?? '') });
+    }
+    return out;
+  }
+
+  /** العضو يحذف حسابه: اسمه في رسائله «عضو سابق» · رسائله وحده (القواعد) · #2 */
+  async anonymizeMine(label: string): Promise<number> {
+    let n = 0;
+    for (const t of await this.myThreads()) {
+      const rows = (await this.req('POST', `${this.root}/orgs/${this.o.org}/chats/${t.id}:runQuery`, {
+        structuredQuery: {
+          from: [{ collectionId: 'msgs' }],
+          where: { fieldFilter: { field: { fieldPath: 'from' }, op: 'EQUAL', value: { stringValue: this.o.uid } } },
+        },
+      })) as Array<{ document?: { name: string } }>;
+      const names = rows.filter((r) => r.document).map((r) => r.document!.name);
+      for (let i = 0; i < names.length; i += 200) {
+        await this.req('POST', `${this.root}:commit`, {
+          writes: names.slice(i, i + 200).map((name) => ({
+            update: { name, fields: encodeFields({ name: label }) }, updateMask: { fieldPaths: ['name'] }, currentDocument: { exists: true },
+          })),
+        });
+        n += Math.min(200, names.length - i);
+      }
+    }
+    return n;
+  }
+
+  /** نافذة الحذف بوقت الخادم (meta/deletion) · لساعة · للمالك */
+  async openDeletionWindow(): Promise<void> {
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [{ update: { name: `${this.docsRoot}/${this.orgPath('meta/deletion')}`, fields: {} }, updateTransforms: [{ fieldPath: 'at', setToServerValue: 'REQUEST_TIME' }] }],
+    });
+  }
+  async closeDeletionWindow(): Promise<void> {
+    await this.deleteIn('meta/deletion');
+  }
+
+  /** حذف مستند في المنشأة (دليل أو إشراف) */
+  async deleteIn(rel: string): Promise<void> {
+    await this.req('POST', `${this.root}:commit`, { writes: [{ delete: `${this.docsRoot}/${this.orgPath(rel)}` }] });
+  }
+
+  /**
+   * محادثات المنشأة كلها ورسائلها ودليلها وإشرافها · للمالك في نافذة الحذف (meta/deletion بوقت الخادم) ·
+   * «حذف حسابي» للمالك (#2) و«مسح كل البيانات» (#28)
+   */
+  async purgeAll(): Promise<number> {
+    const list = async (rel: string): Promise<string[]> => {
+      const token = await this.o.idToken();
+      const res = await this.f(`${this.root}/${rel}?pageSize=300&mask.fieldPaths=k`, { headers: { Authorization: 'Bearer ' + token } });
+      const text = await res.text();
+      if (!res.ok) throw new FirestoreHttpError(res.status, text);
+      return ((text ? JSON.parse(text) : {}).documents ?? []).map((d: { name: string }) => d.name);
+    };
+    const del = async (names: string[]) => {
+      for (let i = 0; i < names.length; i += 300) {
+        await this.req('POST', `${this.root}:commit`, { writes: names.slice(i, i + 300).map((name) => ({ delete: name })) });
+      }
+    };
+    let n = 0;
+    for (;;) {
+      const chats = await list(this.orgPath('chats'));
+      if (!chats.length) break;
+      for (const c of chats) {
+        const rel = c.slice(c.indexOf('/documents/') + '/documents/'.length);
+        for (;;) {
+          const msgs = await list(`${rel}/msgs`);
+          if (!msgs.length) break;
+          await del(msgs);
+          n += msgs.length;
+        }
+      }
+      await del(chats);
+    }
+    for (const sub of ['chatDir', 'chatRoles']) {
+      for (;;) {
+        const docs = await list(this.orgPath(sub));
+        if (!docs.length) break;
+        await del(docs);
+      }
+    }
+    return n;
+  }
+
   /* ─── الدليل والإشراف ─── */
 
   /** يكتب العضو اسمه في الدليل · وإشرافه كما سجّله المالك (القواعد تطابقه بمستند الإشراف) */
