@@ -467,17 +467,29 @@ service cloud.firestore {
             || (request.resource.data.k == 'group' && chatId.matches('^g_[A-Za-z0-9_-]{6,64}$')
               && (orgOwner(org) || chatSup(org).size() > 0)));
       // المجموعة يعدّل أعضاءها واسمها المالك ومنشئها · لا نوعها ولا منشئها ولا وقتها (#19)
+      // والعضو يُخرج نفسه وحده (مغادرة المنشأة) · والإزالة قد تُبقي المجموعة بلا أعضاء (التحقق ق٣)
       allow update: if chatIn(org) && resource.data.k == 'group'
-        && (orgOwner(org) || resource.data.by == request.auth.uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['p', 'name'])
-        && request.resource.data.p is list && request.resource.data.p.size() >= 1 && request.resource.data.p.size() <= 100
-        && request.resource.data.name is string && request.resource.data.name.size() <= 80;
+        && request.resource.data.p is list && request.resource.data.p.size() <= 100
+        && request.resource.data.name is string && request.resource.data.name.size() <= 80
+        && ((orgOwner(org) || resource.data.by == request.auth.uid)
+            || (request.resource.data.name == resource.data.name
+                && request.resource.data.p.toSet() == resource.data.p.toSet().difference([request.auth.uid].toSet())));
       // حذف المحادثة للمالك في نافذة الحذف وحدها: «حذف حسابي» (#2) و«مسح كل البيانات» (#28)
       allow delete: if orgOwner(org) && orgDeletionOpen(org);
 
-      match /msgs/{msgId} {
-        // والمالك في نافذة الحذف وحدها ليسرد الرسائل فيحذفها (#2 و#28) · والحذف يطلب أسماءها لا محتواها
+      // فهرس أرقام الرسائل بلا محتوى (التحقق ق١): يكتبه المرسل مع رسالته في التزام واحد · ويسرده المالك في نافذة
+      // الحذف ليحذف الرسائل بأسمائها دون أن يقرأها
+      match /ids/{msgId} {
         allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && orgDeletionOpen(org));
+        allow create: if chatIn(org) && chatParty(org, chatId) && request.resource.data.keys().size() == 0
+          && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(msgId)).data.from == request.auth.uid;
+        allow update: if false;
+        allow delete: if orgOwner(org) && orgDeletionOpen(org);
+      }
+
+      match /msgs/{msgId} {
+        allow read: if chatIn(org) && chatParty(org, chatId);
         allow create: if chatIn(org) && chatParty(org, chatId)
           && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts'])
           && request.resource.data.from == request.auth.uid

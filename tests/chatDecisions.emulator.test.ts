@@ -6,7 +6,7 @@
  */
 import { encodeFields } from '@/cloud/firestore';
 import { ChatRemote } from '@/chat/remote';
-import { chatPurgeOrg, chatForgetMe, chatRemoveMember, FORMER_MEMBER, directId } from '@/chat';
+import { chatPurgeOrg, chatForgetMe, chatRemoveMember, chatLeaveOrg, FORMER_MEMBER, directId } from '@/chat';
 
 const HOST = process.env.FIRESTORE_EMULATOR_HOST;
 const PROJECT = 'demo-aqari';
@@ -91,8 +91,45 @@ d('قرارات المالك على مراجعة المحادثة', () => {
     expect(await chat(A).myThreads()).toEqual([]);
     expect(await chat(A).directory()).toEqual([]);
     expect(await chat(B).role('u-dcb@example.test')).toEqual([]);
+    // لا رسالة يتيمة بلا محادثتها · والفهرس معها
+    const orphan = await fetch(url(`orgs/${ORG}/chats/${dAB}/msgs/MA1`), { headers: { Authorization: 'Bearer ' + token(A) } });
+    expect([403, 404]).toContain(orphan.status);
     // أُغلقت النافذة بعده
     const meta = await fetch(url(`orgs/${ORG}/meta/deletion`), { headers: { Authorization: 'Bearer ' + token(ORG) } });
     expect(meta.status).toBe(404);
+  });
+
+  test('ق١ المالك لا يقرأ الرسائل الخاصة ولو فتح نافذة الحذف · يسرد فهرس أرقامها وحده', async () => {
+    const dAB = directId(A, B);
+    await chat(ORG).openDeletionWindow();
+    await expect(chat(ORG).messagesSince(dAB, null)).rejects.toThrow(/403/);
+    const ids = await fetch(url(`orgs/${ORG}/chats/${dAB}/ids`), { headers: { Authorization: 'Bearer ' + token(ORG) } });
+    expect(ids.status).toBe(200);
+    const body = (await ids.json()) as { documents?: Array<{ fields?: object }> };
+    expect(body.documents?.length).toBe(2);
+    expect(body.documents?.every((d) => !d.fields || Object.keys(d.fields).length === 0)).toBe(true);
+    await chat(ORG).closeDeletionWindow();
+    // ولا فهرس مزوّر لرسالة غيره
+    const fake = await fetch(url(`orgs/${ORG}/chats/${dAB}/ids/MB1`), { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(A) }, body: JSON.stringify({ fields: {} }) });
+    expect(fake.status).toBe(403);
+  });
+
+  test('ق٢ المسح (#28) يُبقي الدليل والإشراف لأن الأعضاء باقون', async () => {
+    expect(await chatPurgeOrg(session(ORG), ORG, { keepDirectory: true })).toBe(3);
+    expect(await chat(A).myThreads()).toEqual([]);
+    expect((await chat(A).directory()).length).toBe(4);
+    expect(await chat(B).role('u-dcb@example.test')).toEqual(['contracts']);
+  });
+
+  test('ق٣ إزالة عضو بقي وحده في مجموعة · والعضو يُخرج نفسه وحده بالمغادرة', async () => {
+    await chat(ORG).createThread({ id: 'g_solo00001', k: 'group', p: [ORG, C].sort(), name: 'مجموعة ج' });
+    expect(await chat(ORG).updateGroup('g_solo00001', [C], 'مجموعة ج')).toBeUndefined();
+    expect(await chatRemoveMember(session(ORG), ORG, C, 'u-dcc@example.test')).toBe(2);
+    expect((await chat(A).myThreads()).find((t) => t.id === 'g_decgroup1')!.p).toEqual([A, B].sort());
+    // العضو أ يغادر: يخرج من المجموعة ومن الدليل · ولا يُخرج غيره
+    expect(await status(chat(A).updateGroup('g_decgroup1', [A].sort(), 'مجموعة المشرف'))).toBe(403);
+    await chatLeaveOrg(session(A), ORG);
+    expect((await chat(B).myThreads()).find((t) => t.id === 'g_decgroup1')!.p).toEqual([B]);
+    expect((await chat(B).directory()).map((x) => x.uid)).not.toContain(A);
   });
 });

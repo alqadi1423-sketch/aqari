@@ -102,10 +102,28 @@ export class ChatRemote {
 
   /* ─── الرسائل ─── */
 
+  /**
+   * الرسالة ومعها فهرس رقمها بلا محتوى (ids/{id}) في التزام واحد · المالك يسرد الفهرس ليحذف في نافذة الحذف
+   * ولا يقرأ الرسائل، فالأطراف وحدهم يقرؤون (التحقق ق١)
+   */
   async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null }): Promise<'created' | 'exists'> {
-    return this.createOnce(this.orgPath(`chats/${threadId}/msgs/${m.id}`), {
-      from: this.o.uid, name: m.name, body: m.body, link: m.link, att: null,
-    }, 'ts');
+    const base = `${this.docsRoot}/${this.orgPath(`chats/${threadId}`)}`;
+    try {
+      await this.req('POST', `${this.root}:commit`, {
+        writes: [
+          {
+            update: { name: `${base}/msgs/${m.id}`, fields: encodeFields({ from: this.o.uid, name: m.name, body: m.body, link: m.link, att: null }) },
+            currentDocument: { exists: false },
+            updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
+          },
+          { update: { name: `${base}/ids/${m.id}`, fields: {} }, currentDocument: { exists: false } },
+        ],
+      });
+      return 'created';
+    } catch (e) {
+      if (e instanceof FirestoreHttpError && (e.status === 409 || /ALREADY_EXISTS|FAILED_PRECONDITION/.test(e.message))) return 'exists';
+      throw e;
+    }
   }
 
   /** رسائل محادثة بعد مؤشر وقت الخادم · بترتيبه */
@@ -144,6 +162,11 @@ export class ChatRemote {
         currentDocument: { exists: true },
       }],
     });
+  }
+
+  /** العضو يُخرج نفسه من مجموعة (مغادرة المنشأة) · القواعد تجيز إخراج نفسه وحده */
+  async leaveGroup(threadId: string, p: string[], name: string): Promise<void> {
+    await this.updateGroup(threadId, p.filter((x) => x !== this.o.uid), name);
   }
 
   /** مجموعات المنشأة التي فيها عضو · للمالك (يقرأ مستندات المحادثات دون رسائلها) · #19 */
@@ -206,7 +229,7 @@ export class ChatRemote {
    * محادثات المنشأة كلها ورسائلها ودليلها وإشرافها · للمالك في نافذة الحذف (meta/deletion بوقت الخادم) ·
    * «حذف حسابي» للمالك (#2) و«مسح كل البيانات» (#28)
    */
-  async purgeAll(): Promise<number> {
+  async purgeAll(o: { keepDirectory?: boolean } = {}): Promise<number> {
     const list = async (rel: string): Promise<string[]> => {
       const token = await this.o.idToken();
       const res = await this.f(`${this.root}/${rel}?pageSize=300&mask.fieldPaths=k`, { headers: { Authorization: 'Bearer ' + token } });
@@ -226,15 +249,16 @@ export class ChatRemote {
       for (const c of chats) {
         const rel = c.slice(c.indexOf('/documents/') + '/documents/'.length);
         for (;;) {
-          const msgs = await list(`${rel}/msgs`);
-          if (!msgs.length) break;
-          await del(msgs);
-          n += msgs.length;
+          const ids = await list(`${rel}/ids`);
+          if (!ids.length) break;
+          // الرسالة وفهرسها معاً · بالأسماء دون قراءة محتوى
+          await del(ids.flatMap((x) => [x.replace('/ids/', '/msgs/'), x]));
+          n += ids.length;
         }
       }
       await del(chats);
     }
-    for (const sub of ['chatDir', 'chatRoles']) {
+    for (const sub of o.keepDirectory ? [] : ['chatDir', 'chatRoles']) {
       for (;;) {
         const docs = await list(this.orgPath(sub));
         if (!docs.length) break;
@@ -257,15 +281,22 @@ export class ChatRemote {
   }
 
   async directory(): Promise<ChatPerson[]> {
-    const token = await this.o.idToken();
-    const res = await this.f(`${this.root}/${this.orgPath('chatDir')}?pageSize=300`, { headers: { Authorization: 'Bearer ' + token } });
-    const text = await res.text();
-    if (!res.ok) throw new FirestoreHttpError(res.status, text);
-    const docs = ((text ? JSON.parse(text) : {}).documents ?? []) as Array<{ name: string; fields?: Record<string, FsValue> }>;
-    return docs.map((d) => {
-      const f = decodeFields(d.fields ?? {});
-      return { uid: tail(d.name), name: String(f.name ?? ''), sup: Array.isArray(f.sup) ? (f.sup as string[]) : [] };
-    });
+    const out: ChatPerson[] = [];
+    let page = '';
+    for (let guard = 0; guard < 100; guard++) {
+      const token = await this.o.idToken();
+      const res = await this.f(`${this.root}/${this.orgPath('chatDir')}?pageSize=300${page ? '&pageToken=' + encodeURIComponent(page) : ''}`, { headers: { Authorization: 'Bearer ' + token } });
+      const text = await res.text();
+      if (!res.ok) throw new FirestoreHttpError(res.status, text);
+      const j = (text ? JSON.parse(text) : {}) as { documents?: Array<{ name: string; fields?: Record<string, FsValue> }>; nextPageToken?: string };
+      for (const d of j.documents ?? []) {
+        const f = decodeFields(d.fields ?? {});
+        out.push({ uid: tail(d.name), name: String(f.name ?? ''), sup: Array.isArray(f.sup) ? (f.sup as string[]) : [] });
+      }
+      if (!j.nextPageToken) break;
+      page = j.nextPageToken;
+    }
+    return out;
   }
 
   /** إشراف عضو بإيميله · يكتبه المالك عند الدعوة أو التعديل */

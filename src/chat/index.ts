@@ -82,10 +82,19 @@ export function runChatSync(db: DB, s: ChatSession, ownerName = '', o: { threadI
  * محادثات المنشأة كلها في نافذة الحذف · «حذف حسابي» للمالك (#2) و«مسح كل البيانات» (#28) ·
  * والمحادثة على هذا الجهاز تُفرَّغ مع قاعدته
  */
-export async function chatPurgeOrg(s: ChatSession, org: string): Promise<number> {
+export async function chatPurgeOrg(s: ChatSession, org: string, o: { keepDirectory?: boolean } = {}): Promise<number> {
   const r = remoteFor(s, org);
   await r.openDeletionWindow();
-  try { return await r.purgeAll(); } finally { await r.closeDeletionWindow().catch(() => {}); }
+  try { return await r.purgeAll(o); } finally { await r.closeDeletionWindow().catch(() => {}); }
+}
+
+/** العضو يغادر المنشأة: يخرج من مجموعاتها ومن الدليل · محاولةٌ لا تمنع المغادرة */
+export async function chatLeaveOrg(s: ChatSession, org: string): Promise<void> {
+  const r = remoteFor(s, org);
+  for (const t of await r.myThreads()) {
+    if (t.k === 'group') await r.leaveGroup(t.id, t.p, t.name).catch(() => {});
+  }
+  await r.deleteIn(`chatDir/${s.uid}`).catch(() => {});
 }
 
 /** العضو يحذف حسابه: اسمه في رسائله «عضو سابق»، ويخرج من الدليل (#2) */
@@ -99,11 +108,14 @@ export async function chatForgetMe(s: ChatSession, org: string): Promise<number>
 /** المالك يُزيل عضواً: يخرج من كل مجموعاتها ومن الدليل والإشراف (#19) */
 export async function chatRemoveMember(s: ChatSession, org: string, uid: string, email: string): Promise<number> {
   const r = remoteFor(s, org);
-  const groups = await r.groupsOf(uid);
-  for (const g of groups) await r.updateGroup(g.id, g.p.filter((x) => x !== uid), g.name);
   await r.deleteIn(`chatDir/${uid}`).catch(() => {});
   if (email) await r.deleteIn(`chatRoles/${email.trim().toLowerCase()}`).catch(() => {});
-  return groups.length;
+  const groups = await r.groupsOf(uid);
+  let n = 0;
+  for (const g of groups) {
+    try { await r.updateGroup(g.id, g.p.filter((x) => x !== uid), g.name); n++; } catch { /* تُعاد مع الإزالة التالية */ }
+  }
+  return n;
 }
 
 /** تعديل أعضاء المجموعة واسمها · للمالك ومنشئها · يحتاج اتصالاً، ثم يُطبَّق على الجهاز (#19) */

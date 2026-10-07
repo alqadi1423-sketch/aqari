@@ -46,7 +46,7 @@ import { memberTokens, fullReadTables } from '../sync/acl';
 import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engine';
 import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatUpdateGroup } from '../chat';
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatUpdateGroup, chatLeaveOrg } from '../chat';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
@@ -560,7 +560,8 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
     // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
     const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.idToken() };
     const mem = readMembership(db);
-    if (mem) await chatForgetMe(chatS, mem.org);
+    // محاولة: عضوٌ أُزيل ولم يُحسم قراره لا يُمنع من حذف حسابه (التحقق)
+    if (mem) await chatForgetMe(chatS, mem.org).catch(() => {});
     else await chatPurgeOrg(chatS, uid);
     for (const remote of [
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
@@ -678,7 +679,8 @@ export async function wipeEverything(db: AppDB, onProgress?: (m: string) => void
       const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.idToken(), org: user!.uid });
       epoch = await wipeOrgCloud(remote, user!.uid, onProgress);
       // المسح يشمل المحادثة (قرار المالك 2026-10-07: #28)
-      await chatPurgeOrg({ projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.idToken() }, user!.uid);
+      // الأعضاء والدعوات باقون بعد المسح · فيبقى الدليل والإشراف (التحقق ق٢)
+      await chatPurgeOrg({ projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.idToken() }, user!.uid, { keepDirectory: true });
       await deleteOrgFiles(user!.uid, onProgress);
     }
     await wipeLocal(db, onProgress, safety);
@@ -738,6 +740,9 @@ export async function leaveOrgNow(db: AppDB): Promise<void> {
   const sess = s;
   await pauseSync();
   try {
+    // يخرج من مجموعات المحادثة ومن دليلها قبل عضويته (قرار المالك #19)
+    const cfgL = cloudConfig();
+    if (cfgL) await chatLeaveOrg({ projectId: cfgL.projectId, uid: state.user.uid, email: state.user.email, idToken: () => sess.idToken() }, m.org).catch(() => {});
     await leaveOrg(remoteOf(db, state.user.uid, () => sess.idToken()), m.org, m.uid);
     await resetDeviceData(db);
     await sess.signOut();
