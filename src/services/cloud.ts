@@ -294,8 +294,11 @@ export async function syncNow(): Promise<void> {
   }
 }
 
+/** اسم المالك في المحادثة · مصدر واحد للشاشة والمزامنة (التحقق ج١) */
+export const chatOwnerName = (db: DB): string => orgNameOf(db);
+
 /** دورة مزامنة للمحادثة وحدها · تستدعيها شاشتها أيضاً · بلا جلسة أو اتصال لا تفعل شيئاً */
-export async function chatSyncNow(o: { threadId?: string; force?: boolean } = {}): Promise<void> {
+export async function chatSyncNow(o: { threadId?: string; full?: boolean; force?: boolean } = {}): Promise<void> {
   const s = getSession();
   const db = appDb;
   const cfg = cloudConfig();
@@ -793,7 +796,8 @@ export async function updateMemberNow(db: DB, uid: string, spec: MemberSpec) { c
 /** إشراف عضو في المحادثة بإيميله (src/chat) · للمالك وحده */
 export async function chatSupervisorNow(email: string): Promise<string[]> {
   const s = getSession(); const cfg = cloudConfig();
-  if (!s || !cfg || !state.user || !state.online || !email) return [];
+  if (!s || !cfg || !state.user || !email) return [];
+  if (!state.online) throw new Error('offline');
   return supervisorOf({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email);
 }
 export async function setChatSupervisorNow(email: string, sections: string[]): Promise<void> {

@@ -47,7 +47,7 @@ function fakeCloud() {
       },
       async messagesSince(threadId: string, cursor: string | null) {
         guard();
-        return (msgs.get(threadId) ?? []).filter((m) => !cursor || m.ts > cursor);
+        return (msgs.get(threadId) ?? []).filter((m) => !cursor || m.ts >= cursor);
       },
     } as unknown as ChatRemote;
   };
@@ -168,4 +168,34 @@ test('المحادثة لا تُرفع قبل أول رسالة · والدلي�
   await chatSyncOnce(a, remote, OWNER, { now: 1_200_000 });
   expect(cloud.threads.has(tid)).toBe(true);
   expect(calls.threads).toBe(2);
+});
+
+test('المحادثة المرفوضة تحجز رسائلها وتوسَم · والرسالة تُرفع باسم صاحبها الحالي (التحقق ج١ وج٢ وج٤)', async () => {
+  const cloud = fakeCloud();
+  const a = memDb();
+  const base = cloud.remote(MEMBER.uid);
+  const sent: string[] = [];
+  const refusing = new Proxy(base, {
+    get(t, k) {
+      if (k === 'createThread') return async () => { throw new Error('Firestore 403: denied'); };
+      if (k === 'sendMessage') return async (_id: string, m: { name: string }) => { sent.push(m.name); return 'created'; };
+      return (t as unknown as Record<string | symbol, unknown>)[k];
+    },
+  }) as typeof base;
+  const gid = createGroup(a, MEMBER.uid, 'مجموعة مرفوضة', [OWNER.uid]);
+  sendLocal(a, gid, { uid: MEMBER.uid, name: 'اسم قديم' }, 'لا تُرسل');
+  await chatSyncOnce(a, refusing, MEMBER, { force: true });
+  await chatSyncOnce(a, refusing, MEMBER, { force: true });
+  expect(listThreads(a, MEMBER.uid).find((t) => t.id === gid)!.rejected).toBe(true);
+  expect(sent).toEqual([]);
+  // محادثة سليمة: الرسالة المكتوبة باسم قديم تُرفع بالاسم الحالي
+  const tid = openDirect(a, MEMBER.uid, OWNER.uid);
+  sendLocal(a, tid, { uid: MEMBER.uid, name: 'اسم قديم' }, 'تُرسل');
+  await chatSyncOnce(a, new Proxy(base, {
+    get(t, k) {
+      if (k === 'sendMessage') return async (_id: string, m: { name: string }) => { sent.push(m.name); return 'created'; };
+      return (t as unknown as Record<string | symbol, unknown>)[k];
+    },
+  }) as typeof base, MEMBER, { force: true });
+  expect(sent).toEqual([MEMBER.name]);
 });

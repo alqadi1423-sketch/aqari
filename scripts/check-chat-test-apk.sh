@@ -30,6 +30,7 @@ if [ -n "$OWNER_NUM" ]; then
 fi
 [ $COMPARED -ge 3 ] || { echo "سقط: قورن $COMPARED فقط من قيم مشروع المالك"; FAIL=1; }
 TEST_PID=$(grep -E "^EXPO_PUBLIC_FIREBASE_PROJECT_ID=" "$TEST_ENV" | cut -d= -f2- | tr -d '\r')
+[ -n "$TEST_PID" ] || { echo "سقط: ملف البيئة التجريبي بلا معرّف مشروع"; exit 1; }
 n=$(unzip -p "$APK" | grep -a -c -F "$TEST_PID")
 if [ "$n" = "0" ]; then echo "سقط: المشروع التجريبي غائب عن الحزمة (هل فُعّل الدخول بقوقل فيه؟)"; FAIL=1; else echo "المشروع التجريبي في الحزمة: $TEST_PID"; fi
 aapt=$(ls -d "$ANDROID_HOME"/build-tools/*/aapt.exe 2>/dev/null | tail -1)

@@ -10,7 +10,8 @@ import { getSyncState, setSyncState } from '../sync/engine';
 import type { ChatRemote } from './remote';
 import type { ChatMe } from './types';
 import {
-  applyRemoteMessage, applyRemoteThread, markSent, markThreadPushed, markThreadRejected, pendingMessages, pendingThreads,
+  applyRemoteMessage, applyRemoteThread, heldThreads, markMessageRejected, markSent, markThreadPushed, markThreadRejected,
+  pendingMessages, pendingThreads,
   savePeople, threadCursor,
 } from './store';
 
@@ -20,7 +21,9 @@ export interface ChatSyncOptions {
   mySup?: string[];
   /** سحب المحادثة المفتوحة وحدها */
   threadId?: string;
-  /** سحب كامل الآن ولو لم تمضِ مدته */
+  /** سحب كامل الآن ولو لم تمضِ مدته · بلا تجديد الدليل */
+  full?: boolean;
+  /** سحب كامل ومعه تجديد الدليل الآن (أول فتح للشاشة) */
   force?: boolean;
   now?: number;
 }
@@ -79,14 +82,18 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
   }
 
   // ٣) الرسائل المكتوبة بلا اتصال · ما لم تُرفع محادثتها بعد ينتظر الدورة التالية
-  const unpushed = new Set(pendingThreads(db, me.uid, true).map((t) => t.id));
+  const unpushed = heldThreads(db);
   for (const m of pendingMessages(db)) {
     if (unpushed.has(m.threadId)) continue;
     try {
-      await remote.sendMessage(m.threadId, { id: m.id, name: m.senderName, body: m.body, link: m.link });
+      // باسمي الحالي في الدليل لا المحفوظ يوم الكتابة · فتغيّر الاسم لا يحبس الرسالة (قواعد الخادم تطابقه)
+      await remote.sendMessage(m.threadId, { id: m.id, name: me.name, body: m.body, link: m.link });
       markSent(db, m.id, null);
       r.pushedMessages++;
-    } catch { r.failed++; }
+    } catch (e) {
+      if (/Firestore 403/.test(String(e))) markMessageRejected(db, m.id);
+      r.failed++;
+    }
   }
 
   // ٤) السحب: المحادثة المفتوحة وحدها، أو الكل حين يحين أو يُطلب
@@ -94,7 +101,7 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
     try { r.pulledMessages += await pullThread(db, remote, o.threadId); } catch { r.failed++; }
     return r;
   }
-  if (!o.force && now - stamp(db, 'chat_full_at') < FULL_EVERY_MS) return r;
+  if (!o.force && !o.full && now - stamp(db, 'chat_full_at') < FULL_EVERY_MS) return r;
   let threads: Awaited<ReturnType<ChatRemote['myThreads']>> = [];
   try { threads = await remote.myThreads(); } catch { r.failed++; return r; }
   for (const t of threads) {

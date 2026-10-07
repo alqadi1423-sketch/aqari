@@ -33,6 +33,7 @@ export function permSummary(perm: Perms): string {
 
 export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const { db } = useApp();
+  const { t } = useLang();
   const dialog = useDialog();
   const toast = useToast();
   const [team, setTeam] = useState<Team | null>(null);
@@ -116,7 +117,7 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
               }
               else { const doc = await inviteMemberNow(db, spec); shareInvite(doc); }
               // إشراف الأقسام في المحادثة (قرار المالك 2026-10-07) · بعد الصلاحية، وفشله لا يُسقط ما حُفظ
-              if (sup) await setChatSupervisorNow(spec.email, sup).catch(() => {});
+              if (sup) await setChatSupervisorNow(spec.email, sup).catch((e) => reportFailure({ title: t('chat.supSaveFailed'), where: 'الأعضاء', db, e }));
               setEdit(null);
               load();
             } catch (e) { await reportFailure({ title: 'تعذّر الحفظ', where: 'الأعضاء', db, e }); }
@@ -149,7 +150,7 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
   const [supKnown, setSupKnown] = useState(isNew);
   const setSup: typeof setSupRaw = (v) => { setSupKnown(true); setSupRaw(v); };
   useEffect(() => {
-    if (initial?.email) chatSupervisorNow(initial.email).then((x) => { setSupRaw(x); setSupKnown(true); }).catch(() => {});
+    if (initial?.email) chatSupervisorNow(initial.email).then((x) => { setSupKnown((k) => { if (!k) setSupRaw(x); return true; }); }).catch(() => {});
   }, [initial?.email]);
   const [email, setEmail] = useState(initial?.email ?? '');
   const [perms, setPermsRaw] = useState<Perms>(initial?.perm ?? {});

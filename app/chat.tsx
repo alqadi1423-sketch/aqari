@@ -13,7 +13,7 @@ import { useApp, useFs } from '../src/ui/store';
 import { useAccess } from '../src/ui/access';
 import { useLang } from '../src/i18n';
 import { dfmt } from '../src/domain/dates';
-import { cloudState, subscribeCloud, chatSyncNow } from '../src/services/cloud';
+import { cloudState, subscribeCloud, chatSyncNow, chatOwnerName } from '../src/services/cloud';
 import { sectionDef } from '../src/domain/access/sections';
 import { UnitDetailSheet } from '../src/ui/unitSheets';
 import { AssetSheet } from '../src/ui/AssetSheets';
@@ -29,8 +29,9 @@ function useChatPulse(threadId: string | null): number {
   const [tick, setTick] = useState(0);
   useEffect(() => {
     const off = onChatSynced(() => setTick((x) => x + 1));
-    const run = () => chatSyncNow(threadId ? { threadId } : { force: true }).catch(() => {});
-    run();
+    // أول فتح: سحب كامل مع الدليل · ثم القائمة سحباً كاملاً بلا الدليل كل ٣٠ ثانية، والمفتوحة وحدها كل ٨ ثوانٍ
+    chatSyncNow(threadId ? { threadId } : { force: true }).catch(() => {});
+    const run = () => chatSyncNow(threadId ? { threadId } : { full: true }).catch(() => {});
     const h = setInterval(run, threadId ? 8000 : 30000);
     return () => { off(); clearInterval(h); };
   }, [threadId]);
@@ -46,8 +47,7 @@ function useChatMe(): ChatMe | null {
   const { db } = useApp();
   const [cloud, setCloud] = useState(cloudState());
   useEffect(() => subscribeCloud(() => setCloud(cloudState())), []);
-  const companyName = db.get<{ name: string }>(`SELECT name FROM company WHERE id = 1`)?.name ?? '';
-  return cloud.user ? chatMe(db, cloud.user, companyName) : null;
+  return cloud.user ? chatMe(db, cloud.user, chatOwnerName(db)) : null;
 }
 
 const LIST_SEP = '، '; // i18n-exempt: فاصل قائمة الأقسام
@@ -234,7 +234,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
                 </Pressable>
               ) : null}
               <T size={10} color={C.muted} style={{ marginTop: 3 }}>
-                {localTime(m.serverTs ?? m.localAt)}{!m.sent ? ' · ' + t('chat.notSent') : ''}
+                {localTime(m.serverTs ?? m.localAt)}{m.rejected ? ' · ' + t('chat.rejectedMsg') : !m.sent ? ' · ' + t('chat.notSent') : ''}
               </T>
             </View>
           );

@@ -57,6 +57,8 @@ export interface ChatMessage {
   /** وقت الخادم بعد الإرسال */
   serverTs: string | null;
   sent: boolean;
+  /** رفضها الخادم · تبقى موسومة */
+  rejected: boolean;
 }
 
 export interface ChatPerson {

@@ -83,7 +83,7 @@ interface MsgRow {
 const msgOf = (r: MsgRow): ChatMessage => ({
   id: r.id, threadId: r.thread_id, sender: r.sender, senderName: r.sender_name, body: r.body,
   link: r.link_type && r.link_id ? { type: r.link_type as ChatLink['type'], id: r.link_id, label: r.link_label ?? '' } : null,
-  localAt: r.local_at, serverTs: r.server_ts, sent: !!r.sent,
+  localAt: r.local_at, serverTs: r.server_ts, sent: Number(r.sent) === 1, rejected: Number(r.sent) === -1,
 });
 
 /** رسائل محادثة بترتيب وقوعها · وقت الخادم للمرسَل، ووقت الكتابة لما ينتظر */
@@ -96,6 +96,7 @@ export function listMessages(db: DB, threadId: string): ChatMessage[] {
 export function sendLocal(db: DB, threadId: string, me: { uid: string; name: string }, body: string, link: ChatLink | null = null): string {
   const text = body.trim();
   if (!text && !link) throw new Error('chat: empty message');
+  if (link) link = { ...link, id: link.id.slice(0, 64), label: link.label.slice(0, 200) };
   if (text.length > CHAT_BODY_MAX) throw new Error('chat: message too long');
   if (!db.get(`SELECT 1 FROM chat_threads WHERE id = ?`, [threadId])) throw new Error('chat: no such thread');
   const id = newId();
@@ -121,6 +122,16 @@ export function pendingMessages(db: DB): ChatMessage[] {
 export function pendingThreads(db: DB, me: string, includeEmpty = false): ChatThread[] {
   return listThreads(db, me).filter((t) => t.pending && !t.rejected
     && (includeEmpty || !!db.get(`SELECT 1 FROM chat_messages WHERE thread_id = ? LIMIT 1`, [t.id])));
+}
+
+/** محادثات لم تُرفع (منتظرة أو مرفوضة) · لا تُرسل رسائلها (التحقق ج٤) */
+export function heldThreads(db: DB): Set<string> {
+  return new Set(db.all<{ id: string }>(`SELECT id FROM chat_threads WHERE pending != 0`).map((r) => r.id));
+}
+
+/** رسالة رفضها الخادم · تبقى على الجهاز موسومة ولا تُعاد (لا تُحذف) */
+export function markMessageRejected(db: DB, id: string): void {
+  db.run(`UPDATE chat_messages SET sent = -1 WHERE id = ?`, [id]);
 }
 
 /** رفض الخادم إنشاءها · تبقى على الجهاز بسببها ولا تُعاد محاولتها */

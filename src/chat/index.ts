@@ -50,7 +50,7 @@ const ROLE_EVERY_MS = 10 * 60_000;
  * دورة مزامنة واحدة · دورتان معاً تصيران واحدة · threadId: المحادثة المفتوحة وحدها، force: سحب كامل الآن ·
  * وإشرافي يُقرأ كل عشر دقائق ويُحفظ (الحصة المجانية)
  */
-export function runChatSync(db: DB, s: ChatSession, ownerName = '', o: { threadId?: string; force?: boolean } = {}): Promise<ChatSyncResult> {
+export function runChatSync(db: DB, s: ChatSession, ownerName = '', o: { threadId?: string; full?: boolean; force?: boolean } = {}): Promise<ChatSyncResult> {
   if (running) return running;
   running = (async () => {
     const me = chatMe(db, s, ownerName);
@@ -67,7 +67,7 @@ export function runChatSync(db: DB, s: ChatSession, ownerName = '', o: { threadI
         } catch { /* يبقى المحفوظ */ }
       }
     }
-    return chatSyncOnce(db, remote, me, { mySup: sup, threadId: o.threadId, force: o.force });
+    return chatSyncOnce(db, remote, me, { mySup: sup, threadId: o.threadId, full: o.full, force: o.force });
   })().finally(() => {
     running = null;
     for (const l of listeners) { try { l(); } catch { /* عارض المحادثة مغلق */ } }
