@@ -71,7 +71,7 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
 };
 
 // كل قسمٍ يُرفق ملفاتٍ بسجلّاته ينشئ صفوفها ويدير بيانات ملفاته · والمكتبة تملك المرفقات كلها
-for (const k of ["props","contracts","tenants","collect","deposits","reservations","claims","invoices","purchases","handover","banks","company"] as SectionKey[]) {
+for (const k of ["props","contracts","tenants","collect","deposits","reservations","claims","invoices","purchases","handover","banks","company","assets"] as SectionKey[]) {
   const w = OP_WRITES[k]!;
   w.create = [...w.create, ...FILES];
   w.touch = { ...(w.touch ?? {}), ...FILE_META };

@@ -10,6 +10,7 @@ import { View, Pressable } from 'react-native';
 import { Sheet, SelectField } from './Sheet';
 import { Badge, BtnGhost, BtnPrimary, ChipGroup, EmptyState, Field, Money, Note, Row, SearchBox, T } from './components';
 import { DateField } from './DateField';
+import { AttachStrip } from './AttachStrip';
 import { C, TYPE } from './theme';
 import { useApp } from './store';
 import { useToast } from './Toast';
@@ -156,6 +157,7 @@ export function AssetSheet({ id, onClose }: { id: string; onClose: () => void })
         </>
       ) : null}
       {a.notes ? <Note>{a.notes}</Note> : null}
+      <AttachStrip section="assets" entityType="asset" entityId={a.id} kind="photo" linked={a.name} title={t('assets.ui.photos')} />
       <View style={{ marginTop: 12 }}>
         <T size={TYPE.body} bold>{t('assets.ui.history')}</T>
         {history.length ? history.slice(0, 40).map((h, i) => (

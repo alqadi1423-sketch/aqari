@@ -184,7 +184,7 @@ service cloud.firestore {
         || (op == 'banks' && t in ['journal_entries', 'audit_log', 'blobs', 'attachments', 'banks', 'bank_tx'])
         || (op == 'ledger' && t in ['audit_log', 'journal_entries', 'accounts', 'cost_centers'])
         || (op == 'library' && t in ['audit_log', 'blobs', 'attachments'])
-        || (op == 'assets' && t in ['journal_entries', 'audit_log', 'bank_tx', 'purchase_lines', 'assets', 'asset_events', 'depreciation_runs'])
+        || (op == 'assets' && t in ['journal_entries', 'audit_log', 'bank_tx', 'purchase_lines', 'blobs', 'attachments', 'assets', 'asset_events', 'depreciation_runs'])
         || (op == 'company' && t in ['audit_log', 'blobs', 'attachments', 'company', 'company_docs', 'message_scripts', 'form_templates'])
         || (op == 'reports' && t in ['audit_log']);
     }
@@ -208,7 +208,7 @@ service cloud.firestore {
     }
     // حقولٌ بعينها في جداول أقسام أخرى تمسّها العملية جانبياً بإدخال
     function opTouches(op, t, keys) {
-      return (t == 'attachments' && op in ['props', 'contracts', 'tenants', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'handover', 'banks', 'company'] && keys.hasOnly(['display_name', 'note', 'cat_override', 'deleted_at', 'entity_type', 'entity_id', 'thumb']))
+      return (t == 'attachments' && op in ['props', 'contracts', 'tenants', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'handover', 'banks', 'assets', 'company'] && keys.hasOnly(['display_name', 'note', 'cat_override', 'deleted_at', 'entity_type', 'entity_id', 'thumb']))
         || (op == 'maintenance' && t == 'units' && keys.hasOnly(['under_maintenance']))
         || (t == 'journal_entries' && op in ['contracts', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'banks', 'assets'] && keys.hasOnly(['reversed_by']))
         || (op == 'contracts' && t == 'reservations' && keys.hasOnly(['status', 'converted_contract_id', 'deposit_outcome', 'deposit_settled_date']))

@@ -65,7 +65,7 @@ export const ATTACHMENT_ENTITY_TABLE: Record<string, string> = {
   contract: 'contracts', unit: 'units', property: 'properties', tenant: 'tenants', occupant: 'occupants',
   purchase: 'purchases', supplier: 'suppliers', invoice: 'invoices', claim: 'claims', handover: 'handovers',
   payment: 'contract_payments', reservation: 'reservations', bank: 'banks', bank_tx: 'bank_tx',
-  company: 'company_docs', company_doc: 'company_docs',
+  company: 'company_docs', company_doc: 'company_docs', asset: 'assets',
 };
 
 /**
