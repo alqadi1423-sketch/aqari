@@ -174,3 +174,36 @@ test('مركز محذوفٌ يظهر باسمه في تقرير المراكز �
   deleteCostCenter(db, 'cc-ops');
   expect(costCenterReport(db, null, null).map((r) => r.name)).toEqual(['تشغيل (محذوف)']);
 });
+
+describe('العملية بضغطة بلا نموذج ترث مركز مستندها الأصلي (قرار المالك ٢٠٢٦-١٠-٠٧)', () => {
+  const ccOf = (db: DB, srcType: string, srcId: string) => db.get<{ c: string }>(
+    `SELECT l.cost_center_id AS c FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+     WHERE e.src_type = ? AND e.src_id = ? ORDER BY e.created_at DESC LIMIT 1`, [srcType, srcId])!.c;
+
+  test('تحصيل المطالبة من المطالبة · وإلغاء الحجز من الحجز · والشاشة إن اختارت تغلب', async () => {
+    const { saveClaim, collectClaim } = await import('@/domain/claims');
+    const { createReservation, cancelReservation } = await import('@/domain/reservations');
+    const { db, c1, p2 } = world();
+    const vacant = addUnit(db, p2, { unit_no: 'D-9' });
+    const cl = withCostCenter('cc-ops', () => saveClaim(db, { contractId: c1, amountHalalas: 5000, reason: 'مطالبة مصطنعة', date: '2026-03-01' }));
+    collectClaim(db, cl, '2026-03-05');
+    expect(ccOf(db, 'claim_collect', cl)).toBe('cc-ops');
+    const rv = withCostCenter('cc-ops', () => createReservation(db, { unitId: vacant, name: 'حاجز مصطنع', phone: '0500008009', depositHalalas: 1000, expiryDate: '2026-12-31' }));
+    cancelReservation(db, rv, true, '2026-03-06');
+    expect(ccOf(db, 'reservation_forfeit', rv)).toBe('cc-ops');
+    // الشاشة اختارت «عام» صراحةً فلا يُورَث
+    const cl2 = withCostCenter('cc-ops', () => saveClaim(db, { contractId: c1, amountHalalas: 3000, reason: 'مطالبة مصطنعة ثانية', date: '2026-03-02' }));
+    withCostCenter(GENERAL_COST_CENTER, () => collectClaim(db, cl2, '2026-03-07'));
+    expect(ccOf(db, 'claim_collect', cl2)).toBe(GENERAL_COST_CENTER);
+  });
+
+  test('الفاتورة التي تصدر لاحقاً ترث مركزها المحفوظ عند حفظها · وما لا أصل له «عام»', async () => {
+    const { db, p1 } = world();
+    const id = withCostCenter('cc-ops', () => saveInvoice(db, { customer: 'عميل مصطنع', customerVat: '', issue: '2026-03-02', due: '2026-03-30', notes: '', propertyId: p1, lines: [{ descr: 'خدمة', qty: 1, priceHalalas: 10000, taxPct: 0 }] }, 'مسودة'));
+    const { setInvoiceStatus } = await import('@/domain/invoices');
+    setInvoiceStatus(db, id, 'مستحقة');
+    expect(ccOf(db, 'invoice', id)).toBe('cc-ops');
+    const m = postManualEntry(db, { date: '2026-02-01', memo: 'قيد مصطنع', lines: [{ account: '1100', debit: 10, credit: 0 }, { account: '3100', debit: 0, credit: 10 }] })!;
+    expect(linesOf(db, m.id)[0].cost_center_id).toBe(GENERAL_COST_CENTER);
+  });
+});

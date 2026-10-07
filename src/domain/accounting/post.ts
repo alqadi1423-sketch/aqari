@@ -5,7 +5,7 @@ import { today } from '../dates';
 import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
-import { dimsFromSource, hasDimColumns, lineDims, type Dims } from './dimensions';
+import { dimsFromSource, hasDimColumns, lineDims, ambientCostCenter, inheritedCostCenter, GENERAL_COST_CENTER, type Dims } from './dimensions';
 
 export interface EntryLine {
   account: string;
@@ -105,8 +105,11 @@ export function postEntry(
       return { id, no };
     }
     const derived = dimsFromSource(db, args.srcType, args.srcId);
+    // مركز التكلفة: الصريح، ثم ما اختارته الشاشة، ثم مركز المستند الأصلي (العملية بضغطة بلا نموذج)، ثم «عام»
+    const cc = args.dims?.costCenterId ?? ambientCostCenter() ?? inheritedCostCenter(db, args.srcType, args.srcId) ?? GENERAL_COST_CENTER;
+    const explicit = { ...(args.dims ?? {}), costCenterId: cc };
     for (const l of rows) {
-      const d = lineDims(derived, args.dims, l.dims);
+      const d = lineDims(derived, explicit, l.dims);
       db.run(
         `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas,
            property_id, unit_id, contract_id, cost_center_id, asset_id)

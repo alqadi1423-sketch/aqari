@@ -5,6 +5,7 @@
 import type { DB } from '../db/adapter';
 import { requireCash, reversalCashOut } from './cashGuard';
 import { uid } from './ids';
+import { ambientCostCenter } from './accounting/dimensions';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment } from './accounting/post';
 import { mulQty, pctOf } from './money';
 import { logAudit } from './audit';
@@ -143,6 +144,11 @@ export function saveInvoice(
         [uid(), id, l.descr, l.qty, l.priceHalalas, l.taxPct, i]
       );
     });
+    // مركز التكلفة الذي اختارته شاشة الفاتورة يُحفظ معها · فترثه إن صدرت لاحقاً بلا شاشة (الهجرة ٣٠)
+    const cc = ambientCostCenter();
+    if (cc && db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'cost_center_id')) {
+      db.run(`UPDATE invoices SET cost_center_id = ? WHERE id = ?`, [cc, id]);
+    }
     if (status !== 'مسودة') {
       const entry = postInvoiceToLedger(db, { id, no, customer: input.customer, issue: input.issue, subtotal, tax, total });
       if (entry) db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = ?`, [entry.id, id]);

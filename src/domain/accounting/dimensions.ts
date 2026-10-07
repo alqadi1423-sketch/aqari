@@ -42,6 +42,35 @@ export function withCostCenter<T>(costCenterId: string | null | undefined, fn: (
 /** مركز العملية الجارية · وإلا «عام» */
 export const currentCostCenter = (): string => stack[stack.length - 1] ?? GENERAL_COST_CENTER;
 
+/** ما اختارته الشاشة صراحةً · null بلا شاشة (عملية بضغطة بلا نموذج أو عملية آلية) */
+export const ambientCostCenter = (): string | null => (stack.length ? stack[stack.length - 1] : null);
+
+// i18n-exempt: حالة القيد المخزّنة
+const POSTED_STATUS = 'مرحّل';
+
+/**
+ * مركز المستند الأصلي (قرار المالك ٢٠٢٦-١٠-٠٧): العملية بضغطة بلا نموذج ترث مركز مستندها ·
+ * تحصيل المطالبة من المطالبة، وإلغاء الحجز من الحجز، وقيد الخصم من الدفعة، واسترداد الضريبة من الفاتورة،
+ * والفاتورة التي تصدر لاحقاً من مركزها المحفوظ عند حفظها · وإن لم يكن للأصل مركز فـ«عام».
+ */
+export function inheritedCostCenter(db: DB, srcType: string | null | undefined, srcId: string | null | undefined): string | null {
+  if (!srcType || !srcId || !hasDimColumns(db)) return null;
+  const base = srcType.replace(/_rev$/, '');
+  if (base.startsWith('invoice')) {
+    const hasCol = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'cost_center_id');
+    const v = hasCol ? db.get<{ c: string | null }>(`SELECT cost_center_id AS c FROM invoices WHERE id = ?`, [srcId])?.c : null;
+    if (v) return v;
+  }
+  // قيد الخصم مربوطٌ بالدفعة، وقيد الدفعة مصدره القسط أو العقد · فيُتبع قيدها نفسه
+  const paymentEntry = base.startsWith('discount')
+    ? db.get<{ e: string | null }>(`SELECT journal_entry_id AS e FROM contract_payments WHERE id = ?`, [srcId])?.e ?? null
+    : null;
+  return db.get<{ c: string }>(
+    `SELECT l.cost_center_id AS c FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+     WHERE (e.src_id = ? OR e.id = ?) AND e.status = ? AND e.deleted_at IS NULL AND l.cost_center_id IS NOT NULL
+     ORDER BY e.created_at LIMIT 1`, [srcId, paymentEntry ?? '', POSTED_STATUS])?.c ?? null;
+}
+
 /** سطور القيد بأعمدة الأبعاد (الهجرة ٢٨) · قاعدةٌ أقدم تُفحص قبل ترقيتها بلا أبعاد */
 const dimCols = new WeakMap<object, boolean>();
 export function hasDimColumns(db: DB): boolean {
