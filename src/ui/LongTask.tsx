@@ -6,6 +6,7 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, View } from 'react-native';
+import { DirView } from './DirView';
 import { T, BtnGhost, BtnPrimary } from './components';
 import { C, TYPE } from './theme';
 import {
@@ -104,6 +105,7 @@ export function useLongTask(): LongTask {
     const fill: `${number}%` = v.pct !== null ? `${v.pct}%` : '100%';
     element = (
       <Modal visible transparent animationType="fade">
+        <DirView>
         <View style={{ flex: 1, backgroundColor: 'rgba(20,23,29,0.55)', alignItems: 'center', justifyContent: 'center', padding: 28 }}>
           <View style={{ backgroundColor: '#fff', borderRadius: 14, padding: 22, minWidth: 280, alignSelf: 'stretch', alignItems: 'center', gap: 10 }}>
             <View style={{ alignSelf: 'stretch', height: 8, borderRadius: 4, backgroundColor: C.paperLine, overflow: 'hidden' }}>
@@ -128,6 +130,7 @@ export function useLongTask(): LongTask {
             ) : null}
           </View>
         </View>
+        </DirView>
       </Modal>
     );
   }

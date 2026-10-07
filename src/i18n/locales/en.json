@@ -1,0 +1,19 @@
+{
+  "language": {
+    "title": "Language",
+    "pickTitle": "Interface language",
+    "device": "Device language",
+    "deviceIs": "Device language · {{name}}",
+    "changed": "Language changed to {{name}}",
+    "dirNote": "Screens switch direction now; system elements (horizontal lists and Android arrows) follow after the app is reopened once.",
+    "migrating": "Texts are moving to both languages in stages · anything not moved yet appears in Arabic."
+  },
+  "names": {
+    "ar": "العربية",
+    "en": "English"
+  },
+  "common": {
+    "ok": "Done",
+    "close": "Close"
+  }
+}

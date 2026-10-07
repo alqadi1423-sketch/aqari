@@ -11,6 +11,7 @@ import {
   Modal, View, FlatList, Pressable, useWindowDimensions,
   TextInput, ActivityIndicator, Image, PanResponder, Text, Platform, I18nManager,
 } from 'react-native';
+import { DirView } from './DirView';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -438,6 +439,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
 
   return (
     <Modal visible animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+      <DirView>
       <View style={{ flex: 1, backgroundColor: '#14171D' }}>
         {/* الشريط العلوي */}
         <View style={{
@@ -594,6 +596,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
           }}
         />
       </View>
+      </DirView>
     </Modal>
   );
 }

@@ -1,5 +1,7 @@
 import React, { useEffect } from 'react';
 import { I18nManager, View, ActivityIndicator } from 'react-native';
+import { LangProvider, initI18n } from '../src/i18n';
+import { bootLanguage } from '../src/i18n/device';
 import { Stack, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -21,11 +23,13 @@ import { rescheduleAllNotifications } from '../src/services/notifications';
 import { appDb } from '../src/db/expoAdapter';
 import { perfMarkNavRender, perfRouteChanged, perfTouch, perfTouchUp } from '../src/perf/perf';
 
-// التطبيق عربي RTL بالكامل
+// لغة الواجهة واتجاهها من اختيار الجهاز (العربية افتراضاً) · قبل أول رسم
 try {
-  I18nManager.allowRTL(true);
-  I18nManager.forceRTL(true);
-} catch { /* على الويب لا يلزم */ }
+  bootLanguage();
+} catch {
+  initI18n('ar');
+  try { I18nManager.allowRTL(true); I18nManager.forceRTL(true); } catch { /* على الويب لا يلزم */ }
+}
 
 // شبكة أمان أخيرة: أي خطأ أفلت من الالتقاط يُعرض رسالةً بدل أن يُغلق التطبيق
 type GlobalErrorUtils = { getGlobalHandler(): (e: unknown, fatal?: boolean) => void; setGlobalHandler(h: (e: unknown, fatal?: boolean) => void): void };
@@ -90,6 +94,7 @@ export default function RootLayout() {
   }
 
   return (
+    <LangProvider>
     <SafeAreaProvider>
       <UpgradeGate>
       <AppStateProvider>
@@ -119,5 +124,6 @@ export default function RootLayout() {
       </AppStateProvider>
       </UpgradeGate>
     </SafeAreaProvider>
+    </LangProvider>
   );
 }

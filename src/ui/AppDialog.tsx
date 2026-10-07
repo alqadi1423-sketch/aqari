@@ -4,6 +4,7 @@
  */
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { Modal, Pressable, View, ScrollView } from 'react-native';
+import { DirView } from './DirView';
 import { T } from './components';
 import { C, FONT_BOLD } from './theme';
 import { Text } from 'react-native';
@@ -141,6 +142,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
       {children}
       {spec ? (
         <Modal visible transparent animationType="fade" onRequestClose={() => { if (!spec.locked) close(); }}>
+          <DirView>
           <Pressable
             style={{
               flex: 1, backgroundColor: 'rgba(20,23,29,0.55)', alignItems: 'center',
@@ -162,6 +164,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
               </View>
             </Pressable>
           </Pressable>
+          </DirView>
         </Modal>
       ) : null}
     </Ctx.Provider>

@@ -12,6 +12,8 @@ import { useFs } from './store';
 import { fmt } from '../domain/money';
 import { Icon, Riyal, type IconName } from './icons';
 import { useMarkSheetDirty } from './sheetDirty';
+import { useLang } from '../i18n';
+import { useTextAlign } from './DirView';
 
 /**
  * مقاييس الأزرار الثلاثة معلنة في مكان واحد ومنه وحده تقرأ كل الأزرار:
@@ -66,13 +68,14 @@ export function T({
   color?: string; style?: StyleProp<TextStyle>; center?: boolean; numberOfLines?: number;
 }) {
   const fs = useFs();
+  const dir = useTextAlign();
   return (
     <Text
       ellipsizeMode="tail"
       numberOfLines={numberOfLines}
       style={[
         { fontFamily: bold ? FONT_BOLD : med ? FONT_MED : FONT, fontSize: fs(size), color,
-          textAlign: center ? 'center' : undefined, writingDirection: 'rtl', flexShrink: 1 },
+          textAlign: center ? 'center' : dir.textAlign, writingDirection: dir.writingDirection, flexShrink: 1 },
         style,
       ]}
     >
@@ -236,6 +239,7 @@ export function Field({
   secure?: boolean;
 }) {
   const fs = useFs();
+  const { rtl } = useLang();
   // أول تغيير يُعلّم الورقة الحاوية بأن فيها إدخالاً · فلا تُغلق بإيماءة بلا استئذان
   const markDirty = useMarkSheetDirty();
   return (
@@ -258,7 +262,7 @@ export function Field({
           multiline && { minHeight: 74, textAlignVertical: 'top' },
           disabled && { opacity: 0.6 },
           error && { borderColor: C.rose, borderWidth: 1.6, backgroundColor: C.roseSoft },
-          ltr ? { writingDirection: 'ltr', textAlign: 'left' } : { writingDirection: 'rtl', textAlign: 'right' },
+          ltr || !rtl ? { writingDirection: 'ltr', textAlign: 'left' } : { writingDirection: 'rtl', textAlign: 'right' },
         ]}
       />
     </View>
@@ -353,13 +357,14 @@ export function EmptyState({ children }: { children: React.ReactNode }) {
 
 export function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
   const fs = useFs();
+  const { rtl } = useLang();
   return (
     <TextInput
       value={value}
       onChangeText={onChange}
       placeholder={placeholder ?? 'بحث…'}
       placeholderTextColor="#B9BFC9"
-      style={[st.input, { fontSize: fs(TYPE.body), backgroundColor: '#FAFAF7', writingDirection: 'rtl', textAlign: 'right' }]}
+      style={[st.input, { fontSize: fs(TYPE.body), backgroundColor: '#FAFAF7' }, rtl ? { writingDirection: 'rtl', textAlign: 'right' } : { writingDirection: 'ltr', textAlign: 'left' }]}
     />
   );
 }

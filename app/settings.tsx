@@ -56,6 +56,8 @@ import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orpha
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
 import { EntrySheet } from '../src/ui/EntrySheet';
+import { useLang, langName, resolveLang, type LangPref } from '../src/i18n';
+import { readLangPref, changeLanguage, deviceLocale } from '../src/i18n/device';
 import { CostCentersSheet, DimsBackfillSheet, CostCenterField } from '../src/ui/CostCenters';
 import { costCenters, planDimsBackfill, GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 import { reviewData } from '../src/domain/backup/checks';
@@ -124,6 +126,20 @@ export default function Settings() {
   const openChoice = (title: string, options: ReadonlyArray<readonly [number, string]>, value: number, onPick: (v: number) => void) =>
     setChoice({ title, options: options.map(([v, l]) => [v, l] as [number, string]), value, onPick });
   const [syncOpen, setSyncOpen] = useState(false);
+  // لغة الواجهة · إعداد هذا الجهاز وحده (المرحلة الأولى من تعدد اللغات)
+  const { t } = useLang();
+  const [langPref, setLangPref] = useState<LangPref>(() => readLangPref());
+  const LANG_OPTS: Array<[number, LangPref]> = [[0, 'device'], [1, 'ar'], [2, 'en']];
+  const langLabel = (p: LangPref) => (p === 'device' ? t('language.deviceIs', { name: langName(resolveLang('device', deviceLocale())) }) : langName(p));
+  const pickLang = (n: number) => {
+    const p = LANG_OPTS.find(([k]) => k === n)?.[1] ?? 'device';
+    try {
+      const r = changeLanguage(p);
+      setLangPref(p);
+      toast(t('language.changed', { name: langName(r.lang) }));
+      if (r.reopen) dialog({ title: t('language.title'), body: t('language.dirNote') + '\n\n' + t('language.migrating'), actions: [{ label: t('common.ok'), variant: 'primary' }] });
+    } catch (e) { reportFailure({ title: t('language.title'), e }); }
+  };
   const [driveOpen, setDriveOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
@@ -732,6 +748,8 @@ export default function Settings() {
       {/* العرض · لم يرد في ترتيب المالك فبقي بطاقةً مستقلة حتى يحدّد مكانه */}
       <Card>
         <CardTitle>العرض</CardTitle>
+        <ValueRow icon="chat" title={t('language.title')} value={langLabel(langPref)}
+          onPress={() => openChoice(t('language.pickTitle'), LANG_OPTS.map(([k, p]) => [k, langLabel(p)] as [number, string]), LANG_OPTS.find(([, p]) => p === langPref)?.[0] ?? 0, pickLang)} />
         <ValueRow icon="eye" title="حجم الواجهة والخط" value={uiPct + '٪ · ' + fontPct + '٪'} onPress={() => setDisplayOpen(true)} />      </Card>
 
       {/* ٦ · البيانات والمساحة */}

@@ -7,6 +7,7 @@ import React from 'react';
 import { View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from './store';
+import { DirView } from './DirView';
 
 /** ارتفاع شريط التبويبات قبل إضافة الحافة الآمنة · يستعمله الشريط وحشو المحتوى معاً */
 export const TAB_BAR_BASE = 56;
@@ -30,7 +31,7 @@ export function useScaledInsets() {
 export function UiScaleView({ children }: { children: React.ReactNode }) {
   const { uiScale } = useApp();
   const { width, height } = useWindowDimensions();
-  if (Math.abs(uiScale - 1) < 0.005) return <View style={{ flex: 1 }}>{children}</View>;
+  if (Math.abs(uiScale - 1) < 0.005) return <DirView>{children}</DirView>;
   // اللوح يُثبَّت بحيث يكون مركزه = مركز الشاشة، فيملأ التحجيم (حول المركز)
   // الشاشة بالضبط بلا فيض ولا قصّ · لا اعتماد على transformOrigin ولا يتأثر بالاتجاه RTL
   const w = width / uiScale;
@@ -47,7 +48,7 @@ export function UiScaleView({ children }: { children: React.ReactNode }) {
           transform: [{ scale: uiScale }],
         }}
       >
-        {children}
+        <DirView>{children}</DirView>
       </View>
     </View>
   );

@@ -36,12 +36,12 @@ async function addAttachments(env: TestBackupEnv, n: number, size = 4096): Promi
 
 describe('العرض والتوقّف', () => {
   test('النسبة والحجم بالبايت · والرسائل القديمة «· N من M» تُفهم عدداً', () => {
-    expect(fmtBytes(512)).toBe('٥١٢ بايت');
-    expect(fmtBytes(2.5 * 1024 * 1024)).toBe('٢٫٥ م.ب');
+    expect(fmtBytes(512)).toBe('512 بايت');
+    expect(fmtBytes(2.5 * 1024 * 1024)).toBe('2.5 م.ب');
     const v = progressView('جاري التنزيل من Google Drive', { done: 3 * 1024 * 1024, total: 12 * 1024 * 1024, unit: 'bytes' });
-    expect(v).toEqual({ pct: 25, amount: '٣٫٠ م.ب من ١٢٫٠ م.ب' });
-    expect(progressLine(v)).toBe('٢٥٪، ٣٫٠ م.ب من ١٢٫٠ م.ب');
-    expect(progressView('جاري نسخ المرفقات · 3 من 12')).toEqual({ pct: 25, amount: '٣ من ١٢' });
+    expect(v).toEqual({ pct: 25, amount: '3.0 م.ب من 12.0 م.ب' });
+    expect(progressLine(v)).toBe('25%، 3.0 م.ب من 12.0 م.ب');
+    expect(progressView('جاري نسخ المرفقات · 3 من 12')).toEqual({ pct: 25, amount: '3 من 12' });
     expect(progressLabel('جاري نسخ المرفقات · 3 من 12')).toBe('جاري نسخ المرفقات');
     expect(progressView('جاري أخذ لقطة قاعدة البيانات')).toEqual({ pct: null, amount: null });
   });

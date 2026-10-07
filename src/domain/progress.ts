@@ -60,8 +60,8 @@ export const isCancelled = (e: unknown): boolean => e instanceof CancelledError;
 
 /* ═══════════ العرض ═══════════ */
 
-const AR_DIGITS = '٠١٢٣٤٥٦٧٨٩';
-const ar = (s: string) => s.replace(/\d/g, (d) => AR_DIGITS[Number(d)]).replace(/\./g, '٫');
+// الأرقام لاتينية في الواجهة العربية كما في سائر التطبيق (قرار المالك ٢٠٢٦-١٠-٠٧ على موجز تعدد اللغات)
+const ar = (s: string) => s;
 
 /** الحجم بوحدته · بايت، ك.ب، م.ب، ج.ب */
 export function fmtBytes(n: number): string {
@@ -131,5 +131,5 @@ export const progressLabel = (msg: string): string => msg.replace(/\s*·\s*\d+\s
  * بفاصلةٍ عربية لا بنقطة «·»: النقطة بين رقمين عربيين تُقرأ صفراً («١ · ٣٣» ← «١٠٣٣») كما ظهر على الجهاز
  */
 export function progressLine(v: ProgressView): string {
-  return [v.pct !== null ? ar(String(v.pct)) + '٪' : null, v.amount].filter(Boolean).join('، ');
+  return [v.pct !== null ? ar(String(v.pct)) + '%' : null, v.amount].filter(Boolean).join('، ');
 }
