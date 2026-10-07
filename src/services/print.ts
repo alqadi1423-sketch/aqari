@@ -201,6 +201,8 @@ export async function printContractDoc(db: DB, contractId: string): Promise<void
     contractNo: c.contract_no || '', tenantName: c.tenant_name, idNumber: c.id_number || '',
     phone: c.phone || '', unitLabel: c.unit_label, propertyName, start: c.start, end: c.end,
     valueHalalas: Number(c.value_halalas), depositHalalas: Number(c.deposit_halalas),
+    servicesHalalas: Number((c as unknown as { services_halalas?: number }).services_halalas ?? 0),
+    parkingHalalas: Number((c as unknown as { parking_halalas?: number }).parking_halalas ?? 0),
     depositHolderLabel: Number(c.deposit_halalas) > 0
       ? depositState(c.deposit_holder, c.deposit_holder_name).label
       : undefined,

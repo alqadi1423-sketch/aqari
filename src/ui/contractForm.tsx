@@ -91,6 +91,13 @@ export interface ContractFormState {
   fromEjarFile?: boolean;
   /** بنود العقد التي لها خانة في التطبيق · تُقارن بالقائم في المراجعة (قرارات تفصيل العقد) */
   extras?: EjarExtras | null;
+  /** الخدمات والمواقف المحفوظة مع المسودة · حين يُعاد فتحها بلا قراءة الملف (المراجعة #1) */
+  split?: { servicesHalalas?: number; parkingHalalas?: number };
+}
+
+/** الخدمات والمواقف في النموذج: من الملف المقروء، وإلا مما حُفظ مع المسودة */
+export function formSplit(s: Pick<ContractFormState, 'extras' | 'split'>): { servicesHalalas?: number; parkingHalalas?: number } {
+  return s.extras ? revenueSplitOf(s.extras) : s.split ?? {};
 }
 
 export const emptyContractForm = (): ContractFormState => ({
@@ -113,7 +120,7 @@ export function formToInput(s: ContractFormState): ContractDraftInput {
     reservationId: s.reservationId || null,
     schedule: s.schedule,
     fromEjarFile: s.fromEjarFile,
-    ...revenueSplitOf(s.extras),
+    ...formSplit(s),
   };
 }
 

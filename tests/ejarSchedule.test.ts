@@ -126,14 +126,11 @@ describe('التوثيق من جدول الملف', () => {
     expect(dues(db, cid).map((x) => x.d)).toEqual(schedule.map((x) => x.dueDate));
   });
 
-  test('مجموع الجدول لا يطابق القيمة: التواريخ منه والقيمة تُقسم بالهللات', async () => {
+  test('مجموع الجدول لا يطابق الإجمالي: لا قسمة صامتة ولا توثيق (قرار المالك 2026-10-07، المراجعة #1 و#2)', async () => {
     const { db, input } = await setup();
     const { confirmContract } = await import('@/domain/contracts/service');
     const schedule = DATES.map((d) => ({ dueDate: d, amountHalalas: 90000 }));
-    const cid = confirmContract(db, { ...input, schedule, fromEjarFile: true });
-    const r = dues(db, cid);
-    expect(r.map((x) => x.d)).toEqual(DATES);
-    expect(r.reduce((s, x) => s + x.a, 0)).toBe(600000);
+    expect(() => confirmContract(db, { ...input, schedule, fromEjarFile: true })).toThrow();
   });
 
   test('عقد أُدخل يدوياً: بلا مصدر', async () => {

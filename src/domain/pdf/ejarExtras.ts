@@ -203,6 +203,12 @@ export const mapFloor = (v?: string): string | null => {
 export interface ScheduleCheck { code: 'count' | 'regular' | 'last'; expected: number; actual: number }
 
 /** عدد الصفوف والدفعة الدورية والأخيرة مقابل البيانات المالية المقروءة · الفارق تنبيه في المراجعة */
+/** فرق مجموع جدول إيجار عن إجمالي العقد بالهللات · صفر = متطابقان (المراجعة #2: لا استبدال صامت) */
+export function scheduleSumGap(schedule: Array<{ amountHalalas: number }> | null | undefined, totalHalalas: number): number {
+  if (!schedule?.length) return 0;
+  return schedule.reduce((s, r) => s + Number(r.amountHalalas || 0), 0) - totalHalalas;
+}
+
 export function scheduleChecks(schedule: ScheduleRow[] | null | undefined, f: EjarExtras['financial']): ScheduleCheck[] {
   if (!schedule?.length) return [];
   const out: ScheduleCheck[] = [];

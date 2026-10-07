@@ -10,6 +10,7 @@ import { fmt } from './money';
 import { dfmt } from './dates';
 import { moneyToArabicWords } from './numberWords';
 import type { HandoverSection } from './handover/build';
+import { t } from '../i18n';
 
 export const esc = (s: unknown): string =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -309,6 +310,8 @@ export interface ContractDocData {
   contractNo: string; tenantName: string; idNumber: string; phone: string;
   unitLabel: string; propertyName: string; start: string | null; end: string | null;
   valueHalalas: number; depositHalalas: number;
+  /** الخدمات والمواقف فوق قيمة الإيجار · وإجمالي العقد مجموع الثلاثة (المراجعة #4) */
+  servicesHalalas?: number; parkingHalalas?: number;
   /** جهة قبض التأمين · تُطبع نصاً بجانب مبلغه */
   depositHolderLabel?: string;
   cycle: string; status: string;
@@ -318,6 +321,14 @@ export interface ContractDocData {
 /** عقد الإيجار · نسخة المكتب: الأطراف والوحدة والمدة والقيمة وجدول الأقساط */
 export function buildContractDoc(co: CompanyInfo, c: ContractDocData, issuedAt: string): string {
   const chunks: PagedChunk[] = [];
+  const services = Math.max(0, c.servicesHalalas ?? 0);
+  const parking = Math.max(0, c.parkingHalalas ?? 0);
+  const total = c.valueHalalas + services + parking;
+  const ar = (k: string) => esc(t(k, { lng: 'ar' }));
+  // سطر التفصيل حين يكون في العقد خدمات أو مواقف · وإلا فالقيمة هي الإجمالي
+  const splitHtml = services || parking
+    ? `<br><b>${ar('lease.print.services')}:</b> <span class="num">${fmt(services)}</span> ${SAR}<br><b>${ar('lease.print.parking')}:</b> <span class="num">${fmt(parking)}</span> ${SAR}<br><b>${ar('lease.print.total')}:</b> <span class="num">${fmt(total)}</span> ${SAR}`
+    : '';
   chunks.push({
     html: `<h3>جدول الأقساط (${c.installments.length})</h3>
     <table><thead><tr><th>م</th><th>تاريخ الاستحقاق</th><th>القسط</th><th>المسدَّد</th><th>الحالة</th></tr></thead><tbody>
@@ -333,7 +344,7 @@ export function buildContractDoc(co: CompanyInfo, c: ContractDocData, issuedAt: 
     });
   }
   chunks.push({
-    html: `<div class="words">قيمة العقد: ${fmt(c.valueHalalas)} ${SAR} · ${esc(moneyToArabicWords(c.valueHalalas))}</div>
+    html: `<div class="words">${services || parking ? ar('lease.print.total') : ar('lease.print.value')}: ${fmt(total)} ${SAR} · ${esc(moneyToArabicWords(total))}</div>
     <div class="sign-row">
       <div class="sign"><div class="line"></div>المستأجر: ${esc(c.tenantName)}</div>
       <div class="sign"><div class="line"></div>ممثل ${esc(co.name || 'المكتب')}</div>
@@ -345,7 +356,7 @@ export function buildContractDoc(co: CompanyInfo, c: ContractDocData, issuedAt: 
   </div>
   <div class="inv-meta">
     <div class="inv-box"><b>المدة:</b> <span class="num">${c.start ? dfmt(c.start) : 'لا يوجد'}</span> إلى <span class="num">${c.end ? dfmt(c.end) : 'لا يوجد'}</span><br><b>الدورية:</b> ${esc(c.cycle)}</div>
-    <div class="inv-box"><b>قيمة العقد:</b> <span class="num">${fmt(c.valueHalalas)}</span> ${SAR}<br><b>التأمين:</b> <span class="num">${fmt(c.depositHalalas)}</span> ${SAR}${c.depositHolderLabel ? ' · ' + c.depositHolderLabel : ''}</div>
+    <div class="inv-box"><b>${services || parking ? ar('lease.print.rent') : ar('lease.print.value')}:</b> <span class="num">${fmt(c.valueHalalas)}</span> ${SAR}${splitHtml}<br><b>التأمين:</b> <span class="num">${fmt(c.depositHalalas)}</span> ${SAR}${c.depositHolderLabel ? ' · ' + c.depositHolderLabel : ''}</div>
   </div>`;
   return pagedDoc(co, 'عقد إيجار · نسخة المكتب', c.contractNo || undefined, issuedAt, intro, chunks);
 }

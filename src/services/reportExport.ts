@@ -67,7 +67,7 @@ function unitBlock(db: DB, unitId: string, from: string | null, to: string): Rep
     ],
     sections: [
       { title: `العقود (${d.contracts.length})`, header: ['رقم العقد', 'المستأجر', 'من', 'إلى', 'القيمة', 'الحالة'],
-        rows: d.contracts.map((c) => [c.contract_no ?? 'لا يوجد', c.tenant_name, c.start ? dfmt(c.start) : 'لا يوجد', c.end ? dfmt(c.end) : 'لا يوجد', M(c.value_halalas), c.status]) },
+        rows: d.contracts.map((c) => [c.contract_no ?? 'لا يوجد', c.tenant_name, c.start ? dfmt(c.start) : 'لا يوجد', c.end ? dfmt(c.end) : 'لا يوجد', M(c.total_halalas), c.status]) },
       { title: 'الأقساط', header: ['عدد الأقساط', 'المستحق حتى نهاية المدة', 'المحصَّل', 'المتبقي'],
         rows: [[d.installments.count, M(d.installments.due), M(d.installments.collected), M(d.installments.outstanding)]] },
       { title: `المقبوضات خلال المدة (${d.payments.length})`, header: ['التاريخ', 'الفترة', 'المستأجر', 'الطريقة', 'الصافي'],

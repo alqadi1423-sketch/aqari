@@ -45,6 +45,7 @@ import { seedTenantOccupant, carryOccupantsToRenewal } from '../occupants';
 import { createHandoverForContract } from '../handover/service';
 import { normalizePhone } from '../phone';
 import { rentRevenueLines } from '../accounting/rentSplit';
+import { t } from '../../i18n';
 
 export class RuleViolation extends Error {
   /** الحقل المسبِّب · تظلّله الواجهة بالأحمر */
@@ -103,23 +104,28 @@ export const SOURCE_FILE = 'ملف';
 export const SOURCE_COMPUTED = 'محسوبة';
 
 /**
- * الجدول صالحٌ لعقدٍ بمدته · كل تاريخ داخلها ومتصاعد. المبالغ من الملف إن طابق مجموعها قيمة العقد،
- * وإلا قُسمت القيمة على عدد صفوفه بالهللات (الأخير يمتص الفرق) فتبقى التواريخ من الملف.
+ * الجدول صالحٌ لعقدٍ بمدته · كل تاريخ داخلها ومتصاعد. التواريخ والمبالغ من الملف كما هي دائماً:
+ * لا استبدال صامت إن خالف مجموعها إجمالي العقد (قرار المالك 2026-10-07)، بل تنبيه أحمر بالفرق ولا توثيق حتى يتطابقا.
  */
-export function scheduleInstallments(schedule: ScheduleRow[] | null | undefined, start: string, end: string, valueHalalas: number):
+export function scheduleInstallments(schedule: ScheduleRow[] | null | undefined, start: string, end: string, _totalHalalas?: number):
   Array<{ dueDate: string; deadline: string | null; amountHalalas: number }> | null {
   if (!schedule || !schedule.length || !start || !end) return null;
   for (let i = 0; i < schedule.length; i++) {
     const d = schedule[i].dueDate;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d < start || d > end || (i && d < schedule[i - 1].dueDate)) return null;
   }
-  const sum = schedule.reduce((s, r) => s + Number(r.amountHalalas || 0), 0);
   // آخر مهلة السداد إلى مهلة القسط (grace_until) · لا تسبق الاستحقاق
   const dl = (r: ScheduleRow) => (r.deadline && r.deadline > r.dueDate ? r.deadline : null);
-  if (sum === valueHalalas) return schedule.map((r) => ({ dueDate: r.dueDate, deadline: dl(r), amountHalalas: Number(r.amountHalalas) }));
-  const n = schedule.length;
-  const per = Math.floor(valueHalalas / n);
-  return schedule.map((r, i) => ({ dueDate: r.dueDate, deadline: dl(r), amountHalalas: i === n - 1 ? valueHalalas - per * (n - 1) : per }));
+  return schedule.map((r) => ({ dueDate: r.dueDate, deadline: dl(r), amountHalalas: Number(r.amountHalalas) }));
+}
+
+/** مبلغا الخدمات والمواقف المحفوظان مع المسودة · يُستعملان حين يأتي النموذج المعاد فتحه بلا قراءة الملف */
+function withStoredSplit(db: DB, input: ContractDraftInput, draftId?: string): ContractDraftInput {
+  if (!draftId || input.servicesHalalas !== undefined || input.parkingHalalas !== undefined) return input;
+  if (!db.all<{ name: string }>(`PRAGMA table_info(contracts)`).some((c) => c.name === 'services_halalas')) return input;
+  const r = db.get<{ s: number; p: number }>(`SELECT services_halalas AS s, parking_halalas AS p FROM contracts WHERE id = ?`, [draftId]);
+  if (!r || (!Number(r.s) && !Number(r.p))) return input;
+  return { ...input, servicesHalalas: Number(r.s), parkingHalalas: Number(r.p) };
 }
 
 /** قاعدة ما قبل الهجرة ٢٤ (نسخة تُراجَع قبل ترقيتها) بلا عمودي الجدول والمصدر · فتُحسب أقساطها كما كانت */
@@ -196,6 +202,8 @@ export function saveDraft(db: DB, input: ContractDraftInput, draftId?: string): 
       [input.depositHolder || 'المكتب', input.depositHolderName || '', id]);
     const ej = hasEjarColumns(db) ? ejarColumns(input) : null;
     if (ej) db.run(`UPDATE contracts SET ejar_schedule = ?, installments_source = ? WHERE id = ?`, [ej.schedule, ej.source, id]);
+    // الخدمات والمواقف تُحفظ مع المسودة وتعود عند فتحها (المراجعة #1)
+    saveRevenueSplit(db, id, input);
     syncTenantToCustomer(db, input.tenant, input.phone);
     linkContractTenant(db, id);
     seedTenantOccupant(db, id);
@@ -218,7 +226,8 @@ export function deleteDraft(db: DB, id: string): void {
  * توثيق عقد (جديد أو ترقية مسودة): القواعد ← الرقم ← جدول الدفعات ← قيد التأمين
  * ← تحويل الحجز ← مزامنة المستأجر. بعده العقد مقفل.
  */
-export function confirmContract(db: DB, input: ContractDraftInput, draftId?: string): string {
+export function confirmContract(db: DB, inputRaw: ContractDraftInput, draftId?: string): string {
+  const input = withStoredSplit(db, inputRaw, draftId);
   const err = validateConfirmedContract(
     db,
     {
@@ -278,6 +287,12 @@ export function confirmContract(db: DB, input: ContractDraftInput, draftId?: str
       let parsed: ScheduleRow[] | null = null;
       try { parsed = ej.schedule ? (JSON.parse(ej.schedule) as ScheduleRow[]) : null; } catch { parsed = null; }
       const fromFile = scheduleInstallments(parsed, input.start, input.end, draftTotal(input));
+      if (fromFile) {
+        const sum = fromFile.reduce((x, r) => x + r.amountHalalas, 0);
+        if (sum !== draftTotal(input)) {
+          throw new RuleViolation(t('lease.scheduleSumMismatch', { lng: 'ar', sum: fmt(sum), total: fmt(draftTotal(input)) }), 'value');
+        }
+      }
       const insts: Array<{ id: string; dueDate: string; amountHalalas: number; deadline?: string | null }> = fromFile
         ? fromFile.map((x) => ({ id: uid(), ...x }))
         : generateInstallments(input.start, input.end, draftTotal(input), input.cycle);
@@ -445,6 +460,9 @@ export interface RenewInput {
   furnished: string;
   ejarNo: string;
   note: string;
+  /** الخدمات والمواقف في العقد الجديد · وغيابهما ينقلهما من العقد السابق (المراجعة #3) */
+  servicesHalalas?: number;
+  parkingHalalas?: number;
 }
 
 /** تحذيرات التجديد · بنصوص النموذج (تُعرض قبل التنفيذ وتمنع التأكيد) */
@@ -490,7 +508,15 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
        input.ejarNo.trim(), input.services.trim(), input.furnished, c.type_specific,
        c.id, (Number(c.renew_count) || 0) + 1, input.note.trim() || null, new Date().toISOString()]
     );
-    const insts = generateInstallments(input.start, input.end, input.valueHalalas, input.cycle);
+    const prevSplit = db.all<{ name: string }>(`PRAGMA table_info(contracts)`).some((x) => x.name === 'services_halalas')
+      ? db.get<{ s: number; p: number }>(`SELECT services_halalas AS s, parking_halalas AS p FROM contracts WHERE id = ?`, [c.id])
+      : undefined;
+    const split = {
+      servicesHalalas: Math.max(0, input.servicesHalalas ?? Number(prevSplit?.s ?? 0)),
+      parkingHalalas: Math.max(0, input.parkingHalalas ?? Number(prevSplit?.p ?? 0)),
+    };
+    if (prevSplit) db.run(`UPDATE contracts SET services_halalas = ?, parking_halalas = ? WHERE id = ?`, [split.servicesHalalas, split.parkingHalalas, newId]);
+    const insts = generateInstallments(input.start, input.end, draftTotal({ valueHalalas: input.valueHalalas, ...split }), input.cycle);
     insts.forEach((inst, i) => {
       db.run(
         `INSERT INTO contract_installments (id, contract_id, due_date, amount_halalas, sort)

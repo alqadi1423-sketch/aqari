@@ -98,7 +98,7 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
                   : null}
               </View>
               <View style={{ alignItems: 'flex-end' }}>
-                <Money halalas={Number(c.value_halalas)} size={TYPE.cardTitle} bold />
+                <Money halalas={Number(c.total_halalas)} size={TYPE.cardTitle} bold />
                 {/* الحالة محسوبة من التواريخ لا مخزّنة · فعقد يبدأ غداً «موثَّق ولم يبدأ» لا «سارٍ» */}
                 <Badge kind={contractStatusKind(c)} label={contractStatusLabel(c)} />
               </View>

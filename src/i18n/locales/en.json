@@ -75,7 +75,18 @@
     "revServices": "Services revenue (gas, electricity, water)",
     "revParking": "Parking revenue",
     "splitLine": "Of which rent {{rent}} · services {{services}} · parking {{parking}}",
-    "valueField": "Total rent value"
+    "valueField": "Total rent value",
+    "scheduleSumMismatch": "The Ejar schedule total {{sum}} differs from the contract total {{total}} · correct the rent, services or parking until they match, or save as draft",
+    "renewServices": "Services (gas, electricity, water)",
+    "renewParking": "Parking",
+    "contractTotal": "Contract total",
+    "print": {
+      "rent": "Rent value",
+      "services": "Services (gas, electricity, water)",
+      "parking": "Parking",
+      "total": "Contract total",
+      "value": "Contract value"
+    }
   },
   "dataLabels": {
     "table": {
@@ -321,5 +332,12 @@
     "editTitle": "Edit cost centre",
     "name": "Name",
     "add": "Add"
+  },
+  "templates": {
+    "tok": {
+      "total": "Contract total (rent, services and parking)",
+      "services": "Contract services amount",
+      "parking": "Contract parking amount"
+    }
   }
 }

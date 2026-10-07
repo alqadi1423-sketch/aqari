@@ -6,6 +6,7 @@ import { today, dfmt } from './dates';
 import { fmt } from './money';
 import { INSTALLMENT_DISCOUNT_SQL, installmentState } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
+import { t } from '../i18n';
 
 export const TEMPLATE_TOKENS: Array<{ k: string; d: string }> = [
   { k: '{المستأجر}', d: 'اسم المستأجر' },
@@ -23,6 +24,10 @@ export const TEMPLATE_TOKENS: Array<{ k: string; d: string }> = [
   { k: '{أيام_التأخير}', d: 'عدد أيام التأخير' },
   { k: '{المنشأة}', d: 'اسم المنشأة' },
   { k: '{اليوم}', d: 'تاريخ اليوم' },
+  // إجمالي العقد وتفصيله (المراجعة #6) · الرمز مخزَّن في القوالب، ووصفه من ملفات الترجمة
+  { k: '{إجمالي_العقد}', get d() { return t('templates.tok.total'); } }, // i18n-exempt: رمز قالب مخزَّن
+  { k: '{الخدمات}', get d() { return t('templates.tok.services'); } }, // i18n-exempt: رمز قالب مخزَّن
+  { k: '{المواقف}', get d() { return t('templates.tok.parking'); } }, // i18n-exempt: رمز قالب مخزَّن
 ];
 
 export const SCRIPT_CATEGORIES = ['تذكير بالسداد', 'تأخر السداد', 'تجديد العقد', 'إخلاء', 'صيانة', 'عام'];
@@ -39,9 +44,11 @@ export function templateContext(db: DB, contractId: string | null, name?: string
   const c = db.get<{
     id: string; contract_no: string | null; tenant_name: string; phone: string;
     unit_id: string; unit_label: string; start: string | null; end: string | null;
-    value_halalas: number; deposit_halalas: number; total_halalas: number;
+    value_halalas: number; deposit_halalas: number; total_halalas: number; services_halalas: number; parking_halalas: number;
   }>(`SELECT id, contract_no, tenant_name, phone, unit_id, unit_label, start, end, value_halalas, deposit_halalas,
-      ${contractTotalSql(db)} AS total_halalas
+      ${contractTotalSql(db)} AS total_halalas,
+      ${contractTotalSql(db) === 'value_halalas' ? '0' : 'services_halalas'} AS services_halalas,
+      ${contractTotalSql(db) === 'value_halalas' ? '0' : 'parking_halalas'} AS parking_halalas
       FROM contracts WHERE id = ?`, [contractId]);
   if (!c) return ctx;
   const u = db.get<{ unit_no: string; property_id: string }>(
@@ -78,8 +85,12 @@ export function templateContext(db: DB, contractId: string | null, name?: string
     '{نهاية_العقد}': c.end ? dfmt(c.end) : '',
     '{قيمة_العقد}': fmt(Number(c.value_halalas)),
     '{التأمين}': fmt(Number(c.deposit_halalas)),
-    '{المبلغ}': st ? fmt(st.remaining) : fmt(Number(c.total_halalas)),
+    // لا قسط مفتوح: لا مبلغ مستحق (المراجعة #6) · والمتبقي من الأقساط الحيّة
+    '{المبلغ}': st ? fmt(st.remaining) : fmt(0),
     '{المتبقي}': fmt(remain ? Number(remain.s) : Number(c.total_halalas)),
+    '{إجمالي_العقد}': fmt(Number(c.total_halalas)), // i18n-exempt: رمز قالب
+    '{الخدمات}': fmt(Number(c.services_halalas)), // i18n-exempt: رمز قالب
+    '{المواقف}': fmt(Number(c.parking_halalas)), // i18n-exempt: رمز قالب
     '{التاريخ}': st ? dfmt(st.effectiveDue) : c.end ? dfmt(c.end) : 'لا يوجد',
     '{أيام_التأخير}': st ? String(Math.max(0, st.daysLate)) : '0',
   });

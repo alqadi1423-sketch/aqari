@@ -200,17 +200,29 @@ export function contractCollectedValue(db: DB, contractId: string): number {
   return Number(pay.s);
 }
 
+/**
+ * قيمة العقد الملغى بتعريف واحد للبطاقة والإحصاء (المراجعة #7): المتبقي من أقساطه الملغاة بعد المسدَّد والخصم ·
+ * والعقد بلا أقساط: إجماليه ناقص المحصَّل منه.
+ */
+const CANCELLED_INST = 'ملغية'; // i18n-exempt: حالة القسط المخزّنة
+function cancelledValueSql(db: DB, c: string): string {
+  return `(CASE WHEN EXISTS (SELECT 1 FROM contract_installments i0 WHERE i0.contract_id = ${c}.id)
+    THEN (SELECT COALESCE(SUM(MAX(0, i.amount_halalas - i.paid_halalas - ${INSTALLMENT_DISCOUNT_SQL})),0)
+          FROM contract_installments i WHERE i.contract_id = ${c}.id AND i.status = '${CANCELLED_INST}')
+    ELSE MAX(0, ${contractTotalSql(db, c + '.')} - (SELECT COALESCE(SUM(pm.net_halalas),0) FROM contract_payments pm
+          WHERE pm.contract_id = ${c}.id AND pm.cancelled_at IS NULL)) END)`;
+}
+
 export function contractCancelledValue(db: DB, c: { id: string; status: string; value_halalas: number }): number {
   if (c.status !== 'ملغى') return 0;
-  const inst = db.get<{ n: number; s: number }>(
-    `SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN status='ملغية' THEN amount_halalas ELSE 0 END),0) AS s
-     FROM contract_installments WHERE contract_id = ?`,
-    [c.id]
-  )!;
-  if (Number(inst.n) > 0) return Number(inst.s);
-  const collected = contractCollectedValue(db, c.id);
-  const total = db.get<{ v: number }>(`SELECT ${contractTotalSql(db)} AS v FROM contracts WHERE id = ?`, [c.id])?.v ?? c.value_halalas;
-  return Math.max(0, Number(total) - collected);
+  return Number(db.get<{ v: number }>(`SELECT ${cancelledValueSql(db, 'c')} AS v FROM contracts c WHERE c.id = ?`, [c.id])?.v ?? 0);
+}
+
+/** المتبقي على العقد من أقساطه الحيّة بعد المسدَّد والخصم (المراجعة #8) */
+export function contractRemainingHalalas(db: DB, contractId: string): number {
+  return Number(db.get<{ v: number }>(
+    `SELECT COALESCE(SUM(MAX(0, i.amount_halalas - i.paid_halalas - ${INSTALLMENT_DISCOUNT_SQL})),0) AS v
+     FROM contract_installments i WHERE i.contract_id = ? AND i.status != 'ملغية'`, [contractId])?.v ?? 0);
 }
 
 export interface PropertyStats {
@@ -256,8 +268,7 @@ function aggregatedStats(db: DB, propertyId: string | null, T: string): Property
   )!.s);
   const cancelled = db.get<{ n: number; v: number }>(
     `SELECT COUNT(*) AS n,
-            COALESCE(SUM((SELECT COALESCE(SUM(CASE WHEN i.status='ملغية' THEN i.amount_halalas ELSE 0 END),0)
-                          FROM contract_installments i WHERE i.contract_id = c.id)),0) AS v
+            COALESCE(SUM(${cancelledValueSql(db, 'c')}),0) AS v
      FROM contracts c JOIN units u ON u.id = c.unit_id
      WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL AND c.status = 'ملغى' ${unitFilter}`, p
   )!;

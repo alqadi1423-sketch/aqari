@@ -21,6 +21,7 @@ import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining } from '../../src/domain
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../../src/domain/contracts/vocab';
 import { depositState } from '../../src/domain/contracts/vocab';
 import { InstallmentSheet } from '../../src/ui/InstallmentSheet';
+import { contractRemainingHalalas } from '../../src/domain/stats';
 import { OccupantSheet } from '../../src/ui/OccupantSheet';
 import { usePager, Pager } from '../../src/ui/Pager';
 import { useDeferredReady } from '../../src/ui/useDeferredReady';
@@ -209,6 +210,10 @@ export default function Contracts() {
         try { return raw ? JSON.parse(raw) : undefined; } catch { return undefined; }
       })(),
       fromEjarFile: (c as unknown as { installments_source?: string | null }).installments_source ? true : undefined,
+      split: {
+        servicesHalalas: Number((c as unknown as { services_halalas?: number }).services_halalas ?? 0) || undefined,
+        parkingHalalas: Number((c as unknown as { parking_halalas?: number }).parking_halalas ?? 0) || undefined,
+      },
     });
     setEditingDraftId(c.id);
     setFormOpen(true);
@@ -359,7 +364,7 @@ export default function Contracts() {
             </Row>
             <Row style={{ justifyContent: 'space-between', marginTop: 6 }}>
               <Row gap={12}>
-                <View><T size={10} color={C.muted}>القيمة</T><Money halalas={Number(c.value_halalas)} size={12} bold /></View>
+                <View><T size={10} color={C.muted}>{t('lease.contractTotal')}</T><Money halalas={contractTotalOf(c)} size={12} bold /></View>
                 <View>
                   <T size={10} color={C.muted}>التأمين</T>
                   <Money halalas={Number(c.deposit_halalas)} size={12} bold
@@ -528,11 +533,12 @@ import { reportFailure } from '../../src/ui/failureDialog';
 
 import { CostCenterField } from '../../src/ui/CostCenters';
 import { ScheduleReview } from '../../src/ui/ScheduleReview';
-import { revenueSplitOf } from '../../src/ui/contractForm';
+import { formSplit } from '../../src/ui/contractForm';
 import { LeaseCompare, useLeaseDiffs } from '../../src/ui/LeaseCompare';
 import { applyExtras, type ExtraDiff, type ExtraKey } from '../../src/domain/pdf/ejarExtras';
 import { useLang } from '../../src/i18n';
 import { GENERAL_COST_CENTER, withCostCenter } from '../../src/domain/accounting/dimensions';
+import { contractTotalOf } from '../../src/domain/accounting/rentSplit';
 function ReviewSheet({
   visible, form, onBack, onConfirm, db, cc, onCc, leaseDiffs, approved, onApproved,
 }: { visible: boolean; form: ContractFormState; onBack: () => void; onConfirm: () => void; db: DB; cc: string; onCc: (v: string) => void;
@@ -577,7 +583,7 @@ function ReviewSheet({
         </Row>
       ))}
       <View style={{ marginTop: 12 }}>
-        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} financial={form.extras?.financial} split={revenueSplitOf(form.extras)} />
+        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} financial={form.extras?.financial} split={formSplit(form)} />
         <LeaseCompare extras={form.extras} diffs={leaseDiffs} approved={approved} onChange={onApproved} />
         <CostCenterField value={cc} onChange={onCc} />
         <Note>بعد الإنشاء لا يمكن تعديل العقد أو حذفه · يُلغى فقط.</Note>
@@ -599,6 +605,7 @@ function ContractDetailSheet({
   const depPerm = usePerm('deposits');
   const collectPerm = usePerm('collect');
   const seesPurchases = routeAllowed(access, '/purchases');
+  const { t } = useLang();
   const [occEditing, setOccEditing] = useState<OccupantRow | null>(null);
   const [instFor, setInstFor] = useState<string | null>(null);
   const [expOpen, setExpOpen] = useState(false);
@@ -723,6 +730,18 @@ function ContractDetailSheet({
         );
       })() : null}
       {c.services ? <View style={{ marginBottom: 6 }}><T size={11} color={C.muted}>الخدمات المشمولة</T><T size={12.5}>{c.services}</T></View> : null}
+      {/* إجمالي العقد وتفصيله (المراجعة #5) · يغيب إن لم يكن فيه خدمات ولا مواقف */}
+      {contractTotalOf(c as never) !== Number(c.value_halalas) ? (
+        <View style={{ marginBottom: 6 }}>
+          <T size={11} color={C.muted}>{t('lease.contractTotal')}</T>
+          <Money halalas={contractTotalOf(c as never)} size={12.5} bold />
+          <T size={11} color={C.muted}>{t('lease.splitLine', {
+            rent: fmt(Number(c.value_halalas)),
+            services: fmt(Number((c as unknown as { services_halalas?: number }).services_halalas ?? 0)),
+            parking: fmt(Number((c as unknown as { parking_halalas?: number }).parking_halalas ?? 0)),
+          })}</T>
+        </View>
+      ) : null}
       <ContractFileButton contractId={contractId} linked={'عقد ' + (c.contract_no || c.tenant_name)} />
 
       {/* دخل العقد ومصاريفه */}
@@ -963,21 +982,23 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const [furnished, setFurnished] = useState(c.furnished || '');
   const [ejar, setEjar] = useState('');
   const [note, setNote] = useState('');
+  // الخدمات والمواقف تنتقل من العقد السابق وتدخل الأقساط وفصل الإيراد (المراجعة #3)
+  const cx = c as ContractRow & { services_halalas?: number; parking_halalas?: number };
+  const [servicesAmt, setServicesAmt] = useState(Number(cx.services_halalas ?? 0) ? fmt(Number(cx.services_halalas)).replace(/,/g, '') : '');
+  const [parkingAmt, setParkingAmt] = useState(Number(cx.parking_halalas ?? 0) ? fmt(Number(cx.parking_halalas)).replace(/,/g, '') : '');
+  const { t } = useLang();
 
   const end = durMonths === 'custom'
     ? customEnd
     : start ? contractEndFromDuration(start, Number(durMonths)) : '';
   const valueH = toHalalas(value);
   const totalDep = (carry ? Number(c.deposit_halalas) : 0) + toHalalas(extraDeposit);
-  const ins = start && end && valueH ? generateInstallments(start, end, valueH, cycle) : [];
+  const totalH = valueH + toHalalas(servicesAmt) + toHalalas(parkingAmt);
+  const ins = start && end && valueH ? generateInstallments(start, end, totalH, cycle) : [];
   const warns = renewWarnings(db, contractId, { start, end, valueHalalas: valueH });
   const block = renewBlockReason(c);
-  const paid = db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [contractId]
-  )!.s;
-  // المتبقي من إجمالي العقد: الإيجار والخدمات والمواقف
-  const cx = c as ContractRow & { services_halalas?: number; parking_halalas?: number };
-  const due = Math.max(0, Number(c.value_halalas) + Number(cx.services_halalas ?? 0) + Number(cx.parking_halalas ?? 0) - Number(paid));
+  // المتبقي من الأقساط الحيّة بعد المسدَّد والخصم (المراجعة #8)
+  const due = contractRemainingHalalas(db, contractId);
 
   const applyRaise = (r: string) => {
     setRaise(r);
@@ -993,6 +1014,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
         start, end, valueHalalas: valueH, cycle,
         carryDeposit: carry, extraDepositHalalas: toHalalas(extraDeposit),
         services, furnished, ejarNo: ejar, note,
+        servicesHalalas: toHalalas(servicesAmt), parkingHalalas: toHalalas(parkingAmt),
       });
       onClose();
       onDone('جُدِّد العقد بنجاح');
@@ -1042,6 +1064,10 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
         {/* استلام التأمين وترحيله من قسم التأمينات · ومن لا يملكه يجدد بالترحيل الافتراضي */}
         {depPerm.add ? <View style={{ flex: 1 }}><Field label="تأمين إضافي" value={extraDeposit} onChange={setExtraDeposit} keyboard="numeric" ltr /></View> : null}
       </Row>
+      <Row>
+        <View style={{ flex: 1 }}><Field label={t('lease.renewServices')} value={servicesAmt} onChange={setServicesAmt} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label={t('lease.renewParking')} value={parkingAmt} onChange={setParkingAmt} keyboard="numeric" ltr /></View>
+      </Row>
       {depPerm.add && Number(c.deposit_halalas) > 0 && (
         <Pressable onPress={() => setCarry((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>
           <View style={{
@@ -1071,6 +1097,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
           ['الفترة الجديدة', start && end ? dfmt(start) + ' · ' + dfmt(end) : ''],
           ['المدة', start && end ? Math.max(1, approxMonths(start, end)) + ' شهراً' : ''],
           ['القيمة', fmt(valueH)],
+          [t('lease.contractTotal'), totalH !== valueH ? fmt(totalH) : ''],
           ['عدد الدفعات', ins.length ? String(ins.length) : ''],
           ['أول دفعة', ins.length ? fmt(ins[0].amountHalalas) + ' · ' + dfmt(ins[0].dueDate) : ''],
           ['آخر دفعة', ins.length ? fmt(ins[ins.length - 1].amountHalalas) + ' · ' + dfmt(ins[ins.length - 1].dueDate) : ''],

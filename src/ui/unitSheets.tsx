@@ -43,6 +43,8 @@ import { routeAllowed } from '../domain/access/routes';
 import { CostCenterField } from './CostCenters';
 import { GENERAL_COST_CENTER, withCostCenter } from '../domain/accounting/dimensions';
 import { UnitAssetsSection } from './UnitAssets';
+import { contractTotalSql, contractTotalOf } from '../domain/accounting/rentSplit';
+import { useLang } from '../i18n';
 export function UnitFormSheet({
   propertyId, unitId, onClose, onSaved,
 }: { propertyId?: string; unitId?: string; onClose: () => void; onSaved: () => void }) {
@@ -368,8 +370,8 @@ export function UnitDetailSheet({
       </CollapsibleSection>
 
       <CollapsibleSection title="تاريخ العقود" count={data.counts.contracts} icon="contract" pageKey="unitContracts">
-        {(page) => db.all<{ id: string; tenant_name: string; start: string | null; end: string | null; value_halalas: number; status: string }>(
-          `SELECT id, tenant_name, start, "end", value_halalas, status FROM contracts
+        {(page) => db.all<{ id: string; tenant_name: string; start: string | null; end: string | null; value_halalas: number; total_halalas: number; status: string }>(
+          `SELECT id, tenant_name, start, "end", value_halalas, ${contractTotalSql(db)} AS total_halalas, status FROM contracts
            WHERE unit_id = ? AND deleted_at IS NULL ORDER BY start DESC LIMIT ? OFFSET ?`,
           [unitId, page.limit, page.offset]
         ).map((c) => {
@@ -383,7 +385,7 @@ export function UnitDetailSheet({
               </Row>
               <Row style={{ justifyContent: 'space-between', marginTop: 2 }}>
                 <Num size={TYPE.caption} color={C.muted}>{dfmt(c.start)} · {dfmt(c.end)}</Num>
-                <Money halalas={Number(c.value_halalas)} size={TYPE.body} />
+                <Money halalas={Number(c.total_halalas)} size={TYPE.body} />
               </Row>
             </Pressable>
           );
@@ -464,6 +466,7 @@ function ContractQuickSheet({ contractId, onClose, onOpenInstallment, onOpenFull
 }) {
   const { db, version } = useApp();
   const openFull = routeAllowed(useAccess(), '/contracts');
+  const { t } = useLang();
   const c = db.get<{
     id: string; contract_no: string; tenant_name: string; phone: string; start: string; end: string;
     value_halalas: number; deposit_halalas: number; cycle: string; status: string;
@@ -483,7 +486,7 @@ function ContractQuickSheet({ contractId, onClose, onOpenInstallment, onOpenFull
         <Num size={TYPE.caption} color={C.muted}>{dfmt(c.start)} · {dfmt(c.end)}</Num>
       </Row>
       <Row style={{ marginBottom: 8 }}>
-        <View style={{ flex: 1 }}><T size={TYPE.caption} color={C.muted}>القيمة</T><Money halalas={Number(c.value_halalas)} size={TYPE.cardTitle} bold /></View>
+        <View style={{ flex: 1 }}><T size={TYPE.caption} color={C.muted}>{t('lease.contractTotal')}</T><Money halalas={contractTotalOf(c)} size={TYPE.cardTitle} bold /></View>
         {c.cycle ? <View style={{ flex: 1 }}><T size={TYPE.caption} color={C.muted}>الدورية</T><T size={TYPE.cardTitle}>{c.cycle}</T></View> : null}
       </Row>
       {Number(c.deposit_halalas) > 0 ? (

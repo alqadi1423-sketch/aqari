@@ -9,7 +9,7 @@ import { C, TYPE } from './theme';
 import { useLang } from '../i18n';
 import { dfmt } from '../domain/dates';
 import { toHalalas, fmt } from '../domain/money';
-import { scheduleChecks, type EjarExtras } from '../domain/pdf/ejarExtras';
+import { scheduleChecks, scheduleSumGap, type EjarExtras } from '../domain/pdf/ejarExtras';
 import { scheduleInstallments } from '../domain/contracts/service';
 import { generateInstallments } from '../domain/contracts/installments';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
@@ -41,6 +41,12 @@ export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFil
         : fromEjarFile ? <Note tone="danger">{t('lease.scheduleComputedFromFile')}</Note> : <Note>{t('lease.scheduleComputed')}</Note>}
       {split && (split.servicesHalalas || split.parkingHalalas) ? (
         <T size={TYPE.caption} color={C.muted}>{t('lease.splitLine', { rent: fmt(toHalalas(value)), services: fmt(split.servicesHalalas ?? 0), parking: fmt(split.parkingHalalas ?? 0) })}</T>
+      ) : null}
+      {rows.read && scheduleSumGap(schedule, toHalalas(value) + (split?.servicesHalalas ?? 0) + (split?.parkingHalalas ?? 0)) !== 0 ? (
+        <Note tone="danger">{t('lease.scheduleSumMismatch', {
+          sum: fmt(rows.rows.reduce((x, r) => x + r.amount, 0)),
+          total: fmt(toHalalas(value) + (split?.servicesHalalas ?? 0) + (split?.parkingHalalas ?? 0)),
+        })}</Note>
       ) : null}
       {rows.read && financial ? scheduleChecks(schedule, financial).map((c) => (
         <Note key={c.code} tone="danger">{t('lease.check.' + c.code, { expected: c.code === 'count' ? c.expected : fmt(c.expected), actual: c.code === 'count' ? c.actual : fmt(c.actual) })}</Note>
