@@ -45,6 +45,8 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
   const [info, setInfo] = useState<ProgressInfo | null>(null);
   const [stalled, setStalled] = useState(false);
   const [reason, setReason] = useState('');
+  // ألغاها المستخدم بنفسه · فلا تُعرض عطلاً
+  const [cancelled, setCancelled] = useState(false);
   // النسبة والحجم والإلغاء، ودقيقة بلا تقدّم تظهر مع إعادة المحاولة (توجيه المالك ٢٠٢٦-١٠-٠٧)
   const watch = useRef(new StallWatch());
   const cancelRef = useRef<{ cancel: () => void; retry: boolean } | null>(null);
@@ -64,8 +66,9 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
       setPhase('ready');
     } catch (e) {
       if (isCancelled(e) && cancelRef.current?.retry) { run(); return; }
+      setCancelled(isCancelled(e));
       setReason(isCancelled(e)
-        ? 'أُلغي حفظ النسخة · بياناتك كما هي، والترقية تنتظر نسخة كاملة منها.'
+        ? 'بياناتك كما هي، والترقية تنتظر نسخة كاملة منها.'
         : e instanceof Error ? e.message : 'لم تُرقَّ بياناتك لأن حفظ نسخة منها قبل الترقية لم يكتمل.');
       setPhase('failed');
     }
@@ -112,11 +115,11 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
         </>
       ) : (
         <View style={{ width: '100%', maxWidth: 420 }}>
-          <Text style={txt(15, C.rose, true)}>تعذّرت ترقية البيانات</Text>
+          <Text style={txt(15, cancelled ? C.ink : C.rose, true)}>{cancelled ? 'أُلغي حفظ النسخة' : 'تعذّرت ترقية البيانات'}</Text>
           <Text style={[txt(13, C.ink), { marginTop: 12, lineHeight: 22 }]}>{reason}</Text>
           <View style={{ marginTop: 18, gap: 10 }}>
             <Btn primary title="إعادة المحاولة" onPress={run} />
-            <Btn title="مشاركة السبب" onPress={() => { Share.share({ message: reason }).catch(() => {}); }} />
+            {cancelled ? null : <Btn title="مشاركة السبب" onPress={() => { Share.share({ message: reason }).catch(() => {}); }} />}
           </View>
         </View>
       )}
