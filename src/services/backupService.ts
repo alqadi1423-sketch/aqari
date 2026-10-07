@@ -17,6 +17,7 @@ import { openNodeDbCompat } from './openTempDb';
 import { deviceCipher } from './cipher';
 import { getBackupPassword } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
+import type { CancelSignal, ProgressFn } from '../domain/progress';
 
 export function appBackupEnv(db: AppDB): BackupEnv {
   const root = appDataRoot();
@@ -43,12 +44,13 @@ function openTempSqlite(path: string) {
 /** إنشاء نسخة ومشاركتها خارج الجهاز · تحدّث lastBackupAt و lastExportAt */
 export async function createAndShareBackup(
   db: AppDB,
-  onProgress?: (msg: string) => void
+  onProgress?: ProgressFn,
+  signal?: CancelSignal,
 ): Promise<BackupManifest> {
   const env = appBackupEnv(db);
   const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
   const outPath = joinPath(env.tmpDir, name);
-  const manifest = await createBackup(env, outPath, onProgress);
+  const manifest = await createBackup(env, outPath, onProgress, { signal });
   // بكلمة مرور النسخ إن وُضعت · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق
   const pw = await getBackupPassword();
   if (pw) await sealBackupFile(env, outPath, pw, onProgress);
@@ -74,7 +76,7 @@ export async function createAndShareBackup(
  */
 export async function prepareRestoreFromSafety(
   db: AppDB,
-  onProgress?: (msg: string) => void,
+  onProgress?: ProgressFn,
   opts?: PrepareOptions
 ): Promise<{ env: BackupEnv; plan: RestorePlan; archiveTmp: string } | null> {
   const env = appBackupEnv(db);
@@ -93,7 +95,7 @@ export async function prepareRestoreFromSafety(
 
 export async function pickAndPrepareRestore(
   db: AppDB,
-  onProgress?: (msg: string) => void,
+  onProgress?: ProgressFn,
   opts?: PrepareOptions
 ): Promise<{ env: BackupEnv; plan: RestorePlan; archiveTmp: string } | null> {
   const env = appBackupEnv(db);

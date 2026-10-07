@@ -4,6 +4,7 @@
  * وملخص «ما سيحدث») ثم تنفيذ (نسخة أمان في مجلد دائم لا يُكنس، تبديل ذرّي برجوع فوري).
  * الذاكرة لا تحمل الأرشيف والمرفقات معاً أثناء نسخة الأمان · هذا ما كان يقتل التطبيق.
  */
+import { throwIfCancelled, type CancelSignal, type ProgressFn } from '../progress';
 import { joinPath } from '../../files/fsAdapter';
 import { liveBlobs, isSafeBlobName } from '../../files/store';
 import { unzipYielding, yieldUi, archiveFailureText } from './zipStream';
@@ -60,6 +61,8 @@ export interface PrepareOptions {
    * null = ألغى المستخدم (PasswordRequiredError)
    */
   password?: (wrong: boolean) => Promise<string | null>;
+  /** الإلغاء بيد المستخدم · التجهيز لا يمسّ البيانات الحية، فيُلغى في أي خطوة ويُكنس ما كُتب (progress.ts) */
+  signal?: CancelSignal;
 }
 
 /**
@@ -93,7 +96,7 @@ export interface RestoreResult {
 export async function prepareRestore(
   env: BackupEnv,
   archivePath: string,
-  onProgress?: (msg: string) => void,
+  onProgress?: ProgressFn,
   opts: PrepareOptions = {}
 ): Promise<RestorePlan> {
   if (!env.hasher) throw new RestoreError('التحقق يحتاج مكوّن البصمات وهو غير متاح');
@@ -141,10 +144,16 @@ export async function prepareRestore(
     // ٣) الاستخراج إلى staging · البيانات الحالية لم تُمسّ · تنفّس بعد كل ملف
     env.fs.write(stagedDbPath, entries['data.db']);
     env.fs.mkdirp(joinPath(stagingDir, 'attachments'));
+    throwIfCancelled(opts.signal);
+    const fileBytes = manifest.files.reduce((n, x) => n + Number(x.size ?? 0), 0);
+    const bytesInfo = (done: number) => (fileBytes > 0 ? { done, total: fileBytes, unit: 'bytes' as const } : undefined);
+    let eBytes = 0;
     let ei = 0;
     for (const f of manifest.files) {
       ei += 1;
-      onProgress?.(`جاري استخراج المرفقات · ${ei} من ${manifest.files.length}`);
+      throwIfCancelled(opts.signal);
+      onProgress?.(`جاري استخراج المرفقات · ${ei} من ${manifest.files.length}`, bytesInfo(eBytes));
+      eBytes += Number(f.size ?? 0);
       const name = `attachments/${f.sha256}.${f.ext}`;
       const bytes = entries[name];
       if (!bytes) throw new RestoreError('النسخة ينقصها مرفق مذكور في بيانها: ' + f.sha256.slice(0, 12));
@@ -160,16 +169,21 @@ export async function prepareRestore(
     if (dbSha !== manifest.db_sha256)
       throw new RestoreError('بصمة قاعدة النسخة لا تطابق بيانها (الملف عُدّل أو تلف)');
     let hi = 0;
+    let hBytes = 0;
     for (const f of manifest.files) {
       hi += 1;
-      onProgress?.(`جاري التحقق من المرفقات · ${hi} من ${manifest.files.length}`);
+      throwIfCancelled(opts.signal);
+      onProgress?.(`جاري التحقق من المرفقات · ${hi} من ${manifest.files.length}`, bytesInfo(hBytes));
+      hBytes += Number(f.size ?? 0);
       const p = joinPath(stagingDir, `attachments/${f.sha256}.${f.ext}`);
       const actual = await hasher(env.fs.read(p));
       if (actual !== f.sha256)
         throw new RestoreError('بصمة مرفق لا تطابق بيانها: ' + f.sha256.slice(0, 12));
       if (hi % 8 === 0) await yieldUi();
     }
+    throwIfCancelled(opts.signal);
     const cloudDocs = opts.cloud ? await opts.cloud() : undefined;
+    throwIfCancelled(opts.signal);
     onProgress?.('جاري التشغيل التجريبي للنسخة');
 
     let migrated = false;

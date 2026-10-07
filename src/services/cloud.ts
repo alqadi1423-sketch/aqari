@@ -51,6 +51,7 @@ import {
 } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
+import { throwIfCancelled, CancelledError, type CancelSignal, type ProgressFn } from '../domain/progress';
 import { saveInvoiceIssued, setInvoiceStatusIssued, issuePendingInvoices, type InvoiceNumberSource, type IssueResult } from '../domain/invoiceIssue';
 import type { InvoiceInput } from '../domain/invoices';
 
@@ -756,15 +757,31 @@ export async function revokeInviteNow(email: string) { const t = teamRemote(); r
 
 const driveIO: DriveIO = {
   fetch: (...a) => fetch(...a),
-  async putFile(url, path, headers) {
-    const r = await LegacyFS.uploadAsync(url, new File(path).uri, {
+  // مهام النقل الأصلية بتقدّمها وإلغائها (توجيه المالك ٢٠٢٦-١٠-٠٧: النسبة والحجم وزر الإلغاء)
+  async putFile(url, path, headers, onBytes, signal) {
+    throwIfCancelled(signal);
+    const task = LegacyFS.createUploadTask(url, new File(path).uri, {
       httpMethod: 'PUT', uploadType: LegacyFS.FileSystemUploadType.BINARY_CONTENT, headers,
-    });
-    return { status: r.status, body: r.body };
+    }, (p) => onBytes?.(p.totalBytesSent, p.totalBytesExpectedToSend));
+    const off = signal?.onCancel(() => { task.cancelAsync().catch(() => {}); });
+    try {
+      const r = await task.uploadAsync();
+      throwIfCancelled(signal);
+      if (!r) throw new CancelledError();
+      return { status: r.status, body: r.body };
+    } finally { off?.(); }
   },
-  async downloadFile(url, path, headers) {
-    const r = await LegacyFS.downloadAsync(url, new File(path).uri, { headers });
-    return { status: r.status };
+  async downloadFile(url, path, headers, onBytes, signal) {
+    throwIfCancelled(signal);
+    const task = LegacyFS.createDownloadResumable(url, new File(path).uri, { headers },
+      (p) => onBytes?.(p.totalBytesWritten, p.totalBytesExpectedToWrite));
+    const off = signal?.onCancel(() => { task.cancelAsync().catch(() => {}); });
+    try {
+      const r = await task.downloadAsync();
+      throwIfCancelled(signal);
+      if (!r) throw new CancelledError();
+      return { status: r.status };
+    } finally { off?.(); }
   },
   async sha256OfFile(path) { return expoHasher(new File(path).bytesSync()); },
   sizeOf(path) { return new File(path).size ?? 0; },
@@ -777,18 +794,18 @@ async function driveToken(): Promise<string> {
 }
 
 /** نسخة جديدة تجتاز كل تحققات الإنشاء ثم تُرفع وتُطابق بصمتها على Drive */
-export async function backupToDrive(db: AppDB, onProgress?: (m: string) => void): Promise<DriveBackup> {
+export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?: CancelSignal): Promise<DriveBackup> {
   const env = appBackupEnv(db);
   const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
   const out = joinPath(env.tmpDir, 'drive-' + Date.now() + '.aqbk');
-  const manifest = await createBackup(env, out, onProgress);
+  const manifest = await createBackup(env, out, onProgress, { signal });
   try {
     // نسخة Drive تُشفَّر أيضاً إن وُضعت كلمة مرور النسخ
     const pw = await getBackupPassword();
     if (pw) await sealBackupFile(env, out, pw, onProgress);
-    onProgress?.('جاري الرفع إلى Google Drive');
+    throwIfCancelled(signal);
     const token = await driveToken();
-    return await uploadBackupToDrive(driveIO, token, out, name, { encrypted: !!pw, notes: !!manifest.notes?.length });
+    return await uploadBackupToDrive(driveIO, token, out, name, { encrypted: !!pw, notes: !!manifest.notes?.length, onProgress, signal });
   } finally {
     try { env.fs.remove(out); } catch { /* يكنسه الإقلاع */ }
   }
@@ -803,19 +820,19 @@ export async function listBackupsOnDrive(): Promise<DriveBackup[]> {
  * الفك والبصمات والفحص الدلالي والملخص · والتنفيذ بعدها هو تنفيذ الاستعادة المحلية حرفاً بحرف.
  */
 export async function prepareRestoreFromDrive(
-  db: AppDB, b: DriveBackup, onProgress?: (m: string) => void, opts?: PrepareOptions
+  db: AppDB, b: DriveBackup, onProgress?: ProgressFn, opts?: PrepareOptions
 ): Promise<{ env: BackupEnv; plan: RestorePlan; archiveTmp: string }> {
   const env = appBackupEnv(db);
   // القرص يسع العملية قبل أن يبدأ التنزيل · كما في الاستعادة من ملف
   await ensureFreeSpace(env);
   env.fs.mkdirp(env.tmpDir);
   const archiveTmp = joinPath(env.tmpDir, 'restore-input.aqbk');
-  onProgress?.('جاري التنزيل من Google Drive');
-  await downloadBackupFromDrive(driveIO, await driveToken(), b, archiveTmp);
   try {
+    await downloadBackupFromDrive(driveIO, await driveToken(), b, archiveTmp, { onProgress, signal: opts?.signal });
     const plan = await prepareRestore(env, archiveTmp, onProgress, opts);
     return { env, plan, archiveTmp };
   } catch (e) {
+    // تنزيلٌ أُلغي أو انقطع أو لم تطابق بصمته: لا يبقى منه شيء
     try { env.fs.remove(archiveTmp); } catch { /* يكنسه الإقلاع */ }
     throw e;
   }

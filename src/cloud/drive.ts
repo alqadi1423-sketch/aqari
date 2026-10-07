@@ -7,15 +7,20 @@
  *  - الاستعادة: تنزيل إلى القرص ثم مطابقة البصمة ثم مسار الاستعادة المحلي نفسه بكل ضماناته.
  * منطق خالص · النقل الفعلي يُحقن (expo-file-system على الجهاز، ونسخة وهمية في الاختبارات).
  */
+import { throwIfCancelled, type CancelSignal, type ProgressFn } from '../domain/progress';
+
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 
 export interface DriveIO {
   fetch: typeof fetch;
-  /** PUT يبثّ الملف من القرص · يعيد الحالة ونصّ الرد */
-  putFile(url: string, path: string, headers: Record<string, string>): Promise<{ status: number; body: string }>;
-  /** GET إلى ملف على القرص */
-  downloadFile(url: string, path: string, headers: Record<string, string>): Promise<{ status: number }>;
+  /**
+   * PUT يبثّ الملف من القرص · يعيد الحالة ونصّ الرد · onBytes بالمرسَل والكلي ·
+   * والإلغاء يقطع النقل ويرمي CancelledError (progress.ts)
+   */
+  putFile(url: string, path: string, headers: Record<string, string>, onBytes?: (done: number, total: number) => void, signal?: CancelSignal): Promise<{ status: number; body: string }>;
+  /** GET إلى ملف على القرص · onBytes بالمكتوب والكلي (والكلي صفر إن لم يُعرف) · والإلغاء كذلك */
+  downloadFile(url: string, path: string, headers: Record<string, string>, onBytes?: (done: number, total: number) => void, signal?: CancelSignal): Promise<{ status: number }>;
   sha256OfFile(path: string): Promise<string>;
   sizeOf(path: string): number;
 }
@@ -82,8 +87,11 @@ async function remoteSha(io: DriveIO, token: string, id: string): Promise<{ sha:
  * رفع نسخة · البصمة المحلية تُحسب من الملف على القرص، وبصمة Drive تُقرأ بعد الرفع ·
  * أي اختلاف يحذف المرفوع ويرفض برسالة تسمّي الملف.
  */
+export interface TransferOptions { onProgress?: ProgressFn; signal?: CancelSignal }
+
 export async function uploadBackupToDrive(
-  io: DriveIO, token: string, path: string, name: string, opts: { encrypted?: boolean; notes?: boolean } = {},
+  io: DriveIO, token: string, path: string, name: string,
+  opts: { encrypted?: boolean; notes?: boolean } & TransferOptions = {},
 ): Promise<DriveBackup> {
   const local = (await io.sha256OfFile(path)).toLowerCase();
   const size = io.sizeOf(path);
@@ -99,7 +107,13 @@ export async function uploadBackupToDrive(
   if (init.status === 401 || init.status === 403) throw new DriveError('رُفض الوصول عند بدء الرفع · سجّل الدخول من جديد');
   const session = init.headers.get('Location') ?? init.headers.get('location');
   if (!init.ok || !session) throw new DriveError(`تعذّر بدء رفع «${name}» (${init.status})`);
-  const put = await io.putFile(session, path, { 'Content-Type': 'application/octet-stream' });
+  throwIfCancelled(opts.signal);
+  const label = 'جاري الرفع إلى Google Drive';
+  opts.onProgress?.(label, { done: 0, total: size, unit: 'bytes' });
+  const put = await io.putFile(session, path, { 'Content-Type': 'application/octet-stream' },
+    (done, total) => opts.onProgress?.(label, { done, total: total || size, unit: 'bytes' }), opts.signal);
+  throwIfCancelled(opts.signal);
+  opts.onProgress?.('جاري مطابقة بصمة النسخة على Drive');
   if (put.status < 200 || put.status >= 300) throw new DriveError(`انقطع رفع «${name}» (${put.status})`);
   const f = JSON.parse(put.body || '{}') as { id: string; name: string; size?: string; createdTime?: string; sha256Checksum?: string };
   let sha = (f.sha256Checksum ?? '').toLowerCase();
@@ -113,10 +127,15 @@ export async function uploadBackupToDrive(
 }
 
 /** تنزيل نسخة إلى مسار محلي ومطابقة بصمتها · المطابقة شرط قبل أن يبدأ مسار الاستعادة */
-export async function downloadBackupFromDrive(io: DriveIO, token: string, b: DriveBackup, path: string): Promise<void> {
-  const res = await io.downloadFile(`${API}/files/${b.id}?alt=media`, path, auth(token));
+export async function downloadBackupFromDrive(io: DriveIO, token: string, b: DriveBackup, path: string, opts: TransferOptions = {}): Promise<void> {
+  const label = 'جاري التنزيل من Google Drive';
+  opts.onProgress?.(label, { done: 0, total: b.size, unit: 'bytes' });
+  const res = await io.downloadFile(`${API}/files/${b.id}?alt=media`, path, auth(token),
+    (done, total) => opts.onProgress?.(label, { done, total: total > 0 ? total : b.size, unit: 'bytes' }), opts.signal);
+  throwIfCancelled(opts.signal);
   if (res.status === 401 || res.status === 403) throw new DriveError('رُفض الوصول عند التنزيل · سجّل الدخول من جديد');
   if (res.status < 200 || res.status >= 300) throw new DriveError(`تعذّر تنزيل «${b.name}» (${res.status})`);
+  opts.onProgress?.('جاري مطابقة بصمة النسخة المنزَّلة');
   const local = (await io.sha256OfFile(path)).toLowerCase();
   if (!b.sha256 || local !== b.sha256) {
     throw new DriveError(`بصمة «${b.name}» بعد التنزيل لا تطابق بصمتها على Drive · رُفضت الاستعادة`);

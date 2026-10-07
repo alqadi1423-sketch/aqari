@@ -36,6 +36,8 @@ import { rescheduleAllNotifications } from '../src/services/notifications';
 import { SCHEMA_VERSION } from '../src/db/schema';
 import { storageBreakdown, sweepCache, reclaimStorage } from '../src/services/storageOps';
 import { libSizeLabel } from '../src/domain/library';
+import { useLongTask } from '../src/ui/LongTask';
+import { isCancelled } from '../src/domain/progress';
 import { reportFailure, arabicMessage } from '../src/ui/failureDialog';
 import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
@@ -129,7 +131,9 @@ export default function Settings() {
   const [busy, setBusy] = useState(false);
   const [wipeConfirm, setWipeConfirm] = useState<string | null>(null);
   // شريط تقدم بالمراحل · «جاري نسخ المرفقات · ٢٢ من ١١٨» فلا يُظن التطبيق متجمداً
-  const [progress, setProgress] = useState<string | null>(null);
+  // نافذة التقدّم الموحّدة: النسبة والحجم والإلغاء، وتنبيه التوقّف مع إعادة المحاولة (src/ui/LongTask.tsx)
+  const task = useLongTask();
+  const setProgress = task.report;
   // مراجعة الأقساط من الدفتر · قراءة عند كل تغيير، ولا يُطبَّق شيء إلا بموافقة المستخدم
   const [reviewOpen, setReviewOpen] = useState(false);
   const review = useMemo(() => ({ plan: planLedgerRepair(db), unbooked: unbookedDiscounts(db), surpluses: contractSurpluses(db), kept: keptForReview(db), checks: reviewData(db).notes }),
@@ -224,13 +228,15 @@ export default function Settings() {
   const doBackup = async () => {
     setBusy(true);
     const before = fingerprintData(appBackupEnv(db));
+    const signal = task.begin({ onRetry: () => { doBackup(); } });
     try {
-      const m = await createAndShareBackup(db, setProgress);
+      const m = await createAndShareBackup(db, setProgress, signal);
       bump();
       // الفرق المحاسبي لا يمنع حفظ البيانات (checks.ts) · تُنشأ النسخة وتُوسم «فيها ملاحظات» وتُسمّى
       if (m.notes?.length) notesDialog('أُنشئت النسخة وفيها ملاحظات', m.notes);
       else toast(pwOn ? 'أُنشئت النسخة مشفّرة وتُحقّق منها بنجاح' : 'أُنشئت النسخة وتُحقّق منها بنجاح');
     } catch (e) {
+      if (isCancelled(e)) { endCancelled('أُلغي إنشاء النسخة · لم يُكتب منها شيء', () => { doBackup(); }); return; }
       await reportFailure({
         title: 'تعذّر إنشاء النسخة الاحتياطية', where: 'إنشاء نسخة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
         // سبب الرفض كما كتبه التحقق: اسم الملف أو الفحص الذي فشل · والجملة العامة لما لم يُسمَّ
@@ -284,8 +290,10 @@ export default function Settings() {
 
   // المسار الواحد للاستعادة من أي مصدر: التجهيز (فك وبصمات وفحص دلالي) ثم الملخص ثم التنفيذ ·
   // ومع الدخول بحساب: المزامنة تتوقف قبل كل شيء، ولا يُكتب إلى السحابة إلا بالاعتماد صراحةً
-  const runRestore = async (prepare: (opts: PrepareOptions) => Promise<Awaited<ReturnType<typeof pickAndPrepareRestore>>>) => {
+  const runRestore = async (prepare: (opts: PrepareOptions) => Promise<Awaited<ReturnType<typeof pickAndPrepareRestore>>>): Promise<void> => {
     setBusy(true);
+    // التجهيز يُقطع في أي خطوة ولا يمسّ البيانات الحية · والتبديل بعده لا يُقطع
+    const signal = task.begin({ onRetry: () => { runRestore(prepare); } });
     const before = fingerprintData(appBackupEnv(db));
     const signedIn = !!cloudState().user;
     let prepared: Awaited<ReturnType<typeof pickAndPrepareRestore>> = null;
@@ -296,7 +304,7 @@ export default function Settings() {
       // لقطة السحابة تُقرأ مرة بعد فحص النسخة · قيودها المرحّلة تُضمّ، ومنها خطة الاستبدال
       let snap: CloudSnapshot | null = null;
       const loadCloud = async () => (snap ??= await readCloudSnapshot(setProgress));
-      prepared = await prepare({ ...(signedIn ? { cloud: async () => (await loadCloud()).docs } : {}), password: restorePassword() });
+      prepared = await prepare({ ...(signedIn ? { cloud: async () => (await loadCloud()).docs } : {}), password: restorePassword(), signal });
       setProgress(null);
       if (!prepared) { setBusy(false); if (resumeOnExit) resumeSync(); return; }
       const { env, plan, archiveTmp } = prepared;
@@ -342,6 +350,7 @@ export default function Settings() {
             onPress: async () => {
               setBusy(true);
               let restored = false;
+              task.begin({ cancellable: false });
               try {
                 await commitPreparedRestore(env, plan, archiveTmp, setProgress);
                 restored = true;
@@ -383,6 +392,12 @@ export default function Settings() {
       if (prepared) { try { abortPreparedRestore(prepared.env, prepared.plan, prepared.archiveTmp); } catch { /* يكنسه الإقلاع */ } }
       // ألغى المستخدم سؤال كلمة المرور · لا عطل يُبلَّغ
       if (e instanceof PasswordRequiredError) { if (resumeOnExit) resumeSync(); setProgress(null); setBusy(false); return; }
+      // ألغى المستخدم التجهيز أو طلب إعادة المحاولة · بياناته كما هي
+      if (isCancelled(e)) {
+        if (resumeOnExit) resumeSync();
+        endCancelled('أُلغيت الاستعادة · بياناتك كما هي', () => { runRestore(prepare); });
+        return;
+      }
       await reportFailure({
         title: 'تعذّرت الاستعادة', where: 'تجهيز استعادة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'update',
         before, env: appBackupEnv(db), e,
@@ -505,12 +520,14 @@ export default function Settings() {
   });
   const doDriveBackup = async () => {
     setBusy(true);
+    const signal = task.begin({ onRetry: () => { doDriveBackup(); } });
     try {
-      const b = await backupToDrive(db, setProgress);
+      const b = await backupToDrive(db, setProgress, signal);
       bump();
       if (b.notes) notesDialog('رُفعت النسخة إلى Google Drive وفيها ملاحظات', reviewData(db).notes);
       else toast('رُفعت النسخة' + (pwOn ? ' مشفّرة' : '') + ' إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
     } catch (e) {
+      if (isCancelled(e)) { endCancelled('أُلغي النسخ على Google Drive', () => { doDriveBackup(); }); return; }
       await reportFailure({
         title: 'تعذّر النسخ على Google Drive', where: 'نسخ على Drive', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
         lead: arabicMessage(e) || 'لم يكتمل رفع النسخة.', e,
@@ -529,6 +546,14 @@ export default function Settings() {
       await reportFailure({ title: 'تعذّرت قراءة النسخ على Google Drive', where: 'قائمة نسخ Drive', db, e });
     }
     setBusy(false);
+  };
+
+  /** نهاية عملية أُلغيت · وإن كان الإلغاء لإعادة المحاولة بدأت من جديد */
+  const endCancelled = (msg: string, again: () => void) => {
+    setProgress(null);
+    setBusy(false);
+    if (task.takeRetry()) again();
+    else toast(msg);
   };
 
   const doWipe = async () => {
@@ -1236,24 +1261,7 @@ export default function Settings() {
           <Field label="اكتب «مسح» للتأكيد" value={wipeConfirm} onChange={setWipeConfirm} />
         </Sheet>
       )}
-      {progress !== null && (() => {
-        // «... · N من M» → شريط تقدم محدد النسبة · وبلا أعداد يظهر الشريط بهيئة غير محددة
-        const m = progress.match(/·\s*(\d+)\s*من\s*(\d+)\s*$/);
-        const pct = m ? Math.min(100, Math.round((Number(m[1]) / Math.max(1, Number(m[2]))) * 100)) : null;
-        const fillW: `${number}%` = pct !== null ? `${pct}%` : '100%';
-        return (
-          <Modal visible transparent animationType="fade">
-            <View style={{ flex: 1, backgroundColor: 'rgba(20,23,29,0.55)', alignItems: 'center', justifyContent: 'center', padding: 32 }}>
-              <View style={{ backgroundColor: '#fff', borderRadius: 14, padding: 22, minWidth: 260, alignItems: 'center', gap: 12 }}>
-                <View style={{ alignSelf: 'stretch', height: 8, borderRadius: 4, backgroundColor: C.paperLine, overflow: 'hidden' }}>
-                  <View style={{ height: 8, borderRadius: 4, backgroundColor: C.emerald, width: fillW, opacity: pct !== null ? 1 : 0.3 }} />
-                </View>
-                <T size={TYPE.number} med center>{progress}</T>
-              </View>
-            </View>
-          </Modal>
-        );
-      })()}
+      {task.element}
     </Screen>
   );
 }

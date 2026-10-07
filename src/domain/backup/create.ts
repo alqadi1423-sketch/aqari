@@ -1,3 +1,4 @@
+import { throwIfCancelled, type CancelSignal, type ProgressFn } from '../progress';
 import { joinPath } from '../../files/fsAdapter';
 import { zipYielding, unzipYielding, yieldUi, archiveFailureText, type ZipEntry } from './zipStream';
 import { liveBlobs } from '../../files/store';
@@ -185,12 +186,14 @@ export interface CreateBackupOptions {
    * بصمة القاعدة، وإعادة فتح الأرشيف، وintegrity_check، ومطابقة الأعداد، وبصمة كل مرفق محفوظ.
    */
   preUpgrade?: boolean;
+  /** الإلغاء بيد المستخدم · يُفحص بين الخطوات ولا يبقى بعده أرشيف جزئي (progress.ts) */
+  signal?: CancelSignal;
 }
 
 export async function createBackup(
   env: BackupEnv,
   outPath: string,
-  onProgress?: (msg: string) => void,
+  onProgress?: ProgressFn,
   opts: CreateBackupOptions = {}
 ): Promise<BackupManifest> {
   if (!env.hasher) throw new HashingUnavailableError();
@@ -232,6 +235,7 @@ export async function createBackup(
   await yieldUi();
 
   // ٢) لقطة القاعدة
+  throwIfCancelled(opts.signal);
   onProgress?.('جاري أخذ لقطة قاعدة البيانات');
   env.fs.mkdirp(env.tmpDir);
   if (!env.fs.exists(env.tmpDir)) throw new Error('تعذّر إنشاء المجلد المؤقت للنسخة');
@@ -272,10 +276,15 @@ export async function createBackup(
     const files: BackupManifest['files'] = [];
     const missing: string[] = [];
     const blobs = liveBlobs(env.db);
+    // الحجم المنجز من الكلي · بأحجام المرفقات المسجَّلة
+    const blobBytes = blobs.reduce((n, x) => n + Number(x.size_bytes ?? 0), 0);
+    let doneBytes = 0;
     let bi = 0;
     for (const b of blobs) {
       bi += 1;
-      onProgress?.(`جاري نسخ المرفقات · ${bi} من ${blobs.length}`);
+      throwIfCancelled(opts.signal);
+      onProgress?.(`جاري نسخ المرفقات · ${bi} من ${blobs.length}`, blobBytes > 0 ? { done: doneBytes, total: blobBytes, unit: 'bytes' } : undefined);
+      doneBytes += Number(b.size_bytes ?? 0);
       const p = joinPath(env.attachmentsDir, `${b.sha256}.${b.ext}`);
       const label = () => attachmentLabel(env.db, b.sha256, b.ext);
       if (!env.fs.exists(p)) {
@@ -315,15 +324,20 @@ export async function createBackup(
     zipEntries.push({ name: 'manifest.json', bytes: enc.encode(JSON.stringify(manifest, null, 1)), level: 6 });
 
     // ٤) الضغط المتنفس والكتابة إلى ملف مؤقت
-    const zipped = await zipYielding(zipEntries, (done, total) =>
-      onProgress?.(`جاري ضغط الأرشيف · ${done} من ${total}`));
+    throwIfCancelled(opts.signal);
+    const zipped = await zipYielding(zipEntries, (done, total) => {
+      throwIfCancelled(opts.signal);
+      onProgress?.(`جاري ضغط الأرشيف · ${done} من ${total}`);
+    });
     env.fs.write(tmpArchive, zipped);
+    throwIfCancelled(opts.signal);
 
     // ٥) التحقق الإلزامي بإعادة فتح الأرشيف الناتج من القرص
     onProgress?.('جاري التحقق من الأرشيف الناتج');
     await verifyArchiveAt(env, tmpArchive, manifest, onProgress);
 
-    // ٦) النقل الذرّي إلى الوجهة
+    // ٦) النقل الذرّي إلى الوجهة · آخر نقطة يُقبل عندها الإلغاء
+    throwIfCancelled(opts.signal);
     if (env.fs.exists(outPath)) env.fs.remove(outPath);
     env.fs.rename(tmpArchive, outPath);
   } catch (e) {

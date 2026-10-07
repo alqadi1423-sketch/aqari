@@ -7,6 +7,7 @@
  * والنسخة بالتحقق الكامل نفسه الذي في createBackup: إعادة فتح الأرشيف، وبصمة القاعدة وكل
  * مرفق، وintegrity_check، ومطابقة الأعداد · ويُحتفظ بآخر ثلاث ويُحذف ما قبلها.
  */
+import { isCancelled, type CancelSignal, type ProgressFn } from '../progress';
 import { joinPath } from '../../files/fsAdapter';
 import { currentSchemaVersion, migrate } from '../../db/migrations';
 import { SCHEMA_VERSION } from '../../db/schema';
@@ -71,8 +72,9 @@ export function preUpgradeBackups(env: BackupEnv): string[] {
  */
 export async function makePreUpgradeBackup(
   env: BackupEnv,
-  onProgress?: (msg: string) => void,
-  now: Date = new Date()
+  onProgress?: ProgressFn,
+  now: Date = new Date(),
+  signal?: CancelSignal,
 ): Promise<{ path: string; manifest: BackupManifest }> {
   const from = currentSchemaVersion(env.db);
   const dir = safetyBackupsDir(env);
@@ -82,8 +84,9 @@ export async function makePreUpgradeBackup(
   try {
     await ensureFreeSpace(env);
     env.fs.mkdirp(dir);
-    manifest = await createBackup(env, outPath, onProgress, { preUpgrade: true });
+    manifest = await createBackup(env, outPath, onProgress, { preUpgrade: true, signal });
   } catch (e) {
+    if (isCancelled(e)) throw e;
     const m = e instanceof Error ? e.message : '';
     throw new UpgradeBackupError(ARABIC.test(m) ? m : 'تعذّر إنشاء النسخة أو التحقق منها');
   }

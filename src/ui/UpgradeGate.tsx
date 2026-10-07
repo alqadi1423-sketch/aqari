@@ -9,12 +9,13 @@
  * تقرأ مقياس الخط)، بل Text وPressable بخطوط السمة مباشرة. وجده الفحص على المحاكي: انهار
  * التطبيق عند أول فتح لقاعدة قديمة بـ«AppStateProvider مفقود».
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, ActivityIndicator, Share, type TextStyle } from 'react-native';
 import { C, FONT, FONT_BOLD } from './theme';
 import { rawAppDb, clearUpgrade } from '../db/expoAdapter';
 import { upgradeState, makePreUpgradeBackup } from '../domain/backup/upgrade';
 import { appBackupEnv } from '../services/backupService';
+import { cancelSource, isCancelled, progressView, progressLabel, progressLine, StallWatch, type ProgressInfo } from '../domain/progress';
 
 type Phase = 'ready' | 'backup' | 'failed';
 
@@ -41,20 +42,40 @@ function Btn({ title, primary, onPress }: { title: string; primary?: boolean; on
 export function UpgradeGate({ children }: { children: React.ReactNode }) {
   const [phase, setPhase] = useState<Phase>(initialPhase);
   const [msg, setMsg] = useState('جاري التحضير');
+  const [info, setInfo] = useState<ProgressInfo | null>(null);
+  const [stalled, setStalled] = useState(false);
   const [reason, setReason] = useState('');
+  // النسبة والحجم والإلغاء، ودقيقة بلا تقدّم تظهر مع إعادة المحاولة (توجيه المالك ٢٠٢٦-١٠-٠٧)
+  const watch = useRef(new StallWatch());
+  const cancelRef = useRef<{ cancel: () => void; retry: boolean } | null>(null);
 
   const run = useCallback(async () => {
-    setPhase('backup');
+    const src = cancelSource();
+    cancelRef.current = { cancel: src.cancel, retry: false };
+    watch.current.reset();
+    setPhase('backup'); setStalled(false); setInfo(null);
     setMsg('جاري التحضير');
     try {
-      await makePreUpgradeBackup(appBackupEnv(rawAppDb()), setMsg);
+      await makePreUpgradeBackup(appBackupEnv(rawAppDb()), (m, i) => {
+        if (watch.current.tick(m, i)) setStalled(false);
+        setMsg(m); setInfo(i ?? null);
+      }, new Date(), src.signal);
       clearUpgrade();
       setPhase('ready');
     } catch (e) {
-      setReason(e instanceof Error ? e.message : 'لم تُرقَّ بياناتك لأن حفظ نسخة منها قبل الترقية لم يكتمل.');
+      if (isCancelled(e) && cancelRef.current?.retry) { run(); return; }
+      setReason(isCancelled(e)
+        ? 'أُلغي حفظ النسخة · بياناتك كما هي، والترقية تنتظر نسخة كاملة منها.'
+        : e instanceof Error ? e.message : 'لم تُرقَّ بياناتك لأن حفظ نسخة منها قبل الترقية لم يكتمل.');
       setPhase('failed');
     }
   }, []);
+
+  useEffect(() => {
+    if (phase !== 'backup') return;
+    const t = setInterval(() => { if (watch.current.stalled()) setStalled(true); }, 2000);
+    return () => clearInterval(t);
+  }, [phase]);
 
   useEffect(() => {
     if (phase === 'backup') run();
@@ -70,7 +91,23 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
         <>
           <ActivityIndicator color={C.emerald} size="large" />
           <Text style={[txt(15, C.ink, true), { marginTop: 18 }]}>نسخة كاملة من بياناتك قبل ترقيتها</Text>
-          <Text style={[txt(12.5, C.muted), { marginTop: 8 }]}>{msg}</Text>
+          <Text style={[txt(12.5, C.muted), { marginTop: 8 }]}>{progressLabel(msg)}</Text>
+          {(() => {
+            const v = progressView(msg, info);
+            return v.pct !== null ? (
+              <>
+                <View style={{ alignSelf: 'stretch', height: 8, borderRadius: 4, backgroundColor: C.paperLine, overflow: 'hidden', marginTop: 12 }}>
+                  <View style={{ height: 8, borderRadius: 4, backgroundColor: C.emerald, width: `${v.pct}%` }} />
+                </View>
+                <Text style={[txt(12.5, C.muted), { marginTop: 6 }]}>{progressLine(v)}</Text>
+              </>
+            ) : null;
+          })()}
+          {stalled ? <Text style={[txt(12.5, C.rose), { marginTop: 10 }]}>لم تتقدم النسخة منذ دقيقة</Text> : null}
+          <View style={{ marginTop: 14, gap: 10, alignSelf: 'stretch' }}>
+            {stalled ? <Btn primary title="إعادة المحاولة" onPress={() => { if (cancelRef.current) { cancelRef.current.retry = true; cancelRef.current.cancel(); } }} /> : null}
+            <Btn title="إلغاء" onPress={() => cancelRef.current?.cancel()} />
+          </View>
           <Text style={[txt(12, C.muted), { marginTop: 14 }]}>لا تُغلق التطبيق · الترقية تبدأ بعد أن تُحفظ النسخة ويُتحقَّق منها</Text>
         </>
       ) : (
