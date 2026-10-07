@@ -76,7 +76,9 @@ test('صيغ الجمع كاملة: العربية بستٍّ والإنجليز
 test('اللغة: الاختيار يغلب لغة الجهاز · ولغة جهاز غير مدعومة تعطي العربية', () => {
   expect(resolveLang('en', 'ar-SA')).toBe('en');
   expect(resolveLang('ar', 'en-US')).toBe('ar');
-  expect(resolveLang('device', 'en_GB')).toBe('en');
+  // لغة الجهاز لا تختار إلا لغةً اكتملت ترجمتها · والإنجليزية لم تكتمل بعد
+  const enDone = LANGUAGES.find((l) => l.code === 'en')!.complete;
+  expect(resolveLang('device', 'en_GB')).toBe(enDone ? 'en' : 'ar');
   expect(resolveLang('device', 'ar-SA')).toBe('ar');
   expect(resolveLang('device', 'fr-FR')).toBe('ar');
   expect(resolveLang(null, '')).toBe('ar');

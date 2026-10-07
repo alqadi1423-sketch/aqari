@@ -14,9 +14,13 @@ import en from './locales/en.json';
 export type Lang = 'ar' | 'en';
 export type LangPref = 'device' | Lang;
 
-export const LANGUAGES: ReadonlyArray<{ code: Lang; rtl: boolean; resources: Record<string, unknown> }> = [
-  { code: 'ar', rtl: true, resources: ar },
-  { code: 'en', rtl: false, resources: en },
+/**
+ * complete: ترجمة الواجهة كاملة · «لغة الجهاز» لا تختار إلا لغةً كاملة، فلا تنقلب الواجهة يساراً
+ * ونصوصها عربية بعدُ على جهازٍ لغته الإنجليزية (حتى تكتمل مرحلة نقل النصوص) · والاختيار الصريح متاح دائماً
+ */
+export const LANGUAGES: ReadonlyArray<{ code: Lang; rtl: boolean; complete: boolean; resources: Record<string, unknown> }> = [
+  { code: 'ar', rtl: true, complete: true, resources: ar },
+  { code: 'en', rtl: false, complete: false, resources: en },
 ];
 export const DEFAULT_LANG: Lang = 'ar';
 
@@ -26,7 +30,7 @@ export const isRtlLang = (l: Lang): boolean => LANGUAGES.find((x) => x.code === 
 export function resolveLang(pref: LangPref | null | undefined, deviceLocale: string | null | undefined): Lang {
   if (pref && pref !== 'device' && LANGUAGES.some((x) => x.code === pref)) return pref;
   const base = String(deviceLocale ?? '').toLowerCase().split(/[-_]/)[0];
-  return (LANGUAGES.find((x) => x.code === base)?.code) ?? DEFAULT_LANG;
+  return (LANGUAGES.find((x) => x.code === base && x.complete)?.code) ?? DEFAULT_LANG;
 }
 
 export const parseLangPref = (v: string | null | undefined): LangPref =>
