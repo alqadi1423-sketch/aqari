@@ -17,6 +17,7 @@ import { contractEndFromDuration, today, dfmt } from '../domain/dates';
 import { scanContractFile } from '../services/contractScan';
 import { anchorDiagnostics } from '../domain/pdf/parseEjar';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../domain/contracts/vocab';
+import { parseEjarExtras, unitByNumber, type EjarExtras } from '../domain/pdf/ejarExtras';
 import type { ContractDraftInput } from '../domain/contracts/service';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
 import type { ContractField } from '../domain/contracts/rules';
@@ -86,6 +87,8 @@ export interface ContractFormState {
   /** جدول الدفعات من ملف إيجار · null = قُرئ الملف وتعذّر جدوله، undefined = لم يُقرأ ملف */
   schedule?: ScheduleRow[] | null;
   fromEjarFile?: boolean;
+  /** بنود العقد التي لها خانة في التطبيق · تُقارن بالقائم في المراجعة (قرارات تفصيل العقد) */
+  extras?: EjarExtras | null;
 }
 
 export const emptyContractForm = (): ContractFormState => ({
@@ -196,6 +199,14 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
       // تواريخ الأقساط من جدول الملف دائماً (قرار المالك ٢٠٢٦-١٠-٠٥) · وإن تعذّر تُحسب وينبَّه عليها
       set('schedule', result.schedule ?? null);
       set('fromEjarFile', true);
+      // البنود التي لها خانة: التأثيث في العقد مباشرة، والوحدة برقمها داخل العقار المختار، والباقي يُقارن في المراجعة
+      const extras = parseEjarExtras(text);
+      set('extras', extras);
+      if (extras.unit.furnished) set('furnished', extras.unit.furnished);
+      if (propertyId && extras.unit.unitNo) {
+        const uidByNo = unitByNumber(db, propertyId, extras.unit.unitNo);
+        if (uidByNo) set('unitId', uidByNo);
+      }
       const n = result.found.length;
       setScanStatus(n
         ? `قُرئ ${n} حقلاً` + (result.months ? ` · المدة ${result.months} شهراً` : '')
@@ -275,10 +286,12 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
         options={properties.map((p) => ({ value: p.id, label: p.name }))}
         onPick={(v) => {
           setPropertyId(v);
+          // رقم الوحدة المقروء من العقد يختارها داخل العقار · وإلا أولها
+          const byNo = state.extras?.unit.unitNo ? unitByNumber(db, v, state.extras.unit.unitNo) : null;
           const first = db.get<{ id: string }>(
             `SELECT id FROM units WHERE property_id = ? AND deleted_at IS NULL AND archived = 0 ORDER BY COALESCE(unit_no_key, unit_no), unit_no LIMIT 1`, [v]
           );
-          form.set('unitId', first?.id ?? '');
+          form.set('unitId', byNo ?? first?.id ?? '');
         }}
         placeholder="اختر العقار أولاً"
         emptyText="أضف عقاراً أولاً من شاشة العقارات"

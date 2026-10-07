@@ -96,6 +96,10 @@ export default function Contracts() {
   const [editingDraftId, setEditingDraftId] = useState<string | null>(null);
   const form = useContractForm();
   const [reviewOpen, setReviewOpen] = useState(false);
+  // بنود عقد إيجار المقروءة مقارنةً بالقائم · وما وافق المستخدم على كتابته
+  const leaseDiffs = useLeaseDiffs(form.state.extras, form.state.unitId, form.state.tenant);
+  const [approvedExtras, setApprovedExtras] = useState<Set<ExtraKey>>(new Set());
+  const { t } = useLang();
 
   const [detailId, setDetailId] = useState<string | null>(null);
   const [renewId, setRenewId] = useState<string | null>(null);
@@ -237,6 +241,10 @@ export default function Contracts() {
   const doConfirmCreateIn = () => {
     try {
       const id = confirmContract(db, formToInput(form.state), editingDraftId ?? undefined);
+      // ما وافق عليه المستخدم من بنود العقد المقروءة يُكتب في العقار والوحدة والمستأجر والعدادات
+      if (leaseDiffs.length && approvedExtras.size) {
+        applyExtras(db, leaseDiffs, approvedExtras, { unitId: form.state.unitId, tenantName: form.state.tenant, start: form.state.start, handoverRef: t('lease.handoverReading', { lng: 'ar' }) });
+      }
       if (form.state.pendingFile) {
         attachPicked(db, form.state.pendingFile, 'contract', id, 'lease').catch((e) => reportFailure({ title: 'تعذّر حفظ ملف العقد', e }));
       }
@@ -471,6 +479,7 @@ export default function Contracts() {
         onBack={() => { setReviewOpen(false); setFormOpen(true); }}
         onConfirm={doConfirmCreate}
         cc={cc} onCc={setCc}
+        leaseDiffs={leaseDiffs} approved={approvedExtras} onApproved={setApprovedExtras}
         db={db}
       />
 
@@ -518,10 +527,14 @@ import { reportFailure } from '../../src/ui/failureDialog';
 
 import { CostCenterField } from '../../src/ui/CostCenters';
 import { ScheduleReview } from '../../src/ui/ScheduleReview';
+import { LeaseCompare, useLeaseDiffs } from '../../src/ui/LeaseCompare';
+import { applyExtras, type ExtraDiff, type ExtraKey } from '../../src/domain/pdf/ejarExtras';
+import { useLang } from '../../src/i18n';
 import { GENERAL_COST_CENTER, withCostCenter } from '../../src/domain/accounting/dimensions';
 function ReviewSheet({
-  visible, form, onBack, onConfirm, db, cc, onCc,
-}: { visible: boolean; form: ContractFormState; onBack: () => void; onConfirm: () => void; db: DB; cc: string; onCc: (v: string) => void }) {
+  visible, form, onBack, onConfirm, db, cc, onCc, leaseDiffs, approved, onApproved,
+}: { visible: boolean; form: ContractFormState; onBack: () => void; onConfirm: () => void; db: DB; cc: string; onCc: (v: string) => void;
+  leaseDiffs: ExtraDiff[]; approved: Set<ExtraKey>; onApproved: (s: Set<ExtraKey>) => void }) {
   const u = form.unitId
     ? db.get<{ unit_no: string; property_id: string }>(`SELECT unit_no, property_id FROM units WHERE id = ?`, [form.unitId])
     : undefined;
@@ -562,7 +575,8 @@ function ReviewSheet({
         </Row>
       ))}
       <View style={{ marginTop: 12 }}>
-        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} />
+        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} financial={form.extras?.financial} />
+        <LeaseCompare extras={form.extras} diffs={leaseDiffs} approved={approved} onChange={onApproved} />
         <CostCenterField value={cc} onChange={onCc} />
         <Note>بعد الإنشاء لا يمكن تعديل العقد أو حذفه · يُلغى فقط.</Note>
       </View>

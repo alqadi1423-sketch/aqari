@@ -8,13 +8,16 @@ import { Money, Note, Row, T } from './components';
 import { C, TYPE } from './theme';
 import { useLang } from '../i18n';
 import { dfmt } from '../domain/dates';
-import { toHalalas } from '../domain/money';
+import { toHalalas, fmt } from '../domain/money';
+import { scheduleChecks, type EjarExtras } from '../domain/pdf/ejarExtras';
 import { scheduleInstallments } from '../domain/contracts/service';
 import { generateInstallments } from '../domain/contracts/installments';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
 
-export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFile }: {
+export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFile, financial }: {
   start: string; end: string; value: string; cycle: string; schedule?: ScheduleRow[] | null; fromEjarFile?: boolean;
+  /** البيانات المالية المقروءة · لفحص عدد الصفوف والدفعة الدورية والأخيرة */
+  financial?: EjarExtras['financial'];
 }) {
   const { t } = useLang();
   const rows = useMemo(() => {
@@ -33,6 +36,9 @@ export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFil
       {rows.read
         ? <Note tone="ok">{t('lease.scheduleRead')}</Note>
         : fromEjarFile ? <Note tone="danger">{t('lease.scheduleComputedFromFile')}</Note> : <Note>{t('lease.scheduleComputed')}</Note>}
+      {rows.read && financial ? scheduleChecks(schedule, financial).map((c) => (
+        <Note key={c.code} tone="danger">{t('lease.check.' + c.code, { expected: c.code === 'count' ? c.expected : fmt(c.expected), actual: c.code === 'count' ? c.actual : fmt(c.actual) })}</Note>
+      )) : null}
       <Row style={{ paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: C.line }}>
         <T size={TYPE.caption} color={C.muted} style={{ width: 28 }}>#</T>
         <T size={TYPE.caption} color={C.muted} style={{ flex: 1 }}>{t('lease.due')}</T>

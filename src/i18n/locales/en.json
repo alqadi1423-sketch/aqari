@@ -43,7 +43,34 @@
     "deadline": "Last day",
     "amount": "Amount",
     "cmpRow": "Due {{from}} → {{to}} · last day {{gfrom}} → {{gto}}",
-    "applyBody": "Due dates and last payment days in {{n}} contract(s) will be corrected to their files' schedules; amounts and payments stay as they are. Apply?"
+    "applyBody": "Due dates and last payment days in {{n}} contract(s) will be corrected to their files' schedules; amounts and payments stay as they are. Apply?",
+    "compareTitle": "What was read vs. what exists",
+    "compareNote": "Tap an item to choose what gets written · empty values are filled by default; different ones only with your approval.",
+    "current": "Current",
+    "read": "Read",
+    "empty": "empty",
+    "noSlot": "No field in the app · shown only",
+    "reading": "Move-in reading {{n}}",
+    "handoverReading": "Move-in reading",
+    "lessorDiffers": "The lessor in the contract ({{name}}) differs from the company name · lessor data never overwrites company data.",
+    "lessorCrDiffers": "The lessor's CR in the contract differs from the company's · lessor data never overwrites company data.",
+    "check": {
+      "count": "The schedule has {{actual}} rows; the contract states {{expected}} rent payments",
+      "regular": "A schedule payment ({{actual}}) differs from the regular rent payment ({{expected}})",
+      "last": "The last schedule payment ({{actual}}) differs from the stated last rent payment ({{expected}})"
+    },
+    "field": {
+      "property_address": "Property national address",
+      "property_usage": "Property usage",
+      "property_floors": "Number of floors",
+      "property_deed": "Title deed number",
+      "unit_type": "Unit type",
+      "unit_floor": "Unit floor",
+      "tenant_email": "Tenant email",
+      "meter_electricity": "Electricity meter",
+      "meter_water": "Water meter",
+      "meter_gas": "Gas meter"
+    }
   },
   "dataLabels": {
     "table": {
