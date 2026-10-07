@@ -71,7 +71,8 @@ export function AttachStrip({ entityType, entityId, kind, linked, title, hideAdd
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <Row gap={8}>
             {atts.map((a, i) => {
-              const thumb = isImageFile(a.ext, a.mime) ? existingThumbUri(a.sha256) : null;
+              // المصغّرة على الجهاز، وإلا الخفيفة المزامَنة مع صفّه (ملفٌ في الخادم لم يُنزَّل)
+              const thumb = isImageFile(a.ext, a.mime) ? (existingThumbUri(a.sha256) ?? a.thumb ?? null) : null;
               return (
                 <Pressable key={a.id} onPress={() => setViewer(i)}
                   style={{ width: 86, borderWidth: 1, borderColor: C.line, borderRadius: 9, overflow: 'hidden', backgroundColor: '#fff' }}>

@@ -22,3 +22,20 @@ export function cloudConfig(): CloudConfig | null {
 
 /** نطاق Drive الوحيد: مجلد التطبيق المخفي · لا وصول لأي ملف آخر في Drive المستخدم */
 export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+
+/**
+ * تخزين الملفات في Firebase Storage (النموذج المختلط · قرار المالك ٢٠٢٦-١٠-٠٧) · مطفأ حتى تُنشأ الحاوية
+ * في me-central2 بعد تفعيل الفوترة: يعمل حين يُعطى اسمها ويُفعَّل صراحةً عند البناء، وبدونهما تبقى الملفات
+ * على الجهاز كما كانت وتحمل النسخة الاحتياطية ملفاتها.
+ */
+export interface FilesCloudConfig {
+  bucket: string;
+  base: string;
+}
+
+export function filesCloudConfig(): FilesCloudConfig | null {
+  const bucket = process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ?? '';
+  const on = process.env.EXPO_PUBLIC_FILES_CLOUD === '1';
+  if (!on || !bucket) return null;
+  return { bucket, base: 'https://firebasestorage.googleapis.com' };
+}

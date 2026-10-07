@@ -87,6 +87,8 @@ export interface LibraryFile {
   createdAt: string;
   missing: boolean;
   isImage: boolean;
+  /** المصغّرة الخفيفة المزامَنة مع صفّه · يظهر بها الملف الذي في الخادم ولم يُنزَّل */
+  thumb: string | null;
 }
 
 /**
@@ -101,10 +103,10 @@ export function libraryFiles(env: FilesEnv): LibraryFile[] {
     id: string; sha256: string; ext: string | null; size_bytes: number | null;
     original_name: string; display_name: string; mime: string; note: string;
     kind: string; cat_override: string | null;
-    entity_type: string; entity_id: string; created_at: string;
+    entity_type: string; entity_id: string; created_at: string; thumb: string | null;
   }>(
     `SELECT a.id, a.sha256, b.ext, b.size_bytes, a.original_name, a.display_name, a.mime, a.note,
-            a.kind, a.cat_override, a.entity_type, a.entity_id, a.created_at
+            a.kind, a.cat_override, a.entity_type, a.entity_id, a.created_at, a.thumb
      FROM attachments a LEFT JOIN blobs b ON b.sha256 = a.sha256
      WHERE a.deleted_at IS NULL
      ORDER BY a.created_at DESC`
@@ -253,6 +255,7 @@ export function libraryFiles(env: FilesEnv): LibraryFile[] {
       createdAt: r.created_at,
       missing: onDisk ? !onDisk.has(`${r.sha256}.${ext}`) : !env.fs.exists(blobPath(env, r.sha256, ext)),
       isImage,
+      thumb: r.thumb ?? null,
     };
   });
 }

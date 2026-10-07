@@ -25,6 +25,7 @@ import { putAttachment, softDeleteAttachment } from '../src/files/store';
 import { dfmt } from '../src/domain/dates';
 import { FileViewer, type ViewerFile } from '../src/ui/FileViewer';
 import { thumbUri, existingThumbUri } from '../src/services/thumbs';
+import { filesCloudOn } from '../src/services/cloud';
 import { pickFromGallery, captureWithCamera } from '../src/ui/attach';
 import { logAudit } from '../src/domain/audit';
 import { usePager, Pager } from '../src/ui/Pager';
@@ -65,8 +66,8 @@ const LIB_JOINS = `FROM attachments a
   LEFT JOIN contracts c3 ON c3.id = cp.contract_id
   LEFT JOIN units u ON u.id = ${UNIT_EXPR}`;
 
-function ThumbImage({ sha256, ext, mime, cat }: { sha256: string; ext: string; mime: string; cat: string }) {
-  const [uri, setUri] = React.useState<string | null>(existingThumbUri(sha256));
+function ThumbImage({ sha256, ext, mime, cat, light }: { sha256: string; ext: string; mime: string; cat: string; light?: string | null }) {
+  const [uri, setUri] = React.useState<string | null>(existingThumbUri(sha256) ?? light ?? null);
   React.useEffect(() => {
     let on = true;
     if (!uri) thumbUri(sha256, ext, mime).then((u) => { if (on) setUri(u); }).catch(() => {});
@@ -79,10 +80,13 @@ function ThumbImage({ sha256, ext, mime, cat }: { sha256: string; ext: string; m
 }
 
 const FileCard = React.memo(function FileCard({
-  id, name, sizeBytes, createdAt, sha256, ext, mime, cat, missing, showImage, selected, onPress, onLongPress,
+  id, name, sizeBytes, createdAt, sha256, ext, mime, cat, missing, remote, thumb, showImage, selected, onPress, onLongPress,
 }: {
   id: string; name: string; sizeBytes: number; createdAt: string; sha256: string; ext: string;
   mime: string; cat: string; missing: boolean; showImage: boolean; selected: boolean;
+  /** في الخادم ولم يُنزَّل (النموذج المختلط) · يُنزَّل عند فتحه */
+  remote: boolean;
+  thumb: string | null;
   onPress: (id: string) => void; onLongPress: (id: string) => void;
 }) {
   return (
@@ -97,8 +101,11 @@ const FileCard = React.memo(function FileCard({
       <View style={{ height: 84, backgroundColor: C.paper, alignItems: 'center', justifyContent: 'center' }}>
         {missing ? (
           <T size={11} color={C.rose} center>مفقود من{'\n'}التخزين</T>
+        ) : remote ? (
+          thumb ? <Image source={{ uri: thumb }} style={{ width: '100%', height: 84 }} resizeMode="cover" />
+            : <Icon name={libCat(cat).icon as IconName} size={26} color={C.muted} />
         ) : showImage ? (
-          <ThumbImage sha256={sha256} ext={ext} mime={mime} cat={cat} />
+          <ThumbImage sha256={sha256} ext={ext} mime={mime} cat={cat} light={thumb} />
         ) : (
           <Icon name={libCat(cat).icon as IconName} size={26} color={C.muted} />
         )}
@@ -324,7 +331,8 @@ export default function Library() {
     <FileCard
       id={item.id} name={item.name} sizeBytes={item.sizeBytes} createdAt={item.createdAt}
       sha256={item.sha256} ext={item.ext} mime={item.mime} cat={item.cat}
-      missing={item.missing} showImage={item.isImage && !item.missing}
+      missing={item.missing && !filesCloudOn()} remote={item.missing && filesCloudOn()} thumb={item.thumb}
+      showImage={item.isImage && !item.missing}
       selected={sel.has(item.id)} onPress={onPressCard} onLongPress={onLongPressCard}
     />
   ), [sel, onPressCard, onLongPressCard]);

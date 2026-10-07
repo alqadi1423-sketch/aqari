@@ -10,7 +10,7 @@ import type { RemoteDoc, RowData } from './types';
 import type { Access } from '../domain/access/access';
 import { level } from '../domain/access/access';
 import { SECTION_KEYS, type SectionKey } from '../domain/access/sections';
-import { CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
+import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
 import { OP_WRITES, SELF_OP, SELF_AUDIT_ENTITY } from '../domain/access/opWrites';
 
 export const ORG_WIDE = '*';
@@ -49,6 +49,13 @@ export function rowPids(db: DB, table: string, row: RowData | null, depth = 0): 
       if (src) return rowPids(db, t, src, depth + 1);
     }
     return [ORG_WIDE];
+  } else if (table === 'attachments') {
+    // عقار المرفق عقارُ جهته · والمكتبة وما لا جهة له صفٌّ عام
+    if (depth > 0) return [ORG_WIDE];
+    const src = ATTACHMENT_ENTITY_TABLE[String(r.entity_type ?? '')];
+    if (!src || !r.entity_id) return [ORG_WIDE];
+    const ent = db.get<RowData>(`SELECT * FROM "${src}" WHERE id = ?`, [r.entity_id as string]);
+    return ent ? rowPids(db, src, ent, depth + 1) : [ORG_WIDE];
   } else if (r.property_id) p = String(r.property_id);
   else if (r.unit_id) p = unitProp(db, r.unit_id);
   else if (r.contract_id) p = contractProp(db, r.contract_id);

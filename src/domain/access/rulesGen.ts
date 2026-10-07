@@ -16,10 +16,20 @@ function writesFns(): string {
   const entries = Object.entries(OP_WRITES) as Array<[SectionKey, NonNullable<(typeof OP_WRITES)[SectionKey]>]>;
   const create = entries.map(([s, w]) => `(op == '${s}' && t in ${q([...new Set([...w.create, ...w.own])])})`);
   const own = entries.filter(([, w]) => w.own.length).map(([s, w]) => `(op == '${s}' && t in ${q(w.own)})`);
-  const touch: string[] = [];
+  // الجدول والحقول نفسها في أكثر من قسم سطرٌ واحد بأقسامه · فالسلسلة قصيرة ولا تبلغ حدّ ألف تعبير في الطلب
+  // (وجده المحاكي حين دخلت حقول المرفقات اثني عشر قسماً)
+  const grouped = new Map<string, { t: string; cols: string[]; ops: string[] }>();
   for (const [s, w] of entries) {
-    for (const [t, cols] of Object.entries(w.touch ?? {})) touch.push(`(op == '${s}' && t == '${t}' && keys.hasOnly(${q(cols)}))`);
+    for (const [t, cols] of Object.entries(w.touch ?? {})) {
+      const key = t + '|' + cols.join(',');
+      const g = grouped.get(key) ?? { t, cols, ops: [] };
+      g.ops.push(s);
+      grouped.set(key, g);
+    }
   }
+  const touch = [...grouped.values()].map((g) => (g.ops.length === 1
+    ? `(op == '${g.ops[0]}' && t == '${g.t}' && keys.hasOnly(${q(g.cols)}))`
+    : `(t == '${g.t}' && op in ${q(g.ops)} && keys.hasOnly(${q(g.cols)}))`));
   const join = (xs: string[]) => xs.length ? xs.join('\n        || ') : 'false';
   return `
     // ما ينشئه كل قسم (create + own في OP_WRITES)

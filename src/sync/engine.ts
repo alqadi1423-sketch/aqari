@@ -16,7 +16,7 @@
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
 import type { DB, SqlValue } from '../db/adapter';
-import { SYNC_TABLES, SYNC_RANK, syncTable } from '../db/syncTables';
+import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
 import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
@@ -69,9 +69,32 @@ export function enableSync(db: DB, uid: string): { seeded: boolean } {
 /** كل صف من كل جدول مزامَن إلى الطابور · بلا مسّ لما فيه أصلاً */
 export function seedOutbox(db: DB): void {
   const at = nowIso();
-  for (const t of SYNC_TABLES) enqueueTable(db, t.name, at);
+  for (const t of syncedNow(db)) enqueueTable(db, t.name, at);
   // كل شيء يُرفع برموز الرؤية الحالية · فلا يلزمه رفعٌ آخر لها
   setSyncState(db, 'acl_version', String(ACL_VERSION));
+}
+
+/**
+ * صفوف المرفقات تُزامَن حين يعمل تخزين الملفات وحده (sync_ctl.capture_files · الهجرة ٢٧) ·
+ * فقبله لا تُلتقط ولا تُرفع، فلا يتغير شيء في السحابة حتى تُنشأ الحاوية وتُنشر قواعدها
+ */
+export function filesSyncOn(db: DB): boolean {
+  return Number(db.get<{ v: number }>(`SELECT v FROM sync_ctl WHERE k = 'capture_files'`)?.v ?? 0) === 1;
+}
+const FILE_TABLES = new Set(LATER_SYNC_TABLES.map((t) => t.name));
+/** جداول المزامنة الجارية الآن على هذا الجهاز */
+function syncedNow(db: DB) {
+  return filesSyncOn(db) ? SYNC_TABLES : SYNC_TABLES.filter((t) => !FILE_TABLES.has(t.name));
+}
+
+/** يشغّل مزامنة صفوف المرفقات أو يوقفها · وأول تشغيل يرفع ما فيها كله مرة · يعيد true إن تغيّر شيء */
+export function setFilesSync(db: DB, on: boolean): boolean {
+  if (filesSyncOn(db) === on) return false;
+  db.transaction(() => {
+    db.run(`INSERT INTO sync_ctl (k, v) VALUES ('capture_files', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [on ? 1 : 0]);
+    if (on && captureOn(db)) { const at = nowIso(); for (const t of LATER_SYNC_TABLES) enqueueTable(db, t.name, at); }
+  });
+  return true;
 }
 
 function enqueueTable(db: DB, table: string, at: string): void {
@@ -701,7 +724,7 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, e
     if (epoch !== undefined) { setSyncState(db, 'wipe_epoch', String(epoch)); setSyncState(db, 'epoch_pending', null); }
     // كل شيء يُرفع برموز الرؤية الحالية
     setSyncState(db, 'acl_version', String(ACL_VERSION));
-    for (const t of SYNC_TABLES) {
+    for (const t of syncedNow(db)) {
       db.run(
         `INSERT INTO sync_outbox (tbl, pk, op, changed_at)
          SELECT '${t.name}', ${t.pk(t.name)}, 'upsert', ? FROM "${t.name}" WHERE true`, [at]);

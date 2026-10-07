@@ -7,6 +7,7 @@
 import { throwIfCancelled, isCancelled, type CancelSignal, type ProgressFn } from '../progress';
 import { joinPath } from '../../files/fsAdapter';
 import { liveBlobs, isSafeBlobName } from '../../files/store';
+import { reconcileCache } from '../../files/cloudFiles';
 import { unzipYielding, yieldUi, archiveFailureText } from './zipStream';
 import { currentSchemaVersion, migrate, NewerSchemaError } from '../../db/migrations';
 import { SCHEMA_VERSION } from '../../db/schema';
@@ -386,6 +387,8 @@ export async function commitRestore(
       if (!env.fs.exists(dest)) { env.fs.rename(src, dest); moved.push({ src, dest }); }
     }
     try { env.fs.remove(preSwap); } catch { /* تجاهل */ }
+    // حال الملفات من القرص لا من النسخة: ما هنا «لم يُرفع» حتى يطابقه الخادم، وما في الخادم وحده يُنزَّل عند فتحه
+    if (env.hasher) reconcileCache({ db: fresh, fs: env.fs, hasher: env.hasher, attachmentsDir: env.attachmentsDir });
     // ٧) التنظيف
     abortRestore(env, plan.stagingDir);
     return { manifest: plan.manifest, safetyBackupPath, db: fresh, migrated: plan.migrated };

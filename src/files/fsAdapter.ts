@@ -32,3 +32,16 @@ export function joinPath(...parts: string[]): string {
   if (m) return m[1] + m[2].replace(/\/{2,}/g, '/');
   return joined.replace(/\/{2,}/g, '/');
 }
+
+const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+/** base64 بلا اعتماد على btoa · لبصمة md5 كما يعيدها Storage في md5Hash */
+export function toBase64(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i], b = bytes[i + 1], c = bytes[i + 2];
+    const n = (a << 16) | ((b ?? 0) << 8) | (c ?? 0);
+    out += B64[(n >> 18) & 63] + B64[(n >> 12) & 63] + (b === undefined ? '=' : B64[(n >> 6) & 63]) + (c === undefined ? '=' : B64[n & 63]);
+  }
+  return out;
+}
+

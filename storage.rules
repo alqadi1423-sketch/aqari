@@ -1,0 +1,52 @@
+rules_version = '2';
+
+// قواعد ملفات عقاري في Firebase Storage (النموذج المختلط · قرار المالك ٢٠٢٦-١٠-٠٧) · src/cloud/storage.ts
+//  · المسار orgs/{org}/files/{بصمة}.{امتداد} · ورقم المنشأة uid مالكها كما في firestore.rules.
+//  · الملف يحمل رموز رؤيته في metadata.g («قسم|عقار» مفصولة بفواصل) كصفّ مرفقه في Firestore،
+//    فلا يقرؤه العضو إلا إن كان في رموزه (مستند عضويته) رمزٌ منها.
+//  · الرفع: المالك، أو عضوٌ له «إدخال» في قسم العملية metadata.op · بحجمٍ أقصاه ٥٠ م.ب، واسمٍ هو بصمة وامتداد،
+//    وmd5 الذي حسبه الجهاز يطابق ما حسبه الخادم.
+//  · التعديل: رموز الرؤية تزيد ولا تنقص، ومحتوى الملف لا يتغير · والحذف للمالك وحده.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function memberDoc(org) {
+      return /databases/(default)/documents/orgs/$(org)/members/$(request.auth.uid);
+    }
+    function isOwner(org) {
+      return request.auth != null && request.auth.uid == org;
+    }
+    function isMember(org) {
+      return request.auth != null && firestore.exists(memberDoc(org));
+    }
+    function lvl(org, s) {
+      let p = firestore.get(memberDoc(org)).data.perm;
+      return s is string && s in p ? p[s] : 0;
+    }
+    function tokens(md) {
+      return md != null && 'g' in md && md.g is string ? md.g.split(',') : [];
+    }
+
+    match /orgs/{org}/files/{name} {
+      // السؤال عن ملفٍ غير موجود يعيد «غير موجود» للعضو (لا يكشف شيئاً) · فيعرف الطابور أن عليه رفعه
+      allow get: if isOwner(org)
+        || (isMember(org) && (resource == null || tokens(resource.metadata).hasAny(firestore.get(memberDoc(org)).data.tokens)));
+      allow create: if (isOwner(org) || (isMember(org) && 'op' in request.resource.metadata && lvl(org, request.resource.metadata.op) >= 2))
+        && request.resource.size < 50 * 1024 * 1024
+        && name.matches('^[0-9a-f]{64}[.][a-z0-9]{1,5}$')
+        && request.resource.metadata.md5 == request.resource.md5Hash;
+      allow update: if (isOwner(org) || isMember(org))
+        && request.resource.md5Hash == resource.md5Hash
+        && request.resource.metadata.md5 == resource.metadata.md5
+        && tokens(request.resource.metadata).hasAll(tokens(resource.metadata));
+      allow delete: if isOwner(org);
+    }
+
+    // قائمة الملفات للمالك وحده · للمسح الشامل وحذف الحساب
+    match /orgs/{org}/files {
+      allow list: if isOwner(org);
+    }
+    match /orgs/{org}/{rest=**} {
+      allow list: if isOwner(org);
+    }
+  }
+}

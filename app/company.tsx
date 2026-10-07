@@ -16,6 +16,7 @@ import { Icon } from '../src/ui/icons';
 import { ErrorBoundary } from '../src/ui/ErrorBoundary';
 import { appFilesEnv } from '../src/services/filesEnv';
 import { putAttachment, attachmentsFor, attachmentPath, softDeleteAttachment } from '../src/files/store';
+import { filesCloudOn, openFileNow } from '../src/services/cloud';
 import { daysBetween, dfmt, today } from '../src/domain/dates';
 import { uid } from '../src/domain/ids';
 import { logAudit } from '../src/domain/audit';
@@ -54,6 +55,12 @@ function CompanyBody() {
 
   const env = appFilesEnv(db);
   const logo = attachmentsFor(db, 'company', '1', 'logo')[0];
+  // شعارٌ في الخادم وحده يُنزَّل مرة ويُعرض (النموذج المختلط)
+  React.useEffect(() => {
+    if (!logo || !filesCloudOn() || env.fs.exists(attachmentPath(env, logo))) return;
+    openFileNow(db, logo.sha256, logo.ext).then(() => bump()).catch(() => { /* بلا اتصال: المصغّرة */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [logo?.sha256]);
   const extraDocs = db.all<{ id: string; name: string; expiry: string | null }>(
     `SELECT id, name, expiry FROM company_docs WHERE deleted_at IS NULL ORDER BY created_at DESC`
   );
@@ -145,6 +152,9 @@ function CompanyBody() {
           }}>
             {logo && env.fs.exists(attachmentPath(env, logo)) ? (
               <Image source={{ uri: 'file://' + attachmentPath(env, logo).replace(/^file:\/\//, '') }} style={{ width: 64, height: 64 }} resizeMode="contain" />
+            ) : logo?.thumb ? (
+              // الشعار في الخادم ولم يُنزَّل بعد · مصغّرته الخفيفة إلى أن يُنزَّل
+              <Image source={{ uri: logo.thumb }} style={{ width: 64, height: 64 }} resizeMode="contain" />
             ) : <Icon name="building" size={24} color={C.muted} />}
           </View>
           <View style={{ flex: 1 }}>{perm.manage ? <BtnGhost small title="رفع شعار المنشأة" onPress={pickLogo} /> : null}</View>

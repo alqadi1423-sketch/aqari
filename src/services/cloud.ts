@@ -13,7 +13,12 @@ import * as LegacyFS from 'expo-file-system/legacy';
 import { File } from 'expo-file-system';
 import { GoogleSignin, isSuccessResponse } from '@react-native-google-signin/google-signin';
 import type { AppDB } from '../db/expoAdapter';
-import { cloudConfig, DRIVE_SCOPE } from '../cloud/config';
+import { cloudConfig, filesCloudConfig, DRIVE_SCOPE } from '../cloud/config';
+import { listObjects, deleteObject, filesPrefix, type StorageIO } from '../cloud/storage';
+import { pumpUploads, ensureLocal, fileState, cacheUsage, clearCache, type FilesRemote } from '../files/cloudFiles';
+import { liveBlobs } from '../files/store';
+import { appFilesEnv } from './filesEnv';
+import { getSetting } from '../repos/settings';
 import { signInWithGoogleIdToken, refreshIdToken, deleteFirebaseAccount } from '../cloud/authRest';
 import { createSession, type Session, type SessionUser } from '../cloud/session';
 import { FirestoreRemote } from '../cloud/firestore';
@@ -26,7 +31,7 @@ import {
 } from '../sync/engine';
 import type { DB } from '../db/adapter';
 import { ensureDeviceId } from '../db/seed';
-import { expoHasher } from '../files/expoFs';
+import { expoHasher, expoMd5Base64 } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { createBackup, ensureFreeSpace } from '../domain/backup/create';
 import { prepareRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
@@ -38,7 +43,7 @@ import { getBackupPassword } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
 import { SYNC_TABLES } from '../db/syncTables';
 import { memberTokens, fullReadTables } from '../sync/acl';
-import { setCapture, outboxCount, seedOutbox } from '../sync/engine';
+import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engine';
 import { wipeAllData } from '../domain/wipe';
 import { makeSafetyBackup } from '../domain/backup/create';
 import { appDataRoot } from '../files/expoFs';
@@ -216,6 +221,8 @@ export async function syncNow(): Promise<void> {
     // enableSync لا يفعل شيئاً للحساب نفسه سوى تشغيل الالتقاط، ولغيره ينضمّ من جديد
     const uid = state.user.uid;
     const idToken = () => s.idToken();
+    // صفوف المرفقات تُزامَن حين يعمل تخزين الملفات وحده (النموذج المختلط) · وأول تشغيل يرفعها كلها
+    setFilesSync(db, filesCloudOn());
     const member = readMembership(db);
     if (!member) {
       enableSync(db, uid);
@@ -237,6 +244,8 @@ export async function syncNow(): Promise<void> {
     if (rep.applied || rep.conflicts) onData();
     // الفواتير التي طُلب إصدارها بلا اتصال تصدر الآن برقمها من العدّاد (قرار المالك ٢٠٢٦-١٠-٠٥)
     if (await issuePendingInvoices(db, remoteOf(db, uid, idToken))) onData();
+    // الملفات الجديدة تُرفع في الخلفية بعد البيانات · ولا تُنتظر
+    pumpFilesInBackground(db).catch(() => {});
     // المالك ينشر نقل الوحدات بعد رفع صفوفها بوسمها الجديد (ملاحظة المالك على ٤.١٢)
     if (!member && org === uid) await publishUnitMoves(db, remoteOf(db, uid, idToken), org);
     if (member) {
@@ -515,6 +524,8 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
   try {
     onProgress?.('جاري حذف بياناتك من السحابة');
     // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
+    // ملفات المنشأة في الخادم مع صفوفها
+    await deleteOrgFiles(uid, onProgress);
     for (const remote of [
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() }),
@@ -630,6 +641,7 @@ export async function wipeEverything(db: AppDB, onProgress?: (m: string) => void
       const sess = s!;
       const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.idToken(), org: user!.uid });
       epoch = await wipeOrgCloud(remote, user!.uid, onProgress);
+      await deleteOrgFiles(user!.uid, onProgress);
     }
     await wipeLocal(db, onProgress, safety);
     if (epoch !== null) {
@@ -798,7 +810,8 @@ export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?:
   const env = appBackupEnv(db);
   const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
   const out = joinPath(env.tmpDir, 'drive-' + Date.now() + '.aqbk');
-  const manifest = await createBackup(env, out, onProgress, { signal });
+  // الملفات في الخادم: نسخة Drive للبيانات وقائمة الملفات وبصماتها، ومعها ما لم يُرفع بعد · فتصير صغيرة وسريعة
+  const manifest = await createBackup(env, out, onProgress, { signal, dataOnly: filesCloudOn() });
   try {
     // نسخة Drive تُشفَّر أيضاً إن وُضعت كلمة مرور النسخ
     const pw = await getBackupPassword();
@@ -860,4 +873,123 @@ export function saveInvoiceNow(db: DB, input: InvoiceInput, status: 'مسودة'
 /** تغيير حالة فاتورة من الشاشة · الخروج من المسودة يأخذ رقم العدّاد */
 export function setInvoiceStatusNow(db: DB, id: string, status: 'مسودة' | 'مستحقة' | 'متأخرة'): Promise<IssueResult> {
   return setInvoiceStatusIssued(db, invoiceSource(db), id, status);
+}
+
+/* ═══════════ الملفات في الخادم · النموذج المختلط (قرار المالك ٢٠٢٦-١٠-٠٧) ═══════════ */
+
+/** نقل ملفات Storage على الجهاز · مهام النقل الأصلية بتقدّمها وإلغائها */
+const storageIO: StorageIO = {
+  fetch: (...a) => fetch(...a),
+  async sendFile(url, path, method, headers, onBytes, signal) {
+    throwIfCancelled(signal);
+    const task = LegacyFS.createUploadTask(url, new File(path).uri, {
+      httpMethod: method, uploadType: LegacyFS.FileSystemUploadType.BINARY_CONTENT, headers,
+    }, (p) => onBytes?.(p.totalBytesSent, p.totalBytesExpectedToSend));
+    const off = signal?.onCancel(() => { task.cancelAsync().catch(() => {}); });
+    try {
+      const r = await task.uploadAsync();
+      throwIfCancelled(signal);
+      if (!r) throw new CancelledError();
+      return { status: r.status, body: r.body };
+    } finally { off?.(); }
+  },
+  async downloadFile(url, path, headers, onBytes, signal) {
+    throwIfCancelled(signal);
+    const task = LegacyFS.createDownloadResumable(url, new File(path).uri, { headers },
+      (p) => onBytes?.(p.totalBytesWritten, p.totalBytesExpectedToWrite));
+    const off = signal?.onCancel(() => { task.cancelAsync().catch(() => {}); });
+    try {
+      const r = await task.downloadAsync();
+      throwIfCancelled(signal);
+      if (!r) throw new CancelledError();
+      return { status: r.status };
+    } finally { off?.(); }
+  },
+  async md5OfFile(path) { return expoMd5Base64(new File(path).bytesSync()); },
+  sizeOf(path) { return new File(path).size ?? 0; },
+};
+
+/** هل تعمل الملفات في الخادم على هذا الإصدار · مطفأة حتى تُنشأ الحاوية (config.ts) */
+export const filesCloudOn = (): boolean => !!filesCloudConfig();
+
+/** الاتصال بملفات المنشأة · null بلا تخزين أو بلا دخول أو قبل الانتقال إلى المنشأة */
+function filesRemote(db: DB): FilesRemote | null {
+  const fc = filesCloudConfig();
+  const s = getSession();
+  if (!fc || !s || !state.user) return null;
+  const org = readMembership(db)?.org ?? (getSyncState(db, 'org') === state.user.uid ? state.user.uid : null);
+  if (!org) return null;
+  const sess = s;
+  return { io: storageIO, target: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.idToken() }, access: readAccess(db) };
+}
+
+const cacheLimitOf = (db: DB) => Number(getSetting(db, 'fileCacheMb') || 500) * 1024 * 1024;
+
+/** رفع الملفات المنتظرة في الخلفية بعد كل مزامنة · طابورها مستقل فلا يحبس البيانات، والفشل يُعاد لاحقاً */
+let pumping = false;
+async function pumpFilesInBackground(db: DB): Promise<void> {
+  const remote = filesRemote(db);
+  if (!remote || pumping || !state.online) return;
+  pumping = true;
+  try {
+    const env = appFilesEnv(db);
+    // صورٌ قائمة قبل المصغّرات الخفيفة: تُولَّد مصغّرتها قبل رفعها فيراها الجهاز الآخر قبل التنزيل
+    for (const r of db.all<{ sha256: string; ext: string; mime: string }>(
+      `SELECT DISTINCT a.sha256, b.ext, a.mime FROM attachments a JOIN blobs b ON b.sha256 = a.sha256
+       JOIN file_cache f ON f.sha256 = a.sha256 WHERE f.uploaded = 0 AND a.thumb IS NULL AND a.deleted_at IS NULL`)) {
+      const t = await env.thumbnailer?.(joinPath(env.attachmentsDir, r.sha256 + '.' + r.ext), r.ext, r.mime ?? '');
+      if (t) db.run(`UPDATE attachments SET thumb = ? WHERE sha256 = ? AND thumb IS NULL`, [t, r.sha256]);
+    }
+    await pumpUploads(env, remote);
+  } catch { /* يُعاد في الدورة التالية */ } finally { pumping = false; }
+}
+
+/**
+ * مسار ملفٍ للفتح · يُنزَّل من الخادم إن لم يكن على الجهاز ثم يُطابَق ببصمته ويبقى في الذاكرة المؤقتة ·
+ * وبلا اتصال أو بلا تخزين يُرمى بسببٍ يُعرض.
+ */
+export async function openFileNow(db: DB, sha256: string, ext: string, onProgress?: ProgressFn, signal?: CancelSignal): Promise<string> {
+  return ensureLocal(appFilesEnv(db), filesRemote(db), sha256, ext,
+    { onProgress, signal, online: state.online, cacheLimit: cacheLimitOf(db) });
+}
+
+/** النسخة الكاملة بالملفات: كل ملفٍ في الخادم وحده يُنزَّل أولاً · ويعيد عدد ما نُزّل */
+export async function downloadAllFiles(db: DB, onProgress?: ProgressFn, signal?: CancelSignal): Promise<number> {
+  const env = appFilesEnv(db);
+  const missing = liveBlobs(db).filter((b) => fileState(env, b.sha256, b.ext) === 'remote');
+  if (!missing.length) return 0;
+  const remote = filesRemote(db);
+  if (!remote || !state.online) throw new Error(missing.length + ' ملفاً في الخادم لم يُنزَّل على هذا الجهاز · النسخة الكاملة تحتاج اتصالاً لتنزيلها');
+  const total = missing.reduce((n, b) => n + Number(b.size_bytes), 0);
+  let done = 0;
+  for (const b of missing) {
+    await ensureLocal(env, remote, b.sha256, b.ext, {
+      signal, online: true,
+      onProgress: (_m, i) => onProgress?.('جاري تنزيل الملفات للنسخة الكاملة', { done: done + (i && i.unit === 'bytes' ? i.done : 0), total, unit: 'bytes' }),
+    });
+    done += Number(b.size_bytes);
+  }
+  return missing.length;
+}
+
+/** حال الذاكرة المؤقتة للإعدادات */
+export const fileCacheUsage = (db: DB) => cacheUsage(db);
+/** «تفريغ الذاكرة المؤقتة» · ما لم يُرفع يبقى */
+export const clearFileCacheNow = (db: DB) => clearCache(appFilesEnv(db));
+
+/** المسح الشامل وحذف الحساب: ملفات المنشأة في الخادم تُحذف مع صفوفها · المالك وحده */
+async function deleteOrgFiles(org: string, onProgress?: (m: string) => void): Promise<number> {
+  const fc = filesCloudConfig();
+  const s = getSession();
+  if (!fc || !s) return 0;
+  const sess = s;
+  const t = { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.idToken() };
+  const names = await listObjects(storageIO, t, filesPrefix(org));
+  let n = 0;
+  for (const name of names) {
+    await deleteObject(storageIO, t, name);
+    n++;
+    onProgress?.('جاري حذف الملفات من الخادم · ' + n + ' من ' + names.length);
+  }
+  return n;
 }

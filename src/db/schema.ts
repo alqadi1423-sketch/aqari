@@ -3,10 +3,10 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-import { buildSyncMigration } from './syncTables';
+import { buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, LATER_SYNC_TABLES } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1312,5 +1312,32 @@ DELETE FROM form_templates WHERE ${NOT_MEMBER} AND id = 'FT-HANDOVER' AND name =
   AND sections_json = ${sq(JSON.stringify(LEGACY_HANDOVER_TEMPLATE))};
 `;
 
+/**
+ * الهجرة ٢٧ · النموذج المختلط للملفات (قرار المالك ٢٠٢٦-١٠-٠٧): البيانات على الجهاز وتُزامَن، والملف أصله في الخادم
+ * ولا يُنزَّل إلا حين يُفتح.
+ *  - المرفقات وبصماتها تدخل المزامنة صفوفاً (محفّزات الالتقاط لهما).
+ *  - thumb: مصغّرة خفيفة للصورة تُزامَن مع صفّ مرفقها، فيظهر الملف الذي لم يُنزَّل بمصغّرته.
+ *  - file_cache: حال الملف على هذا الجهاز وحده: موجودٌ ملفه هنا، ورُفع وطابقت بصمته أم لا ·
+ *    ما لم يُرفع لا يُحذف من الجهاز أبداً، وما رُفع يُحذف منه الأقدم استعمالاً حين يتجاوز الحدّ.
+ *  كل ملفٍ قائم اليوم على الجهاز يدخلها «لم يُرفع» فيرفعه طابور الملفات حين يُفعَّل التخزين.
+ */
+export const MIGRATION_27 = `
+ALTER TABLE attachments ADD COLUMN thumb TEXT;
+CREATE TABLE IF NOT EXISTS file_cache (
+  sha256     TEXT PRIMARY KEY,
+  ext        TEXT NOT NULL,
+  bytes      INTEGER NOT NULL DEFAULT 0,
+  uploaded   INTEGER NOT NULL DEFAULT 0,
+  last_used  TEXT NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_file_cache_lru ON file_cache(uploaded, last_used);
+INSERT OR IGNORE INTO file_cache (sha256, ext, bytes, uploaded, last_used)
+  SELECT sha256, ext, size_bytes, 0, created_at FROM blobs;
+INSERT OR IGNORE INTO sync_ctl (k, v) VALUES ('capture_files', 0);
+${buildSyncTriggers(LATER_SYNC_TABLES, CAPTURE_FILES)}
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27];

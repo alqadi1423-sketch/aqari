@@ -38,7 +38,7 @@ jobs:
         run: npx tsc --noEmit
 
       - name: الاختبارات كاملة مع محاكي Firestore
-        run: npx --yes firebase-tools@15.32.1 emulators:exec --only firestore --project demo-aqari "npx jest -i --json --outputFile=jest-results.json"
+        run: npx --yes firebase-tools@15.32.1 emulators:exec --only firestore,storage --project demo-aqari "npx jest -i --json --outputFile=jest-results.json"
 
       - name: نشر الخلاصة في فرع ci-results
         if: always()

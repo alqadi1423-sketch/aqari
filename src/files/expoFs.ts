@@ -5,6 +5,7 @@
 import { File, Directory, Paths } from 'expo-file-system';
 import { getFreeDiskStorageAsync } from 'expo-file-system/legacy';
 import * as Crypto from 'expo-crypto';
+import { toBase64 } from './fsAdapter';
 import type { FS, Hasher } from './fsAdapter';
 
 /** توحيد المسار إلى صيغة file:// URI التي تتوقعها الواجهة الجديدة */
@@ -60,3 +61,9 @@ export const expoHasher: Hasher = async (bytes) => {
 
 /** جذر بيانات التطبيق */
 export const appDataRoot = (): string => Paths.document.uri.replace(/\/$/, '');
+
+/** md5 بترميز base64 · يطابق md5Hash الذي يحسبه Storage للملف المرفوع */
+export async function expoMd5Base64(bytes: Uint8Array): Promise<string> {
+  const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.MD5, new Uint8Array(bytes));
+  return toBase64(new Uint8Array(digest));
+}

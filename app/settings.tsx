@@ -43,7 +43,7 @@ import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
   pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
   restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
-  leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything,
+  leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything, filesCloudOn, downloadAllFiles, fileCacheUsage, clearFileCacheNow,
 } from '../src/services/cloud';
 import { TeamSheet } from '../src/ui/TeamSheet';
 import { MyProfileSheet } from '../src/ui/ProfileForm';
@@ -230,6 +230,8 @@ export default function Settings() {
     const before = fingerprintData(appBackupEnv(db));
     const signal = task.begin({ onRetry: () => { doBackup(); } });
     try {
+      // «نسخة كاملة بالملفات» للتصدير: ما في الخادم وحده يُنزَّل أولاً
+      if (filesCloudOn()) await downloadAllFiles(db, setProgress, signal);
       const m = await createAndShareBackup(db, setProgress, signal);
       bump();
       // الفرق المحاسبي لا يمنع حفظ البيانات (checks.ts) · تُنشأ النسخة وتُوسم «فيها ملاحظات» وتُسمّى
@@ -745,6 +747,28 @@ export default function Settings() {
             </Row>
           ))}
         </Fold>
+        {/* الملفات في الخادم (النموذج المختلط): ما نُزّل يبقى للفتح بلا اتصال حتى حدّه، وما لم يُرفع لا يُحذف · تظهر حين يعمل التخزين */}
+        {filesCloudOn() ? (() => {
+          const fu = fileCacheUsage(db);
+          return <>
+            <ValueRow icon="library" title="الملفات المنزَّلة من الخادم"
+              value={fu.cachedCount ? libSizeLabel(fu.cachedBytes) + ' · ' + fu.cachedCount + ' ملف · تفريغ' : 'لا شيء'}
+              onPress={fu.cachedCount ? () => dialog({
+                title: 'تفريغ الملفات المنزَّلة',
+                body: 'تُحذف من هذا الجهاز الملفات المنزَّلة من الخادم (' + libSizeLabel(fu.cachedBytes) + ')، وتبقى في الخادم وتُنزَّل حين تُفتح. وما لم يُرفع بعد يبقى على الجهاز.',
+                actions: [
+                  { label: 'تراجع', variant: 'ghost' },
+                  { label: 'تفريغ', variant: 'primary', onPress: () => { const n = clearFileCacheNow(db); bump(); toast('حُذف من الجهاز ' + n + ' ملف · تبقى في الخادم'); } },
+                ],
+              }) : undefined} />
+            <ValueRow icon="settings" title="حدّ الملفات المنزَّلة" value={libSizeLabel(Number(settings.fileCacheMb) * 1024 * 1024)}
+              onPress={() => openChoice('حدّ الملفات المنزَّلة', [[250, '٢٥٠ م.ب'], [500, '٥٠٠ م.ب'], [1000, '١ ج.ب'], [2000, '٢ ج.ب']], Number(settings.fileCacheMb),
+                (v) => updateSetting('fileCacheMb', v as never))} />
+            {fu.pendingCount ? (
+              <ValueRow icon="reload" title="ملفات تنتظر الرفع إلى الخادم" value={fu.pendingCount + ' ملف · ' + libSizeLabel(fu.pendingBytes)} />
+            ) : null}
+          </>;
+        })() : null}
         {/* بلا مؤقتات لا تفريغ · الصف بلا ضغط */}
         <ValueRow icon="reload" title="الملفات المؤقتة" value={storage.cacheBytes > 0 ? libSizeLabel(storage.cacheBytes) + ' · تفريغ' : 'لا شيء'}
           onPress={storage.cacheBytes > 0 ? () => { const freed = sweepCache(); bump(); toast('حُرّر ' + libSizeLabel(freed) + ' من المؤقتات'); } : undefined} />

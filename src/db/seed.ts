@@ -73,6 +73,7 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
   displayScale: 100,
   fontScale: 100,
   stripExif: false,
+  fileCacheMb: 500,
 };
 
 export function isSeeded(db: DB): boolean {

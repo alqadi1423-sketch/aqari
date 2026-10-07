@@ -17,6 +17,10 @@ export interface OpWrites {
 /** كل عملية ترحّل قيداً تنشئه وتربط القيد المعكوس بعاكسه (القواعد تحصر تعديل المرحّل في reversed_by) */
 const POSTS = ['journal_entries', 'audit_log'];
 const LINKS_REVERSAL = { journal_entries: ['reversed_by'] };
+/** إرفاق ملفٍ بسجلّ القسم: بصمته وصفّ مرفقه (النموذج المختلط · الهجرة ٢٧) */
+const FILES = ['blobs', 'attachments'];
+/** إدارة ملفات القسم من عارضها: الاسم والملاحظة والتصنيف ونزع الربط والحذف إلى السلة */
+const FILE_META = { attachments: ['display_name', 'note', 'cat_override', 'deleted_at', 'entity_type', 'entity_id', 'thumb'] };
 
 export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
   props: {
@@ -58,6 +62,14 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
   company: { own: ['company', 'company_docs', 'message_scripts', 'form_templates'], create: ['audit_log'] },
   reports: { own: [], create: ['audit_log'] },
 };
+
+// كل قسمٍ يُرفق ملفاتٍ بسجلّاته ينشئ صفوفها ويدير بيانات ملفاته · والمكتبة تملك المرفقات كلها
+for (const k of ["props","contracts","tenants","collect","deposits","reservations","claims","invoices","purchases","handover","banks","company"] as SectionKey[]) {
+  const w = OP_WRITES[k]!;
+  w.create = [...w.create, ...FILES];
+  w.touch = { ...(w.touch ?? {}), ...FILE_META };
+}
+OP_WRITES.library = { own: ['attachments'], create: ['audit_log', ...FILES] };
 
 /**
  * عمليةٌ ليست قسماً: تعديل العضو بياناته (توجيه المالك ٢٠٢٦-١٠-٠٥) · ينشئ صفّ سجل عمليات واحداً من نوعٍ واحد،

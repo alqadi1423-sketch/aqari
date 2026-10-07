@@ -14,6 +14,8 @@ export interface AppSettings {
   fontScale: number;
   /** نزع بيانات EXIF من صور JPEG عند الرفع · حذف تعريفي بلا إعادة ترميز · مطفأ افتراضياً */
   stripExif: boolean;
+  /** حدّ الذاكرة المؤقتة للملفات المنزَّلة من الخادم بالميغابايت (النموذج المختلط) */
+  fileCacheMb: 250 | 500 | 1000 | 2000;
 }
 
 export function getSetting<K extends keyof AppSettings>(db: DB, key: K): AppSettings[K] {

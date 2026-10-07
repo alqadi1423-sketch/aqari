@@ -188,6 +188,12 @@ export interface CreateBackupOptions {
   preUpgrade?: boolean;
   /** الإلغاء بيد المستخدم · يُفحص بين الخطوات ولا يبقى بعده أرشيف جزئي (progress.ts) */
   signal?: CancelSignal;
+  /**
+   * «البيانات وحدها» (نسخة Drive في النموذج المختلط · قرار المالك ٢٠٢٦-١٠-٠٧): ما رُفع إلى الخادم وطابقت بصمته
+   * يُذكر في remote_files ببصمته ولا يدخل الأرشيف، فتصير النسخة صغيرة وسريعة · وما لم يُرفع بعد يدخلها كما هو
+   * فلا يضيع ملفٌ لم يبلغ الخادم. وبدونها: النسخة الكاملة بكل ملفاتها.
+   */
+  dataOnly?: boolean;
 }
 
 export async function createBackup(
@@ -275,7 +281,16 @@ export async function createBackup(
     const zipEntries: ZipEntry[] = [{ name: 'data.db', bytes: dbBytes, level: 6 }];
     const files: BackupManifest['files'] = [];
     const missing: string[] = [];
-    const blobs = liveBlobs(env.db);
+    const remoteFiles: NonNullable<BackupManifest['remote_files']> = [];
+    // «البيانات وحدها»: ما رُفع وطابق يُذكر ببصمته ولا يُقرأ · وما لم يُرفع يُنسخ كما هو
+    const uploaded = new Set<string>(opts.dataOnly
+      ? env.db.all<{ sha256: string }>(`SELECT sha256 FROM file_cache WHERE uploaded = 1`).map((r) => r.sha256)
+      : []);
+    const allBlobs = liveBlobs(env.db);
+    for (const b of allBlobs) {
+      if (uploaded.has(b.sha256)) remoteFiles.push({ sha256: b.sha256, ext: b.ext, size: Number(b.size_bytes) });
+    }
+    const blobs = allBlobs.filter((b) => !uploaded.has(b.sha256));
     // الحجم المنجز من الكلي · بأحجام المرفقات المسجَّلة
     const blobBytes = blobs.reduce((n, x) => n + Number(x.size_bytes ?? 0), 0);
     let doneBytes = 0;
@@ -315,6 +330,7 @@ export async function createBackup(
       db_sha256: dbSha,
       files,
       missing_files: missing,
+      ...(opts.dataOnly ? { remote_files: remoteFiles } : {}),
       table_counts: counts,
       ledger,
       integrity,

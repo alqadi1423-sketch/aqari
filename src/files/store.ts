@@ -15,6 +15,11 @@ export interface FilesEnv {
   hasher: Hasher;
   /** مجلد attachments المطلق */
   attachmentsDir: string;
+  /**
+   * مصغّرة خفيفة للصورة (data URI بضعة كيلوبايت) تُزامَن مع صفّ المرفق، فيظهر بها الملف على جهازٍ لم يُنزّله ·
+   * null لغير الصور أو حين يتعذّر التوليد · وبيئة بلا مولِّد (الاختبارات والأدوات) لا مصغّرة لها
+   */
+  thumbnailer?: (path: string, ext: string, mime: string) => Promise<string | null>;
 }
 
 export interface AttachmentMeta {
@@ -40,6 +45,8 @@ export interface AttachmentRow {
   created_at: string;
   ext: string;
   size_bytes: number;
+  /** المصغّرة الخفيفة المزامَنة (الهجرة ٢٧) · null لغير الصور */
+  thumb?: string | null;
 }
 
 /** شكل البصمة والامتداد المقبولان · منهما يُبنى اسم الملف على القرص ويدخل صفحات العرض */
@@ -81,7 +88,8 @@ export async function putAttachment(
   );
   const finalExt = existing ? existing.ext : ext;
   const path = blobPath(env, sha, finalExt);
-  if (!existing) {
+  // بصمةٌ معروفة وملفها ليس هنا (في الخادم وحده) يُكتب ملفها من البايتات التي بين أيدينا
+  if (!existing || !env.fs.exists(path)) {
     env.fs.mkdirp(env.attachmentsDir);
     env.fs.write(path, bytes);
     // التحقق قبل التسجيل بإعادة القراءة الفعلية · لا نسجّل مرفقاً لملف لم يُنسخ سليماً
@@ -92,17 +100,27 @@ export async function putAttachment(
     }
   }
   const id = uid();
+  // مصغّرة البصمة نفسها إن سبقت لها · وإلا تُولَّد مرة (الفشل لا يمنع المرفق)
+  let thumb: string | null = env.db.get<{ t: string }>(
+    `SELECT thumb AS t FROM attachments WHERE sha256 = ? AND thumb IS NOT NULL LIMIT 1`, [sha])?.t ?? null;
+  if (!thumb && env.thumbnailer) {
+    try { thumb = await env.thumbnailer(path, finalExt, meta.mime ?? ''); } catch { thumb = null; }
+  }
   env.db.transaction(() => {
     if (!existing) {
       env.db.run(`INSERT INTO blobs (sha256, ext, size_bytes, created_at) VALUES (?,?,?,?)`, [
         sha, finalExt, bytes.byteLength, now,
       ]);
     }
+    // الملف هنا ولم يُرفع · فلا يُحذف من الجهاز حتى يُرفع وتطابق بصمته (cloudFiles.ts)
     env.db.run(
-      `INSERT INTO attachments (id, sha256, entity_type, entity_id, kind, original_name, mime, note, display_name, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO file_cache (sha256, ext, bytes, uploaded, last_used) VALUES (?,?,?,0,?)
+       ON CONFLICT(sha256) DO UPDATE SET last_used = excluded.last_used`, [sha, finalExt, bytes.byteLength, now]);
+    env.db.run(
+      `INSERT INTO attachments (id, sha256, entity_type, entity_id, kind, original_name, mime, note, display_name, created_at, thumb)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       [id, sha, meta.entityType, meta.entityId ?? '', meta.kind, meta.originalName ?? '',
-       meta.mime ?? '', meta.note ?? '', meta.originalName ?? '', now]
+       meta.mime ?? '', meta.note ?? '', meta.originalName ?? '', now, thumb]
     );
   });
   return getAttachment(env.db, id)!;
@@ -189,6 +207,7 @@ export function gcBlobs(env: FilesEnv, retentionDays: number, now: Date = new Da
     env.db.transaction(() => {
       env.db.run(`DELETE FROM attachments WHERE sha256 = ?`, [o.sha256]);
       env.db.run(`DELETE FROM blobs WHERE sha256 = ?`, [o.sha256]);
+      env.db.run(`DELETE FROM file_cache WHERE sha256 = ?`, [o.sha256]);
     });
     if (env.fs.exists(p)) env.fs.remove(p);
     removed++;

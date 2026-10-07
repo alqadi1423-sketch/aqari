@@ -2,8 +2,11 @@
  * الجداول التي تُزامَن مع السحابة وترتيبها · الآباء قبل الأبناء، فتطبيق الوارد بهذا الترتيب
  * يجد كل مفتاح أجنبي قائماً.
  *
+ * المرفقات (attachments) وبصماتها (blobs) تُزامَن صفوفاً منذ الهجرة ٢٧ (النموذج المختلط: قرار المالك ٢٠٢٦-١٠-٠٧) ·
+ * والملف نفسه في Firebase Storage لا في قاعدة المستندات (files/cloudFiles.ts).
+ *
  * خارج المزامنة عمداً:
- *  - attachments و blobs: الملفات نفسها لا تحملها قاعدة المستندات · تنتقل في النسخة على Drive.
+ *  - file_cache: حال الملف على هذا الجهاز (موجود، رُفع وطابق) · تخصّ الجهاز.
  *  - meta و settings و scheduled_notifications: تخصّ هذا الجهاز (هويته، حجم العرض، تنبيهاته).
  *  - journal_lines: تسافر داخل مستند قيدها · فالقيد وسطوره وحدة لا تنفصل.
  *  - جداول sync_* نفسها.
@@ -20,7 +23,8 @@ export interface SyncTable {
 
 const id = (a: string) => `${a}.id`;
 
-export const SYNC_TABLES: SyncTable[] = [
+/** جداول الهجرة ١٨ كما كانت · مخرَجها ثابت فلا تتغير ترحيلةٌ سابقة بإضافة جدول */
+const BASE_SYNC_TABLES: SyncTable[] = [
   { name: 'accounts', pk: (a) => `${a}.code`, pkCols: ['code'] },
   { name: 'tenants', pk: id, pkCols: ['id'] },
   { name: 'suppliers', pk: id, pkCols: ['id'] },
@@ -57,6 +61,19 @@ export const SYNC_TABLES: SyncTable[] = [
   { name: 'bank_tx', pk: id, pkCols: ['id'] },
   { name: 'handovers', pk: id, pkCols: ['id'] },
   { name: 'audit_log', pk: id, pkCols: ['id'], appendOnly: true },
+];
+
+/** ما دخل المزامنة بعد الهجرة ١٨ · ومحفّزاته في هجرته (الهجرة ٢٧) */
+export const LATER_SYNC_TABLES: SyncTable[] = [
+  { name: 'blobs', pk: (a) => `${a}.sha256`, pkCols: ['sha256'] },
+  { name: 'attachments', pk: id, pkCols: ['id'] },
+];
+
+/** كل جداول المزامنة بترتيب التطبيق · البصمة قبل مرفقها، وسجل العمليات آخراً */
+export const SYNC_TABLES: SyncTable[] = [
+  ...BASE_SYNC_TABLES.filter((t) => t.name !== 'audit_log'),
+  ...LATER_SYNC_TABLES,
+  ...BASE_SYNC_TABLES.filter((t) => t.name === 'audit_log'),
 ];
 
 export const SYNC_RANK: Record<string, number> = Object.fromEntries(SYNC_TABLES.map((t, i) => [t.name, i]));
@@ -109,15 +126,7 @@ CREATE TABLE IF NOT EXISTS sync_rejects (
   payload TEXT NOT NULL,
   at      TEXT NOT NULL
 );`];
-  for (const t of SYNC_TABLES) {
-    parts.push(`
-CREATE TRIGGER IF NOT EXISTS sync_${t.name}_ins AFTER INSERT ON ${t.name} WHEN ${CAPTURE}
-BEGIN ${upsertOutbox(t.name, t.pk('NEW'), 'upsert')} END;
-CREATE TRIGGER IF NOT EXISTS sync_${t.name}_upd AFTER UPDATE ON ${t.name} WHEN ${CAPTURE}
-BEGIN ${upsertOutbox(t.name, t.pk('NEW'), 'upsert')} END;
-CREATE TRIGGER IF NOT EXISTS sync_${t.name}_del AFTER DELETE ON ${t.name} WHEN ${CAPTURE}
-BEGIN ${upsertOutbox(t.name, t.pk('OLD'), 'delete')} END;`);
-  }
+  parts.push(buildSyncTriggers(BASE_SYNC_TABLES));
   // سطور القيد تُعلِّم قيدها · فالمستند الواحد يحمل القيد وسطوره
   parts.push(`
 CREATE TRIGGER IF NOT EXISTS sync_journal_lines_ins AFTER INSERT ON journal_lines WHEN ${CAPTURE}
@@ -127,5 +136,26 @@ BEGIN ${upsertOutbox('journal_entries', 'NEW.entry_id', 'upsert')} END;
 CREATE TRIGGER IF NOT EXISTS sync_journal_lines_del AFTER DELETE ON journal_lines WHEN ${CAPTURE}
   AND EXISTS (SELECT 1 FROM journal_entries WHERE id = OLD.entry_id)
 BEGIN ${upsertOutbox('journal_entries', 'OLD.entry_id', 'upsert')} END;`);
+  return parts.join('\n');
+}
+
+/**
+ * مزامنة صفوف المرفقات مرهونةٌ بتفعيل تخزين الملفات (sync_ctl.capture_files) · فلا يُلتقط منها شيء ولا يُرفع
+ * قبل أن تُنشأ الحاوية وتُنشر قواعدها، وحين تُفعَّل يُرفع ما فيها كله مرة (engine.setFilesSync)
+ */
+export const CAPTURE_FILES = `${CAPTURE} AND (SELECT v FROM sync_ctl WHERE k = 'capture_files') = 1`;
+
+/** محفّزات الالتقاط لجداول بعينها · لكل إدراج وتعديل وحذف · when: شرط الالتقاط */
+export function buildSyncTriggers(tables: SyncTable[], when: string = CAPTURE): string {
+  const parts: string[] = [];
+  for (const t of tables) {
+    parts.push(`
+CREATE TRIGGER IF NOT EXISTS sync_${t.name}_ins AFTER INSERT ON ${t.name} WHEN ${when}
+BEGIN ${upsertOutbox(t.name, t.pk('NEW'), 'upsert')} END;
+CREATE TRIGGER IF NOT EXISTS sync_${t.name}_upd AFTER UPDATE ON ${t.name} WHEN ${when}
+BEGIN ${upsertOutbox(t.name, t.pk('NEW'), 'upsert')} END;
+CREATE TRIGGER IF NOT EXISTS sync_${t.name}_del AFTER DELETE ON ${t.name} WHEN ${when}
+BEGIN ${upsertOutbox(t.name, t.pk('OLD'), 'delete')} END;`);
+  }
   return parts.join('\n');
 }

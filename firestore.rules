@@ -26,7 +26,7 @@ service cloud.firestore {
         'meter_readings', 'company', 'company_docs', 'message_scripts', 'form_templates', 'journal_entries',
         'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'reservations', 'key_money_deals',
         'contract_payments', 'payment_lines', 'payment_allocations', 'deposit_settlements', 'tenant_ratings', 'claims',
-        'invoices', 'invoice_lines', 'purchases', 'bank_tx', 'handovers', 'audit_log'
+        'invoices', 'invoice_lines', 'purchases', 'bank_tx', 'handovers', 'blobs', 'attachments', 'audit_log'
       ];
     }
 
@@ -157,21 +157,21 @@ service cloud.firestore {
 
     // ما ينشئه كل قسم (create + own في OP_WRITES)
     function opCreates(op, t) {
-      return (op == 'props' && t in ['audit_log', 'properties', 'property_areas', 'property_area_items', 'property_floor_categories', 'units', 'unit_rooms', 'unit_room_items', 'meters'])
+      return (op == 'props' && t in ['audit_log', 'blobs', 'attachments', 'properties', 'property_areas', 'property_area_items', 'property_floor_categories', 'units', 'unit_rooms', 'unit_room_items', 'meters'])
         || (op == 'maintenance' && t in ['audit_log'])
-        || (op == 'contracts' && t in ['journal_entries', 'audit_log', 'tenants', 'handovers', 'claims', 'bank_tx', 'contract_payments', 'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'])
-        || (op == 'tenants' && t in ['audit_log', 'tenants'])
-        || (op == 'collect' && t in ['journal_entries', 'audit_log', 'bank_tx', 'contract_payments', 'payment_lines', 'payment_allocations'])
-        || (op == 'deposits' && t in ['journal_entries', 'audit_log', 'bank_tx', 'claims', 'deposit_settlements'])
-        || (op == 'reservations' && t in ['journal_entries', 'audit_log', 'bank_tx', 'reservations', 'key_money_deals'])
-        || (op == 'claims' && t in ['journal_entries', 'audit_log', 'bank_tx', 'claims'])
-        || (op == 'invoices' && t in ['journal_entries', 'audit_log', 'bank_tx', 'invoices', 'invoice_lines'])
-        || (op == 'purchases' && t in ['journal_entries', 'audit_log', 'bank_tx', 'suppliers', 'purchases', 'meter_readings'])
-        || (op == 'handover' && t in ['audit_log', 'handovers'])
-        || (op == 'banks' && t in ['journal_entries', 'audit_log', 'banks', 'bank_tx'])
+        || (op == 'contracts' && t in ['journal_entries', 'audit_log', 'tenants', 'handovers', 'claims', 'bank_tx', 'contract_payments', 'blobs', 'attachments', 'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'])
+        || (op == 'tenants' && t in ['audit_log', 'blobs', 'attachments', 'tenants'])
+        || (op == 'collect' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'contract_payments', 'payment_lines', 'payment_allocations'])
+        || (op == 'deposits' && t in ['journal_entries', 'audit_log', 'bank_tx', 'claims', 'blobs', 'attachments', 'deposit_settlements'])
+        || (op == 'reservations' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'reservations', 'key_money_deals'])
+        || (op == 'claims' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'claims'])
+        || (op == 'invoices' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'invoices', 'invoice_lines'])
+        || (op == 'purchases' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'suppliers', 'purchases', 'meter_readings'])
+        || (op == 'handover' && t in ['audit_log', 'blobs', 'attachments', 'handovers'])
+        || (op == 'banks' && t in ['journal_entries', 'audit_log', 'blobs', 'attachments', 'banks', 'bank_tx'])
         || (op == 'ledger' && t in ['audit_log', 'journal_entries', 'accounts'])
-        || (op == 'library' && t in ['audit_log'])
-        || (op == 'company' && t in ['audit_log', 'company', 'company_docs', 'message_scripts', 'form_templates'])
+        || (op == 'library' && t in ['audit_log', 'blobs', 'attachments'])
+        || (op == 'company' && t in ['audit_log', 'blobs', 'attachments', 'company', 'company_docs', 'message_scripts', 'form_templates'])
         || (op == 'reports' && t in ['audit_log']);
     }
     // جداول القسم نفسه · تعديلها وحذفها بكامل
@@ -188,24 +188,19 @@ service cloud.firestore {
         || (op == 'handover' && t in ['handovers'])
         || (op == 'banks' && t in ['banks', 'bank_tx'])
         || (op == 'ledger' && t in ['journal_entries', 'accounts'])
+        || (op == 'library' && t in ['attachments'])
         || (op == 'company' && t in ['company', 'company_docs', 'message_scripts', 'form_templates']);
     }
     // حقولٌ بعينها في جداول أقسام أخرى تمسّها العملية جانبياً بإدخال
     function opTouches(op, t, keys) {
-      return (op == 'maintenance' && t == 'units' && keys.hasOnly(['under_maintenance']))
-        || (op == 'contracts' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
+      return (t == 'attachments' && op in ['props', 'contracts', 'tenants', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'handover', 'banks', 'company'] && keys.hasOnly(['display_name', 'note', 'cat_override', 'deleted_at', 'entity_type', 'entity_id', 'thumb']))
+        || (op == 'maintenance' && t == 'units' && keys.hasOnly(['under_maintenance']))
+        || (t == 'journal_entries' && op in ['contracts', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'banks'] && keys.hasOnly(['reversed_by']))
         || (op == 'contracts' && t == 'reservations' && keys.hasOnly(['status', 'converted_contract_id', 'deposit_outcome', 'deposit_settled_date']))
         || (op == 'tenants' && t == 'contracts' && keys.hasOnly(['tenant_id', 'tenant_name']))
-        || (op == 'collect' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
         || (op == 'collect' && t == 'contract_installments' && keys.hasOnly(['paid_halalas', 'status']))
         || (op == 'collect' && t == 'tenants' && keys.hasOnly(['credit_halalas']))
-        || (op == 'deposits' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
-        || (op == 'reservations' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
-        || (op == 'claims' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
-        || (op == 'invoices' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
-        || (op == 'purchases' && t == 'journal_entries' && keys.hasOnly(['reversed_by']))
-        || (op == 'purchases' && t == 'meters' && keys.hasOnly(['supplier_id']))
-        || (op == 'banks' && t == 'journal_entries' && keys.hasOnly(['reversed_by']));
+        || (op == 'purchases' && t == 'meters' && keys.hasOnly(['supplier_id']));
     }
 
     function validOrgRow(rowId) {

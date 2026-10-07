@@ -26,6 +26,11 @@ export interface BackupManifest {
   complete: boolean;
   /** «فيها ملاحظات»: فروق محاسبية بأسماء فحوصها وأرقامها · لا تمنع النسخة (checks.ts) · غائبة في نسخ أقدم */
   notes?: string[];
+  /**
+   * ملفاتٌ في الخادم لا في الأرشيف (النموذج المختلط · نسخة «البيانات وحدها») · ببصماتها وأحجامها ·
+   * تُستعاد صفوفها وتُنزَّل ملفاتها عند فتحها · غائبة في النسخة الكاملة وفي نسخ أقدم
+   */
+  remote_files?: Array<{ sha256: string; ext: string; size: number }>;
 }
 
 export interface BackupEnv {

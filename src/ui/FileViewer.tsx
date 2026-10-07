@@ -32,6 +32,8 @@ import { dfmt } from '../domain/dates';
 import { joinPath } from '../files/fsAdapter';
 import { appDataRoot } from '../files/expoFs';
 import { thumbUri, existingThumbUri, isImageFile } from '../services/thumbs';
+import { filesCloudOn, openFileNow } from '../services/cloud';
+import { cancelSource, isCancelled, progressView, progressLabel, progressLine, type ProgressInfo } from '../domain/progress';
 import Pdf from 'react-native-pdf';
 import { logAudit } from '../domain/audit';
 import { reportFailure, recordFailure, copyFailureDetails, shareFailureDetails } from './failureDialog';
@@ -59,6 +61,55 @@ function kindOf(f: ViewerFile): FileKind {
   if (f.mime.startsWith('video/') || ['mp4', 'mov', 'webm', '3gp', 'mkv'].includes(f.ext)) return 'video';
   if (f.mime.startsWith('audio/') || ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'opus'].includes(f.ext)) return 'audio';
   return 'other';
+}
+
+/* ═══════════ ملفٌ في الخادم لم يُنزَّل (النموذج المختلط · قرار المالك ٢٠٢٦-١٠-٠٧) ═══════════ */
+/**
+ * يُنزَّل عند فتحه بنسبته وحجمه وزر إلغاء، وتظهر مصغّرته الخفيفة أثناء التنزيل · ثم يُطابَق ببصمته ويبقى في
+ * الذاكرة المؤقتة · وبلا اتصال يظهر السبب مع «إعادة المحاولة».
+ */
+function RemoteFilePage({ file, onReady }: { file: ViewerFile; onReady: () => void }) {
+  const { db } = useApp();
+  const [msg, setMsg] = useState('جاري تنزيل الملف');
+  const [info, setInfo] = useState<ProgressInfo | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const cancelRef = useRef<(() => void) | null>(null);
+  const light = useMemo(() => db.get<{ t: string | null }>(
+    `SELECT thumb AS t FROM attachments WHERE sha256 = ? AND thumb IS NOT NULL LIMIT 1`, [file.sha256])?.t ?? null,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [db, file.sha256]);
+  useEffect(() => {
+    const src = cancelSource();
+    cancelRef.current = src.cancel;
+    setError(null); setInfo(null); setMsg('جاري تنزيل الملف');
+    openFileNow(db, file.sha256, file.ext, (m, i) => { setMsg(m); setInfo(i ?? null); }, src.signal)
+      .then(() => onReady())
+      .catch((e) => { if (!isCancelled(e)) setError(e instanceof Error ? e.message : 'تعذّر تنزيل الملف'); });
+    return () => src.cancel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file.sha256, attempt]);
+  const v = progressView(msg, info);
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 }}>
+      {light ? <Image source={{ uri: light }} style={{ width: 180, height: 180, opacity: 0.6 }} resizeMode="contain" /> : null}
+      {error ? (
+        <>
+          <T size={14} color="#fff" style={{ textAlign: 'center' }}>{error}</T>
+          <BtnGhost title="إعادة المحاولة" onPress={() => setAttempt((n) => n + 1)} />
+        </>
+      ) : (
+        <>
+          <View style={{ alignSelf: 'stretch', height: 6, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.2)', overflow: 'hidden' }}>
+            <View style={{ height: 6, borderRadius: 3, backgroundColor: '#fff', width: v.pct !== null ? `${v.pct}%` : '100%', opacity: v.pct !== null ? 1 : 0.3 }} />
+          </View>
+          <T size={13} color="#fff" style={{ textAlign: 'center' }}>{progressLabel(msg)}</T>
+          {v.pct !== null ? <T size={12} color="#ddd" style={{ textAlign: 'center' }}>{progressLine(v)}</T> : null}
+          <BtnGhost title="إلغاء" onPress={() => cancelRef.current?.()} />
+        </>
+      )}
+    </View>
+  );
 }
 
 /* ═══════════ صفحة صورة · تكبير بالإصبعين وتدوير عبر WebView ═══════════ */
@@ -246,6 +297,8 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
   const [newName, setNewName] = useState('');
   const [moveOpen, setMoveOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // ملفٌ نُزّل للتو من الخادم · يُعاد الرسم فيُعرض
+  const [, setFetched] = useState(0);
   const listRef = useRef<FlatList<ViewerFile>>(null);
   const cur = files[index];
   /*
@@ -413,7 +466,9 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
           ) : null}
         </View>
 
-        {!exists ? (
+        {!exists && filesCloudOn() ? (
+          <RemoteFilePage key={cur.sha256} file={cur} onReady={() => setFetched((n) => n + 1)} />
+        ) : !exists ? (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
             <T size={14} color="#fff" style={{ textAlign: 'center' }}>سجل الملف موجود لكن ملفه غير موجود في المخزن · استعده من نسخة احتياطية أو أعد رفعه</T>
           </View>

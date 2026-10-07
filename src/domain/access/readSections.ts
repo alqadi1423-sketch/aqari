@@ -3,7 +3,7 @@
  * «قسم|عقار» لكل قسم يقرؤه ولكل عقار يخصه. والبيانات المرتبطة بالحد اللازم:
  * الجدول يُقرأ لقسمه ولما يحتاجه من الأقسام سياقاً، لا لكل قسم.
  */
-import type { SectionKey } from './sections';
+import { SECTION_KEYS, type SectionKey } from './sections';
 
 /** أقسام تحتاج اسم العقار والوحدة سياقاً لعملها */
 const NEEDS_UNITS: SectionKey[] = [
@@ -49,6 +49,16 @@ export const READ_TABLE: Record<string, SectionKey[]> = {
   handovers: ['handover', 'contracts'],
   audit_log: ['audit'],
   journal_entries: MONEY_BOOKS,
+  // بصمة الملف وامتداده وحجمه · لا تكشف شيئاً، ويحتاجها كل من يرى مرفقاً
+  blobs: SECTION_KEYS,
+};
+
+/** جدول الجهة التي يرتبط بها المرفق · فيقرؤه من يقرأ جهته (READ_TABLE)، والمكتبة دائماً */
+export const ATTACHMENT_ENTITY_TABLE: Record<string, string> = {
+  contract: 'contracts', unit: 'units', property: 'properties', tenant: 'tenants', occupant: 'occupants',
+  purchase: 'purchases', supplier: 'suppliers', invoice: 'invoices', claim: 'claims', handover: 'handovers',
+  payment: 'contract_payments', reservation: 'reservations', bank: 'banks', bank_tx: 'bank_tx',
+  company: 'company_docs', company_doc: 'company_docs',
 };
 
 /**
@@ -113,6 +123,10 @@ const JOURNAL_SOURCE: Partial<Record<SectionKey, string>> = {
 };
 
 export function readSectionsOf(table: string, row: Record<string, unknown> | null): SectionKey[] {
+  if (table === 'attachments') {
+    const src = ATTACHMENT_ENTITY_TABLE[String(row?.entity_type ?? '')];
+    return [...new Set<SectionKey>(['library', ...(src ? READ_TABLE[src] ?? [] : [])])];
+  }
   if (table === 'journal_entries') {
     // القيد يقرؤه الدفتر والتقارير وقسم مصدره، وكل قسم مالي يقرأ مستنده (أعطال ٢٠٢٦-١٠-٠٥: عضو العقود
     // يقرأ الدفعة ولا يصله قيدها، فتنتظر الدفعة أباها بلا نهاية ويظهر القسط غير مسدَّد والخصم متبقياً)

@@ -6,6 +6,7 @@ import { parseEjarContract, type EjarParseResult } from '../domain/pdf/parseEjar
 import { extractPdfText, PdfEncrypted } from '../domain/pdf/miniPdfText';
 import type { DB } from '../db/adapter';
 import { attachmentsFor, attachmentPath } from '../files/store';
+import { openFileNow } from './cloud';
 import { appFilesEnv } from './filesEnv';
 
 /**
@@ -62,5 +63,7 @@ export async function readLeaseText(db: DB, contractId: string): Promise<string 
   const att = attachmentsFor(db, 'contract', contractId, 'lease')
     .find((a) => /pdf/i.test(a.mime || '') || /\.pdf$/i.test(a.original_name || ''));
   if (!att) return null;
+  // ملفٌ في الخادم لم يُنزَّل يُنزَّل أولاً (النموذج المختلط) · وبلا اتصال لا نصّ
+  try { await openFileNow(db, att.sha256, att.ext); } catch { return null; }
   try { return await readPdfText(env.fs.read(attachmentPath(env, att))); } catch { return null; }
 }
