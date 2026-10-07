@@ -153,3 +153,19 @@ test('#10 جهة العكس: إلغاء الدفعات يعيد الحسابات
   for (const id of ids.reverse()) cancelPayment(db, id, { date: '2026-03-01', reason: 'اختبار' });
   expect([credit(db, '4200'), credit(db, '4210'), credit(db, '4220')]).toEqual([0, 0, 0]);
 });
+
+test('#10 جهة العكس في فرعها (side = debit): تسوية الفائض تعيد الحسابات إلى نسبتها من الصافي', async () => {
+  const { settleSurplus, contractSurpluses } = await import('@/domain/ledgerReview');
+  const { db, base } = world();
+  const cid = confirmContract(db, { ...base, valueHalalas: 10000, servicesHalalas: 3333, parkingHalalas: 1111 });
+  for (const i of insts(db, cid)) pay(db, cid, i, Number(i.amount_halalas));
+  // دفعات صغيرة بلا قسط فوق الأقساط: فائض يُحوَّل رصيداً دائناً على دفعات
+  for (let k = 0; k < 3; k++) recordRentPayment(db, cid, { installmentId: null, period: '2026-06', date: '2026-06-15', lines: [{ method: 'cash', amountHalalas: 7 }], discountHalalas: 0, notes: '' });
+  const surplus = contractSurpluses(db).find((x) => x.contractId === cid)!.amount;
+  expect(surplus).toBe(21);
+  for (const a of [5, 9, 7]) settleSurplus(db, cid, { action: 'credit', amountHalalas: a, date: '2026-06-20' });
+  const net = credit(db, '4200') + credit(db, '4210') + credit(db, '4220');
+  expect(net).toBe(14444);
+  expect(credit(db, '4210')).toBe(Math.floor((net * 3333) / 14444));
+  expect(credit(db, '4220')).toBe(Math.floor((net * 1111) / 14444));
+});
