@@ -116,7 +116,7 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
               }
               else { const doc = await inviteMemberNow(db, spec); shareInvite(doc); }
               // إشراف الأقسام في المحادثة (قرار المالك 2026-10-07) · بعد الصلاحية، وفشله لا يُسقط ما حُفظ
-              await setChatSupervisorNow(spec.email, sup).catch(() => {});
+              if (sup) await setChatSupervisorNow(spec.email, sup).catch(() => {});
               setEdit(null);
               load();
             } catch (e) { await reportFailure({ title: 'تعذّر الحفظ', where: 'الأعضاء', db, e }); }
@@ -139,14 +139,17 @@ function shareInvite(doc: MemberDoc): void {
 }
 
 function MemberEditor({ initial, isNew, onClose, onSave }: {
-  initial: MemberDoc | null; isNew: boolean; onClose: () => void; onSave: (spec: MemberSpec, sup: string[]) => Promise<void>;
+  initial: MemberDoc | null; isNew: boolean; onClose: () => void; onSave: (spec: MemberSpec, sup: string[] | null) => Promise<void>;
 }) {
   const { db } = useApp();
   const { t } = useLang();
   // «مشرف القسم» لكل قسم له فيه صلاحية · ينشئ المجموعات ويظهر إشرافه بجوار اسمه في المحادثة
-  const [sup, setSup] = useState<string[]>([]);
+  const [sup, setSupRaw] = useState<string[]>([]);
+  // لا يُكتب الإشراف إلا إن حُمِّل أو عدّله المالك · فتعذّر تحميله لا يمحو القائم صامتاً (مراجعة المحادثة #9)
+  const [supKnown, setSupKnown] = useState(isNew);
+  const setSup: typeof setSupRaw = (v) => { setSupKnown(true); setSupRaw(v); };
   useEffect(() => {
-    if (initial?.email) chatSupervisorNow(initial.email).then(setSup).catch(() => {});
+    if (initial?.email) chatSupervisorNow(initial.email).then((x) => { setSupRaw(x); setSupKnown(true); }).catch(() => {});
   }, [initial?.email]);
   const [email, setEmail] = useState(initial?.email ?? '');
   const [perms, setPermsRaw] = useState<Perms>(initial?.perm ?? {});
@@ -172,7 +175,7 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
         <BtnPrimary title={isNew ? 'إرسال الدعوة' : 'حفظ الصلاحية'} loading={saving} onPress={async () => {
           setSaving(true);
           await onSave({ email: isNew ? email : initial!.email, perms, allProps, props, profile: pv.ok ? pv.profile : undefined },
-            sup.filter((k) => (perms[k as SectionKey] ?? 0) > 0));
+            supKnown ? sup.filter((k) => (perms[k as SectionKey] ?? 0) > 0) : null);
           setSaving(false);
         }} />
       ) : null}>

@@ -424,7 +424,11 @@ service cloud.firestore {
       return /databases/$(database)/documents/orgs/$(org)/chatRoles/$(request.auth.token.email);
     }
     function chatSup(org) {
-      return exists(chatRolePath(org)) ? get(chatRolePath(org)).data.sup : [];
+      return request.auth.token.email_verified == true && exists(chatRolePath(org)) ? get(chatRolePath(org)).data.sup : [];
+    }
+    // اسم المرسل من الدليل لا نصٌّ حرّ (مراجعة المحادثة #5) · واسم العضو في الدليل اسمه في عضويته
+    function chatDirName(org) {
+      return get(/databases/$(database)/documents/orgs/$(org)/chatDir/$(request.auth.uid)).data.name;
     }
     function chatParty(org, chatId) {
       return request.auth.uid in get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)).data.p;
@@ -434,12 +438,14 @@ service cloud.firestore {
       allow create, update: if chatIn(org) && request.auth.uid == uid
         && request.resource.data.keys().hasOnly(['name', 'sup', 'at'])
         && request.resource.data.name is string && request.resource.data.name.size() <= 80
+        && (orgOwner(org) || request.resource.data.name == get(memberPath(org)).data.name)
         && request.resource.data.sup == chatSup(org)
         && request.resource.data.at == request.time;
       allow delete: if orgOwner(org) || (request.auth != null && request.auth.uid == uid);
     }
     match /orgs/{org}/chatRoles/{email} {
-      allow read: if chatIn(org);
+      // الإيميل لا يراه إلا المالك وصاحبه (مراجعة المحادثة #6) · والإشراف يُعرض للأعضاء من الدليل
+      allow read: if orgOwner(org) || (chatIn(org) && request.auth.token.email == email);
       allow write: if orgOwner(org)
         && request.resource.data.keys().hasOnly(['sup'])
         && request.resource.data.sup is list && request.resource.data.sup.size() <= 30;
@@ -466,11 +472,13 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts'])
           && request.resource.data.from == request.auth.uid
           && request.resource.data.ts == request.time
-          && request.resource.data.name is string && request.resource.data.name.size() <= 80
+          && request.resource.data.name == chatDirName(org)
           && request.resource.data.body is string && request.resource.data.body.size() <= 4000
           && (request.resource.data.link == null || (request.resource.data.link is map
               && request.resource.data.link.keys().hasOnly(['type', 'id', 'label'])
-              && request.resource.data.link.type in ['contract', 'unit', 'asset', 'maintenance']))
+              && request.resource.data.link.type in ['contract', 'unit', 'asset', 'maintenance']
+              && request.resource.data.link.id is string && request.resource.data.link.id.size() <= 64
+              && request.resource.data.link.label is string && request.resource.data.link.label.size() <= 200))
           && request.resource.data.att == null;
         allow update, delete: if false;
       }

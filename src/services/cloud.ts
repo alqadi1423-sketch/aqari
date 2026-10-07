@@ -46,7 +46,7 @@ import { memberTokens, fullReadTables } from '../sync/acl';
 import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engine';
 import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
-import { runChatSync, setSupervisor, supervisorOf } from '../chat';
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning } from '../chat';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
@@ -195,7 +195,7 @@ let paused = false;
 /** يوقف المزامنة وينتظر انتهاء دورة جارية · فلا تكتب دورةٌ في القاعدة وهي تُستبدل */
 export async function pauseSync(): Promise<void> {
   paused = true;
-  while (running) await new Promise((r) => setTimeout(r, 200));
+  while (running || chatSyncRunning()) await new Promise((r) => setTimeout(r, 200));
 }
 export function resumeSync(): void {
   paused = false;
@@ -295,14 +295,19 @@ export async function syncNow(): Promise<void> {
 }
 
 /** دورة مزامنة للمحادثة وحدها · تستدعيها شاشتها أيضاً · بلا جلسة أو اتصال لا تفعل شيئاً */
-export async function chatSyncNow(): Promise<void> {
+export async function chatSyncNow(o: { threadId?: string; force?: boolean } = {}): Promise<void> {
   const s = getSession();
   const db = appDb;
   const cfg = cloudConfig();
   const u = state.user;
   if (!s || !db || !cfg || !u || !state.online) return;
+  // ما يوقف المزامنة العامة يوقف المحادثة (مراجعة المحادثة #7)
+  if (paused || activating || state.gate || state.invites?.length || state.decision) return;
   if (activeAccount(db) !== u.uid) return;
-  await runChatSync(db, { projectId: cfg.projectId, uid: u.uid, email: u.email, idToken: () => s.idToken() });
+  if (getSyncState(db, 'restored_unadopted') === '1' || syncBackoffUntil(db)) return;
+  const owner = deviceAccount(db);
+  if (owner && owner.uid !== u.uid) return;
+  await runChatSync(db, { projectId: cfg.projectId, uid: u.uid, email: u.email, idToken: () => s.idToken() }, orgNameOf(db), o);
 }
 
 /**

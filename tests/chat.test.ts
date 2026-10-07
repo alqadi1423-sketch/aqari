@@ -134,3 +134,38 @@ test('الربط بعقد ووحدة: يفتحه من له صلاحية وعلى
   sendLocal(a, tid, OWNER, '', link);
   expect(listMessages(a, tid)[0].link).toEqual(link);
 });
+
+test('المحادثة لا تجعل الجهاز «فيه بيانات» فلا تمنع دعوة (مراجعة المحادثة #1)', async () => {
+  const { hasUserData } = await import('@/domain/backup/upgrade');
+  const a = memDb();
+  expect(hasUserData(a)).toBe(false);
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  sendLocal(a, tid, OWNER, 'لا تُحسب بيانات منشأة');
+  expect(hasUserData(a)).toBe(false);
+});
+
+test('المحادثة لا تُرفع قبل أول رسالة · والدليل لا يُكتب بلا تغيير · والسحب الكامل بمدته (الحصة المجانية)', async () => {
+  const cloud = fakeCloud();
+  const calls = { dir: 0, threads: 0 };
+  const base = cloud.remote(OWNER.uid);
+  const remote = new Proxy(base, {
+    get(t, k) {
+      if (k === 'putMyDirectory') calls.dir++;
+      if (k === 'myThreads') calls.threads++;
+      return (t as unknown as Record<string | symbol, unknown>)[k];
+    },
+  }) as typeof base;
+  const a = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  await chatSyncOnce(a, remote, OWNER, { now: 1_000_000 });
+  expect(cloud.threads.has(tid)).toBe(false);
+  expect([calls.dir, calls.threads]).toEqual([1, 1]);
+  // بعد دقيقة: لا كتابة للدليل ولا سحب كامل
+  await chatSyncOnce(a, remote, OWNER, { now: 1_060_000 });
+  expect([calls.dir, calls.threads]).toEqual([1, 1]);
+  // أول رسالة تُرفع معها المحادثة · وبعد دقيقتين سحب كامل
+  sendLocal(a, tid, OWNER, 'أولى');
+  await chatSyncOnce(a, remote, OWNER, { now: 1_200_000 });
+  expect(cloud.threads.has(tid)).toBe(true);
+  expect(calls.threads).toBe(2);
+});

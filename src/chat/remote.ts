@@ -111,7 +111,7 @@ export class ChatRemote {
   /** رسائل محادثة بعد مؤشر وقت الخادم · بترتيبه */
   async messagesSince(threadId: string, cursor: string | null, limit = 200): Promise<RemoteMessage[]> {
     const where = cursor
-      ? { fieldFilter: { field: { fieldPath: 'ts' }, op: 'GREATER_THAN', value: { timestampValue: cursor } } }
+      ? { fieldFilter: { field: { fieldPath: 'ts' }, op: 'GREATER_THAN_OR_EQUAL', value: { timestampValue: cursor } } }
       : undefined;
     const rows = (await this.req('POST', `${this.root}/orgs/${this.o.org}/chats/${threadId}:runQuery`, {
       structuredQuery: {

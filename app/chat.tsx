@@ -18,22 +18,29 @@ import { sectionDef } from '../src/domain/access/sections';
 import { UnitDetailSheet } from '../src/ui/unitSheets';
 import { AssetSheet } from '../src/ui/AssetSheets';
 import { useSaveAttempt } from '../src/ui/formAttempt';
+import { reportFailure } from '../src/ui/failureDialog';
 import {
   chatMe, canCreateGroup, createGroup, getThread, linkCandidates, linkTarget, listMessages, listPeople, listThreads,
-  markRead, onChatSynced, openDirect, sendLocal, type ChatLink, type ChatMe, type ChatPerson,
+  markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, type ChatLink, type ChatMe, type ChatPerson,
 } from '../src/chat';
 
 /** دورة المحادثة كل بضع ثوانٍ ما دامت الشاشة مفتوحة · ومعها تجديد العرض بعد كل دورة */
-function useChatPulse(): number {
+function useChatPulse(threadId: string | null): number {
   const [tick, setTick] = useState(0);
   useEffect(() => {
     const off = onChatSynced(() => setTick((x) => x + 1));
-    chatSyncNow().catch(() => {});
-    const h = setInterval(() => { chatSyncNow().catch(() => {}); }, 8000);
+    const run = () => chatSyncNow(threadId ? { threadId } : { force: true }).catch(() => {});
+    run();
+    const h = setInterval(run, threadId ? 8000 : 30000);
     return () => { off(); clearInterval(h); };
-  }, []);
+  }, [threadId]);
   return tick;
 }
+
+/** الوقت بتوقيت الجهاز لا UTC (مراجعة المحادثة #11) */
+const pad = (n: number) => String(n).padStart(2, '0');
+const localTime = (iso: string) => { const d = new Date(iso); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+const localDay = (iso: string) => { const d = new Date(iso); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
 
 function useChatMe(): ChatMe | null {
   const { db } = useApp();
@@ -51,7 +58,7 @@ export default function Chat() {
   const me = useChatMe();
   const params = useLocalSearchParams<{ t?: string }>();
   const [open, setOpen] = useState<string | null>(params.t ? String(params.t) : null);
-  const tick = useChatPulse();
+  const tick = useChatPulse(open);
   if (!me) {
     return <Screen title={t('chat.title')} icon="chat"><EmptyState>{t('chat.needAccount')}</EmptyState></Screen>;
   }
@@ -90,8 +97,9 @@ function ThreadList({ me, tick, onOpen }: { me: ChatMe; tick: number; onOpen: (i
           </Row>
           <Row style={{ justifyContent: 'space-between', marginTop: 2 }}>
             <T size={TYPE.caption} color={C.muted} numberOfLines={1} style={{ flex: 1 }}>{th.lastBody}</T>
-            {th.lastTs ? <T size={TYPE.caption} color={C.muted}>{dfmt(th.lastTs.slice(0, 10))}</T> : null}
+            {th.lastTs ? <T size={TYPE.caption} color={C.muted}>{dfmt(localDay(th.lastTs))}</T> : null}
           </Row>
+          {th.rejected ? <T size={TYPE.caption} color={C.rose}>{t('chat.rejected')}</T> : null}
         </Pressable>
       )) : <EmptyState>{t('chat.empty')}</EmptyState>}
       {sheet === 'person' ? (
@@ -138,7 +146,9 @@ function GroupSheet({ me, people, onClose, onCreated }: { me: ChatMe; people: Ch
   const [name, setName] = useState('');
   const [picked, setPicked] = useState<string[]>([]);
   const others = people.filter((p) => p.uid !== me.uid);
-  const save = () => { onCreated(createGroup(db, me.uid, name, picked)); chatSyncNow().catch(() => {}); };
+  const save = () => {
+    try { onCreated(createGroup(db, me.uid, name, picked)); } catch (e) { reportFailure({ title: t('chat.sendFailed'), e }); }
+  };
   return (
     <Sheet visible onClose={onClose} title={t('chat.newGroup')} tall
       footer={<View style={{ flex: 1 }}><BtnPrimary title={t('chat.create')} onPress={() => f.attempt(!!name.trim() && picked.length > 0, save)} /></View>}>
@@ -170,16 +180,27 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const msgs = useMemo(() => listMessages(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
   const people = useMemo(() => listPeople(db), [db, tick]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { markRead(db, id); }, [db, id, msgs.length]);
-  const title = thread?.kind === 'group'
-    ? thread.name
-    : people.find((p) => p.uid === thread?.members.find((u) => u !== me.uid))?.name || t('chat.member');
+  const other = people.find((p) => p.uid === thread?.members.find((u) => u !== me.uid));
+  const title = thread?.kind === 'group' ? thread.name : other?.name || t('chat.member');
+  const sub = thread?.kind === 'group' ? undefined
+    : other?.uid === me.org ? t('chat.owner') : other?.sup.length ? t('chat.supervisorOf', { sections: supLabel(other.sup) }) : undefined;
+  const senderOf = (uid: string, fallback: string) => {
+    const p = people.find((x) => x.uid === uid);
+    const sup = uid === me.org ? t('chat.owner') : p?.sup.length ? t('chat.supervisorOf', { sections: supLabel(p.sup) }) : '';
+    return (p?.name || fallback || t('chat.member')) + (sup ? ' · ' + sup : '');
+  };
 
   const send = useCallback(() => {
     if (!text.trim() && !link) return;
-    sendLocal(db, id, me, text, link);
+    try {
+      sendLocal(db, id, me, text, link);
+    } catch (e) {
+      reportFailure({ title: t('chat.sendFailed'), e });
+      return;
+    }
     setText(''); setLink(null); bump();
-    chatSyncNow().catch(() => {});
-  }, [db, id, me, text, link, bump]);
+    chatSyncNow({ threadId: id }).catch(() => {});
+  }, [db, id, me, text, link, bump, t]);
 
   const openLink = (l: ChatLink) => {
     const target = linkTarget(db, access, l);
@@ -190,7 +211,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   };
 
   return (
-    <Screen title={title} icon="chat" scroll={false}
+    <Screen title={title} sub={sub} icon="chat" scroll={false}
       actions={<BtnGhost small title={t('chat.back')} onPress={onBack} />}>
       <FlatList
         style={{ flex: 1 }}
@@ -202,7 +223,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           return (
             <View style={{ alignSelf: mine ? 'flex-start' : 'flex-end', maxWidth: '85%', marginVertical: 4,
               backgroundColor: mine ? C.emeraldSoft : C.paper, borderRadius: 12, padding: 9, borderWidth: 1, borderColor: C.line }}>
-              {!mine && thread?.kind === 'group' ? <T size={TYPE.caption} bold color={C.emerald}>{m.senderName}</T> : null}
+              {!mine && thread?.kind === 'group' ? <T size={TYPE.caption} bold color={C.emerald}>{senderOf(m.sender, m.senderName)}</T> : null}
               {m.body ? <T size={TYPE.body}>{m.body}</T> : null}
               {m.link ? (
                 <Pressable disabled={!target?.canOpen} onPress={() => openLink(m.link!)}
@@ -213,7 +234,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
                 </Pressable>
               ) : null}
               <T size={10} color={C.muted} style={{ marginTop: 3 }}>
-                {(m.serverTs ?? m.localAt).slice(11, 16)}{!m.sent ? ' · ' + t('chat.notSent') : ''}
+                {localTime(m.serverTs ?? m.localAt)}{!m.sent ? ' · ' + t('chat.notSent') : ''}
               </T>
             </View>
           );
@@ -226,13 +247,15 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
       ) : null}
       <Row style={{ paddingVertical: 6, alignItems: 'flex-end' }} gap={6}>
         <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
-        <TextInput value={text} onChangeText={setText} multiline placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
+        <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
           style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
             borderRadius: 10, paddingHorizontal: 10, backgroundColor: '#FAFAF7', textAlign: 'right' }} />
         <BtnPrimary small title={t('chat.send')} onPress={send} />
       </Row>
       {linkOpen ? <LinkSheet onClose={() => setLinkOpen(false)} onPick={(l) => { setLink(l); setLinkOpen(false); }} /> : null}
-      {unitFor ? <UnitDetailSheet unitId={unitFor} onClose={() => setUnitFor(null)} onEdit={() => setUnitFor(null)} onReserve={() => setUnitFor(null)} /> : null}
+      {unitFor ? <UnitDetailSheet unitId={unitFor} onClose={() => setUnitFor(null)}
+        onEdit={() => { setUnitFor(null); router.push('/units' as never); }}
+        onReserve={() => { setUnitFor(null); router.push('/units' as never); }} /> : null}
       {assetFor ? <AssetSheet id={assetFor} onClose={() => setAssetFor(null)} /> : null}
     </Screen>
   );

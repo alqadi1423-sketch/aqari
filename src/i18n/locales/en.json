@@ -373,6 +373,8 @@
       "unit": "Unit",
       "asset": "Asset",
       "maintenance": "Maintenance request"
-    }
+    },
+    "rejected": "The server refused to create this chat · your supervision may have been removed",
+    "sendFailed": "Could not send"
   }
 }

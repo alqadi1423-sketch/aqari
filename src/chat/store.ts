@@ -27,6 +27,7 @@ interface ThreadRow {
 const threadOf = (r: ThreadRow): ChatThread => ({
   id: r.id, kind: r.kind, name: r.name, members: parseList(r.members), createdBy: r.created_by,
   createdAt: r.created_at, lastTs: r.last_ts, lastBody: r.last_body, unread: Number(r.unread || 0), pending: !!r.pending,
+  rejected: Number(r.pending) === 2,
 });
 
 /** المحادثات بآخر نشاط · وغير المقروء من رسائل الآخرين */
@@ -113,8 +114,18 @@ export function pendingMessages(db: DB): ChatMessage[] {
   return db.all<MsgRow>(`SELECT * FROM chat_messages WHERE sent = 0 ORDER BY local_at`).map(msgOf);
 }
 
-export function pendingThreads(db: DB, me: string): ChatThread[] {
-  return listThreads(db, me).filter((t) => t.pending);
+/**
+ * محادثات أُنشئت على الجهاز ولم تُرفع · تُرفع بعد أول رسالة فيها (مراجعة المحادثة #20) ·
+ * includeEmpty للتحقق من رسائلها: ما لم تُرفع محادثته لا تُرسل رسالته
+ */
+export function pendingThreads(db: DB, me: string, includeEmpty = false): ChatThread[] {
+  return listThreads(db, me).filter((t) => t.pending && !t.rejected
+    && (includeEmpty || !!db.get(`SELECT 1 FROM chat_messages WHERE thread_id = ? LIMIT 1`, [t.id])));
+}
+
+/** رفض الخادم إنشاءها · تبقى على الجهاز بسببها ولا تُعاد محاولتها */
+export function markThreadRejected(db: DB, id: string): void {
+  db.run(`UPDATE chat_threads SET pending = 2 WHERE id = ?`, [id]);
 }
 
 export function markThreadPushed(db: DB, id: string): void {

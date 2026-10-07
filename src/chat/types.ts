@@ -41,6 +41,8 @@ export interface ChatThread {
   unread: number;
   /** أُنشئت على الجهاز ولم تُرفع بعد */
   pending: boolean;
+  /** رفض الخادم إنشاءها (مثل مجموعة أنشأها مشرف سُحب إشرافه) */
+  rejected: boolean;
 }
 
 export interface ChatMessage {

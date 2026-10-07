@@ -41,7 +41,7 @@ export function linkCandidates(db: DB, access: Access, type: Exclude<ChatLinkTyp
   try {
     if (type === 'contract') {
       return db.all<{ id: string; label: string }>(
-        `SELECT id, COALESCE(NULLIF(contract_no, ''), tenant_name) || ' · ' || tenant_name || ' · ' || unit_label AS label
+        `SELECT id, COALESCE(NULLIF(contract_no, ''), '#') || ' · ' || unit_label AS label
          FROM contracts WHERE deleted_at IS NULL AND status != ?
            AND (tenant_name LIKE ? OR COALESCE(contract_no,'') LIKE ? OR unit_label LIKE ?)
          ORDER BY COALESCE(start, '') DESC LIMIT ?`, [DRAFT, like, like, like, limit])

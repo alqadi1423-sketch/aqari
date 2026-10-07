@@ -20,6 +20,8 @@ export ANDROID_SDK_ROOT=$ANDROID_HOME
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BT=$(ls -d "$ANDROID_HOME"/build-tools/*/ | tail -1)
 W=$(dirname "$OUT")/work
+# الشيفرة الأصلية التجريبية في مسار خاص بها · لا يُعاد استعمال مخرَج بناء المالك (مراجعة المحادثة #4)
+NATIVE=$(dirname "$OUT")/native-$ARCH.apk
 rm -rf "$W"; mkdir -p "$W/assets"
 
 # ١) الشيفرة الأصلية باسم الحزمة التجريبي · SKIP_GRADLE=1 يعيد استعمال آخر بناء لها
@@ -33,7 +35,14 @@ rc=$?
 grep -E "BUILD SUCCESSFUL|BUILD FAILED" "$LOG"
 [ $rc -eq 0 ] || exit $rc
 ./gradlew --stop >/dev/null 2>&1
+cp app/build/outputs/apk/release/app-release.apk "$NATIVE" || exit 1
+# مسار مخرَج بناء المالك لا تبقى فيه حزمة تجريبية تُلتقط خطأً
+rm -f app/build/outputs/apk/release/app-release.apk
 fi
+# لا تُستعمل شيفرة أصلية إلا باسم الحزمة التجريبي
+AAPT=$(ls -d "$ANDROID_HOME"/build-tools/*/aapt.exe 2>/dev/null | tail -1)
+[ -f "$NATIVE" ] || { echo "لا شيفرة أصلية تجريبية: ابنِ بلا SKIP_GRADLE"; exit 1; }
+"$AAPT" dump badging "$NATIVE" 2>/dev/null | grep -q "^package: name='com.aqari.app.chat'" || { echo "سقط: الشيفرة الأصلية ليست باسم الحزمة التجريبي"; exit 1; }
 
 # ٢) حزمة JavaScript بقيم المشروع التجريبي وحدها
 cd "$ROOT" || exit 1
@@ -46,7 +55,7 @@ HERMESC=$(ls -d node_modules/hermes-compiler/hermesc/win64-bin/hermesc.exe node_
 mv "$W/assets/b.hbc" "$W/assets/index.android.bundle"
 
 # ٣) الاستبدال والمحاذاة والتوقيع
-cp android/app/build/outputs/apk/release/app-release.apk "$W/u.apk"
+cp "$NATIVE" "$W/u.apk"
 (cd "$W" && "$JAVA_HOME/bin/jar.exe" -u -0 -M -f u.apk assets/index.android.bundle) || exit 1
 "$BT/zipalign.exe" -f -p 4 "$W/u.apk" "$W/a.apk" || exit 1
 "$JAVA_HOME/bin/java.exe" -jar "$BT/lib/apksigner.jar" sign --ks "$AQARI_UPLOAD_STORE_FILE" --ks-key-alias "$AQARI_UPLOAD_KEY_ALIAS" \

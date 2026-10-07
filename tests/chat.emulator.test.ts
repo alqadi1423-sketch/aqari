@@ -38,8 +38,8 @@ d('قواعد المحادثة', () => {
   const OUT = 'U-OUT';
   beforeAll(async () => {
     await fetch(`http://${HOST}/emulator/v1/projects/${PROJECT}/databases/(default)/documents`, { method: 'DELETE' });
-    for (const u of [A, B]) {
-      expect(await put(`orgs/${ORG}/members/${u}`, { email: u.toLowerCase() + '@example.test', perm: { contracts: 1 }, all: true, props: [], tokens: [] }, ORG)).toBe(200);
+    for (const [u, name] of [[A, 'عضو مصطنع أ'], [B, 'عضو مصطنع ب']]) {
+      expect(await put(`orgs/${ORG}/members/${u}`, { email: u.toLowerCase() + '@example.test', perm: { contracts: 1 }, all: true, props: [], tokens: [], name }, ORG)).toBe(200);
     }
   });
 
@@ -49,9 +49,15 @@ d('قواعد المحادثة', () => {
     expect(await status(chat(ORG).setRole('u-chb@example.test', ['contracts']))).toBe(200);
     expect(await status(chat(B).setRole('u-cha@example.test', ['contracts']))).toBe(403);
     expect(await status(chat(B).putMyDirectory('عضو مصطنع ب', ['contracts']))).toBe(200);
+    // اسم العضو في الدليل اسمه في عضويته · لا ينتحل اسماً آخر
+    expect(await status(chat(A).putMyDirectory('مالك المنشأة', []))).toBe(403);
+    expect(await status(chat(ORG).putMyDirectory('منشأة مصطنعة', []))).toBe(200);
     const dir = await chat(A).directory();
-    expect(dir.map((x) => x.name).sort()).toEqual(['عضو مصطنع أ', 'عضو مصطنع ب']);
+    expect(dir.map((x) => x.name).sort()).toEqual(['عضو مصطنع أ', 'عضو مصطنع ب', 'منشأة مصطنعة'].sort());
     await expect(chat(OUT).directory()).rejects.toThrow(/403/);
+    // الإيميلات في مستندات الإشراف لا يقرؤها إلا المالك وصاحبها
+    expect(await chat(B).role('u-chb@example.test')).toEqual(['contracts']);
+    await expect(chat(A).role('u-chb@example.test')).rejects.toThrow(/403/);
   });
 
   test('الفردية: أي عضو يراسل أي عضو · الأطراف وحدهم يقرؤون · ورقمها من طرفيها', async () => {
@@ -59,10 +65,14 @@ d('قواعد المحادثة', () => {
     expect(await chat(A).createThread({ id, k: 'direct', p: [A, B].sort(), name: '' })).toBe('created');
     expect(await chat(B).createThread({ id, k: 'direct', p: [A, B].sort(), name: '' })).toBe('exists');
     expect(await status(chat(A).createThread({ id: 'd_X_Y', k: 'direct', p: [A, B].sort(), name: '' }))).toBe(403);
-    expect(await status(chat(A).sendMessage(id, { id: 'M1', name: 'أ', body: 'رسالة مصطنعة', link: { type: 'contract', id: 'C1', label: 'عقد مصطنع' } }))).toBe(200);
-    expect(await chat(A).sendMessage(id, { id: 'M1', name: 'أ', body: 'مكررة', link: null })).toBe('exists');
+    expect(await status(chat(A).sendMessage(id, { id: 'M1', name: 'عضو مصطنع أ', body: 'رسالة مصطنعة', link: { type: 'contract', id: 'C1', label: 'عقد مصطنع' } }))).toBe(200);
+    expect(await chat(A).sendMessage(id, { id: 'M1', name: 'عضو مصطنع أ', body: 'مكررة', link: null })).toBe('exists');
+    // اسم المرسل اسمه في الدليل · لا «المالك» ولا غيره (مراجعة المحادثة #5)
+    expect(await status(chat(A).sendMessage(id, { id: 'M9', name: 'منشأة مصطنعة', body: 'منتحلة', link: null }))).toBe(403);
+    // الربط بحدود · لا مرفق مقنَّع في اسم السجل
+    expect(await status(chat(A).sendMessage(id, { id: 'M8', name: 'عضو مصطنع أ', body: '', link: { type: 'unit', id: 'U1', label: 'x'.repeat(500) } }))).toBe(403);
     const got = await chat(B).messagesSince(id, null);
-    expect(got.map((m) => [m.from, m.body, m.link?.label])).toEqual([[A, 'رسالة مصطنعة', 'عقد مصطنع']]);
+    expect(got.map((m) => [m.from, m.name, m.body, m.link?.label])).toEqual([[A, 'عضو مصطنع أ', 'رسالة مصطنعة', 'عقد مصطنع']]);
     expect(got[0].ts).toMatch(/^\d{4}-/);
     expect((await chat(B).myThreads()).map((t) => t.id)).toEqual([id]);
     // المالك ليس طرفاً فيها: لا يقرؤها
@@ -86,7 +96,7 @@ d('قواعد المحادثة', () => {
     expect(await status(chat(A).createThread({ id: 'g_member01', k: 'group', p: [A, B].sort(), name: 'مجموعة عضو' }))).toBe(403);
     expect(await chat(B).createThread({ id: 'g_super01', k: 'group', p: [A, B].sort(), name: 'مجموعة مشرف' })).toBe('created');
     expect(await chat(ORG).createThread({ id: 'g_owner01', k: 'group', p: [ORG, A, B].sort(), name: 'مجموعة المالك' })).toBe('created');
-    expect(await status(chat(ORG).sendMessage('g_owner01', { id: 'G1', name: 'المالك', body: 'إعلان مصطنع', link: null }))).toBe(200);
+    expect(await status(chat(ORG).sendMessage('g_owner01', { id: 'G1', name: 'منشأة مصطنعة', body: 'إعلان مصطنع', link: null }))).toBe(200);
     expect((await chat(A).messagesSince('g_owner01', null)).map((m) => m.body)).toEqual(['إعلان مصطنع']);
     // غير العضو لا ينشئ في المنشأة ولو جعل نفسه طرفاً
     expect(await status(chat(OUT).createThread({ id: directId(OUT, A), k: 'direct', p: [OUT, A].sort(), name: '' }))).toBe(403);
