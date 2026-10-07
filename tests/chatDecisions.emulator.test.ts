@@ -109,6 +109,10 @@ d('قرارات المالك على مراجعة المحادثة', () => {
     expect(body.documents?.length).toBe(2);
     expect(body.documents?.every((d) => !d.fields || Object.keys(d.fields).length === 0)).toBe(true);
     await chat(ORG).closeDeletionWindow();
+    // ولا رسالة بلا فهرسها (ر١)
+    const lone = await fetch(url(`orgs/${ORG}/chats/${dAB}/msgs/MX1`), { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(A) },
+      body: JSON.stringify({ fields: encodeFields({ from: A, name: NAMES[A], body: 'بلا فهرس', link: null, att: null }) }) });
+    expect(lone.status).toBe(403);
     // ولا فهرس مزوّر لرسالة غيره
     const fake = await fetch(url(`orgs/${ORG}/chats/${dAB}/ids/MB1`), { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(A) }, body: JSON.stringify({ fields: {} }) });
     expect(fake.status).toBe(403);
@@ -128,6 +132,8 @@ d('قرارات المالك على مراجعة المحادثة', () => {
     expect((await chat(A).myThreads()).find((t) => t.id === 'g_decgroup1')!.p).toEqual([A, B].sort());
     // العضو أ يغادر: يخرج من المجموعة ومن الدليل · ولا يُخرج غيره
     expect(await status(chat(A).updateGroup('g_decgroup1', [A].sort(), 'مجموعة المشرف'))).toBe(403);
+    // ولا إعادة ترتيب ولا تكرار بحجة الإخراج (ر٢)
+    expect(await status(chat(A).updateGroup('g_decgroup1', [B, B], 'مجموعة المشرف'))).toBe(403);
     await chatLeaveOrg(session(A), ORG);
     expect((await chat(B).myThreads()).find((t) => t.id === 'g_decgroup1')!.p).toEqual([B]);
     expect((await chat(B).directory()).map((x) => x.uid)).not.toContain(A);
