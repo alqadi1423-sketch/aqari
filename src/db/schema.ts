@@ -6,7 +6,7 @@
 import { ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 33;
+export const SCHEMA_VERSION = 34;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1517,5 +1517,47 @@ export const MIGRATION_33 = `
 CREATE INDEX IF NOT EXISTS ix_jl_contract_account ON journal_lines(contract_id, account_code);
 `;
 
+/**
+ * الهجرة ٣٤ · المحادثة (src/chat · قرار المالك 2026-10-07): وحدة مستقلة بجداولها وحدها، خارج مزامنة الصفوف
+ * العامة والنسخ الدلالي · الرسالة لا تُحذف ولا تُعدَّل، والمرسَلة بلا اتصال تبقى «لم تُرسل» حتى عودته.
+ */
+export const MIGRATION_34 = `
+CREATE TABLE IF NOT EXISTS chat_threads (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL CHECK (kind IN ('direct','group')),
+  name        TEXT NOT NULL DEFAULT '',
+  members     TEXT NOT NULL DEFAULT '[]',
+  created_by  TEXT NOT NULL DEFAULT '',
+  created_at  TEXT,
+  last_ts     TEXT,
+  last_body   TEXT NOT NULL DEFAULT '',
+  read_ts     TEXT,
+  msg_cursor  TEXT,
+  pending     INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id          TEXT PRIMARY KEY,
+  thread_id   TEXT NOT NULL,
+  sender      TEXT NOT NULL,
+  sender_name TEXT NOT NULL DEFAULT '',
+  body        TEXT NOT NULL DEFAULT '',
+  link_type   TEXT,
+  link_id     TEXT,
+  link_label  TEXT,
+  local_at    TEXT NOT NULL,
+  server_ts   TEXT,
+  sent        INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_chat_msg_thread ON chat_messages(thread_id, local_at);
+CREATE TABLE IF NOT EXISTS chat_people (
+  uid         TEXT PRIMARY KEY,
+  name        TEXT NOT NULL DEFAULT '',
+  sup         TEXT NOT NULL DEFAULT '[]',
+  updated_at  TEXT
+);
+CREATE TRIGGER IF NOT EXISTS trg_chat_msg_no_delete BEFORE DELETE ON chat_messages
+BEGIN SELECT RAISE(ABORT, 'chat message is permanent'); END;
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34];

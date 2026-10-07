@@ -39,6 +39,7 @@ export const MORE_SCREENS: Array<{ title: string; items: Array<[string, string, 
     items: [
       ['/tenants', 'المستأجرون', 'كل مستأجر بعقوده وأرصدته ومرفقاته', 'collect'],
       ['/suppliers', 'الموردون', 'الموردون وموردو الخدمات وعداداتهم', 'supplier'],
+      ['/chat', '@chat.title', '@chat.menuSub', 'chat'],
       ['/scripts', 'قوالب الرسائل', 'نصوص جاهزة برموز تستدعي البيانات', 'message'],
     ],
   },

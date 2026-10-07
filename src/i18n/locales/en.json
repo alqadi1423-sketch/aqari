@@ -339,5 +339,40 @@
       "services": "Contract services amount",
       "parking": "Contract parking amount"
     }
+  },
+  "chat": {
+    "title": "Chat",
+    "menuSub": "Direct and group chats between members",
+    "needAccount": "Chat works after signing in to an organisation · every chat is between its members",
+    "empty": "No chats yet · start one with a member",
+    "newChat": "Chat",
+    "newGroup": "New group",
+    "groupName": "Group name",
+    "groupMembers": "Members",
+    "pickMembers": "Pick at least one member",
+    "create": "Create",
+    "pickPerson": "Chat with",
+    "noPeople": "No members in the directory yet · a member appears after their first sync",
+    "typeMessage": "Type a message",
+    "send": "Send",
+    "attach": "Link",
+    "back": "Chats",
+    "you": "You",
+    "member": "Member",
+    "owner": "Organisation owner",
+    "supervisor": "Section supervisor",
+    "supervisorOf": "Supervises: {{sections}}",
+    "notSent": "Not sent yet",
+    "nameOnly": "You have no access to this record · name only",
+    "attachmentsLater": "Photos, files and message notifications work after billing is enabled",
+    "linkTitle": "Link the message to a record",
+    "maintenanceLater": "Linking maintenance requests works once they are built",
+    "noRecords": "No records",
+    "link": {
+      "contract": "Contract",
+      "unit": "Unit",
+      "asset": "Asset",
+      "maintenance": "Maintenance request"
+    }
   }
 }

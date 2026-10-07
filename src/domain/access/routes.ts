@@ -35,6 +35,8 @@ export const ROUTE_SECTION: Record<string, SectionKey | null> = {
   '/audit-log': 'audit',
   '/perf': 'admin',
   '/settings': null,
+  // المحادثة لكل عضو في المنشأة (src/chat) · وما يُفتح منها من سجلات يتبع صلاحيته
+  '/chat': null,
 };
 
 /** مسار من شجرة expo-router (قد يحمل (tabs)) إلى مفتاح الجدول */

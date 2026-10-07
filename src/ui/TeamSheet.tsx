@@ -19,7 +19,8 @@ import { routeAllowed } from '../domain/access/routes';
 import { MONEY_SECTIONS } from '../domain/access/readSections';
 import { MORE_SCREENS, screenText } from './moreScreens';
 import { profileOf, type MemberDoc, type MemberSpec } from '../services/org';
-import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow, updateMemberProfileNow } from '../services/cloud';
+import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow, updateMemberProfileNow, chatSupervisorNow, setChatSupervisorNow } from '../services/cloud';
+import { useLang } from '../i18n';
 import { validateProfile, type MemberProfile } from '../domain/access/profile';
 
 type Team = Awaited<ReturnType<typeof listTeamNow>>;
@@ -102,7 +103,7 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
           initial={edit.doc}
           isNew={!edit.uid}
           onClose={() => setEdit(null)}
-          onSave={async (spec) => {
+          onSave={async (spec, sup) => {
             try {
               if (edit.uid) {
                 // البيانات أولاً بسجلها، ثم الصلاحية بالمستند كاملاً ومعه البيانات نفسها
@@ -114,6 +115,8 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
                 toast('حُفظت · تسري على جهازه عند أول اتصال');
               }
               else { const doc = await inviteMemberNow(db, spec); shareInvite(doc); }
+              // إشراف الأقسام في المحادثة (قرار المالك 2026-10-07) · بعد الصلاحية، وفشله لا يُسقط ما حُفظ
+              await setChatSupervisorNow(spec.email, sup).catch(() => {});
               setEdit(null);
               load();
             } catch (e) { await reportFailure({ title: 'تعذّر الحفظ', where: 'الأعضاء', db, e }); }
@@ -136,9 +139,15 @@ function shareInvite(doc: MemberDoc): void {
 }
 
 function MemberEditor({ initial, isNew, onClose, onSave }: {
-  initial: MemberDoc | null; isNew: boolean; onClose: () => void; onSave: (spec: MemberSpec) => Promise<void>;
+  initial: MemberDoc | null; isNew: boolean; onClose: () => void; onSave: (spec: MemberSpec, sup: string[]) => Promise<void>;
 }) {
   const { db } = useApp();
+  const { t } = useLang();
+  // «مشرف القسم» لكل قسم له فيه صلاحية · ينشئ المجموعات ويظهر إشرافه بجوار اسمه في المحادثة
+  const [sup, setSup] = useState<string[]>([]);
+  useEffect(() => {
+    if (initial?.email) chatSupervisorNow(initial.email).then(setSup).catch(() => {});
+  }, [initial?.email]);
   const [email, setEmail] = useState(initial?.email ?? '');
   const [perms, setPermsRaw] = useState<Perms>(initial?.perm ?? {});
   const [allProps, setAllPropsRaw] = useState(initial?.all ?? true);
@@ -162,7 +171,8 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
       footer={ready ? (
         <BtnPrimary title={isNew ? 'إرسال الدعوة' : 'حفظ الصلاحية'} loading={saving} onPress={async () => {
           setSaving(true);
-          await onSave({ email: isNew ? email : initial!.email, perms, allProps, props, profile: pv.ok ? pv.profile : undefined });
+          await onSave({ email: isNew ? email : initial!.email, perms, allProps, props, profile: pv.ok ? pv.profile : undefined },
+            sup.filter((k) => (perms[k as SectionKey] ?? 0) > 0));
           setSaving(false);
         }} />
       ) : null}>
@@ -206,6 +216,12 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
                     <Badge kind={cur === 0 ? 'draft' : cur === 3 ? 'paid' : 'due'} label={LEVEL_LABEL[cur]} />
                   </Row>
                 </Pressable>
+                {cur > 0 ? (
+                  <Row style={{ marginBottom: 6 }}>
+                    <Chip label={t('chat.supervisor')} active={sup.includes(k)}
+                      onPress={() => setSup((x) => (x.includes(k) ? x.filter((y) => y !== k) : [...x, k]))} />
+                  </Row>
+                ) : null}
                 {open ? levelsOf(k).map((l) => (
                   <Pressable key={l} onPress={() => { setPerms((p) => ({ ...p, [k]: l })); setOpenKey(null); }}>
                     <Row style={{ paddingVertical: 7, paddingHorizontal: 8, marginBottom: 4, borderRadius: 8,

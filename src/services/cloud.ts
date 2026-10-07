@@ -46,6 +46,7 @@ import { memberTokens, fullReadTables } from '../sync/acl';
 import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engine';
 import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
+import { runChatSync, setSupervisor, supervisorOf } from '../chat';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
@@ -288,7 +289,20 @@ export async function syncNow(): Promise<void> {
   } finally {
     running = false;
     patch({ syncing: false, progress: null, sync: syncStatus(db) });
+    // المحادثة بعد كل دورة (src/chat) · وحدة مستقلة: فشلها لا يمسّ المزامنة ولا يظهر خطأً عاماً
+    chatSyncNow().catch(() => {});
   }
+}
+
+/** دورة مزامنة للمحادثة وحدها · تستدعيها شاشتها أيضاً · بلا جلسة أو اتصال لا تفعل شيئاً */
+export async function chatSyncNow(): Promise<void> {
+  const s = getSession();
+  const db = appDb;
+  const cfg = cloudConfig();
+  const u = state.user;
+  if (!s || !db || !cfg || !u || !state.online) return;
+  if (activeAccount(db) !== u.uid) return;
+  await runChatSync(db, { projectId: cfg.projectId, uid: u.uid, email: u.email, idToken: () => s.idToken() });
 }
 
 /**
@@ -771,6 +785,17 @@ export async function updateMyProfileNow(db: DB, profile: MemberProfile) {
   });
 }
 export async function updateMemberNow(db: DB, uid: string, spec: MemberSpec) { const t = teamRemote(); return updateMember(t.remote, t.org, uid, spec, orgNameOf(db)); }
+/** إشراف عضو في المحادثة بإيميله (src/chat) · للمالك وحده */
+export async function chatSupervisorNow(email: string): Promise<string[]> {
+  const s = getSession(); const cfg = cloudConfig();
+  if (!s || !cfg || !state.user || !state.online || !email) return [];
+  return supervisorOf({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email);
+}
+export async function setChatSupervisorNow(email: string, sections: string[]): Promise<void> {
+  const s = getSession(); const cfg = cloudConfig();
+  if (!s || !cfg || !state.user) { teamRemote(); return; }
+  await setSupervisor({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email, sections);
+}
 export async function removeMemberNow(uid: string) { const t = teamRemote(); return removeMember(t.remote, t.org, uid); }
 export async function revokeInviteNow(email: string) { const t = teamRemote(); return revokeInvite(t.remote, t.org, email); }
 
