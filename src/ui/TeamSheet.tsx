@@ -220,7 +220,8 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
                     <Badge kind={cur === 0 ? 'draft' : cur === 3 ? 'paid' : 'due'} label={LEVEL_LABEL[cur]} />
                   </Row>
                 </Pressable>
-                {cur > 0 ? (
+                {/* الشارة بعد اكتمال تحميل الإشراف · فضغطةٌ قبله لا تمحو أقساماً لم تظهر بعد (التحقق ج١٢) */}
+                {cur > 0 && supKnown ? (
                   <Row style={{ marginBottom: 6 }}>
                     <Chip label={t('chat.supervisor')} active={sup.includes(k)}
                       onPress={() => setSup((x) => (x.includes(k) ? x.filter((y) => y !== k) : [...x, k]))} />

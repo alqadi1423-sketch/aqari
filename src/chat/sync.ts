@@ -56,8 +56,8 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
   const mySup = o.mySup ?? [];
 
   // ١) الدليل: اسمي وإشرافي حين يتغيران · وأسماء الأعضاء كل عشر دقائق أو بطلب
+  const sig = JSON.stringify([me.org, me.name, mySup]);
   try {
-    const sig = JSON.stringify([me.org, me.name, mySup]);
     if (getSyncState(db, 'chat_dir_sig') !== sig) {
       await remote.putMyDirectory(me.name, mySup);
       setSyncState(db, 'chat_dir_sig', sig);
@@ -83,7 +83,9 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
 
   // ٣) الرسائل المكتوبة بلا اتصال · ما لم تُرفع محادثتها بعد ينتظر الدورة التالية
   const unpushed = heldThreads(db);
-  for (const m of pendingMessages(db)) {
+  // لا ترفع قبل أن يُكتب اسمي الحالي في الدليل بنجاح · فالقاعدة تطابقه، ورفضٌ لسببٍ عابر يوسم الرسالة (التحقق ج١١)
+  const dirReady = getSyncState(db, 'chat_dir_sig') === sig;
+  for (const m of dirReady ? pendingMessages(db) : []) {
     if (unpushed.has(m.threadId)) continue;
     try {
       // باسمي الحالي في الدليل لا المحفوظ يوم الكتابة · فتغيّر الاسم لا يحبس الرسالة (قواعد الخادم تطابقه)
