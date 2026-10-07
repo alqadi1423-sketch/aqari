@@ -5,6 +5,7 @@ import { today } from '../dates';
 import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
+import { rentRevenueLines } from './rentSplit';
 import { dimsFromSource, hasDimColumns, lineDims, ambientCostCenter, inheritedCostCenter, GENERAL_COST_CENTER, type Dims } from './dimensions';
 
 export interface EntryLine {
@@ -401,7 +402,7 @@ export const postReservationForfeit = (db: DB, rv: { id: string; name: string; d
  */
 export const postReservationConvert = (
   db: DB,
-  rv: { id: string; amount: number; tenant: string; date: string; period?: string },
+  rv: { id: string; amount: number; tenant: string; date: string; period?: string; contractId?: string },
   contractNo: string
 ) =>
   rv.amount > 0
@@ -410,7 +411,7 @@ export const postReservationConvert = (
         memo: 'تحويل عربون إلى عقد ' + contractNo + ' · ' + rv.tenant + (rv.period ? ' · ' + rv.period : ''),
         lines: [
           { account: '2450', descr: 'إطفاء التزام العربون', debit: rv.amount, credit: 0 },
-          { account: '4200', descr: 'إيراد إيجار من العربون', debit: 0, credit: rv.amount },
+          ...rentRevenueLines(db, rv.contractId, rv.amount, 'إيراد إيجار من العربون', 'credit'),
         ],
         srcType: 'reservation_convert',
         srcId: rv.id,
@@ -491,7 +492,7 @@ export const postRentCollection = (
         lines: [
           { account: CASH, descr: 'إيجار محصَّل', debit: args.net, credit: 0 },
           { account: DISCOUNT_ACCOUNT, descr: 'خصم ممنوح بعد الاستحقاق', debit: booked, credit: 0 },
-          { account: '4200', descr: 'إيراد إيجار', debit: 0, credit: revenue },
+          ...rentRevenueLines(db, args.contractId, revenue, 'إيراد إيجار', 'credit'),
         ],
         srcType: 'rent',
         srcId: args.srcId,
@@ -512,7 +513,7 @@ export const postBookedDiscount = (
     memo: 'خصم ممنوح بعد الاستحقاق · ' + d.tenant + ' (عقد ' + d.contractNo + ') · دفعة ' + d.paymentDate,
     lines: [
       { account: DISCOUNT_ACCOUNT, descr: 'خصم ممنوح بعد الاستحقاق', debit: d.amount, credit: 0 },
-      { account: '4200', descr: 'إيراد إيجار يقابل الخصم', debit: 0, credit: d.amount },
+      ...rentRevenueLines(db, db.get<{ c: string }>(`SELECT contract_id AS c FROM contract_payments WHERE id = ?`, [d.paymentId])?.c, d.amount, 'إيراد إيجار يقابل الخصم', 'credit'),
     ],
     srcType: DISCOUNT_ENTRY_SRC,
     srcId: d.paymentId,

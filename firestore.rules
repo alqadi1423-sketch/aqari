@@ -63,7 +63,7 @@ service cloud.firestore {
         || (r.t == 'claims' && intOrAbsent(r.d, 'amount_halalas'))
         || (r.t == 'contract_installments' && intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'paid_halalas'))
         || (r.t == 'contract_payments' && intOrAbsent(r.d, 'gross_halalas') && intOrAbsent(r.d, 'discount_halalas') && intOrAbsent(r.d, 'net_halalas'))
-        || (r.t == 'contracts' && intOrAbsent(r.d, 'value_halalas') && intOrAbsent(r.d, 'deposit_halalas') && intOrAbsent(r.d, 'cancel_deduction_halalas') && intOrAbsent(r.d, 'cancel_refund_halalas'))
+        || (r.t == 'contracts' && intOrAbsent(r.d, 'value_halalas') && intOrAbsent(r.d, 'deposit_halalas') && intOrAbsent(r.d, 'cancel_deduction_halalas') && intOrAbsent(r.d, 'cancel_refund_halalas') && intOrAbsent(r.d, 'services_halalas') && intOrAbsent(r.d, 'parking_halalas'))
         || (r.t == 'deposit_settlements' && intOrAbsent(r.d, 'deduction_halalas') && intOrAbsent(r.d, 'refund_halalas'))
         || (r.t == 'invoice_lines' && intOrAbsent(r.d, 'price_halalas'))
         || (r.t == 'invoices' && intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas') && intOrAbsent(r.d, 'total_halalas'))

@@ -19,6 +19,7 @@ import { fmt } from './money';
 import { postBookedDiscount, postEntry, type PostedEntry } from './accounting/post';
 import { walletCashBalance } from './accounting/ledger';
 import { DERIVED_PAID_SQL, recomputeInstallments } from './contracts/paid';
+import { rentRevenueLines, RENT_REVENUE_SQL } from './accounting/rentSplit';
 import {
   INSTALLMENT_DISCOUNT_SQL, installmentStoredStatus, DISCOUNT_ACCOUNT, DISCOUNT_ENTRY_SRC,
   DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind,
@@ -99,7 +100,7 @@ export function planLedgerRepair(db: DB): LedgerRepairPlan {
     }
     const cash = db.get<{ c: number; n: number }>(
       `SELECT COALESCE(SUM(CASE
-                WHEN l.account_code = '4200' THEN l.credit_halalas - l.debit_halalas
+                WHEN l.account_code IN (${RENT_REVENUE_SQL}) THEN l.credit_halalas - l.debit_halalas
                 WHEN l.account_code = '${DISCOUNT_ACCOUNT}' THEN l.credit_halalas - l.debit_halalas
                 ELSE 0 END), 0) AS c,
               COUNT(DISTINCT p.journal_entry_id) AS n
@@ -372,7 +373,7 @@ export function contractSurpluses(db: DB): ContractSurplus[] {
   }>(
     `SELECT c.id, c.contract_no, c.tenant_name, c.tenant_id,
             /* تشمل الملغاة: قيودها معكوسة فيستبعدها reversed_by */
-            COALESCE((SELECT SUM(CASE WHEN l.account_code IN ('4200', '${DISCOUNT_ACCOUNT}') THEN l.credit_halalas - l.debit_halalas ELSE 0 END)
+            COALESCE((SELECT SUM(CASE WHEN l.account_code IN (${RENT_REVENUE_SQL}, '${DISCOUNT_ACCOUNT}') THEN l.credit_halalas - l.debit_halalas ELSE 0 END)
                       FROM contract_payments p
                       JOIN journal_entries e ON e.id = p.journal_entry_id AND e.status = 'مرحّل' AND e.reversed_by IS NULL
                       JOIN journal_lines l ON l.entry_id = e.id
@@ -380,7 +381,7 @@ export function contractSurpluses(db: DB): ContractSurplus[] {
             COALESCE((SELECT SUM(paid_halalas) FROM contract_installments WHERE contract_id = c.id AND status != 'ملغية'), 0) AS live_paid,
             COALESCE((SELECT SUM(paid_halalas) FROM contract_installments WHERE contract_id = c.id AND status = 'ملغية'), 0) AS dead_paid,
             COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
-                      FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code = '4200'
+                      FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id AND l.account_code IN (${RENT_REVENUE_SQL})
                       WHERE e.src_type IN ('${SURPLUS_REFUND_SRC}', '${SURPLUS_CREDIT_SRC}') AND e.src_id = c.id
                         AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) AS settled
      FROM contracts c
@@ -442,11 +443,11 @@ export function settleSurplus(db: DB, contractId: string, input: SettleSurplusIn
         + (input.notes?.trim() ? ' · ' + input.notes.trim() : ''),
       lines: refund
         ? [
-            { account: '4200', descr: 'ردّ ما قُبض فوق الأقساط', debit: amount, credit: 0 },
+            ...rentRevenueLines(db, s.contractId, amount, 'ردّ ما قُبض فوق الأقساط', 'debit'),
             { account: '1100', descr: input.method === 'bank' ? 'تحويل للمستأجر' : 'نقد للمستأجر', debit: 0, credit: amount },
           ]
         : [
-            { account: '4200', descr: 'ما قُبض فوق الأقساط', debit: amount, credit: 0 },
+            ...rentRevenueLines(db, s.contractId, amount, 'ما قُبض فوق الأقساط', 'debit'),
             { account: '2410', descr: 'رصيد دائن للمستأجر', debit: 0, credit: amount },
           ],
       srcType: refund ? SURPLUS_REFUND_SRC : SURPLUS_CREDIT_SRC,

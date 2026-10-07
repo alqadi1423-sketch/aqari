@@ -45,6 +45,8 @@ import { SYNC_TABLES } from '../db/syncTables';
 import { memberTokens, fullReadTables } from '../sync/acl';
 import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engine';
 import { autoDepreciate } from '../domain/assets/auto';
+import { syncLanguageWithAccount } from '../i18n/device';
+import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
 import { makeSafetyBackup } from '../domain/backup/create';
@@ -223,6 +225,9 @@ export async function syncNow(): Promise<void> {
     // enableSync لا يفعل شيئاً للحساب نفسه سوى تشغيل الالتقاط، ولغيره ينضمّ من جديد
     const uid = state.user.uid;
     const idToken = () => s.idToken();
+    // لغة المستخدم تتبعه على أجهزته وتُزامَن مع حسابه (قرار المالك ٢٠٢٦-١٠-٠٧) · فشلها لا يعطّل المزامنة
+    const prefsAt = { projectId: cfg.projectId, uid, idToken };
+    syncLanguageWithAccount(uid, { get: () => getCloudLang(prefsAt), put: (c) => putCloudLang(prefsAt, c) }).catch(() => {});
     // صفوف المرفقات تُزامَن حين يعمل تخزين الملفات وحده (النموذج المختلط) · وأول تشغيل يرفعها كلها
     setFilesSync(db, filesCloudOn());
     const member = readMembership(db);

@@ -11,7 +11,7 @@ export type IconName =
   | 'search' | 'back' | 'arrowBack' | 'dots' | 'home' | 'building' | 'contract' | 'collect' | 'menu'
   | 'calendar' | 'lock' | 'check' | 'pin' | 'bank' | 'tx' | 'settings' | 'library'
   | 'phone' | 'chat' | 'map' | 'claim' | 'message' | 'invoice' | 'supplier' | 'chart'
-  | 'shield' | 'bell' | 'reload' | 'x' | 'bolt' | 'drop' | 'wifi' | 'filter';
+  | 'shield' | 'bell' | 'reload' | 'x' | 'bolt' | 'drop' | 'wifi' | 'filter' | 'flame';
 
 const P: Record<IconName, React.ReactNode> = {
   trash: <Path d="M4 6h16M9 6V4h6v2m-8 0 1 14h8l1-14" />,
@@ -65,6 +65,7 @@ const P: Record<IconName, React.ReactNode> = {
   bolt: <Path d="M13 2L4.5 13.5h6L11 22l8.5-11.5h-6L13 2z" />,
   drop: <Path d="M12 2.7S5.5 9.9 5.5 14.5a6.5 6.5 0 0 0 13 0C18.5 9.9 12 2.7 12 2.7z" />,
   wifi: <><Path d="M2.5 8.8a15.5 15.5 0 0 1 19 0M5.6 12.2a10.5 10.5 0 0 1 12.8 0M8.8 15.6a5.5 5.5 0 0 1 6.4 0" /><Circle cx={12} cy={19} r={1.3} /></>,
+  flame: <Path d="M12 2.5c.6 3.4 4.8 5.6 4.8 10.2a4.8 4.8 0 0 1-9.6 0c0-2.2 1.1-3.6 2.3-4.8.2 1.5 1 2.4 1.9 2.4 0-3 .1-5.3.6-7.8z" />,
 };
 
 /**

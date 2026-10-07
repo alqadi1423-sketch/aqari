@@ -527,6 +527,7 @@ import { reportFailure } from '../../src/ui/failureDialog';
 
 import { CostCenterField } from '../../src/ui/CostCenters';
 import { ScheduleReview } from '../../src/ui/ScheduleReview';
+import { revenueSplitOf } from '../../src/ui/contractForm';
 import { LeaseCompare, useLeaseDiffs } from '../../src/ui/LeaseCompare';
 import { applyExtras, type ExtraDiff, type ExtraKey } from '../../src/domain/pdf/ejarExtras';
 import { useLang } from '../../src/i18n';
@@ -575,7 +576,7 @@ function ReviewSheet({
         </Row>
       ))}
       <View style={{ marginTop: 12 }}>
-        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} financial={form.extras?.financial} />
+        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} financial={form.extras?.financial} split={revenueSplitOf(form.extras)} />
         <LeaseCompare extras={form.extras} diffs={leaseDiffs} approved={approved} onChange={onApproved} />
         <CostCenterField value={cc} onChange={onCc} />
         <Note>بعد الإنشاء لا يمكن تعديل العقد أو حذفه · يُلغى فقط.</Note>

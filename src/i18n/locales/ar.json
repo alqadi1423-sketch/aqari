@@ -69,8 +69,12 @@
       "tenant_email": "بريد المستأجر",
       "meter_electricity": "عداد الكهرباء",
       "meter_water": "عداد المياه",
-      "meter_gas": "عداد الغاز"
-    }
+      "meter_gas": "عداد الغاز",
+      "unit_rooms": "غرف الوحدة"
+    },
+    "revServices": "إيراد خدمات (غاز وكهرباء ومياه)",
+    "revParking": "إيراد مواقف",
+    "splitLine": "منها إيجار {{rent}} · خدمات {{services}} · مواقف {{parking}}"
   },
   "dataLabels": {
     "table": {
@@ -80,7 +84,9 @@
     "column": {
       "cost_halalas": "تكلفة الأصل",
       "salvage_halalas": "القيمة المتبقية",
-      "sale_halalas": "مبلغ البيع"
+      "sale_halalas": "مبلغ البيع",
+      "services_halalas": "مبلغ الخدمات في العقد",
+      "parking_halalas": "مبلغ المواقف في العقد"
     }
   },
   "assets": {

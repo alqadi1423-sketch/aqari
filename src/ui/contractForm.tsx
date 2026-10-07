@@ -17,7 +17,8 @@ import { contractEndFromDuration, today, dfmt } from '../domain/dates';
 import { scanContractFile } from '../services/contractScan';
 import { anchorDiagnostics } from '../domain/pdf/parseEjar';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../domain/contracts/vocab';
-import { parseEjarExtras, unitByNumber, type EjarExtras } from '../domain/pdf/ejarExtras';
+import { parseEjarExtras, unitByNumber, revenueSplitOf, type EjarExtras } from '../domain/pdf/ejarExtras';
+export { revenueSplitOf };
 import type { ContractDraftInput } from '../domain/contracts/service';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
 import type { ContractField } from '../domain/contracts/rules';
@@ -111,8 +112,10 @@ export function formToInput(s: ContractFormState): ContractDraftInput {
     reservationId: s.reservationId || null,
     schedule: s.schedule,
     fromEjarFile: s.fromEjarFile,
+    ...revenueSplitOf(s.extras),
   };
 }
+
 
 export function useContractForm() {
   const [state, setState] = useState<ContractFormState>(emptyContractForm());

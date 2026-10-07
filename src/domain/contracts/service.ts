@@ -44,6 +44,7 @@ import { linkContractTenant } from '../tenants';
 import { seedTenantOccupant, carryOccupantsToRenewal } from '../occupants';
 import { createHandoverForContract } from '../handover/service';
 import { normalizePhone } from '../phone';
+import { rentRevenueLines } from '../accounting/rentSplit';
 
 export class RuleViolation extends Error {
   /** الحقل المسبِّب · تظلّله الواجهة بالأحمر */
@@ -78,6 +79,19 @@ export interface ContractDraftInput {
   schedule?: ScheduleRow[] | null;
   /** العقد قُرئ من ملف إيجار · فإن تعذّر جدوله حُسبت الأقساط ونُبّه عليها */
   fromEjarFile?: boolean;
+  /** ما في قيمة العقد للخدمات (غاز وكهرباء ومياه) وللمواقف · يُقسم بهما الإيراد (الهجرة ٣٢) */
+  servicesHalalas?: number;
+  parkingHalalas?: number;
+}
+
+/** مبلغا الخدمات والمواقف في العقد · لا يتجاوزان قيمته (وإلا بقي الإيراد كله إيجاراً) */
+function saveRevenueSplit(db: DB, id: string, input: ContractDraftInput): void {
+  if (input.servicesHalalas === undefined && input.parkingHalalas === undefined) return;
+  if (!db.all<{ name: string }>(`PRAGMA table_info(contracts)`).some((c) => c.name === 'services_halalas')) return;
+  const s = Math.max(0, input.servicesHalalas ?? 0);
+  const p = Math.max(0, input.parkingHalalas ?? 0);
+  const ok = s + p <= input.valueHalalas;
+  db.run(`UPDATE contracts SET services_halalas = ?, parking_halalas = ? WHERE id = ?`, [ok ? s : 0, ok ? p : 0, id]);
 }
 
 /** مصدر تواريخ الأقساط (الهجرة ٢٤) */
@@ -245,6 +259,7 @@ export function confirmContract(db: DB, input: ContractDraftInput, draftId?: str
         [id, ...fields, new Date().toISOString()]
       );
     }
+    saveRevenueSplit(db, id, input);
     // «جدول الدفعات يُولَّد آلياً عند الإنشاء ولا يُعاد توليده»
     const hasInstallments = db.get(
       `SELECT id FROM contract_installments WHERE contract_id = ? LIMIT 1`, [id]
@@ -320,7 +335,7 @@ export function allocateDeposit(
     const amt = Math.min(left, i.remaining);
     left -= amt;
     const period = 'قسط ' + dfmt(i.due_date);
-    const entry = postReservationConvert(db, { id: a.rsvId, amount: amt, tenant: a.tenant, date: a.date, period }, a.contractNo);
+    const entry = postReservationConvert(db, { id: a.rsvId, amount: amt, tenant: a.tenant, date: a.date, period, contractId: a.contractId }, a.contractNo);
     db.run(
       `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
         discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
@@ -778,7 +793,7 @@ export function recordBulkRentPayment(
       srcId: contractId,
       lines: [
         { account: '1100', descr: 'تحصيل جماعي', debit: net, credit: 0 },
-        ...(allocated > 0 ? [{ account: '4200', descr: 'إيجار مخصَّص على ' + allocations.length + ' قسط', debit: 0, credit: allocated }] : []),
+        ...(allocated > 0 ? rentRevenueLines(db, contractId, allocated, 'إيجار مخصَّص على ' + allocations.length + ' قسط', 'credit') : []),
         ...(excess > 0 ? [{ account: '2410', descr: 'فائض تحصيل · رصيد دائن للمستأجر', debit: 0, credit: excess }] : []),
       ],
     });

@@ -36,6 +36,8 @@ export const MIGRATED_SYSTEM_ACCOUNTS: Array<{ code: string; name: string; type:
   { code: '2410', name: 'أرصدة مستأجرين دائنة', type: 'خصم', grp: null },
   { code: '4900', name: 'خصومات ممنوحة', type: 'مصروف', grp: null },
   { code: '5900', name: 'فروق تقريب', type: 'مصروف', grp: null },
+  { code: '4210', name: 'إيرادات الخدمات (غاز وكهرباء ومياه)', type: 'إيراد', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٣٢)
+  { code: '4220', name: 'إيرادات المواقف', type: 'إيراد', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٣٢)
   { code: '1410', name: 'مكيفات وتبريد', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
   { code: '1420', name: 'أجهزة منزلية كبيرة', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
   { code: '1430', name: 'أثاث ومفروشات', type: 'أصل', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)

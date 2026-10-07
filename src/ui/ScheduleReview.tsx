@@ -14,10 +14,12 @@ import { scheduleInstallments } from '../domain/contracts/service';
 import { generateInstallments } from '../domain/contracts/installments';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
 
-export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFile, financial }: {
+export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFile, financial, split }: {
   start: string; end: string; value: string; cycle: string; schedule?: ScheduleRow[] | null; fromEjarFile?: boolean;
   /** البيانات المالية المقروءة · لفحص عدد الصفوف والدفعة الدورية والأخيرة */
   financial?: EjarExtras['financial'];
+  /** ما في القيمة للخدمات والمواقف · يُعرض تفصيلها */
+  split?: { servicesHalalas?: number; parkingHalalas?: number };
 }) {
   const { t } = useLang();
   const rows = useMemo(() => {
@@ -36,6 +38,9 @@ export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFil
       {rows.read
         ? <Note tone="ok">{t('lease.scheduleRead')}</Note>
         : fromEjarFile ? <Note tone="danger">{t('lease.scheduleComputedFromFile')}</Note> : <Note>{t('lease.scheduleComputed')}</Note>}
+      {split && (split.servicesHalalas || split.parkingHalalas) ? (
+        <T size={TYPE.caption} color={C.muted}>{t('lease.splitLine', { rent: fmt(toHalalas(value) - (split.servicesHalalas ?? 0) - (split.parkingHalalas ?? 0)), services: fmt(split.servicesHalalas ?? 0), parking: fmt(split.parkingHalalas ?? 0) })}</T>
+      ) : null}
       {rows.read && financial ? scheduleChecks(schedule, financial).map((c) => (
         <Note key={c.code} tone="danger">{t('lease.check.' + c.code, { expected: c.code === 'count' ? c.expected : fmt(c.expected), actual: c.code === 'count' ? c.actual : fmt(c.actual) })}</Note>
       )) : null}

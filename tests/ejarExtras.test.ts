@@ -84,12 +84,37 @@ test('المقارنة بالقائم: الفارغ يُملأ افتراضاً 
   const deed = diffs.find((d) => d.key === 'property.deed')!;
   expect([deed.current, deed.read, deed.fillsEmpty]).toEqual(['999', '123456789012', false]);
   expect(diffs.find((d) => d.key === 'property.address')!.fillsEmpty).toBe(true);
-  expect(diffs.find((d) => d.key === 'meter.gas')!.noSlot).toBe(true);
+  expect(diffs.find((d) => d.key === 'meter.gas')!.fillsEmpty).toBe(true);
   // يُكتب ما وافق عليه وحده: العنوان والعداد · والصك المختلف بلا موافقة يبقى
   const n = applyExtras(db, diffs, new Set(['property.address', 'meter.electricity', 'meter.gas']), { unitId: u, tenantName: 'مستأجر مصطنع', start: '2026-01-01', handoverRef: 'قراءة استلام' });
-  expect(n).toBe(2);
+  expect(n).toBe(3);
+  expect(db.get<{ n: string }>(`SELECT number AS n FROM meters WHERE owner_id = ? AND kind = 'غاز'`, [u])!.n).toBe('55667788');
   expect(db.get<{ a: string; d: string }>(`SELECT address AS a, deed_no AS d FROM properties WHERE id = ?`, [p])).toEqual({ a: 'حي مصطنع، شارع الاختبار', d: '999' });
   const m = db.get<{ id: string; number: string }>(`SELECT id, number FROM meters WHERE owner_id = ? AND kind = 'كهرباء'`, [u])!;
   expect(m.number).toBe('33445566');
   expect(db.get<{ r: number }>(`SELECT reading AS r FROM meter_readings WHERE meter_id = ?`, [m.id])!.r).toBe(1520);
+});
+
+test('جدول الغرف والمكيفات على هيئته: أزواج «نوع وعدد» بأيّ الترتيبين · والغرف الناقصة وحدها تُضاف', async () => {
+  const { pairsOf, roomNames } = await import('@/domain/pdf/ejarExtras');
+  expect(pairsOf('2 غرفة نوم 1 صالة 1 مطبخ')).toEqual([{ type: 'غرفة نوم', count: 2 }, { type: 'صالة', count: 1 }, { type: 'مطبخ', count: 1 }]);
+  expect(pairsOf('غرفة نوم 2 دورة مياه 2')).toEqual([{ type: 'غرفة نوم', count: 2 }, { type: 'دورة مياه', count: 2 }]);
+  expect(pairsOf('نوع الغرفة العدد')).toEqual([]);
+  expect(roomNames([{ type: 'غرفة نوم', count: 2 }, { type: 'صالة', count: 1 }])).toEqual(['غرفة نوم 1', 'غرفة نوم 2', 'صالة']);
+  const text = TEXT.replace('Current meter reading 1520',
+    'Number Room Type\nNumber Room Type\n2 غرفة نوم 1 صالة\nNumber AC Type\n3 سبليت\nCurrent meter reading 1520');
+  const x = parseEjarExtras(text);
+  expect(x.rooms).toEqual([{ type: 'غرفة نوم', count: 2 }, { type: 'صالة', count: 1 }]);
+  expect(x.acUnits).toEqual([{ type: 'سبليت', count: 3 }]);
+  const db = memDb();
+  const p = addProperty(db, { name: 'عقار غرف مصطنع' });
+  const u = addUnit(db, p, { unit_no: '9' });
+  db.run(`INSERT INTO unit_rooms (id, unit_id, room_name, sort) VALUES ('r1', ?, 'صالة', 0)`, [u]);
+  db.run(`INSERT INTO unit_room_items (id, room_id, name, descr, sort) VALUES ('i1', 'r1', 'كنبة', '', 0)`);
+  const diffs = compareExtras(db, x, { unitId: u, tenantName: 'مستأجر مصطنع' });
+  const rooms = diffs.find((d) => d.key === 'unit.rooms')!;
+  expect([rooms.current, rooms.fillsEmpty]).toEqual(['صالة', false]);
+  applyExtras(db, diffs, new Set(['unit.rooms']), { unitId: u, tenantName: 'مستأجر مصطنع', start: '2026-01-01', handoverRef: 'قراءة استلام' });
+  expect(db.all<{ n: string }>(`SELECT room_name AS n FROM unit_rooms WHERE unit_id = ? ORDER BY sort`, [u]).map((r) => r.n)).toEqual(['صالة', 'غرفة نوم 1', 'غرفة نوم 2']);
+  expect(db.get(`SELECT 1 FROM unit_room_items WHERE id = 'i1'`)).toBeTruthy();
 });

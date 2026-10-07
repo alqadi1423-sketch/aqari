@@ -3,10 +3,10 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-import { ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES } from './syncTables';
+import { ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 32;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1473,5 +1473,41 @@ export const MIGRATION_30 = `
 ALTER TABLE invoices ADD COLUMN cost_center_id TEXT;
 `;
 
+/**
+ * الهجرة ٣١ · عداد الغاز نوعاً للعدادات (قرار المالك ٢٠٢٦-١٠-٠٧) · SQLite لا يعدّل قيد CHECK فيُعاد بناء الجدول
+ * بأعمدته وصفوفه كما هي (المفاتيح الأجنبية مطفأة أثناء الهجرات فلا تُمسّ القراءات)، ثم فهارسه ومحفّزات مزامنته.
+ */
+// i18n-exempt: أنواع العدادات المخزّنة
+export const MIGRATION_31 = `
+CREATE TABLE meters_new (
+  id          TEXT PRIMARY KEY,
+  owner_type  TEXT NOT NULL CHECK (owner_type IN ('property','unit')),
+  owner_id    TEXT NOT NULL,
+  kind        TEXT NOT NULL CHECK (kind IN ('كهرباء','ماء','إنترنت','غاز')),
+  number      TEXT NOT NULL,
+  supplier_id TEXT REFERENCES suppliers(id),
+  deleted_at  TEXT
+);
+INSERT INTO meters_new (id, owner_type, owner_id, kind, number, supplier_id, deleted_at)
+  SELECT id, owner_type, owner_id, kind, number, supplier_id, deleted_at FROM meters;
+DROP TABLE meters;
+ALTER TABLE meters_new RENAME TO meters;
+CREATE INDEX ix_meters_owner ON meters(owner_type, owner_id);
+CREATE INDEX ix_meters_supplier ON meters(supplier_id);
+${buildSyncTriggers([syncTable('meters')!])}
+`;
+
+/**
+ * الهجرة ٣٢ · فصل إيراد العقد (قرار المالك ٢٠٢٦-١٠-٠٧): حسابا «إيرادات الخدمات» 4210 و«إيرادات المواقف» 4220
+ * تحت 4200، ومبلغا الخدمات والمواقف في العقد (جزءٌ من قيمته) · الإيراد يُقسم بنسبتهما (accounting/rentSplit.ts).
+ */
+// i18n-exempt: أسماء حسابات النظام المخزّنة
+export const MIGRATION_32 = `
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('4210', 'إيرادات الخدمات (غاز وكهرباء ومياه)', 'إيراد', NULL, 0, 1, datetime('now'));
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('4220', 'إيرادات المواقف', 'إيراد', NULL, 0, 1, datetime('now'));
+ALTER TABLE contracts ADD COLUMN services_halalas INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE contracts ADD COLUMN parking_halalas INTEGER NOT NULL DEFAULT 0;
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32];

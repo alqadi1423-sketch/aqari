@@ -187,3 +187,15 @@ d('قواعد Firestore · users/{uid}', () => {
     expect(((await meta.json()) as { documents?: unknown[] }).documents ?? []).toEqual([]);
   });
 });
+
+d('قواعد Firestore · لغة المستخدم في users/{uid}', () => {
+  test('صاحب الحساب يكتب لغته ويقرؤها · وغيره لا يقرؤها ولا يكتبها', async () => {
+    const { getCloudLang, putCloudLang } = await import('@/cloud/userPrefs');
+    const at = (uid: string, asUid = uid) => ({ projectId: PROJECT, uid, idToken: async () => token(asUid), baseUrl: 'http://' + HOST });
+    await putCloudLang(at('L1'), { pref: 'en', at: '2026-01-05T00:00:00.000Z' });
+    expect(await getCloudLang(at('L1'))).toEqual({ pref: 'en', at: '2026-01-05T00:00:00.000Z' });
+    await expect(getCloudLang(at('L1', 'L2'))).rejects.toThrow(/403/);
+    await expect(putCloudLang(at('L1', 'L2'), { pref: 'ar', at: '2026-01-06T00:00:00.000Z' })).rejects.toThrow(/403/);
+    expect(await getCloudLang(at('L9'))).toBeNull();
+  });
+});

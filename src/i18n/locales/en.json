@@ -69,8 +69,12 @@
       "tenant_email": "Tenant email",
       "meter_electricity": "Electricity meter",
       "meter_water": "Water meter",
-      "meter_gas": "Gas meter"
-    }
+      "meter_gas": "Gas meter",
+      "unit_rooms": "Unit rooms"
+    },
+    "revServices": "Services revenue (gas, electricity, water)",
+    "revParking": "Parking revenue",
+    "splitLine": "Of which rent {{rent}} · services {{services}} · parking {{parking}}"
   },
   "dataLabels": {
     "table": {
@@ -80,7 +84,9 @@
     "column": {
       "cost_halalas": "Asset cost",
       "salvage_halalas": "Residual value",
-      "sale_halalas": "Sale amount"
+      "sale_halalas": "Sale amount",
+      "services_halalas": "Contract services amount",
+      "parking_halalas": "Contract parking amount"
     }
   },
   "assets": {

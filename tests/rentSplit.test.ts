@@ -1,0 +1,59 @@
+/**
+ * فصل إيراد العقد (قرار المالك ٢٠٢٦-١٠-٠٧ · الهجرة ٣٢): الأقساط كما هي، والإيراد يُقسم بنسبة الخدمات والمواقف
+ * في قيمة العقد على 4200 و4210 و4220 · والعقد بلا تفصيل كله إيجار · ومراجعة الدفتر تعدّ الثلاثة معاً · بيانات مصطنعة.
+ */
+import { memDb } from './helpers/testDb';
+import { addProperty, addUnit, contractInput } from './helpers/fixtures';
+import type { DB } from '@/db/adapter';
+import { confirmContract, recordRentPayment } from '@/domain/contracts/service';
+import { accountMovement } from '@/domain/accounting/ledger';
+import { planLedgerRepair } from '@/domain/ledgerReview';
+import { rentSplit } from '@/domain/accounting/rentSplit';
+import { revenueSplitOf } from '@/domain/pdf/ejarExtras';
+
+const credit = (db: DB, code: string) => { const m = accountMovement(db, code, null, null); return m.credit - m.debit; };
+const firstInst = (db: DB, c: string) => db.get<{ id: string; due_date: string; amount_halalas: number }>(
+  `SELECT id, due_date, amount_halalas FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1`, [c])!;
+
+function world(split: { servicesHalalas?: number; parkingHalalas?: number }) {
+  const db = memDb();
+  const u = addUnit(db, addProperty(db, { name: 'عقار فصل الإيراد' }), { unit_no: 'S-1' });
+  // ستة آلاف للعقد: منها تسعمئة خدمات وثلاثمئة مواقف
+  const c = confirmContract(db, { ...contractInput(u, { tenant: 'مستأجر فصل مصطنع', idNumber: '1000007001', phone: '0500007001', depositHalalas: 0, start: '2026-01-01', end: '2026-12-31', valueHalalas: 600000, cycle: 'شهرية' } as never), ...split });
+  return { db, c };
+}
+
+test('التحصيل يُقسم بالنسبة على الإيجار والخدمات والمواقف · والقسط كما هو', () => {
+  const { db, c } = world({ servicesHalalas: 90000, parkingHalalas: 30000 });
+  const i = firstInst(db, c);
+  expect(i.amount_halalas).toBe(50000);
+  recordRentPayment(db, c, { installmentId: i.id, period: i.due_date, date: i.due_date, lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  expect(credit(db, '4210')).toBe(7500);
+  expect(credit(db, '4220')).toBe(2500);
+  expect(credit(db, '4200')).toBe(40000);
+  // مراجعة الدفتر لا ترى فرقاً: المحصَّل من الحسابات الثلاثة
+  expect(planLedgerRepair(db).changes).toEqual([]);
+});
+
+test('العقد بلا تفصيل: الإيراد كله إيجار كما كان · وتفصيلٌ يتجاوز القيمة لا يُعتمد', () => {
+  const { db, c } = world({});
+  const i = firstInst(db, c);
+  recordRentPayment(db, c, { installmentId: i.id, period: i.due_date, date: i.due_date, lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  expect([credit(db, '4200'), credit(db, '4210'), credit(db, '4220')]).toEqual([50000, 0, 0]);
+  const { db: db2, c: c2 } = world({ servicesHalalas: 700000 });
+  expect(rentSplit(db2, c2, 50000)).toEqual({ rent: 50000, services: 0, parking: 0 });
+});
+
+test('الهللات الباقية على الإيجار فيطابق المجموع المحصَّل', () => {
+  const { db, c } = world({ servicesHalalas: 100000, parkingHalalas: 100000 });
+  const sp = rentSplit(db, c, 10001);
+  expect(sp.rent + sp.services + sp.parking).toBe(10001);
+  expect(sp.services).toBe(Math.floor((10001 * 100000) / 600000));
+});
+
+test('الخدمات والمواقف من بيانات العقد المقروءة: الخدمات مجموع الثلاثة، والمواقف الباقي بعد الإيجار والخدمات', () => {
+  expect(revenueSplitOf({ property: {}, unit: {}, tenant: {}, lessor: {}, meters: [], rooms: [], acUnits: [], financial: { totalValue: 690000, rentValue: 600000, gas: 0, electricity: 60000, water: 30000 } }))
+    .toEqual({ servicesHalalas: 90000, parkingHalalas: 0 });
+  expect(revenueSplitOf({ property: {}, unit: {}, tenant: {}, lessor: {}, meters: [], rooms: [], acUnits: [], financial: { totalValue: 600000, rentValue: 600000 } })).toEqual({});
+  expect(revenueSplitOf(null)).toEqual({});
+});

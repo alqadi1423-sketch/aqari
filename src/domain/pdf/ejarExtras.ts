@@ -13,6 +13,8 @@ import { FURNISHED_OPTIONS } from '../contracts/vocab';
 import { floorLabels } from '../propertiesService';
 
 export type MeterKind = 'electricity' | 'water' | 'gas';
+// i18n-exempt: أنواع العدادات المخزّنة (الغاز منذ الهجرة ٣١)
+const METER_KIND_OF: Record<MeterKind, string> = { electricity: 'كهرباء', water: 'ماء', gas: 'غاز' };
 export interface EjarExtras {
   property: { nationalAddress?: string; usage?: string; floors?: number; deedNo?: string };
   unit: { unitNo?: string; unitType?: string; floorNo?: string; furnished?: (typeof FURNISHED_OPTIONS)[number] };
@@ -23,6 +25,9 @@ export interface EjarExtras {
     regular?: number; last?: number; count?: number;
   };
   meters: Array<{ kind: MeterKind; number: string; reading: number | null }>;
+  /** جدول الغرف: النوع وعدده · وجدول المكيفات للأصول لاحقاً */
+  rooms: Array<{ type: string; count: number }>;
+  acUnits: Array<{ type: string; count: number }>;
 }
 
 const halalas = (s: string | undefined) => {
@@ -60,7 +65,7 @@ export function parseEjarExtras(raw: string): EjarExtras {
   const one = tf.replace(/\n/g, '');
   const lines = t.split('\n').map((l) => fixArabicOrder(l, rev));
   const num = (re: RegExp, s = one) => s.match(re)?.[1];
-  const out: EjarExtras = { property: {}, unit: {}, tenant: {}, lessor: {}, financial: {}, meters: [] };
+  const out: EjarExtras = { property: {}, unit: {}, tenant: {}, lessor: {}, financial: {}, meters: [], rooms: [], acUnits: [] };
 
   // العقار
   out.property.usage = arabicAfter(lines, /Property\s*Usage/i);
@@ -117,6 +122,40 @@ export function parseEjarExtras(raw: string): EjarExtras {
     const before = one.slice(Math.max(0, i - 80), i);
     const rd = [...before.matchAll(/Currentmeterreading:?(\d+(?:\.\d+)?)/gi)].pop();
     out.meters.push({ kind, number: n[1], reading: rd ? Number(rd[1]) : null });
+  }
+
+  // جدولا الغرف والمكيفات (قرار المالك: تُبنى القراءة على هيئة الجدول وتُفحص على الجوال) · بعد عنوان كلٍّ منهما
+  // سطورٌ فيها أزواج «نوع وعدد» بأيّ الترتيبين، حتى أول سطرٍ لاتيني غير عنوانهما
+  const table = (header: RegExp, stop: RegExp) => {
+    const rows: Array<{ type: string; count: number }> = [];
+    let inside = false;
+    for (const l of lines) {
+      const flat = l.replace(/\s+/g, '');
+      if (header.test(flat)) { inside = true; continue; }
+      if (!inside) continue;
+      if (stop.test(flat) || (/[A-Za-z]{3,}/.test(l) && !header.test(flat))) break;
+      rows.push(...pairsOf(l));
+    }
+    return rows;
+  };
+  out.rooms = table(/NumberRoomType/i, /NumberACType|meter|TenantAuthority|FinancialData/i);
+  out.acUnits = table(/NumberACType/i, /meter|TenantAuthority|FinancialData/i);
+  return out;
+}
+
+// عناوين أعمدة الجدولين بالعربية لا تُعدّ أنواعاً
+const HEADER_WORD = /^(نوع|العدد|عدد|الغرفة|المكيف)/; // i18n-exempt: مفردات الملف
+
+/** أزواج «نوع وعدد» في سطرٍ مصحَّح الاتجاه · العدد قبل النوع أو بعده */
+export function pairsOf(line: string): Array<{ type: string; count: number }> {
+  const toks = line.match(/\d{1,3}|[\u0600-\u06FF][\u0600-\u06FF\s/]*[\u0600-\u06FF]|[\u0600-\u06FF]/g) ?? [];
+  const items = toks.map((x) => x.trim()).filter((x) => x && !HEADER_WORD.test(x));
+  if (!items.length) return [];
+  const numFirst = /^\d+$/.test(items[0]);
+  const out: Array<{ type: string; count: number }> = [];
+  for (let i = 0; i + 1 < items.length; i += 2) {
+    const [a, b] = numFirst ? [items[i + 1], items[i]] : [items[i], items[i + 1]];
+    if (/^\d+$/.test(b) && !/^\d+$/.test(a) && Number(b) > 0) out.push({ type: a, count: Number(b) });
   }
   return out;
 }
@@ -182,7 +221,7 @@ export function scheduleChecks(schedule: ScheduleRow[] | null | undefined, f: Ej
 export type ExtraKey =
   | 'property.address' | 'property.usage' | 'property.floors' | 'property.deed'
   | 'unit.type' | 'unit.floor' | 'tenant.email'
-  | 'meter.electricity' | 'meter.water' | 'meter.gas';
+  | 'meter.electricity' | 'meter.water' | 'meter.gas' | 'unit.rooms';
 
 export interface ExtraDiff {
   key: ExtraKey;
@@ -219,13 +258,18 @@ export function compareExtras(db: DB, x: EjarExtras, ctx: { unitId: string; tena
   add('property.deed', p?.deed_no, x.property.deedNo);
   add('unit.type', u.type, mapUnitType(x.unit.unitType));
   add('unit.floor', u.floor, mapFloor(x.unit.floorNo));
+  if (x.rooms.length) {
+    const cur = db.all<{ room_name: string }>(`SELECT room_name FROM unit_rooms WHERE unit_id = ? ORDER BY sort`, [ctx.unitId]).map((r) => r.room_name);
+    const want = roomNames(x.rooms);
+    const missing = want.filter((n) => !cur.includes(n));
+    if (missing.length) out.push({ key: 'unit.rooms', current: cur.join(ROOM_SEP), read: want.join(ROOM_SEP), fillsEmpty: !cur.length });
+  }
   if (tenant) add('tenant.email', tenant.email, x.tenant.email);
   else if (x.tenant.email) out.push({ key: 'tenant.email', current: '', read: x.tenant.email, fillsEmpty: true });
   for (const m of x.meters) {
-    if (m.kind === 'gas') { out.push({ key: 'meter.gas', current: '', read: m.number, fillsEmpty: false, noSlot: true, reading: m.reading }); continue; }
-    const kind = m.kind === 'electricity' ? 'كهرباء' : 'ماء'; // i18n-exempt: نوع العداد المخزّن
+    const kind = METER_KIND_OF[m.kind];
     const cur = db.get<{ number: string }>(`SELECT number FROM meters WHERE owner_type = 'unit' AND owner_id = ? AND kind = ? AND deleted_at IS NULL`, [ctx.unitId, kind]);
-    add(m.kind === 'electricity' ? 'meter.electricity' : 'meter.water', cur?.number, m.number, { reading: m.reading });
+    add(('meter.' + m.kind) as ExtraKey, cur?.number, m.number, { reading: m.reading });
   }
   return out;
 }
@@ -248,10 +292,21 @@ export function applyExtras(db: DB, diffs: ExtraDiff[], approved: Set<ExtraKey>,
         case 'property.deed': db.run(`UPDATE properties SET deed_no = ? WHERE id = ?`, [d.read, u.property_id]); break;
         case 'unit.type': db.run(`UPDATE units SET type = ? WHERE id = ?`, [d.read, ctx.unitId]); break;
         case 'unit.floor': db.run(`UPDATE units SET floor = ? WHERE id = ?`, [d.read, ctx.unitId]); break;
+        case 'unit.rooms': {
+          // تُضاف الغرف الناقصة وحدها · والقائمة ومحتوياتها لا تُمسّ
+          const cur = new Set(db.all<{ room_name: string }>(`SELECT room_name FROM unit_rooms WHERE unit_id = ?`, [ctx.unitId]).map((r) => r.room_name));
+          let sort = Number(db.get<{ m: number }>(`SELECT COALESCE(MAX(sort), -1) AS m FROM unit_rooms WHERE unit_id = ?`, [ctx.unitId])?.m ?? -1);
+          for (const name of d.read.split(ROOM_SEP)) {
+            if (!name || cur.has(name)) continue;
+            db.run(`INSERT INTO unit_rooms (id, unit_id, room_name, sort) VALUES (?,?,?,?)`, [uid(), ctx.unitId, name, ++sort]);
+          }
+          break;
+        }
         case 'tenant.email': db.run(`UPDATE tenants SET email = ? WHERE name = ? AND deleted_at IS NULL`, [d.read, ctx.tenantName.trim()]); break;
         case 'meter.electricity':
-        case 'meter.water': {
-          const kind = d.key === 'meter.electricity' ? 'كهرباء' : 'ماء'; // i18n-exempt: نوع العداد المخزّن
+        case 'meter.water':
+        case 'meter.gas': {
+          const kind = METER_KIND_OF[d.key.slice(6) as MeterKind];
           let m = db.get<{ id: string }>(`SELECT id FROM meters WHERE owner_type = 'unit' AND owner_id = ? AND kind = ? AND deleted_at IS NULL`, [ctx.unitId, kind]);
           if (m) db.run(`UPDATE meters SET number = ? WHERE id = ?`, [d.read, m.id]);
           else { const id = uid(); db.run(`INSERT INTO meters (id, owner_type, owner_id, kind, number) VALUES (?,?,?,?,?)`, [id, 'unit', ctx.unitId, kind, d.read]); m = { id }; }
@@ -274,3 +329,23 @@ export function unitByNumber(db: DB, propertyId: string, unitNo: string): string
   const rows = db.all<{ id: string; unit_no: string }>(`SELECT id, unit_no FROM units WHERE property_id = ? AND deleted_at IS NULL`, [propertyId]);
   return rows.find((r) => norm(r.unit_no) === norm(unitNo))?.id ?? null;
 }
+
+/**
+ * الخدمات والمواقف من بيانات العقد المالية المقروءة (قرار المالك ٢٠٢٦-١٠-٠٧) · الخدمات مجموع الغاز والكهرباء
+ * والمياه، والمواقف ما بقي من إجمالي قيمة العقد بعد كامل قيمة الإيجار والخدمات
+ */
+export function revenueSplitOf(x?: EjarExtras | null): { servicesHalalas?: number; parkingHalalas?: number } {
+  const f = x?.financial;
+  if (!f || f.totalValue == null || f.rentValue == null) return {};
+  const services = (f.gas ?? 0) + (f.electricity ?? 0) + (f.water ?? 0);
+  const parking = Math.max(0, f.totalValue - f.rentValue - services);
+  return services || parking ? { servicesHalalas: services, parkingHalalas: parking } : {};
+}
+
+/** أسماء الغرف من «النوع وعدده»: الواحدة باسم نوعها، والأكثر مرقّمة */
+export function roomNames(rooms: Array<{ type: string; count: number }>): string[] {
+  return rooms.flatMap((r) => (r.count === 1 ? [r.type] : Array.from({ length: Math.min(r.count, 30) }, (_, i) => r.type + ' ' + (i + 1))));
+}
+
+// i18n-exempt: فاصل قائمة الغرف في قيمة المقارنة (يُكتب ويُقرأ في الموضعين)
+const ROOM_SEP = '، ';
