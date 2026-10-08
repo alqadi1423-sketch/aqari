@@ -14,8 +14,10 @@ import { View, Pressable, ActivityIndicator, Linking, ScrollView } from 'react-n
 import { T, BtnPrimary, BtnGhost, Note } from './components';
 import { C, TYPE } from './theme';
 import { useApp } from './store';
-import { reportFailure } from './failureDialog';
+import { reportFailure, copyFailureDetails } from './failureDialog';
+import { t } from '../i18n';
 import { cloudConfig } from '../cloud/config';
+import { signInFailureText } from '../cloud/signInFailure';
 import {
   cloudState, subscribeCloud, primeSession, cloudSignIn, cloudSignOut, activateAccount,
   acceptInviteNow, declineInvites, bindUnboundToAccount, keepUnboundAside,
@@ -71,7 +73,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const run = async (fn: () => Promise<unknown> | unknown, title: string, where: string) => {
     setBusy(true);
     try { await fn(); bump(); }
-    catch (e) { await reportFailure({ title, where, db, e }); }
+    // كل فشل في الدخول يقول سببه الفعلي لا «لم يكتمل الإجراء» (رسالة المالك 2026-10-08)
+    catch (e) { await reportFailure({ title, where, db, e, lead: signInFailureText(e) }); }
     setBusy(false);
   };
 
@@ -82,7 +85,13 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     if (cloud.gate === 'retry') {
       return (
         <Shell>
-          <Note>{'لم يكتمل التحقق من حساب ' + email + ' · أول دخول بالحساب على هذا الجهاز يحتاج اتصالاً بالإنترنت.'}</Note>
+          {/* السبب الفعلي لا الاتصال دائماً · ومعه نسخ التفاصيل (رسالة المالك 2026-10-08، وقرار 2026-09-02) */}
+          <Note tone="danger">{t('auth.fail.title', { email }) + ' · ' + (cloud.gateError?.lead ?? t('auth.fail.server', { status: '' }))}</Note>
+          {cloud.gateError?.full ? (
+            <View style={{ marginBottom: 10 }}>
+              <BtnGhost small title={t('auth.fail.copy')} onPress={() => copyFailureDetails(cloud.gateError!.full)} />
+            </View>
+          ) : null}
           <BtnPrimary title="أعد المحاولة" loading={busy} onPress={() => run(() => activateAccount(cloud.user!), 'تعذّر التحقق', 'الدخول')} />
           <View style={{ marginTop: 10 }}>
             <BtnGhost title="خروج" onPress={() => run(() => cloudSignOut(), 'تعذّر الخروج', 'الخروج')} />

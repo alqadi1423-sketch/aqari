@@ -46,6 +46,7 @@ import { memberTokens, fullReadTables } from '../sync/acl';
 import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engine';
 import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
+import { gateFailure } from '../cloud/signInFailure';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
@@ -121,6 +122,8 @@ export interface CloudState {
    * 'unbound' على الجهاز بيانات بلا حساب ينتظر قرار الداخل فيها · 'switching' تُفتح نسخة الحساب
    */
   gate: 'retry' | 'unbound' | 'switching' | null;
+  /** سبب تعثّر التحقق من الدعوات بنصه الفعلي وتفاصيله للنسخ (رسالة المالك 2026-10-08) */
+  gateError?: { lead: string; full: string } | null;
   /**
    * ما ينتظر قرار المستخدم ولا يُنفَّذ بدونه (قاعدة المالك ٢٠٢٦-١٠-٠٥): 'epoch' مُسحت المنشأة من جهاز آخر
    * وعلى هذا الجهاز بيانات · 'removed' أُزيلت عضويته وفي طابوره ما لم يُرفع. والمزامنة متوقفة حتى يقرر.
@@ -348,6 +351,9 @@ export async function cloudSignIn(): Promise<SessionUser | null> {
   return u;
 }
 
+// موضع الخطأ في نص التفاصيل المنسوخ لا في الشاشة
+const GATE_WHERE = 'الدخول · التحقق من الدعوات'; // i18n-exempt: موضع في تقرير الخطأ
+
 let activating = false;
 
 /**
@@ -361,7 +367,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
   if (!db || !s || activating) return;
   activating = true;
   // شاشة الانتظار حين تُفتح نسخة غير النشطة وحدها · والنسخة النشطة نفسها لا تومض عند كل إقلاع
-  patch(activeAccount(db) === u.uid ? { user: u, invites: null } : { user: u, gate: 'switching', invites: null });
+  patch(activeAccount(db) === u.uid ? { user: u, invites: null, gateError: null } : { user: u, gate: 'switching', invites: null, gateError: null });
   await pauseSync();
   try {
     const env = appSlotEnv(db);
@@ -385,7 +391,12 @@ export async function activateAccount(u: SessionUser): Promise<void> {
         try {
           const sess = s;
           inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.email);
-        } catch { inv = null; }
+        } catch (e) {
+          inv = null;
+          patch({ gateError: gateFailure(GATE_WHERE, true, e) });
+        }
+      } else {
+        patch({ gateError: gateFailure(GATE_WHERE, false) });
       }
       if (inv === null) { patch({ gate: 'retry' }); return; }
       if (inv.length) {
@@ -399,7 +410,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
       enableSync(db, u.uid);
     }
     setSyncState(db, 'email', u.email);
-    patch({ gate: null, sync: syncStatus(db) });
+    patch({ gate: null, gateError: null, sync: syncStatus(db) });
   } finally {
     activating = false;
     resumeSync();

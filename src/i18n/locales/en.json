@@ -339,5 +339,20 @@
       "services": "Contract services amount",
       "parking": "Contract parking amount"
     }
+  },
+  "auth": {
+    "fail": {
+      "title": "Could not finish verifying {{email}}",
+      "network": "No connection to the server · check the internet and retry",
+      "index": "Cloud setup incomplete: the invitation lookup index is not deployed on this project",
+      "denied": "The cloud rules refused the request (403)",
+      "token": "Could not verify the sign-in token · sign out and sign in again",
+      "server": "Unexpected server error {{status}}",
+      "copy": "Copy error details",
+      "googleConfig": "Google refused sign-in for this build: the signing fingerprint or client id does not match the cloud project",
+      "playServices": "Google Play services are unavailable or need an update on this device",
+      "google": "Google sign-in failed (code {{status}})",
+      "device": "Unexpected error on the device ({{status}}) · see the copied details"
+    }
   }
 }
