@@ -512,5 +512,9 @@
     "changeIn": "Change in {{name}}",
     "financing": "Net cash from financing activities",
     "unexplained": "Difference not explained by entries · check reconciliation"
+  },
+  "claims": {
+    "collectedLocked": "The claim is collected and posted · only its reason can be edited",
+    "collectedNoDelete": "The claim is collected and posted · it cannot be deleted"
   }
 }

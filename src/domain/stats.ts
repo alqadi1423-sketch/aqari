@@ -86,7 +86,9 @@ export interface CollectKpis {
   collectionPct: number;
 }
 
-export function collectKpis(all: InstallmentView[], T: string = today()): CollectKpis {
+export function collectKpis(all0: InstallmentView[], T: string = today()): CollectKpis {
+  // الأقساط الملغاة ليست مستحقة ولا محصَّلة (مراجعة التثبيت #24)
+  const all = all0.filter((x) => x.status !== CANCELLED_INST);
   const mo = T.slice(0, 7);
   const inMonth = all.filter((x) => x.dueDate.slice(0, 7) === mo);
   const late = all.filter((x) => x.remaining > 0 && x.daysLate > 0 && x.status !== 'ملغية');
@@ -185,14 +187,8 @@ export function unitStatusInfo(db: DB, unit: { id: string; under_maintenance: nu
   return { key: 'vacant', label: 'شاغرة', color: '#8A93A6', bg: '#F0F1F3' };
 }
 
-/** المحصَّل الفعلي لعقد */
+/** المحصَّل الفعلي لعقد: صافي دفعاته الحيّة (مراجعة التثبيت #24) */
 export function contractCollectedValue(db: DB, contractId: string): number {
-  const inst = db.get<{ n: number; s: number }>(
-    `SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN status='مدفوعة' THEN amount_halalas ELSE 0 END),0) AS s
-     FROM contract_installments WHERE contract_id = ?`,
-    [contractId]
-  )!;
-  if (Number(inst.n) > 0) return Number(inst.s);
   const pay = db.get<{ s: number }>(
     `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
     [contractId]
@@ -250,21 +246,15 @@ function aggregatedStats(db: DB, propertyId: string | null, T: string): Property
        AND c.start <= ? AND c.end >= ? ${unitFilter}`,
     [T, T, ...p]
   )!.n);
-  // المحصَّل: من الأقساط المدفوعة، ومن سجل الدفعات للعقود التي بلا جدول أقساط
-  const instPaid = Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(CASE WHEN i.status='مدفوعة' THEN i.amount_halalas ELSE 0 END),0) AS s
-     FROM contract_installments i
-     JOIN contracts c ON c.id = i.contract_id
-     JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL ${unitFilter}`, p
-  )!.s);
+  // المحصَّل ما قُبض فعلاً: صافي الدفعات الحيّة (مراجعة التثبيت #24) · كان مبلغ القسط «المدفوعة» كاملاً،
+  // فيُسقط المدفوع جزئياً ويعدّ الخصم محصَّلاً
+  const instPaid = 0;
   const payOnly = Number(db.get<{ s: number }>(
     `SELECT COALESCE(SUM(pm.net_halalas),0) AS s
      FROM contract_payments pm
      JOIN contracts c ON c.id = pm.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL AND u.deleted_at IS NULL ${unitFilter}
-       AND NOT EXISTS (SELECT 1 FROM contract_installments i WHERE i.contract_id = c.id)`, p
+     WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL AND u.deleted_at IS NULL ${unitFilter}`, p
   )!.s);
   const cancelled = db.get<{ n: number; v: number }>(
     `SELECT COUNT(*) AS n,
@@ -312,21 +302,13 @@ export function allPropertyStats(db: DB, T: string = today()): Map<string, Prope
        AND c.start <= ? AND c.end >= ?
      GROUP BY u.property_id`, [T, T]
   )) ensure(r.pid).occupied = Number(r.n);
-  for (const r of db.all<{ pid: string; s: number }>(
-    `SELECT u.property_id AS pid,
-            COALESCE(SUM(CASE WHEN i.status='مدفوعة' THEN i.amount_halalas ELSE 0 END),0) AS s
-     FROM contract_installments i
-     JOIN contracts c ON c.id = i.contract_id
-     JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL GROUP BY u.property_id`
-  )) ensure(r.pid).income += Number(r.s);
+  // المحصَّل ما قُبض فعلاً: صافي الدفعات الحيّة (مراجعة التثبيت #24)
   for (const r of db.all<{ pid: string; s: number }>(
     `SELECT u.property_id AS pid, COALESCE(SUM(pm.net_halalas),0) AS s
      FROM contract_payments pm
      JOIN contracts c ON c.id = pm.contract_id
      JOIN units u ON u.id = c.unit_id
      WHERE pm.cancelled_at IS NULL AND c.deleted_at IS NULL AND u.deleted_at IS NULL
-       AND NOT EXISTS (SELECT 1 FROM contract_installments i WHERE i.contract_id = c.id)
      GROUP BY u.property_id`
   )) ensure(r.pid).income += Number(r.s);
   for (const r of db.all<{ pid: string; n: number; v: number }>(

@@ -65,7 +65,7 @@ const ClaimCard = React.memo(function ClaimCard({
   return (
     <Card style={{ paddingVertical: 10 }}>
       {/* زر ⋮ أعلى البطاقة يساراً بمحاذاة العنوان ·
-          والمحصَّلة لا يُعرض لها «تحصيل» ولا «تعديل»: قيدها أُقفل فتصحيحها بحذفها */}
+          والمحصَّلة لا يُعرض لها «تحصيل» ولا «تعديل» ولا «حذف»: قيداها مرحّلان (القاعدة ٩٠ · مراجعة التثبيت #22) */}
       <Row style={{ justifyContent: 'space-between' }}>
         <T size={TYPE.sectionTitle} bold style={{ flex: 1 }}>{tenantName}</T>
         <Row gap={8}>
@@ -75,7 +75,7 @@ const ClaimCard = React.memo(function ClaimCard({
             open && canManage ? { icon: 'wallet', label: 'تحصيل المطالبة', onPress: () => onCollect(id) } : null,
             open && canManage ? { icon: 'edit', label: 'تعديل', onPress: () => onEdit(id) } : null,
             { icon: 'print', label: 'طباعة / PDF', onPress: () => onPrint(id) },
-            canManage ? { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) } : null,
+            open && canManage ? { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) } : null,
           ]} />
         </Row>
       </Row>

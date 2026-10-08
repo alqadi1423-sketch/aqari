@@ -88,17 +88,21 @@ export function tenantProfile(db: DB, tenantId: string, today: string): TenantPr
     `SELECT id, contract_no, unit_label, start, "end", value_halalas, ${contractTotalSql(db)} AS total_halalas,
             ${contractTotalSql(db) === 'value_halalas' ? '0 AS services_halalas, 0 AS parking_halalas' : 'services_halalas, parking_halalas'}, status FROM contracts
      WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY COALESCE(start,'') DESC`, [tenantId]);
-  const inst = db.get<{ due: number; collected: number; total: number; paidOnTime: number; dueCount: number }>(
+  // المتبقي على ما حلّ: القسط ناقص المسدَّد ناقص الخصم، قسطاً قسطاً (القرار ٤.١٠) · ومنه العقد الملغى، فأقساطه
+  // السابقة لإلغائه دَين (القرار ٤.٩) · مراجعة التثبيت #23
+  const inst = db.get<{ due: number; collected: number; total: number; paidOnTime: number; dueCount: number; outstanding: number }>(
     `SELECT
        COALESCE(SUM(CASE WHEN i.due_date <= ? AND i.status != 'ملغية' THEN i.amount_halalas ELSE 0 END),0) AS due,
+       COALESCE(SUM(CASE WHEN i.due_date <= ? AND i.status != 'ملغية'
+                          THEN MAX(0, i.amount_halalas - i.paid_halalas - ${INSTALLMENT_DISCOUNT_SQL}) ELSE 0 END),0) AS outstanding,
        COALESCE(SUM(CASE WHEN i.status != 'ملغية' THEN i.paid_halalas ELSE 0 END),0) AS collected,
        COUNT(*) AS total,
        COALESCE(SUM(CASE WHEN i.due_date <= ? AND i.status != 'ملغية'
                           AND i.paid_halalas + ${INSTALLMENT_DISCOUNT_SQL} >= i.amount_halalas THEN 1 ELSE 0 END),0) AS paidOnTime,
        COALESCE(SUM(CASE WHEN i.due_date <= ? AND i.status != 'ملغية' THEN 1 ELSE 0 END),0) AS dueCount
      FROM contract_installments i JOIN contracts c ON c.id = i.contract_id
-     WHERE c.tenant_id = ? AND c.deleted_at IS NULL AND c.status NOT IN ('مسودة','ملغى')`,
-    [today, today, today, tenantId])!;
+     WHERE c.tenant_id = ? AND c.deleted_at IS NULL AND c.status != 'مسودة'`,
+    [today, today, today, today, tenantId])!;
   const claims = db.get<{ n: number; s: number }>(
     `SELECT COUNT(*) AS n, COALESCE(SUM(cl.amount_halalas),0) AS s
      FROM claims cl JOIN contracts c ON c.id = cl.contract_id
@@ -106,7 +110,7 @@ export function tenantProfile(db: DB, tenantId: string, today: string): TenantPr
   const due = Number(inst.due), collected = Number(inst.collected);
   return {
     tenant, contracts,
-    totals: { dueToDate: due, collected, outstanding: Math.max(0, due - collected) },
+    totals: { dueToDate: due, collected, outstanding: Number(inst.outstanding) },
     claims: { count: Number(claims.n), amountHalalas: Number(claims.s) },
     onTimePct: Number(inst.dueCount) ? Math.round((Number(inst.paidOnTime) / Number(inst.dueCount)) * 100) : null,
   };

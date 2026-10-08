@@ -1,6 +1,7 @@
 /**
  * المطالبات · التسجيل يرحّل (1250/4300)، والتحصيل يقفلها (1100/1250).
  */
+import { t } from '../i18n';
 import type { DB } from '../db/adapter';
 import { uid } from './ids';
 import { today } from './dates';
@@ -22,6 +23,13 @@ export function saveClaim(db: DB, input: ClaimInput, existingId?: string): strin
         `SELECT amount_halalas, status, date FROM claims WHERE id = ?`, [existingId]
       );
       if (!cl) throw new Error('تعذّر العثور على المطالبة');
+      // المحصَّلة قيداها مرحّلان: مبلغها وتاريخها وعقدها كما هي، ويُعدَّل سببها وحده (مراجعة التثبيت #22)
+      if (cl.status !== 'مفتوحة') { // i18n-exempt: حالة مخزّنة
+        const cur = db.get<{ contract_id: string }>(`SELECT contract_id FROM claims WHERE id = ?`, [existingId])!;
+        if (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date || cur.contract_id !== input.contractId) {
+          throw new Error(t('claims.collectedLocked'));
+        }
+      }
       // تعديل مطالبة مفتوحة بمبلغ أو تاريخ مختلف: عكس القيد القديم وترحيل الجديد بتاريخه (المراجعة ٤.١٧)
       if (cl.status === 'مفتوحة' && (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date)) {
         reverseEntryBySource(db, 'claim', existingId, 'تعديل مطالبة · عكس القيد السابق');
@@ -66,7 +74,9 @@ export function deleteClaim(db: DB, id: string): void {
       `SELECT reason, status FROM claims WHERE id = ?`, [id]
     );
     if (!cl) return;
-    if (cl.status === 'مفتوحة') reverseEntryBySource(db, 'claim', id, 'حذف مطالبة · عكس قيدها');
+    // المحصَّلة لا تُحذف: تعلّقت بها مبالغ مرحّلة (القاعدة ٩٠ · مراجعة التثبيت #22)
+    if (cl.status !== 'مفتوحة') throw new Error(t('claims.collectedNoDelete')); // i18n-exempt: حالة مخزّنة
+    reverseEntryBySource(db, 'claim', id, 'حذف مطالبة · عكس قيدها');
     db.run(`UPDATE claims SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), id]);
     logAudit(db, 'المطالبات', 'delete', 'مطالبة', cl.reason || id);
   });

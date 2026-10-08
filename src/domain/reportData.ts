@@ -3,13 +3,26 @@
  * كلٌّ بمدة قابلة للتحديد (from فارغ = من البداية) وشامل لتفاصيل نوعه،
  * وتُغذّي تصدير PDF وإكسل من مصدر واحد.
  */
+import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
 import type { DB } from '../db/adapter';
 import { today } from './dates';
 import { contractStatusLabel } from './contracts/rules';
 import { contractTotalSql } from './accounting/rentSplit';
 
+/** التاريخ يُضمَّن في SQL بصيغته وحدها (مراجعة التثبيت #24) */
+const ymd = (d: string): string => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new Error('تاريخ بغير صيغته: ' + d); // i18n-exempt: خطأ برمجي لا يظهر للمستخدم
+  return d;
+};
 const period = (col: string, from: string | null, to: string) =>
-  ` AND (${from ? `${col} >= '${from}' AND ` : ''}${col} <= '${to}')`;
+  ` AND (${from ? `${col} >= '${ymd(from)}' AND ` : ''}${col} <= '${ymd(to)}')`;
+/**
+ * مصروف فاتورة الشراء كما رحّله الدفتر: سطور المصروف في قيدها (بلا ضريبة المدخلات القابلة للاسترداد ولا ما رُسمل أصولاً) ·
+ * والفاتورة بلا قيد بإجماليها (مراجعة التثبيت #24)
+ */
+// i18n-exempt: نوع الحساب المخزّن
+const PURCHASE_EXPENSE = (alias: string) => `COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas) FROM journal_lines l
+     JOIN accounts a ON a.code = l.account_code WHERE l.entry_id = ${alias}.journal_entry_id AND a.type = 'مصروف'), ${alias}.total_halalas)`;
 
 export interface UnitReport {
   unit: { unit_no: string; floor: string; type: string; subtype: string; rent_monthly_halalas: number };
@@ -42,23 +55,26 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
      ORDER BY p.date DESC`, [unitId]
   );
   const expenses = db.all<UnitReport['expenses'][number]>(
-    `SELECT date, supplier_name, category, total_halalas, paid FROM purchases
+    `SELECT date, supplier_name, category, ${PURCHASE_EXPENSE('purchases')} AS total_halalas, paid FROM purchases
      WHERE unit_id = ? AND deleted_at IS NULL${period('date', from, to)}
      ORDER BY date DESC`, [unitId]
   );
   const handoversCount = Number(db.get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM handovers WHERE unit_id = ? AND deleted_at IS NULL`, [unitId]
   )!.n);
-  const instRow = db.get<{ n: number; due: number; collected: number }>(
+  // المتبقي على ما حلّ قسطاً قسطاً بخصمه (القرار ٤.١٠)، ومنه أقساط العقد الملغى القائمة (القرار ٤.٩) · مراجعة التثبيت #23
+  const instRow = db.get<{ n: number; due: number; collected: number; outstanding: number }>(
     `SELECT COUNT(*) AS n,
-            COALESCE(SUM(CASE WHEN i.due_date <= '${to}' AND i.status != 'ملغية' THEN i.amount_halalas ELSE 0 END),0) AS due,
-            COALESCE(SUM(CASE WHEN i.status != 'ملغية' THEN i.paid_halalas ELSE 0 END),0) AS collected
+            COALESCE(SUM(CASE WHEN i.due_date <= ? AND i.status != 'ملغية' THEN i.amount_halalas ELSE 0 END),0) AS due,
+            COALESCE(SUM(CASE WHEN i.status != 'ملغية' THEN i.paid_halalas ELSE 0 END),0) AS collected,
+            COALESCE(SUM(CASE WHEN i.due_date <= ? AND i.status != 'ملغية'
+                              THEN MAX(0, i.amount_halalas - i.paid_halalas - ${INSTALLMENT_DISCOUNT_SQL}) ELSE 0 END),0) AS outstanding
      FROM contract_installments i JOIN contracts c ON c.id = i.contract_id
-     WHERE c.unit_id = ? AND c.deleted_at IS NULL AND c.status NOT IN ('مسودة','ملغى')`, [unitId]
+     WHERE c.unit_id = ? AND c.deleted_at IS NULL AND c.status != 'مسودة'`, [to, to, unitId]
   )!;
   const installments = {
     count: Number(instRow.n), due: Number(instRow.due), collected: Number(instRow.collected),
-    outstanding: Math.max(0, Number(instRow.due) - Number(instRow.collected)),
+    outstanding: Number(instRow.outstanding),
   };
   const unitMeters = db.all<{ kind: string; number: string; supplier: string }>(
     `SELECT m.kind, m.number, COALESCE(sp.name,'لا يوجد') AS supplier FROM meters m
@@ -104,12 +120,12 @@ export function propertyReportData(db: DB, propertyId: string, from: string | nu
      ORDER BY p.date DESC`, [propertyId]
   );
   const sharedExpenses = db.all<PropertyReport['sharedExpenses'][number]>(
-    `SELECT date, supplier_name, category, total_halalas FROM purchases
+    `SELECT date, supplier_name, category, ${PURCHASE_EXPENSE('purchases')} AS total_halalas FROM purchases
      WHERE property_id = ? AND unit_id IS NULL AND deleted_at IS NULL${period('date', from, to)}
      ORDER BY date DESC`, [propertyId]
   );
   const unitExpenses = db.all<PropertyReport['unitExpenses'][number]>(
-    `SELECT pu.date, pu.supplier_name, pu.category, pu.total_halalas, u.unit_no
+    `SELECT pu.date, pu.supplier_name, pu.category, ${PURCHASE_EXPENSE('pu')} AS total_halalas, u.unit_no
      FROM purchases pu JOIN units u ON u.id = pu.unit_id
      WHERE u.property_id = ? AND pu.deleted_at IS NULL${period('pu.date', from, to)}
      ORDER BY pu.date DESC`, [propertyId]
