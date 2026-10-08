@@ -32,6 +32,7 @@ const DIR_EVERY_MS = 10 * 60_000;
 const FULL_EVERY_MS = 2 * 60_000;
 const STATE_EVERY_MS = 10 * 60_000;
 const STATE_OPEN_EVERY_MS = 30_000;
+const CHANNEL_PULL_EVERY_MS = 10 * 60_000;
 
 /** حال المحادثة: يُسحب ما جدّ منه، وتُرفع قراءتي إن تقدّمت (الدفعة ٢ · 2026-10-08T05:31Z) */
 async function syncState(db: DB, remote: ChatRemote, threadId: string, me: string): Promise<void> {
@@ -167,13 +168,17 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
   try { threads = await remote.myThreads(); } catch { r.failed++; return r; }
   // حال المحادثات (التثبيت والقراءة): لما جاءه جديد، ولكلها كل عشر دقائق أو بطلب (الحصة المجانية)
   const stateAll = o.force || now - stamp(db, 'chat_state_at') > STATE_EVERY_MS;
+  // القنوات ومحادثات العقارات كثيرة (عقار لكل عقار): تُسحب كل عشر دقائق في الخلفية أو بطلب، والمفتوحة كل ثوانٍ كغيرها
+  const channelsDue = o.force || now - stamp(db, 'chat_ch_pull_at') > CHANNEL_PULL_EVERY_MS;
   for (const t of threads) {
     applyRemoteThread(db, t);
+    if (t.ch && !channelsDue) continue;
     let got = 0;
     try { got = await pullThread(db, remote, t.id, me.uid); r.pulledMessages += got; } catch { r.failed++; }
     if (got > 0 || stateAll) await syncState(db, remote, t.id, me.uid).catch(() => { r.failed++; });
   }
   if (stateAll) setSyncState(db, 'chat_state_at', String(now));
+  if (channelsDue) setSyncState(db, 'chat_ch_pull_at', String(now));
   setSyncState(db, 'chat_full_at', String(now));
   return r;
 }

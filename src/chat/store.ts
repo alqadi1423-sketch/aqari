@@ -4,7 +4,7 @@
 import type { DB, SqlValue } from '../db/adapter';
 import { uid as newId } from '../domain/ids';
 import {
-  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, directId, groupSettings, tsGte, type ChatTag, type GroupSettings,
+  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, directId, groupSettings, tsGte, type ChannelRef, type ChatTag, type GroupSettings,
   type ChatKind, type ChatLink, type ChatMessage, type ChatPerson, type ChatThread,
 } from './types';
 
@@ -24,7 +24,7 @@ interface ThreadRow {
   last_ts: string | null; last_body: string; read_ts: string | null; pending: number; unread: number; meta: string | null;
 }
 
-function metaOf(raw: string | null | undefined): { s?: GroupSettings; a?: string[]; jt?: Record<string, string> } {
+function metaOf(raw: string | null | undefined): { s?: GroupSettings; a?: string[]; jt?: Record<string, string>; ch?: ChannelRef | null } {
   try { const v = JSON.parse(raw || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
 }
 
@@ -35,6 +35,7 @@ const threadOf = (r: ThreadRow): ChatThread => {
     createdAt: r.created_at, lastTs: r.last_ts, lastBody: r.last_body, unread: Number(r.unread || 0), pending: !!r.pending,
     rejected: Number(r.pending) === 2,
     settings: groupSettings(m.s), admins: Array.isArray(m.a) ? m.a : [], joined: m.jt && typeof m.jt === 'object' ? m.jt : {},
+    channel: m.ch && typeof m.ch === 'object' ? m.ch : null,
   };
 };
 
@@ -230,9 +231,9 @@ export function markSent(db: DB, id: string, serverTs: string | null): void {
 
 export function applyRemoteThread(db: DB, t: {
   id: string; k: ChatKind; p: string[]; name: string; by: string; at: string | null;
-  s?: GroupSettings; a?: string[]; jt?: Record<string, string>;
+  s?: GroupSettings; a?: string[]; jt?: Record<string, string>; ch?: ChannelRef | null;
 }): void {
-  const meta = JSON.stringify({ s: groupSettings(t.s), a: t.a ?? [], jt: t.jt ?? {} });
+  const meta = JSON.stringify({ s: groupSettings(t.s), a: t.a ?? [], jt: t.jt ?? {}, ch: t.ch ?? null });
   // من «من لحظة انضمامه» إلى «كل السابق»: يُعاد المؤشر فيصل ما قبل الانضمام (قرار المالك 2026-10-08T05:31Z)
   const old = db.get<{ meta: string | null }>(`SELECT meta FROM chat_threads WHERE id = ?`, [t.id]);
   if (old && metaOf(old.meta).s?.h === 'join' && groupSettings(t.s).h === 'all') {

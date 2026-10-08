@@ -708,3 +708,120 @@ test('الدفعة ٣ · من أكّد بلا من انضم بعد الإعلا�
   applyState(a, tid, [{ id: 'x_x1', k: 'edit', m: 'x1', n: 2, ts: '2026-01-03T00:00:00.000000000Z' }]);
   expect(staleEdits(a, tid)).toEqual(['x1']);
 });
+
+/* ─── الدفعة ٤: القنوات ومحادثات العقارات (قرار المالك 2026-10-08T05:31Z) ─── */
+
+/** سحابة قنوات وهمية: المالك ينشئ، والعضو يضم نفسه بصلاحيته (كالقواعد) */
+function channelCloud(members: Array<{ uid: string; perm: Record<string, number>; all: boolean; props: string[] }>) {
+  const threads = new Map<string, RemoteThread>();
+  const calls = { created: 0, removed: [] as string[], joinTries: 0 };
+  const remote = (uid: string): ChatRemote => ({
+    async members() { if (uid !== OWNER.uid) throw new Error('Firestore 403'); return members; },
+    async createChannel(id: string, ch: RemoteThread['ch'], name: string) {
+      if (threads.has(id)) return 'exists';
+      threads.set(id, { id, k: 'group', p: [uid], name, by: uid, at: '2026-01-01T00:00:00.000000000Z', s: {}, a: [], jt: {}, ch });
+      calls.created++;
+      return 'created';
+    },
+    async getThread(id: string) { const t = threads.get(id); if (!t) throw new Error('Firestore 404'); return { ...t, p: [...t.p] }; },
+    async removeMembers(id: string, uids: string[]) { const t = threads.get(id)!; t.p = t.p.filter((x) => !uids.includes(x)); calls.removed.push(...uids); },
+    async addMember(id: string, who: string) {
+      calls.joinTries++;
+      const t = threads.get(id);
+      if (!t) throw new Error('Firestore 404: no channel');
+      const m = members.find((x) => x.uid === who);
+      const { qualifies } = jest.requireActual('@/chat/channels') as typeof import('@/chat/channels');
+      if (!m || !t.ch || !qualifies(t.ch, m)) throw new Error('Firestore 403');
+      t.p = [...t.p, who];
+    },
+  } as unknown as ChatRemote);
+  return { threads, calls, remote };
+}
+
+test('القنوات عند المالك: الإعلانات وقسمٌ له عضو وكل عقار · مرة واحدة · ويُخرج منها من لم تعد تحق له', async () => {
+  const { ensureChannels, channelId } = await import('@/chat');
+  const o = memDb();
+  const p1 = addProperty(o, { name: 'عقار قنوات أ' });
+  addProperty(o, { name: 'عقار قنوات ب' });
+  const members: Array<{ uid: string; perm: Record<string, number>; all: boolean; props: string[] }> = [
+    { uid: 'u-con', perm: { contracts: 2 }, all: true, props: [] }, { uid: 'u-none', perm: {}, all: false, props: [] }];
+  const cc = channelCloud(members);
+  await ensureChannels(o, cc.remote(OWNER.uid), OWNER);
+  expect([...cc.threads.keys()].sort()).toEqual([channelId({ t: 'announce' }), channelId({ t: 'section', key: 'contracts' }),
+    ...[...o.all<{ id: string }>('SELECT id FROM properties').map((r) => channelId({ t: 'prop', id: r.id }))]].sort());
+  expect(listThreads(o, OWNER.uid).filter((t) => t.channel).length).toBe(4);
+  await ensureChannels(o, cc.remote(OWNER.uid), OWNER);
+  expect(cc.calls.created).toBe(4);
+  // عضوٌ في قناة العقود سُحبت صلاحيته: يُخرج
+  const sec = cc.threads.get(channelId({ t: 'section', key: 'contracts' }))!;
+  sec.p.push('u-con');
+  applyRemoteThread(o, sec);
+  members[0].perm = { props: 1 };
+  await ensureChannels(o, cc.remote(OWNER.uid), OWNER);
+  expect(cc.calls.removed).toEqual(['u-con']);
+  expect(cc.threads.get(channelId({ t: 'prop', id: p1 }))!.p).toEqual([OWNER.uid]);
+});
+
+test('العضو ينضم تلقائياً إلى قنوات أقسامه وعقاراته وحدها · وما لم يُنشأ بعد يُعاد بعد ساعة', async () => {
+  const { autoJoinChannels, ensureChannels, channelId } = await import('@/chat');
+  const { saveMembership } = await import('@/services/access');
+  const o = memDb();
+  const P1 = addProperty(o, { name: 'عقار ١' });
+  const P2 = addProperty(o, { name: 'عقار ٢' });
+  const members = [{ uid: MEMBER.uid, perm: { contracts: 1 }, all: false, props: [P1] }];
+  const cc = channelCloud(members);
+  await ensureChannels(o, cc.remote(OWNER.uid), OWNER);
+  const m = memDb();
+  addProperty(m, { id: P1, name: 'عقار ١' });
+  addProperty(m, { id: P2, name: 'عقار ٢' });
+  saveMembership(m, { org: 'ORG', uid: MEMBER.uid, perms: { contracts: 1 }, allProps: false, props: [P1] });
+  expect(await autoJoinChannels(m, cc.remote(MEMBER.uid), MEMBER, 1_000_000)).toBe(3);
+  expect(listThreads(m, MEMBER.uid, true).map((t) => t.id).sort()).toEqual(
+    [channelId({ t: 'announce' }), channelId({ t: 'section', key: 'contracts' }), channelId({ t: 'prop', id: P1 })].sort());
+  // قسم لم تُنشأ قناته (لا عضو فيه عند المالك) لا يُطلب كل دورة
+  saveMembership(m, { org: 'ORG', uid: MEMBER.uid, perms: { contracts: 1, claims: 2 }, allProps: false, props: [P1] });
+  const tries = cc.calls.joinTries;
+  await autoJoinChannels(m, cc.remote(MEMBER.uid), MEMBER, 1_000_000);
+  expect(cc.calls.joinTries).toBe(tries + 1);
+  await autoJoinChannels(m, cc.remote(MEMBER.uid), MEMBER, 1_000_000 + 60_000);
+  expect(cc.calls.joinTries).toBe(tries + 1);
+  await autoJoinChannels(m, cc.remote(MEMBER.uid), MEMBER, 1_000_000 + 61 * 60_000);
+  expect(cc.calls.joinTries).toBe(tries + 2);
+});
+
+test('محادثة العقار تجمع ما يخصه: الربط بعقوده ووحداته وحدها', () => {
+  const a = memDb();
+  const p1 = addProperty(a, { name: 'عقار ربط أ' });
+  const p2 = addProperty(a, { name: 'عقار ربط ب' });
+  const u1 = addUnit(a, p1, { unit_no: 'A-1' });
+  const u2 = addUnit(a, p2, { unit_no: 'B-1' });
+  const c1 = confirmContract(a, contractInput(u1, { tenant: 'مستأجر ربط أ', idNumber: '1000009011', phone: '0500009011', depositHalalas: 0 }));
+  confirmContract(a, contractInput(u2, { tenant: 'مستأجر ربط ب', idNumber: '1000009012', phone: '0500009012', depositHalalas: 0 }));
+  expect(linkCandidates(a, OWNER_ACCESS, 'unit', '', 50, p1).map((l) => l.id)).toEqual([u1]);
+  expect(linkCandidates(a, OWNER_ACCESS, 'contract', '', 50, p1).map((l) => l.id)).toEqual([c1]);
+  expect(linkCandidates(a, OWNER_ACCESS, 'unit').length).toBe(2);
+});
+
+test('الدفعة ٤ · فشل قناة لا يوقف غيرها ولا الإخراج · وقائمة أعضاء فارغة لا تُخرج أحداً · والأصول بعقارها', async () => {
+  const { ensureChannels, channelId } = await import('@/chat');
+  const o = memDb();
+  addProperty(o, { name: 'عقار فشل' });
+  const members: Array<{ uid: string; perm: Record<string, number>; all: boolean; props: string[] }> = [{ uid: 'u-con', perm: { contracts: 1 }, all: true, props: [] }];
+  const cc = channelCloud(members);
+  const base = cc.remote(OWNER.uid) as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+  const failing = { ...base, createChannel: async (id: string, ...rest: unknown[]) => { if (id === channelId({ t: 'announce' })) throw new Error('Firestore 500'); return base.createChannel(id, ...rest); } } as unknown as ChatRemote;
+  await ensureChannels(o, failing, OWNER);
+  expect(cc.threads.has(channelId({ t: 'announce' }))).toBe(false);
+  expect(cc.threads.has(channelId({ t: 'section', key: 'contracts' }))).toBe(true);
+  // قائمة فارغة وفي القناة عضو: لا إخراج
+  const sec = cc.threads.get(channelId({ t: 'section', key: 'contracts' }))!;
+  sec.p.push('u-con');
+  applyRemoteThread(o, sec);
+  members.length = 0;
+  await ensureChannels(o, cc.remote(OWNER.uid), OWNER);
+  expect(cc.calls.removed).toEqual([]);
+  // الأصول بعقارها في محادثة العقار
+  const p1 = addProperty(o, { name: 'عقار أصول' });
+  o.run(`INSERT INTO assets (id, name, category, life_months, property_id, created_at) VALUES ('as1', 'مكيف مصطنع', 'أجهزة', 60, ?, '2026-01-01'), ('as2', 'مضخة مصطنعة', 'أجهزة', 60, NULL, '2026-01-01')`, [p1]);
+  expect(linkCandidates(o, OWNER_ACCESS, 'asset', '', 50, p1).map((l) => l.id)).toEqual(['as1']);
+});

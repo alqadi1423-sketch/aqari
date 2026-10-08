@@ -51,6 +51,8 @@ export interface ChatThread {
   settings: Required<GroupSettings>;
   admins: string[];
   joined: Record<string, string>;
+  /** القناة (الدفعة ٤) · null للمحادثة العادية */
+  channel: ChannelRef | null;
 }
 
 export interface ChatMessage {
@@ -188,4 +190,19 @@ export function tsGte(a: string, b: string): boolean {
 /** تاريخ للعرض من وقت الخادم · بالمللي ثانية، فمحرّك الجوال قد لا يقرأ أكثر من ثلاثة أجزاء من الثانية */
 export function tsDate(s: string): Date {
   return new Date(s.replace(/\.(\d{3})\d*Z$/, '.$1Z'));
+}
+
+/* ─── الدفعة ٤ (قرار المالك 2026-10-08T05:31Z): القنوات ومحادثات العقارات ─── */
+
+/**
+ * قناة: قسم (ينضم إليها من له صلاحية عليه)، أو إعلانات الإدارة (كل عضو، ويرسل المسؤولون)، أو عقار (من له صلاحية
+ * على العقار) · ينشئها المالك، ورقمها من نوعها فلا تتكرر، والقواعد تفرض الصلاحية من مستند العضوية
+ */
+export type ChannelRef = { t: 'section'; key: string } | { t: 'announce' } | { t: 'prop'; id: string };
+export function channelId(ch: ChannelRef): string {
+  return ch.t === 'section' ? 'g_sec_' + ch.key : ch.t === 'announce' ? 'g_announce' : 'g_prop_' + ch.id;
+}
+/** إعدادات القناة عند إنشائها: الإعلانات للمسؤولين، وغيرها كل الأعضاء · وسجلها كل السابق */
+export function channelSettings(ch: ChannelRef): GroupSettings {
+  return { h: 'all', w: ch.t === 'announce' ? 'admins' : 'all', ad: 'admins' };
 }

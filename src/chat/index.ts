@@ -10,6 +10,8 @@ import { readMembership } from '../services/access';
 import { getSyncState, setSyncState } from '../sync/engine';
 import { ChatRemote } from './remote';
 import { chatSyncOnce, type ChatSyncResult } from './sync';
+import { ensureChannels, autoJoinChannels } from './channels';
+export { ensureChannels, autoJoinChannels, qualifies, wantedChannels } from './channels';
 import { CHAT_BODY_MAX, CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe, type ChatTag, type GroupSettings } from './types';
 import { logAudit } from '../domain/audit';
 import type { RemoteEdit, RemoteMessage, RemoteThread } from './remote';
@@ -50,6 +52,7 @@ export function onChatSynced(fn: () => void): () => void {
 export const chatSyncRunning = () => running !== null;
 
 const ROLE_EVERY_MS = 10 * 60_000;
+const CHANNELS_EVERY_MS = 10 * 60_000;
 
 /**
  * دورة مزامنة واحدة · دورتان معاً تصيران واحدة · threadId: المحادثة المفتوحة وحدها، force: سحب كامل الآن ·
@@ -72,7 +75,17 @@ export function runChatSync(db: DB, s: ChatSession, ownerName = '', o: { threadI
         } catch { /* يبقى المحفوظ */ }
       }
     }
-    return chatSyncOnce(db, remote, me, { mySup: sup, threadId: o.threadId, full: o.full, force: o.force });
+    const res = await chatSyncOnce(db, remote, me, { mySup: sup, threadId: o.threadId, full: o.full, force: o.force });
+    // القنوات (الدفعة ٤) بعد السحب (فيعرف الجهاز ما هو فيه): كل عشر دقائق أو عند فتح الشاشة · والمحاولة تُحسب
+    // ولو فشلت فلا تتكرر كل دورة · وفشلها لا يعطّل المحادثة
+    const chAt = Number(getSyncState(db, 'chat_channels_at') ?? 0);
+    if (!o.threadId && (o.force || Date.now() - chAt > CHANNELS_EVERY_MS)) {
+      setSyncState(db, 'chat_channels_at', String(Date.now()));
+      try {
+        if (me.owner) await ensureChannels(db, remote, me); else await autoJoinChannels(db, remote, me);
+      } catch { /* تُعاد بعد مدتها */ }
+    }
+    return res;
   })().finally(() => {
     running = null;
     for (const l of listeners) { try { l(); } catch { /* عارض المحادثة مغلق */ } }

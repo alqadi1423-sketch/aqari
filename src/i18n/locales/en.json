@@ -454,7 +454,11 @@
     "beforeEdit": "Before edit {{n}}",
     "nowText": "Current text",
     "needOnline": "This needs an internet connection",
-    "historyFailed": "Could not load the edit history"
+    "historyFailed": "Could not load the edit history",
+    "sectionChannel": "Section channel",
+    "announceChannel": "Announcements channel",
+    "propertyChat": "Property chat",
+    "channelMembersAuto": "Channel members follow their permissions automatically: those with access join, those who lose it leave"
   },
   "auth": {
     "fail": {

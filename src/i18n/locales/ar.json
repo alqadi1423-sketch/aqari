@@ -454,7 +454,11 @@
     "beforeEdit": "قبل التعديل {{n}}",
     "nowText": "النص الآن",
     "needOnline": "هذا يحتاج اتصالاً بالإنترنت",
-    "historyFailed": "تعذّر عرض سجل التعديل"
+    "historyFailed": "تعذّر عرض سجل التعديل",
+    "sectionChannel": "قناة قسم",
+    "announceChannel": "قناة الإعلانات",
+    "propertyChat": "محادثة عقار",
+    "channelMembersAuto": "أعضاء القناة بصلاحياتهم تلقائياً: ينضم من له صلاحية، ويخرج من سُحبت منه"
   },
   "auth": {
     "fail": {

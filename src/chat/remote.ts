@@ -6,7 +6,7 @@ import { encodeFields, decodeFields, FirestoreHttpError } from '../cloud/firesto
 
 /** قيمة Firestore كما يفكّها العميل العام · بلا مسّ له */
 type FsValue = Parameters<typeof decodeFields>[0][string];
-import { CHAT_LINK_TYPES, CHAT_TAGS, OWNER_JOINED, normTs, type ChatKind, type ChatLink, type ChatPerson, type ChatTag, type GroupSettings } from './types';
+import { CHAT_LINK_TYPES, CHAT_TAGS, OWNER_JOINED, channelSettings, normTs, type ChannelRef, type ChatKind, type ChatLink, type ChatPerson, type ChatTag, type GroupSettings } from './types';
 export { normTs } from './types';
 import { uid as newId } from '../domain/ids';
 
@@ -27,6 +27,8 @@ export interface ChatRemoteOptions {
 export interface RemoteThread {
   id: string; k: ChatKind; p: string[]; name: string; by: string; at: string | null;
   s?: GroupSettings; a?: string[]; jt?: Record<string, string>;
+  /** القناة (الدفعة ٤) · null للمحادثة العادية */
+  ch?: ChannelRef | null;
 }
 /** sys: سطر نظام لا رسالة · 'join' انضم المالك (قرار المالك 2026-10-08T04:11Z) */
 export interface RemoteMessage {
@@ -61,6 +63,7 @@ function threadOf(doc: { name: string; fields: Record<string, FsValue> }): Remot
     id: tail(doc.name), k: d.k === 'group' ? 'group' : 'direct', p: Array.isArray(d.p) ? (d.p as string[]) : [],
     name: String(d.name ?? ''), by: String(d.by ?? ''), at: typeof d.at === 'string' ? normTs(d.at) : null,
     s: (d.s && typeof d.s === 'object' ? d.s : {}) as GroupSettings, a: Array.isArray(d.a) ? (d.a as string[]) : [], jt,
+    ch: d.ch && typeof d.ch === 'object' ? (d.ch as ChannelRef) : null,
   };
 }
 
@@ -129,6 +132,34 @@ export class ChatRemote {
     const fields: Record<string, unknown> = { k: t.k, p: t.p, name: t.name, by: this.o.uid };
     if (t.k === 'group') { fields.s = t.s ?? {}; fields.a = t.a ?? []; }
     return this.createOnce(this.orgPath(`chats/${t.id}`), fields, 'at');
+  }
+
+  /** قناة (الدفعة ٤) · للمالك وحده، وهو فيها، ويضم إليها الأعضاءُ أنفسَهم بصلاحيتهم */
+  async createChannel(id: string, ch: ChannelRef, name: string): Promise<'created' | 'exists'> {
+    return this.createOnce(this.orgPath(`chats/${id}`),
+      { k: 'group', p: [this.o.uid], name: name.slice(0, 80), by: this.o.uid, s: channelSettings(ch), a: [], ch }, 'at');
+  }
+
+  /** أعضاء المنشأة وصلاحياتهم · للمالك (يضبط القنوات بها) */
+  async members(): Promise<Array<{ uid: string; perm: Record<string, number>; all: boolean; props: string[] }>> {
+    const out: Array<{ uid: string; perm: Record<string, number>; all: boolean; props: string[] }> = [];
+    let page = '';
+    for (let guard = 0; guard < 50; guard++) {
+      const token = await this.o.idToken();
+      const res = await this.f(`${this.root}/${this.orgPath('members')}?pageSize=300&mask.fieldPaths=perm&mask.fieldPaths=all&mask.fieldPaths=props${page ? '&pageToken=' + encodeURIComponent(page) : ''}`,
+        { headers: { Authorization: 'Bearer ' + token } });
+      const text = await res.text();
+      if (!res.ok) throw new FirestoreHttpError(res.status, text);
+      const j = (text ? JSON.parse(text) : {}) as { documents?: Array<{ name: string; fields?: Record<string, FsValue> }>; nextPageToken?: string };
+      for (const doc of j.documents ?? []) {
+        const f = decodeFields(doc.fields ?? {});
+        out.push({ uid: tail(doc.name), perm: (f.perm && typeof f.perm === 'object' ? f.perm : {}) as Record<string, number>,
+          all: f.all === true, props: Array.isArray(f.props) ? (f.props as string[]) : [] });
+      }
+      if (!j.nextPageToken) break;
+      page = j.nextPageToken;
+    }
+    return out;
   }
 
   /** المحادثة كما في الخادم · لأطرافها والمالك */

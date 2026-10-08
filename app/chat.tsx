@@ -118,6 +118,8 @@ function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; 
             {th.lastTs ? <T size={TYPE.caption} color={C.muted}>{dfmt(localDay(th.lastTs))}</T> : null}
           </Row>
           {th.rejected ? <T size={TYPE.caption} color={C.rose}>{t('chat.rejected')}</T> : null}
+          {/* القناة ومحادثة العقار (الدفعة ٤) */}
+          {th.channel ? <T size={TYPE.caption} color={C.muted}>{t(th.channel.t === 'prop' ? 'chat.propertyChat' : th.channel.t === 'announce' ? 'chat.announceChannel' : 'chat.sectionChannel')}</T> : null}
         </Pressable>
       )) : <EmptyState>{t('chat.empty')}</EmptyState>}
       {sheet === 'person' ? (
@@ -166,7 +168,7 @@ function PersonSheet({ me, people, onClose, onPick }: { me: ChatMe; people: Chat
 }
 
 /** إعدادات المجموعة الثلاثة (قرار المالك 2026-10-08T05:31Z) · تُحدَّد عند الإنشاء ويعدّلها المسؤولون */
-function GroupSettingsPicker({ value, onChange, disabled }: { value: Required<GroupSettings>; onChange: (v: Required<GroupSettings>) => void; disabled?: boolean }) {
+function GroupSettingsPicker({ value, onChange, disabled, channel = false }: { value: Required<GroupSettings>; onChange: (v: Required<GroupSettings>) => void; disabled?: boolean; channel?: boolean }) {
   const { t } = useLang();
   const row = <K extends keyof GroupSettings>(label: string, key: K, opts: Array<[Required<GroupSettings>[K], string]>) => (
     <View style={{ marginTop: 6 }}>
@@ -183,7 +185,8 @@ function GroupSettingsPicker({ value, onChange, disabled }: { value: Required<Gr
       <T size={TYPE.cardTitle} bold>{t('chat.settings')}</T>
       {row(t('chat.hist'), 'h', [['all', t('chat.histAll')], ['join', t('chat.histJoin')]])}
       {row(t('chat.whoSends'), 'w', [['all', t('chat.everyone')], ['admins', t('chat.adminsOnly')]])}
-      {row(t('chat.whoAdds'), 'ad', [['admins', t('chat.adminsOnly')], ['all', t('chat.everyone')]])}
+      {/* القناة أعضاؤها بصلاحياتهم، فلا «من يضيف» */}
+      {channel ? null : row(t('chat.whoAdds'), 'ad', [['admins', t('chat.adminsOnly')], ['all', t('chat.everyone')]])}
     </View>
   );
 }
@@ -404,7 +407,8 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
       {editOpen && thread ? (
         <GroupEditSheet me={me} people={people} thread={thread} onClose={() => setEditOpen(false)} />
       ) : null}
-      {linkOpen ? <LinkSheet onClose={() => setLinkOpen(false)} onPick={(l) => { setLink(l); setLinkOpen(false); }} /> : null}
+      {linkOpen ? <LinkSheet propertyId={thread?.channel?.t === 'prop' ? thread.channel.id : null}
+        onClose={() => setLinkOpen(false)} onPick={(l) => { setLink(l); setLinkOpen(false); }} /> : null}
       {menOpen && thread ? (
         <MentionSheet people={people.filter((p) => thread.members.includes(p.uid) && p.uid !== me.uid)} onClose={() => setMenOpen(false)}
           onPick={(x) => { setMen((v) => (v.includes(x) || v.length >= MENTIONS_MAX ? v : [...v, x])); setMenOpen(false); }} />
@@ -478,11 +482,13 @@ function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: C
     <Sheet visible onClose={onClose} title={t('chat.editGroup')} tall
       footer={<View style={{ flex: 1 }}><BtnPrimary title={t('common.save')} onPress={() => f.attempt(!!name.trim() && members.length > 0, save)} /></View>}>
       <Field label={t('chat.groupName')} value={name} onChange={setName} error={f.missing(name)} disabled={!admin} />
-      <GroupSettingsPicker value={settings} onChange={setSettings} disabled={!admin} />
+      <GroupSettingsPicker value={settings} onChange={setSettings} disabled={!admin} channel={!!thread.channel} />
       <T size={TYPE.cardTitle} bold style={{ marginTop: 6 }}>{t('chat.groupMembers')}</T>
-      {others.map((p) => (
+      {/* القناة: أعضاؤها بصلاحياتهم تلقائياً · ويبقى تعيين المسؤولين (الدفعة ٤) */}
+      {thread.channel ? <Note>{t('chat.channelMembersAuto')}</Note> : null}
+      {(thread.channel ? others.filter((p) => thread.members.includes(p.uid)) : others).map((p) => (
         <MemberRow key={p.uid} p={p} me={me} member={members.includes(p.uid)} admin={admins.includes(p.uid)} canAppoint={appoint}
-          onToggle={() => toggle(p.uid)}
+          onToggle={() => { if (!thread.channel) toggle(p.uid); }}
           onAdmin={() => setAdmins((x) => (x.includes(p.uid) ? x.filter((u) => u !== p.uid) : [...x, p.uid]))} />
       ))}
     </Sheet>
@@ -782,13 +788,14 @@ function ReviewView({ review, onClose }: { review: Review; onClose: () => void }
 /* ─── نهاية المراجعة ─── */
 
 /** ربط الرسالة بسجل من جهاز المرسل · عقد أو وحدة أو أصل · وطلب الصيانة حين يُبنى */
-function LinkSheet({ onClose, onPick }: { onClose: () => void; onPick: (l: ChatLink) => void }) {
+function LinkSheet({ onClose, onPick, propertyId = null }: { onClose: () => void; onPick: (l: ChatLink) => void; propertyId?: string | null }) {
   const { db } = useApp();
   const { t } = useLang();
   const access = useAccess();
   const [type, setType] = useState<'contract' | 'unit' | 'asset'>('contract');
   const [q, setQ] = useState('');
-  const list = useMemo(() => linkCandidates(db, access, type, q), [db, access, type, q]);
+  // محادثة العقار تجمع ما يخصه: عقوده ووحداته وأصوله (الدفعة ٤)
+  const list = useMemo(() => linkCandidates(db, access, type, q, 50, propertyId), [db, access, type, q, propertyId]);
   return (
     <Sheet visible onClose={onClose} title={t('chat.linkTitle')} tall>
       <Row style={{ flexWrap: 'wrap', marginBottom: 6 }}>
