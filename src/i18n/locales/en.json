@@ -380,7 +380,10 @@
     "supSaveFailed": "Could not save section supervision · permissions were saved",
     "editGroup": "Group members",
     "groupSaved": "Group saved",
-    "groupSaveFailed": "Could not save the group"
+    "groupSaveFailed": "Could not save the group",
+    "ownerSees": "The organization owner can view the organization’s chats",
+    "readOnly": "View only · you are not part of this chat",
+    "observing": "Viewing"
   },
   "auth": {
     "fail": {

@@ -24,18 +24,23 @@ interface ThreadRow {
   last_ts: string | null; last_body: string; read_ts: string | null; pending: number; unread: number;
 }
 
-const threadOf = (r: ThreadRow): ChatThread => ({
-  id: r.id, kind: r.kind, name: r.name, members: parseList(r.members), createdBy: r.created_by,
-  createdAt: r.created_at, lastTs: r.last_ts, lastBody: r.last_body, unread: Number(r.unread || 0), pending: !!r.pending,
-  rejected: Number(r.pending) === 2,
-});
+const threadOf = (me: string) => (r: ThreadRow): ChatThread => {
+  const members = parseList(r.members);
+  const observer = !members.includes(me);
+  return {
+    id: r.id, kind: r.kind, name: r.name, members, createdBy: r.created_by,
+    // ما يطّلع عليه المالك ولا هو طرف فيه لا يتراكم عليه غير مقروء (قرار المالك 2026-10-08)
+    createdAt: r.created_at, lastTs: r.last_ts, lastBody: r.last_body, unread: observer ? 0 : Number(r.unread || 0), pending: !!r.pending,
+    rejected: Number(r.pending) === 2, observer,
+  };
+};
 
 /** المحادثات بآخر نشاط · وغير المقروء من رسائل الآخرين */
 export function listThreads(db: DB, me: string): ChatThread[] {
   return db.all<ThreadRow>(
     `SELECT t.*, (SELECT COUNT(*) FROM chat_messages m WHERE m.thread_id = t.id AND m.sender != ?
        AND COALESCE(m.server_ts, m.local_at) > COALESCE(t.read_ts, '')) AS unread
-     FROM chat_threads t ORDER BY COALESCE(t.last_ts, t.created_at, '') DESC`, [me]).map(threadOf);
+     FROM chat_threads t ORDER BY COALESCE(t.last_ts, t.created_at, '') DESC`, [me]).map(threadOf(me));
 }
 
 export function getThread(db: DB, id: string, me: string): ChatThread | null {
@@ -104,7 +109,10 @@ export function sendLocal(db: DB, threadId: string, me: { uid: string; name: str
   if (!text && !link) throw new Error('chat: empty message');
   if (link) link = { ...link, id: link.id.slice(0, 64), label: link.label.slice(0, 200) };
   if (text.length > CHAT_BODY_MAX) throw new Error('chat: message too long');
-  if (!db.get(`SELECT 1 FROM chat_threads WHERE id = ?`, [threadId])) throw new Error('chat: no such thread');
+  const row = db.get<{ members: string }>(`SELECT members FROM chat_threads WHERE id = ?`, [threadId]);
+  if (!row) throw new Error('chat: no such thread');
+  // اطلاع المالك للقراءة وحدها: لا يكتب في محادثة ليس طرفاً فيها (قرار المالك 2026-10-08)
+  if (!parseList(row.members).includes(me.uid)) throw new Error('chat: not a party');
   const id = newId();
   const at = nowIso();
   db.transaction(() => {

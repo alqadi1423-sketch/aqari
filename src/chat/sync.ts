@@ -30,6 +30,7 @@ export interface ChatSyncOptions {
 
 const DIR_EVERY_MS = 10 * 60_000;
 const FULL_EVERY_MS = 2 * 60_000;
+const OBSERVE_EVERY_MS = 10 * 60_000;
 const PAGE = 200;
 
 const stamp = (db: DB, k: string) => Number(getSyncState(db, k) ?? 0);
@@ -105,11 +106,16 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
   }
   if (!o.force && !o.full && now - stamp(db, 'chat_full_at') < FULL_EVERY_MS) return r;
   let threads: Awaited<ReturnType<ChatRemote['myThreads']>> = [];
-  try { threads = await remote.myThreads(); } catch { r.failed++; return r; }
+  // المالك يطّلع على محادثات منشأته كلها للقراءة · والعضو محادثاته وحدها (قرار المالك 2026-10-08) ·
+  // وكلفة الاطلاع تكبر بحجم المنشأة، فمحادثاته بمدتها المعتادة، والمنشأة كلها كل عشر دقائق أو عند فتح الشاشة،
+  // والمحادثة التي يفتحها تُسحب وحدها كل بضع ثوانٍ كغيرها
+  const observe = me.owner && (o.force || now - stamp(db, 'chat_observe_at') > OBSERVE_EVERY_MS);
+  try { threads = observe ? await remote.orgThreads() : await remote.myThreads(); } catch { r.failed++; return r; }
   for (const t of threads) {
     applyRemoteThread(db, t);
     try { r.pulledMessages += await pullThread(db, remote, t.id); } catch { r.failed++; }
   }
+  if (observe) setSyncState(db, 'chat_observe_at', String(now));
   setSyncState(db, 'chat_full_at', String(now));
   return r;
 }

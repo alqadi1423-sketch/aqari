@@ -1,6 +1,6 @@
 /**
  * قواعد المحادثة على محاكي Firestore (firestore.rules · كتلة <chat>) بعميل المحادثة نفسه · بيانات مصطنعة:
- * الأطراف وحدهم يقرؤون · الرسالة بوقت الخادم ولا تُعدَّل ولا تُحذف · المجموعة للمالك والمشرف · لا مرفقات قبل الفوترة ·
+ * الأطراف يقرؤون والمالك وحده من غيرهم (اطلاع 2026-10-08) · الرسالة بوقت الخادم ولا تُعدَّل ولا تُحذف · المجموعة للمالك والمشرف · لا مرفقات قبل الفوترة ·
  * وغير الأعضاء لا يصلون شيئاً.
  *   firebase emulators:exec --only firestore --project demo-aqari "npx jest tests/chat.emulator.test.ts"
  */
@@ -60,7 +60,7 @@ d('قواعد المحادثة', () => {
     await expect(chat(A).role('u-chb@example.test')).rejects.toThrow(/403/);
   });
 
-  test('الفردية: أي عضو يراسل أي عضو · الأطراف وحدهم يقرؤون · ورقمها من طرفيها', async () => {
+  test('الفردية: أي عضو يراسل أي عضو · يقرؤها طرفاها والمالك · ورقمها من طرفيها', async () => {
     const id = directId(A, B);
     expect(await chat(A).createThread({ id, k: 'direct', p: [A, B].sort(), name: '' })).toBe('created');
     expect(await chat(B).createThread({ id, k: 'direct', p: [A, B].sort(), name: '' })).toBe('exists');
@@ -75,8 +75,8 @@ d('قواعد المحادثة', () => {
     expect(got.map((m) => [m.from, m.name, m.body, m.link?.label])).toEqual([[A, 'عضو مصطنع أ', 'رسالة مصطنعة', 'عقد مصطنع']]);
     expect(got[0].ts).toMatch(/^\d{4}-/);
     expect((await chat(B).myThreads()).map((t) => t.id)).toEqual([id]);
-    // المالك ليس طرفاً فيها: لا يقرؤها
-    await expect(chat(ORG).messagesSince(id, null)).rejects.toThrow(/403/);
+    // المالك ليس طرفاً فيها ويطّلع عليها (قرار المالك 2026-10-08) · وغير العضو لا
+    expect((await chat(ORG).messagesSince(id, null)).map((m) => m.body)).toEqual(['رسالة مصطنعة']);
     await expect(chat(OUT).messagesSince(id, null)).rejects.toThrow(/403/);
   });
 

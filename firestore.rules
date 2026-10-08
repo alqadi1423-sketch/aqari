@@ -415,8 +415,8 @@ service cloud.firestore {
     // </org:generated>
 
     // <chat> · المحادثة (src/chat · قرار المالك 2026-10-07) · إضافة لا تغيّر قاعدة قائمة:
-    // الأطراف وحدهم يقرؤون المحادثة ورسائلها · الرسالة تُنشأ مرة بوقت الخادم ولا تُعدَّل ولا تُحذف ·
-    // والمجموعة ينشئها المالك أو مشرف قسم · والمرفقات (att) مغلقة حتى الفوترة
+    // يقرأ المحادثة ورسائلها أطرافها، والمالك يطّلع على كل محادثات منشأته للقراءة وحده (قرار المالك 2026-10-08) ·
+    // الرسالة تُنشأ مرة بوقت الخادم ولا تُعدَّل ولا تُحذف · والمجموعة ينشئها المالك أو مشرف قسم · والمرفقات (att) مغلقة حتى الفوترة
     function chatIn(org) {
       return request.auth != null && (orgOwner(org) || isMember(org));
     }
@@ -453,7 +453,7 @@ service cloud.firestore {
       allow delete: if orgOwner(org);
     }
     match /orgs/{org}/chats/{chatId} {
-      // المالك يقرأ مستند المحادثة (أطرافها واسمها) ليدير المجموعات ويُزيل المُزال · لا رسائلها (#19)
+      // المالك يقرأ محادثات منشأته كلها (اطلاع 2026-10-08) ويدير المجموعات ويُزيل المُزال (#19)
       allow read: if (chatIn(org) && request.auth.uid in resource.data.p) || orgOwner(org);
       allow create: if chatIn(org)
         && request.resource.data.keys().hasOnly(['k', 'p', 'name', 'by', 'at'])
@@ -480,18 +480,16 @@ service cloud.firestore {
       // حذف المحادثة للمالك في نافذة الحذف وحدها: «حذف حسابي» (#2) و«مسح كل البيانات» (#28)
       allow delete: if orgOwner(org) && orgDeletionOpen(org);
 
-      // فهرس أرقام الرسائل بلا محتوى (التحقق ق١): يكتبه المرسل مع رسالته في التزام واحد · ويسرده المالك في نافذة
-      // الحذف ليحذف الرسائل بأسمائها دون أن يقرأها
+      // فهرس أرقام الرسائل بلا محتوى من النسخ السابقة · لم يعد يُكتب لأن المالك يقرأ الرسائل (2026-10-08) ·
+      // يبقى سرده وحذفه للمالك في نافذة الحذف فلا يبقى منه شيء بعد المسح
       match /ids/{msgId} {
-        allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && orgDeletionOpen(org));
-        allow create: if chatIn(org) && chatParty(org, chatId) && request.resource.data.keys().size() == 0
-          && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(msgId)).data.from == request.auth.uid;
-        allow update: if false;
-        allow delete: if orgOwner(org) && orgDeletionOpen(org);
+        allow read, delete: if orgOwner(org) && orgDeletionOpen(org);
+        allow create, update: if false;
       }
 
       match /msgs/{msgId} {
-        allow read: if chatIn(org) && chatParty(org, chatId);
+        // أطرافها، والمالك وحده من غيرهم · لا المشرف (اطلاع 2026-10-08)
+        allow read: if (chatIn(org) && chatParty(org, chatId)) || orgOwner(org);
         allow create: if chatIn(org) && chatParty(org, chatId)
           && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts'])
           && request.resource.data.from == request.auth.uid
@@ -503,9 +501,7 @@ service cloud.firestore {
               && request.resource.data.link.type in ['contract', 'unit', 'asset', 'maintenance']
               && request.resource.data.link.id is string && request.resource.data.link.id.size() <= 64
               && request.resource.data.link.label is string && request.resource.data.link.label.size() <= 200))
-          && request.resource.data.att == null
-          // ومعها فهرس رقمها في الالتزام نفسه · فلا رسالة تفلت من الحذف (التحقق ر١)
-          && existsAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/ids/$(msgId));
+          && request.resource.data.att == null;
         // العضو يحذف حسابه: اسمه في رسائله «عضو سابق» وحده · رسائله وحده ولا حقل غيره (#2)
         allow update: if chatIn(org) && resource.data.from == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])

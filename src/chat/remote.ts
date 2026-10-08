@@ -31,6 +31,14 @@ function linkOf(v: unknown): ChatLink | null {
   return { type, id: o.id, label: String(o.label ?? '') };
 }
 
+function threadOf(doc: { name: string; fields: Record<string, FsValue> }): RemoteThread {
+  const d = decodeFields(doc.fields);
+  return {
+    id: tail(doc.name), k: d.k === 'group' ? 'group' : 'direct', p: Array.isArray(d.p) ? (d.p as string[]) : [],
+    name: String(d.name ?? ''), by: String(d.by ?? ''), at: typeof d.at === 'string' ? d.at : null,
+  };
+}
+
 export class ChatRemote {
   private docsRoot: string;
   private root: string;
@@ -87,43 +95,27 @@ export class ChatRemote {
         where: { fieldFilter: { field: { fieldPath: 'p' }, op: 'ARRAY_CONTAINS', value: { stringValue: this.o.uid } } },
       },
     })) as Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
-    const out: RemoteThread[] = [];
-    for (const r of rows) {
-      if (!r.document) continue;
-      const d = decodeFields(r.document.fields);
-      const k = d.k === 'group' ? 'group' : 'direct';
-      out.push({
-        id: tail(r.document.name), k, p: Array.isArray(d.p) ? (d.p as string[]) : [],
-        name: String(d.name ?? ''), by: String(d.by ?? ''), at: typeof d.at === 'string' ? d.at : null,
-      });
-    }
-    return out;
+    return rows.filter((r) => r.document).map((r) => threadOf(r.document!));
+  }
+
+  /**
+   * محادثات المنشأة كلها · للمالك وحده (القواعد) · اطلاعه للقراءة ولا يصير طرفاً فيها (قرار المالك 2026-10-08)
+   */
+  async orgThreads(): Promise<RemoteThread[]> {
+    const rows = (await this.req('POST', `${this.root}/orgs/${this.o.org}:runQuery`, {
+      structuredQuery: { from: [{ collectionId: 'chats' }] },
+    })) as Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
+    return rows.filter((r) => r.document).map((r) => threadOf(r.document!));
   }
 
   /* ─── الرسائل ─── */
 
   /**
-   * الرسالة ومعها فهرس رقمها بلا محتوى (ids/{id}) في التزام واحد · المالك يسرد الفهرس ليحذف في نافذة الحذف
-   * ولا يقرأ الرسائل، فالأطراف وحدهم يقرؤون (التحقق ق١)
+   * الرسالة وحدها · فهرس الأرقام بلا محتوى لم يعد يُكتب: المالك يقرأ الرسائل فيحذفها بسردها (قرار المالك 2026-10-08)
    */
   async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null }): Promise<'created' | 'exists'> {
-    const base = `${this.docsRoot}/${this.orgPath(`chats/${threadId}`)}`;
-    try {
-      await this.req('POST', `${this.root}:commit`, {
-        writes: [
-          {
-            update: { name: `${base}/msgs/${m.id}`, fields: encodeFields({ from: this.o.uid, name: m.name, body: m.body, link: m.link, att: null }) },
-            currentDocument: { exists: false },
-            updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
-          },
-          { update: { name: `${base}/ids/${m.id}`, fields: {} }, currentDocument: { exists: false } },
-        ],
-      });
-      return 'created';
-    } catch (e) {
-      if (e instanceof FirestoreHttpError && (e.status === 409 || /ALREADY_EXISTS|FAILED_PRECONDITION/.test(e.message))) return 'exists';
-      throw e;
-    }
+    return this.createOnce(this.orgPath(`chats/${threadId}/msgs/${m.id}`),
+      { from: this.o.uid, name: m.name, body: m.body, link: m.link, att: null }, 'ts');
   }
 
   /** رسائل محادثة بعد مؤشر وقت الخادم · بترتيبه */
@@ -169,7 +161,7 @@ export class ChatRemote {
     await this.updateGroup(threadId, p.filter((x) => x !== this.o.uid), name);
   }
 
-  /** مجموعات المنشأة التي فيها عضو · للمالك (يقرأ مستندات المحادثات دون رسائلها) · #19 */
+  /** مجموعات المنشأة التي فيها عضو · للمالك · #19 */
   async groupsOf(uid: string): Promise<Array<{ id: string; p: string[]; name: string }>> {
     const rows = (await this.req('POST', `${this.root}/orgs/${this.o.org}:runQuery`, {
       structuredQuery: {
@@ -248,12 +240,17 @@ export class ChatRemote {
       if (!chats.length) break;
       for (const c of chats) {
         const rel = c.slice(c.indexOf('/documents/') + '/documents/'.length);
+        // الرسائل بسردها (المالك يقرؤها منذ 2026-10-08) · ثم فهارس الأرقام التي كتبتها النسخ السابقة
+        for (;;) {
+          const msgs = await list(`${rel}/msgs`);
+          if (!msgs.length) break;
+          await del(msgs);
+          n += msgs.length;
+        }
         for (;;) {
           const ids = await list(`${rel}/ids`);
           if (!ids.length) break;
-          // الرسالة وفهرسها معاً · بالأسماء دون قراءة محتوى
-          await del(ids.flatMap((x) => [x.replace('/ids/', '/msgs/'), x]));
-          n += ids.length;
+          await del(ids);
         }
       }
       await del(chats);

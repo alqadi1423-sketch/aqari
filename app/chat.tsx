@@ -22,7 +22,7 @@ import { useSaveAttempt } from '../src/ui/formAttempt';
 import { reportFailure } from '../src/ui/failureDialog';
 import {
   chatMe, canCreateGroup, createGroup, getThread, linkCandidates, linkTarget, listMessages, listPeople, listThreads,
-  markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup,
+  markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup, groupEditMembers,
   type ChatLink, type ChatMe, type ChatPerson, type ChatThread,
 } from '../src/chat';
 
@@ -53,6 +53,7 @@ function useChatMe(): ChatMe | null {
 }
 
 const LIST_SEP = '، '; // i18n-exempt: فاصل قائمة الأقسام
+const PARTY_SEP = ' · '; // i18n-exempt: فاصل اسمي طرفي المحادثة
 const supLabel = (sup: string[]) => sup.map((k) => { try { return sectionDef(k as never).label; } catch { return k; } }).join(LIST_SEP);
 
 export default function Chat() {
@@ -80,7 +81,8 @@ function ThreadList({ me, tick, onOpen }: { me: ChatMe; tick: number; onOpen: (i
   const mySup = people.find((p) => p.uid === me.uid)?.sup ?? [];
   const nameOf = (uid: string) => (uid === me.uid ? t('chat.you') : people.find((p) => p.uid === uid)?.name || t('chat.member'));
   const titleOf = (th: (typeof threads)[number]) =>
-    th.kind === 'group' ? th.name : nameOf(th.members.find((u) => u !== me.uid) ?? me.uid);
+    th.kind === 'group' ? th.name
+      : th.observer ? th.members.map(nameOf).join(PARTY_SEP) : nameOf(th.members.find((u) => u !== me.uid) ?? me.uid);
   return (
     <Screen title={t('chat.title')} icon="chat"
       actions={(
@@ -89,6 +91,8 @@ function ThreadList({ me, tick, onOpen }: { me: ChatMe; tick: number; onOpen: (i
           {canCreateGroup(me, mySup) ? <BtnGhost small title={t('chat.newGroup')} onPress={() => setSheet('group')} /> : null}
         </Row>
       )}>
+      {/* تنبيه ثابت للأعضاء (قرار المالك 2026-10-08) */}
+      {!me.owner ? <Note>{t('chat.ownerSees')}</Note> : null}
       <Note>{t('chat.attachmentsLater')}</Note>
       {threads.length ? threads.map((th) => (
         <Pressable key={th.id} onPress={() => onOpen(th.id)}
@@ -102,6 +106,7 @@ function ThreadList({ me, tick, onOpen }: { me: ChatMe; tick: number; onOpen: (i
             {th.lastTs ? <T size={TYPE.caption} color={C.muted}>{dfmt(localDay(th.lastTs))}</T> : null}
           </Row>
           {th.rejected ? <T size={TYPE.caption} color={C.rose}>{t('chat.rejected')}</T> : null}
+          {th.observer ? <T size={TYPE.caption} color={C.muted}>{t('chat.observing')}</T> : null}
         </Pressable>
       )) : <EmptyState>{t('chat.empty')}</EmptyState>}
       {sheet === 'person' ? (
@@ -184,9 +189,12 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   useEffect(() => { markRead(db, id); }, [db, id, msgs.length]);
   const other = people.find((p) => p.uid === thread?.members.find((u) => u !== me.uid));
   const otherUid = thread?.members.find((u) => u !== me.uid);
-  const title = thread?.kind === 'group' ? thread.name : other?.name || (otherUid && people.length ? FORMER_MEMBER : t('chat.member'));
+  const partyName = (uid: string) => people.find((p) => p.uid === uid)?.name || (people.length ? FORMER_MEMBER : t('chat.member'));
+  const title = thread?.kind === 'group' ? thread.name
+    : thread?.observer ? thread.members.map(partyName).join(PARTY_SEP)
+      : other?.name || (otherUid && people.length ? FORMER_MEMBER : t('chat.member'));
   const [editOpen, setEditOpen] = useState(false);
-  const sub = thread?.kind === 'group' ? undefined
+  const sub = thread?.kind === 'group' || thread?.observer ? undefined
     : other?.uid === me.org ? t('chat.owner') : other?.sup.length ? t('chat.supervisorOf', { sections: supLabel(other.sup) }) : undefined;
   const senderOf = (uid: string, fallback: string) => {
     const p = people.find((x) => x.uid === uid);
@@ -226,6 +234,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           <BtnGhost small title={t('chat.back')} onPress={onBack} />
         </Row>
       )}>
+      {!me.owner ? <Note>{t('chat.ownerSees')}</Note> : null}
       <FlatList
         style={{ flex: 1 }}
         data={msgs}
@@ -236,7 +245,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           return (
             <View style={{ alignSelf: mine ? 'flex-start' : 'flex-end', maxWidth: '85%', marginVertical: 4,
               backgroundColor: mine ? C.emeraldSoft : C.paper, borderRadius: 12, padding: 9, borderWidth: 1, borderColor: C.line }}>
-              {!mine && thread?.kind === 'group' ? <T size={TYPE.caption} bold color={C.emerald}>{senderOf(m.sender, m.senderName)}</T> : null}
+              {!mine && (thread?.kind === 'group' || thread?.observer) ? <T size={TYPE.caption} bold color={C.emerald}>{senderOf(m.sender, m.senderName)}</T> : null}
               {m.body ? <T size={TYPE.body}>{m.body}</T> : null}
               {m.link ? (
                 <Pressable disabled={!target?.canOpen} onPress={() => openLink(m.link!)}
@@ -253,18 +262,25 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           );
         }}
       />
-      {link ? (
-        <Row style={{ paddingVertical: 4 }}>
-          <Chip label={t('chat.link.' + link.type) + ' · ' + link.label} active onPress={() => setLink(null)} />
-        </Row>
-      ) : null}
-      <Row style={{ paddingVertical: 6, alignItems: 'flex-end' }} gap={6}>
-        <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
-        <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
-          style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
-            borderRadius: 10, paddingHorizontal: 10, backgroundColor: '#FAFAF7', textAlign: 'right' }} />
-        <BtnPrimary small title={t('chat.send')} onPress={send} />
-      </Row>
+      {/* اطلاع المالك للقراءة وحدها: لا خانة كتابة ولا ربط فيما ليس طرفاً فيه (قرار المالك 2026-10-08) */}
+      {thread?.observer ? (
+        <Note>{t('chat.readOnly')}</Note>
+      ) : (
+        <>
+          {link ? (
+            <Row style={{ paddingVertical: 4 }}>
+              <Chip label={t('chat.link.' + link.type) + ' · ' + link.label} active onPress={() => setLink(null)} />
+            </Row>
+          ) : null}
+          <Row style={{ paddingVertical: 6, alignItems: 'flex-end' }} gap={6}>
+            <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
+            <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
+              style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
+                borderRadius: 10, paddingHorizontal: 10, backgroundColor: '#FAFAF7', textAlign: 'right' }} />
+            <BtnPrimary small title={t('chat.send')} onPress={send} />
+          </Row>
+        </>
+      )}
       {editOpen && thread ? (
         <GroupEditSheet me={me} people={people} thread={thread} onClose={() => setEditOpen(false)} />
       ) : null}
@@ -288,7 +304,8 @@ function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: C
   const others = people.filter((p) => p.uid !== me.uid);
   const save = async () => {
     try {
-      await chatUpdateGroupNow(thread.id, [me.uid, ...picked], name);
+      // المالك المطّلع لا يُدخله تعديله في مجموعة ليس طرفاً فيها
+      await chatUpdateGroupNow(thread.id, groupEditMembers(me, thread, picked), name);
       bump(); toast(t('chat.groupSaved')); onClose();
     } catch (e) { reportFailure({ title: t('chat.groupSaveFailed'), e }); }
   };

@@ -11,7 +11,7 @@
  *
  * في السحابة تحت المنشأة (قواعد مضافة لا تغيّر القائمة · firestore.rules بعد الكتلة المولَّدة):
  *  orgs/{org}/chats/{chatId}            { k: 'direct'|'group', p: uid[], name, by, at }
- *  orgs/{org}/chats/{chatId}/msgs/{id}  { from, name, body, link, att, ts }  · إنشاء فقط
+ *  orgs/{org}/chats/{chatId}/msgs/{id}  { from, name, body, link, att, ts }  · إنشاء فقط · يقرؤها أطرافها والمالك وحده
  *  orgs/{org}/chatDir/{uid}             { name, sup, at }  · دليل الأعضاء للمحادثة · يكتبه صاحبه
  *  orgs/{org}/chatRoles/{email}         { sup: SectionKey[] }  · إشراف الأقسام · يكتبه المالك
  */
@@ -43,6 +43,8 @@ export interface ChatThread {
   pending: boolean;
   /** رفض الخادم إنشاءها (مثل مجموعة أنشأها مشرف سُحب إشرافه) */
   rejected: boolean;
+  /** لست طرفاً فيها: اطلاع المالك للقراءة وحدها (قرار المالك 2026-10-08) */
+  observer: boolean;
 }
 
 export interface ChatMessage {
@@ -94,6 +96,15 @@ export const CHAT_GROUP_MAX = 100;
 /** المحادثة الفردية برقم ثابت من رقمي الطرفين · فلا تتكرر بينهما */
 export function directId(a: string, b: string): string {
   return 'd_' + [a, b].sort().join('_');
+}
+
+/**
+ * أعضاء المجموعة بعد تعديلها · من هو فيها يبقى فيها، والمالك المطّلع (ليس طرفاً) لا يُدخله تعديله فيها
+ * (قرار المالك 2026-10-08: «ولا يظهر عضواً في محادثة ليس طرفاً فيها»)
+ */
+export function groupEditMembers(me: ChatMe, thread: { members: string[] }, picked: string[]): string[] {
+  const others = picked.filter((u) => u && u !== me.uid);
+  return thread.members.includes(me.uid) ? [me.uid, ...others] : others;
 }
 
 /** من ينشئ المجموعات: المالك والمشرفون */

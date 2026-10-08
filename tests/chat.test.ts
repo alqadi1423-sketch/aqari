@@ -36,6 +36,7 @@ function fakeCloud() {
         return 'created';
       },
       async myThreads() { guard(); return [...threads.values()].filter((t) => t.p.includes(uid)); },
+      async orgThreads() { guard(); if (uid !== OWNER.uid) throw new Error('Firestore 403: owner only'); return [...threads.values()]; },
       async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null }) {
         guard();
         state.sends++;
@@ -151,7 +152,7 @@ test('المحادثة لا تُرفع قبل أول رسالة · والدلي�
   const remote = new Proxy(base, {
     get(t, k) {
       if (k === 'putMyDirectory') calls.dir++;
-      if (k === 'myThreads') calls.threads++;
+      if (k === 'myThreads' || k === 'orgThreads') calls.threads++; // السحب الكامل · المالك بمحادثات المنشأة كلها (2026-10-08)
       return (t as unknown as Record<string | symbol, unknown>)[k];
     },
   }) as typeof base;
@@ -210,4 +211,83 @@ test('الدليل يُستبدل كاملاً فمن خرج منه لا يبق�
   expect(canEditGroup(OWNER, 'someone')).toBe(true);
   expect(canEditGroup(MEMBER, MEMBER.uid)).toBe(true);
   expect(canEditGroup(MEMBER, 'someone')).toBe(false);
+});
+
+/* ─── اطلاع المالك على محادثات منشأته (قرار المالك 2026-10-08) ─── */
+
+test('المالك يسحب محادثات المنشأة كلها للقراءة · لا يصير طرفاً ولا يكتب فيما ليس طرفاً فيه · والعضو محادثاته وحدها', async () => {
+  const cloud = fakeCloud();
+  const OTHER = me('u-other', 'عضو آخر مصطنع');
+  const THIRD = me('u-third', 'عضو ثالث مصطنع');
+  const m1 = memDb();
+  const tid = openDirect(m1, MEMBER.uid, OTHER.uid);
+  sendLocal(m1, tid, MEMBER, 'خاصة بين عضوين');
+  await chatSyncOnce(m1, cloud.remote(MEMBER.uid), MEMBER);
+  // المالك: يراها للقراءة · بلا غير مقروء يتراكم عليه · وأطرافها كما هم
+  const o = memDb();
+  await chatSyncOnce(o, cloud.remote(OWNER.uid), OWNER, { force: true });
+  const seen = listThreads(o, OWNER.uid);
+  expect(seen.map((t) => [t.id, t.observer, t.unread])).toEqual([[tid, true, 0]]);
+  expect(seen[0].members).toEqual([MEMBER.uid, OTHER.uid].sort());
+  expect(listMessages(o, tid).map((m) => [m.senderName, m.body])).toEqual([[MEMBER.name, 'خاصة بين عضوين']]);
+  // للقراءة فقط: لا رسالة منه فيها ولو كُتبت على جهازه
+  expect(() => sendLocal(o, tid, OWNER, 'من المالك')).toThrow();
+  expect(listMessages(o, tid).length).toBe(1);
+  await chatSyncOnce(o, cloud.remote(OWNER.uid), OWNER, { force: true });
+  expect(cloud.msgs.get(tid)!.length).toBe(1);
+  // محادثته هو مع عضو ليست اطلاعاً
+  const own = openDirect(o, OWNER.uid, MEMBER.uid);
+  expect(listThreads(o, OWNER.uid).find((t) => t.id === own)!.observer).toBe(false);
+  // العضو غير الطرف لا يراها · والطرف يراها
+  const t3 = memDb();
+  await chatSyncOnce(t3, cloud.remote(THIRD.uid), THIRD, { force: true });
+  expect(listThreads(t3, THIRD.uid)).toEqual([]);
+  const t2 = memDb();
+  await chatSyncOnce(t2, cloud.remote(OTHER.uid), OTHER, { force: true });
+  expect(listThreads(t2, OTHER.uid).map((t) => [t.id, t.observer])).toEqual([[tid, false]]);
+});
+
+test('تعديل المالك مجموعةً ليس طرفاً فيها لا يُدخله فيها (#19 مع الاطلاع)', async () => {
+  const { groupEditMembers } = await import('@/chat');
+  const group = { members: ['u-a', 'u-b', 'u-sup'].sort() };
+  expect(groupEditMembers(OWNER, group, ['u-a', 'u-b'])).toEqual(['u-a', 'u-b']);
+  // ومن هو فيها يبقى فيها
+  expect(groupEditMembers(MEMBER, { members: [MEMBER.uid, 'u-a'] }, ['u-a', 'u-b'])).toEqual([MEMBER.uid, 'u-a', 'u-b']);
+});
+
+test('تنبيه ثابت للأعضاء: «محادثات المنشأة يطّلع عليها المالك» · وشاشة المالك المطّلع بلا خانة كتابة', () => {
+  const { readFileSync } = jest.requireActual('fs') as typeof import('fs');
+  const { join } = jest.requireActual('path') as typeof import('path');
+  const ar = JSON.parse(readFileSync(join(__dirname, '..', 'src', 'i18n', 'locales', 'ar.json'), 'utf8'));
+  expect(ar.chat.ownerSees).toBe('محادثات المنشأة يطّلع عليها المالك');
+  const src = readFileSync(join(__dirname, '..', 'app', 'chat.tsx'), 'utf8');
+  // في القائمة والمحادثة المفتوحة · للأعضاء لا للمالك
+  expect(src.match(/!me\.owner \? <Note[^>]*>\{t\('chat\.ownerSees'\)\}<\/Note> : null/g)?.length).toBe(2);
+  // خانة الكتابة وزر الربط لا يظهران للمطّلع
+  expect(src).toMatch(/thread\?\.observer \? \(\s*<Note[^>]*>\{t\('chat\.readOnly'\)\}<\/Note>\s*\) : \(/);
+});
+
+test('حصة المالك: محادثاته بمدتها المعتادة · ومحادثات المنشأة التي يطّلع عليها كل عشر دقائق أو بفتحها (التحقق: الحصة)', async () => {
+  const cloud = fakeCloud();
+  const calls = { org: 0, mine: 0 };
+  const base = cloud.remote(OWNER.uid);
+  const remote = new Proxy(base, {
+    get(t, k) {
+      if (k === 'orgThreads') calls.org++;
+      if (k === 'myThreads') calls.mine++;
+      return (t as unknown as Record<string | symbol, unknown>)[k];
+    },
+  }) as typeof base;
+  const o = memDb();
+  await chatSyncOnce(o, remote, OWNER, { now: 10_000_000 });
+  expect([calls.org, calls.mine]).toEqual([1, 0]);
+  // سحب كامل بعد ٣ دقائق: محادثاته وحدها
+  await chatSyncOnce(o, remote, OWNER, { now: 10_180_000, full: true });
+  expect([calls.org, calls.mine]).toEqual([1, 1]);
+  // بعد عشر دقائق: المنشأة كلها
+  await chatSyncOnce(o, remote, OWNER, { now: 10_700_000, full: true });
+  expect([calls.org, calls.mine]).toEqual([2, 1]);
+  // فتح الشاشة (force): المنشأة كلها
+  await chatSyncOnce(o, remote, OWNER, { now: 10_710_000, force: true });
+  expect(calls.org).toBe(3);
 });
