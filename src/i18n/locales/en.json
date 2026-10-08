@@ -382,8 +382,22 @@
     "groupSaved": "Group saved",
     "groupSaveFailed": "Could not save the group",
     "ownerSees": "The organization owner can view the organization’s chats",
-    "readOnly": "View only · you are not part of this chat",
-    "observing": "Viewing"
+    "review": "Review a chat",
+    "reviewPick": "Choose the chat",
+    "reviewPickFirst": "Choose a chat first",
+    "reviewReason": "Reason for review",
+    "reviewOpen": "Open review",
+    "reviewing": "Review",
+    "reviewReadOnly": "Read-only review · ends when closed; each new opening needs a new reason",
+    "reviewReasonShown": "Reason: {{reason}}",
+    "reviewClose": "Close review",
+    "reviewNone": "No member chats",
+    "reviewFailed": "Review failed",
+    "join": "Join",
+    "joined": "You joined the group",
+    "joinFailed": "Could not join",
+    "ownerJoined": "The owner joined",
+    "loading": "Loading"
   },
   "auth": {
     "fail": {

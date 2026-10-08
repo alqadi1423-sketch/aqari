@@ -11,7 +11,7 @@ import type { ChatRemote } from './remote';
 import type { ChatMe } from './types';
 import {
   applyRemoteMessage, applyRemoteThread, heldThreads, markMessageRejected, markSent, markThreadPushed, markThreadRejected,
-  pendingMessages, pendingThreads,
+  pendingMessages, pendingThreads, forgetObserved,
   savePeople, threadCursor,
 } from './store';
 
@@ -30,7 +30,6 @@ export interface ChatSyncOptions {
 
 const DIR_EVERY_MS = 10 * 60_000;
 const FULL_EVERY_MS = 2 * 60_000;
-const OBSERVE_EVERY_MS = 10 * 60_000;
 const PAGE = 200;
 
 const stamp = (db: DB, k: string) => Number(getSyncState(db, k) ?? 0);
@@ -54,6 +53,11 @@ async function pullThread(db: DB, remote: ChatRemote, threadId: string): Promise
 export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: ChatSyncOptions = {}): Promise<ChatSyncResult> {
   const r: ChatSyncResult = { pushedThreads: 0, pushedMessages: 0, pulledMessages: 0, failed: 0 };
   const now = o.now ?? Date.now();
+  // مرة واحدة على جهاز المالك: ما سحبه الاطلاع السابق من محادثات ليس طرفاً فيها يُمحى (2026-10-08T04:11Z)
+  if (me.owner && getSyncState(db, 'chat_forgot_observed') !== '1') {
+    forgetObserved(db, me.uid);
+    setSyncState(db, 'chat_forgot_observed', '1');
+  }
   const mySup = o.mySup ?? [];
 
   // ١) الدليل: اسمي وإشرافي حين يتغيران · وأسماء الأعضاء كل عشر دقائق أو بطلب
@@ -106,16 +110,13 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
   }
   if (!o.force && !o.full && now - stamp(db, 'chat_full_at') < FULL_EVERY_MS) return r;
   let threads: Awaited<ReturnType<ChatRemote['myThreads']>> = [];
-  // المالك يطّلع على محادثات منشأته كلها للقراءة · والعضو محادثاته وحدها (قرار المالك 2026-10-08) ·
-  // وكلفة الاطلاع تكبر بحجم المنشأة، فمحادثاته بمدتها المعتادة، والمنشأة كلها كل عشر دقائق أو عند فتح الشاشة،
-  // والمحادثة التي يفتحها تُسحب وحدها كل بضع ثوانٍ كغيرها
-  const observe = me.owner && (o.force || now - stamp(db, 'chat_observe_at') > OBSERVE_EVERY_MS);
-  try { threads = observe ? await remote.orgThreads() : await remote.myThreads(); } catch { r.failed++; return r; }
+  // محادثاتي وحدها، والمالك كغيره: لا تحديث دوري لمحادثات المنشأة عنده، فلا تُقرأ إلا بمراجعة بسببها
+  // (قرار المالك 2026-10-08T04:11Z)
+  try { threads = await remote.myThreads(); } catch { r.failed++; return r; }
   for (const t of threads) {
     applyRemoteThread(db, t);
     try { r.pulledMessages += await pullThread(db, remote, t.id); } catch { r.failed++; }
   }
-  if (observe) setSyncState(db, 'chat_observe_at', String(now));
   setSyncState(db, 'chat_full_at', String(now));
   return r;
 }

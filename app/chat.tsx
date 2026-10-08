@@ -1,6 +1,7 @@
 /**
  * المحادثة (src/chat · قرار المالك 2026-10-07) · شاشة واحدة: قائمة المحادثات، والمحادثة المفتوحة بمعاملها t.
  * تعمل بلا اتصال: الرسالة تُحفظ فوراً «لم تُرسل» وتُرفع عند عودته · كل نصٍّ بمفتاحه في ملفي الترجمة.
+ * والمالك يراجع محادثةً ليس طرفاً فيها بسببٍ إلزامي، للقراءة وحدها، وتنتهي بإغلاقها (قرار المالك 2026-10-08T04:11Z).
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { FlatList, Pressable, TextInput, View } from 'react-native';
@@ -13,7 +14,11 @@ import { useApp, useFs } from '../src/ui/store';
 import { useAccess } from '../src/ui/access';
 import { useLang } from '../src/i18n';
 import { dfmt } from '../src/domain/dates';
-import { cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatUpdateGroupNow } from '../src/services/cloud';
+import {
+  cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatUpdateGroupNow,
+  chatReviewCandidatesNow, chatOpenReviewNow, chatCloseReviewNow, chatJoinGroupNow,
+} from '../src/services/cloud';
+import type { RemoteMessage, RemoteThread } from '../src/chat/remote';
 import { useToast } from '../src/ui/Toast';
 import { sectionDef } from '../src/domain/access/sections';
 import { UnitDetailSheet } from '../src/ui/unitSheets';
@@ -22,7 +27,7 @@ import { useSaveAttempt } from '../src/ui/formAttempt';
 import { reportFailure } from '../src/ui/failureDialog';
 import {
   chatMe, canCreateGroup, createGroup, getThread, linkCandidates, linkTarget, listMessages, listPeople, listThreads,
-  markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup, groupEditMembers,
+  markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup,
   type ChatLink, type ChatMe, type ChatPerson, type ChatThread,
 } from '../src/chat';
 
@@ -61,34 +66,37 @@ export default function Chat() {
   const me = useChatMe();
   const params = useLocalSearchParams<{ t?: string }>();
   const [open, setOpen] = useState<string | null>(params.t ? String(params.t) : null);
+  const [review, setReview] = useState<Review | null>(null);
   const tick = useChatPulse(open);
   if (!me) {
     return <Screen title={t('chat.title')} icon="chat"><EmptyState>{t('chat.needAccount')}</EmptyState></Screen>;
   }
+  if (review) return <ReviewView review={review} onClose={() => setReview(null)} />;
   return open
     ? <ThreadView me={me} id={open} tick={tick} onBack={() => setOpen(null)} />
-    : <ThreadList me={me} tick={tick} onOpen={setOpen} />;
+    : <ThreadList me={me} tick={tick} onOpen={setOpen} onReview={setReview} />;
 }
 
 /* ─── القائمة ─── */
 
-function ThreadList({ me, tick, onOpen }: { me: ChatMe; tick: number; onOpen: (id: string) => void }) {
+function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; onOpen: (id: string) => void; onReview: (r: Review) => void }) {
   const { db, version } = useApp();
   const { t } = useLang();
-  const [sheet, setSheet] = useState<'person' | 'group' | null>(null);
+  const [sheet, setSheet] = useState<'person' | 'group' | 'review' | null>(null);
   const people = useMemo(() => listPeople(db), [db, version, tick]); // eslint-disable-line react-hooks/exhaustive-deps
-  const threads = useMemo(() => listThreads(db, me.uid), [db, version, tick, me.uid]); // eslint-disable-line react-hooks/exhaustive-deps
+  const threads = useMemo(() => listThreads(db, me.uid, me.owner), [db, version, tick, me.uid, me.owner]); // eslint-disable-line react-hooks/exhaustive-deps
   const mySup = people.find((p) => p.uid === me.uid)?.sup ?? [];
   const nameOf = (uid: string) => (uid === me.uid ? t('chat.you') : people.find((p) => p.uid === uid)?.name || t('chat.member'));
   const titleOf = (th: (typeof threads)[number]) =>
-    th.kind === 'group' ? th.name
-      : th.observer ? th.members.map(nameOf).join(PARTY_SEP) : nameOf(th.members.find((u) => u !== me.uid) ?? me.uid);
+    th.kind === 'group' ? th.name : nameOf(th.members.find((u) => u !== me.uid) ?? me.uid);
   return (
     <Screen title={t('chat.title')} icon="chat"
       actions={(
         <Row gap={6}>
           <BtnPrimary small icon="plus" title={t('chat.newChat')} onPress={() => setSheet('person')} />
           {canCreateGroup(me, mySup) ? <BtnGhost small title={t('chat.newGroup')} onPress={() => setSheet('group')} /> : null}
+          {/* مراجعة محادثة للمالك وحده (قرار المالك 2026-10-08T04:11Z) · ولغيره لا يظهر الزر */}
+          {me.owner ? <BtnGhost small title={t('chat.review')} onPress={() => setSheet('review')} /> : null}
         </Row>
       )}>
       {/* تنبيه ثابت للأعضاء (قرار المالك 2026-10-08) */}
@@ -106,7 +114,6 @@ function ThreadList({ me, tick, onOpen }: { me: ChatMe; tick: number; onOpen: (i
             {th.lastTs ? <T size={TYPE.caption} color={C.muted}>{dfmt(localDay(th.lastTs))}</T> : null}
           </Row>
           {th.rejected ? <T size={TYPE.caption} color={C.rose}>{t('chat.rejected')}</T> : null}
-          {th.observer ? <T size={TYPE.caption} color={C.muted}>{t('chat.observing')}</T> : null}
         </Pressable>
       )) : <EmptyState>{t('chat.empty')}</EmptyState>}
       {sheet === 'person' ? (
@@ -116,6 +123,11 @@ function ThreadList({ me, tick, onOpen }: { me: ChatMe; tick: number; onOpen: (i
       {sheet === 'group' ? (
         <GroupSheet me={me} people={people} onClose={() => setSheet(null)}
           onCreated={(id) => { setSheet(null); onOpen(id); }} />
+      ) : null}
+      {sheet === 'review' ? (
+        <ReviewPickSheet people={people} onClose={() => setSheet(null)}
+          onReview={(r) => { setSheet(null); onReview(r); }}
+          onJoined={(id) => { setSheet(null); onOpen(id); }} />
       ) : null}
     </Screen>
   );
@@ -189,12 +201,9 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   useEffect(() => { markRead(db, id); }, [db, id, msgs.length]);
   const other = people.find((p) => p.uid === thread?.members.find((u) => u !== me.uid));
   const otherUid = thread?.members.find((u) => u !== me.uid);
-  const partyName = (uid: string) => people.find((p) => p.uid === uid)?.name || (people.length ? FORMER_MEMBER : t('chat.member'));
-  const title = thread?.kind === 'group' ? thread.name
-    : thread?.observer ? thread.members.map(partyName).join(PARTY_SEP)
-      : other?.name || (otherUid && people.length ? FORMER_MEMBER : t('chat.member'));
+  const title = thread?.kind === 'group' ? thread.name : other?.name || (otherUid && people.length ? FORMER_MEMBER : t('chat.member'));
   const [editOpen, setEditOpen] = useState(false);
-  const sub = thread?.kind === 'group' || thread?.observer ? undefined
+  const sub = thread?.kind === 'group' ? undefined
     : other?.uid === me.org ? t('chat.owner') : other?.sup.length ? t('chat.supervisorOf', { sections: supLabel(other.sup) }) : undefined;
   const senderOf = (uid: string, fallback: string) => {
     const p = people.find((x) => x.uid === uid);
@@ -242,10 +251,11 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
         renderItem={({ item: m }) => {
           const mine = m.sender === me.uid;
           const target = m.link ? linkTarget(db, access, m.link) : null;
+          if (m.sys === 'join') return <SysLine label={t('chat.ownerJoined')} />;
           return (
             <View style={{ alignSelf: mine ? 'flex-start' : 'flex-end', maxWidth: '85%', marginVertical: 4,
               backgroundColor: mine ? C.emeraldSoft : C.paper, borderRadius: 12, padding: 9, borderWidth: 1, borderColor: C.line }}>
-              {!mine && (thread?.kind === 'group' || thread?.observer) ? <T size={TYPE.caption} bold color={C.emerald}>{senderOf(m.sender, m.senderName)}</T> : null}
+              {!mine && thread?.kind === 'group' ? <T size={TYPE.caption} bold color={C.emerald}>{senderOf(m.sender, m.senderName)}</T> : null}
               {m.body ? <T size={TYPE.body}>{m.body}</T> : null}
               {m.link ? (
                 <Pressable disabled={!target?.canOpen} onPress={() => openLink(m.link!)}
@@ -262,25 +272,18 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           );
         }}
       />
-      {/* اطلاع المالك للقراءة وحدها: لا خانة كتابة ولا ربط فيما ليس طرفاً فيه (قرار المالك 2026-10-08) */}
-      {thread?.observer ? (
-        <Note>{t('chat.readOnly')}</Note>
-      ) : (
-        <>
-          {link ? (
-            <Row style={{ paddingVertical: 4 }}>
-              <Chip label={t('chat.link.' + link.type) + ' · ' + link.label} active onPress={() => setLink(null)} />
-            </Row>
-          ) : null}
-          <Row style={{ paddingVertical: 6, alignItems: 'flex-end' }} gap={6}>
-            <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
-            <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
-              style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
-                borderRadius: 10, paddingHorizontal: 10, backgroundColor: '#FAFAF7', textAlign: 'right' }} />
-            <BtnPrimary small title={t('chat.send')} onPress={send} />
-          </Row>
-        </>
-      )}
+      {link ? (
+        <Row style={{ paddingVertical: 4 }}>
+          <Chip label={t('chat.link.' + link.type) + ' · ' + link.label} active onPress={() => setLink(null)} />
+        </Row>
+      ) : null}
+      <Row style={{ paddingVertical: 6, alignItems: 'flex-end' }} gap={6}>
+        <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
+        <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
+          style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
+            borderRadius: 10, paddingHorizontal: 10, backgroundColor: '#FAFAF7', textAlign: 'right' }} />
+        <BtnPrimary small title={t('chat.send')} onPress={send} />
+      </Row>
       {editOpen && thread ? (
         <GroupEditSheet me={me} people={people} thread={thread} onClose={() => setEditOpen(false)} />
       ) : null}
@@ -304,8 +307,7 @@ function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: C
   const others = people.filter((p) => p.uid !== me.uid);
   const save = async () => {
     try {
-      // المالك المطّلع لا يُدخله تعديله في مجموعة ليس طرفاً فيها
-      await chatUpdateGroupNow(thread.id, groupEditMembers(me, thread, picked), name);
+      await chatUpdateGroupNow(thread.id, [me.uid, ...picked], name);
       bump(); toast(t('chat.groupSaved')); onClose();
     } catch (e) { reportFailure({ title: t('chat.groupSaveFailed'), e }); }
   };
@@ -322,6 +324,117 @@ function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: C
     </Sheet>
   );
 }
+
+/** سطر نظام وسط المحادثة · «انضم المالك» */
+function SysLine({ label }: { label: string }) {
+  return (
+    <View style={{ alignSelf: 'center', marginVertical: 6, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 10, backgroundColor: C.line }}>
+      <T size={TYPE.caption} color={C.muted}>{label}</T>
+    </View>
+  );
+}
+
+/* ─── مراجعة المالك محادثةً بسبب، وانضمامه إلى مجموعة (قرارا المالك 2026-10-08T04:11Z) ─── */
+
+interface Review { thread: RemoteThread; title: string; reason: string; msgs: RemoteMessage[] }
+
+/** يختار المالك المحادثة ويكتب السبب إلزامياً · والمجموعة يقدر أن ينضم إليها فيرى الأعضاء «انضم المالك» */
+function ReviewPickSheet({ people, onClose, onReview, onJoined }: {
+  people: ChatPerson[]; onClose: () => void; onReview: (r: Review) => void; onJoined: (id: string) => void;
+}) {
+  const { t } = useLang();
+  const { bump } = useApp();
+  const toast = useToast();
+  const f = useSaveAttempt();
+  const [list, setList] = useState<RemoteThread[] | null>(null);
+  const [picked, setPicked] = useState<RemoteThread | null>(null);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    chatReviewCandidatesNow().then((x) => { if (live) setList(x); })
+      .catch((e) => { if (live) { setList([]); reportFailure({ title: t('chat.reviewFailed'), e }); } });
+    return () => { live = false; };
+  }, [t]);
+  const nameOf = (uid: string) => people.find((p) => p.uid === uid)?.name || t('chat.member');
+  const titleOf = (th: RemoteThread) => (th.k === 'group' ? th.name : th.p.map(nameOf).join(PARTY_SEP));
+  const open = async () => {
+    if (!picked) return;
+    setBusy(true);
+    try {
+      const title = titleOf(picked);
+      const msgs = await chatOpenReviewNow(picked.id, reason, title);
+      onReview({ thread: picked, title, reason: reason.trim(), msgs });
+    } catch (e) { reportFailure({ title: t('chat.reviewFailed'), e }); }
+    setBusy(false);
+  };
+  const join = async (th: RemoteThread) => {
+    setBusy(true);
+    try {
+      await chatJoinGroupNow(th);
+      bump(); toast(t('chat.joined'));
+      chatSyncNow({ threadId: th.id }).catch(() => {});
+      onJoined(th.id);
+    } catch (e) { reportFailure({ title: t('chat.joinFailed'), e }); }
+    setBusy(false);
+  };
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.review')} tall
+      footer={<View style={{ flex: 1 }}><BtnPrimary title={t('chat.reviewOpen')} loading={busy}
+        onPress={() => f.attempt(!!reason.trim() && !!picked, open)} /></View>}>
+      <T size={TYPE.cardTitle} bold>{t('chat.reviewPick')}</T>
+      {f.tried && !picked ? <T size={TYPE.caption} color={C.rose}>{t('chat.reviewPickFirst')}</T> : null}
+      {list === null ? <T size={TYPE.caption} color={C.muted}>{t('chat.loading')}</T>
+        : list.length ? list.map((th) => (
+          <Pressable key={th.id} onPress={() => setPicked(th)}
+            style={{ paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: C.line, backgroundColor: picked?.id === th.id ? C.emeraldSoft : undefined }}>
+            <Row style={{ justifyContent: 'space-between' }}>
+              <T size={TYPE.body} bold style={{ flex: 1 }}>{titleOf(th)}</T>
+              {th.k === 'group' ? <BtnGhost small title={t('chat.join')} onPress={() => join(th)} /> : null}
+            </Row>
+          </Pressable>
+        )) : <EmptyState>{t('chat.reviewNone')}</EmptyState>}
+      <Field label={t('chat.reviewReason')} value={reason} onChange={setReason} error={f.missing(reason)} />
+    </Sheet>
+  );
+}
+
+/**
+ * المراجعة للقراءة وحدها · رسائلها في الذاكرة لا على الجهاز · وتنتهي بإغلاقها (أو بالخروج من الشاشة)،
+ * وكل فتح جديد بسببٍ جديد
+ */
+function ReviewView({ review, onClose }: { review: Review; onClose: () => void }) {
+  const { t } = useLang();
+  const closed = React.useRef(false);
+  const close = useCallback(() => {
+    if (closed.current) return;
+    closed.current = true;
+    chatCloseReviewNow(review.thread.id).catch(() => {});
+  }, [review.thread.id]);
+  useEffect(() => close, [close]);
+  return (
+    <Screen title={review.title} sub={t('chat.reviewing')} icon="chat" scroll={false}
+      actions={<BtnGhost small title={t('chat.reviewClose')} onPress={() => { close(); onClose(); }} />}>
+      <Note>{t('chat.reviewReadOnly')}</Note>
+      <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 6 }}>{t('chat.reviewReasonShown', { reason: review.reason })}</T>
+      <FlatList
+        style={{ flex: 1 }}
+        data={review.msgs}
+        keyExtractor={(m) => m.id}
+        renderItem={({ item: m }) => (m.sys === 'join' ? <SysLine label={t('chat.ownerJoined')} /> : (
+          <View style={{ alignSelf: 'flex-end', maxWidth: '85%', marginVertical: 4, backgroundColor: C.paper, borderRadius: 12, padding: 9, borderWidth: 1, borderColor: C.line }}>
+            <T size={TYPE.caption} bold color={C.emerald}>{m.name || t('chat.member')}</T>
+            {m.body ? <T size={TYPE.body}>{m.body}</T> : null}
+            {m.link ? <T size={TYPE.caption} color={C.muted}>{t('chat.link.' + m.link.type)} · {m.link.label}</T> : null}
+            <T size={10} color={C.muted} style={{ marginTop: 3 }}>{dfmt(localDay(m.ts))} {localTime(m.ts)}</T>
+          </View>
+        ))}
+        ListEmptyComponent={<EmptyState>{t('chat.empty')}</EmptyState>}
+      />
+    </Screen>
+  );
+}
+/* ─── نهاية المراجعة ─── */
 
 /** ربط الرسالة بسجل من جهاز المرسل · عقد أو وحدة أو أصل · وطلب الصيانة حين يُبنى */
 function LinkSheet({ onClose, onPick }: { onClose: () => void; onPick: (l: ChatLink) => void }) {

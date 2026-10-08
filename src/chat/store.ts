@@ -24,24 +24,47 @@ interface ThreadRow {
   last_ts: string | null; last_body: string; read_ts: string | null; pending: number; unread: number;
 }
 
-const threadOf = (me: string) => (r: ThreadRow): ChatThread => {
-  const members = parseList(r.members);
-  const observer = !members.includes(me);
-  return {
-    id: r.id, kind: r.kind, name: r.name, members, createdBy: r.created_by,
-    // ما يطّلع عليه المالك ولا هو طرف فيه لا يتراكم عليه غير مقروء (قرار المالك 2026-10-08)
-    createdAt: r.created_at, lastTs: r.last_ts, lastBody: r.last_body, unread: observer ? 0 : Number(r.unread || 0), pending: !!r.pending,
-    rejected: Number(r.pending) === 2, observer,
-  };
-};
+const threadOf = (r: ThreadRow): ChatThread => ({
+  id: r.id, kind: r.kind, name: r.name, members: parseList(r.members), createdBy: r.created_by,
+  createdAt: r.created_at, lastTs: r.last_ts, lastBody: r.last_body, unread: Number(r.unread || 0), pending: !!r.pending,
+  rejected: Number(r.pending) === 2,
+});
 
-/** المحادثات بآخر نشاط · وغير المقروء من رسائل الآخرين */
-export function listThreads(db: DB, me: string): ChatThread[] {
+/**
+ * محادثاتي بآخر نشاط · وغير المقروء من رسائل الآخرين · onlyMine للمالك: ما ليس طرفاً فيه لا يظهر في قائمته
+ * (قرار المالك 2026-10-08T04:11Z: «قائمته محادثاته هو وحدها») · والعضو يرى مجموعةً أُخرج منها بسجلها كما كان
+ */
+export function listThreads(db: DB, me: string, onlyMine = false): ChatThread[] {
   return db.all<ThreadRow>(
     `SELECT t.*, (SELECT COUNT(*) FROM chat_messages m WHERE m.thread_id = t.id AND m.sender != ?
        AND COALESCE(m.server_ts, m.local_at) > COALESCE(t.read_ts, '')) AS unread
-     FROM chat_threads t ORDER BY COALESCE(t.last_ts, t.created_at, '') DESC`, [me]).map(threadOf(me));
+     FROM chat_threads t ORDER BY COALESCE(t.last_ts, t.created_at, '') DESC`, [me]).map(threadOf)
+    .filter((t) => !onlyMine || t.members.includes(me));
 }
+
+/**
+ * ما سحبه اطلاع المالك في النسخة السابقة (2026-10-08) من محادثات ليس طرفاً فيها يُمحى من جهازه · فلا يُقرأ
+ * إلا بمراجعة بسببها. لا يمسّ محادثةً أنشأها أو كتب فيها (مجموعة غادرها مثلاً). والرسالة لا تُحذف بعده كما كانت.
+ */
+export function forgetObserved(db: DB, me: string): number {
+  const ids = db.all<ThreadRow>(`SELECT * FROM chat_threads`).map(threadOf)
+    .filter((t) => !t.members.includes(me) && t.createdBy !== me
+      && !db.get(`SELECT 1 FROM chat_messages WHERE thread_id = ? AND sender = ? LIMIT 1`, [t.id, me]))
+    .map((t) => t.id);
+  if (!ids.length) return 0;
+  const marks = ids.map(() => '?').join(',');
+  db.transaction(() => {
+    db.run(`DROP TRIGGER IF EXISTS trg_chat_msg_no_delete`);
+    db.run(`DELETE FROM chat_messages WHERE thread_id IN (${marks})`, ids);
+    db.run(`DELETE FROM chat_threads WHERE id IN (${marks})`, ids);
+    db.run(CHAT_NO_DELETE_TRIGGER);
+  });
+  return ids.length;
+}
+
+/** مطابق للهجرة ٣٤ حرفاً · يُعاد بعد المحو أعلاه */
+const CHAT_NO_DELETE_TRIGGER = `CREATE TRIGGER IF NOT EXISTS trg_chat_msg_no_delete BEFORE DELETE ON chat_messages
+BEGIN SELECT RAISE(ABORT, 'chat message is permanent'); END;`;
 
 export function getThread(db: DB, id: string, me: string): ChatThread | null {
   return listThreads(db, me).find((t) => t.id === id) ?? null;
@@ -88,13 +111,13 @@ export function markRead(db: DB, threadId: string): void {
 interface MsgRow {
   id: string; thread_id: string; sender: string; sender_name: string; body: string;
   link_type: string | null; link_id: string | null; link_label: string | null;
-  local_at: string; server_ts: string | null; sent: number;
+  local_at: string; server_ts: string | null; sent: number; sys: string | null;
 }
 
 const msgOf = (r: MsgRow): ChatMessage => ({
   id: r.id, threadId: r.thread_id, sender: r.sender, senderName: r.sender_name, body: r.body,
   link: r.link_type && r.link_id ? { type: r.link_type as ChatLink['type'], id: r.link_id, label: r.link_label ?? '' } : null,
-  localAt: r.local_at, serverTs: r.server_ts, sent: Number(r.sent) === 1, rejected: Number(r.sent) === -1,
+  localAt: r.local_at, serverTs: r.server_ts, sent: Number(r.sent) === 1, rejected: Number(r.sent) === -1, sys: r.sys ?? null,
 });
 
 /** رسائل محادثة بترتيب وقوعها · وقت الخادم للمرسَل، ووقت الكتابة لما ينتظر */
@@ -172,14 +195,14 @@ export function applyRemoteThread(db: DB, t: { id: string; k: ChatKind; p: strin
     [t.id, t.k, t.name, JSON.stringify([...t.p].sort()), t.by, t.at]);
 }
 
-export function applyRemoteMessage(db: DB, threadId: string, m: { id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string }): void {
+export function applyRemoteMessage(db: DB, threadId: string, m: { id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null }): void {
   db.transaction(() => {
     const had = db.get(`SELECT 1 FROM chat_messages WHERE id = ?`, [m.id]);
     if (had) db.run(`UPDATE chat_messages SET sent = 1, server_ts = ? WHERE id = ?`, [m.ts, m.id]);
     else db.run(
-      `INSERT INTO chat_messages (id, thread_id, sender, sender_name, body, link_type, link_id, link_label, local_at, server_ts, sent)
-       VALUES (?,?,?,?,?,?,?,?,?,?,1)`,
-      [m.id, threadId, m.from, m.name, m.body, m.link?.type ?? null, m.link?.id ?? null, m.link?.label ?? null, m.ts, m.ts]);
+      `INSERT INTO chat_messages (id, thread_id, sender, sender_name, body, link_type, link_id, link_label, local_at, server_ts, sent, sys)
+       VALUES (?,?,?,?,?,?,?,?,?,?,1,?)`,
+      [m.id, threadId, m.from, m.name, m.body, m.link?.type ?? null, m.link?.id ?? null, m.link?.label ?? null, m.ts, m.ts, m.sys ?? null]);
     db.run(
       `UPDATE chat_threads SET last_ts = ?, last_body = ?, msg_cursor = ?
        WHERE id = ? AND (last_ts IS NULL OR last_ts <= ?)`,

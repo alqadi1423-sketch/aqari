@@ -47,7 +47,9 @@ import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engin
 import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatUpdateGroup, chatLeaveOrg } from '../chat';
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatUpdateGroup, chatLeaveOrg,
+  chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
+import type { RemoteMessage, RemoteThread } from '../chat/remote';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
@@ -843,6 +845,32 @@ export async function chatUpdateGroupNow(threadId: string, members: string[], na
   if (!state.online) teamRemote();
   const org = readMembership(db)?.org ?? state.user.uid;
   await chatUpdateGroup(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, members, name);
+}
+/* ─── مراجعة المالك محادثةً بسبب، وانضمامه إلى مجموعة (قرارا المالك 2026-10-08T04:11Z) · للمالك وحده، وتحتاج اتصالاً ─── */
+
+function ownerChatSession(): { s: ChatSession; db: DB } {
+  const t = teamRemote(); // يشترط الدخول والاتصال
+  const sess = getSession()!;
+  const cfg = cloudConfig()!;
+  const db = appDb;
+  if (!db || readMembership(db)) throw new Error('chat: owner only');
+  return { s: { projectId: cfg.projectId, uid: t.org, email: state.user!.email, idToken: () => sess.idToken() }, db };
+}
+export async function chatReviewCandidatesNow(): Promise<RemoteThread[]> {
+  const { s } = ownerChatSession();
+  return chatReviewCandidates(s, s.uid);
+}
+export async function chatOpenReviewNow(chatId: string, reason: string, title: string): Promise<RemoteMessage[]> {
+  const { s, db } = ownerChatSession();
+  return chatOpenReview(db, s, s.uid, chatId, reason, title);
+}
+export async function chatCloseReviewNow(chatId: string): Promise<void> {
+  const { s } = ownerChatSession();
+  await chatCloseReview(s, s.uid, chatId);
+}
+export async function chatJoinGroupNow(t: RemoteThread): Promise<void> {
+  const { s, db } = ownerChatSession();
+  await chatJoinGroup(db, s, s.uid, t, chatMe(db, s, orgNameOf(db)).name);
 }
 export async function revokeInviteNow(email: string) { const t = teamRemote(); return revokeInvite(t.remote, t.org, email); }
 

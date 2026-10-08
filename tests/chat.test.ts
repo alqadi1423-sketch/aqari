@@ -9,8 +9,9 @@ import { confirmContract } from '@/domain/contracts/service';
 import { OWNER_ACCESS } from '@/domain/access/access';
 import {
   openDirect, createGroup, sendLocal, listMessages, listThreads, markRead, linkTarget, linkCandidates, directId, canCreateGroup,
-  type ChatMe, type ChatLink,
+  OWNER_JOINED, REVIEW_ENTITY, JOIN_ENTITY, type ChatMe, type ChatLink,
 } from '@/chat';
+import { applyRemoteThread, applyRemoteMessage } from '@/chat/store';
 import { chatSyncOnce } from '@/chat/sync';
 import type { ChatRemote, RemoteMessage, RemoteThread } from '@/chat/remote';
 
@@ -36,7 +37,6 @@ function fakeCloud() {
         return 'created';
       },
       async myThreads() { guard(); return [...threads.values()].filter((t) => t.p.includes(uid)); },
-      async orgThreads() { guard(); if (uid !== OWNER.uid) throw new Error('Firestore 403: owner only'); return [...threads.values()]; },
       async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null }) {
         guard();
         state.sends++;
@@ -152,7 +152,7 @@ test('المحادثة لا تُرفع قبل أول رسالة · والدلي�
   const remote = new Proxy(base, {
     get(t, k) {
       if (k === 'putMyDirectory') calls.dir++;
-      if (k === 'myThreads' || k === 'orgThreads') calls.threads++; // السحب الكامل · المالك بمحادثات المنشأة كلها (2026-10-08)
+      if (k === 'myThreads') calls.threads++;
       return (t as unknown as Record<string | symbol, unknown>)[k];
     },
   }) as typeof base;
@@ -213,81 +213,145 @@ test('الدليل يُستبدل كاملاً فمن خرج منه لا يبق�
   expect(canEditGroup(MEMBER, 'someone')).toBe(false);
 });
 
-/* ─── اطلاع المالك على محادثات منشأته (قرار المالك 2026-10-08) ─── */
+/* ─── مراجعة المحادثات بسبب · وانضمام المالك (قرارا المالك 2026-10-08T04:11Z) ─── */
 
-test('المالك يسحب محادثات المنشأة كلها للقراءة · لا يصير طرفاً ولا يكتب فيما ليس طرفاً فيه · والعضو محادثاته وحدها', async () => {
+/** سحابة وهمية بمراجعات المالك وانضمامه · فوق السحابة المشتركة */
+function reviewCloud() {
   const cloud = fakeCloud();
+  const calls = { org: 0, open: [] as Array<{ chat: string; reason: string }>, closed: [] as string[] };
+  const remote = (uid: string): ChatRemote => {
+    const base = cloud.remote(uid) as unknown as Record<string, unknown>;
+    return new Proxy(base, {
+      get(t, k) {
+        if (k === 'orgThreads') return async () => { calls.org++; return [...cloud.threads.values()]; };
+        if (k === 'openReview') return async (chat: string, reason: string) => { calls.open.push({ chat, reason }); return 'rid-' + calls.open.length; };
+        if (k === 'closeReview') return async (chat: string) => { calls.closed.push(chat); };
+        if (k === 'allMessages') return async (id: string) => cloud.msgs.get(id) ?? [];
+        if (k === 'joinGroup') return async (id: string, p: string[], name: string, myName: string) => {
+          const th = cloud.threads.get(id)!;
+          cloud.threads.set(id, { ...th, p: Array.from(new Set([...p, uid])).sort(), name });
+          const list = cloud.msgs.get(id) ?? [];
+          list.push({ id: 'j_1', from: uid, name: myName, body: OWNER_JOINED, link: null, ts: new Date(Date.UTC(2026, 0, 2)).toISOString(), sys: 'join' });
+          cloud.msgs.set(id, list);
+          return 'j_1';
+        };
+        return t[k as string];
+      },
+    }) as unknown as ChatRemote;
+  };
+  return { cloud, calls, remote };
+}
+
+async function memberChat(rc: ReturnType<typeof reviewCloud>) {
   const OTHER = me('u-other', 'عضو آخر مصطنع');
-  const THIRD = me('u-third', 'عضو ثالث مصطنع');
   const m1 = memDb();
   const tid = openDirect(m1, MEMBER.uid, OTHER.uid);
   sendLocal(m1, tid, MEMBER, 'خاصة بين عضوين');
-  await chatSyncOnce(m1, cloud.remote(MEMBER.uid), MEMBER);
-  // المالك: يراها للقراءة · بلا غير مقروء يتراكم عليه · وأطرافها كما هم
+  await chatSyncOnce(m1, rc.remote(MEMBER.uid), MEMBER);
+  return { tid, OTHER };
+}
+
+test('١ و٧ قائمة المالك محادثاته وحدها · ولا تُقرأ محادثات المنشأة في المزامنة أبداً', async () => {
+  const rc = reviewCloud();
+  const { tid } = await memberChat(rc);
   const o = memDb();
-  await chatSyncOnce(o, cloud.remote(OWNER.uid), OWNER, { force: true });
-  const seen = listThreads(o, OWNER.uid);
-  expect(seen.map((t) => [t.id, t.observer, t.unread])).toEqual([[tid, true, 0]]);
-  expect(seen[0].members).toEqual([MEMBER.uid, OTHER.uid].sort());
-  expect(listMessages(o, tid).map((m) => [m.senderName, m.body])).toEqual([[MEMBER.name, 'خاصة بين عضوين']]);
-  // للقراءة فقط: لا رسالة منه فيها ولو كُتبت على جهازه
-  expect(() => sendLocal(o, tid, OWNER, 'من المالك')).toThrow();
-  expect(listMessages(o, tid).length).toBe(1);
-  await chatSyncOnce(o, cloud.remote(OWNER.uid), OWNER, { force: true });
-  expect(cloud.msgs.get(tid)!.length).toBe(1);
-  // محادثته هو مع عضو ليست اطلاعاً
   const own = openDirect(o, OWNER.uid, MEMBER.uid);
-  expect(listThreads(o, OWNER.uid).find((t) => t.id === own)!.observer).toBe(false);
-  // العضو غير الطرف لا يراها · والطرف يراها
-  const t3 = memDb();
-  await chatSyncOnce(t3, cloud.remote(THIRD.uid), THIRD, { force: true });
-  expect(listThreads(t3, THIRD.uid)).toEqual([]);
-  const t2 = memDb();
-  await chatSyncOnce(t2, cloud.remote(OTHER.uid), OTHER, { force: true });
-  expect(listThreads(t2, OTHER.uid).map((t) => [t.id, t.observer])).toEqual([[tid, false]]);
+  sendLocal(o, own, OWNER, 'من المالك');
+  for (const now of [10_000_000, 10_700_000, 20_000_000]) await chatSyncOnce(o, rc.remote(OWNER.uid), OWNER, { now, force: true });
+  await chatSyncOnce(o, rc.remote(OWNER.uid), OWNER, { full: true });
+  expect(rc.calls.org).toBe(0);
+  expect(listThreads(o, OWNER.uid, true).map((t) => t.id)).toEqual([own]);
+  expect(listMessages(o, tid)).toEqual([]);
 });
 
-test('تعديل المالك مجموعةً ليس طرفاً فيها لا يُدخله فيها (#19 مع الاطلاع)', async () => {
-  const { groupEditMembers } = await import('@/chat');
-  const group = { members: ['u-a', 'u-b', 'u-sup'].sort() };
-  expect(groupEditMembers(OWNER, group, ['u-a', 'u-b'])).toEqual(['u-a', 'u-b']);
-  // ومن هو فيها يبقى فيها
-  expect(groupEditMembers(MEMBER, { members: [MEMBER.uid, 'u-a'] }, ['u-a', 'u-b'])).toEqual([MEMBER.uid, 'u-a', 'u-b']);
+test('العضو يرى مجموعةً أُخرج منها بسجلها كما كان · والتصفية للمالك وحده', () => {
+  const m = memDb();
+  applyRemoteThread(m, { id: 'g_out00001', k: 'group', p: ['u-a', 'u-b'], name: 'أُخرج منها', by: 'u-a', at: null });
+  expect(listThreads(m, MEMBER.uid).map((t) => t.id)).toEqual(['g_out00001']);
+  expect(listThreads(m, MEMBER.uid, true)).toEqual([]);
 });
 
-test('تنبيه ثابت للأعضاء: «محادثات المنشأة يطّلع عليها المالك» · وشاشة المالك المطّلع بلا خانة كتابة', () => {
+test('١ ما بقي على جهاز المالك من اطلاع النسخة السابقة يُمحى مرة واحدة · ولا تُمسّ محادثاته', async () => {
+  const { forgetObserved } = await import('@/chat/store');
+  const o = memDb();
+  const own = openDirect(o, OWNER.uid, MEMBER.uid);
+  sendLocal(o, own, OWNER, 'تبقى');
+  // محادثة عضوين سُحبت بالاطلاع السابق
+  applyRemoteThread(o, { id: 'd_u-a_u-b', k: 'direct', p: ['u-a', 'u-b'], name: '', by: 'u-a', at: null });
+  applyRemoteMessage(o, 'd_u-a_u-b', { id: 'X1', from: 'u-a', name: 'أ', body: 'سُحبت بالاطلاع', link: null, ts: '2026-01-01T00:00:00.000Z' });
+  // مجموعة غادرها المالك وفيها رسائله: تبقى
+  applyRemoteThread(o, { id: 'g_left0001', k: 'group', p: ['u-a', 'u-b'], name: 'غادرها', by: OWNER.uid, at: null });
+  expect(forgetObserved(o, OWNER.uid)).toBe(1);
+  expect(listMessages(o, 'd_u-a_u-b')).toEqual([]);
+  expect(listMessages(o, own).map((m) => m.body)).toEqual(['تبقى']);
+  expect(o.get(`SELECT 1 AS x FROM chat_threads WHERE id = 'g_left0001'`)).toBeTruthy();
+  // ثم لا يُمسّ شيء ولو تكرر
+  expect(forgetObserved(o, OWNER.uid)).toBe(0);
+  // والرسالة لا تُحذف بعده كما كانت
+  expect(() => o.run(`DELETE FROM chat_messages`)).toThrow();
+});
+
+test('٢ و٣ و٤ المراجعة: سببٌ إلزامي · تُسجَّل في سجل العمليات · تُعرض ولا تُحفظ · وتنتهي بالإغلاق', async () => {
+  const { chatOpenReview, chatCloseReview } = await import('@/chat');
+  const rc = reviewCloud();
+  const { tid } = await memberChat(rc);
+  const o = memDb();
+  const s = { projectId: 'p', uid: OWNER.uid, email: OWNER.email, idToken: async () => 't' };
+  await expect(chatOpenReview(o, s, OWNER.org, tid, '   ', 'عضوان', rc.remote(OWNER.uid))).rejects.toThrow();
+  expect(rc.calls.open).toEqual([]);
+  const msgs = await chatOpenReview(o, s, OWNER.org, tid, 'شكوى مصطنعة', 'عضو مصطنع · عضو آخر مصطنع', rc.remote(OWNER.uid));
+  expect(msgs.map((m) => m.body)).toEqual(['خاصة بين عضوين']);
+  expect(rc.calls.open).toEqual([{ chat: tid, reason: 'شكوى مصطنعة' }]);
+  // لا تُحفظ على الجهاز
+  expect(listMessages(o, tid)).toEqual([]);
+  expect(listThreads(o, OWNER.uid, true)).toEqual([]);
+  // سجل العمليات: المحادثة والوقت والسبب والمراجِع
+  const row = o.get<{ ts: string; user_name: string; module: string; entity_name: string; after_json: string }>(
+    `SELECT ts, user_name, module, entity_name, after_json FROM audit_log WHERE entity_type = ? ORDER BY ts DESC LIMIT 1`, [REVIEW_ENTITY])!;
+  expect(row.entity_name).toBe('عضو مصطنع · عضو آخر مصطنع');
+  expect(row.ts).toMatch(/^\d{4}-/);
+  expect(row.user_name).toBeTruthy();
+  expect(JSON.parse(row.after_json)).toEqual({ chat: tid, reason: 'شكوى مصطنعة', rid: 'rid-1' });
+  await chatCloseReview(s, OWNER.org, tid, rc.remote(OWNER.uid));
+  expect(rc.calls.closed).toEqual([tid]);
+  // كل فتح جديد بسببه
+  await chatOpenReview(o, s, OWNER.org, tid, 'سبب ثانٍ مصطنع', 'عضوان', rc.remote(OWNER.uid));
+  expect(rc.calls.open.map((x) => x.reason)).toEqual(['شكوى مصطنعة', 'سبب ثانٍ مصطنع']);
+});
+
+test('ثانياً انضمام المالك: يصير طرفاً في المجموعة · ويرى الأعضاء سطر «انضم المالك»', async () => {
+  const { chatJoinGroup } = await import('@/chat');
+  const rc = reviewCloud();
+  const m = memDb();
+  const SUP = me('u-sup', 'مشرف مصطنع');
+  const gid = createGroup(m, SUP.uid, 'مجموعة مصطنعة', [MEMBER.uid]);
+  sendLocal(m, gid, SUP, 'أولى');
+  await chatSyncOnce(m, rc.remote(SUP.uid), SUP);
+  const o = memDb();
+  const s = { projectId: 'p', uid: OWNER.uid, email: OWNER.email, idToken: async () => 't' };
+  await chatJoinGroup(o, s, OWNER.org, { id: gid, p: [MEMBER.uid, SUP.uid].sort(), name: 'مجموعة مصطنعة' }, OWNER.name, rc.remote(OWNER.uid));
+  expect(listThreads(o, OWNER.uid, true).map((t) => t.id)).toEqual([gid]);
+  // الانضمام عملية في سجل العمليات بمنفّذها
+  expect(o.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log WHERE entity_type = ?`, [JOIN_ENTITY])!.n).toBe(1);
+  const b = memDb();
+  await chatSyncOnce(b, rc.remote(MEMBER.uid), MEMBER, { force: true });
+  const lines = listMessages(b, gid);
+  expect(lines.map((x) => [x.body, x.sys])).toEqual([['أولى', null], [OWNER_JOINED, 'join']]);
+});
+
+test('٥ تنبيه ثابت للأعضاء · وزر «مراجعة محادثة» للمالك وحده بسببٍ إلزامي · وشاشة المراجعة بلا خانة كتابة', () => {
   const { readFileSync } = jest.requireActual('fs') as typeof import('fs');
   const { join } = jest.requireActual('path') as typeof import('path');
   const ar = JSON.parse(readFileSync(join(__dirname, '..', 'src', 'i18n', 'locales', 'ar.json'), 'utf8'));
   expect(ar.chat.ownerSees).toBe('محادثات المنشأة يطّلع عليها المالك');
+  expect(ar.chat.review).toBe('مراجعة محادثة');
+  expect(ar.chat.ownerJoined).toBe('انضم المالك');
   const src = readFileSync(join(__dirname, '..', 'app', 'chat.tsx'), 'utf8');
-  // في القائمة والمحادثة المفتوحة · للأعضاء لا للمالك
   expect(src.match(/!me\.owner \? <Note[^>]*>\{t\('chat\.ownerSees'\)\}<\/Note> : null/g)?.length).toBe(2);
-  // خانة الكتابة وزر الربط لا يظهران للمطّلع
-  expect(src).toMatch(/thread\?\.observer \? \(\s*<Note[^>]*>\{t\('chat\.readOnly'\)\}<\/Note>\s*\) : \(/);
-});
-
-test('حصة المالك: محادثاته بمدتها المعتادة · ومحادثات المنشأة التي يطّلع عليها كل عشر دقائق أو بفتحها (التحقق: الحصة)', async () => {
-  const cloud = fakeCloud();
-  const calls = { org: 0, mine: 0 };
-  const base = cloud.remote(OWNER.uid);
-  const remote = new Proxy(base, {
-    get(t, k) {
-      if (k === 'orgThreads') calls.org++;
-      if (k === 'myThreads') calls.mine++;
-      return (t as unknown as Record<string | symbol, unknown>)[k];
-    },
-  }) as typeof base;
-  const o = memDb();
-  await chatSyncOnce(o, remote, OWNER, { now: 10_000_000 });
-  expect([calls.org, calls.mine]).toEqual([1, 0]);
-  // سحب كامل بعد ٣ دقائق: محادثاته وحدها
-  await chatSyncOnce(o, remote, OWNER, { now: 10_180_000, full: true });
-  expect([calls.org, calls.mine]).toEqual([1, 1]);
-  // بعد عشر دقائق: المنشأة كلها
-  await chatSyncOnce(o, remote, OWNER, { now: 10_700_000, full: true });
-  expect([calls.org, calls.mine]).toEqual([2, 1]);
-  // فتح الشاشة (force): المنشأة كلها
-  await chatSyncOnce(o, remote, OWNER, { now: 10_710_000, force: true });
-  expect(calls.org).toBe(3);
+  expect(src).toMatch(/\{me\.owner \? <BtnGhost small title=\{t\('chat\.review'\)\}/);
+  expect(src).toMatch(/f\.attempt\(!!reason\.trim\(\)/);
+  // شاشة المراجعة لا تستورد ما يكتب
+  const view = src.slice(src.indexOf('function ReviewView'), src.indexOf('/* ─── نهاية المراجعة ─── */'));
+  expect(view.length).toBeGreaterThan(100);
+  expect(view).not.toMatch(/sendLocal|TextInput|chatSyncNow/);
 });

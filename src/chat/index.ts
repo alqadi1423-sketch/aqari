@@ -10,7 +10,9 @@ import { readMembership } from '../services/access';
 import { getSyncState, setSyncState } from '../sync/engine';
 import { ChatRemote } from './remote';
 import { chatSyncOnce, type ChatSyncResult } from './sync';
-import { CHAT_NAME_MAX, FORMER_MEMBER, type ChatMe } from './types';
+import { CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe } from './types';
+import { logAudit } from '../domain/audit';
+import type { RemoteMessage, RemoteThread } from './remote';
 import { applyRemoteThread, getThreadRow } from './store';
 
 export * from './types';
@@ -124,6 +126,43 @@ export async function chatUpdateGroup(db: DB, s: ChatSession, org: string, threa
   const n = name.trim().slice(0, CHAT_NAME_MAX);
   await remoteFor(s, org).updateGroup(threadId, all, n);
   applyRemoteThread(db, { ...(getThreadRow(db, threadId)), id: threadId, k: 'group', p: all, name: n });
+}
+
+/* ─── مراجعة المالك محادثةً بسبب، وانضمامه إلى مجموعة (قرارا المالك 2026-10-08T04:11Z) ─── */
+
+/** محادثات المنشأة التي ليس المالك طرفاً فيها · بأطرافها واسمها دون رسائلها · عند طلبه وحده */
+export async function chatReviewCandidates(s: ChatSession, org: string, r: ChatRemote = remoteFor(s, org)): Promise<RemoteThread[]> {
+  return (await r.orgThreads()).filter((t) => !t.p.includes(s.uid));
+}
+
+/**
+ * مراجعة محادثة بسببٍ إلزامي: سجلٌّ في الخادم (تفرض القواعد قراءتها به) وسجلٌّ في سجل العمليات بالمحادثة والسبب
+ * والمراجِع ووقته · ورسائلها تُعرض ولا تُحفظ على الجهاز · وتنتهي بإغلاقها (chatCloseReview)
+ */
+export async function chatOpenReview(db: DB, s: ChatSession, org: string, chatId: string, reason: string, title: string,
+  r: ChatRemote = remoteFor(s, org)): Promise<RemoteMessage[]> {
+  const why = reason.trim().slice(0, 500);
+  if (!why) throw new Error('chat: review needs a reason');
+  const rid = await r.openReview(chatId, why);
+  logAudit(db, CHAT_MODULE, 'create', REVIEW_ENTITY, title, null, { chat: chatId, reason: why, rid });
+  try {
+    return await r.allMessages(chatId);
+  } catch (e) {
+    await r.closeReview(chatId).catch(() => {});
+    throw e;
+  }
+}
+
+export async function chatCloseReview(s: ChatSession, org: string, chatId: string, r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  await r.closeReview(chatId);
+}
+
+/** المالك ينضم إلى مجموعة ليس فيها · ومعه سطر «انضم المالك» للأعضاء · ثم تصير من محادثاته */
+export async function chatJoinGroup(db: DB, s: ChatSession, org: string, t: { id: string; p: string[]; name: string; by?: string; at?: string | null },
+  myName: string, r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  const line = await r.joinGroup(t.id, t.p, t.name, myName);
+  logAudit(db, CHAT_MODULE, 'update', JOIN_ENTITY, t.name, null, { chat: t.id, line });
+  applyRemoteThread(db, { id: t.id, k: 'group', p: Array.from(new Set([...t.p, s.uid])), name: t.name, by: t.by ?? '', at: t.at ?? null });
 }
 
 /** إشراف عضو بإيميله · للمالك وحده (القواعد) */

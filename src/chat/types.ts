@@ -11,7 +11,11 @@
  *
  * في السحابة تحت المنشأة (قواعد مضافة لا تغيّر القائمة · firestore.rules بعد الكتلة المولَّدة):
  *  orgs/{org}/chats/{chatId}            { k: 'direct'|'group', p: uid[], name, by, at }
- *  orgs/{org}/chats/{chatId}/msgs/{id}  { from, name, body, link, att, ts }  · إنشاء فقط · يقرؤها أطرافها والمالك وحده
+ *  orgs/{org}/chats/{chatId}/msgs/{id}  { from, name, body, link, att, ts, sys }  · إنشاء فقط · يقرؤها أطرافها،
+ *                                       والمالك بمراجعة مفتوحة بسببٍ مسجَّل (2026-10-08T04:11Z)
+ *  orgs/{org}/chats/{chatId}/ids/{id}   {}  · فهرس الأرقام بلا محتوى ليحذف المالك دون أن يقرأ
+ *  orgs/{org}/chatReviews/{rid}         { chat, reason, by, at }  · سجل المراجعات · للمالك وحده
+ *  orgs/{org}/chatReviewOpen/{chatId}   { rid, at }  · المراجعة المفتوحة · تُحذف بالإغلاق
  *  orgs/{org}/chatDir/{uid}             { name, sup, at }  · دليل الأعضاء للمحادثة · يكتبه صاحبه
  *  orgs/{org}/chatRoles/{email}         { sup: SectionKey[] }  · إشراف الأقسام · يكتبه المالك
  */
@@ -43,8 +47,6 @@ export interface ChatThread {
   pending: boolean;
   /** رفض الخادم إنشاءها (مثل مجموعة أنشأها مشرف سُحب إشرافه) */
   rejected: boolean;
-  /** لست طرفاً فيها: اطلاع المالك للقراءة وحدها (قرار المالك 2026-10-08) */
-  observer: boolean;
 }
 
 export interface ChatMessage {
@@ -61,6 +63,8 @@ export interface ChatMessage {
   sent: boolean;
   /** رفضها الخادم · تبقى موسومة */
   rejected: boolean;
+  /** سطر نظام لا رسالة · 'join' انضم المالك */
+  sys: string | null;
 }
 
 export interface ChatPerson {
@@ -83,6 +87,14 @@ export interface ChatMe {
 /** اسم من حذف حسابه في رسائله (قرار المالك 2026-10-07: #2) · مطابق لقواعد الخادم */
 export const FORMER_MEMBER = 'عضو سابق'; // i18n-exempt: قيمة مخزّنة تطابقها القواعد
 
+/** سطر انضمام المالك إلى مجموعة ليس فيها (قرار المالك 2026-10-08T04:11Z) · مطابق لقواعد الخادم */
+export const OWNER_JOINED = 'انضم المالك'; // i18n-exempt: قيمة مخزّنة تطابقها القواعد · وتُعرض بمفتاحها
+
+/** نوع السجل في سجل العمليات لمراجعة المالك محادثةً بسبب (قرار المالك 2026-10-08T04:11Z) */
+export const REVIEW_ENTITY = 'مراجعة محادثة'; // i18n-exempt: قيمة مخزّنة في سجل العمليات
+export const CHAT_MODULE = 'المحادثة'; // i18n-exempt: قيمة مخزّنة في سجل العمليات
+export const JOIN_ENTITY = 'انضمام المالك إلى مجموعة'; // i18n-exempt: قيمة مخزّنة في سجل العمليات
+
 /** من يعدّل المجموعة: المالك ومنشئها (#19) */
 export function canEditGroup(me: ChatMe, createdBy: string): boolean {
   return me.owner || me.uid === createdBy;
@@ -96,15 +108,6 @@ export const CHAT_GROUP_MAX = 100;
 /** المحادثة الفردية برقم ثابت من رقمي الطرفين · فلا تتكرر بينهما */
 export function directId(a: string, b: string): string {
   return 'd_' + [a, b].sort().join('_');
-}
-
-/**
- * أعضاء المجموعة بعد تعديلها · من هو فيها يبقى فيها، والمالك المطّلع (ليس طرفاً) لا يُدخله تعديله فيها
- * (قرار المالك 2026-10-08: «ولا يظهر عضواً في محادثة ليس طرفاً فيها»)
- */
-export function groupEditMembers(me: ChatMe, thread: { members: string[] }, picked: string[]): string[] {
-  const others = picked.filter((u) => u && u !== me.uid);
-  return thread.members.includes(me.uid) ? [me.uid, ...others] : others;
 }
 
 /** من ينشئ المجموعات: المالك والمشرفون */

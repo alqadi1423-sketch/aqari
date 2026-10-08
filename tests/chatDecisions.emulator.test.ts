@@ -84,18 +84,38 @@ d('قرارات المالك على مراجعة المحادثة', () => {
 
   test('#2 و#28 المالك: محادثات المنشأة كلها تُحذف في نافذة الحذف وحدها · ولو لم يكن طرفاً فيها', async () => {
     const dAB = directId(A, B);
-    // بلا نافذة: لا حذف · والقراءة اطلاعٌ لا يجيز الحذف (اطلاع 2026-10-08)
+    // بلا نافذة: لا حذف ولا سرد لرسائل ليس طرفاً فيها
     expect(await status(chat(ORG).deleteIn(`chats/${dAB}/msgs/MA1`))).toBe(403);
+    await expect(chat(ORG).messagesSince(dAB, null)).rejects.toThrow(/403/);
     expect(await chatPurgeOrg(session(ORG), ORG)).toBe(3);
     expect(await chat(A).myThreads()).toEqual([]);
     expect(await chat(A).directory()).toEqual([]);
     expect(await chat(B).role('u-dcb@example.test')).toEqual([]);
-    // لا رسالة يتيمة بلا محادثتها
+    // لا رسالة يتيمة بلا محادثتها · والفهرس معها
     const orphan = await fetch(url(`orgs/${ORG}/chats/${dAB}/msgs/MA1`), { headers: { Authorization: 'Bearer ' + token(A) } });
     expect([403, 404]).toContain(orphan.status);
     // أُغلقت النافذة بعده
     const meta = await fetch(url(`orgs/${ORG}/meta/deletion`), { headers: { Authorization: 'Bearer ' + token(ORG) } });
     expect(meta.status).toBe(404);
+  });
+
+  test('ق١ المالك لا يقرأ الرسائل الخاصة ولو فتح نافذة الحذف · يسرد فهرس أرقامها وحده', async () => {
+    const dAB = directId(A, B);
+    await chat(ORG).openDeletionWindow();
+    await expect(chat(ORG).messagesSince(dAB, null)).rejects.toThrow(/403/);
+    const ids = await fetch(url(`orgs/${ORG}/chats/${dAB}/ids`), { headers: { Authorization: 'Bearer ' + token(ORG) } });
+    expect(ids.status).toBe(200);
+    const body = (await ids.json()) as { documents?: Array<{ fields?: object }> };
+    expect(body.documents?.length).toBe(2);
+    expect(body.documents?.every((d) => !d.fields || Object.keys(d.fields).length === 0)).toBe(true);
+    await chat(ORG).closeDeletionWindow();
+    // ولا رسالة بلا فهرسها (ر١)
+    const lone = await fetch(url(`orgs/${ORG}/chats/${dAB}/msgs/MX1`), { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(A) },
+      body: JSON.stringify({ fields: encodeFields({ from: A, name: NAMES[A], body: 'بلا فهرس', link: null, att: null }) }) });
+    expect(lone.status).toBe(403);
+    // ولا فهرس مزوّر لرسالة غيره
+    const fake = await fetch(url(`orgs/${ORG}/chats/${dAB}/ids/MB1`), { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(A) }, body: JSON.stringify({ fields: {} }) });
+    expect(fake.status).toBe(403);
   });
 
   test('ق٢ المسح (#28) يُبقي الدليل والإشراف لأن الأعضاء باقون', async () => {

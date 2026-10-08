@@ -415,7 +415,7 @@ service cloud.firestore {
     // </org:generated>
 
     // <chat> · المحادثة (src/chat · قرار المالك 2026-10-07) · إضافة لا تغيّر قاعدة قائمة:
-    // يقرأ المحادثة ورسائلها أطرافها، والمالك يطّلع على كل محادثات منشأته للقراءة وحده (قرار المالك 2026-10-08) ·
+    // يقرأ المحادثة ورسائلها أطرافها · والمالك يقرأ محادثةً ليس طرفاً فيها بمراجعةٍ مفتوحة بسببٍ مسجَّل وحدها (قرار المالك 2026-10-08T04:11Z) ·
     // الرسالة تُنشأ مرة بوقت الخادم ولا تُعدَّل ولا تُحذف · والمجموعة ينشئها المالك أو مشرف قسم · والمرفقات (att) مغلقة حتى الفوترة
     function chatIn(org) {
       return request.auth != null && (orgOwner(org) || isMember(org));
@@ -430,8 +430,23 @@ service cloud.firestore {
     function chatDirName(org) {
       return get(/databases/$(database)/documents/orgs/$(org)/chatDir/$(request.auth.uid)).data.name;
     }
+    function chatPath(org, chatId) {
+      return /databases/$(database)/documents/orgs/$(org)/chats/$(chatId);
+    }
     function chatParty(org, chatId) {
-      return request.auth.uid in get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)).data.p;
+      return request.auth.uid in get(chatPath(org, chatId)).data.p;
+    }
+    // طرفٌ بعد الالتزام · فانضمام المالك وسطره في التزام واحد
+    function chatPartyAfter(org, chatId) {
+      return request.auth.uid in getAfter(chatPath(org, chatId)).data.p;
+    }
+    function chatReviewPath(org, chatId) {
+      return /databases/$(database)/documents/orgs/$(org)/chatReviewOpen/$(chatId);
+    }
+    // مراجعة مفتوحة لهذه المحادثة · تنتهي بإغلاقها، ولا تتجاوز ثلاثين دقيقة إن لم تُغلق (انقطاع أو إغلاق التطبيق)
+    function chatReviewing(org, chatId) {
+      return exists(chatReviewPath(org, chatId))
+        && get(chatReviewPath(org, chatId)).data.at > request.time - duration.value(30, 'm');
     }
     match /orgs/{org}/chatDir/{uid} {
       allow read: if chatIn(org);
@@ -452,8 +467,35 @@ service cloud.firestore {
         && request.resource.data.sup is list && request.resource.data.sup.size() <= 30;
       allow delete: if orgOwner(org);
     }
+
+    // سجل مراجعات المالك (قرار المالك 2026-10-08T04:11Z): المحادثة والسبب والمراجِع ووقت الخادم · لا يُعدَّل
+    // ولا يُحذف إلا في نافذة الحذف (#2 و#28) · يقرؤه المالك وحده فلا إشعار لأحد بمراجعة بعينها
+    match /orgs/{org}/chatReviews/{rid} {
+      allow read: if orgOwner(org);
+      allow create: if orgOwner(org)
+        && request.resource.data.keys().hasOnly(['chat', 'reason', 'by', 'at'])
+        && request.resource.data.by == request.auth.uid
+        && request.resource.data.at == request.time
+        && request.resource.data.reason is string && request.resource.data.reason.trim().size() > 0
+        && request.resource.data.reason.size() <= 500
+        && request.resource.data.chat is string && exists(chatPath(org, request.resource.data.chat));
+      allow update: if false;
+      allow delete: if orgOwner(org) && orgDeletionOpen(org);
+    }
+    // المراجعة المفتوحة لمحادثة: لا تُفتح إلا بسجلٍّ جديد لها في الالتزام نفسه، فكل فتح بسببٍ جديد · وتُغلق بحذفها
+    match /orgs/{org}/chatReviewOpen/{chatId} {
+      allow read, delete: if orgOwner(org);
+      allow create, update: if orgOwner(org)
+        && request.resource.data.keys().hasOnly(['rid', 'at'])
+        && request.resource.data.at == request.time
+        && request.resource.data.rid is string
+        && getAfter(/databases/$(database)/documents/orgs/$(org)/chatReviews/$(request.resource.data.rid)).data.chat == chatId
+        && getAfter(/databases/$(database)/documents/orgs/$(org)/chatReviews/$(request.resource.data.rid)).data.at == request.time;
+    }
+
     match /orgs/{org}/chats/{chatId} {
-      // المالك يقرأ محادثات منشأته كلها (اطلاع 2026-10-08) ويدير المجموعات ويُزيل المُزال (#19)
+      // أطراف المحادثة ومستندها (أطرافها واسمها، بلا رسائلها) للمالك: ليدير المجموعات ويُزيل المُزال (#19)،
+      // ويختار ما يراجعه أو ينضم إليه
       allow read: if (chatIn(org) && request.auth.uid in resource.data.p) || orgOwner(org);
       allow create: if chatIn(org)
         && request.resource.data.keys().hasOnly(['k', 'p', 'name', 'by', 'at'])
@@ -468,30 +510,41 @@ service cloud.firestore {
               && (orgOwner(org) || chatSup(org).size() > 0)));
       // المجموعة يعدّل أعضاءها واسمها المالك ومنشئها · لا نوعها ولا منشئها ولا وقتها (#19)
       // والعضو يُخرج نفسه وحده (مغادرة المنشأة) · والإزالة قد تُبقي المجموعة بلا أعضاء (التحقق ق٣)
+      // وانضمام المالك إلى مجموعة ليس فيها مسموح، ومعه سطر «انضم المالك» في الالتزام نفسه (jm رقمه) · ولا يتغير jm بغيره
       allow update: if chatIn(org) && resource.data.k == 'group'
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['p', 'name'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['p', 'name', 'jm'])
         && request.resource.data.p is list && request.resource.data.p.size() <= 100
         && request.resource.data.name is string && request.resource.data.name.size() <= 80
         && ((orgOwner(org) || resource.data.by == request.auth.uid)
             || (request.resource.data.name == resource.data.name
                 && request.auth.uid in resource.data.p
                 && request.resource.data.p.size() == resource.data.p.size() - 1
-                && request.resource.data.p.toSet() == resource.data.p.toSet().difference([request.auth.uid].toSet())));
+                && request.resource.data.p.toSet() == resource.data.p.toSet().difference([request.auth.uid].toSet())))
+        && ((orgOwner(org) && !(request.auth.uid in resource.data.p) && request.auth.uid in request.resource.data.p)
+            ? (request.resource.data.get('jm', '') is string
+                && request.resource.data.get('jm', '') != resource.data.get('jm', '')
+                && !exists(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm))
+                && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm)).data.get('sys', '') == 'join'
+                && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm)).data.from == request.auth.uid)
+            : request.resource.data.get('jm', '') == resource.data.get('jm', ''));
       // حذف المحادثة للمالك في نافذة الحذف وحدها: «حذف حسابي» (#2) و«مسح كل البيانات» (#28)
       allow delete: if orgOwner(org) && orgDeletionOpen(org);
 
-      // فهرس أرقام الرسائل بلا محتوى من النسخ السابقة · لم يعد يُكتب لأن المالك يقرأ الرسائل (2026-10-08) ·
-      // يبقى سرده وحذفه للمالك في نافذة الحذف فلا يبقى منه شيء بعد المسح
+      // فهرس أرقام الرسائل بلا محتوى (التحقق ق١): يكتبه المرسل مع رسالته في التزام واحد · ويسرده المالك في نافذة
+      // الحذف ليحذف الرسائل بأسمائها دون أن يقرأها
       match /ids/{msgId} {
-        allow read, delete: if orgOwner(org) && orgDeletionOpen(org);
-        allow create, update: if false;
+        allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && orgDeletionOpen(org));
+        allow create: if chatIn(org) && chatPartyAfter(org, chatId) && request.resource.data.keys().size() == 0
+          && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(msgId)).data.from == request.auth.uid;
+        allow update: if false;
+        allow delete: if orgOwner(org) && orgDeletionOpen(org);
       }
 
       match /msgs/{msgId} {
-        // أطرافها، والمالك وحده من غيرهم · لا المشرف (اطلاع 2026-10-08)
-        allow read: if (chatIn(org) && chatParty(org, chatId)) || orgOwner(org);
-        allow create: if chatIn(org) && chatParty(org, chatId)
-          && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts'])
+        // أطرافها · والمالك بمراجعة مفتوحة لها وحدها · لا المشرف ولا نافذة الحذف (قرار المالك 2026-10-08T04:11Z)
+        allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && chatReviewing(org, chatId));
+        allow create: if chatIn(org) && chatPartyAfter(org, chatId)
+          && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts', 'sys'])
           && request.resource.data.from == request.auth.uid
           && request.resource.data.ts == request.time
           && request.resource.data.name == chatDirName(org)
@@ -501,7 +554,15 @@ service cloud.firestore {
               && request.resource.data.link.type in ['contract', 'unit', 'asset', 'maintenance']
               && request.resource.data.link.id is string && request.resource.data.link.id.size() <= 64
               && request.resource.data.link.label is string && request.resource.data.link.label.size() <= 200))
-          && request.resource.data.att == null;
+          && request.resource.data.att == null
+          // سطر «انضم المالك»: من المالك، مع انضمامه في الالتزام نفسه (jm رقمه) · لا سطر نظام غيره
+          && (request.resource.data.get('sys', null) == null
+              || (request.resource.data.sys == 'join' && orgOwner(org)
+                  && request.resource.data.body == 'انضم المالك' && request.resource.data.link == null
+                  && getAfter(chatPath(org, chatId)).data.get('jm', '') == msgId
+                  && !(request.auth.uid in get(chatPath(org, chatId)).data.p)))
+          // ومعها فهرس رقمها في الالتزام نفسه · فلا رسالة تفلت من الحذف (التحقق ر١)
+          && existsAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/ids/$(msgId));
         // العضو يحذف حسابه: اسمه في رسائله «عضو سابق» وحده · رسائله وحده ولا حقل غيره (#2)
         allow update: if chatIn(org) && resource.data.from == request.auth.uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])

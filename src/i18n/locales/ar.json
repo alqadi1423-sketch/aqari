@@ -382,8 +382,22 @@
     "groupSaved": "حُفظت المجموعة",
     "groupSaveFailed": "تعذّر حفظ المجموعة",
     "ownerSees": "محادثات المنشأة يطّلع عليها المالك",
-    "readOnly": "اطلاع للقراءة فقط · لست طرفاً في هذه المحادثة",
-    "observing": "اطلاع"
+    "review": "مراجعة محادثة",
+    "reviewPick": "اختر المحادثة",
+    "reviewPickFirst": "اختر محادثة أولاً",
+    "reviewReason": "سبب المراجعة",
+    "reviewOpen": "فتح المراجعة",
+    "reviewing": "مراجعة",
+    "reviewReadOnly": "مراجعة للقراءة فقط · تنتهي بإغلاقها، وكل فتح جديد بسبب جديد",
+    "reviewReasonShown": "السبب: {{reason}}",
+    "reviewClose": "إغلاق المراجعة",
+    "reviewNone": "لا محادثات للأعضاء",
+    "reviewFailed": "تعذّرت المراجعة",
+    "join": "انضمام",
+    "joined": "انضممت إلى المجموعة",
+    "joinFailed": "تعذّر الانضمام",
+    "ownerJoined": "انضم المالك",
+    "loading": "جارٍ التحميل"
   },
   "auth": {
     "fail": {
