@@ -16,7 +16,7 @@ import { readAccess, readMembership, saveMembership, type Membership } from '@/s
 import { sendInvite, findInvites, acceptInvite } from '@/services/org';
 import { putAttachment } from '@/files/store';
 import { pumpUploads, ensureLocal, fileState, FileUnavailableError, type FilesRemote } from '@/files/cloudFiles';
-import { objectName, statObject, uploadObject, deleteObject, type StorageTarget } from '@/cloud/storage';
+import { objectName, statObject, uploadObject, deleteObject, addTokens, type StorageTarget } from '@/cloud/storage';
 import { nodeStorageIO } from './helpers/nodeStorageIO';
 import { tempDir, rmrf } from './helpers/testDb';
 import { makeBackupEnv, type TestBackupEnv } from './helpers/backupEnv';
@@ -170,5 +170,23 @@ d('مزامنة الملفات على المحاكي', () => {
     await expect(deleteObject(nodeStorageIO, target(W.uid, W.email), objectName(OWNER, sha(f1), 'pdf'))).rejects.toThrow('رُفض');
     await deleteObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), objectName(OWNER, sha(f2), 'pdf'));
     expect(await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), objectName(OWNER, sha(f2), 'pdf'))).toBeNull();
+  });
+
+  test('#19 رموز رؤية الملف يزيدها من يقرؤه وحده: عضوٌ لا يقرأ ملفاً لا يضمّ رمزه إليه فيقرؤه', async () => {
+    const f7 = bytesOf(7);
+    await putAttachment(fe(owner), f7, { entityType: 'contract', entityId: C2, kind: 'هوية', originalName: 'هوية.jpg', mime: 'image/jpeg' });
+    expect((await pumpUploads(fe(owner), filesRemote(owner.db, OWNER, OWNER_EMAIL))).uploaded).toBeGreaterThan(0);
+    const name7 = objectName(OWNER, sha(f7), 'jpg');
+    const there = (await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name7))!;
+    expect(there.g.some((x) => x.endsWith('|FP1'))).toBe(false);
+    // عضو العقار الأول يعرف البصمة (جدول البصمات يقرؤه كل قسم) فيضمّ رمزه إليها
+    await expect(addTokens(nodeStorageIO, target(M.uid, M.email), name7, there, ['contracts|FP1'])).rejects.toThrow('رُفض');
+    await expect(statObject(nodeStorageIO, target(M.uid, M.email), name7)).rejects.toThrow('رُفض');
+    expect((await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name7))!.g).toEqual(there.g);
+    // ومن يقرأ الملف يضمّ إليه (بصمةٌ رُبطت بجهةٍ أخرى عنده)
+    const name1 = objectName(OWNER, sha(f1), 'pdf');
+    const f1there = (await statObject(nodeStorageIO, target(W.uid, W.email), name1))!;
+    await addTokens(nodeStorageIO, target(W.uid, W.email), name1, f1there, ['handover|FP1']);
+    expect((await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name1))!.g).toContain('handover|FP1');
   });
 });

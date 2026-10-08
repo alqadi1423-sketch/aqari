@@ -48,9 +48,11 @@ describe('المزامنة لا تحجب الواجهة · وأول سحب يظ�
     const fresh = memDb();
     enableSync(fresh, 'u-pull');
     const progress: string[] = [];
-    let longest = 0, steps = 0, last = Date.now();
+    // زمن المعالج لهذه العملية بين الفسحتين (بالمللي ثانية) · لا الزمن الفعلي الذي يطول بزحام عمّال jest المتوازيين
+    const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; };
+    let longest = 0, steps = 0, last = cpu();
     const rep = await syncOnce(fresh, remote, getMeta(fresh, 'device_id')!, (m) => progress.push(m), {
-      pause: async () => { const now = Date.now(); longest = Math.max(longest, now - last); steps++; await new Promise((r) => setTimeout(r, 0)); last = Date.now(); },
+      pause: async () => { const now = cpu(); longest = Math.max(longest, now - last); steps++; await new Promise((r) => setTimeout(r, 0)); last = cpu(); },
     });
     expect(rep.pending).toBe(0);
     // صفحات كثيرة لا خطوة واحدة، وكل خطوة قصيرة · والتقدم يُعرض بعددٍ يكبر
