@@ -102,6 +102,9 @@ export function memberTokens(a: Pick<Access, 'owner' | 'perms' | 'allProps' | 'p
  * قسم العملية لكتابة عضو · الأقوى أولاً: جدول القسم بمستوى كامل، ثم ما ينشئه بإدخال،
  * ثم ما يمسّه جانبياً بإدخال. null: لا قسم يجيزها، فلا تُرفع (القواعد سترفضها أصلاً).
  */
+/** صفوفٌ للمنشأة كلها لا لعقار: يقرؤها ويكتبها ذو كل العقارات وحده (القواعد تشترط m.all) */
+export const ORG_WIDE_ROWS: ReadonlySet<string> = new Set(['vat_filings']);
+
 export function chooseOp(a: Access, table: string): SectionKey | null {
   const entries = Object.entries(OP_WRITES) as Array<[SectionKey, NonNullable<(typeof OP_WRITES)[SectionKey]>]>;
   const lv = (s: SectionKey) => level(a, s);
@@ -169,6 +172,8 @@ export function annotate(db: DB, doc: RemoteDoc, a: Access): AclDocs {
     if (by) extra.by = by;
   }
   const out: RemoteDoc = { ...doc, ...extra };
+  // الإقرار المقدَّم للمنشأة كلها: يقرؤه ذو كل العقارات وحده (رموز «قسم|@») · والمحصور لا يرى أرقام عقارات غيره (التحقق المستقل)
+  if (ORG_WIDE_ROWS.has(doc.t)) return { doc: { ...out, g: tokensFor(full, []) }, pub: null };
   if (CROSS_PROPERTY[doc.t]) {
     // الكامل لذي كل العقارات وحده (رموز «قسم|@») · والإسقاط لكل قارئ بعقاراته
     out.g = tokensFor(full, []);

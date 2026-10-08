@@ -61,7 +61,9 @@ export default function Reports() {
   // التقارير: عرض → القوائم والإقرار · كامل → التصدير
   const perm = usePerm('reports');
   const seesLedger = usePerm('ledger').view;
-  const seesPurchases = routeAllowed(useAccess(), '/purchases');
+  // الإقرار المقدَّم للمنشأة كلها: يسجّله ذو كل العقارات وحده
+  const access = useAccess();
+  const seesPurchases = routeAllowed(access, '/purchases');
   const [finYear, setFinYear] = useState<number | 'all' | 'custom' | null>(null);
   const [finQ, setFinQ] = useState<0 | 1 | 2 | 3 | 4>(0);
   const [customFrom, setCustomFrom] = useState('');
@@ -656,7 +658,7 @@ export default function Reports() {
               </Pressable>
             </View>
           ) : null}
-          {vatYear != null && vatPreview ? <VatFilingCard year={vatYear} q={vatQ} canManage={perm.manage} /> : null}
+          {vatYear != null && vatPreview ? <VatFilingCard year={vatYear} q={vatQ} canManage={perm.manage && (access.owner || access.allProps)} /> : null}
           <T size={11.5} color={C.muted} style={{ marginVertical: 5 }}>علامة «مسودة» المائية</T>
           <ChipGroup options={[[0, 'مسودة'], [1, 'معتمد · بلا علامة']]} value={vatApproved ? 1 : 0} onChange={(v) => setVatApproved(!!v)} />
           <View style={{ height: 8 }} />

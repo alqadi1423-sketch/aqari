@@ -400,5 +400,34 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     expect((await r.write([{ ...pub, d: { ...pub.d!, notes: 'في الإسقاط' } }]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
     expect((await r.write([{ ...main, d: { ...main.d!, phone: '0500000177' } }]))[0]).toMatchObject({ ok: true });
   });
+
+  test('التحقق المستقل: الإقرار المقدَّم للمنشأة كلها يكتبه ذو كل العقارات وحده · ولا يقرؤه المحصور', async () => {
+    const q2 = { id: '2026-Q2', period_from: '2026-04-01', period_to: '2026-06-30', filed_at: '2026-07-15', snapshot: '{}', created_at: '2026-07-15T00:00:00.000Z', deleted_at: null as string | null };
+    db.run(`INSERT INTO vat_filings (id, period_from, period_to, filed_at, snapshot, created_at) VALUES (?,?,?,?,?,?)`,
+      [q2.id, q2.period_from, q2.period_to, q2.filed_at, q2.snapshot, q2.created_at]);
+    const owner = remoteFor(ORG, null);
+    const base = owner.annotate!(db, doc('vat_filings', q2.id, q2));
+    // رؤيته رموز «كل العقارات» وحدها
+    expect(base.g!.length).toBeGreaterThan(0);
+    expect(base.g!.every((x) => x.endsWith('|@'))).toBe(true);
+    expect((await owner.write([base]))[0]).toMatchObject({ ok: true });
+    const RREST = member('U-VRPR', { reports: 3, collect: 1 }, ['P1']);
+    const RALL = member('U-VRPA', { reports: 3 }, 'all');
+    for (const a of [RREST, RALL]) {
+      expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, { email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a) }, ORG)).toBe(200);
+    }
+    const q3 = { ...q2, id: '2026-Q3', period_from: '2026-07-01', period_to: '2026-09-30' };
+    const as = (a: typeof RREST, d: typeof q2, u: string) => remoteFor(a.uid!, a).annotate!(db, doc('vat_filings', d.id, d, u));
+    // المحصور: لا ينشئ ولا يسحب
+    expect((await remoteFor(RREST.uid!, RREST).write([as(RREST, q3, 'f1')]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect((await remoteFor(RREST.uid!, RREST).write([as(RREST, { ...q2, deleted_at: '2026-08-01T00:00:00.000Z' }, 'f2')]))[0])
+      .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    // ولا يقرؤه
+    const res = await fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/rows/${base.id}`,
+      { headers: { Authorization: 'Bearer ' + token(RREST.uid!) } });
+    expect(res.status).toBe(403);
+    // ذو كل العقارات ينشئ
+    expect((await remoteFor(RALL.uid!, RALL).write([as(RALL, q3, 'f3')]))[0]).toMatchObject({ ok: true });
+  });
 });
 
