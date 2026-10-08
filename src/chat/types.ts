@@ -176,3 +176,8 @@ export function normTs(v: unknown): string {
 export function tsGte(a: string, b: string): boolean {
   return normTs(a) >= normTs(b);
 }
+
+/** تاريخ للعرض من وقت الخادم · بالمللي ثانية، فمحرّك الجوال قد لا يقرأ أكثر من ثلاثة أجزاء من الثانية */
+export function tsDate(s: string): Date {
+  return new Date(s.replace(/\.(\d{3})\d*Z$/, '.$1Z'));
+}

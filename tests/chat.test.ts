@@ -593,3 +593,9 @@ test('الدفعة ٢ · الرد على أصلٍ رفضه الخادم يُرف
   await chatSyncOnce(a, refusing, OWNER, { force: true });
   expect(listMessages(a, tid).map((m) => [m.body, m.rejected])).toEqual([['أصل', true], ['رد', true]]);
 });
+
+test('الدفعة ٢ · تاريخ العرض من وقت الخادم بالمللي ثانية (محرّك الجوال)', async () => {
+  const { tsDate } = await import('@/chat');
+  expect(tsDate('2026-01-01T10:20:30.123456789Z').toISOString()).toBe('2026-01-01T10:20:30.123Z');
+  expect(tsDate('2026-01-01T10:20:30Z').toISOString()).toBe('2026-01-01T10:20:30.000Z');
+});

@@ -30,7 +30,7 @@ import {
   markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup,
   isGroupAdmin, canAppointAdmins, canAddMembers, canSendIn, GROUP_DEFAULTS, type GroupSettings, type GroupChange,
   mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft, mentionsMe, mentionUser, mentionSection, MENTIONS_MAX,
-  type ChatMessage,
+  tsDate, type ChatMessage,
   type ChatLink, type ChatMe, type ChatPerson, type ChatThread,
 } from '../src/chat';
 
@@ -50,8 +50,8 @@ function useChatPulse(threadId: string | null): number {
 
 /** الوقت بتوقيت الجهاز لا UTC (مراجعة المحادثة #11) */
 const pad = (n: number) => String(n).padStart(2, '0');
-const localTime = (iso: string) => { const d = new Date(iso); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
-const localDay = (iso: string) => { const d = new Date(iso); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
+const localTime = (iso: string) => { const d = tsDate(iso); return pad(d.getHours()) + ':' + pad(d.getMinutes()); };
+const localDay = (iso: string) => { const d = tsDate(iso); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
 
 function useChatMe(): ChatMe | null {
   const { db } = useApp();
