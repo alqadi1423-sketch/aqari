@@ -383,5 +383,22 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     expect((await remoteFor(TALL2.uid!, TALL2).write([{ ...pub, g: toks(['P1', 'P3']) }]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
     expect((await remoteFor(TALL2.uid!, TALL2).write([{ ...pub, g: toks(['P1', 'P2', 'P3']) }]))[0]).toMatchObject({ ok: true });
   });
+
+  test('التحقق المستقل: المحصور لا يكتب ملاحظات المستأجر المشترك ولا يحذفه عن غيره ولا يكتبها في إسقاطه', async () => {
+    db.run(`INSERT INTO tenants (id, name, phone, notes, created_at) VALUES ('VT7', 'مستأجر ملاحظات مصطنع', '0500000176', 'ملاحظة المالك', '2026-01-01T00:00:00.000Z')`);
+    const owner = remoteFor(ORG, null);
+    const base = owner.annotate!(db, doc('tenants', 'VT7', row('tenants', 'VT7')));
+    const at = base.companions![0].g!.filter((x) => x.endsWith('|@'));
+    const toks = [...at, ...at.flatMap((x) => [x.replace('|@', '|P1'), x.replace('|@', '|P2')])].sort();
+    expect((await owner.write([{ ...base, pids: ['P1', 'P2'], companions: [{ ...base.companions![0], pids: ['P1', 'P2'], g: toks }] }]))[0])
+      .toMatchObject({ ok: true });
+    const r = remoteFor(CONTR.uid!, CONTR);
+    const main = { ...base, u: 't7', dev: 'dev-v', op: 'tenants', pids: ['P1', 'P2'], companions: undefined };
+    const pub = { ...base.companions![0], u: 't7', dev: 'dev-v', op: 'tenants', pids: ['P1', 'P2'], g: toks };
+    expect((await r.write([{ ...main, d: { ...main.d!, notes: 'مُسحت' } }]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect((await r.write([{ ...main, d: { ...main.d!, deleted_at: '2026-07-01' } }]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect((await r.write([{ ...pub, d: { ...pub.d!, notes: 'في الإسقاط' } }]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect((await r.write([{ ...main, d: { ...main.d!, phone: '0500000177' } }]))[0]).toMatchObject({ ok: true });
+  });
 });
 

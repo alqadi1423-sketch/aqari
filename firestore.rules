@@ -300,13 +300,13 @@ service cloud.firestore {
     }
     function moneyKeysOk(m, r, keys) {
       return (!(r.op in ['props', 'maintenance', 'tenants', 'handover', 'library', 'company']) || !keys.hasAny(['cancel_deduction_halalas', 'cancel_refund_halalas', 'credit_halalas', 'deposit_halalas', 'lease_value_halalas', 'parking_halalas', 'rent_monthly_halalas', 'services_halalas', 'value_halalas']) || moneyReaderOf(m, r))
-        && (r.t != 'tenants' || m.all == true || !keys.hasAny(['credit_halalas']));
+        && (r.t != 'tenants' || m.all == true || !keys.hasAny(['credit_halalas', 'notes']));
     }
     function moneyKept(m, before, after) {
-      return after.del == true
+      return after.del == true || ((after.t != 'tenants~pub' || !after.d.keys().hasAny(['credit_halalas', 'notes']))) && (false
         // قسمٌ مالي في غير الصف المشترك: يقرأ ما يكتبه، فلا حاجة إلى حساب الفرق
         || (!(after.op in ['props', 'maintenance', 'tenants', 'handover', 'library', 'company']) && !(after.t in ['tenants']))
-        || moneyKeysOk(m, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys());
+        || moneyKeysOk(m, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys()));
     }
 
     function validOrgRow(rowId) {
@@ -368,7 +368,9 @@ service cloud.firestore {
         && (
           (owns && level >= 3 && (propsOk(m, after)
               // والمستأجر المشترك بين عقاراته وعقار غيره: عقاراته كما هي وفيها عقارٌ له (التحقق المستقل: تعديله كان يُرفض صامتاً)
-              || (after.t in ['tenants', 'tenants~pub'] && after.pids == before.pids && after.pids.hasAny(m.props.concat(['*'])))))
+              || (after.t in ['tenants', 'tenants~pub'] && after.pids == before.pids && after.pids.hasAny(m.props.concat(['*']))
+                  // ولا يحذفه أو يؤرشفه عن عقارٍ ليس له (التحقق المستقل)
+                  && !after.d.diff(before.d).affectedKeys().hasAny(['deleted_at', 'archived']))))
           || (owns && level >= 2 && isDraft(before)
               && before.get('by', '') == request.auth.uid && propsOk(m, after))
           // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)

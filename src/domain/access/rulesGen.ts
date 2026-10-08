@@ -84,7 +84,8 @@ function guardFns(schema: RulesSchema): string {
     const toks = q(secs.flatMap((x) => [x + '|*', x + '|@']));
     return `r.t == '${t}' ? ${CROSS_PROPERTY[t] ? 'm.all == true && ' : ''}${secs.length ? `m.tokens.hasAny(${toks})` : 'false'}`;
   });
-  const crossMoney = Object.keys(CROSS_PROPERTY).map((t) => ({ t, cols: schema.money[t] ?? [] })).filter((x) => x.cols.length);
+  // الحقول الجامعة للعقارات في الصف المشترك (مبالغه وCROSS_PROPERTY): لا يكتبها المحصور، ولا تُكتب في إسقاطه (التحقق المستقل)
+  const crossMoney = Object.keys(CROSS_PROPERTY).map((t) => ({ t, cols: [...(schema.money[t] ?? []), ...CROSS_PROPERTY[t]] })).filter((x) => x.cols.length);
   const allToks = SECTION_KEYS.flatMap((x) => [`'${x}|' + p`, `'${x}|@'`]);
   // i18n-exempt: نص القواعد المولَّدة وتعليقاتها، لا نصّ واجهة
   return `
@@ -160,10 +161,10 @@ function guardFns(schema: RulesSchema): string {
 ${crossMoney.map((x) => `        && (r.t != '${x.t}' || m.all == true || !keys.hasAny(${q(x.cols)}))`).join('\n')};
     }
     function moneyKept(m, before, after) {
-      return after.del == true
+      return after.del == true || (${crossMoney.map((x) => `(after.t != '${x.t}~pub' || !after.d.keys().hasAny(${q(x.cols)}))`).join(' && ') || 'true'}) && (false
         // قسمٌ مالي في غير الصف المشترك: يقرأ ما يكتبه، فلا حاجة إلى حساب الفرق
         || (!(after.op in ${q(nonMoneyOps)}) && !(after.t in ${q(crossMoney.map((x) => x.t))}))
-        || moneyKeysOk(m, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys());
+        || moneyKeysOk(m, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys()));
     }`;
 }
 
@@ -274,7 +275,9 @@ ${guardFns(schema)}
         && (
           (owns && level >= 3 && (propsOk(m, after)
               // والمستأجر المشترك بين عقاراته وعقار غيره: عقاراته كما هي وفيها عقارٌ له (التحقق المستقل: تعديله كان يُرفض صامتاً)
-              || (after.t in ['tenants', 'tenants~pub'] && after.pids == before.pids && after.pids.hasAny(m.props.concat(['*'])))))
+              || (after.t in ['tenants', 'tenants~pub'] && after.pids == before.pids && after.pids.hasAny(m.props.concat(['*']))
+                  // ولا يحذفه أو يؤرشفه عن عقارٍ ليس له (التحقق المستقل)
+                  && !after.d.diff(before.d).affectedKeys().hasAny(['deleted_at', 'archived']))))
           || (owns && level >= 2 && isDraft(before)
               && before.get('by', '') == request.auth.uid && propsOk(m, after))
           // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)
