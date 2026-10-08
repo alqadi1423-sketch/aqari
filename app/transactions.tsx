@@ -14,10 +14,10 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { useDialog } from '../src/ui/AppDialog';
 import { C, TYPE } from '../src/ui/theme';
-import { uid } from '../src/domain/ids';
-import { fmt, toHalalas } from '../src/domain/money';
+import { toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
-import { logAudit } from '../src/domain/audit';
+import { recordManualBankTx, type ManualBankKind } from '../src/domain/cashOps';
+import { useLang } from '../src/i18n';
 import { usePerm } from '../src/ui/access';
 import { deleteBankTx } from '../src/domain/bankTx';
 import { reportFailure } from '../src/ui/failureDialog';
@@ -45,13 +45,12 @@ const PERIOD_OPTIONS = [{ value: '', label: 'كل الفترات' },
   ...Object.entries(PERIOD_LABELS).map(([value, label]) => ({ value, label }))];
 
 const TxCard = React.memo(function TxCard({
-  id, bankId, date, descr, amountHalalas, matched, journalNo, source, bankName, canManage, onEdit, onDelete,
+  id, date, descr, amountHalalas, matched, journalNo, source, bankName, canManage, onDelete,
 }: {
   id: string; bankId: string; date: string; descr: string; amountHalalas: number;
   matched: number; journalNo: string; source: string; bankName: string;
   /** «البنوك والنقد: كامل» · التعديل والحذف */
   canManage: boolean;
-  onEdit: (id: string, bankId: string, date: string, amountHalalas: number, descr: string, source: string) => void;
   onDelete: (id: string) => void;
 }) {
   // الحركة المولَّدة من مستند مرحَّل (لها رقم قيد) لا تُعدَّل ولا تُحذف يدوياً ·
@@ -64,8 +63,8 @@ const TxCard = React.memo(function TxCard({
         <Row gap={8}>
           <Money halalas={amountHalalas} size={TYPE.number} bold
             color={amountHalalas < 0 ? C.rose : C.emerald} />
+          {/* اليدوية بلا قيد تُحذف وحدها، وتُعاد بنوعها · لا تعديل لحركةٍ أثرها في المحفظة والبنك (#33) */}
           <ActionMenuButton title={descr} actions={generated || !canManage ? [] : [
-            { icon: 'edit', label: 'تعديل', onPress: () => onEdit(id, bankId, date, amountHalalas, descr, source) },
             { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) },
           ]} />
         </Row>
@@ -84,6 +83,7 @@ const TxCard = React.memo(function TxCard({
 });
 
 export default function Transactions() {
+  const { t } = useLang();
   const { db, version, bump } = useApp();
   const perm = usePerm('banks');
   const toast = useToast();
@@ -94,12 +94,12 @@ export default function Transactions() {
   const [matchFilter, setMatchFilter] = useState<MatchFilter>('all');
   const [periodFilter, setPeriodFilter] = useState('');
   const [formOpen, setFormOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  // الحركة اليدوية بنوعها (#33): إيداع من المحفظة، سحب إليها، رسوم بنكية، وارد آخر
+  const [kind, setKind] = useState<ManualBankKind>('deposit');
   const [bankId, setBankId] = useState('');
   const [date, setDate] = useState(today());
   const [amount, setAmount] = useState('');
   const [descr, setDescr] = useState('');
-  const [source, setSource] = useState('');
   const pager = usePager('transactions');
   const fsheet = useFilterSheet();
   const ready = useDeferredReady();
@@ -154,32 +154,16 @@ export default function Transactions() {
   }, [db, version, ready]);
 
   const openNew = () => {
-    setEditingId(null); setBankId(banks[0].id); setDate(today()); setAmount(''); setDescr(''); setSource('');
+    setKind('deposit'); setBankId(banks[0].id); setDate(today()); setAmount(''); setDescr('');
     setFormOpen(true);
   };
-  const openEdit = useCallback((id: string, txBankId: string, txDate: string, amountHalalas: number, txDescr: string, txSource: string) => {
-    setEditingId(id); setBankId(txBankId); setDate(txDate);
-    setAmount(fmt(amountHalalas).replace(/,/g, ''));
-    setDescr(txDescr); setSource(txSource); setFormOpen(true);
-  }, []);
   const save = () => {
     if (!descr.trim() || !toHalalas(amount)) { toast('الرجاء إدخال البيان والمبلغ'); return; }
-    db.transaction(() => {
-      if (editingId) {
-        db.run(`UPDATE bank_tx SET bank_id=?, date=?, descr=?, amount_halalas=?, source=? WHERE id=?`, [
-          bankId, date, descr.trim(), toHalalas(amount), source.trim(), editingId,
-        ]);
-      } else {
-        db.run(
-          `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, source, created_at)
-           VALUES (?,?,?,?,?,0,?,?)`,
-          [uid(), bankId, date, descr.trim(), toHalalas(amount), source.trim(), new Date().toISOString()]
-        );
-      }
-      logAudit(db, 'الحركات البنكية', editingId ? 'update' : 'create', 'حركة بنكية', descr.trim());
-    });
-    setFormOpen(false); bump();
-    toast(editingId ? 'تم تحديث الحركة' : 'أُضيفت الحركة');
+    try {
+      recordManualBankTx(db, { kind, bankId, amountHalalas: Math.abs(toHalalas(amount)), date, descr });
+      setFormOpen(false); bump();
+      toast('أُضيفت الحركة');
+    } catch (e) { reportFailure({ title: t('bankTx.kind'), e }); }
   };
 
   const deleteTx = useCallback((id: string) => {
@@ -205,9 +189,9 @@ export default function Transactions() {
       id={item.id} bankId={item.bank_id} date={item.date} descr={item.descr}
       amountHalalas={Number(item.amount_halalas)} matched={Number(item.matched)}
       journalNo={item.journal_no} source={item.source} bankName={bankName(item.bank_id)}
-      canManage={perm.manage} onEdit={openEdit} onDelete={deleteTx}
+      canManage={perm.manage} onDelete={deleteTx}
     />
-  ), [bankName, openEdit, deleteTx, perm.manage]);
+  ), [bankName, deleteTx, perm.manage]);
 
   const clearFilters = useCallback(() => {
     setQ(''); setBankFilter('all'); setDirFilter('all'); setMatchFilter('all'); setPeriodFilter('');
@@ -263,20 +247,26 @@ export default function Transactions() {
       </FilterSheet>
 
       <Sheet visible={formOpen} onClose={() => setFormOpen(false)}
-        title={editingId ? 'تعديل الحركة البنكية' : 'حركة بنكية جديدة'}
+        title="حركة بنكية جديدة"
         footer={
           <>
-            <View style={{ flex: 1 }}><BtnPrimary title={editingId ? 'حفظ التعديل' : 'إضافة الحركة'} onPress={save} /></View>
+            <View style={{ flex: 1 }}><BtnPrimary title="إضافة الحركة" onPress={save} /></View>
           </>
         }>
         <SelectField label="الحساب البنكي" value={bankId}
           options={banks.map((b) => ({ value: b.id, label: b.name }))} onPick={setBankId} />
+        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 5 }}>{t('bankTx.kind')}</T>
+        <View style={{ marginBottom: 10 }}>
+          <ChipGroup<ManualBankKind> value={kind} onChange={setKind} options={[
+            ['deposit', t('bankTx.kindDeposit')], ['withdraw', t('bankTx.kindWithdraw')],
+            ['fee', t('bankTx.kindFee')], ['income', t('bankTx.kindIncome')],
+          ]} />
+        </View>
         <Row>
           <View style={{ flex: 1 }}><DateField label="التاريخ" value={date} onChange={setDate} /></View>
-          <View style={{ flex: 1 }}><Field label="المبلغ (سالب للصادر)" value={amount} onChange={setAmount} keyboard="numeric" ltr /></View>
+          <View style={{ flex: 1 }}><Field label={t('common.amount')} value={amount} onChange={setAmount} keyboard="numeric" ltr /></View>
         </Row>
         <Field label="البيان" value={descr} onChange={setDescr} />
-        <Field label="المصدر" value={source} onChange={setSource} />
       </Sheet>
     </Screen>
   );

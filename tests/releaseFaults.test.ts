@@ -48,18 +48,18 @@ describe('المزامنة لا تحجب الواجهة · وأول سحب يظ�
     const fresh = memDb();
     enableSync(fresh, 'u-pull');
     const progress: string[] = [];
-    // زمن معالج الخيط الرئيس بين الفسحتين (بالمللي ثانية): لا الزمن الفعلي الذي يطول بزحام عمّال jest، ولا زمن خيوط
-    // جمع المهملات والترجمة الذي يعدّه زمن العملية كلها
-    const cpu = () => { const u = process.threadCpuUsage(); return (u.user + u.system) / 1000; };
-    let longest = 0, longestWall = 0, steps = 0, last = cpu(), lastWall = Date.now();
+    // قِصَر الخطوة يُقاس بما تطبّقه بين فسحتين (صفوفٌ لا زمن): الزمن في jest يطول بزحام العمّال فيفشل بلا خلل، والسرعة
+    // تُقاس على الجوال وحده · ومعه سقفٌ واسع بالزمن الفعلي يمسك خطوةً تعلق (التحقق المستقل)
+    let longestWall = 0, steps = 0, lastWall = Date.now();
     const rep = await syncOnce(fresh, remote, getMeta(fresh, 'device_id')!, (m) => progress.push(m), {
-      pause: async () => { const now = cpu(), nowWall = Date.now(); longest = Math.max(longest, now - last); longestWall = Math.max(longestWall, nowWall - lastWall); steps++; await new Promise((r) => setTimeout(r, 0)); last = cpu(); lastWall = Date.now(); },
+      pause: async () => { longestWall = Math.max(longestWall, Date.now() - lastWall); steps++; await new Promise((r) => setTimeout(r, 0)); lastWall = Date.now(); },
     });
     expect(rep.pending).toBe(0);
-    // صفحات كثيرة لا خطوة واحدة، وكل خطوة قصيرة · والتقدم يُعرض بعددٍ يكبر
+    // صفحات كثيرة لا خطوة واحدة، وكل خطوة لا تزيد على صفحة (٦٠ صفاً) · والتقدم يُعرض بعددٍ يكبر
     expect(steps).toBeGreaterThan(10);
-    expect(longest).toBeLessThan(400);
-    // وسقفٌ واسع بالزمن الفعلي: خطوةٌ تحجب بانتظارٍ لا يحسبه المعالج تفشل أيضاً (التحقق المستقل)
+    const done = progress.map((m) => /^جاري تطبيق الوارد · (\d+) من/.exec(m)).filter(Boolean).map((m) => Number(m![1]));
+    const biggest = Math.max(...done.map((d, i) => d - (i ? done[i - 1] : 0)));
+    expect(biggest).toBeLessThanOrEqual(60);
     expect(longestWall).toBeLessThan(2000);
     expect(progress.filter((m) => m.startsWith('جاري تطبيق الوارد · ')).length).toBeGreaterThan(10);
     // والنتيجة كما في المصدر: لا خصم يظهر متبقياً

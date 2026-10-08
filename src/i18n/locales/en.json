@@ -572,5 +572,19 @@
     "issueDateLabel": "Issue date",
     "dueDateLabel": "Due date",
     "totalDue": "Total due"
+  },
+  "purchase": {
+    "vatSettled": "This invoice's VAT is refunded or its refund was rejected, and its entry closed the account · cancel that entry from the ledger first"
+  },
+  "bankTx": {
+    "descrRequired": "Enter a description",
+    "bankShort": "{{bank}} balance is {{balance}}, not enough for {{amount}}",
+    "kindDeposit": "Deposit from wallet",
+    "kindWithdraw": "Withdrawal to wallet",
+    "kindFee": "Bank fee",
+    "kindIncome": "Other income",
+    "kind": "Movement type",
+    "deleteWhat": "Delete the movement",
+    "deleteBankShort": "Deleting this inflow takes the bank balance ({{balance}}) below zero by {{amount}}"
   }
 }

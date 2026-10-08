@@ -11,6 +11,7 @@ import { fmt } from './money';
 import { logAudit } from './audit';
 import { postEntry } from './accounting/post';
 import { walletCashBalance, bankBalance } from './accounting/ledger';
+import { t } from '../i18n';
 
 const MODULE = 'المحفظة النقدية';
 
@@ -181,3 +182,46 @@ export function ownerCashOut(
     });
   });
 }
+
+/**
+ * الحركة البنكية اليدوية بنوعها (#33): المحفظة والبنوك كلها في 1100، فالحركة بلا قيد تحويلٌ خفي بين المحفظة والبنك ·
+ * فتُسجَّل بنوعها في مسارها: إيداعٌ من المحفظة أو سحبٌ إليها (بكفايتهما)، أو رسومٌ مصروفاً، أو واردٌ آخر إيراداً، بقيدٍ
+ * مرتبطٍ بالحركة · قرار المالك 2026-10-05: «كل صرف نقدي يتحقق من رصيد النقد، ولا يصير النقد سالباً أبداً».
+ */
+export type ManualBankKind = 'deposit' | 'withdraw' | 'fee' | 'income';
+
+export function recordManualBankTx(
+  db: DB,
+  a: { kind: ManualBankKind; bankId: string; amountHalalas: number; date: string; descr: string },
+): void {
+  if (a.kind === 'deposit') return depositCashToBank(db, { bankId: a.bankId, amountHalalas: a.amountHalalas, date: a.date, notes: a.descr });
+  if (a.kind === 'withdraw') return withdrawCashFromBank(db, { bankId: a.bankId, amountHalalas: a.amountHalalas, date: a.date, notes: a.descr });
+  requirePositive(a.amountHalalas);
+  const descr = a.descr.trim();
+  if (!descr) throw new Error(t('bankTx.descrRequired'));
+  const name = bankName(db, a.bankId);
+  const fee = a.kind === 'fee';
+  if (fee && a.amountHalalas > bankBalance(db, a.bankId)) {
+    throw new Error(t('bankTx.bankShort', { bank: name, balance: fmt(bankBalance(db, a.bankId)), amount: fmt(a.amountHalalas) }));
+  }
+  const opId = uid();
+  db.transaction(() => {
+    const entry = postEntry(db, {
+      date: a.date,
+      memo: descr + ' · ' + name,
+      srcType: 'cash_op', srcId: opId,
+      lines: fee
+        ? [{ account: '5400', descr, debit: a.amountHalalas, credit: 0 }, { account: '1100', descr: name, debit: 0, credit: a.amountHalalas }]
+        : [{ account: '1100', descr: name, debit: a.amountHalalas, credit: 0 }, { account: '4300', descr, debit: 0, credit: a.amountHalalas }],
+    });
+    db.run(
+      `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
+       VALUES (?,?,?,?,?,1,?,?,?)`,
+      [uid(), a.bankId, a.date, descr, fee ? -a.amountHalalas : a.amountHalalas, entry ? entry.no : '',
+       t(fee ? 'bankTx.kindFee' : 'bankTx.kindIncome', { lng: 'ar' }), new Date().toISOString()]);
+    logAudit(db, MODULE, 'create', t(fee ? 'bankTx.kindFee' : 'bankTx.kindIncome', { lng: 'ar' }), name, undefined, {
+      amount_halalas: a.amountHalalas, date: a.date,
+    });
+  });
+}
+

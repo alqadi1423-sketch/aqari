@@ -24,7 +24,7 @@ import { Icon } from '../src/ui/icons';
 import {
   savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax, priorPaymentCashOut,
   TAX_STATUSES, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
-  type PurchasePayMethod, type TaxStatus,
+  type PurchasePayMethod, type TaxStatus, isVatSettled,
 } from '../src/domain/purchases';
 import { today as todayFn } from '../src/domain/dates';
 import { metersForPurchase } from '../src/domain/meters';
@@ -105,7 +105,7 @@ const PurchaseCard = React.memo(function PurchaseCard({
   onVatRejected: (id: string) => void;
 }) {
   // الضريبة إذا استُردت أو رُفضت فقد انتهت قصتها · لا يُعرض لها فعل استرداد بعدها
-  const vatSettled = refundStatus.startsWith('مسترَد') || refundStatus === 'مرفوض';
+  const vatSettled = isVatSettled(refundStatus);
   const vatActions = canManage && taxStatus === TS_DEDUCTIBLE && !vatSettled ? [
     ...(refundStatus.startsWith('مُقدَّم') ? [] : [
       { icon: 'reload' as const, label: 'الضريبة: مُقدَّمة في الإقرار', onPress: () => onVatFiled(id) },
@@ -126,10 +126,11 @@ const PurchaseCard = React.memo(function PurchaseCard({
               { icon: 'eye', label: 'عرض التفاصيل', onPress: () => onDetail(id) },
               canManage && !paid ? { icon: 'card', label: 'تسديد الفاتورة', onPress: () => onPay(id, totalHalalas) } : null,
               canManage && paid ? { icon: 'undo', label: 'التراجع عن السداد', onPress: () => onUndoPay(id) } : null,
-              paid || !canManage ? null : { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) },
+              paid || !canManage || vatSettled ? null : { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) },
               hasOriginal ? { icon: 'print' as const, label: 'الفاتورة الأصلية', onPress: () => onPrint(id, no) } : null,
               ...vatActions,
-              canManage ? {
+              // الضريبة المسترَدة أو المرفوضة تقفل الفاتورة حتى يُلغى قيدها من الدفتر (#32)
+              canManage && !vatSettled ? {
                 icon: 'trash', label: 'حذف', danger: true,
                 onPress: () => onDelete(id),
               } : null,

@@ -12,6 +12,7 @@ import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurc
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
 import { correctionDate } from './vatFilings';
+import { t } from '../i18n';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber } from './numbering';
 
@@ -85,6 +86,7 @@ export function nextPurchaseNo(db: DB): string {
 
 export function savePurchase(db: DB, input: PurchaseInput, existingId?: string): string {
   if (!input.subtotalHalalas && !input.totalHalalas) throw new Error('الرجاء إدخال مبالغ الفاتورة');
+  if (existingId) failVatSettled(db, existingId);
   return db.transaction(() => {
     // الافتراض مستبعدة ما لم يُثبَت العكس · و«خاضعة باسمنا» تشترط الرقم الضريبي للمورد
     const taxStatus: TaxStatus = input.taxStatus ?? (input.exempt ? TS_EXEMPT : TS_EXCLUDED);
@@ -339,8 +341,18 @@ export function unmarkPurchasePaid(db: DB, id: string): void {
   });
 }
 
+/** ضريبة الفاتورة مسترَدة أو مرفوضٌ استردادها: قيدها أقفل 1270، فلا تُحذف الفاتورة ولا تُعدَّل حتى يُلغى من الدفتر (#32) */
+export const isVatSettled = (refundStatus: string | null | undefined): boolean =>
+  !!refundStatus && (refundStatus.startsWith('مسترَد') || refundStatus === 'مرفوض'); // i18n-exempt: حالة مخزّنة
+
+function failVatSettled(db: DB, id: string): void {
+  const r = db.get<{ s: string | null }>(`SELECT refund_status AS s FROM purchases WHERE id = ?`, [id])?.s;
+  if (isVatSettled(r)) throw new Error(t('purchase.vatSettled'));
+}
+
 /** حذف ناعم · قيدا التسجيل والسداد يُعكَسان بقيدي مرآة ولا يُخفيان */
 export function deletePurchase(db: DB, id: string): void {
+  failVatSettled(db, id);
   db.transaction(() => {
     const p = db.get<{ no: string; journal_entry_id: string | null; paid: number }>(
       `SELECT no, journal_entry_id, paid FROM purchases WHERE id = ?`, [id]
@@ -409,6 +421,7 @@ export function markVatRefunded(db: DB, purchaseId: string, date: string): void 
   if (!p) throw new Error('تعذّر العثور على الفاتورة');
   if (p.tax_status !== TS_DEDUCTIBLE) throw new Error('الاسترداد لفواتير «' + TS_DEDUCTIBLE + '» وحدها · هذه ' + p.tax_status);
   if (p.refund_status.startsWith('مسترَد')) throw new Error('ضريبة الفاتورة ' + p.no + ' مسترَدة من قبل');
+  if (isVatSettled(p.refund_status)) throw new Error(t('purchase.vatSettled'));
   db.transaction(() => {
     postEntry(db, {
       date,
@@ -427,9 +440,10 @@ export function markVatRefunded(db: DB, purchaseId: string, date: string): void 
 
 /** رفض الاسترداد: الضريبة تصير جزءاً من التكلفة · مدين مصروف الفئة / دائن 1270 */
 export function markVatRejected(db: DB, purchaseId: string, date: string): void {
-  const p = db.get<{ no: string; supplier_name: string; category: string; tax_halalas: number; tax_status: string }>(
-    `SELECT no, supplier_name, category, tax_halalas, tax_status FROM purchases WHERE id = ?`, [purchaseId]);
+  const p = db.get<{ no: string; supplier_name: string; category: string; tax_halalas: number; tax_status: string; refund_status: string }>(
+    `SELECT no, supplier_name, category, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ?`, [purchaseId]);
   if (!p) throw new Error('تعذّر العثور على الفاتورة');
+  if (isVatSettled(p.refund_status)) throw new Error(t('purchase.vatSettled'));
   if (p.tax_status !== TS_DEDUCTIBLE) throw new Error('الاسترداد لفواتير «' + TS_DEDUCTIBLE + '» وحدها · هذه ' + p.tax_status);
   db.transaction(() => {
     postEntry(db, {

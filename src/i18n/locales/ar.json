@@ -572,5 +572,19 @@
     "issueDateLabel": "تاريخ الإصدار",
     "dueDateLabel": "تاريخ الاستحقاق",
     "totalDue": "الإجمالي المستحق"
+  },
+  "purchase": {
+    "vatSettled": "ضريبة هذه الفاتورة مسترَدة أو مرفوضٌ استردادها، وقيدها أقفل حسابها · ألغِ قيد الاسترداد أو الرفض من الدفتر أولاً"
+  },
+  "bankTx": {
+    "descrRequired": "اكتب بيان الحركة",
+    "bankShort": "رصيد {{bank}} هو {{balance}} ولا يكفي لـ {{amount}}",
+    "kindDeposit": "إيداع من المحفظة",
+    "kindWithdraw": "سحب إلى المحفظة",
+    "kindFee": "رسوم بنكية",
+    "kindIncome": "وارد آخر",
+    "kind": "نوع الحركة",
+    "deleteWhat": "حذف الحركة",
+    "deleteBankShort": "حذف هذا الوارد يُنزل رصيد البنك ({{balance}}) تحت الصفر بـ {{amount}}"
   }
 }
