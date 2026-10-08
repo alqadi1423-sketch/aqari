@@ -38,6 +38,7 @@ import { fmt, toHalalas } from '../domain/money';
 import { dfmt, today } from '../domain/dates';
 import { reportFailure } from './failureDialog';
 import { useAccess, usePerm } from './access';
+import { hiddenColumns } from '../sync/acl';
 import { routeAllowed } from '../domain/access/routes';
 
 import { CostCenterField } from './CostCenters';
@@ -50,6 +51,8 @@ export function UnitFormSheet({
 }: { propertyId?: string; unitId?: string; onClose: () => void; onSaved: () => void }) {
   const { db } = useApp();
   const toast = useToast();
+  // من يقرأ الوحدة بلا مبالغها لا يرى الإيجار ولا يكتبه: لا يُرفع منه (المراجعة #17 · الزر غير المسموح لا يظهر)
+  const rentHidden = hiddenColumns(useAccess(), 'units', { rent_monthly_halalas: 0 }).length > 0;
   const existing = unitId
     ? db.get<{ property_id: string; unit_no: string; floor: string; type: string; subtype: string; rent_monthly_halalas: number }>(
         `SELECT * FROM units WHERE id = ?`, [unitId]
@@ -130,7 +133,7 @@ export function UnitFormSheet({
           <Field label={cfg.label} value={subtype} onChange={setSubtype} />
         )
       ) : null}
-      <Field label="الإيجار الشهري" value={rent} onChange={setRent} keyboard="numeric" ltr />
+      {rentHidden ? null : <Field label="الإيجار الشهري" value={rent} onChange={setRent} keyboard="numeric" ltr />}
       <MetersEditor meters={meters} onChange={setMeters} title="العدادات" />
       <SectionsEditor sections={rooms} onChange={setRooms}
         title="غرف الوحدة ومحتوياتها" addSectionLabel="+ إضافة غرفة" addItemLabel="+ إضافة محتوى" namePlaceholder="اسم الغرفة" />
@@ -146,6 +149,8 @@ export function UnitDetailSheet({
   const dialog = useDialog();
   const router = useRouter();
   const perm = usePerm('props');
+  // من يقرأ الوحدة بلا مبالغها: إيجارها عنده افتراضه لا الحقيقي، فلا يُعرض (المراجعة #17)
+  const rentHidden = hiddenColumns(useAccess(), 'units', { rent_monthly_halalas: 0 }).length > 0;
   const rsvPerm = usePerm('reservations');
   const seesContracts = usePerm('contracts').view;
   const seesHandover = usePerm('handover').view;
@@ -228,7 +233,7 @@ export function UnitDetailSheet({
       <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
         {u.type || u.subtype ? <View><T size={TYPE.caption} color={C.muted}>النوع</T><T size={TYPE.cardTitle}>{[u.type, u.subtype].filter(Boolean).join(' · ')}</T></View> : null}
         {u.floor ? <View><T size={TYPE.caption} color={C.muted}>الطابق</T><T size={TYPE.cardTitle}>{u.floor}</T></View> : null}
-        <View><T size={TYPE.caption} color={C.muted}>الإيجار الشهري</T><Money halalas={Number(u.rent_monthly_halalas)} size={TYPE.cardTitle} bold /></View>
+        {rentHidden ? null : <View><T size={TYPE.caption} color={C.muted}>الإيجار الشهري</T><Money halalas={Number(u.rent_monthly_halalas)} size={TYPE.cardTitle} bold /></View>}
       </Row>
       {/* الشاغرة وحدها تُحجز، والمحجوزة وحدها يُلغى حجزها · وإرفاق المستندات أيقونة عارية */}
       <Row style={{ marginBottom: 10 }}>

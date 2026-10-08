@@ -427,6 +427,11 @@ function applyOne(
       reject(db, doc, 'مفتاح الصف لا يطابق مفتاح المستند'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض كأسبابه الأخرى
       return 'rejected';
     }
+    // سطور القيد الواردة لقيدها وحده: سطرٌ يحمل قيداً آخر يُدرَج في ذلك القيد (التحقق المستقل، نظير #20 للسطور)
+    if (doc.t === 'journal_entries' && (doc.lines ?? []).some((l) => l.entry_id != null && String(l.entry_id) !== doc.k)) {
+      reject(db, doc, 'سطرٌ لقيدٍ آخر في مستند القيد'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض
+      return 'rejected';
+    }
     // بصمة الملف وامتداده يُبنى منهما مسار على هذا الجهاز (المراجعة #21) · والمرفق بصمته وحدها (امتداده في blobs)
     if ((doc.t === 'blobs' && !isSafeBlobName(doc.d.sha256, doc.d.ext))
       || (doc.t === 'attachments' && !isSafeBlobName(doc.d.sha256, 'bin'))) {
@@ -780,10 +785,10 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, e
 const PULL_PAGE = 500;
 const PUSH_BATCH = 400;
 /**
- * دفعة العضو صفٌّ واحد (بإسقاطه): قواعده تحرس كل صفٍّ بما يقارب مئتي تعبير وتقرأ مستند أبيه (المراجعة #17 و#18)،
- * وللطلب الواحد حدّ ألف تعبير وعشرون قراءة تتقاسمها صفوف الدفعة · ورفعُ العضو قليلٌ أصلاً (ما يعدّله هو)
+ * دفعة العضو صغيرة: قواعده تقرأ لكل صفٍّ مستند أبيه (المراجعة #18)، وللطلب الواحد عشرون قراءة تتقاسمها صفوف الدفعة ·
+ * وحدّ الألف تعبير لكل مستند (ثبت على المحاكي) · وما زاد يُرفض فتُقسم الدفعة نصفين
  */
-const MEMBER_PUSH_BATCH = 1;
+const MEMBER_PUSH_BATCH = 8;
 
 /** رفض قواعد الأمان لكتابةٍ على ما لا يُعدَّل (قيد مرحّل، سجل عمليات) · نسخته في السحابة نهائية */
 function immutableDenied(doc: RemoteDoc, code?: string): boolean {

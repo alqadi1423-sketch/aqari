@@ -91,3 +91,36 @@ test('#٢١ صف ملفٍ وارد يخرج مساره عن المرفقات ي�
     rmrf(dir);
   }
 });
+
+test('التحقق المستقل: سطور قيدٍ وارد لقيدٍ آخر تُرفض ولا تُدرَج في ذلك القيد', async () => {
+  const db = memDb();
+  db.run(`INSERT INTO journal_entries (id, no, date, memo, status, created_at) VALUES ('JA', 'JE-A', '2026-03-01', 'مسودة مصطنعة', 'قيد الإنشاء', 'x')`);
+  enableSync(db, 'U1');
+  const remote = new MemoryRemote();
+  await syncOnce(db, remote, dev(db));
+  await remote.write([{ id: 'journal_entries__JB', t: 'journal_entries', k: 'JB', u: '2099-01-01T00:00:00.000Z', dev: 'other', del: false,
+    d: { id: 'JB', no: 'JE-B', date: '2026-03-02', memo: 'مزوّر', status: 'قيد الإنشاء', created_at: 'x' },
+    lines: [{ id: 'LX', entry_id: 'JA', account_code: '1100', descr: '', debit_halalas: 999, credit_halalas: 0 }] }]);
+  await syncOnce(db, remote, dev(db));
+  expect(db.get(`SELECT 1 FROM journal_lines WHERE entry_id = 'JA'`)).toBeUndefined();
+  expect(db.get(`SELECT 1 FROM sync_rejects WHERE doc = 'journal_entries__JB'`)).toBeTruthy();
+  db.close();
+});
+
+test('التحقق المستقل: مسار الملف في مجلد المرفقات دائماً · وصفوف الأسماء غير الآمنة تُزال', async () => {
+  const { blobPath } = await import('@/files/store');
+  const p = blobPath({ attachmentsDir: '/root/attachments' }, '../../data', 'db');
+  expect(p.startsWith('/root/attachments/')).toBe(true);
+  expect(p.includes('..')).toBe(false);
+  const dir = tempDir('aqari-gap13-');
+  try {
+    const env = makeBackupEnv(dir);
+    env.db.run(`INSERT INTO blobs (sha256, ext, size_bytes, created_at) VALUES ('../x', 'txt', 1, '2030-01-01T00:00:00.000Z')`);
+    gcBlobs(env.filesEnv, 365, new Date('2030-01-01T00:00:00.000Z'));
+    expect(env.db.get(`SELECT 1 FROM blobs WHERE sha256 = '../x'`)).toBeUndefined();
+    env.closeLive();
+  } finally {
+    rmrf(dir);
+  }
+});
+

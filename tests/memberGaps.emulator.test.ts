@@ -158,3 +158,126 @@ d('ثغرات الأعضاء (المراجعة #17 و#18 و#20 و#21 و#39)', ()
     expect(await write(COLLECTOR, { ...doc, u: 't2', d: { ...inst, status: 'مدفوعة جزئياً' } as never })).toMatchObject({ ok: true });
   });
 });
+
+d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026-10-08)', () => {
+  const TECH = member('U-VTEC', { props: 3 }, ['P1']);
+  const CONTR = member('U-VCON', { contracts: 3, props: 1, tenants: 3 }, ['P1']);
+  const COL3 = member('U-VCOL', { collect: 3, contracts: 1, props: 1 }, ['P1']);
+  const COMPANY = member('U-VCMP', { company: 3 }, 'all');
+  const ALLCON = member('U-VALL', { contracts: 3, props: 1 }, 'all');
+  const COLLECTOR = member('U-VCO2', { collect: 2, contracts: 1, props: 1 }, ['P1']);
+  const TWO = member('U-VTWO', { contracts: 3, props: 1 }, ['P1', 'P3']);
+  let db: import('@/db/adapter').DB;
+  let C1 = '', C2 = '', C3 = '', T0 = '';
+
+  beforeAll(async () => {
+    await fetch(`http://${HOST}/emulator/v1/projects/${PROJECT}/databases/(default)/documents`, { method: 'DELETE' });
+    const { memDb } = await import('./helpers/testDb');
+    const { addProperty, addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const { enableSync, syncOnce } = await import('@/sync/engine');
+    db = memDb();
+    addProperty(db, { id: 'P1', name: 'عقار أول مصطنع' });
+    addProperty(db, { id: 'P2', name: 'عقار ثانٍ مصطنع' });
+    addUnit(db, 'P1', { id: 'VUN1' });
+    addUnit(db, 'P2', { id: 'VUN2' });
+    addProperty(db, { id: 'P3', name: 'عقار ثالث مصطنع' });
+    addUnit(db, 'P3', { id: 'VUN3' });
+    addUnit(db, 'P1', { id: 'VUN4' });
+    for (const [id, unit] of [['VR1', 'VUN1'], ['VR2', 'VUN2']]) {
+      db.run(`INSERT INTO unit_rooms (id, unit_id, room_name) VALUES (?,?,?)`, [id, unit, 'غرفة مصطنعة']);
+    }
+    C1 = confirmContract(db, contractInput('VUN1', { tenant: 'مستأجر أول مصطنع', idNumber: '1000000132', phone: '0500000091' }));
+    C2 = confirmContract(db, contractInput('VUN2', { tenant: 'مستأجر ثانٍ مصطنع', idNumber: '1000000140', phone: '0500000092' }));
+    C3 = confirmContract(db, contractInput('VUN4', { tenant: 'مستأجر ثالث مصطنع', idNumber: '1000000157', phone: '0500000095' }));
+    T0 = 'VT0';
+    db.run(`INSERT INTO tenants (id, name, phone, created_at) VALUES ('VT0', 'مستأجر بلا عقد مصطنع', '0500000093', '2026-01-01T00:00:00.000Z')`);
+    db.run(`INSERT INTO journal_entries (id, no, date, memo, status, created_at) VALUES ('VJE', 'JE-V1', '2026-03-01', 'مسودة قيد مصطنعة', 'قيد الإنشاء', '2026-03-01T00:00:00.000Z')`);
+    enableSync(db, ORG);
+    expect((await syncOnce(db, remoteFor(ORG, null), 'dev-owner')).pending).toBe(0);
+    for (const a of [TECH, CONTR, COL3, COMPANY, ALLCON, COLLECTOR, TWO]) {
+      expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
+        email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
+      }, ORG)).toBe(200);
+    }
+  });
+  const write = async (a: Access, doc: RemoteDoc, forge: Partial<RemoteDoc> = {}) =>
+    (await remoteFor(a.uid!, a).write([{ ...annotate(db, doc, a).doc, ...forge }]))[0];
+  const row = (t: string, id: string) => db.get<Record<string, unknown>>(`SELECT * FROM "${t}" WHERE id = ?`, [id])!;
+  const doc = (t: string, k: string, d: Record<string, unknown> | null, u = 'v1'): RemoteDoc =>
+    ({ id: t + '__' + k, t, k, u, dev: 'dev-v', del: d === null, d: d as never });
+
+  test('المحصور يحذف صفاً في عقاره (شاهد الحذف بحقول الصف الفارغ) · ولا يحذف في عقار آخر', async () => {
+    expect(await write(TECH, doc('unit_rooms', 'VR1', null))).toMatchObject({ ok: true });
+    expect(await write(TECH, doc('unit_rooms', 'VR2', null))).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  });
+
+  test('لا يُعاد ربط صفٍّ قائم بعقار آخر بتغيير روابطه وعقاراته كما هي', async () => {
+    // عقده إلى وحدة في عقار آخر · بعقارات الصف ورؤيته كما هما (يزوّرهما العميل المعدَّل)
+    const same = (t: string, k: string, a: Access) => { const o = annotate(db, doc(t, k, row(t, k)), a).doc; return { pids: o.pids, g: o.g }; };
+    expect(await write(CONTR, doc('contracts', C1, { ...row('contracts', C1), unit_id: 'VUN2' }), same('contracts', C1, CONTR)))
+      .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    // دفعته إلى عقد في عقار آخر
+    const pay = (contract: string) => doc('contract_payments', 'VPZ1', { id: 'VPZ1', contract_id: contract, installment_id: null, date: '2026-05-01',
+      gross_halalas: 1000, discount_halalas: 0, net_halalas: 1000 });
+    expect(await write(COL3, pay(C1))).toMatchObject({ ok: true });
+    const g1 = annotate(db, pay(C1), COL3).doc.g;
+    expect(await write(COL3, pay(C2), { pids: ['P1'], g: g1 })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    // وتعديله المشروع يمرّ
+    expect(await write(CONTR, doc('contracts', C1, { ...row('contracts', C1), notes: 'ملاحظة مصطنعة' }))).toMatchObject({ ok: true });
+  });
+
+  test('ولا يُحيا شاهد حذف بصفٍّ لعقار آخر', async () => {
+    const pay = (contract: string | null) => doc('contract_payments', 'VPZ2', contract === null ? null : { id: 'VPZ2', contract_id: contract, installment_id: null,
+      date: '2026-05-01', gross_halalas: 1000, discount_halalas: 0, net_halalas: 1000 });
+    expect(await write(COL3, pay(C1))).toMatchObject({ ok: true });
+    expect(await write(COL3, pay(null))).toMatchObject({ ok: true });
+    expect(await write(COL3, pay(C2), { pids: ['*'], g: ['collect|*', 'collect|@'] })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect(await write(COL3, pay(C1))).toMatchObject({ ok: true });
+  });
+
+  test('صفّ المنشأة رقمه عدد: يعدّله قسم المنشأة', async () => {
+    const c = db.get<Record<string, unknown>>(`SELECT * FROM company WHERE id = 1`)!;
+    expect(await write(COMPANY, doc('company', '1', { ...c, name: 'منشأة مصطنعة' }))).toMatchObject({ ok: true });
+  });
+
+  test('المستأجر تتبع عقاراته عقوده: المحصور يكتبه بعقاره بعد أن كان عاماً', async () => {
+    expect(await write(CONTR, doc('tenants', T0, { ...row('tenants', T0), phone: '0500000094' }), { pids: ['P1'] })).toMatchObject({ ok: true });
+  });
+
+  test('ذو كل العقارات ينقل عقده إلى وحدة في عقار آخر بحقيقته', async () => {
+    const moved = doc('contracts', C1, { ...row('contracts', C1), unit_id: 'VUN2' }, 'v9');
+    expect(annotate(db, { ...moved, d: { ...moved.d!, unit_id: 'VUN1' } as never }, ALLCON).doc.pids).toEqual(['P1']);
+    db.run(`UPDATE contracts SET unit_id = 'VUN2' WHERE id = ?`, [C1]);
+    // كما يرفعه جهازه: المستند وإسقاطه في طلب واحد
+    const r = remoteFor(ALLCON.uid!, ALLCON);
+    const sent = r.annotate!(db, moved);
+    expect(sent.companions?.length).toBe(1);
+    expect((await r.write([sent]))[0]).toMatchObject({ ok: true });
+    db.run(`UPDATE contracts SET unit_id = 'VUN1' WHERE id = ?`, [C1]);
+  });
+
+  test('#٣٩ اللمس الجانبي لا يغيّر سطور القيد', async () => {
+    const je = row('journal_entries', 'VJE');
+    const entry = { ...doc('journal_entries', 'VJE', { ...je, reversed_by: null }), lines: [] as never[] };
+    const base = annotate(db, entry, COLLECTOR).doc;
+    // يغيّر السطور وd كما هو (اللمس الفارغ)، ومع لمس reversed_by
+    expect((await remoteFor(COLLECTOR.uid!, COLLECTOR).write([{ ...base, lines: [{ id: 'X', entry_id: 'VJE', account_code: '1100', debit_halalas: 1, credit_halalas: 0 }] as never }]))[0])
+      .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect((await remoteFor(COLLECTOR.uid!, COLLECTOR).write([{ ...base, d: { ...base.d!, reversed_by: 'VJX' }, lines: [{ id: 'X', entry_id: 'VJE', account_code: '1100', debit_halalas: 1, credit_halalas: 0 }] as never }]))[0])
+      .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  });
+
+  test('المحصور بعقارين ينقل عقده بينهما بحقيقته · ولا ينقله إلى عقار ليس له', async () => {
+    const r = remoteFor(TWO.uid!, TWO);
+    // عقدٌ له وحده في عقاره الأول (لا يمسّه اختبار قبله)
+    const to = (unit: string) => doc('contracts', C3, { ...row('contracts', C3), unit_id: unit }, 'v' + unit);
+    db.run(`UPDATE contracts SET unit_id = 'VUN2' WHERE id = ?`, [C3]);
+    expect((await r.write([r.annotate!(db, to('VUN2'))]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    db.run(`UPDATE contracts SET unit_id = 'VUN3' WHERE id = ?`, [C3]);
+    expect((await r.write([r.annotate!(db, to('VUN3'))]))[0]).toMatchObject({ ok: true });
+    db.run(`UPDATE contracts SET unit_id = 'VUN4' WHERE id = ?`, [C3]);
+    expect((await r.write([r.annotate!(db, to('VUN4'))]))[0]).toMatchObject({ ok: true });
+  });
+});
+

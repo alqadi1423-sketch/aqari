@@ -66,6 +66,10 @@ export function extOf(name: string | undefined, mime?: string): string {
 }
 
 export function blobPath(env: Pick<FilesEnv, 'attachmentsDir'>, sha256: string, ext: string): string {
+  // اسمٌ غير آمن (وصل بالمزامنة قبل فحصه، المراجعة #21) لا يخرج بالمسار عن مجلد المرفقات: يُحوَّل اسماً لا ملف له
+  if (!isSafeBlobName(sha256, ext)) {
+    return joinPath(env.attachmentsDir, 'unsafe-' + String(sha256).replace(/[^0-9a-f]/g, '_') + '.' + String(ext).replace(/[^a-z0-9]/g, '_'));
+  }
   return joinPath(env.attachmentsDir, `${sha256}.${ext}`);
 }
 
@@ -194,6 +198,16 @@ export function unlinkAttachment(db: DB, id: string): void {
  * وبعد التأكد أن لا صف حيّ يشير لبصمته.
  */
 export function gcBlobs(env: FilesEnv, retentionDays: number, now: Date = new Date()): number {
+  // صفوفٌ بأسماء غير آمنة وصلت قبل فحصها (المراجعة #21): تُزال صفوفها وحدها، ولا ملف لها في المرفقات
+  const unsafe = env.db.all<{ sha256: string; ext: string }>(`SELECT sha256, ext FROM blobs`).filter((b) => !isSafeBlobName(b.sha256, b.ext));
+  const unsafeAtt = env.db.all<{ sha256: string }>(`SELECT DISTINCT sha256 FROM attachments`).filter((a) => !isSafeBlobName(a.sha256, 'bin'));
+  for (const sha of new Set([...unsafe.map((b) => b.sha256), ...unsafeAtt.map((a) => a.sha256)])) {
+    env.db.transaction(() => {
+      env.db.run(`DELETE FROM attachments WHERE sha256 = ?`, [sha]);
+      env.db.run(`DELETE FROM blobs WHERE sha256 = ?`, [sha]);
+      env.db.run(`DELETE FROM file_cache WHERE sha256 = ?`, [sha]);
+    });
+  }
   const cutoff = new Date(now.getTime() - retentionDays * 86400000).toISOString();
   const orphans = env.db.all<{ sha256: string; ext: string }>(
     `SELECT b.sha256, b.ext FROM blobs b
