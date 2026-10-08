@@ -69,14 +69,14 @@ describe('جرد مسارات الصرف النقدي · كلها تُرفض ب�
     expect(() => cancelPayment(db, pid, { reason: 'خطأ', date: T })).toThrow(SHORT);
   });
 
-  test('الرجوع عن تحصيل فاتورة نقدي وحذفها', async () => {
+  test('الرجوع عن تحصيل فاتورة نقدي · وحذفها مقفلٌ لأنها صادرة (قرار المالك على #30)', async () => {
     const { saveInvoice, payInvoice, setInvoiceStatus, deleteInvoice } = await import('@/domain/invoices');
     const db = memDb();
     const id = saveInvoice(db, { customer: 'عميل مصطنع', customerVat: '', issue: T, due: T, notes: '', lines: [{ descr: 'خدمة', qty: 1, priceHalalas: 7000, taxPct: 0 }] }, 'مستحقة');
     payInvoice(db, id, { method: 'cash', bankId: null, date: T });
     emptyWallet(db);
     expect(() => setInvoiceStatus(db, id, 'مستحقة')).toThrow(SHORT);
-    expect(() => deleteInvoice(db, id)).toThrow(SHORT);
+    expect(() => deleteInvoice(db, id)).toThrow();
   });
 
   test('الإلغاء من المستند لقيدٍ أدخل نقداً (عمولة تقبيل نقدية)', async () => {

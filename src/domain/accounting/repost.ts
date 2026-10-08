@@ -38,6 +38,16 @@ export function repostBlockers(db: DB, entryId: string): string[] {
   return out;
 }
 
+/**
+ * تاريخ إعادة ترحيل قيدٍ عُكس: تاريخ عكسه نفسه، فيتقابلان في فترةٍ واحدة ويبقى الأصل في فترته (التحقق المستقل على
+ * #29: إلغاءٌ بتاريخٍ اختاره المستخدم ثم استرجاعٌ بتاريخ الأصل كان يضاعف فترةً وينقص أخرى) · وبلا عكسٍ تاريخ التصحيح
+ */
+export function repostDate(db: DB, entryId: string): string {
+  const r = db.get<{ date: string; rdate: string | null }>(
+    `SELECT o.date, r.date AS rdate FROM journal_entries o LEFT JOIN journal_entries r ON r.id = o.reversed_by WHERE o.id = ?`, [entryId]);
+  return r?.rdate ?? correctionDate(db, r?.date);
+}
+
 /** يعيد ترحيل نسخة القيد وحركات بنكه · ويعيد القيد الجديد */
 export function repostCopy(db: DB, entryId: string, note: string): PostedEntry | null {
   const e = orig(db, entryId);
@@ -47,8 +57,8 @@ export function repostCopy(db: DB, entryId: string, note: string): PostedEntry |
   const lines = db.all<{ account_code: string; descr: string; debit_halalas: number; credit_halalas: number;
     property_id?: string | null; unit_id?: string | null; contract_id?: string | null; cost_center_id?: string | null; asset_id?: string | null }>(
     `SELECT account_code, descr, debit_halalas, credit_halalas${dimSql} FROM journal_lines WHERE entry_id = ?`, [entryId]);
-  // بتاريخ الأصل، إلا إن قُدِّم إقرار فترته فاليوم (قرار المالك على #29) · كعكسه عند الحذف فلا تتضاعف فترة وتنقص أخرى
-  const date = correctionDate(db, e.date);
+  // بتاريخ عكسه (repostDate): تاريخ الأصل ما لم يُقدَّم إقرار فترته، أو التاريخ الذي اختاره المستخدم للإلغاء
+  const date = repostDate(db, entryId);
   const posted = postEntry(db, {
     date,
     memo: e.memo + ' · ' + note,

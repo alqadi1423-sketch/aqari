@@ -7,6 +7,7 @@ import { uid } from './ids';
 import { today } from './dates';
 import { postClaim, postClaimCollection, reverseEntryBySource } from './accounting/post';
 import { logAudit } from './audit';
+import { correctionDate } from './vatFilings';
 
 export interface ClaimInput {
   contractId: string;
@@ -40,7 +41,8 @@ export function saveClaim(db: DB, input: ClaimInput, existingId?: string): strin
       if (cl.status === 'مفتوحة' && (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date // i18n-exempt: حالة مخزّنة
         || prevContract !== input.contractId)) {
         reverseEntryBySource(db, 'claim', existingId, 'تعديل مطالبة · عكس القيد السابق');
-        postClaim(db, { id: existingId, amount: input.amountHalalas, reason: input.reason, date: input.date });
+        // قيد القيم الجديدة قيدُ تصحيح: بتاريخ المطالبة، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسه (#29)
+        postClaim(db, { id: existingId, amount: input.amountHalalas, reason: input.reason, date: correctionDate(db, input.date) });
       }
       logAudit(db, 'المطالبات', 'update', 'مطالبة', input.reason || existingId);
       return existingId;

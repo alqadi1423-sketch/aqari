@@ -20,9 +20,13 @@ import { Skeleton } from '../src/ui/Skeleton';
 import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
-import { payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, invoiceNoLabel, type InvoiceLineInput, type InvoicePayMethod } from '../src/domain/invoices';
+import {
+  payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, invoiceNoLabel, invoiceRemaining, creditTaxFor, KIND_CREDIT,
+  type InvoiceLineInput, type InvoicePayMethod,
+} from '../src/domain/invoices';
+import { useLang } from '../src/i18n';
 import { isIssuePending } from '../src/domain/invoiceIssue';
-import { saveInvoiceNow, setInvoiceStatusNow } from '../src/services/cloud';
+import { saveInvoiceNow, setInvoiceStatusNow, issueCreditNoteNow } from '../src/services/cloud';
 import { today, dfmt, addDays } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
 import { printInvoice } from '../src/services/print';
@@ -51,6 +55,8 @@ interface LineState { descr: string; qty: string; price: string; tax: string }
 
 interface InvoiceRow {
   id: string; no: string; customer_name: string; issue: string; due: string; status: string; total_halalas: number;
+  /** الإشعار الدائن (#30) ورقم فاتورته وما بقي من الفاتورة بعد إشعاراتها */
+  kind: string; ref_no: string | null; remaining: number;
 }
 
 const EMPTY_PAGE: { rows: InvoiceRow[]; total: number } = { rows: [], total: 0 };
@@ -59,8 +65,10 @@ const EMPTY_PAGE: { rows: InvoiceRow[]; total: number } = { rows: [], total: 0 }
  * الضغط عليها يفتح ورقة العرض لا التعديل · والمدفوعة لا زر تعديل لها (التصحيح بتغيير الحالة) */
 const InvoiceCard = React.memo(function InvoiceCard({
   id, no, pending, customerName, issue, due, status, totalHalalas, canEdit, canManage, onView, onEdit, onStatus, onPrint, onDelete,
+  kind, refNo, remaining, onCredit,
 }: {
   id: string; no: string; customerName: string; issue: string; due: string; status: string; totalHalalas: number;
+  kind: string; refNo: string | null; remaining: number; onCredit: (id: string) => void;
   /** طُلب إصدارها بلا اتصال · تصدر برقمها عند عودته */
   pending: boolean;
   /** كامل، أو مسودة كاتبها بإدخال · للتعديل والحذف */
@@ -70,6 +78,11 @@ const InvoiceCard = React.memo(function InvoiceCard({
   onView: (id: string) => void; onEdit: (id: string) => void; onStatus: (id: string) => void;
   onPrint: (id: string) => void; onDelete: (id: string) => void;
 }) {
+  const { t } = useLang();
+  // الصادرة مقفلة (قرار المالك على #30): لا تعديل ولا حذف ولا عودة مسودة، وتصحيحها بإشعار دائن · والإشعار لا يُحصَّل
+  const credit = kind === KIND_CREDIT;
+  const draft = status === 'مسودة'; // i18n-exempt: حالة مخزّنة
+  const credited = !credit && !draft && remaining <= 0 && status !== 'مدفوعة'; // i18n-exempt: حالة مخزّنة
   return (
     <Pressable onPress={() => onView(id)}>
       <Card style={{ paddingVertical: 10 }}>
@@ -78,18 +91,23 @@ const InvoiceCard = React.memo(function InvoiceCard({
         <Row style={{ justifyContent: 'space-between' }}>
           <T size={TYPE.sectionTitle} bold style={{ flex: 1 }}>{customerName}</T>
           <Row gap={8}>
-            <Badge kind={STATUS_MAP[status] || 'draft'} label={status} />
+            <Badge kind={credit ? 'draft' : credited ? 'paid' : STATUS_MAP[status] || 'draft'}
+              label={credit ? t('invoice.creditNote') : credited ? t('invoice.fullyCredited') : status} />
             <ActionMenuButton title={invoiceNoLabel(no)} actions={[
               { icon: 'eye', label: 'عرض الفاتورة', onPress: () => onView(id) },
-              status !== 'مدفوعة' && canEdit ? { icon: 'edit', label: 'تعديل الفاتورة', onPress: () => onEdit(id) } : null,
-              canManage ? { icon: 'swap', label: 'تغيير الحالة', onPress: () => onStatus(id) } : null,
-              status !== 'مسودة' ? { icon: 'print', label: 'طباعة / PDF', onPress: () => onPrint(id) } : null,
-              canEdit ? { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) } : null,
+              draft && canEdit ? { icon: 'edit', label: 'تعديل الفاتورة', onPress: () => onEdit(id) } : null,
+              canManage && !credit && !credited ? { icon: 'swap', label: 'تغيير الحالة', onPress: () => onStatus(id) } : null,
+              canManage && !credit && !draft && status !== 'مدفوعة' && remaining > 0 // i18n-exempt: حالة مخزّنة
+                ? { icon: 'invoice', label: t('invoice.issueCredit'), onPress: () => onCredit(id) } : null,
+              !draft ? { icon: 'print', label: 'طباعة / PDF', onPress: () => onPrint(id) } : null,
+              draft && canEdit ? { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(id) } : null,
             ]} />
           </Row>
         </Row>
         <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
-          <Num size={TYPE.caption} color={C.muted}>{invoiceNoLabel(no) + (pending ? ' · تصدر عند عودة الاتصال' : '')} · {dfmt(issue)} إلى {dfmt(due)}</Num>
+          <Num size={TYPE.caption} color={C.muted}>
+            {invoiceNoLabel(no) + (pending ? ' · تصدر عند عودة الاتصال' : '')} · {credit && refNo ? t('invoice.creditFor', { no: refNo }) : <>{dfmt(issue)} إلى {dfmt(due)}</>}
+          </Num>
           <Money halalas={totalHalalas} size={TYPE.number} bold />
         </Row>
       </Card>
@@ -98,6 +116,7 @@ const InvoiceCard = React.memo(function InvoiceCard({
 });
 
 export default function Invoices() {
+  const { t } = useLang();
   const { db, version, bump } = useApp();
   const perm = usePerm('invoices');
   const toast = useToast();
@@ -129,6 +148,8 @@ export default function Invoices() {
     [db, statusFor]
   );
   const [viewFor, setViewFor] = useState<string | null>(null);
+  // الإشعار الدائن (#30)
+  const [creditFor, setCreditFor] = useState<string | null>(null);
 
   // البحث أو المرشِّحات تعيد الصفحة للأولى
   useEffect(() => {
@@ -153,8 +174,11 @@ export default function Invoices() {
     if (!ready) return EMPTY_PAGE;
     const cnt = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM invoices WHERE ${filter.sql}`, filter.args)?.n ?? 0);
     const page = db.all<InvoiceRow>(
-      `SELECT id, no, customer_name, issue, due, status, total_halalas FROM invoices
-       WHERE ${filter.sql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      `SELECT id, no, customer_name, issue, due, status, total_halalas, kind,
+         (SELECT r.no FROM invoices r WHERE r.id = invoices.ref_invoice_id) AS ref_no,
+         total_halalas + COALESCE((SELECT SUM(c.total_halalas) FROM invoices c
+           WHERE c.ref_invoice_id = invoices.id AND c.kind = 'credit_note' AND c.deleted_at IS NULL), 0) AS remaining
+       FROM invoices WHERE ${filter.sql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
       [...filter.args, pager.limit, pager.offset]
     );
     return { rows: page, total: cnt };
@@ -207,6 +231,7 @@ export default function Invoices() {
 
   const onView = useCallback((id: string) => setViewFor(id), []);
   const onStatus = useCallback((id: string) => setStatusFor(id), []);
+  const onCredit = useCallback((id: string) => setCreditFor(id), []);
   const onPrint = useCallback((id: string) => {
     printInvoice(db, id).catch(() => toast('تعذّرت الطباعة'));
   }, [db, toast]);
@@ -243,8 +268,9 @@ export default function Invoices() {
     <InvoiceCard id={item.id} no={item.no} pending={isIssuePending(db, item.id)} customerName={item.customer_name} issue={item.issue}
       due={item.due} status={item.status} totalHalalas={Number(item.total_halalas)}
       canEdit={mayEdit(item.id, item.status)} canManage={perm.manage}
+      kind={item.kind} refNo={item.ref_no} remaining={Number(item.remaining)} onCredit={onCredit}
       onView={onView} onEdit={openEdit} onStatus={onStatus} onPrint={onPrint} onDelete={onDelete} />
-  ), [onView, openEdit, onStatus, onPrint, onDelete, mayEdit, perm.manage]);
+  ), [onView, openEdit, onStatus, onPrint, onDelete, onCredit, mayEdit, perm.manage]);
 
   const toInputs = (): InvoiceLineInput[] =>
     lines.map((l) => ({ descr: l.descr, qty: parseFloat(l.qty) || 0, priceHalalas: toHalalas(l.price), taxPct: parseFloat(l.tax) || 0 }));
@@ -409,7 +435,8 @@ export default function Invoices() {
           {/* الرجوع عن «مدفوعة» يعكس تحصيلاً نقدياً فيخرج من المحفظة · لا يظهر حين لا يكفي النقد */}
           {statusNow === 'مدفوعة' && !legacyPaid ? <CashShortNote needed={collectionCashOut(db, statusFor)} what="عكس تحصيل الفاتورة" /> : null}
           {/* المسودة لا تُحصَّل فلا يظهر لها «تسجيل التحصيل» */}
-          {ALL_STATUSES.filter((s) => (s !== statusNow || legacyPaid) && !(s === 'مدفوعة' && statusNow === 'مسودة'))
+          {/* الصادرة لا تعود مسودة (قرار المالك على #30) */}
+          {ALL_STATUSES.filter((s) => (s !== statusNow || legacyPaid) && !(s === 'مدفوعة' && statusNow === 'مسودة') && !(s === 'مسودة' && statusNow !== 'مسودة')) // i18n-exempt: حالات مخزّنة
             .filter((s) => s === 'مدفوعة' || statusNow !== 'مدفوعة' || legacyPaid || cashShortfall(db, collectionCashOut(db, statusFor)) <= 0).map((s) => (
             <View key={s} style={{ marginBottom: 8 }}>
               <BtnGhost
@@ -447,6 +474,12 @@ export default function Invoices() {
           <T size={12} color={C.muted} style={{ marginBottom: 10 }}>
             يُرحَّل قيد: مدين النقد أو البنك، دائن ذمم العملاء، بإجمالي الفاتورة.
           </T>
+          {invoiceRemaining(db, statusFor) !== Number(db.get<{ t: number }>(`SELECT total_halalas AS t FROM invoices WHERE id = ?`, [statusFor])?.t ?? 0) ? (
+            <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+              <T size={12.5}>{t('invoice.remaining')}</T>
+              <Money halalas={invoiceRemaining(db, statusFor)} size={12.5} bold />
+            </Row>
+          ) : null}
           <DateField label="تاريخ التحصيل" value={payDate} onChange={setPayDate} />
           <CostCenterField value={payCc} onChange={setPayCc} />
           <SelectField label="الطريقة" value={payMethod}
@@ -467,6 +500,7 @@ export default function Invoices() {
       )}
 
       {depositFor !== null ? <OwnerCashInSheet amountHalalas={depositFor} onClose={() => setDepositFor(null)} /> : null}
+      {creditFor && perm.manage ? <CreditNoteSheet invoiceId={creditFor} onClose={() => setCreditFor(null)} /> : null}
       {/* ورقة عرض الفاتورة الكاملة · الضغط على البطاقة يفتحها والتعديل زر داخلها */}
       {viewFor && (
         <InvoiceViewSheet invoiceId={viewFor} onClose={() => setViewFor(null)} onEdit={openEdit} mayEdit={mayEdit} />
@@ -486,30 +520,48 @@ function InvoiceViewSheet({ invoiceId, onClose, onEdit, mayEdit }: {
   onEdit: (id: string) => void;
   mayEdit: (id: string, status: string) => boolean;
 }) {
+  const { t } = useLang();
   const { db, version } = useApp();
   const data = useMemo(() => {
     const v = db.get<{
       id: string; no: string; customer_name: string; customer_vat: string; issue: string; due: string;
       status: string; subtotal_halalas: number; tax_halalas: number; total_halalas: number; notes: string;
+      kind: string; ref_invoice_id: string | null; credit_reason: string;
     }>(`SELECT * FROM invoices WHERE id = ?`, [invoiceId]);
     if (!v) return null;
     const vLines = db.all<{ descr: string; qty: number; price_halalas: number; tax_pct: number }>(
       `SELECT descr, qty, price_halalas, tax_pct FROM invoice_lines WHERE invoice_id = ? ORDER BY sort`, [invoiceId]);
-    return { v, vLines };
+    // إشعاراتها الدائنة، أو فاتورة الإشعار
+    const credits = db.all<{ id: string; no: string; issue: string; total_halalas: number; credit_reason: string }>(
+      `SELECT id, no, issue, total_halalas, credit_reason FROM invoices WHERE ref_invoice_id = ? AND kind = 'credit_note' AND deleted_at IS NULL ORDER BY issue`,
+      [invoiceId]);
+    const refNo = v.ref_invoice_id ? db.get<{ no: string }>(`SELECT no FROM invoices WHERE id = ?`, [v.ref_invoice_id])?.no ?? null : null;
+    return { v, vLines, credits, refNo };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, invoiceId]);
   if (!data) return null;
-  const { v, vLines } = data;
+  const { v, vLines, credits, refNo } = data;
+  const isCredit = v.kind === KIND_CREDIT;
+  const issued = v.status !== 'مسودة'; // i18n-exempt: حالة مخزّنة
   // الخانة الواحدة لكل بطاقة تفاصيل · تغيب بعنوانها إن غابت قيمتها
   const cell = (label: string, val: React.ReactNode) => <KV label={label} v={val} flex />;
   return (
-    <Sheet visible onClose={onClose} title={'فاتورة ' + invoiceNoLabel(v.no)} tall>
+    <Sheet visible onClose={onClose} title={(isCredit ? t('invoice.creditNote') + ' ' : 'فاتورة ') + invoiceNoLabel(v.no)} tall>
       <Row style={{ justifyContent: 'space-between', marginBottom: 10 }}>
-        <Badge kind={STATUS_MAP[v.status] || 'draft'} label={v.status} />
-        {v.status !== 'مدفوعة' && mayEdit(v.id, v.status) ? (
+        <Badge kind={isCredit ? 'draft' : STATUS_MAP[v.status] || 'draft'} label={isCredit ? t('invoice.creditNote') : v.status} />
+        {/* المسودة وحدها تُعدَّل · الصادرة تصحيحها بإشعار دائن (قرار المالك على #30) */}
+        {v.status === 'مسودة' && mayEdit(v.id, v.status) ? (
           <BtnGhost small icon="edit" title="تعديل" onPress={() => { onClose(); onEdit(v.id); }} />
         ) : null}
       </Row>
+      {isCredit ? (
+        <View style={{ marginBottom: 8 }}>
+          {refNo ? <T size={12.5} bold>{t('invoice.creditFor', { no: refNo })}</T> : null}
+          {v.credit_reason ? <T size={12} color={C.muted}>{v.credit_reason}</T> : null}
+        </View>
+      ) : issued ? (
+        <T size={11.5} color={C.muted} style={{ marginBottom: 8 }}>{t('invoice.lockedNote')}</T>
+      ) : null}
       <Row style={{ marginBottom: 8 }}>
         {cell('العميل', <T size={12.5} bold>{v.customer_name}</T>)}
         {cell('الرقم الضريبي للعميل',
@@ -543,6 +595,24 @@ function InvoiceViewSheet({ invoiceId, onClose, onEdit, mayEdit }: {
           <Money halalas={Number(v.total_halalas)} size={13} bold />
         </Row>
       </View>
+      {credits.length ? (
+        <View style={{ marginBottom: 8 }}>
+          <T size={13} bold color={C.ink} style={{ marginBottom: 4 }}>{t('invoice.creditNotes')} ({credits.length})</T>
+          {credits.map((c) => (
+            <Row key={c.id} style={{ justifyContent: 'space-between', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: C.line }}>
+              <View style={{ flex: 1 }}>
+                <Num size={12} bold>{c.no} · {dfmt(c.issue)}</Num>
+                {c.credit_reason ? <T size={11.5} color={C.muted}>{c.credit_reason}</T> : null}
+              </View>
+              <Money halalas={Number(c.total_halalas)} size={12} bold />
+            </Row>
+          ))}
+          <Row style={{ justifyContent: 'space-between', paddingTop: 6 }}>
+            <T size={12.5} bold>{t('invoice.remaining')}</T>
+            <Money halalas={Number(v.total_halalas) + credits.reduce((s, c) => s + Number(c.total_halalas), 0)} size={12.5} bold />
+          </Row>
+        </View>
+      ) : null}
       {v.notes ? (
         <View style={{ marginBottom: 8 }}>
           <T size={10.5} color={C.muted}>ملاحظات</T>
@@ -550,6 +620,54 @@ function InvoiceViewSheet({ invoiceId, onClose, onEdit, mayEdit }: {
         </View>
       ) : null}
       <View style={{ height: 12 }} />
+    </Sheet>
+  );
+}
+
+/**
+ * إصدار إشعار دائن على فاتورة صادرة غير محصّلة (قرار المالك على #30): المبلغ قبل الضريبة وسببه وتاريخه، وضريبته
+ * بنسبة ضريبة الفاتورة · ولا يزيد على ما بقي منها، ورقمه من تسلسل الفواتير.
+ */
+function CreditNoteSheet({ invoiceId, onClose }: { invoiceId: string; onClose: () => void }) {
+  const { t } = useLang();
+  const { db, bump } = useApp();
+  const toast = useToast();
+  const [date, setDate] = useState(today());
+  const [reason, setReason] = useState('');
+  const [amount, setAmount] = useState('');
+  const v = db.get<{ no: string; subtotal_halalas: number; tax_halalas: number }>(
+    `SELECT no, subtotal_halalas, tax_halalas FROM invoices WHERE id = ?`, [invoiceId]);
+  if (!v) return null;
+  const sub = toHalalas(amount);
+  const tax = creditTaxFor({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) }, sub);
+  const left = invoiceRemaining(db, invoiceId);
+  const ok = sub > 0 && sub + tax <= left && !!reason.trim();
+  return (
+    <Sheet visible onClose={onClose} title={t('invoice.issueCredit') + ' · ' + v.no}
+      footer={ok ? (
+        <BtnPrimary title={t('invoice.issueCredit')} onPress={() => {
+          issueCreditNoteNow(db, invoiceId, { date, reason, subtotalHalalas: sub })
+            .then(() => { onClose(); bump(); toast(t('invoice.creditIssued')); })
+            .catch((e) => reportFailure({ title: t('invoice.issueCredit'), e }));
+        }} />
+      ) : undefined}>
+      <Row style={{ justifyContent: 'space-between', marginBottom: 8 }}>
+        <T size={12.5}>{t('invoice.remaining')}</T>
+        <Money halalas={left} size={12.5} bold />
+      </Row>
+      <DateField label={t('invoice.creditDate')} value={date} onChange={setDate} />
+      <Field label={t('invoice.creditReasonLabel')} value={reason} onChange={setReason} />
+      <Field label={t('invoice.creditSubtotal')} value={amount} onChange={setAmount} keyboard="numeric" ltr />
+      <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
+        <T size={12} color={C.muted}>{t('invoice.creditTax')}</T>
+        <Money halalas={tax} size={12} />
+      </Row>
+      <Row style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
+        <T size={12.5} bold>{t('invoice.creditTotal')}</T>
+        <Money halalas={sub + tax} size={12.5} bold />
+      </Row>
+      {sub + tax > left ? <T size={12} color={C.rose}>{t('invoice.creditOver')}</T> : null}
+      <View style={{ height: 10 }} />
     </Sheet>
   );
 }

@@ -570,6 +570,26 @@ export const postInvoiceToLedger = (
   });
 
 /**
+ * إشعار دائن على فاتورة مبيعات (قرار المالك على #30): عكس جزءٍ منها أو كلها بتاريخه · مدين 4100 بالصافي ومدين 2200
+ * بالضريبة / دائن 1200 بالإجمالي. مصدره صفّ الإشعار نفسه في الفواتير، فأبعاده من عقار الفاتورة ووحدتها.
+ */
+export const postCreditNoteToLedger = (
+  db: DB,
+  v: { id: string; no: string; refNo: string; customer: string; date: string; subtotal: number; tax: number; total: number }
+) =>
+  postEntry(db, {
+    date: v.date,
+    memo: 'إشعار دائن ' + v.no + ' على الفاتورة ' + v.refNo + ' · ' + v.customer, // i18n-exempt: بيان القيد المخزَّن
+    lines: [
+      ...(v.subtotal ? [{ account: '4100', debit: v.subtotal, credit: 0 }] : []),
+      ...(v.tax ? [{ account: '2200', debit: v.tax, credit: 0 }] : []),
+      { account: '1200', debit: 0, credit: v.total },
+    ],
+    srcType: 'invoice',
+    srcId: v.id,
+  });
+
+/**
  * فاتورة شراء: دائن 2100 بالإجمالي، ومدينها:
  *  - الفاتورة القابلة للخصم (deductible): مصروف الفئة بالأساس، وضريبتها في 1270 «ضريبة مدخلات قابلة للاسترداد».
  *  - غيرها (غير قابلة للخصم، معفاة، صفرية): مصروف الفئة بالأساس والضريبة معاً، بالتكلفة الكاملة.

@@ -37,6 +37,33 @@ export function quarterRange(year: number, quarter: 1 | 2 | 3 | 4): { from: stri
   return { from, to };
 }
 
+type ExemptRow = VatReturnData['schedules']['exemptSales'][number];
+
+/**
+ * صفوف المبيعات المعفاة (البند ٥ وكشفه معاً · #31 والتحقق المستقل):
+ *  - كل دفعة إيجار قائمة بصافيها بلا فائضها الذي صار رصيداً دائناً للمستأجر (دائن 2410 في قيدها): التزامٌ له لا توريد.
+ *  - وفائضٌ قديمٌ دخل إيراداً ثم سُوّي رصيداً أو رُدّ (surplus_credit وsurplus_refund وعكوسهما): ينقص في فترة تسويته.
+ */
+function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
+  const none = 'لا يوجد'; // i18n-exempt: نص الكشف المصدَّر بالعربية
+  const pays = db.all<ExemptRow>(
+    `SELECT p.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
+            p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas - l.debit_halalas) FROM journal_lines l
+              WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410'), 0) AS net
+     FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
+     WHERE p.cancelled_at IS NULL AND p.date >= ? AND p.date <= ? ORDER BY p.date`, [none, from, to]);
+  const settled = db.all<ExemptRow>(
+    `SELECT e.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
+            -SUM(l.debit_halalas - l.credit_halalas) AS net
+     FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id JOIN contracts c ON c.id = e.src_id
+     WHERE e.src_type IN ('surplus_credit', 'surplus_refund', 'surplus_credit_rev', 'surplus_refund_rev')
+       AND e.status = ? AND e.deleted_at IS NULL AND l.account_code LIKE '42%' AND e.date >= ? AND e.date <= ?
+     GROUP BY e.id ORDER BY e.date`,
+    [none, 'مرحّل', from, to]); // i18n-exempt: حالة مخزّنة
+  return [...pays, ...settled.filter((r) => Number(r.net) !== 0)]
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+
 export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): VatReturnData {
   const { from, to } = quarterRange(year, quarter);
   const inPeriod = (col: string) => ` AND ${col} >= '${from}' AND ${col} <= '${to}'`;
@@ -47,13 +74,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
      FROM invoices WHERE deleted_at IS NULL AND status != 'مسودة'${inPeriod('issue')}`
   )!;
 
-  // ٥ · المبيعات المعفاة = إيرادات الإيجار السكني المحصَّلة · بلا فائض التحصيل الذي صار رصيداً دائناً للمستأجر
-  // (دائن 2410 في قيد الدفعة): التزامٌ له لا توريد (#31)
-  const rent = db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(p.net_halalas),0) - COALESCE(SUM((SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0)
-       FROM journal_lines l WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410')), 0) AS s
-     FROM contract_payments p WHERE p.cancelled_at IS NULL${inPeriod('p.date')}`
-  )!;
+  // ٥ · المبيعات المعفاة = إيرادات الإيجار السكني المحصَّلة، من صفوف كشفها نفسها (exemptSalesRows)
 
   // ٧ · المشتريات الخاضعة باسمنا وحدها · لبّ الطلب
   const ded = db.get<{ sub: number; tax: number }>(
@@ -80,7 +101,8 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
   )!;
 
   const salesSub = Number(sales.sub), salesTax = Number(sales.tax);
-  const rentNet = Number(rent.s);
+  const exemptSales = exemptSalesRows(db, from, to);
+  const rentNet = exemptSales.reduce((s, r) => s + Number(r.net), 0);
   const dedSub = Number(ded.sub), dedTax = Number(ded.tax);
   const exemptPurAmt = Number(exemptPur.s), zeroPurAmt = Number(zeroPur.s);
   const totalSales = salesSub + rentNet;
@@ -119,11 +141,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
             tax_halalas AS tax, total_halalas AS total, exclude_reason AS reason
      FROM purchases WHERE deleted_at IS NULL AND tax_status = 'غير قابلة للخصم'${inPeriod('date')} ORDER BY date`
   );
-  const exemptSales = db.all<{ date: string; tenant: string; contractNo: string; unitLabel: string; net: number }>(
-    `SELECT p.date, c.tenant_name AS tenant, COALESCE(c.contract_no,'لا يوجد') AS contractNo,
-            c.unit_label AS unitLabel, p.net_halalas AS net
-     FROM contract_payments p JOIN contracts c ON c.id = p.contract_id WHERE p.cancelled_at IS NULL${inPeriod('p.date')} ORDER BY p.date`
-  );
+
   const transfers = db.all<{ date: string; amount: number; party: string; purpose: string; bankRef: string; invoiceNo: string }>(
     `SELECT pu.paid_date AS date, pu.total_halalas AS amount, pu.supplier_name AS party,
             pu.category AS purpose, COALESCE(je.no,'لا يوجد') AS bankRef, pu.no AS invoiceNo

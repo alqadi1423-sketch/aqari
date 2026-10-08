@@ -280,6 +280,7 @@ export async function exportInvoicesReport(db: DB, from: string | null, to: stri
 /* ═══════════ الإقرار الضريبي · ١٦ بنداً والمستبعدة في سطر رقابة ═══════════ */
 
 import { vatReturnData } from '../domain/vatReturn';
+import { filedReturn } from '../domain/vatFilings';
 import { QUARTER_AR } from '../domain/periods';
 import { trialBalance, costCenterReport, type DimFilter } from '../domain/accounting/ledger';
 import { dimsLabel } from '../domain/accounting/dimensions';
@@ -297,13 +298,17 @@ export async function exportVatReturn(
   /** معتمد = بلا علامة «مسودة» */
   approved = false
 ): Promise<void> {
-  const d = vatReturnData(db, year, quarter);
+  const live = vatReturnData(db, year, quarter);
+  // الإقرار المقدَّم يُصدَّر بلقطة بنوده كما قُدِّم (قرار المالك على #30) · والكشوف المساندة من المستندات
+  const filed = filedReturn(db, year, quarter);
+  const d = filed ? { ...live, items: filed.items, excluded: filed.excluded } : live;
   const title = 'الإقرار الضريبي · ' + d.period;
   const mainBlock: ReportBlock = {
     heading: 'نموذج الإقرار · ' + d.period,
     meta: [
       ['الفترة', `${dfmt(d.from)} إلى ${dfmt(d.to)}`],
       ['أعمدة الإفصاح الذاتي والتعديل وسبب التعديل', 'تُملأ يدوياً في الملف المصدَّر'],
+      ...(filed ? [[t('vat.filedLabel', { lng: 'ar' }), dfmt(filed.filedAt)] as [string, string]] : []),
     ],
     sections: [
       // بنود الإقرار الستة عشر لا تُجمع: كل بند مستقل ولا معنى لمجموعها

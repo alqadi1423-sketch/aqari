@@ -144,8 +144,12 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
   // ١٠) ذمم الفواتير (المراجعة ٤.٢): لا فاتورة «مدفوعة» بلا قيد تحصيل، وحركة 1200 = المصدرة غير المحصّلة
   // قاعدة ما قبل الهجرة ٢٣ (نسخة ما قبل الترقية تُفحص بإصدارها) لا عمود تحصيل فيها: كل «مدفوعة» فيها بلا قيد
   const hasPay = hasCol(db, 'invoices', 'payment_journal_entry_id');
+  // الإشعار الدائن (الهجرة ٣٨) ينقص ذمة فاتورته ما دامت غير محصّلة · وتحصيلها بالمتبقي يقفل الاثنين معاً
+  const creditOpen = hasCol(db, 'invoices', 'kind')
+    ? `CASE WHEN kind = 'credit_note' THEN (SELECT r.status FROM invoices r WHERE r.id = invoices.ref_invoice_id) ELSE status END`
+    : 'status';
   const inv = db.get<{ due: number; paidNoEntry: number }>(
-    `SELECT COALESCE(SUM(CASE WHEN status <> 'مدفوعة' THEN total_halalas ELSE 0 END),0) AS due,
+    `SELECT COALESCE(SUM(CASE WHEN ${creditOpen} <> 'مدفوعة' THEN total_halalas ELSE 0 END),0) AS due,
             COALESCE(SUM(CASE WHEN status = 'مدفوعة' AND ${hasPay ? 'payment_journal_entry_id' : 'NULL'} IS NULL THEN 1 ELSE 0 END),0) AS paidNoEntry
      FROM invoices WHERE deleted_at IS NULL AND journal_entry_id IS NOT NULL`)!;
   const ar = ledgerNet(db, '1200');

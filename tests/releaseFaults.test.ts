@@ -48,8 +48,9 @@ describe('المزامنة لا تحجب الواجهة · وأول سحب يظ�
     const fresh = memDb();
     enableSync(fresh, 'u-pull');
     const progress: string[] = [];
-    // زمن المعالج لهذه العملية بين الفسحتين (بالمللي ثانية) · لا الزمن الفعلي الذي يطول بزحام عمّال jest المتوازيين
-    const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; };
+    // زمن معالج الخيط الرئيس بين الفسحتين (بالمللي ثانية): لا الزمن الفعلي الذي يطول بزحام عمّال jest، ولا زمن خيوط
+    // جمع المهملات والترجمة الذي يعدّه زمن العملية كلها
+    const cpu = () => { const u = process.threadCpuUsage(); return (u.user + u.system) / 1000; };
     let longest = 0, longestWall = 0, steps = 0, last = cpu(), lastWall = Date.now();
     const rep = await syncOnce(fresh, remote, getMeta(fresh, 'device_id')!, (m) => progress.push(m), {
       pause: async () => { const now = cpu(), nowWall = Date.now(); longest = Math.max(longest, now - last); longestWall = Math.max(longestWall, nowWall - lastWall); steps++; await new Promise((r) => setTimeout(r, 0)); last = cpu(); lastWall = Date.now(); },

@@ -17,7 +17,7 @@ import {
 } from '@/domain/contracts/service';
 import { getContract, contractDisplayId, unitCurrentContract, unitActiveReservation } from '@/domain/contracts/rules';
 import { saveClaim, collectClaim } from '@/domain/claims';
-import { saveInvoice, setInvoiceStatus, payInvoice, deleteInvoice } from '@/domain/invoices';
+import { saveInvoice, setInvoiceStatus, payInvoice, deleteInvoice, saveCreditNote } from '@/domain/invoices';
 import { savePurchase, payPurchase, unmarkPurchasePaid } from '@/domain/purchases';
 import { recordKeyMoneyDeal } from '@/domain/keymoney';
 import { buildHandoverSections } from '@/domain/handover/build';
@@ -189,51 +189,38 @@ test('دورة الاستخدام الكاملة تعمل من الطرف للط
   });
   expect(accountBalance(db, '1250')).toBe(20000);
 
-  /* ═══ ١٢) فاتورة مبيعات: إصدار ← مدفوعة ← مسودة تعكس القيد ═══ */
+  /* ═══ ١٢) فاتورة مبيعات: إصدار ← تحصيل ← عكس التحصيل · والصادرة مقفلة (قرار المالك على #30) ═══ */
   const invId = saveInvoice(db, {
     customer: 'شركة أفق', customerVat: '300012345600003',
     issue: T, due: addDays(T, 30), notes: '',
     lines: [{ descr: 'إيجار مساحة إعلانية', qty: 2, priceHalalas: 50000, taxPct: 15 }],
   }, 'مستحقة');
   expect(accountBalance(db, '1200')).toBeGreaterThan(0);
-  const invEntry1 = db.get<{ journal_entry_id: string }>(
-    `SELECT journal_entry_id FROM invoices WHERE id = ?`, [invId])!.journal_entry_id;
+  const ar0 = accountBalance(db, '1200');
   payInvoice(db, invId, { method: 'cash', bankId: null, date: T }); // التحصيل بقيد (المراجعة ٤.٢)
   expect(() => setInvoiceStatus(db, invId, 'مدفوعة')).toThrow();
-  setInvoiceStatus(db, invId, 'مسودة'); // يعكس القيد بقيد مرآة ولا يخفيه
-  const ar = accountBalance(db, '1200');
-  setInvoiceStatus(db, invId, 'مستحقة'); // يعيد الترحيل
-  expect(accountBalance(db, '1200')).toBe(ar + 115000);
-  // القيد الأصلي باقٍ في الدفتر مختوماً بمن عكسه · لا إخفاء ناعم لمرحّل
-  const inv1 = db.get<{ deleted_at: string | null; reversed_by: string | null }>(
-    `SELECT deleted_at, reversed_by FROM journal_entries WHERE id = ?`, [invEntry1])!;
-  expect(inv1.deleted_at).toBeNull();
-  expect(inv1.reversed_by).toBeTruthy();
-
-  /* ═══ ١٢ب) تعديل فاتورة مرحّلة: عكس الأصل وترحيل الجديد وسجل بالقيم ═══ */
-  const beforeEntry = db.get<{ journal_entry_id: string }>(
-    `SELECT journal_entry_id FROM invoices WHERE id = ?`, [invId])!.journal_entry_id;
-  saveInvoice(db, {
-    customer: 'شركة أفق', customerVat: '300012345600003',
-    issue: T, due: addDays(T, 30), notes: '',
+  // الصادرة لا تعود مسودة ولا تُعدَّل ولا تُحذف
+  expect(() => setInvoiceStatus(db, invId, 'مسودة')).toThrow();
+  expect(() => saveInvoice(db, {
+    customer: 'شركة أفق', customerVat: '300012345600003', issue: T, due: addDays(T, 30), notes: '',
     lines: [{ descr: 'إيجار مساحة إعلانية', qty: 3, priceHalalas: 50000, taxPct: 15 }],
-  }, 'مستحقة', invId);
-  const old = db.get<{ deleted_at: string | null; reversed_by: string | null }>(
-    `SELECT deleted_at, reversed_by FROM journal_entries WHERE id = ?`, [beforeEntry])!;
-  expect(old.deleted_at).toBeNull();
-  expect(old.reversed_by).toBeTruthy();
-  const rev = db.get<{ memo: string; status: string }>(
-    `SELECT memo, status FROM journal_entries WHERE id = ?`, [old.reversed_by])!;
-  expect(rev.status).toBe('مرحّل');
-  expect(rev.memo).toContain('تعديل الفاتورة');
-  // الرصيد يعكس القيم الجديدة وحدها (172,500 = 150,000 + ضريبة) بعد عكس القديمة
-  expect(accountBalance(db, '1200')).toBe(ar + 172500);
-  const audit = db.get<{ before_json: string | null; after_json: string | null }>(
-    `SELECT before_json, after_json FROM audit_log
-     WHERE module = 'الفواتير' AND action_type = 'update' AND before_json IS NOT NULL
-     ORDER BY id DESC LIMIT 1`)!;
-  expect(JSON.parse(audit.before_json!)['الإجمالي']).toBe(115000);
-  expect(JSON.parse(audit.after_json!)['الإجمالي']).toBe(172500);
+  }, 'مستحقة', invId)).toThrow();
+  expect(() => deleteInvoice(db, invId)).toThrow();
+  // عكس التحصيل يعيدها مستحقة وقيد التحصيل باقٍ مختوماً بمن عكسه
+  const payEntry = db.get<{ pj: string }>(`SELECT payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [invId])!.pj;
+  setInvoiceStatus(db, invId, 'مستحقة');
+  expect(accountBalance(db, '1200')).toBe(ar0);
+  const pay1 = db.get<{ deleted_at: string | null; reversed_by: string | null }>(
+    `SELECT deleted_at, reversed_by FROM journal_entries WHERE id = ?`, [payEntry])!;
+  expect(pay1.deleted_at).toBeNull();
+  expect(pay1.reversed_by).toBeTruthy();
+
+  /* ═══ ١٢ب) تصحيح فاتورة صادرة: إشعار دائن مرتبط بها، والتحصيل بالمتبقي ═══ */
+  const cn = saveCreditNote(db, invId, { date: T, reason: 'تخفيض مصطنع', subtotalHalalas: 50000 });
+  expect(db.get(`SELECT ref_invoice_id AS r, total_halalas AS t FROM invoices WHERE id = ?`, [cn])).toEqual({ r: invId, t: -57500 });
+  expect(accountBalance(db, '1200')).toBe(ar0 - 57500);
+  payInvoice(db, invId, { method: 'cash', bankId: null, date: T });
+  expect(accountBalance(db, '1200')).toBe(ar0 - 115000);
 
   /* ═══ ١٣) فاتورة شراء بعداد: تسجيل ← سداد بنكي ← تراجع ═══ */
   const meterId = supplierMeters(db, supplierId)[0].id;

@@ -93,6 +93,16 @@ describe('٤.٢ تحصيل فاتورة المبيعات بقيد', () => {
   });
 });
 
+/** حذف فاتورةٍ صادرة كما كان قبل قفلها (#30): عكس تحصيلها بشروطه ثم قيد إصدارها ثم السلة · لما في السلة من قبل */
+async function legacyDeleteInvoice(db: import('@/db/adapter').DB, id: string): Promise<void> {
+  const { reverseInvoicePayment } = await import('@/domain/invoices');
+  const { reverseEntryById } = await import('@/domain/accounting/post');
+  reverseInvoicePayment(db, id, true);
+  const je = db.get<{ j: string }>(`SELECT journal_entry_id AS j FROM invoices WHERE id = ?`, [id])!.j;
+  reverseEntryById(db, je);
+  db.run(`UPDATE invoices SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), id]);
+}
+
 describe('٤.٢ و٤.٦ حذف الفاتورة المحصّلة واسترجاعها', () => {
   test('الاسترجاع يعيد قيد الإصدار والتحصيل وحركة البنك كما كانت', async () => {
     const { memDb } = await import('./helpers/testDb');
@@ -105,7 +115,9 @@ describe('٤.٢ و٤.٦ حذف الفاتورة المحصّلة واسترجا�
     const id = saveInvoice(db, { customer: 'عميل استرجاع', customerVat: '', issue: '2026-04-01', due: '2026-04-30', notes: '',
       lines: [{ descr: 'خدمة', qty: 2, priceHalalas: 50000, taxPct: 15 }] }, 'مستحقة');
     payInvoice(db, id, { method: 'bank', bankId: bank, date: '2026-04-12' });
-    deleteInvoice(db, id);
+    // الصادرة لا تُحذف الآن (قرار المالك على #30) · والاسترجاع لما حُذف قبل القفل
+    expect(() => deleteInvoice(db, id)).toThrow();
+    await legacyDeleteInvoice(db, id);
     expect(accountBalance(db, '1100')).toBe(0);
     expect(bankBalance(db, bank)).toBe(0);
     restoreInvoice(db, id);
@@ -126,7 +138,7 @@ describe('٤.٢ و٤.٦ حذف الفاتورة المحصّلة واسترجا�
     const id = saveInvoice(db, { customer: 'عميل', customerVat: '', issue: '2026-04-01', due: '2026-04-30', notes: '',
       lines: [{ descr: 'خدمة', qty: 1, priceHalalas: 10000, taxPct: 0 }] }, 'مستحقة');
     payInvoice(db, id, { method: 'bank', bankId: bank, date: '2026-04-12' });
-    deleteInvoice(db, id);
+    await legacyDeleteInvoice(db, id);
     db.run(`UPDATE banks SET deleted_at = ? WHERE id = ?`, ['2026-04-13T00:00:00Z', bank]);
     expect(() => restoreInvoice(db, id)).toThrow(/البنك/);
     expect(db.get<{ d: string | null }>(`SELECT deleted_at AS d FROM invoices WHERE id = ?`, [id])!.d).toBeTruthy();
@@ -141,7 +153,7 @@ test('٤.٢ تعديل فاتورة محصّلة يُرفض فلا يبقى قي
     lines: [{ descr: 'خدمة', qty: 1, priceHalalas: 20000, taxPct: 0 }] };
   const id = saveInvoice(db, input, 'مستحقة');
   payInvoice(db, id, { method: 'cash', bankId: null, date: '2026-05-02' });
-  expect(() => saveInvoice(db, { ...input, lines: [{ descr: 'خدمة', qty: 2, priceHalalas: 20000, taxPct: 0 }] }, 'مستحقة', id)).toThrow(/التحصيل/);
+  expect(() => saveInvoice(db, { ...input, lines: [{ descr: 'خدمة', qty: 2, priceHalalas: 20000, taxPct: 0 }] }, 'مستحقة', id)).toThrow(/إشعار دائن/); // الصادرة مقفلة أصلاً (قرار المالك على #30)
 });
 
 test('٤.٢ أداة البيانات السابقة: تحصيل فاتورة «مدفوعة» بلا قيد يُصلح الفحص', async () => {

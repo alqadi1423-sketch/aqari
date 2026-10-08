@@ -143,8 +143,12 @@ export async function printInvoice(db: DB, invoiceId: string): Promise<void> {
   const v = db.get<{
     id: string; no: string; customer_name: string; customer_vat: string; issue: string; due: string;
     subtotal_halalas: number; tax_halalas: number; total_halalas: number; notes: string;
+    kind?: string; ref_invoice_id?: string | null; credit_reason?: string;
   }>(`SELECT * FROM invoices WHERE id = ?`, [invoiceId]);
   if (!v) return;
+  // الإشعار الدائن (#30) بمرجع فاتورته وسببه
+  const refNo = v.kind === 'credit_note' && v.ref_invoice_id
+    ? db.get<{ no: string }>(`SELECT no FROM invoices WHERE id = ?`, [v.ref_invoice_id])?.no ?? '' : null;
   // الرقم المؤقت لا يُطبع على فاتورة (قرار المالك ٢٠٢٦-١٠-٠٥)
   if (isTempInvoiceNo(v.no)) throw new Error('المسودة لا تُطبع · أصدرها أولاً فتأخذ رقمها');
   const lines = db.all<{ descr: string; qty: number; price_halalas: number; tax_pct: number }>(
@@ -156,6 +160,7 @@ export async function printInvoice(db: DB, invoiceId: string): Promise<void> {
     notes: v.notes, subtotalHalalas: Number(v.subtotal_halalas), taxHalalas: Number(v.tax_halalas),
     totalHalalas: Number(v.total_halalas),
     lines: lines.map((l) => ({ descr: l.descr, qty: Number(l.qty), priceHalalas: Number(l.price_halalas), taxPct: Number(l.tax_pct) })),
+    credit: refNo !== null ? { refNo, reason: v.credit_reason ?? '' } : undefined,
   }, issuedNow());
   const filename = 'فاتورة · ' + v.no;
   const uri = await renderPdf('فاتورة ' + v.no, body, filename);

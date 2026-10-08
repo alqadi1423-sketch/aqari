@@ -11,6 +11,13 @@ import { postEntry, reverseEntryById, reverseEntryBySource } from '@/domain/acco
 import { repostCopy } from '@/domain/accounting/repost';
 import { fileVatReturn, correctionDate, unfileVatReturn } from '@/domain/vatFilings';
 import { today } from '@/domain/dates';
+import { addBank } from './helpers/fixtures';
+import { recordKeyMoneyDeal } from '@/domain/keymoney';
+import { entrySourceAction } from '@/domain/accounting/sourceCancel';
+import { restoreFromTrash } from '@/domain/trash';
+import { savePurchase, type PurchaseInput } from '@/domain/purchases';
+import { recordBulkRentPayment } from '@/domain/contracts/service';
+import { vatReturnData } from '@/domain/vatReturn';
 
 const entryDate = (db: ReturnType<typeof memDb>, id: string) =>
   db.get<{ date: string }>(`SELECT date FROM journal_entries WHERE id = ?`, [id])!.date;
@@ -69,3 +76,74 @@ test('#34 العكس من المصدر ينسخ أبعاد أصله · وتعد�
   expect(rev.slice(0, 2).every((l) => l.cc === 'CC-T' && l.contract_id === c2)).toBe(true);
   db.close();
 });
+
+/** صافي الدائن على حسابٍ لقيود مصدرٍ بعينه، لكل ربع (السنة-Qالربع) */
+function byQuarter(db: ReturnType<typeof memDb>, srcId: string, acct: string): Record<string, number> {
+  const rows = db.all<{ q: string; v: number }>(
+    `SELECT substr(e.date,1,4) || '-Q' || ((CAST(substr(e.date,6,2) AS INTEGER) + 2) / 3) AS q, SUM(l.credit_halalas - l.debit_halalas) AS v
+     FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.src_id = ? AND l.account_code LIKE ? GROUP BY q`, [srcId, acct]);
+  const out: Record<string, number> = {};
+  for (const r of rows) if (Number(r.v) !== 0) out[r.q] = Number(r.v);
+  return out;
+}
+const qOf = (d: string) => d.slice(0, 4) + '-Q' + Math.floor((Number(d.slice(5, 7)) - 1) / 3 + 1);
+
+test('#29 (التحقق المستقل) الإلغاء بتاريخه ثم الاسترجاع من السلة لا يشطر الفترات: النسخة بتاريخ عكسها', () => {
+  const db = memDb();
+  const bank = addBank(db, 'بنك تقبيل مصطنع');
+  const u = addUnit(db, addProperty(db, { name: 'عقار تقبيل مصطنع' }));
+  const deal = recordKeyMoneyDeal(db, { unitId: u, outgoing: 'طرف مصطنع أ', incoming: 'طرف مصطنع ب', amountHalalas: 900000,
+    date: '2026-01-10', commissionHalalas: 45000, method: 'bank', bankId: bank, notes: '' });
+  const e = db.get<{ id: string }>(`SELECT id FROM journal_entries WHERE src_type = 'key_money' ORDER BY created_at DESC, rowid DESC LIMIT 1`)!.id;
+  const a = entrySourceAction(db, e);
+  if (a?.kind !== 'op') throw new Error('op');
+  a.run('2026-05-10', 'سبب مصطنع');
+  restoreFromTrash(db, 'key_money_deals', deal);
+  expect(byQuarter(db, deal, '4300')).toEqual({ '2026-Q1': 45000 });
+  db.close();
+});
+
+test('#29 (التحقق المستقل) تعديل مستندٍ في فترةٍ قُدِّم إقرارها: العكس والترحيل الجديد كلاهما بتاريخ اليوم', () => {
+  const db = memDb();
+  const c = confirmContract(db, contractInput(addUnit(db, addProperty(db, { name: 'عقار مطالبة مصطنع' })),
+    { tenant: 'مستأجر مطالبة مصطنع', idNumber: '1000000901', phone: '0500000901', depositHalalas: 0 }));
+  const id = saveClaim(db, { contractId: c, amountHalalas: 12000, reason: 'سبب مصطنع', date: '2026-02-10' });
+  const pid = savePurchase(db, {
+    supplier: 'مورد مصطنع', date: '2026-02-11', due: '2026-03-11', category: 'صيانة', incorpItem: '', amortize: false,
+    amortizeMonths: null, exempt: false, excludeFromVat: true, subtotalHalalas: 20000, taxHalalas: 0, totalHalalas: 20000,
+  } as PurchaseInput);
+  fileVatReturn(db, 2026, 1, '2026-04-20');
+  saveClaim(db, { contractId: c, amountHalalas: 15000, reason: 'سبب مصطنع', date: '2026-02-10' }, id);
+  expect(byQuarter(db, id, '4300')).toEqual({ '2026-Q1': 12000, [qOf(today())]: 3000 });
+  savePurchase(db, {
+    supplier: 'مورد مصطنع', date: '2026-02-11', due: '2026-03-11', category: 'صيانة', incorpItem: '', amortize: false,
+    amortizeMonths: null, exempt: false, excludeFromVat: true, subtotalHalalas: 26000, taxHalalas: 0, totalHalalas: 26000,
+  } as PurchaseInput, pid);
+  expect(byQuarter(db, pid, '2100')).toEqual({ '2026-Q1': 20000, [qOf(today())]: 6000 });
+  db.close();
+});
+
+test('#31 (التحقق المستقل) كشف المبيعات المعفاة يساوي البند ٥ · والفائض المسوّى رصيداً بعدها يخرج منه', () => {
+  const db = memDb();
+  const u = addUnit(db, addProperty(db, { name: 'عقار إقرار مصطنع' }), { unit_no: 'V-9' });
+  const cid = confirmContract(db, contractInput(u, { tenant: 'مستأجر إقرار مصطنع', idNumber: '1000000991', phone: '0500000991',
+    start: '2026-01-01', depositHalalas: 0 }));
+  const insts = db.all<{ id: string; amount_halalas: number }>(
+    `SELECT id, amount_halalas FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 2`, [cid]);
+  const due = insts.reduce((s, i) => s + Number(i.amount_halalas), 0);
+  recordBulkRentPayment(db, cid, { installmentIds: insts.map((i) => i.id), date: '2026-01-05',
+    lines: [{ method: 'cash', amountHalalas: due + 30000 }], notes: '' });
+  const five = (d: ReturnType<typeof vatReturnData>) => d.items.find((x) => x.no === '5')!.amountHalalas;
+  let d = vatReturnData(db, 2026, 1);
+  expect(d.schedules.exemptSales.reduce((s, r) => s + Number(r.net), 0)).toBe(five(d));
+  expect(five(d)).toBe(due);
+  // فائضٌ قديم دخل إيراداً ثم سُوّي رصيداً للمستأجر: يخرج من البند ٥ في فترة تسويته
+  postEntry(db, { date: '2026-02-03', memo: 'فائض مصطنع رصيداً', srcType: 'surplus_credit', srcId: cid,
+    lines: [{ account: '4200', debit: 10000, credit: 0 }, { account: '2410', debit: 0, credit: 10000 }] });
+  d = vatReturnData(db, 2026, 1);
+  expect(five(d)).toBe(due - 10000);
+  expect(d.schedules.exemptSales.reduce((s, r) => s + Number(r.net), 0)).toBe(five(d));
+  db.close();
+});
+

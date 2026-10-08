@@ -2,6 +2,7 @@
  * دورة حياة العقد: مسودة ← مراجعة ← توثيق (قفل) ← تجديد/إلغاء + الدفعات.
  * كل دالة تتم بمعاملة واحدة، والترحيل المحاسبي عبر مسار postEvent الواحد.
  */
+import { correctionDate } from '../vatFilings';
 import type { DB } from '../../db/adapter';
 import { requireCash } from '../cashGuard';
 import type { ScheduleRow } from '../pdf/parseEjar';
@@ -723,6 +724,8 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   for (const [src, memo] of [['deposit_deduct', 'عكس الخصم السابق'], ['deposit_refund', 'عكس الرد السابق'], ['deposit_deduct_move', 'عكس استقرار المخصوم']]) {
     for (let i = 0; i < 20 && reverseEntryBySource(db, src, contractId, 'تعديل تسوية التأمين · ' + memo); i++) { /* حتى لا يبقى حيّ */ }
   }
+  // تعديل تسويةٍ قائمة: قيودها الجديدة قيود تصحيح بتاريخها، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسها (#29)
+  const postDate = prev ? correctionDate(db, input.date) : input.date;
   let excessClaimCreated = false;
   if (excess > 0 && !prevClaim) {
     const claimId = uid();
@@ -731,16 +734,16 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
        VALUES (?,?,?,?,?,'مفتوحة',?,?)`,
       [claimId, contractId, excess, input.deductionReason.trim() || claimReason, input.date, SETTLEMENT_CLAIM, new Date().toISOString()]
     );
-    postClaim(db, { id: claimId, amount: excess, reason: input.deductionReason.trim() || claimReason, date: input.date });
+    postClaim(db, { id: claimId, amount: excess, reason: input.deductionReason.trim() || claimReason, date: postDate });
     excessClaimCreated = true;
   }
-  postDepositDeduct(db, { id: contractId, contract_no: c.contract_no || '', holder, received: !!input.deductReceived }, deduction, input.date);
+  postDepositDeduct(db, { id: contractId, contract_no: c.contract_no || '', holder, received: !!input.deductReceived }, deduction, postDate);
   // التأمين لدى المنصة: المخصوم يُقفل من 1260 ويستقر في محفظة إيجار أو حسابنا
   if (holder === 'منصة إيجار' && deduction > 0) { // i18n-exempt: جهة مخزّنة
-    postDepositDeductMove(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, input.date,
+    postDepositDeductMove(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, postDate,
       input.deductDestination ?? 'محفظة إيجار'); // i18n-exempt: وجهة مخزّنة
   }
-  postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder }, refund, input.date);
+  postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder }, refund, postDate);
   db.run(
     `INSERT INTO deposit_settlements (contract_id, date, deduction_halalas, deduction_reason, refund_halalas, notes, deduct_destination)
      VALUES (?,?,?,?,?,?,?)

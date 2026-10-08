@@ -9,8 +9,9 @@
 import type { DB } from '../db/adapter';
 import { localMaxNumber } from './numbering';
 import {
-  saveInvoice, setInvoiceStatus, needsIssueNumber, invoiceNoFor, isTempInvoiceNo, type InvoiceInput,
+  saveInvoice, setInvoiceStatus, needsIssueNumber, invoiceNoFor, isTempInvoiceNo, saveCreditNote, type InvoiceInput, type CreditNoteInput,
 } from './invoices';
+import { t } from '../i18n';
 
 export interface InvoiceNumberSource { takeInvoiceSeq(floor: number): Promise<number> }
 
@@ -101,6 +102,23 @@ export async function issuePendingInvoices(db: DB, src: InvoiceNumberSource): Pr
     issued++;
   }
   return issued;
+}
+
+/**
+ * إصدار إشعار دائن (#30) برقمٍ من تسلسل الفواتير نفسه · من العدّاد على جهازٍ يزامن، فإن تعذّر الاتصال لم يصدر
+ * (لا مسودة للإشعار) · وجهازٌ لا يزامن من تسلسله
+ */
+export async function issueCreditNote(db: DB, src: InvoiceNumberSource | null, invoiceId: string, input: CreditNoteInput): Promise<string> {
+  if (!src) return saveCreditNote(db, invoiceId, input);
+  let seq: number;
+  try {
+    seq = await reserveSeq(db, src);
+  } catch {
+    throw new Error(t('invoice.creditNeedsConnection'));
+  }
+  const id = saveCreditNote(db, invoiceId, input, invoiceNoFor(seq, input.date));
+  releaseSeq(db);
+  return id;
 }
 
 /** يلغي انتظار الإصدار · حين يُبقيها المستخدم مسودةً بقصد */

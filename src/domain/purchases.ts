@@ -11,6 +11,7 @@ import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryB
 import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
+import { correctionDate } from './vatFilings';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber } from './numbering';
 
@@ -165,8 +166,9 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
     const assetLines = input.lines?.length
       ? writePurchaseLines(db, { id, date: input.date }, input.lines, lineCosts(input.lines, tax, deductible), 'purchase')
       : [];
+    // تعديل المرحّلة: قيد القيم الجديدة قيدُ تصحيح بتاريخها، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسه (#29)
     const entry = postPurchaseToLedger(db, {
-      id, no, supplier: input.supplier, date: input.date,
+      id, no, supplier: input.supplier, date: existingId ? correctionDate(db, input.date) : input.date,
       category: input.category, subtotal: input.subtotalHalalas, tax, total,
       roundingDiff: diff, deductible,
     }, assetLines);

@@ -66,8 +66,8 @@ import {
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
 import { throwIfCancelled, CancelledError, type CancelSignal, type ProgressFn } from '../domain/progress';
-import { saveInvoiceIssued, setInvoiceStatusIssued, issuePendingInvoices, type InvoiceNumberSource, type IssueResult } from '../domain/invoiceIssue';
-import type { InvoiceInput } from '../domain/invoices';
+import { saveInvoiceIssued, setInvoiceStatusIssued, issuePendingInvoices, issueCreditNote, type InvoiceNumberSource, type IssueResult } from '../domain/invoiceIssue';
+import type { InvoiceInput, CreditNoteInput } from '../domain/invoices';
 
 /* ═══════════ الجلسة ═══════════ */
 
@@ -1057,6 +1057,11 @@ function invoiceSource(db: DB): InvoiceNumberSource | null {
 /** حفظ فاتورة من الشاشة · الإصدار برقم العدّاد، وبلا اتصال مسودةٌ تصدر عند عودته */
 export function saveInvoiceNow(db: DB, input: InvoiceInput, status: 'مسودة' | 'مستحقة', existingId?: string): Promise<IssueResult> {
   return saveInvoiceIssued(db, invoiceSource(db), input, status, existingId);
+}
+
+/** إشعار دائن على فاتورة من الشاشة · برقم العدّاد (#30) */
+export function issueCreditNoteNow(db: DB, invoiceId: string, input: CreditNoteInput): Promise<string> {
+  return issueCreditNote(db, invoiceSource(db), invoiceId, input);
 }
 
 /** تغيير حالة فاتورة من الشاشة · الخروج من المسودة يأخذ رقم العدّاد */

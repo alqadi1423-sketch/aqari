@@ -226,11 +226,19 @@ export interface InvoiceDocData {
   no: string; customerName: string; customerVat: string; issue: string; due: string; notes: string;
   subtotalHalalas: number; taxHalalas: number; totalHalalas: number;
   lines: Array<{ descr: string; qty: number; priceHalalas: number; taxPct: number }>;
+  /** إشعار دائن (#30): رقم فاتورته وسببه · ومبالغه المخزّنة سالبة تُطبع موجبة */
+  credit?: { refNo: string; reason: string };
 }
 
-export function buildInvoiceDoc(co: CompanyInfo, v: InvoiceDocData, issuedAt: string): string {
+export function buildInvoiceDoc(co: CompanyInfo, doc: InvoiceDocData, issuedAt: string): string {
   const vat = co.vatEnabled;
-  const title = vat ? 'فاتورة ضريبية' : 'فاتورة';
+  // الإشعار الدائن بعنوانه ومرجعه، ومبالغه موجبة في الورقة
+  const cr = doc.credit;
+  const v: InvoiceDocData = cr ? {
+    ...doc, subtotalHalalas: Math.abs(doc.subtotalHalalas), taxHalalas: Math.abs(doc.taxHalalas), totalHalalas: Math.abs(doc.totalHalalas),
+    lines: doc.lines.map((l) => ({ ...l, priceHalalas: Math.abs(l.priceHalalas) })),
+  } : doc;
+  const title = cr ? t('invoice.creditNote', { lng: 'ar' }) : vat ? 'فاتورة ضريبية' : 'فاتورة';
   const header = vat
     ? ['الوصف', 'الكمية', 'السعر', 'الضريبة', 'الإجمالي']
     : ['الوصف', 'الكمية', 'السعر', 'الإجمالي'];
@@ -247,14 +255,15 @@ export function buildInvoiceDoc(co: CompanyInfo, v: InvoiceDocData, issuedAt: st
   return `<div class="page">
     ${letterhead(co, title, v.no)}
     <div class="inv-meta">
-      <div class="inv-box"><b>تاريخ الإصدار:</b> <span class="num">${dfmt(v.issue)}</span><br><b>تاريخ الاستحقاق:</b> <span class="num">${dfmt(v.due)}</span></div>
+      ${cr ? `<div class="inv-box"><b>${t('invoice.creditDate', { lng: 'ar' })}:</b> <span class="num">${dfmt(v.issue)}</span><br><b>${esc(t('invoice.creditFor', { lng: 'ar', no: '' }))}</b> <span class="num">${esc(cr.refNo)}</span><br><b>${t('invoice.creditReasonLabel', { lng: 'ar' })}:</b> ${esc(cr.reason)}</div>`
+        : `<div class="inv-box"><b>${t('invoice.issueDateLabel', { lng: 'ar' })}:</b> <span class="num">${dfmt(v.issue)}</span><br><b>${t('invoice.dueDateLabel', { lng: 'ar' })}:</b> <span class="num">${dfmt(v.due)}</span></div>`}
       <div class="inv-box"><b>العميل:</b> ${esc(v.customerName)}${vat ? `<br><b>الرقم الضريبي للعميل:</b> <span class="num">${esc(v.customerVat || 'لا يوجد')}</span>` : ''}</div>
     </div>
     <table><thead><tr>${header.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>
     <div class="inv-totals">
       ${vat ? `<div class="t-row"><span>الإجمالي قبل الضريبة</span><span class="num">${fmt(v.subtotalHalalas)} ${SAR}</span></div>
       <div class="t-row"><span>ضريبة القيمة المضافة</span><span class="num">${fmt(v.taxHalalas)} ${SAR}</span></div>` : ''}
-      <div class="t-row tt"><span>الإجمالي المستحق</span><span class="num">${fmt(v.totalHalalas)} ${SAR}</span></div>
+      <div class="t-row tt"><span>${t(cr ? 'invoice.creditTotal' : 'invoice.totalDue', { lng: 'ar' })}</span><span class="num">${fmt(v.totalHalalas)} ${SAR}</span></div>
     </div>
     <div class="words">${fmt(v.totalHalalas)} ${SAR} · ${esc(moneyToArabicWords(v.totalHalalas))}</div>
     ${qr}

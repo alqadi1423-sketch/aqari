@@ -22,6 +22,8 @@ import { costCenters, dimsLabel } from '../src/domain/accounting/dimensions';
 import { cashFlowFigures } from '../src/domain/finStatements';
 import { useLang } from '../src/i18n';
 import { vatReturnData } from '../src/domain/vatReturn';
+import { filedReturn, filedDiff, fileVatReturn, unfileVatReturn } from '../src/domain/vatFilings';
+import { useDialog } from '../src/ui/AppDialog';
 import { dataYears, dataQuarters, defaultPeriod, quarterRange, QUARTER_AR } from '../src/domain/periods';
 import { useRouter } from 'expo-router';
 import { today, toLocalISODate, dfmt } from '../src/domain/dates';
@@ -654,6 +656,7 @@ export default function Reports() {
               </Pressable>
             </View>
           ) : null}
+          {vatYear != null && vatPreview ? <VatFilingCard year={vatYear} q={vatQ} canManage={perm.manage} /> : null}
           <T size={11.5} color={C.muted} style={{ marginVertical: 5 }}>علامة «مسودة» المائية</T>
           <ChipGroup options={[[0, 'مسودة'], [1, 'معتمد · بلا علامة']]} value={vatApproved ? 1 : 0} onChange={(v) => setVatApproved(!!v)} />
           <View style={{ height: 8 }} />
@@ -765,3 +768,69 @@ export default function Reports() {
     </Screen>
   );
 }
+
+/**
+ * الإقرار المقدَّم (قرار المالك على #30: «إقرار الفترة المقدَّمة يُجمَّد»): تسجيله مقدَّماً يحفظ لقطة بنوده فيُصدَّر كما
+ * قُدِّم، وما تغيّر بعده في مستندات فترته يظهر فرقاً يُصحَّح في إقرار فترةٍ لاحقة، وقيود التصحيح في فترته تؤرَّخ
+ * باليوم (#29) · التسجيل والتراجع عنه لصاحب «التقارير» كاملاً.
+ */
+function VatFilingCard({ year, q, canManage }: { year: number; q: 1 | 2 | 3 | 4; canManage: boolean }) {
+  const { t } = useLang();
+  const { db, version, bump } = useApp();
+  const dialog = useDialog();
+  const toast = useToast();
+  const filed = useMemo(() => filedReturn(db, year, q),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version, year, q]);
+  const diff = useMemo(() => (filed ? filedDiff(db, year, q) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version, year, q, filed]);
+  if (!filed) {
+    return canManage ? (
+      <View style={{ marginVertical: 6 }}>
+        <BtnGhost small icon="lock" title={t('vat.markFiled')} onPress={() => dialog({
+          title: t('vat.markFiled'), body: t('vat.markFiledBody'),
+          actions: [
+            { label: t('common.cancel'), variant: 'ghost' },
+            { label: t('vat.markFiled'), variant: 'primary', onPress: () => {
+              try { fileVatReturn(db, year, q); bump(); toast(t('vat.filedDone')); }
+              catch (e) { reportFailure({ title: t('vat.markFiled'), e }); }
+            } },
+          ],
+        })} />
+      </View>
+    ) : null;
+  }
+  return (
+    <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 10, marginVertical: 6, borderWidth: 1, borderColor: C.line }}>
+      <Row style={{ justifyContent: 'space-between' }}>
+        <T size={12.5} bold style={{ flex: 1 }}>{t('vat.filedOn', { date: dfmt(filed.filedAt) })}</T>
+        {canManage ? (
+          <BtnGhost small icon="undo" title={t('vat.unfile')} onPress={() => dialog({
+            title: t('vat.unfile'), body: t('vat.unfileBody'), tone: 'danger',
+            actions: [
+              { label: t('common.cancel'), variant: 'ghost' },
+              { label: t('vat.unfile'), variant: 'danger', onPress: () => {
+                try { unfileVatReturn(db, year, q); bump(); toast(t('vat.unfiledDone')); }
+                catch (e) { reportFailure({ title: t('vat.unfile'), e }); }
+              } },
+            ],
+          })} />
+        ) : null}
+      </Row>
+      <T size={11.5} color={C.muted}>{t('vat.frozenNote')}</T>
+      {diff.length ? (
+        <View style={{ marginTop: 6 }}>
+          <T size={12} bold color={C.rose}>{t('vat.changedSince')}</T>
+          {diff.map((d) => (
+            <Row key={d.no} style={{ justifyContent: 'space-between', paddingVertical: 3 }}>
+              <T size={11.5} numberOfLines={2} style={{ flex: 1 }}>{d.no} · {d.label}</T>
+              <Num size={11.5}>{fmt(d.filed)} ← {fmt(d.now)}{d.filedTax !== d.nowTax ? ' · ' + fmt(d.filedTax) + ' ← ' + fmt(d.nowTax) : ''}</Num>
+            </Row>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
