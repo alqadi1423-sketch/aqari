@@ -571,7 +571,9 @@
     "lockedNote": "An issued invoice is not edited · it is corrected by a linked credit note",
     "issueDateLabel": "Issue date",
     "dueDateLabel": "Due date",
-    "totalDue": "Total due"
+    "totalDue": "Total due",
+    "creditBeforeInvoice": "The note is dated before its invoice",
+    "creditFiledPeriod": "This date's period has a filed return · pick a date in an open period"
   },
   "purchase": {
     "vatSettled": "This invoice's VAT is refunded or its refund was rejected, and its entry closed the account · cancel that entry from the ledger first"

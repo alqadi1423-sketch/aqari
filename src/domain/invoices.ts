@@ -9,6 +9,7 @@ import { ambientCostCenter } from './accounting/dimensions';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment, postCreditNoteToLedger } from './accounting/post';
 import { t } from '../i18n';
 import { lastReversedOf, repostDate } from './accounting/repost';
+import { isFiledDate } from './vatFilings';
 import { mulQty, pctOf } from './money';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
@@ -170,6 +171,9 @@ export function saveInvoice(
 const entryDateOf = (db: DB, id: string): string =>
   db.get<{ date: string }>(`SELECT date FROM journal_entries WHERE id = ?`, [id])?.date ?? today();
 
+/** العملية في رسالة كفاية النقد لكل عكسٍ لتحصيل الفاتورة */
+const REVERSE_COLLECTION = 'عكس تحصيل الفاتورة';
+
 /** تغيير حالة الفاتورة · العودة لمسودة تلغي القيد، والخروج منها يرحّل */
 export type InvoicePayMethod = 'bank' | 'cash' | 'cheque' | 'card';
 export const INV_PAY_LABEL: Record<InvoicePayMethod, string> = { cash: 'نقداً', bank: 'تحويل بنكي', cheque: 'شيك', card: 'بطاقة' };
@@ -204,7 +208,11 @@ export function payInvoice(db: DB, id: string, pay: { method: InvoicePayMethod; 
     if (isCreditNote(db, id)) throw new Error(t('invoice.creditNotCollectable'));
     if (invoiceRemaining(db, id, Number(v.total_halalas)) <= 0) throw new Error(t('invoice.nothingDue'));
     if (pay.method !== 'cash' && !pay.bankId) throw new Error('اختر الحساب البنكي (' + INV_PAY_LABEL[pay.method] + ')، أو بدِّل الطريقة لنقداً');
-    if (v.payment_journal_entry_id) reverseInvoicePayment(db, id);
+    // تحصيلٌ قائم يُعكس أولاً فيخرج نقده · بكفاية النقد (التحقق المستقل · قرار المالك 2026-10-05)
+    if (v.payment_journal_entry_id) {
+      requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION);
+      reverseInvoicePayment(db, id);
+    }
     const entryId = postCollection(db, id, v, pay);
     db.run(`UPDATE invoices SET status = 'مدفوعة', paid_date = ?, payment_method = ?, payment_bank_id = ?, payment_journal_entry_id = ? WHERE id = ?`,
       [pay.date, pay.method, pay.method !== 'cash' ? pay.bankId : null, entryId, id]);
@@ -240,7 +248,7 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
   if (newStatus === 'مدفوعة') throw new Error('سجّل التحصيل بتاريخه وطريقته · «مدفوعة» لا تُختار حالةً وحدها');
   // الصادرة لا تعود مسودة (قرار المالك على #30): تصحيحها بإشعار دائن
   if (newStatus === 'مسودة' && db.get(`SELECT 1 FROM invoices WHERE id = ? AND status != 'مسودة'`, [id])) throw new Error(t('invoice.locked')); // i18n-exempt: حالة مخزّنة
-  requireCash(db, collectionCashOut(db, id), 'عكس تحصيل الفاتورة');
+  requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION);
   db.transaction(() => {
     const v = db.get<{
       no: string; customer_name: string; issue: string;
@@ -284,7 +292,7 @@ export function collectionCashOut(db: DB, id: string): number {
 export function deleteInvoice(db: DB, id: string): void {
   // الصادرة والإشعار الدائن لا يُحذفان (قرار المالك على #30) · المسودة وحدها
   if (db.get(`SELECT 1 FROM invoices WHERE id = ? AND status != 'مسودة'`, [id])) throw new Error(t('invoice.locked')); // i18n-exempt: حالة مخزّنة
-  requireCash(db, collectionCashOut(db, id), 'عكس تحصيل الفاتورة');
+  requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION);
   db.transaction(() => {
     const v = db.get<{ no: string; journal_entry_id: string | null }>(
       `SELECT no, journal_entry_id FROM invoices WHERE id = ?`, [id]
@@ -371,6 +379,14 @@ export interface CreditNoteInput {
   subtotalHalalas: number;
 }
 
+/** ما بقي من صافي الفاتورة وضريبتها بعد إشعاراتها الدائنة */
+export function creditLeft(db: DB, id: string, subtotal: number, tax: number): { sub: number; tax: number } {
+  const c = db.get<{ s: number; t: number }>(
+    `SELECT COALESCE(SUM(subtotal_halalas), 0) AS s, COALESCE(SUM(tax_halalas), 0) AS t FROM invoices
+     WHERE ref_invoice_id = ? AND kind = ? AND deleted_at IS NULL`, [id, KIND_CREDIT]);
+  return { sub: subtotal + Number(c?.s ?? 0), tax: tax + Number(c?.t ?? 0) };
+}
+
 /** ضريبة مبلغٍ بنسبة ضريبة الفاتورة نفسها (صافيها إلى ضريبتها) */
 export function creditTaxFor(inv: { subtotal: number; tax: number }, subtotal: number): number {
   return inv.subtotal ? Math.round((subtotal * inv.tax) / inv.subtotal) : 0;
@@ -384,7 +400,7 @@ export function creditTaxFor(inv: { subtotal: number; tax: number }, subtotal: n
 export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput, issuedNo?: string): string {
   return db.transaction(() => {
     const v = db.get<{
-      id: string; no: string; status: string; kind: string; customer_name: string; customer_vat: string;
+      id: string; no: string; status: string; kind: string; customer_name: string; customer_vat: string; issue: string;
       subtotal_halalas: number; tax_halalas: number; total_halalas: number; payment_journal_entry_id: string | null;
       unit_id: string | null; property_id: string | null; deleted_at: string | null;
     }>(`SELECT * FROM invoices WHERE id = ?`, [invoiceId]);
@@ -393,10 +409,17 @@ export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput
     if (v.payment_journal_entry_id) throw new Error(t('invoice.creditPaid'));
     const reason = input.reason.trim();
     if (!reason) throw new Error(t('invoice.creditReason'));
+    // لا قبل تاريخ فاتورته، ولا في فترةٍ قُدِّم إقرارها فيتغيّر المجمَّد (التحقق المستقل)
+    if (input.date < v.issue) throw new Error(t('invoice.creditBeforeInvoice'));
+    if (isFiledDate(db, input.date)) throw new Error(t('invoice.creditFiledPeriod'));
     const sub = Math.round(input.subtotalHalalas);
-    const tax = creditTaxFor({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) }, sub);
-    const total = sub + tax;
     if (sub <= 0) throw new Error(t('invoice.creditAmount'));
+    // ما بقي من صافيها وضريبتها بعد إشعاراتها: الصافي لا يتجاوز الباقي منه، وإشعار الباقي كله يأخذ ما بقي من الضريبة
+    const left = creditLeft(db, invoiceId, Number(v.subtotal_halalas), Number(v.tax_halalas));
+    if (sub > left.sub) throw new Error(t('invoice.creditOver'));
+    const tax = sub === left.sub ? left.tax
+      : Math.min(left.tax, creditTaxFor({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) }, sub));
+    const total = sub + tax;
     if (total > invoiceRemaining(db, invoiceId, Number(v.total_halalas))) throw new Error(t('invoice.creditOver'));
     const id = uid();
     const no = issuedNo ?? nextInvoiceNo(db, input.date);

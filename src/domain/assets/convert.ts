@@ -11,7 +11,7 @@ import { postEntry, purchaseExpenseAccount, reverseEntryById, type EntryLine } f
 import { fmt as fmtH } from '../money';
 import { logAudit } from '../audit';
 import { t } from '../../i18n';
-import { ACC_ACCUM, ACC_DEPRECIATION, defaultLife } from './catalog';
+import { ACC_ACCUM, ACC_DEPRECIATION, defaultLife, ACC_RETAINED } from './catalog';
 import { catchUpLines, expectedThrough, monthEnd, monthIndex, scheduleByYear } from './depreciation';
 import { splitQty, writePurchaseLines, purchaseAssets, type PurchaseLineInput } from './purchaseLines';
 
@@ -126,6 +126,34 @@ export function convertPurchase(db: DB, purchaseId: string, lines: PurchaseLineI
   });
 }
 
+/**
+ * عكس قيدٍ من سنةٍ سابقة لسنة التراجع: سطور الدخل (إيراد ومصروف) فيه تُعكس على الأرباح المحتجزة 3200، فلا يقع مصروفٌ
+ * سالب أو ربحٌ وهمي في السنة الجارية (قرار المالك 2026-10-07 على #35: «جزء السنوات السابقة على الأرباح المحتجزة») ·
+ * وقيد السنة نفسها يُعكس كما هو.
+ */
+function reverseToRetainedIfPrior(db: DB, entryId: string, memo: string, today: string): void {
+  const e = db.get<{ date: string; src_type: string | null; src_id: string | null }>(`SELECT date, src_type, src_id FROM journal_entries WHERE id = ?`, [entryId]);
+  if (!e) return;
+  if (e.date.slice(0, 4) >= today.slice(0, 4)) { reverseEntryById(db, entryId, memo, today); return; }
+  const lines = db.all<{ account_code: string; descr: string; debit_halalas: number; credit_halalas: number; type: string | null;
+    property_id: string | null; unit_id: string | null; contract_id: string | null; cost_center_id: string | null; asset_id: string | null }>(
+    `SELECT l.account_code, l.descr, l.debit_halalas, l.credit_halalas, a.type, l.property_id, l.unit_id, l.contract_id, l.cost_center_id, l.asset_id
+     FROM journal_lines l LEFT JOIN accounts a ON a.code = l.account_code WHERE l.entry_id = ?`, [entryId]);
+  const posted = postEntry(db, {
+    date: today, memo,
+    lines: lines.map((l) => ({
+      account: isIncomeType(l.type) ? ACC_RETAINED : l.account_code, descr: l.descr,
+      debit: Number(l.credit_halalas), credit: Number(l.debit_halalas),
+      dims: { propertyId: l.property_id, unitId: l.unit_id, contractId: l.contract_id, costCenterId: l.cost_center_id, assetId: l.asset_id },
+    })),
+    srcType: (e.src_type ?? 'manual') + '_rev', srcId: e.src_id ?? entryId,
+  });
+  if (posted) db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [posted.id, entryId]);
+}
+
+/** نوع حسابٍ من حسابات الدخل */
+const isIncomeType = (type: string | null): boolean => type === 'مصروف' || type === 'إيراد'; // i18n-exempt: نوع حساب مخزَّن
+
 /** عكس التحويل كاملاً · ما لم يُنقل أصلٌ منه أو يُستبعد أو يُبع */
 export function undoConversion(db: DB, purchaseId: string, today: string): void {
   const p = getPurchase(db, purchaseId);
@@ -140,19 +168,24 @@ export function undoConversion(db: DB, purchaseId: string, today: string): void 
     for (const e of db.all<{ id: string }>(
       `SELECT id FROM journal_entries WHERE src_id = ? AND src_type IN ('asset_convert', 'asset_catchup') AND status = ? AND deleted_at IS NULL AND reversed_by IS NULL`,
       [purchaseId, POSTED])) {
-      reverseEntryById(db, e.id, t('assets.memo.undo', { no: p.no, lng: 'ar' }), today);
+      reverseToRetainedIfPrior(db, e.id, t('assets.memo.undo', { no: p.no, lng: 'ar' }), today);
     }
-    // الإهلاك الشهري الذي رُحِّل لها بعد التحويل يُعكس بقيدٍ واحد
+    // الإهلاك الشهري الذي رُحِّل لها بعد التحويل يُعكس بقيدٍ واحد: سنته على مصروف الإهلاك، وما قبلها على الأرباح المحتجزة (#35)
     const lines: EntryLine[] = [];
+    const year = today.slice(0, 4);
     for (const a of assets) {
-      const r = db.get<{ v: number }>(
-        `SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS v FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+      const r = db.get<{ cur: number; prior: number }>(
+        `SELECT COALESCE(SUM(CASE WHEN substr(e.date, 1, 4) >= ? THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS cur,
+                COALESCE(SUM(CASE WHEN substr(e.date, 1, 4) < ? THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS prior
+         FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
          WHERE l.asset_id = ? AND l.account_code = ? AND e.status = ? AND e.deleted_at IS NULL AND e.src_type IN ('depreciation', 'asset_dep')`,
-        [a.id, ACC_ACCUM, POSTED]);
-      const v = Number(r?.v ?? 0);
-      if (v > 0) {
+        [year, year, a.id, ACC_ACCUM, POSTED]);
+      const cur = Number(r?.cur ?? 0), prior = Number(r?.prior ?? 0);
+      if (cur + prior > 0) {
         const dims = { assetId: a.id, unitId: a.unit_id, propertyId: a.property_id };
-        lines.push({ account: ACC_ACCUM, descr: a.name, debit: v, credit: 0, dims }, { account: ACC_DEPRECIATION, descr: a.name, debit: 0, credit: v, dims });
+        lines.push({ account: ACC_ACCUM, descr: a.name, debit: cur + prior, credit: 0, dims });
+        if (cur) lines.push({ account: ACC_DEPRECIATION, descr: a.name, debit: 0, credit: cur, dims });
+        if (prior) lines.push({ account: ACC_RETAINED, descr: a.name, debit: 0, credit: prior, dims });
       }
     }
     if (lines.length) postEntry(db, { date: today, memo: t('assets.memo.undo', { no: p.no, lng: 'ar' }), lines, srcType: 'asset_convert_rev', srcId: purchaseId });

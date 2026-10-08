@@ -299,3 +299,24 @@ test('تكرار إهلاك الشهر من جهازين يظهر للمراجع
   expect(getAsset(db, a).model).toBe('طراز تجريبي');
   void monthIndex; void monthEnd;
 });
+
+test('#35 بقرار المالك: التراجع في سنةٍ بعد التحويل يضع جزء السنوات السابقة على الأرباح المحتجزة · ودخل السنة الجارية لا يتأثر', () => {
+  const { db, u1 } = world();
+  const pid = savePurchase(db, purchase({ date: '2025-01-10', category: 'صيانة', subtotalHalalas: 240000, taxHalalas: 0, totalHalalas: 240000 }));
+  const lines = [
+    { descr: 'مكيف شباك تجريبي', qty: 2, amountHalalas: 168000, isAsset: true, category: '1410', unitId: u1 },
+    { descr: 'أجور تركيب', qty: 1, amountHalalas: 72000, isAsset: false },
+  ];
+  convertPurchase(db, pid, lines, '2026-03-10');
+  runDepreciation(db, '2027-01-01');
+  undoConversion(db, pid, '2027-02-15');
+  // حركة السنة الجارية على حسابات الدخل صفر: لا مصروف سالب ولا ربح وهمي
+  const pl2027 = db.get<{ v: number }>(
+    `SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS v FROM journal_lines l
+     JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.code = l.account_code
+     WHERE e.date >= '2027-01-01' AND e.deleted_at IS NULL AND a.type IN ('مصروف', 'إيراد')`)!.v;
+  expect(Number(pl2027)).toBe(0);
+  for (const c of ['1410', '1490']) expect(bal(db, c)).toBe(0);
+  expect(listAssets(db)).toHaveLength(0);
+});
+

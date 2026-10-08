@@ -13,6 +13,7 @@ import { vatReturnData } from '@/domain/vatReturn';
 import { fileVatReturn, filedReturn, filedDiff } from '@/domain/vatFilings';
 import { buildInvoiceDoc } from '@/domain/printDocs';
 import { fmt } from '@/domain/money';
+import { ownerCashOut } from '@/domain/cashOps';
 
 const inv = (over: Partial<InvoiceInput> = {}): InvoiceInput => ({
   customer: 'عميل مصطنع', customerVat: '', issue: '2026-02-10', due: '2026-03-10', notes: '',
@@ -92,5 +93,44 @@ test('#30 الإشعار الدائن يُطبع بعنوانه ورقم فات�
   expect(html).toContain('INV-2026-0001');
   expect(html).not.toContain(fmt(-46000));
   expect(html).toContain(fmt(46000));
+});
+
+test('#30 (التحقق المستقل) لا إشعار في فترةٍ قُدِّم إقرارها ولا قبل تاريخ فاتورته', () => {
+  const db = memDb();
+  const id = saveInvoice(db, inv({ issue: '2026-02-10' }), 'مستحقة');
+  expect(() => saveCreditNote(db, id, { date: '2026-01-05', reason: 'قبل الفاتورة', subtotalHalalas: 1000 })).toThrow();
+  fileVatReturn(db, 2026, 1, '2026-04-15');
+  expect(() => saveCreditNote(db, id, { date: '2026-03-15', reason: 'في فترة مقدَّمة', subtotalHalalas: 1000 })).toThrow();
+  expect(filedDiff(db, 2026, 1)).toEqual([]);
+  saveCreditNote(db, id, { date: '2026-04-16', reason: 'في فترة مفتوحة', subtotalHalalas: 1000 });
+  db.close();
+});
+
+test('#30 (التحقق المستقل) إشعاراتٌ صغيرة كثيرة لا تتجاوز صافي الفاتورة · وآخرها يأخذ ما بقي من ضريبتها', () => {
+  const db = memDb();
+  const id = saveInvoice(db, inv({ lines: [{ descr: 'خدمة صغيرة', qty: 1, priceHalalas: 100, taxPct: 15 }] }), 'مستحقة');
+  let n = 0;
+  for (;;) {
+    try { saveCreditNote(db, id, { date: '2026-02-20', reason: 'جزء ' + n, subtotalHalalas: 3 }); n++; } catch { break; }
+    if (n > 60) break;
+  }
+  const c = db.get<{ s: number; t: number }>(
+    `SELECT COALESCE(SUM(subtotal_halalas), 0) AS s, COALESCE(SUM(tax_halalas), 0) AS t FROM invoices WHERE ref_invoice_id = ?`, [id])!;
+  expect(-Number(c.s)).toBeLessThanOrEqual(100);
+  // ما بقي من الصافي يُشعَر به كله مع ما بقي من الضريبة
+  const leftSub = 100 + Number(c.s);
+  if (leftSub > 0) saveCreditNote(db, id, { date: '2026-02-21', reason: 'الباقي', subtotalHalalas: leftSub });
+  expect([invoiceRemaining(db, id), accountBalance(db, '2200'), accountBalance(db, '1200')]).toEqual([0, 0, 0]);
+  db.close();
+});
+
+test('#30 (التحقق المستقل) إعادة تحصيلٍ قائم تعكس تحصيله النقدي بكفاية النقد', () => {
+  const db = memDb();
+  const id = saveInvoice(db, inv(), 'مستحقة');
+  payInvoice(db, id, { method: 'cash', bankId: null, date: '2026-02-12' });
+  ownerCashOut(db, { amountHalalas: 115000, date: '2026-02-13' });
+  expect(() => payInvoice(db, id, { method: 'cash', bankId: null, date: '2026-02-14' })).toThrow();
+  expect(accountBalance(db, '1100')).toBe(0);
+  db.close();
 });
 

@@ -21,7 +21,7 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import {
-  payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, invoiceNoLabel, invoiceRemaining, creditTaxFor, KIND_CREDIT,
+  payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, invoiceNoLabel, invoiceRemaining, creditTaxFor, creditLeft, KIND_CREDIT,
   type InvoiceLineInput, type InvoicePayMethod,
 } from '../src/domain/invoices';
 import { useLang } from '../src/i18n';
@@ -639,9 +639,11 @@ function CreditNoteSheet({ invoiceId, onClose }: { invoiceId: string; onClose: (
     `SELECT no, subtotal_halalas, tax_halalas FROM invoices WHERE id = ?`, [invoiceId]);
   if (!v) return null;
   const sub = toHalalas(amount);
-  const tax = creditTaxFor({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) }, sub);
+  // كما تحسبها الخدمة: الباقي كله يأخذ ما بقي من الضريبة
+  const rest = creditLeft(db, invoiceId, Number(v.subtotal_halalas), Number(v.tax_halalas));
+  const tax = sub === rest.sub ? rest.tax : Math.min(rest.tax, creditTaxFor({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) }, sub));
   const left = invoiceRemaining(db, invoiceId);
-  const ok = sub > 0 && sub + tax <= left && !!reason.trim();
+  const ok = sub > 0 && sub <= rest.sub && sub + tax <= left && !!reason.trim();
   return (
     <Sheet visible onClose={onClose} title={t('invoice.issueCredit') + ' · ' + v.no}
       footer={ok ? (
