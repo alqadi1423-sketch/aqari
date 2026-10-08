@@ -10,10 +10,10 @@ import { readMembership } from '../services/access';
 import { getSyncState, setSyncState } from '../sync/engine';
 import { ChatRemote } from './remote';
 import { chatSyncOnce, type ChatSyncResult } from './sync';
-import { CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe } from './types';
+import { CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe, type GroupSettings } from './types';
 import { logAudit } from '../domain/audit';
 import type { RemoteMessage, RemoteThread } from './remote';
-import { applyRemoteThread, getThreadRow } from './store';
+import { applyRemoteThread } from './store';
 
 export * from './types';
 export {
@@ -94,7 +94,7 @@ export async function chatPurgeOrg(s: ChatSession, org: string, o: { keepDirecto
 export async function chatLeaveOrg(s: ChatSession, org: string): Promise<void> {
   const r = remoteFor(s, org);
   for (const t of await r.myThreads()) {
-    if (t.k === 'group') await r.leaveGroup(t.id, t.p, t.name).catch(() => {});
+    if (t.k === 'group') await r.leaveGroup(t.id).catch(() => {});
   }
   await r.deleteIn(`chatDir/${s.uid}`).catch(() => {});
 }
@@ -115,17 +115,34 @@ export async function chatRemoveMember(s: ChatSession, org: string, uid: string,
   const groups = await r.groupsOf(uid);
   let n = 0;
   for (const g of groups) {
-    try { await r.updateGroup(g.id, g.p.filter((x) => x !== uid), g.name); n++; } catch { /* تُعاد مع الإزالة التالية */ }
+    try { await r.removeMembers(g.id, [uid]); n++; } catch { /* تُعاد مع الإزالة التالية */ }
   }
   return n;
 }
 
-/** تعديل أعضاء المجموعة واسمها · للمالك ومنشئها · يحتاج اتصالاً، ثم يُطبَّق على الجهاز (#19) */
-export async function chatUpdateGroup(db: DB, s: ChatSession, org: string, threadId: string, members: string[], name: string): Promise<void> {
-  const all = Array.from(new Set(members.filter(Boolean))).sort();
-  const n = name.trim().slice(0, CHAT_NAME_MAX);
-  await remoteFor(s, org).updateGroup(threadId, all, n);
-  applyRemoteThread(db, { ...(getThreadRow(db, threadId)), id: threadId, k: 'group', p: all, name: n });
+/**
+ * تعديل المجموعة · يحتاج اتصالاً، ثم يُطبَّق على الجهاز كما في الخادم · كلٌّ بصلاحيته وتفرضها القواعد:
+ * الاسم والإعدادات للمسؤولين، وتعيين المسؤولين للمالك والمنشئ، والإضافة للمسؤولين (ولكل الأعضاء إن أُذن)،
+ * والإزالة للمالك والمنشئ (#19 وقرار المالك 2026-10-08T05:31Z)
+ */
+export interface GroupChange { name?: string; s?: GroupSettings; a?: string[]; members?: string[] }
+export async function chatEditGroup(db: DB, s: ChatSession, org: string, threadId: string, c: GroupChange,
+  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  const name = c.name === undefined ? undefined : c.name.trim().slice(0, CHAT_NAME_MAX);
+  try {
+    if (name !== undefined || c.s) await r.setGroupMeta(threadId, { ...(name !== undefined ? { name } : {}), ...(c.s ? { s: c.s } : {}) });
+    if (c.members) {
+      const cur = await r.getThread(threadId);
+      const all = Array.from(new Set(c.members.filter(Boolean)));
+      const gone = cur.p.filter((u) => !all.includes(u));
+      if (gone.length) await r.removeMembers(threadId, gone);
+      for (const u of all) if (!cur.p.includes(u)) await r.addMember(threadId, u);
+    }
+    if (c.a) await r.setGroupMeta(threadId, { a: c.a });
+  } finally {
+    // ما نجح منه يظهر على الجهاز كما في الخادم
+    try { applyRemoteThread(db, await r.getThread(threadId)); } catch { /* يُحدَّث في المزامنة التالية */ }
+  }
 }
 
 /* ─── مراجعة المالك محادثةً بسبب، وانضمامه إلى مجموعة (قرارا المالك 2026-10-08T04:11Z) ─── */
@@ -160,9 +177,10 @@ export async function chatCloseReview(s: ChatSession, org: string, chatId: strin
 /** المالك ينضم إلى مجموعة ليس فيها · ومعه سطر «انضم المالك» للأعضاء · ثم تصير من محادثاته */
 export async function chatJoinGroup(db: DB, s: ChatSession, org: string, t: { id: string; p: string[]; name: string; by?: string; at?: string | null },
   myName: string, r: ChatRemote = remoteFor(s, org)): Promise<void> {
-  const line = await r.joinGroup(t.id, t.p, t.name, myName);
+  const line = await r.joinGroup(t.id, myName);
   logAudit(db, CHAT_MODULE, 'update', JOIN_ENTITY, t.name, null, { chat: t.id, line });
-  applyRemoteThread(db, { id: t.id, k: 'group', p: Array.from(new Set([...t.p, s.uid])), name: t.name, by: t.by ?? '', at: t.at ?? null });
+  // كما في الخادم بعد الانضمام · بوقت انضمامه وإعداداتها
+  applyRemoteThread(db, await r.getThread(t.id).catch(() => ({ id: t.id, k: 'group' as const, p: Array.from(new Set([...t.p, s.uid])), name: t.name, by: t.by ?? '', at: t.at ?? null })));
 }
 
 /** إشراف عضو بإيميله · للمالك وحده (القواعد) */

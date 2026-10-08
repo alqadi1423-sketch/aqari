@@ -15,7 +15,7 @@ import { useAccess } from '../src/ui/access';
 import { useLang } from '../src/i18n';
 import { dfmt } from '../src/domain/dates';
 import {
-  cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatUpdateGroupNow,
+  cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatEditGroupNow,
   chatReviewCandidatesNow, chatOpenReviewNow, chatCloseReviewNow, chatJoinGroupNow,
 } from '../src/services/cloud';
 import type { RemoteMessage, RemoteThread } from '../src/chat/remote';
@@ -28,6 +28,7 @@ import { reportFailure } from '../src/ui/failureDialog';
 import {
   chatMe, canCreateGroup, createGroup, getThread, linkCandidates, linkTarget, listMessages, listPeople, listThreads,
   markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup,
+  isGroupAdmin, canAppointAdmins, canAddMembers, canSendIn, GROUP_DEFAULTS, type GroupSettings, type GroupChange,
   type ChatLink, type ChatMe, type ChatPerson, type ChatThread,
 } from '../src/chat';
 
@@ -158,27 +159,69 @@ function PersonSheet({ me, people, onClose, onPick }: { me: ChatMe; people: Chat
   );
 }
 
+/** إعدادات المجموعة الثلاثة (قرار المالك 2026-10-08T05:31Z) · تُحدَّد عند الإنشاء ويعدّلها المسؤولون */
+function GroupSettingsPicker({ value, onChange, disabled }: { value: Required<GroupSettings>; onChange: (v: Required<GroupSettings>) => void; disabled?: boolean }) {
+  const { t } = useLang();
+  const row = <K extends keyof GroupSettings>(label: string, key: K, opts: Array<[Required<GroupSettings>[K], string]>) => (
+    <View style={{ marginTop: 6 }}>
+      <T size={TYPE.caption} color={C.muted}>{label}</T>
+      <Row style={{ flexWrap: 'wrap' }}>
+        {opts.map(([v, l]) => (
+          <Chip key={String(v)} label={l} active={value[key] === v} onPress={() => { if (!disabled) onChange({ ...value, [key]: v }); }} />
+        ))}
+      </Row>
+    </View>
+  );
+  return (
+    <View style={{ marginTop: 6 }}>
+      <T size={TYPE.cardTitle} bold>{t('chat.settings')}</T>
+      {row(t('chat.hist'), 'h', [['all', t('chat.histAll')], ['join', t('chat.histJoin')]])}
+      {row(t('chat.whoSends'), 'w', [['all', t('chat.everyone')], ['admins', t('chat.adminsOnly')]])}
+      {row(t('chat.whoAdds'), 'ad', [['admins', t('chat.adminsOnly')], ['all', t('chat.everyone')]])}
+    </View>
+  );
+}
+
 function GroupSheet({ me, people, onClose, onCreated }: { me: ChatMe; people: ChatPerson[]; onClose: () => void; onCreated: (id: string) => void }) {
   const { db } = useApp();
   const { t } = useLang();
   const f = useSaveAttempt();
   const [name, setName] = useState('');
   const [picked, setPicked] = useState<string[]>([]);
+  const [settings, setSettings] = useState<Required<GroupSettings>>(GROUP_DEFAULTS);
+  const [admins, setAdmins] = useState<string[]>([]);
   const others = people.filter((p) => p.uid !== me.uid);
   const save = () => {
-    try { onCreated(createGroup(db, me.uid, name, picked)); } catch (e) { reportFailure({ title: t('chat.sendFailed'), e }); }
+    try { onCreated(createGroup(db, me.uid, name, picked, settings, admins.filter((u) => picked.includes(u)))); }
+    catch (e) { reportFailure({ title: t('chat.sendFailed'), e }); }
   };
   return (
     <Sheet visible onClose={onClose} title={t('chat.newGroup')} tall
       footer={<View style={{ flex: 1 }}><BtnPrimary title={t('chat.create')} onPress={() => f.attempt(!!name.trim() && picked.length > 0, save)} /></View>}>
       <Field label={t('chat.groupName')} value={name} onChange={setName} error={f.missing(name)} />
+      <GroupSettingsPicker value={settings} onChange={setSettings} />
       <T size={TYPE.cardTitle} bold style={{ marginTop: 6 }}>{t('chat.groupMembers')}</T>
       {f.tried && !picked.length ? <T size={TYPE.caption} color={C.rose}>{t('chat.pickMembers')}</T> : null}
       {others.length ? others.map((p) => (
-        <PersonRow key={p.uid} p={p} me={me} active={picked.includes(p.uid)}
-          onPress={() => setPicked((x) => (x.includes(p.uid) ? x.filter((u) => u !== p.uid) : [...x, p.uid]))} />
+        <MemberRow key={p.uid} p={p} me={me} member={picked.includes(p.uid)} admin={admins.includes(p.uid)} canAppoint
+          onToggle={() => setPicked((x) => (x.includes(p.uid) ? x.filter((u) => u !== p.uid) : [...x, p.uid]))}
+          onAdmin={() => setAdmins((x) => (x.includes(p.uid) ? x.filter((u) => u !== p.uid) : [...x, p.uid]))} />
       )) : <EmptyState>{t('chat.noPeople')}</EmptyState>}
     </Sheet>
+  );
+}
+
+/** عضو في ورقة المجموعة · ومعه «مسؤول» لمن يعيّن (المالك والمنشئ) */
+function MemberRow({ p, me, member, admin, canAppoint, onToggle, onAdmin }: {
+  p: ChatPerson; me: ChatMe; member: boolean; admin: boolean; canAppoint: boolean; onToggle: () => void; onAdmin: () => void;
+}) {
+  const { t } = useLang();
+  return (
+    <Row style={{ alignItems: 'center' }}>
+      <View style={{ flex: 1 }}><PersonRow p={p} me={me} active={member} onPress={onToggle} /></View>
+      {member && canAppoint ? <Chip label={t('chat.admin')} active={admin} onPress={onAdmin} /> : null}
+      {member && !canAppoint && admin ? <T size={TYPE.caption} color={C.emerald}>{t('chat.admin')}</T> : null}
+    </Row>
   );
 }
 
@@ -236,8 +279,8 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
     <Screen title={title} sub={sub} icon="chat" scroll={false}
       actions={(
         <Row gap={6}>
-          {/* تعديل أعضاء المجموعة للمالك ومنشئها وحدهما (قرار المالك 2026-10-07: #19) · ولغيرهما لا يظهر الزر */}
-          {thread?.kind === 'group' && canEditGroup(me, thread.createdBy) ? (
+          {/* المجموعة لمسؤوليها، ولمن يضيف أعضاء إن أُذن له (2026-10-08T05:31Z) · ولغيرهم لا يظهر الزر */}
+          {thread?.kind === 'group' && (isGroupAdmin(me, thread) || canAddMembers(me, thread)) ? (
             <BtnGhost small title={t('chat.groupMembers')} onPress={() => setEditOpen(true)} />
           ) : null}
           <BtnGhost small title={t('chat.back')} onPress={onBack} />
@@ -272,18 +315,23 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           );
         }}
       />
-      {link ? (
-        <Row style={{ paddingVertical: 4 }}>
-          <Chip label={t('chat.link.' + link.type) + ' · ' + link.label} active onPress={() => setLink(null)} />
-        </Row>
-      ) : null}
-      <Row style={{ paddingVertical: 6, alignItems: 'flex-end' }} gap={6}>
-        <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
-        <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
-          style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
-            borderRadius: 10, paddingHorizontal: 10, backgroundColor: '#FAFAF7', textAlign: 'right' }} />
-        <BtnPrimary small title={t('chat.send')} onPress={send} />
-      </Row>
+      {/* من يرسل: كل الأعضاء، أو المسؤولون وحدهم (2026-10-08T05:31Z) */}
+      {thread && !canSendIn(me, thread) ? <Note>{t('chat.adminsOnlySend')}</Note> : (
+        <>
+          {link ? (
+            <Row style={{ paddingVertical: 4 }}>
+              <Chip label={t('chat.link.' + link.type) + ' · ' + link.label} active onPress={() => setLink(null)} />
+            </Row>
+          ) : null}
+          <Row style={{ paddingVertical: 6, alignItems: 'flex-end' }} gap={6}>
+            <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
+            <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
+              style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
+                borderRadius: 10, paddingHorizontal: 10, backgroundColor: '#FAFAF7', textAlign: 'right' }} />
+            <BtnPrimary small title={t('chat.send')} onPress={send} />
+          </Row>
+        </>
+      )}
       {editOpen && thread ? (
         <GroupEditSheet me={me} people={people} thread={thread} onClose={() => setEditOpen(false)} />
       ) : null}
@@ -296,30 +344,48 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   );
 }
 
-/** أعضاء المجموعة واسمها · تعديلٌ يحتاج اتصالاً (#19) */
+/**
+ * المجموعة وإعداداتها ومسؤولوها · تعديلٌ يحتاج اتصالاً · كلٌّ بصلاحيته (#19 وقرار المالك 2026-10-08T05:31Z):
+ * الاسم والإعدادات للمسؤولين، وتعيين المسؤولين للمالك والمنشئ، والإضافة للمسؤولين (ولكل الأعضاء إن أُذن)،
+ * والإزالة للمالك والمنشئ · وما لا يحق له لا يتغير بالضغط
+ */
 function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: ChatPerson[]; thread: ChatThread; onClose: () => void }) {
   const { t } = useLang();
   const { bump } = useApp();
   const toast = useToast();
   const f = useSaveAttempt();
+  const admin = isGroupAdmin(me, thread);
+  const appoint = canAppointAdmins(me, thread);
+  const adder = canAddMembers(me, thread);
+  const remover = canEditGroup(me, thread.createdBy);
   const [name, setName] = useState(thread.name);
-  const [picked, setPicked] = useState<string[]>(thread.members.filter((u) => u !== me.uid));
+  const [settings, setSettings] = useState<Required<GroupSettings>>(thread.settings);
+  const [members, setMembers] = useState<string[]>(thread.members);
+  const [admins, setAdmins] = useState<string[]>(thread.admins);
   const others = people.filter((p) => p.uid !== me.uid);
+  const same = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+  const toggle = (uid: string) => setMembers((x) => (x.includes(uid) ? (remover ? x.filter((u) => u !== uid) : x) : (adder ? [...x, uid] : x)));
   const save = async () => {
+    const change: GroupChange = {};
+    if (admin && name.trim() !== thread.name) change.name = name;
+    if (admin && JSON.stringify(settings) !== JSON.stringify(thread.settings)) change.s = settings;
+    if (!same(members, thread.members)) change.members = members;
+    if (appoint && !same(admins, thread.admins)) change.a = admins.filter((u) => members.includes(u));
     try {
-      await chatUpdateGroupNow(thread.id, [me.uid, ...picked], name);
+      await chatEditGroupNow(thread.id, change);
       bump(); toast(t('chat.groupSaved')); onClose();
     } catch (e) { reportFailure({ title: t('chat.groupSaveFailed'), e }); }
   };
   return (
     <Sheet visible onClose={onClose} title={t('chat.editGroup')} tall
-      footer={<View style={{ flex: 1 }}><BtnPrimary title={t('common.save')} onPress={() => f.attempt(!!name.trim() && picked.length > 0, save)} /></View>}>
-      <Field label={t('chat.groupName')} value={name} onChange={setName} error={f.missing(name)} />
+      footer={<View style={{ flex: 1 }}><BtnPrimary title={t('common.save')} onPress={() => f.attempt(!!name.trim() && members.length > 0, save)} /></View>}>
+      <Field label={t('chat.groupName')} value={name} onChange={setName} error={f.missing(name)} disabled={!admin} />
+      <GroupSettingsPicker value={settings} onChange={setSettings} disabled={!admin} />
       <T size={TYPE.cardTitle} bold style={{ marginTop: 6 }}>{t('chat.groupMembers')}</T>
-      {f.tried && !picked.length ? <T size={TYPE.caption} color={C.rose}>{t('chat.pickMembers')}</T> : null}
       {others.map((p) => (
-        <PersonRow key={p.uid} p={p} me={me} active={picked.includes(p.uid)}
-          onPress={() => setPicked((x) => (x.includes(p.uid) ? x.filter((u) => u !== p.uid) : [...x, p.uid]))} />
+        <MemberRow key={p.uid} p={p} me={me} member={members.includes(p.uid)} admin={admins.includes(p.uid)} canAppoint={appoint}
+          onToggle={() => toggle(p.uid)}
+          onAdmin={() => setAdmins((x) => (x.includes(p.uid) ? x.filter((u) => u !== p.uid) : [...x, p.uid]))} />
       ))}
     </Sheet>
   );

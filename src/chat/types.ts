@@ -47,6 +47,10 @@ export interface ChatThread {
   pending: boolean;
   /** رفض الخادم إنشاءها (مثل مجموعة أنشأها مشرف سُحب إشرافه) */
   rejected: boolean;
+  /** إعدادات المجموعة ومسؤولوها المعيَّنون ووقت انضمام من أُضيف بعد إنشائها (2026-10-08T05:31Z) */
+  settings: Required<GroupSettings>;
+  admins: string[];
+  joined: Record<string, string>;
 }
 
 export interface ChatMessage {
@@ -94,6 +98,34 @@ export const OWNER_JOINED = 'انضم المالك'; // i18n-exempt: قيمة م
 export const REVIEW_ENTITY = 'مراجعة محادثة'; // i18n-exempt: قيمة مخزّنة في سجل العمليات
 export const CHAT_MODULE = 'المحادثة'; // i18n-exempt: قيمة مخزّنة في سجل العمليات
 export const JOIN_ENTITY = 'انضمام المالك إلى مجموعة'; // i18n-exempt: قيمة مخزّنة في سجل العمليات
+
+/**
+ * إعدادات المجموعة (قرار المالك 2026-10-08T05:31Z) · تُحدَّد عند الإنشاء ويعدّلها مسؤولوها:
+ *  h سجل الرسائل للمنضم الجديد: 'all' كل السابق (الافتراضي) أو 'join' من لحظة انضمامه
+ *  w من يرسل: 'all' كل الأعضاء أو 'admins' المسؤولون وحدهم
+ *  ad من يضيف أعضاء: 'admins' المسؤولون وحدهم (الافتراضي) أو 'all' كل الأعضاء
+ * والمسؤولون: المالك دائماً، ومنشئ المجموعة، ومن يعيّنه أحدهما من أعضائها.
+ */
+export interface GroupSettings { h?: 'all' | 'join'; w?: 'all' | 'admins'; ad?: 'admins' | 'all' }
+export const GROUP_DEFAULTS: Required<GroupSettings> = { h: 'all', w: 'all', ad: 'admins' };
+export const groupSettings = (s?: GroupSettings): Required<GroupSettings> => ({ ...GROUP_DEFAULTS, ...(s ?? {}) });
+
+/** مسؤول المجموعة: المالك دائماً، ومنشئها، ومن عُيِّن · له الاسم والإعدادات */
+export function isGroupAdmin(me: ChatMe, g: { createdBy: string; admins: string[] }): boolean {
+  return me.owner || me.uid === g.createdBy || g.admins.includes(me.uid);
+}
+/** تعيين المسؤولين للمالك والمنشئ وحدهما */
+export function canAppointAdmins(me: ChatMe, g: { createdBy: string }): boolean {
+  return me.owner || me.uid === g.createdBy;
+}
+/** من يضيف: المسؤولون، وكل الأعضاء إن أُذن */
+export function canAddMembers(me: ChatMe, g: { createdBy: string; admins: string[]; settings: Required<GroupSettings>; members: string[] }): boolean {
+  return isGroupAdmin(me, g) || (g.settings.ad === 'all' && g.members.includes(me.uid));
+}
+/** من يرسل: كل الأعضاء، أو المسؤولون وحدهم إن قُيِّد */
+export function canSendIn(me: ChatMe, g: { kind: ChatKind; createdBy: string; admins: string[]; settings: Required<GroupSettings> }): boolean {
+  return g.kind !== 'group' || g.settings.w === 'all' || isGroupAdmin(me, g);
+}
 
 /** من يعدّل المجموعة: المالك ومنشئها (#19) */
 export function canEditGroup(me: ChatMe, createdBy: string): boolean {

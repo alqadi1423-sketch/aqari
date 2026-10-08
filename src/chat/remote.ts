@@ -6,7 +6,7 @@ import { encodeFields, decodeFields, FirestoreHttpError } from '../cloud/firesto
 
 /** قيمة Firestore كما يفكّها العميل العام · بلا مسّ له */
 type FsValue = Parameters<typeof decodeFields>[0][string];
-import { CHAT_LINK_TYPES, OWNER_JOINED, type ChatKind, type ChatLink, type ChatPerson } from './types';
+import { CHAT_LINK_TYPES, OWNER_JOINED, type ChatKind, type ChatLink, type ChatPerson, type GroupSettings } from './types';
 import { uid as newId } from '../domain/ids';
 
 export interface ChatRemoteOptions {
@@ -19,7 +19,14 @@ export interface ChatRemoteOptions {
   fetchImpl?: typeof fetch;
 }
 
-export interface RemoteThread { id: string; k: ChatKind; p: string[]; name: string; by: string; at: string | null }
+/**
+ * المحادثة كما في الخادم · s إعدادات المجموعة، a مسؤولوها المعيَّنون، jt وقت انضمام من أُضيف بعد إنشائها
+ * (قرار المالك 2026-10-08T05:31Z) · والأوائل وقت انضمامهم وقت إنشائها
+ */
+export interface RemoteThread {
+  id: string; k: ChatKind; p: string[]; name: string; by: string; at: string | null;
+  s?: GroupSettings; a?: string[]; jt?: Record<string, string>;
+}
 /** sys: سطر نظام لا رسالة · 'join' انضم المالك (قرار المالك 2026-10-08T04:11Z) */
 export interface RemoteMessage { id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null }
 
@@ -35,11 +42,25 @@ function linkOf(v: unknown): ChatLink | null {
 
 function threadOf(doc: { name: string; fields: Record<string, FsValue> }): RemoteThread {
   const d = decodeFields(doc.fields);
+  const jt: Record<string, string> = {};
+  for (const [k, v] of Object.entries((d.jt && typeof d.jt === 'object' ? d.jt : {}) as Record<string, unknown>)) if (typeof v === 'string') jt[k] = v;
   return {
     id: tail(doc.name), k: d.k === 'group' ? 'group' : 'direct', p: Array.isArray(d.p) ? (d.p as string[]) : [],
     name: String(d.name ?? ''), by: String(d.by ?? ''), at: typeof d.at === 'string' ? d.at : null,
+    s: (d.s && typeof d.s === 'object' ? d.s : {}) as GroupSettings, a: Array.isArray(d.a) ? (d.a as string[]) : [], jt,
   };
 }
+
+function msgOf(doc: { name: string; fields: Record<string, FsValue> }): RemoteMessage {
+  const d = decodeFields(doc.fields);
+  return {
+    id: tail(doc.name), from: String(d.from ?? ''), name: String(d.name ?? ''),
+    body: String(d.body ?? ''), link: linkOf(d.link), ts: String(d.ts ?? ''), sys: typeof d.sys === 'string' ? d.sys : null,
+  };
+}
+
+/** مسار حقلٍ في خريطة بمفتاحٍ قد يحوي أي حرف (رقم عضو) */
+const mapKey = (field: string, key: string) => field + '.`' + key.replace(/\\/g, '\\\\').replace(/`/g, '\\`') + '`';
 
 export class ChatRemote {
   private docsRoot: string;
@@ -85,8 +106,17 @@ export class ChatRemote {
 
   /* ─── المحادثات ─── */
 
-  async createThread(t: { id: string; k: ChatKind; p: string[]; name: string }): Promise<'created' | 'exists'> {
-    return this.createOnce(this.orgPath(`chats/${t.id}`), { k: t.k, p: t.p, name: t.name, by: this.o.uid }, 'at');
+  /** المجموعة بإعداداتها ومسؤوليها المعيَّنين عند الإنشاء (قرار المالك 2026-10-08T05:31Z) */
+  async createThread(t: { id: string; k: ChatKind; p: string[]; name: string; s?: GroupSettings; a?: string[] }): Promise<'created' | 'exists'> {
+    const fields: Record<string, unknown> = { k: t.k, p: t.p, name: t.name, by: this.o.uid };
+    if (t.k === 'group') { fields.s = t.s ?? {}; fields.a = t.a ?? []; }
+    return this.createOnce(this.orgPath(`chats/${t.id}`), fields, 'at');
+  }
+
+  /** المحادثة كما في الخادم · لأطرافها والمالك */
+  async getThread(threadId: string): Promise<RemoteThread> {
+    const doc = (await this.req('GET', `${this.root}/${this.orgPath(`chats/${threadId}`)}`)) as { name: string; fields: Record<string, FsValue> };
+    return threadOf(doc);
   }
 
   /** محادثاتي في المنشأة · مَن أنا من أطرافها */
@@ -122,7 +152,7 @@ export class ChatRemote {
         currentDocument: { exists: false },
         updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
       },
-      { update: { name: `${base}/ids/${id}`, fields: {} }, currentDocument: { exists: false } },
+      { update: { name: `${base}/ids/${id}`, fields: {} }, currentDocument: { exists: false }, updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }] },
     ];
   }
 
@@ -152,20 +182,67 @@ export class ChatRemote {
   /**
    * انضمام المالك إلى مجموعة ليس فيها · ومعه سطر «انضم المالك» للأعضاء في الالتزام نفسه (قرار المالك 2026-10-08T04:11Z)
    */
-  async joinGroup(threadId: string, p: string[], name: string, myName: string): Promise<string> {
+  async joinGroup(threadId: string, myName: string): Promise<string> {
     const id = 'j_' + newId();
-    const all = Array.from(new Set([...p, this.o.uid])).sort();
     await this.req('POST', `${this.root}:commit`, {
       writes: [
-        {
-          update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}`)}`, fields: encodeFields({ p: all, name, jm: id }) },
-          updateMask: { fieldPaths: ['p', 'jm'] },
-          currentDocument: { exists: true },
-        },
+        this.addWrite(threadId, this.o.uid, { jm: id }),
         ...this.msgWrites(threadId, id, { from: this.o.uid, name: myName, body: OWNER_JOINED, link: null, att: null, sys: 'join' }),
       ],
     });
     return id;
+  }
+
+  /**
+   * إضافة عضو واحد · بوقت انضمامه من الخادم (jt) ورقمه في la · فالخادم يفرض «من لحظة انضمامه» بوقتٍ لا يضعه الجهاز
+   */
+  private addWrite(threadId: string, uid: string, extra: Record<string, unknown> = {}): unknown {
+    const fields = { la: uid, ...extra };
+    return {
+      update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}`)}`, fields: encodeFields(fields) },
+      updateMask: { fieldPaths: Object.keys(fields) },
+      currentDocument: { exists: true },
+      updateTransforms: [
+        { fieldPath: 'p', appendMissingElements: { values: [{ stringValue: uid }] } },
+        { fieldPath: mapKey('jt', uid), setToServerValue: 'REQUEST_TIME' },
+      ],
+    };
+  }
+
+  async addMember(threadId: string, uid: string): Promise<void> {
+    await this.req('POST', `${this.root}:commit`, { writes: [this.addWrite(threadId, uid)] });
+  }
+
+  /** إزالة أعضاء ومعها خروجهم من المسؤولين · للمالك والمنشئ (#19) · ولصاحبه وحده بالمغادرة */
+  async removeMembers(threadId: string, uids: string[]): Promise<void> {
+    const values = uids.map((u) => ({ stringValue: u }));
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [{
+        update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}`)}`, fields: {} },
+        updateMask: { fieldPaths: [] },
+        currentDocument: { exists: true },
+        updateTransforms: [
+          { fieldPath: 'p', removeAllFromArray: { values } },
+          { fieldPath: 'a', removeAllFromArray: { values } },
+        ],
+      }],
+    });
+  }
+
+  /** الاسم والإعدادات (للمسؤولين) وتعيين المسؤولين (للمالك والمنشئ) · ما يُمرَّر وحده */
+  async setGroupMeta(threadId: string, m: { name?: string; s?: GroupSettings; a?: string[] }): Promise<void> {
+    const fields: Record<string, unknown> = {};
+    if (m.name !== undefined) fields.name = m.name;
+    if (m.s !== undefined) fields.s = m.s;
+    if (m.a !== undefined) fields.a = m.a;
+    if (!Object.keys(fields).length) return;
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [{
+        update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}`)}`, fields: encodeFields(fields) },
+        updateMask: { fieldPaths: Object.keys(fields) },
+        currentDocument: { exists: true },
+      }],
+    });
   }
 
   /* ─── مراجعة المالك محادثةً بسبب (قرار المالك 2026-10-08T04:11Z) ─── */
@@ -213,6 +290,34 @@ export class ChatRemote {
     return out;
   }
 
+  /**
+   * رسائل مجموعة «من لحظة انضمامه» بعد مؤشر لا يسبق انضمامه: أرقامها من ids (بلا محتوى) ثم الرسائل رسالةً رسالة ·
+   * فالخادم يفرض على كل رسالة أنها بعد انضمامه (قرار المالك 2026-10-08T05:31Z)
+   */
+  async messagesSinceJoined(threadId: string, cursor: string, limit = 200): Promise<RemoteMessage[]> {
+    return (await this.joinedPage(threadId, cursor, limit)).msgs;
+  }
+
+  /** صفحة «من لحظة انضمامه»: الرسائل وعدد الأرقام التي جاءت بها (فالصفحة تُعدّ بالأرقام) */
+  async joinedPage(threadId: string, cursor: string, limit = 200): Promise<{ msgs: RemoteMessage[]; ids: number; lastTs: string | null }> {
+    const rows = (await this.req('POST', `${this.root}/orgs/${this.o.org}/chats/${threadId}:runQuery`, {
+      structuredQuery: {
+        from: [{ collectionId: 'ids' }],
+        where: { fieldFilter: { field: { fieldPath: 'ts' }, op: 'GREATER_THAN_OR_EQUAL', value: { timestampValue: cursor } } },
+        orderBy: [{ field: { fieldPath: 'ts' }, direction: 'ASCENDING' }],
+        limit,
+      },
+    })) as Array<{ document?: { name: string } }>;
+    const docs = rows.filter((r) => r.document) as Array<{ document: { name: string; fields?: Record<string, FsValue> } }>;
+    const names = docs.map((r) => r.document.name.replace('/ids/', '/msgs/'));
+    if (!names.length) return { msgs: [], ids: 0, lastTs: null };
+    const lastTs = String(decodeFields(docs[docs.length - 1].document.fields ?? {}).ts ?? '') || null;
+    const got = (await this.req('POST', `${this.root}:batchGet`, { documents: names })) as Array<{ found?: { name: string; fields: Record<string, FsValue> } }>;
+    const msgs = got.filter((g) => g.found).map((g) => msgOf(g.found!))
+      .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    return { msgs, ids: names.length, lastTs };
+  }
+
   /** رسائل محادثة بعد مؤشر وقت الخادم · بترتيبه */
   async messagesSince(threadId: string, cursor: string | null, limit = 200): Promise<RemoteMessage[]> {
     const where = cursor
@@ -226,34 +331,26 @@ export class ChatRemote {
         limit,
       },
     })) as Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
-    const out: RemoteMessage[] = [];
-    for (const r of rows) {
-      if (!r.document) continue;
-      const d = decodeFields(r.document.fields);
-      out.push({
-        id: tail(r.document.name), from: String(d.from ?? ''), name: String(d.name ?? ''),
-        body: String(d.body ?? ''), link: linkOf(d.link), ts: String(d.ts ?? ''), sys: typeof d.sys === 'string' ? d.sys : null,
-      });
-    }
-    return out;
+    return rows.filter((r) => r.document).map((r) => msgOf(r.document!));
   }
 
   /* ─── تعديل المجموعة والحذف (قرارات المالك 2026-10-07 على مراجعة المحادثة) ─── */
 
-  /** أعضاء المجموعة واسمها · للمالك ومنشئها (القواعد) · #19 */
+  /**
+   * أعضاء المجموعة واسمها كما يُراد · الاسم، ثم الإزالة، ثم الإضافة عضواً عضواً (كلٌّ بوقت انضمامه) · #19
+   */
   async updateGroup(threadId: string, p: string[], name: string): Promise<void> {
-    await this.req('POST', `${this.root}:commit`, {
-      writes: [{
-        update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}`)}`, fields: encodeFields({ p, name }) },
-        updateMask: { fieldPaths: ['p', 'name'] },
-        currentDocument: { exists: true },
-      }],
-    });
+    const cur = await this.getThread(threadId);
+    const want = new Set(p.filter(Boolean));
+    if (name !== cur.name) await this.setGroupMeta(threadId, { name });
+    const gone = cur.p.filter((u) => !want.has(u));
+    if (gone.length) await this.removeMembers(threadId, gone);
+    for (const u of want) if (!cur.p.includes(u)) await this.addMember(threadId, u);
   }
 
   /** العضو يُخرج نفسه من مجموعة (مغادرة المنشأة) · القواعد تجيز إخراج نفسه وحده */
-  async leaveGroup(threadId: string, p: string[], name: string): Promise<void> {
-    await this.updateGroup(threadId, p.filter((x) => x !== this.o.uid), name);
+  async leaveGroup(threadId: string): Promise<void> {
+    await this.removeMembers(threadId, [this.o.uid]);
   }
 
   /** مجموعات المنشأة التي فيها عضو · للمالك · #19 */
@@ -278,6 +375,7 @@ export class ChatRemote {
   async anonymizeMine(label: string): Promise<number> {
     let n = 0;
     for (const t of await this.myThreads()) {
+      // رسائله هو في كل مجموعة، ولو كان سجلها «من لحظة انضمامه» (القواعد تجيز له رسائله دائماً)
       const rows = (await this.req('POST', `${this.root}/orgs/${this.o.org}/chats/${t.id}:runQuery`, {
         structuredQuery: {
           from: [{ collectionId: 'msgs' }],

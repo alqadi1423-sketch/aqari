@@ -11,7 +11,7 @@ import type { ChatRemote } from './remote';
 import type { ChatMe } from './types';
 import {
   applyRemoteMessage, applyRemoteThread, heldThreads, markMessageRejected, markSent, markThreadPushed, markThreadRejected,
-  pendingMessages, pendingThreads, forgetObserved,
+  pendingMessages, pendingThreads, forgetObserved, joinFloor,
   savePeople, threadCursor,
 } from './store';
 
@@ -34,16 +34,40 @@ const PAGE = 200;
 
 const stamp = (db: DB, k: string) => Number(getSyncState(db, k) ?? 0);
 
-/** رسائل محادثة بعد مؤشرها · «أكبر من أو يساوي» فلا تُفقد رسالة بالوقت نفسه، والمعروف منها لا يتكرر */
-async function pullThread(db: DB, remote: ChatRemote, threadId: string): Promise<number> {
+/**
+ * رسائل محادثة بعد مؤشرها · «أكبر من أو يساوي» فلا تُفقد رسالة بالوقت نفسه، والمعروف منها لا يتكرر ·
+ * والمجموعة التي سجلُّها «من لحظة انضمامه» من وقت انضمامي وبطريقها (2026-10-08T05:31Z)
+ */
+async function pullThread(db: DB, remote: ChatRemote, threadId: string, me: string, retried = false): Promise<number> {
+  try {
+    return await pullThreadOnce(db, remote, threadId, me);
+  } catch (e) {
+    // تبدّل سجل المجموعة عند غيري (أو أُخرجت): تُجلب كما في الخادم وتُعاد مرة
+    if (retried || !/Firestore 403/.test(String(e))) throw e;
+    applyRemoteThread(db, await remote.getThread(threadId));
+    return pullThread(db, remote, threadId, me, true);
+  }
+}
+
+async function pullThreadOnce(db: DB, remote: ChatRemote, threadId: string, me: string): Promise<number> {
+  const floor = joinFloor(db, threadId, me);
   let cursor = threadCursor(db, threadId);
+  if (floor && (!cursor || cursor < floor)) cursor = floor;
   let n = 0;
   for (let guard = 0; guard < 50; guard++) {
-    const page = await remote.messagesSince(threadId, cursor, PAGE);
+    let page: Awaited<ReturnType<ChatRemote['messagesSince']>>;
+    let full: boolean;
+    let last: string | null;
+    if (floor) {
+      const j = await remote.joinedPage(threadId, cursor!, PAGE);
+      page = j.msgs; full = j.ids >= PAGE; last = j.lastTs;
+    } else {
+      page = await remote.messagesSince(threadId, cursor, PAGE);
+      full = page.length >= PAGE; last = page.length ? page[page.length - 1].ts : null;
+    }
     for (const m of page) applyRemoteMessage(db, threadId, m);
     n += page.length;
-    if (page.length < PAGE) break;
-    const last = page[page.length - 1].ts;
+    if (!full || !last) break;
     if (last === cursor) break; // صفحة كاملة بوقت واحد · لا تقدّم ممكن
     cursor = last;
   }
@@ -76,7 +100,7 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
   // ٢) المحادثات المنشأة على الجهاز · لا تُرفع قبل أول رسالة فيها (فلا تظهر عند الطرف الآخر فارغة)
   for (const t of pendingThreads(db, me.uid)) {
     try {
-      await remote.createThread({ id: t.id, k: t.kind, p: t.members, name: t.name });
+      await remote.createThread({ id: t.id, k: t.kind, p: t.members, name: t.name, ...(t.kind === 'group' ? { s: t.settings, a: t.admins } : {}) });
       markThreadPushed(db, t.id);
       r.pushedThreads++;
     } catch (e) {
@@ -105,7 +129,7 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
 
   // ٤) السحب: المحادثة المفتوحة وحدها، أو الكل حين يحين أو يُطلب
   if (o.threadId && !o.force) {
-    try { r.pulledMessages += await pullThread(db, remote, o.threadId); } catch { r.failed++; }
+    try { r.pulledMessages += await pullThread(db, remote, o.threadId, me.uid); } catch { r.failed++; }
     return r;
   }
   if (!o.force && !o.full && now - stamp(db, 'chat_full_at') < FULL_EVERY_MS) return r;
@@ -115,7 +139,7 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
   try { threads = await remote.myThreads(); } catch { r.failed++; return r; }
   for (const t of threads) {
     applyRemoteThread(db, t);
-    try { r.pulledMessages += await pullThread(db, remote, t.id); } catch { r.failed++; }
+    try { r.pulledMessages += await pullThread(db, remote, t.id, me.uid); } catch { r.failed++; }
   }
   setSyncState(db, 'chat_full_at', String(now));
   return r;

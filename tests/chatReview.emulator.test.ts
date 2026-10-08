@@ -123,7 +123,7 @@ d('مراجعة المحادثات بسبب وانضمام المالك (2026-10
   test('ثانياً انضمام المالك إلى مجموعة ليس فيها: مسموح ومعه سطر «انضم المالك» · لا بدونه', async () => {
     // بلا سطر الانضمام يُرفض
     expect(await status(chat(ORG).updateGroup(G, [A, B, C, ORG].sort(), 'مجموعة بلا المالك'))).toBe(403);
-    await chat(ORG).joinGroup(G, [A, B, C].sort(), 'مجموعة بلا المالك', NAMES[ORG]);
+    await chat(ORG).joinGroup(G, NAMES[ORG]);
     expect((await chat(A).myThreads()).find((t) => t.id === G)!.p).toContain(ORG);
     const msgs = await chat(A).messagesSince(G, null);
     const line = msgs[msgs.length - 1];
@@ -150,11 +150,11 @@ d('مراجعة المحادثات بسبب وانضمام المالك (2026-10
     expect(await put(`orgs/${ORG}/chats/${G}?updateMask.fieldPaths=jm`, { jm: 'RB1' }, ORG)).toBe(403);
     expect(await put(`orgs/${ORG}/chats/${G}?updateMask.fieldPaths=jm`, { jm: 'RB1' }, B)).toBe(403);
     // انضمام ثم خروج ثم انضمام بسطر الانضمام الأول: يُرفض · وبسطر جديد يُقبل
-    const first = await chat(ORG).joinGroup(G, [A, B, C].sort(), 'مجموعة بلا المالك', NAMES[ORG]);
+    const first = await chat(ORG).joinGroup(G, NAMES[ORG]);
     expect(await status(chat(ORG).updateGroup(G, [A, B, C].sort(), 'مجموعة بلا المالك'))).toBe(200);
     expect(await put(`orgs/${ORG}/chats/${G}?updateMask.fieldPaths=p&updateMask.fieldPaths=jm`, { p: [A, B, C, ORG].sort(), jm: 'x' }, ORG)).toBe(403);
     // انضمام ثانٍ بسطر جديد يُقبل · ثم خروج
-    expect(await status(chat(ORG).joinGroup(G, [A, B, C].sort(), 'مجموعة بلا المالك', NAMES[ORG]))).toBe(200);
+    expect(await status(chat(ORG).joinGroup(G, NAMES[ORG]))).toBe(200);
     expect(await status(chat(ORG).updateGroup(G, [A, B, C].sort(), 'مجموعة بلا المالك'))).toBe(200);
     // ثم انضمام بالسطر الأول (يخالف jm الحالي وهو سطر انضمام منه): يُرفض لأنه لم يُكتب في هذا الالتزام
     const rejoinOld = await commit(ORG, [{
@@ -163,10 +163,10 @@ d('مراجعة المحادثات بسبب وانضمام المالك (2026-10
     }]);
     expect(rejoinOld).toBe(403);
     // الفردية لا ينضم إليها ولا يُدخل نفسه فيها
-    expect(await status(chat(ORG).joinGroup(dAC, [A, C].sort(), '', NAMES[ORG]))).toBe(403);
+    expect(await status(chat(ORG).joinGroup(dAC, NAMES[ORG]))).toBe(403);
     expect(await put(`orgs/${ORG}/chats/${dAC}?updateMask.fieldPaths=p`, { p: [A, C, ORG].sort() }, ORG)).toBe(403);
     // لا يكتب باسم غيره ولو صار طرفاً · ينضم بسطر جديد أولاً فيصير طرفاً، فيكون الرفض للاسم وحده
-    expect(await status(chat(ORG).joinGroup(G, [A, B, C].sort(), 'مجموعة بلا المالك', NAMES[ORG]))).toBe(200);
+    expect(await status(chat(ORG).joinGroup(G, NAMES[ORG]))).toBe(200);
     expect(await status(chat(ORG).sendMessage(G, { id: 'RZ0', name: NAMES[ORG], body: 'باسمه', link: null }))).toBe(200);
     expect(await status(chat(ORG).sendMessage(G, { id: 'RZ1', name: NAMES[A], body: 'باسم أ', link: null }))).toBe(403);
   });

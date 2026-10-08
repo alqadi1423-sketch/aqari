@@ -4,7 +4,7 @@
 import type { DB } from '../db/adapter';
 import { uid as newId } from '../domain/ids';
 import {
-  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, directId,
+  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, directId, groupSettings, type GroupSettings,
   type ChatKind, type ChatLink, type ChatMessage, type ChatPerson, type ChatThread,
 } from './types';
 
@@ -21,14 +21,34 @@ function parseList(raw: string | null | undefined): string[] {
 
 interface ThreadRow {
   id: string; kind: ChatKind; name: string; members: string; created_by: string; created_at: string | null;
-  last_ts: string | null; last_body: string; read_ts: string | null; pending: number; unread: number;
+  last_ts: string | null; last_body: string; read_ts: string | null; pending: number; unread: number; meta: string | null;
 }
 
-const threadOf = (r: ThreadRow): ChatThread => ({
-  id: r.id, kind: r.kind, name: r.name, members: parseList(r.members), createdBy: r.created_by,
-  createdAt: r.created_at, lastTs: r.last_ts, lastBody: r.last_body, unread: Number(r.unread || 0), pending: !!r.pending,
-  rejected: Number(r.pending) === 2,
-});
+function metaOf(raw: string | null | undefined): { s?: GroupSettings; a?: string[]; jt?: Record<string, string> } {
+  try { const v = JSON.parse(raw || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+}
+
+const threadOf = (r: ThreadRow): ChatThread => {
+  const m = metaOf(r.meta);
+  return {
+    id: r.id, kind: r.kind, name: r.name, members: parseList(r.members), createdBy: r.created_by,
+    createdAt: r.created_at, lastTs: r.last_ts, lastBody: r.last_body, unread: Number(r.unread || 0), pending: !!r.pending,
+    rejected: Number(r.pending) === 2,
+    settings: groupSettings(m.s), admins: Array.isArray(m.a) ? m.a : [], joined: m.jt && typeof m.jt === 'object' ? m.jt : {},
+  };
+};
+
+/**
+ * من أين يقرأ عضوٌ مجموعةً سجلُّها «من لحظة انضمامه»: وقت انضمامه، والأوائل وقت إنشائها · null لما سواها
+ * (قرار المالك 2026-10-08T05:31Z)
+ */
+export function joinFloor(db: DB, threadId: string, me: string): string | null {
+  const r = db.get<ThreadRow>(`SELECT * FROM chat_threads WHERE id = ?`, [threadId]);
+  if (!r) return null;
+  const t = threadOf(r);
+  if (t.kind !== 'group' || t.settings.h !== 'join') return null;
+  return t.joined[me] ?? t.createdAt ?? '1970-01-01T00:00:00Z';
+}
 
 /**
  * محادثاتي بآخر نشاط · وغير المقروء من رسائل الآخرين · onlyMine للمالك: ما ليس طرفاً فيه لا يظهر في قائمته
@@ -80,17 +100,18 @@ export function openDirect(db: DB, me: string, other: string): string {
   return id;
 }
 
-/** مجموعة جديدة · المالك والمشرفون وحدهم (تفحصه الواجهة وقواعد الخادم) */
-export function createGroup(db: DB, me: string, name: string, members: string[]): string {
+/** مجموعة جديدة بإعداداتها ومسؤوليها · المالك والمشرفون وحدهم (تفحصه الواجهة وقواعد الخادم) */
+export function createGroup(db: DB, me: string, name: string, members: string[], settings: GroupSettings = {}, admins: string[] = []): string {
   const n = name.trim().slice(0, CHAT_NAME_MAX);
   if (!n) throw new Error('chat: group name');
   const all = Array.from(new Set([me, ...members.filter(Boolean)])).sort();
   if (all.length < 2) throw new Error('chat: group needs members');
   if (all.length > CHAT_GROUP_MAX) throw new Error('chat: group too large');
   const id = 'g_' + newId();
+  const meta = { s: groupSettings(settings), a: admins.filter((u) => all.includes(u) && u !== me), jt: {} };
   db.run(
-    `INSERT INTO chat_threads (id, kind, name, members, created_by, created_at, pending)
-     VALUES (?, 'group', ?, ?, ?, ?, 1)`, [id, n, JSON.stringify(all), me, nowIso()]);
+    `INSERT INTO chat_threads (id, kind, name, members, created_by, created_at, pending, meta)
+     VALUES (?, 'group', ?, ?, ?, ?, 1, ?)`, [id, n, JSON.stringify(all), me, nowIso(), JSON.stringify(meta)]);
   return id;
 }
 
@@ -186,13 +207,23 @@ export function markSent(db: DB, id: string, serverTs: string | null): void {
 
 /* ─── ما يصل من السحابة ─── */
 
-export function applyRemoteThread(db: DB, t: { id: string; k: ChatKind; p: string[]; name: string; by: string; at: string | null }): void {
+export function applyRemoteThread(db: DB, t: {
+  id: string; k: ChatKind; p: string[]; name: string; by: string; at: string | null;
+  s?: GroupSettings; a?: string[]; jt?: Record<string, string>;
+}): void {
+  const meta = JSON.stringify({ s: groupSettings(t.s), a: t.a ?? [], jt: t.jt ?? {} });
+  // من «من لحظة انضمامه» إلى «كل السابق»: يُعاد المؤشر فيصل ما قبل الانضمام (قرار المالك 2026-10-08T05:31Z)
+  const old = db.get<{ meta: string | null }>(`SELECT meta FROM chat_threads WHERE id = ?`, [t.id]);
+  if (old && metaOf(old.meta).s?.h === 'join' && groupSettings(t.s).h === 'all') {
+    db.run(`UPDATE chat_threads SET msg_cursor = NULL WHERE id = ?`, [t.id]);
+  }
   db.run(
-    `INSERT INTO chat_threads (id, kind, name, members, created_by, created_at, pending)
-     VALUES (?,?,?,?,?,?,0)
+    `INSERT INTO chat_threads (id, kind, name, members, created_by, created_at, pending, meta)
+     VALUES (?,?,?,?,?,?,0,?)
      ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, name = excluded.name, members = excluded.members,
-       created_by = excluded.created_by, created_at = COALESCE(chat_threads.created_at, excluded.created_at), pending = 0`,
-    [t.id, t.k, t.name, JSON.stringify([...t.p].sort()), t.by, t.at]);
+       created_by = excluded.created_by, created_at = COALESCE(excluded.created_at, chat_threads.created_at), pending = 0,
+       meta = excluded.meta`,
+    [t.id, t.k, t.name, JSON.stringify([...t.p].sort()), t.by, t.at, meta]);
 }
 
 export function applyRemoteMessage(db: DB, threadId: string, m: { id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null }): void {

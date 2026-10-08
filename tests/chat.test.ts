@@ -21,7 +21,7 @@ function fakeCloud() {
   const msgs = new Map<string, RemoteMessage[]>();
   const dir = new Map<string, { name: string; sup: string[] }>();
   let clock = 0;
-  const state = { offline: false, sends: 0 };
+  const state = { offline: false, sends: 0, joinedCalls: 0 };
   const ts = () => new Date(Date.UTC(2026, 0, 1) + ++clock * 1000).toISOString();
   const remote = (uid: string): ChatRemote => {
     const guard = () => { if (state.offline) throw new Error('offline'); };
@@ -30,11 +30,17 @@ function fakeCloud() {
       async directory() { guard(); return [...dir].map(([u, d]) => ({ uid: u, ...d })); },
       async role() { guard(); return []; },
       async setRole() { guard(); },
-      async createThread(t: { id: string; k: 'direct' | 'group'; p: string[]; name: string }) {
+      async createThread(t: { id: string; k: 'direct' | 'group'; p: string[]; name: string; s?: object; a?: string[] }) {
         guard();
         if (threads.has(t.id)) return 'exists';
-        threads.set(t.id, { ...t, by: uid, at: ts() });
+        threads.set(t.id, { ...t, by: uid, at: ts() } as RemoteThread);
         return 'created';
+      },
+      async joinedPage(threadId: string, cursor: string) {
+        guard();
+        state.joinedCalls++;
+        const list = (msgs.get(threadId) ?? []).filter((m) => m.ts >= cursor);
+        return { msgs: list, ids: list.length, lastTs: list.length ? list[list.length - 1].ts : null };
       },
       async myThreads() { guard(); return [...threads.values()].filter((t) => t.p.includes(uid)); },
       async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null }) {
@@ -227,9 +233,10 @@ function reviewCloud() {
         if (k === 'openReview') return async (chat: string, reason: string) => { calls.open.push({ chat, reason }); return 'rid-' + calls.open.length; };
         if (k === 'closeReview') return async (chat: string) => { calls.closed.push(chat); };
         if (k === 'allMessages') return async (id: string) => cloud.msgs.get(id) ?? [];
-        if (k === 'joinGroup') return async (id: string, p: string[], name: string, myName: string) => {
+        if (k === 'getThread') return async (id: string) => cloud.threads.get(id)!;
+        if (k === 'joinGroup') return async (id: string, myName: string) => {
           const th = cloud.threads.get(id)!;
-          cloud.threads.set(id, { ...th, p: Array.from(new Set([...p, uid])).sort(), name });
+          cloud.threads.set(id, { ...th, p: Array.from(new Set([...th.p, uid])).sort() });
           const list = cloud.msgs.get(id) ?? [];
           list.push({ id: 'j_1', from: uid, name: myName, body: OWNER_JOINED, link: null, ts: new Date(Date.UTC(2026, 0, 2)).toISOString(), sys: 'join' });
           cloud.msgs.set(id, list);
@@ -354,4 +361,70 @@ test('٥ تنبيه ثابت للأعضاء · وزر «مراجعة محادث�
   const view = src.slice(src.indexOf('function ReviewView'), src.indexOf('/* ─── نهاية المراجعة ─── */'));
   expect(view.length).toBeGreaterThan(100);
   expect(view).not.toMatch(/sendLocal|TextInput|chatSyncNow/);
+});
+
+/* ─── الدفعة ١: إعدادات المجموعة وقرارات الأسئلة الثلاثة (قرار المالك 2026-10-08T05:31Z) ─── */
+
+test('المجموعة تُنشأ بإعداداتها ومسؤوليها وتُرفع بها · ومن يرسل ومن يضيف ومن يعدّل كما قُرّر', async () => {
+  const { isGroupAdmin, canAppointAdmins, canAddMembers, canSendIn, GROUP_DEFAULTS } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const gid = createGroup(a, OWNER.uid, 'مجموعة إعدادات مصطنعة', [MEMBER.uid, 'u-third'], { h: 'join', w: 'admins', ad: 'all' }, [MEMBER.uid]);
+  sendLocal(a, gid, OWNER, 'أولى');
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  expect(cloud.threads.get(gid)).toMatchObject({ s: { h: 'join', w: 'admins', ad: 'all' }, a: [MEMBER.uid] });
+  const t = listThreads(a, OWNER.uid).find((x) => x.id === gid)!;
+  expect([t.settings, t.admins]).toEqual([{ h: 'join', w: 'admins', ad: 'all' }, [MEMBER.uid]]);
+  const third = me('u-third', 'ثالث مصطنع');
+  const SUP = me('u-sup', 'منشئ مصطنع');
+  const g = { kind: 'group' as const, createdBy: SUP.uid, admins: [MEMBER.uid], settings: { ...GROUP_DEFAULTS, w: 'admins' as const }, members: [SUP.uid, MEMBER.uid, third.uid] };
+  // المسؤولون: المالك دائماً، والمنشئ، والمعيَّن
+  expect([OWNER, SUP, MEMBER, third].map((m) => isGroupAdmin(m, g))).toEqual([true, true, true, false]);
+  // التعيين للمالك والمنشئ وحدهما
+  expect([OWNER, SUP, MEMBER, third].map((m) => canAppointAdmins(m, g))).toEqual([true, true, false, false]);
+  // من يرسل: المسؤولون وحدهم هنا
+  expect([OWNER, MEMBER, third].map((m) => canSendIn(m, g))).toEqual([true, true, false]);
+  // من يضيف: المسؤولون وحدهم افتراضاً · وكل الأعضاء إن أُذن
+  expect(canAddMembers(third, g)).toBe(false);
+  expect(canAddMembers(third, { ...g, settings: { ...g.settings, ad: 'all' } })).toBe(true);
+});
+
+test('سجل «من لحظة انضمامه»: يُسحب من وقت انضمامي وبطريقه · و«كل السابق» بالسحب المعتاد', async () => {
+  const cloud = fakeCloud();
+  const sup = memDb();
+  const SUP = me('u-sup', 'منشئ مصطنع');
+  const gid = createGroup(sup, SUP.uid, 'مجموعة من الانضمام', [MEMBER.uid], { h: 'join' });
+  sendLocal(sup, gid, SUP, 'قبل');
+  await chatSyncOnce(sup, cloud.remote(SUP.uid), SUP);
+  // ب أُضيف بعد رسالة «قبل»
+  const th = cloud.threads.get(gid)!;
+  cloud.threads.set(gid, { ...th, jt: { [MEMBER.uid]: '2026-01-01T00:00:30.000Z' } });
+  cloud.msgs.get(gid)!.push({ id: 'after1', from: SUP.uid, name: SUP.name, body: 'بعد', link: null, ts: '2026-01-01T00:01:00.000Z' });
+  const b = memDb();
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  expect(cloud.state.joinedCalls).toBeGreaterThan(0);
+  expect(listMessages(b, gid).map((m) => m.body)).toEqual(['بعد']);
+});
+
+test('قرار ٢: صف المراجعة في سجل العمليات لا يقرؤه إلا المالك · وغيره كما كان', async () => {
+  const { readSectionsOf } = await import('@/domain/access/readSections');
+  expect(readSectionsOf('audit_log', { entity_type: REVIEW_ENTITY })).toEqual([]);
+  // الانضمام يراه الأعضاء سطراً «انضم المالك»، وصفه في سجل العمليات كغيره (القرار عن صف المراجعة وحده)
+  expect(readSectionsOf('audit_log', { entity_type: JOIN_ENTITY })).toContain('audit');
+  expect(readSectionsOf('audit_log', { entity_type: 'عقد' })).toContain('audit');
+});
+
+test('وقت إنشاء المجموعة من الخادم متى عُرف · وتبدّل «من لحظة انضمامه» إلى «كل السابق» يعيد المؤشر فيصل السابق', async () => {
+  const { joinFloor, threadCursor } = await import('@/chat/store');
+  const a = memDb();
+  const gid = createGroup(a, MEMBER.uid, 'ساعة الجهاز', [OWNER.uid], { h: 'join' });
+  // الجهاز متقدم على الخادم: يُستبدل وقت الإنشاء بوقت الخادم حين يصل
+  a.run(`UPDATE chat_threads SET created_at = '2030-01-01T00:00:00.000Z' WHERE id = ?`, [gid]);
+  applyRemoteThread(a, { id: gid, k: 'group', p: [MEMBER.uid, OWNER.uid], name: 'ساعة الجهاز', by: MEMBER.uid, at: '2026-01-01T00:00:00.000Z', s: { h: 'join' } });
+  expect(joinFloor(a, gid, MEMBER.uid)).toBe('2026-01-01T00:00:00.000Z');
+  applyRemoteMessage(a, gid, { id: 'm1', from: OWNER.uid, name: 'م', body: 'بعد', link: null, ts: '2026-01-02T00:00:00.000Z' });
+  expect(threadCursor(a, gid)).toBe('2026-01-02T00:00:00.000Z');
+  applyRemoteThread(a, { id: gid, k: 'group', p: [MEMBER.uid, OWNER.uid], name: 'ساعة الجهاز', by: MEMBER.uid, at: '2026-01-01T00:00:00.000Z', s: { h: 'all' } });
+  expect(threadCursor(a, gid)).toBeNull();
+  expect(joinFloor(a, gid, MEMBER.uid)).toBeNull();
 });

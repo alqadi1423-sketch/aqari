@@ -493,48 +493,116 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/orgs/$(org)/chatReviews/$(request.resource.data.rid)).data.at == request.time;
     }
 
+    // ── إعدادات المجموعة ومسؤولوها (قرار المالك 2026-10-08T05:31Z) ──
+    // s: h سجل المنضم ('all' أو 'join') · w من يرسل ('all' أو 'admins') · ad من يضيف ('admins' أو 'all') ·
+    // a المسؤولون المعيَّنون من أعضائها · jt وقت انضمام من أُضيف بعد إنشائها (وقت الخادم) · la آخر من أُضيف
+    function chatSettingsOk(d) {
+      return d.get('s', {}) is map && d.get('s', {}).keys().hasOnly(['h', 'w', 'ad'])
+        && d.get('s', {}).get('h', 'all') in ['all', 'join']
+        && d.get('s', {}).get('w', 'all') in ['all', 'admins']
+        && d.get('s', {}).get('ad', 'admins') in ['admins', 'all']
+        && d.get('a', []) is list && d.get('a', []).size() <= 100
+        && d.get('a', []).toSet().difference(d.p.toSet()).size() == 0;
+    }
+    // المسؤول: المالك دائماً، والمنشئ، ومن عُيِّن
+    function chatAdmin(org, d) {
+      return orgOwner(org) || d.by == request.auth.uid || request.auth.uid in d.get('a', []);
+    }
+    function chatChanged(keys) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasAny(keys);
+    }
+    function chatAdded() {
+      return request.resource.data.p.toSet().difference(resource.data.p.toSet());
+    }
+    function chatRemovedSet() {
+      return resource.data.p.toSet().difference(request.resource.data.p.toSet());
+    }
+    // العضو يُخرج نفسه وحده (مغادرة المنشأة) ومعه خروجه من المسؤولين · ولا يغيّر غير ذلك
+    function chatSelfLeave() {
+      return request.auth.uid in resource.data.p
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['p', 'a'])
+        && request.resource.data.p.toSet() == resource.data.p.toSet().difference([request.auth.uid].toSet())
+        && request.resource.data.p.size() == resource.data.p.size() - 1
+        && request.resource.data.get('a', []).toSet() == resource.data.get('a', []).toSet().difference([request.auth.uid].toSet());
+    }
+    // انضمام المالك إلى مجموعة ليس فيها: سطر «انضم المالك» يُكتب في الالتزام نفسه (jm رقمه)
+    function chatOwnerJoinLine(org, chatId) {
+      return request.resource.data.get('jm', '') is string
+        && request.resource.data.get('jm', '') != resource.data.get('jm', '')
+        && !exists(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm))
+        && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm)).data.get('sys', '') == 'join'
+        && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm)).data.from == request.auth.uid;
+    }
+    // إضافة عضو واحد في الالتزام بوقت انضمامه من الخادم · للمسؤولين، ولكل الأعضاء إن أُذن · والمالك لنفسه بسطره
+    function chatAddOk(org, chatId) {
+      return chatAdded() == [request.resource.data.get('la', '')].toSet()
+        && (request.resource.data.la == org || exists(/databases/$(database)/documents/orgs/$(org)/members/$(request.resource.data.la)))
+        && request.resource.data.jt is map
+        && request.resource.data.jt.diff(resource.data.get('jt', {})).affectedKeys() == [request.resource.data.la].toSet()
+        && request.resource.data.jt[request.resource.data.la] == request.time
+        && ((orgOwner(org) && request.resource.data.la == request.auth.uid && !(request.auth.uid in resource.data.p))
+            ? chatOwnerJoinLine(org, chatId)
+            : (!chatChanged(['jm'])
+                && (chatAdmin(org, resource.data)
+                    || (resource.data.get('s', {}).get('ad', 'admins') == 'all' && request.auth.uid in resource.data.p))));
+    }
+    // تعديل من غير المغادرة: الاسم والإعدادات للمسؤولين · وتعيين المسؤولين للمالك والمنشئ · والإزالة لهما (#19)
+    function chatManage(org, chatId) {
+      return (!chatChanged(['name', 's']) || chatAdmin(org, resource.data))
+        && (!chatChanged(['a']) || orgOwner(org) || resource.data.by == request.auth.uid)
+        && (chatRemovedSet().size() == 0 || orgOwner(org) || resource.data.by == request.auth.uid)
+        && (chatAdded().size() == 0
+              ? (!chatChanged(['jt', 'la', 'jm']) && (chatRemovedSet().size() > 0 || !chatChanged(['p'])))
+              : chatAddOk(org, chatId));
+    }
+    // سجل المنضم: كل السابق، أو من لحظة انضمامه (jt، والأوائل وقت إنشائها)
+    function chatHistoryOk(org, chatId) {
+      return get(chatPath(org, chatId)).data.get('s', {}).get('h', 'all') == 'all'
+        || resource.data.ts >= get(chatPath(org, chatId)).data.get('jt', {}).get(request.auth.uid, get(chatPath(org, chatId)).data.at);
+    }
+    // من يرسل: كل الأعضاء، أو المسؤولون وحدهم · بعد الالتزام (فانضمام المالك وسطره معاً)
+    function chatMaySend(org, chatId) {
+      return getAfter(chatPath(org, chatId)).data.k != 'group'
+        || getAfter(chatPath(org, chatId)).data.get('s', {}).get('w', 'all') == 'all'
+        || chatAdmin(org, getAfter(chatPath(org, chatId)).data);
+    }
+
     match /orgs/{org}/chats/{chatId} {
-      // أطراف المحادثة ومستندها (أطرافها واسمها، بلا رسائلها) للمالك: ليدير المجموعات ويُزيل المُزال (#19)،
+      // أطراف المحادثة ومستندها (أطرافها واسمها وإعداداتها، بلا رسائلها) للمالك: ليدير المجموعات ويُزيل المُزال (#19)،
       // ويختار ما يراجعه أو ينضم إليه
       allow read: if (chatIn(org) && request.auth.uid in resource.data.p) || orgOwner(org);
       allow create: if chatIn(org)
-        && request.resource.data.keys().hasOnly(['k', 'p', 'name', 'by', 'at'])
+        && request.resource.data.keys().hasOnly(['k', 'p', 'name', 'by', 'at', 's', 'a'])
         && request.resource.data.by == request.auth.uid
         && request.resource.data.at == request.time
         && request.resource.data.p is list && request.auth.uid in request.resource.data.p
         && request.resource.data.p.size() >= 2 && request.resource.data.p.size() <= 100
         && request.resource.data.name is string && request.resource.data.name.size() <= 80
         && ((request.resource.data.k == 'direct' && request.resource.data.p.size() == 2
+              && !request.resource.data.keys().hasAny(['s', 'a'])
               && chatId == 'd_' + request.resource.data.p[0] + '_' + request.resource.data.p[1])
             || (request.resource.data.k == 'group' && chatId.matches('^g_[A-Za-z0-9_-]{6,64}$')
+              && chatSettingsOk(request.resource.data)
               && (orgOwner(org) || chatSup(org).size() > 0)));
-      // المجموعة يعدّل أعضاءها واسمها المالك ومنشئها · لا نوعها ولا منشئها ولا وقتها (#19)
-      // والعضو يُخرج نفسه وحده (مغادرة المنشأة) · والإزالة قد تُبقي المجموعة بلا أعضاء (التحقق ق٣)
-      // وانضمام المالك إلى مجموعة ليس فيها مسموح، ومعه سطر «انضم المالك» في الالتزام نفسه (jm رقمه) · ولا يتغير jm بغيره
+      // المجموعة: لا نوعها ولا منشئها ولا وقتها · والمغادرة لصاحبها · وما سواها بإعداداتها ومسؤوليها (أعلاه)
+      // والإزالة قد تُبقي المجموعة بلا أعضاء (التحقق ق٣)
       allow update: if chatIn(org) && resource.data.k == 'group'
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['p', 'name', 'jm'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['p', 'name', 'jm', 's', 'a', 'jt', 'la'])
         && request.resource.data.p is list && request.resource.data.p.size() <= 100
         && request.resource.data.name is string && request.resource.data.name.size() <= 80
-        && ((orgOwner(org) || resource.data.by == request.auth.uid)
-            || (request.resource.data.name == resource.data.name
-                && request.auth.uid in resource.data.p
-                && request.resource.data.p.size() == resource.data.p.size() - 1
-                && request.resource.data.p.toSet() == resource.data.p.toSet().difference([request.auth.uid].toSet())))
-        && ((orgOwner(org) && !(request.auth.uid in resource.data.p) && request.auth.uid in request.resource.data.p)
-            ? (request.resource.data.get('jm', '') is string
-                && request.resource.data.get('jm', '') != resource.data.get('jm', '')
-                && !exists(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm))
-                && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm)).data.get('sys', '') == 'join'
-                && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm)).data.from == request.auth.uid)
-            : request.resource.data.get('jm', '') == resource.data.get('jm', ''));
+        && chatSettingsOk(request.resource.data)
+        && request.resource.data.p.toSet().size() == request.resource.data.p.size()
+        && (chatSelfLeave() || chatManage(org, chatId));
       // حذف المحادثة للمالك في نافذة الحذف وحدها: «حذف حسابي» (#2) و«مسح كل البيانات» (#28)
       allow delete: if orgOwner(org) && orgDeletionOpen(org);
 
       // فهرس أرقام الرسائل بلا محتوى (التحقق ق١): يكتبه المرسل مع رسالته في التزام واحد · ويسرده المالك في نافذة
       // الحذف ليحذف الرسائل بأسمائها دون أن يقرأها
+      // ts وقت الخادم وحده (لا محتوى) · به يجد المنضم «من لحظة انضمامه» أرقام ما بعد انضمامه ثم يطلبها رسالةً رسالة
       match /ids/{msgId} {
         allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && orgDeletionOpen(org));
-        allow create: if chatIn(org) && chatPartyAfter(org, chatId) && request.resource.data.keys().size() == 0
+        allow create: if chatIn(org) && chatPartyAfter(org, chatId)
+          && request.resource.data.keys().hasOnly(['ts']) && request.resource.data.ts == request.time
           && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(msgId)).data.from == request.auth.uid;
         allow update: if false;
         allow delete: if orgOwner(org) && orgDeletionOpen(org);
@@ -542,8 +610,15 @@ service cloud.firestore {
 
       match /msgs/{msgId} {
         // أطرافها · والمالك بمراجعة مفتوحة لها وحدها · لا المشرف ولا نافذة الحذف (قرار المالك 2026-10-08T04:11Z)
-        allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && chatReviewing(org, chatId));
-        allow create: if chatIn(org) && chatPartyAfter(org, chatId)
+        // سجل المنضم «من لحظة انضمامه» يُفرض على الرسالة الواحدة (get) · وسرد الرسائل (list) لا يُجاز فيه، لأن القواعد
+        // لا تقارن وقت الرسالة بوقت انضمامه في الاستعلام · فيجد أرقامها في ids ويطلبها رسالةً رسالة
+        // ورسائله هو يقرؤها دائماً (#2: يجعلها «عضو سابق» ولو أُعيدت إضافته) · وسرده إياها باستعلام «من = أنا»
+        allow get: if (chatIn(org) && chatParty(org, chatId) && (chatHistoryOk(org, chatId) || resource.data.from == request.auth.uid))
+          || (orgOwner(org) && chatReviewing(org, chatId));
+        allow list: if (chatIn(org) && chatParty(org, chatId)
+            && (get(chatPath(org, chatId)).data.get('s', {}).get('h', 'all') == 'all' || resource.data.from == request.auth.uid))
+          || (orgOwner(org) && chatReviewing(org, chatId));
+        allow create: if chatIn(org) && chatPartyAfter(org, chatId) && chatMaySend(org, chatId)
           && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts', 'sys'])
           && request.resource.data.from == request.auth.uid
           && request.resource.data.ts == request.time

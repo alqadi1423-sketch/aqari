@@ -397,7 +397,17 @@
     "joined": "You joined the group",
     "joinFailed": "Could not join",
     "ownerJoined": "The owner joined",
-    "loading": "Loading"
+    "loading": "Loading",
+    "settings": "Group settings",
+    "hist": "Message history for new members",
+    "histAll": "All earlier messages",
+    "histJoin": "From the moment they join",
+    "whoSends": "Who can send",
+    "whoAdds": "Who can add members",
+    "everyone": "All members",
+    "adminsOnly": "Admins only",
+    "admin": "Admin",
+    "adminsOnlySend": "Only admins can send in this group"
   },
   "auth": {
     "fail": {

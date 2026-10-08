@@ -47,7 +47,7 @@ import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engin
 import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatUpdateGroup, chatLeaveOrg,
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, type GroupChange,
   chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
 import type { RemoteMessage, RemoteThread } from '../chat/remote';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
@@ -839,12 +839,12 @@ export async function removeMemberNow(uid: string, email = '') {
 }
 
 /** تعديل أعضاء مجموعة واسمها (#19) · للمالك ومنشئها */
-export async function chatUpdateGroupNow(threadId: string, members: string[], name: string): Promise<void> {
+export async function chatEditGroupNow(threadId: string, change: GroupChange): Promise<void> {
   const s = getSession(); const cfg = cloudConfig(); const db = appDb;
   if (!s || !cfg || !state.user || !db) { teamRemote(); return; }
   if (!state.online) teamRemote();
   const org = readMembership(db)?.org ?? state.user.uid;
-  await chatUpdateGroup(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, members, name);
+  await chatEditGroup(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, change);
 }
 /* ─── مراجعة المالك محادثةً بسبب، وانضمامه إلى مجموعة (قرارا المالك 2026-10-08T04:11Z) · للمالك وحده، وتحتاج اتصالاً ─── */
 

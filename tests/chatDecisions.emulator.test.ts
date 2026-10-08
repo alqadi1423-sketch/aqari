@@ -107,7 +107,8 @@ d('قرارات المالك على مراجعة المحادثة', () => {
     expect(ids.status).toBe(200);
     const body = (await ids.json()) as { documents?: Array<{ fields?: object }> };
     expect(body.documents?.length).toBe(2);
-    expect(body.documents?.every((d) => !d.fields || Object.keys(d.fields).length === 0)).toBe(true);
+    // بلا محتوى: وقت الخادم وحده (ts) يجد به المنضم «من لحظة انضمامه» ما بعد انضمامه (2026-10-08T05:31Z)
+    expect(body.documents?.every((d) => !d.fields || Object.keys(d.fields).every((k) => k === 'ts'))).toBe(true);
     await chat(ORG).closeDeletionWindow();
     // ولا رسالة بلا فهرسها (ر١)
     const lone = await fetch(url(`orgs/${ORG}/chats/${dAB}/msgs/MX1`), { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(A) },
@@ -133,7 +134,8 @@ d('قرارات المالك على مراجعة المحادثة', () => {
     // العضو أ يغادر: يخرج من المجموعة ومن الدليل · ولا يُخرج غيره
     expect(await status(chat(A).updateGroup('g_decgroup1', [A].sort(), 'مجموعة المشرف'))).toBe(403);
     // ولا إعادة ترتيب ولا تكرار بحجة الإخراج (ر٢)
-    expect(await status(chat(A).updateGroup('g_decgroup1', [B, B], 'مجموعة المشرف'))).toBe(403);
+    // يُرسل خاماً إلى الخادم: العميل يطبّع القائمة قبل الإرسال
+    expect(await put(`orgs/${ORG}/chats/g_decgroup1?updateMask.fieldPaths=p`, { p: [B, B] }, A)).toBe(403);
     await chatLeaveOrg(session(A), ORG);
     expect((await chat(B).myThreads()).find((t) => t.id === 'g_decgroup1')!.p).toEqual([B]);
     expect((await chat(B).directory()).map((x) => x.uid)).not.toContain(A);
