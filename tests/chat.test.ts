@@ -49,7 +49,7 @@ function fakeCloud() {
         state.sends++;
         const list = msgs.get(threadId) ?? [];
         if (list.some((x) => x.id === m.id)) return 'exists';
-        list.push({ id: m.id, from: uid, name: m.name, body: m.body, link: m.link, ts: ts(), re: m.re ?? null, men: m.men ?? [], tag: m.tag ?? null, ack: !!m.ack, ev: 0 });
+        list.push({ id: m.id, from: uid, name: m.name, body: m.body, link: m.link, ts: ts(), re: m.re ?? null, men: m.men ?? [], tag: m.tag ?? null, ack: !!m.ack, ev: 0, poll: (m as { poll?: { o: string[]; m: boolean } | null }).poll ?? null });
         msgs.set(threadId, list);
         return 'created';
       },
@@ -72,6 +72,17 @@ function fakeCloud() {
       async getMessage(threadId: string, msgId: string) {
         guard();
         return { ...(msgs.get(threadId) ?? []).find((x) => x.id === msgId)! };
+      },
+      async setTask(threadId: string, msgId: string, task: { title: string; as: string; due: string; done: boolean }) {
+        guard();
+        const list = st.get(threadId) ?? [];
+        const cur = list.find((x) => x.id === 't_' + msgId);
+        st.set(threadId, [...list.filter((x) => x.id !== 't_' + msgId), { id: 't_' + msgId, k: 'task', m: msgId, ...task, by: cur?.by ?? uid, ts: ts() }]);
+      },
+      async vote(threadId: string, msgId: string, o: number[]) {
+        guard();
+        const list = st.get(threadId) ?? [];
+        st.set(threadId, [...list.filter((x) => x.id !== 'v_' + msgId + '_' + uid), { id: 'v_' + msgId + '_' + uid, k: 'vote', m: msgId, by: uid, o, ts: ts() }]);
       },
       async setPin(threadId: string, msgId: string, on: boolean) {
         guard();
@@ -824,4 +835,61 @@ test('الدفعة ٤ · فشل قناة لا يوقف غيرها ولا الإ�
   const p1 = addProperty(o, { name: 'عقار أصول' });
   o.run(`INSERT INTO assets (id, name, category, life_months, property_id, created_at) VALUES ('as1', 'مكيف مصطنع', 'أجهزة', 60, ?, '2026-01-01'), ('as2', 'مضخة مصطنعة', 'أجهزة', 60, NULL, '2026-01-01')`, [p1]);
   expect(linkCandidates(o, OWNER_ACCESS, 'asset', '', 50, p1).map((l) => l.id)).toEqual(['as1']);
+});
+
+/* ─── الدفعة ٥: المهام والاستطلاعات والتحويل إلى مطالبة أو فاتورة شراء (قرار المالك 2026-10-08T05:31Z) ─── */
+
+test('الاستطلاع: يُرفع ويصل · ونتيجته من الأصوات · وأغيّر صوتي', async () => {
+  const { chatVote, pollResults } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  const pid = sendLocal(a, tid, OWNER, 'موعد الاجتماع؟', null, { poll: { o: ['الأحد', 'الاثنين', 'الثلاثاء'], m: false } });
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  expect(listMessages(b, tid)[0].poll).toEqual({ o: ['الأحد', 'الاثنين', 'الثلاثاء'], m: false });
+  const sb = { projectId: 'p', uid: MEMBER.uid, email: MEMBER.email, idToken: async () => 't' };
+  const sa = { projectId: 'p', uid: OWNER.uid, email: OWNER.email, idToken: async () => 't' };
+  await chatVote(b, sb, 'ORG', tid, pid, [1], cloud.remote(MEMBER.uid));
+  await chatVote(a, sa, 'ORG', tid, pid, [1], cloud.remote(OWNER.uid));
+  await chatVote(b, sb, 'ORG', tid, pid, [2], cloud.remote(MEMBER.uid));
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER, { force: true });
+  expect(pollResults(a, tid, pid, 3, OWNER.uid)).toEqual({ counts: [0, 1, 1], voters: 2, mine: [1] });
+});
+
+test('المهمة من رسالة: بمسؤول وموعد · تصل المسؤول في «مهامي» · وينجزها', async () => {
+  const { chatSetTask, myTasks, tasksIn } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  const mid = sendLocal(a, tid, OWNER, 'أصلحوا المكيف');
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  const sa = { projectId: 'p', uid: OWNER.uid, email: OWNER.email, idToken: async () => 't' };
+  await expect(chatSetTask(a, sa, 'ORG', tid, mid, { title: '  ', as: MEMBER.uid, due: '2026-12-31', done: false }, cloud.remote(OWNER.uid))).rejects.toThrow();
+  await expect(chatSetTask(a, sa, 'ORG', tid, mid, { title: 'إصلاح', as: MEMBER.uid, due: '31/12/2026', done: false }, cloud.remote(OWNER.uid))).rejects.toThrow();
+  await chatSetTask(a, sa, 'ORG', tid, mid, { title: 'إصلاح المكيف', as: MEMBER.uid, due: '2026-12-31', done: false }, cloud.remote(OWNER.uid));
+  expect(tasksIn(a, tid)[mid]).toMatchObject({ title: 'إصلاح المكيف', as: MEMBER.uid, due: '2026-12-31', done: false, by: OWNER.uid });
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  expect(myTasks(b, MEMBER.uid).map((x) => [x.title, x.done])).toEqual([['إصلاح المكيف', false]]);
+  const sb = { projectId: 'p', uid: MEMBER.uid, email: MEMBER.email, idToken: async () => 't' };
+  await chatSetTask(b, sb, 'ORG', tid, mid, { title: 'إصلاح المكيف', as: MEMBER.uid, due: '2026-12-31', done: true }, cloud.remote(MEMBER.uid));
+  expect(myTasks(b, MEMBER.uid)[0]).toMatchObject({ done: true, by: OWNER.uid });
+});
+
+test('التحويل إلى مطالبة أو فاتورة شراء: يفتح نموذج الشاشة نفسها بنص الرسالة · وبصلاحيتها (الزر غير المسموح لا يظهر)', () => {
+  const { readFileSync } = jest.requireActual('fs') as typeof import('fs');
+  const { join } = jest.requireActual('path') as typeof import('path');
+  const read = (f: string) => readFileSync(join(__dirname, '..', 'app', f), 'utf8');
+  const chatSrc = read('chat.tsx');
+  expect(chatSrc).toMatch(/canClaim=\{actFor\.sent && !actFor\.sys && claimsPerm\.add\}/);
+  expect(chatSrc).toMatch(/canPurchase=\{actFor\.sent && !actFor\.sys && purchasesPerm\.add\}/);
+  expect(chatSrc).toMatch(/pathname: '\/claims', params: \{ newReason: m\.body/);
+  expect(chatSrc).toMatch(/pathname: '\/purchases',\s*params: \{ newNote: m\.body/);
+  // الشاشتان: نموذج جديد بالقيم بصلاحية الإضافة وحدها، والحفظ بمسار الخدمة نفسه (saveClaim و savePurchase لم تُمسّا)
+  const claims = read('claims.tsx');
+  expect(claims).toMatch(/if \(!perm\.add \|\| !contracts\.length\) return;\s*openNew\(\);\s*if \(params\.newReason\) setReason/);
+  const purchases = read('purchases.tsx');
+  expect(purchases).toMatch(/if \(!perm\.add \|\| !suppliers\.length\) return;\s*openNew\(\);\s*if \(params\.newNote\) setLines/);
 });

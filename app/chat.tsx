@@ -11,11 +11,12 @@ import { Badge, BtnGhost, BtnPrimary, Chip, EmptyState, Field, Note, Row, Search
 import { Sheet } from '../src/ui/Sheet';
 import { C, FONT, TYPE } from '../src/ui/theme';
 import { useApp, useFs } from '../src/ui/store';
-import { useAccess } from '../src/ui/access';
+import { useAccess, usePerm } from '../src/ui/access';
 import { useLang } from '../src/i18n';
 import { dfmt } from '../src/domain/dates';
 import {
   cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatEditGroupNow, chatPinNow, chatAckNow, chatEditMessageNow, chatEditsNow,
+  chatTaskNow, chatTaskDoneNow, chatVoteNow,
   chatReviewCandidatesNow, chatOpenReviewNow, chatCloseReviewNow, chatJoinGroupNow,
 } from '../src/services/cloud';
 import type { RemoteMessage, RemoteThread } from '../src/chat/remote';
@@ -31,6 +32,7 @@ import {
   isGroupAdmin, canAppointAdmins, canAddMembers, canSendIn, GROUP_DEFAULTS, type GroupSettings, type GroupChange,
   mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft, mentionsMe, mentionUser, mentionSection, MENTIONS_MAX,
   tsDate, acksOf, ackersFrom, searchMessages, latinDigits, CHAT_TAGS, CHAT_BODY_MAX as BODY_MAX, type ChatMessage, type ChatTag,
+  tasksIn, myTasks, pollResults, POLL_MIN, POLL_MAX, type TaskRow, type ChatPoll,
   type ChatLink, type ChatMe, type ChatPerson, type ChatThread,
 } from '../src/chat';
 
@@ -85,7 +87,7 @@ export default function Chat() {
 function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; onOpen: (id: string) => void; onReview: (r: Review) => void }) {
   const { db, version } = useApp();
   const { t } = useLang();
-  const [sheet, setSheet] = useState<'person' | 'group' | 'review' | 'search' | null>(null);
+  const [sheet, setSheet] = useState<'person' | 'group' | 'review' | 'search' | 'tasks' | null>(null);
   const people = useMemo(() => listPeople(db), [db, version, tick]); // eslint-disable-line react-hooks/exhaustive-deps
   const threads = useMemo(() => listThreads(db, me.uid, me.owner), [db, version, tick, me.uid, me.owner]); // eslint-disable-line react-hooks/exhaustive-deps
   const mySup = people.find((p) => p.uid === me.uid)?.sup ?? [];
@@ -99,6 +101,7 @@ function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; 
           <BtnPrimary small icon="plus" title={t('chat.newChat')} onPress={() => setSheet('person')} />
           {canCreateGroup(me, mySup) ? <BtnGhost small title={t('chat.newGroup')} onPress={() => setSheet('group')} /> : null}
           <BtnGhost small title={t('chat.search')} onPress={() => setSheet('search')} />
+          <BtnGhost small title={t('chat.myTasks')} onPress={() => setSheet('tasks')} />
           {/* مراجعة محادثة للمالك وحده (قرار المالك 2026-10-08T04:11Z) · ولغيره لا يظهر الزر */}
           {me.owner ? <BtnGhost small title={t('chat.review')} onPress={() => setSheet('review')} /> : null}
         </Row>
@@ -129,6 +132,9 @@ function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; 
       {sheet === 'group' ? (
         <GroupSheet me={me} people={people} onClose={() => setSheet(null)}
           onCreated={(id) => { setSheet(null); onOpen(id); }} />
+      ) : null}
+      {sheet === 'tasks' ? (
+        <MyTasksSheet me={me} people={people} onClose={() => setSheet(null)} onOpen={(tid) => { setSheet(null); onOpen(tid); }} />
       ) : null}
       {sheet === 'search' ? (
         <SearchSheet me={me} people={people} onClose={() => setSheet(null)} onOpen={(tid) => { setSheet(null); onOpen(tid); }} />
@@ -248,6 +254,10 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const [tag, setTag] = useState<ChatTag | null>(null);
   const [ack, setAck] = useState(false);
   const [editing, setEditing] = useState<ChatMessage | null>(null);
+  const [taskFor, setTaskFor] = useState<ChatMessage | null>(null);
+  const [pollOpen, setPollOpen] = useState(false);
+  const claimsPerm = usePerm('claims');
+  const purchasesPerm = usePerm('purchases');
   const [historyOf, setHistoryOf] = useState<ChatMessage | null>(null);
   const [menOpen, setMenOpen] = useState(false);
   const [actFor, setActFor] = useState<ChatMessage | null>(null);
@@ -265,6 +275,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const pins = useMemo(() => pinnedIds(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
   const reads = useMemo(() => readsOf(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
   const acks = useMemo(() => acksOf(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const tasks = useMemo(() => tasksIn(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
   const joinedAfter = thread?.settings.h === 'join' ? thread.joined : {};
   const mySections = useMemo(() => (access.owner ? SECTION_KEYS : SECTION_KEYS.filter((k) => ((access.perms as Record<string, number>)[k] ?? 0) >= 1)) as string[], [access]);
   const people = useMemo(() => listPeople(db), [db, tick]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -293,6 +304,17 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
     setTextState(''); setLink(null); setMen([]); setTag(null); setAck(false); bump();
     chatSyncNow({ threadId: id }).catch(() => {});
   }, [db, id, me, text, link, men, tag, ack, bump, t]);
+  const vote = async (m: ChatMessage, options: number[]) => {
+    try { await chatVoteNow(id, m.id, options); bump(); } catch (e) { reportFailure({ title: t('chat.voteFailed'), e }); }
+  };
+  const toggleTask = async (task: TaskRow) => {
+    try { await chatTaskDoneNow(id, task.msgId, !task.done); bump(); }
+    catch (e) { reportFailure({ title: t('chat.taskFailed'), e }); }
+  };
+  // التحويل إلى مطالبة أو فاتورة شراء: يفتح نموذجها بنص الرسالة، والحفظ بمسار الخدمة وصلاحيتها (الدفعة ٥)
+  const toClaim = (m: ChatMessage) => router.push({ pathname: '/claims', params: { newReason: m.body, newContract: m.link?.type === 'contract' ? m.link.id : '' } } as never);
+  const toPurchase = (m: ChatMessage) => router.push({ pathname: '/purchases',
+    params: { newNote: m.body, newProperty: thread?.channel?.t === 'prop' ? thread.channel.id : '' } } as never);
   const acknowledge = async (m: ChatMessage) => {
     try { await chatAckNow(id, m.id); bump(); } catch (e) { reportFailure({ title: t('chat.ackFailed'), e }); }
   };
@@ -355,6 +377,18 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
               {m.men.length ? <T size={TYPE.caption} color={C.emerald}>{m.men.map(menLabel).join(' ')}</T> : null}
               {m.tag ? <Badge kind={m.tag === 'urgent' ? 'due' : 'info'} label={t('chat.tag.' + m.tag)} /> : null}
               {m.ev ? <Pressable onPress={() => setHistoryOf(m)}><T size={TYPE.caption} color={C.muted}>{t('chat.edited')}</T></Pressable> : null}
+              {/* الاستطلاع ونتيجته (الدفعة ٥): الضغط على خيار يصوّت أو يغيّر الصوت */}
+              {m.poll && m.sent ? <PollView m={m} threadId={id} me={me} onVote={(o) => vote(m, o)} /> : null}
+              {/* المهمة من الرسالة: عنوانها ومسؤولها وموعدها · وينجزها مسؤولها أو منشئها */}
+              {tasks[m.id] ? (
+                <View style={{ marginTop: 4, padding: 6, borderRadius: 8, borderWidth: 1, borderColor: C.line }}>
+                  <T size={TYPE.caption} bold>{t('chat.task')}: {tasks[m.id].title}</T>
+                  <T size={TYPE.caption} color={C.muted}>{(people.find((p) => p.uid === tasks[m.id].as)?.name || t('chat.member'))} · {dfmt(tasks[m.id].due)} · {tasks[m.id].done ? t('chat.taskDone') : t('chat.taskOpen')}</T>
+                  {tasks[m.id].as === me.uid || tasks[m.id].by === me.uid ? (
+                    <BtnGhost small title={tasks[m.id].done ? t('chat.taskReopen') : t('chat.taskMarkDone')} onPress={() => toggleTask(tasks[m.id])} />
+                  ) : null}
+                </View>
+              ) : null}
               {m.ack && thread ? (mine
                 ? (() => { const a = ackersFrom(acks, m, thread.members, joinedAfter); return <T size={TYPE.caption} bold color={C.emerald}>{t('chat.ackCount', { n: a.acked.length, total: a.acked.length + a.pending.length })}</T>; })()
                 : (acks[m.id] ?? []).includes(me.uid)
@@ -396,6 +430,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           ) : null}
           <Row style={{ paddingVertical: 6, alignItems: 'flex-end' }} gap={6}>
             <BtnGhost small title={t('chat.mention')} onPress={() => setMenOpen(true)} />
+            <BtnGhost small title={t('chat.poll')} onPress={() => setPollOpen(true)} />
             <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
             <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
               style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
@@ -415,7 +450,11 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
       ) : null}
       {actFor && thread ? (
         <MessageActions m={actFor} canReply={canSendIn(me, thread) && actFor.sent && !actFor.rejected} canPin={canPin} pinned={pins.includes(actFor.id)}
-          canEdit={actFor.sender === me.uid && actFor.sent && !actFor.sys && canSendIn(me, thread)} acks={actFor.ack ? ackersFrom(acks, actFor, thread.members, joinedAfter) : null}
+          canEdit={actFor.sender === me.uid && actFor.sent && !actFor.sys && canSendIn(me, thread)}
+          canTask={actFor.sent && !actFor.sys && (tasks[actFor.id] ? tasks[actFor.id].by === me.uid : canSendIn(me, thread))}
+          onTask={() => { setTaskFor(actFor); setActFor(null); }} hasTask={!!tasks[actFor.id]}
+          canClaim={actFor.sent && !actFor.sys && claimsPerm.add} onClaim={() => { toClaim(actFor); setActFor(null); }}
+          canPurchase={actFor.sent && !actFor.sys && purchasesPerm.add} onPurchase={() => { toPurchase(actFor); setActFor(null); }} acks={actFor.ack ? ackersFrom(acks, actFor, thread.members, joinedAfter) : null}
           onEdit={() => { setEditing(actFor); setActFor(null); }} onHistory={() => { setHistoryOf(actFor); setActFor(null); }}
           readers={readersFrom(reads, actFor, thread.members, thread.settings.h === 'join' ? thread.joined : {})} nameOf={(u) => people.find((p) => p.uid === u)?.name || t('chat.member')}
           onReply={() => { setThreadOf(actFor); setActFor(null); }}
@@ -427,6 +466,11 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           nameOf={(u, f) => senderOf(u, f)} onClose={() => setThreadOf(null)} />
       ) : null}
       {editing ? <EditSheet threadId={id} m={editing} onClose={() => setEditing(null)} /> : null}
+      {taskFor && thread ? (
+        <TaskSheet threadId={id} m={taskFor} task={tasks[taskFor.id] ?? null}
+          members={people.filter((p) => thread.members.includes(p.uid))} onClose={() => setTaskFor(null)} />
+      ) : null}
+      {pollOpen ? <PollSheet threadId={id} me={me} onClose={() => setPollOpen(false)} /> : null}
       {historyOf ? <HistorySheet threadId={id} m={historyOf} onClose={() => setHistoryOf(null)} /> : null}
       {pinsOpen ? (
         <Sheet visible onClose={() => setPinsOpen(false)} title={t('chat.pinnedTitle')} tall>
@@ -498,10 +542,12 @@ function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: C
 /* ─── الدفعة ٢ (قرار المالك 2026-10-08T05:31Z): الرد في سلسلة، والتثبيت، والإشارة، ومن قرأ ─── */
 
 /** ما يُفعل برسالة بضغطة مطوّلة · وما لا يحق لا يظهر */
-function MessageActions({ m, canReply, canPin, pinned, readers, nameOf, onReply, onPin, onClose, canEdit, acks, onEdit, onHistory }: {
+function MessageActions({ m, canReply, canPin, pinned, readers, nameOf, onReply, onPin, onClose, canEdit, acks, onEdit, onHistory,
+  canTask, onTask, canClaim, onClaim, canPurchase, onPurchase, hasTask = false }: {
   m: ChatMessage; canReply: boolean; canPin: boolean; pinned: boolean; readers: { read: string[]; unread: string[] };
   nameOf: (uid: string) => string; onReply: () => void; onPin: (on: boolean) => void; onClose: () => void;
   canEdit: boolean; acks: { acked: string[]; pending: string[] } | null; onEdit: () => void; onHistory: () => void;
+  canTask: boolean; onTask: () => void; canClaim: boolean; onClaim: () => void; canPurchase: boolean; onPurchase: () => void; hasTask?: boolean;
 }) {
   const { t } = useLang();
   return (
@@ -511,6 +557,9 @@ function MessageActions({ m, canReply, canPin, pinned, readers, nameOf, onReply,
         {canReply ? <BtnGhost small title={t('chat.replyInThread')} onPress={onReply} /> : null}
         {canPin && m.sent ? <BtnGhost small title={pinned ? t('chat.unpin') : t('chat.pin')} onPress={() => onPin(!pinned)} /> : null}
         {canEdit ? <BtnGhost small title={t('chat.edit')} onPress={onEdit} /> : null}
+        {canTask ? <BtnGhost small title={hasTask ? t('chat.editTask') : t('chat.toTask')} onPress={onTask} /> : null}
+        {canClaim ? <BtnGhost small title={t('chat.toClaim')} onPress={onClaim} /> : null}
+        {canPurchase ? <BtnGhost small title={t('chat.toPurchase')} onPress={onPurchase} /> : null}
         {m.ev ? <BtnGhost small title={t('chat.editHistory')} onPress={onHistory} /> : null}
       </Row>
       {acks ? (
@@ -614,6 +663,121 @@ function HistorySheet({ threadId, m, onClose }: { threadId: string; m: ChatMessa
         <T size={TYPE.caption} bold color={C.emerald}>{t('chat.nowText')}</T>
         <T size={TYPE.body}>{m.body}</T>
       </View>
+    </Sheet>
+  );
+}
+
+/* ─── الدفعة ٥ (قرار المالك 2026-10-08T05:31Z): المهام والاستطلاعات ─── */
+
+/** تاريخ سنة/شهر/يوم (بالأرقام العربية أو اللاتينية) إلى سنة-شهر-يوم · null إن لم يكن يوماً موجوداً */
+function dayOf(v: string): string | null {
+  const s = latinDigits(v).trim();
+  if (!/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(s)) return null;
+  const [y, mo, da] = s.split(/[-/]/).map(Number);
+  const d = new Date(y, mo - 1, da);
+  if (d.getFullYear() !== y || d.getMonth() !== mo - 1 || d.getDate() !== da) return null;
+  return y + '-' + String(mo).padStart(2, '0') + '-' + String(da).padStart(2, '0');
+}
+
+/** تحويل رسالة إلى مهمة بمسؤول من أطراف المحادثة وموعد · ومنشئها يعدّلها */
+function TaskSheet({ threadId, m, task, members, onClose }: {
+  threadId: string; m: ChatMessage; task: TaskRow | null; members: ChatPerson[]; onClose: () => void;
+}) {
+  const { t } = useLang();
+  const { bump } = useApp();
+  const f = useSaveAttempt();
+  const [title, setTitle] = useState(task?.title ?? (m.body || m.link?.label || '').slice(0, 200));
+  const [as, setAs] = useState<string>(task?.as ?? '');
+  const [due, setDue] = useState(task?.due ? task.due.replace(/-/g, '/') : '');
+  const save = async () => {
+    try {
+      await chatTaskNow(threadId, m.id, { title, as, due: dayOf(due)!, done: task?.done ?? false });
+      bump(); onClose();
+    } catch (e) { reportFailure({ title: t('chat.taskFailed'), e }); }
+  };
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.toTask')} tall
+      footer={<View style={{ flex: 1 }}><BtnPrimary title={t('common.save')} onPress={() => f.attempt(!!title.trim() && !!as && !!dayOf(due), save)} /></View>}>
+      <Field label={t('chat.taskTitle')} value={title} onChange={(v) => setTitle(v.slice(0, 200))} error={f.missing(title)} />
+      <T size={TYPE.cardTitle} bold style={{ marginTop: 6 }}>{t('chat.taskAssignee')}</T>
+      {f.tried && !as ? <T size={TYPE.caption} color={C.rose}>{t('chat.taskPickAssignee')}</T> : null}
+      <Row style={{ flexWrap: 'wrap' }}>
+        {members.map((p) => <Chip key={p.uid} label={p.name || t('chat.member')} active={as === p.uid} onPress={() => setAs(p.uid)} />)}
+      </Row>
+      <Field label={t('chat.taskDue')} value={due} onChange={setDue} ltr error={f.tried && !dayOf(due)} />
+    </Sheet>
+  );
+}
+
+/** مهامي: ما أنا مسؤوله في محادثاتي · غير المنجز أولاً */
+function MyTasksSheet({ me, people, onClose, onOpen }: { me: ChatMe; people: ChatPerson[]; onClose: () => void; onOpen: (threadId: string) => void }) {
+  const { db, version, bump } = useApp();
+  const { t } = useLang();
+  const list = useMemo(() => myTasks(db, me.uid, me.owner), [db, version, me.uid, me.owner]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggle = async (task: TaskRow) => {
+    try { await chatTaskDoneNow(task.threadId, task.msgId, !task.done); bump(); }
+    catch (e) { reportFailure({ title: t('chat.taskFailed'), e }); }
+  };
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.myTasks')} tall>
+      {list.length ? list.map((task) => (
+        <View key={task.threadId + task.msgId} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
+          <Pressable onPress={() => onOpen(task.threadId)}>
+            <T size={TYPE.body} bold>{task.title}</T>
+            <T size={TYPE.caption} color={C.muted}>{dfmt(task.due)} · {task.done ? t('chat.taskDone') : t('chat.taskOpen')} · {people.find((p) => p.uid === task.by)?.name || t('chat.member')}</T>
+          </Pressable>
+          <BtnGhost small title={task.done ? t('chat.taskReopen') : t('chat.taskMarkDone')} onPress={() => toggle(task)} />
+        </View>
+      )) : <EmptyState>{t('chat.noTasks')}</EmptyState>}
+    </Sheet>
+  );
+}
+
+/** نتيجة الاستطلاع وخياراته · الضغط يصوّت (أو يبدّل خياراً في متعدد الاختيار) */
+function PollView({ m, threadId, me, onVote }: { m: ChatMessage; threadId: string; me: ChatMe; onVote: (o: number[]) => void }) {
+  const { db, version } = useApp();
+  const { t } = useLang();
+  const poll = m.poll as ChatPoll;
+  const r = useMemo(() => pollResults(db, threadId, m.id, poll.o.length, me.uid), [db, version, threadId, m.id, poll.o.length, me.uid]); // eslint-disable-line react-hooks/exhaustive-deps
+  const press = (i: number) => onVote(poll.m ? (r.mine.includes(i) ? r.mine.filter((x) => x !== i) : [...r.mine, i]) : [i]);
+  return (
+    <View style={{ marginTop: 4 }}>
+      {poll.o.map((o, i) => (
+        <Pressable key={i} onPress={() => press(i)} disabled={poll.m && r.mine.length === 1 && r.mine[0] === i}
+          style={{ marginTop: 3, padding: 6, borderRadius: 8, borderWidth: 1, borderColor: r.mine.includes(i) ? C.emerald : C.line }}>
+          <T size={TYPE.caption} bold={r.mine.includes(i)}>{o} · {r.counts[i]}</T>
+        </Pressable>
+      ))}
+      <T size={10} color={C.muted}>{t('chat.voters', { n: r.voters })}{poll.m ? ' · ' + t('chat.multiChoice') : ''}</T>
+    </View>
+  );
+}
+
+/** استطلاع جديد: السؤال وخياراته (٢ إلى ١٠) وهل يُختار أكثر من واحد */
+function PollSheet({ threadId, me, onClose }: { threadId: string; me: ChatMe; onClose: () => void }) {
+  const { db, bump } = useApp();
+  const { t } = useLang();
+  const f = useSaveAttempt();
+  const [q, setQ] = useState('');
+  const [opts, setOpts] = useState<string[]>(['', '']);
+  const [multi, setMulti] = useState(false);
+  const filled = opts.map((o) => o.trim()).filter(Boolean);
+  const send = () => {
+    try {
+      sendLocal(db, threadId, me, q, null, { poll: { o: filled.map((o) => o.slice(0, 100)), m: multi } });
+      bump(); chatSyncNow({ threadId }).catch(() => {}); onClose();
+    } catch (e) { reportFailure({ title: t('chat.sendFailed'), e }); }
+  };
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.poll')} tall
+      footer={<View style={{ flex: 1 }}><BtnPrimary title={t('chat.send')} onPress={() => f.attempt(!!q.trim() && filled.length >= POLL_MIN, send)} /></View>}>
+      <Field label={t('chat.pollQuestion')} value={q} onChange={setQ} error={f.missing(q)} />
+      {opts.map((o, i) => (
+        <Field key={i} label={t('chat.pollOption', { n: i + 1 })} value={o} onChange={(v) => setOpts((x) => x.map((y, j) => (j === i ? v.slice(0, 100) : y)))}
+          error={f.tried && i < POLL_MIN && !o.trim()} />
+      ))}
+      {opts.length < POLL_MAX ? <BtnGhost small title={t('chat.pollAddOption')} onPress={() => setOpts((x) => [...x, ''])} /> : null}
+      <Row style={{ marginTop: 6 }}><Chip label={t('chat.multiChoice')} active={multi} onPress={() => setMulti(!multi)} /></Row>
     </Sheet>
   );
 }

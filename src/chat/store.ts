@@ -4,7 +4,8 @@
 import type { DB, SqlValue } from '../db/adapter';
 import { uid as newId } from '../domain/ids';
 import {
-  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, directId, groupSettings, tsGte, type ChannelRef, type ChatTag, type GroupSettings,
+  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, POLL_MAX, directId, groupSettings, tsGte,
+  type ChannelRef, type ChatPoll, type ChatTag, type ChatTask, type GroupSettings,
   type ChatKind, type ChatLink, type ChatMessage, type ChatPerson, type ChatThread,
 } from './types';
 
@@ -137,7 +138,7 @@ interface MsgRow {
 }
 
 /** ما زاد على الرسالة في x (الدفعة ٢): الرد في سلسلة والإشارات */
-interface MsgExtra { re?: string | null; men?: string[]; tag?: ChatTag | null; ack?: boolean; ev?: number; evk?: number }
+interface MsgExtra { re?: string | null; men?: string[]; tag?: ChatTag | null; ack?: boolean; ev?: number; evk?: number; poll?: ChatPoll | null }
 function extraOf(raw: string | null | undefined): MsgExtra {
   try { const v = JSON.parse(raw || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
 }
@@ -149,6 +150,7 @@ const extraJson = (e: MsgExtra): string | null => {
   if (e.ack) o.ack = true;
   if (e.ev) o.ev = e.ev;
   if (e.evk) o.evk = e.evk;
+  if (e.poll) o.poll = { o: e.poll.o.slice(0, POLL_MAX).map((x) => String(x).slice(0, 100)), m: !!e.poll.m };
   return Object.keys(o).length ? JSON.stringify(o) : null;
 };
 
@@ -158,6 +160,7 @@ const msgOf = (r: MsgRow): ChatMessage => ({
   localAt: r.local_at, serverTs: r.server_ts, sent: Number(r.sent) === 1, rejected: Number(r.sent) === -1, sys: r.sys ?? null,
   re: extraOf(r.x).re ?? null, men: extraOf(r.x).men ?? [],
   tag: extraOf(r.x).tag ?? null, ack: extraOf(r.x).ack === true, ev: Number(extraOf(r.x).ev ?? 0) || 0,
+  poll: extraOf(r.x).poll ?? null,
 });
 
 /** رسائل محادثة بترتيب وقوعها · وقت الخادم للمرسَل، ووقت الكتابة لما ينتظر */
@@ -185,7 +188,7 @@ export function sendLocal(db: DB, threadId: string, me: { uid: string; name: str
        VALUES (?,?,?,?,?,?,?,?,?,0,?)`,
       [id, threadId, me.uid, me.name, text, link?.type ?? null, link?.id ?? null, link?.label ?? null, at, extraJson(extra)]);
     // المسودة تُفرَّغ بالإرسال من خانة المحادثة · والرد في سلسلة لا يمسّها
-    if (!extra.re) db.run(`UPDATE chat_threads SET draft = '' WHERE id = ?`, [threadId]);
+    if (!extra.re && !extra.poll) db.run(`UPDATE chat_threads SET draft = '' WHERE id = ?`, [threadId]);
     db.run(`UPDATE chat_threads SET last_ts = ?, last_body = ?, read_ts = ? WHERE id = ?`, [at, text || link!.label, at, threadId]);
   });
   return id;
@@ -250,7 +253,7 @@ export function applyRemoteThread(db: DB, t: {
 
 export function applyRemoteMessage(db: DB, threadId: string, m: {
   id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null; re?: string | null; men?: string[];
-  tag?: ChatTag | null; ack?: boolean; ev?: number;
+  tag?: ChatTag | null; ack?: boolean; ev?: number; poll?: ChatPoll | null;
 }): void {
   db.transaction(() => {
     const had = db.get<{ x: string | null }>(`SELECT x FROM chat_messages WHERE id = ?`, [m.id]);
@@ -259,14 +262,14 @@ export function applyRemoteMessage(db: DB, threadId: string, m: {
       // ما عُدِّل في الخادم (الدفعة ٣): نصه ووسمه وعدد تعديلاته
       if ((m.ev ?? 0) > (Number(extraOf(had.x).ev ?? 0) || 0)) {
         db.run(`UPDATE chat_messages SET body = ?, x = ? WHERE id = ?`,
-          [m.body, extraJson({ re: m.re, men: m.men, tag: m.tag, ack: m.ack, ev: m.ev }), m.id]);
+          [m.body, extraJson({ re: m.re, men: m.men, tag: m.tag, ack: m.ack, ev: m.ev, poll: m.poll }), m.id]);
       }
     }
     else db.run(
       `INSERT INTO chat_messages (id, thread_id, sender, sender_name, body, link_type, link_id, link_label, local_at, server_ts, sent, sys, x)
        VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       [m.id, threadId, m.from, m.name, m.body, m.link?.type ?? null, m.link?.id ?? null, m.link?.label ?? null, m.ts, m.ts, m.sys ?? null,
-        extraJson({ re: m.re, men: m.men, tag: m.tag, ack: m.ack, ev: m.ev })]);
+        extraJson({ re: m.re, men: m.men, tag: m.tag, ack: m.ack, ev: m.ev, poll: m.poll })]);
     db.run(
       `UPDATE chat_threads SET last_ts = ?, last_body = ?, msg_cursor = ?
        WHERE id = ? AND (last_ts IS NULL OR last_ts <= ?)`,
@@ -484,4 +487,42 @@ export function searchMessages(db: DB, me: string, q: ChatSearch, onlyMine = fal
     .filter((m) => (!q.tag || m.tag === q.tag)
       && (!text || m.body.toLowerCase().includes(text) || (m.link?.label ?? '').toLowerCase().includes(text)))
     .slice(0, limit);
+}
+
+/* ─── الدفعة ٥ (قرار المالك 2026-10-08T05:31Z): المهام والاستطلاعات ─── */
+
+export interface TaskRow extends ChatTask { threadId: string; msgId: string; by: string }
+
+/** مهام المحادثة: رقم الرسالة ← مهمتها */
+export function tasksIn(db: DB, threadId: string): Record<string, TaskRow> {
+  const out: Record<string, TaskRow> = {};
+  for (const r of stateRows(db, threadId, 'task')) {
+    const d = r.data;
+    out[String(d.m)] = { threadId, msgId: String(d.m), title: String(d.title ?? ''), as: String(d.as ?? ''), due: String(d.due ?? ''),
+      done: d.done === true, by: String(d.by ?? '') };
+  }
+  return out;
+}
+
+/** مهامي: ما أنا مسؤوله في محادثاتي · غير المنجز أولاً بموعده */
+export function myTasks(db: DB, me: string, onlyMine = false): TaskRow[] {
+  const out: TaskRow[] = [];
+  for (const t of listThreads(db, me, onlyMine)) for (const task of Object.values(tasksIn(db, t.id))) if (task.as === me) out.push(task);
+  return out.sort((a, b) => (Number(a.done) - Number(b.done)) || a.due.localeCompare(b.due));
+}
+
+/** نتيجة الاستطلاع: عدد كل خيار، ومن صوّت، واختياري أنا */
+export function pollResults(db: DB, threadId: string, msgId: string, options: number, me: string): { counts: number[]; voters: number; mine: number[] } {
+  const counts = Array.from({ length: options }, () => 0);
+  let voters = 0;
+  let mine: number[] = [];
+  for (const r of stateRows(db, threadId, 'vote')) {
+    if (r.data.m !== msgId) continue;
+    const o = (Array.isArray(r.data.o) ? r.data.o : []).map(Number).filter((i) => i >= 0 && i < options);
+    if (!o.length) continue;
+    voters++;
+    for (const i of o) counts[i]++;
+    if (r.data.by === me) mine = o;
+  }
+  return { counts, voters, mine };
 }

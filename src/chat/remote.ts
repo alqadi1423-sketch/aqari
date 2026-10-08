@@ -6,7 +6,7 @@ import { encodeFields, decodeFields, FirestoreHttpError } from '../cloud/firesto
 
 /** قيمة Firestore كما يفكّها العميل العام · بلا مسّ له */
 type FsValue = Parameters<typeof decodeFields>[0][string];
-import { CHAT_LINK_TYPES, CHAT_TAGS, OWNER_JOINED, channelSettings, normTs, type ChannelRef, type ChatKind, type ChatLink, type ChatPerson, type ChatTag, type GroupSettings } from './types';
+import { CHAT_LINK_TYPES, CHAT_TAGS, OWNER_JOINED, channelSettings, normTs, type ChannelRef, type ChatKind, type ChatLink, type ChatPerson, type ChatPoll, type ChatTag, type ChatTask, type GroupSettings } from './types';
 export { normTs } from './types';
 import { uid as newId } from '../domain/ids';
 
@@ -37,13 +37,19 @@ export interface RemoteMessage {
   re?: string | null; men?: string[];
   /** الدفعة ٣: الوسم، والإعلان المهم بتأكيد الاطلاع، وعدد تعديلاتها ووقت آخرها */
   tag?: ChatTag | null; ack?: boolean; ev?: number; et?: string | null;
+  /** الدفعة ٥: الاستطلاع */
+  poll?: ChatPoll | null;
 }
 
 /** ما قبل تعديلٍ في سجل الرسالة (الدفعة ٣) */
 export interface RemoteEdit { n: number; body: string; tag: ChatTag | null; at: string }
 
 /** حال المحادثة (st): التثبيت p_رقم وقراءة كل عضو r_رقمه · بوقت الخادم ts فتُسحب بمؤشر واحد */
-export interface RemoteState { id: string; k: string; ts: string; on?: boolean; by?: string; at?: string; m?: string; n?: number }
+export interface RemoteState {
+  id: string; k: string; ts: string; on?: boolean; by?: string; at?: string; m?: string; n?: number;
+  /** الدفعة ٥: المهمة (عنوانها ومسؤولها وموعدها وإنجازها) والصوت (أرقام خياراته) */
+  title?: string; as?: string; due?: string; done?: boolean; o?: number[];
+}
 
 const tail = (name: string) => name.slice(name.lastIndexOf('/') + 1);
 
@@ -76,6 +82,8 @@ function msgOf(doc: { name: string; fields: Record<string, FsValue> }): RemoteMe
     men: Array.isArray(d.men) ? (d.men as unknown[]).filter((x): x is string => typeof x === 'string') : [],
     tag: CHAT_TAGS.includes(d.tag as ChatTag) ? (d.tag as ChatTag) : null,
     ack: d.ack === true, ev: typeof d.ev === 'number' ? d.ev : 0, et: typeof d.et === 'string' ? normTs(d.et) : null,
+    poll: d.poll && typeof d.poll === 'object' && Array.isArray((d.poll as ChatPoll).o)
+      ? { o: ((d.poll as ChatPoll).o as unknown[]).map(String), m: (d.poll as ChatPoll).m === true } : null,
   };
 }
 
@@ -211,12 +219,14 @@ export class ChatRemote {
    */
   async sendMessage(threadId: string, m: {
     id: string; name: string; body: string; link: ChatLink | null; re?: string | null; men?: string[]; tag?: ChatTag | null; ack?: boolean;
+    poll?: ChatPoll | null;
   }): Promise<'created' | 'exists'> {
     const fields: Record<string, unknown> = { from: this.o.uid, name: m.name, body: m.body, link: m.link, att: null };
     if (m.re) fields.re = m.re;
     if (m.men?.length) fields.men = m.men;
     if (m.tag) fields.tag = m.tag;
     if (m.ack) fields.ack = true;
+    if (m.poll) fields.poll = { o: m.poll.o, m: m.poll.m };
     try {
       await this.req('POST', `${this.root}:commit`, { writes: this.msgWrites(threadId, m.id, fields) });
       return 'created';
@@ -340,6 +350,9 @@ export class ChatRemote {
         ...(typeof d.on === 'boolean' ? { on: d.on } : {}), ...(typeof d.by === 'string' ? { by: d.by } : {}),
         ...(typeof d.at === 'string' ? { at: normTs(d.at) } : {}),
         ...(typeof d.m === 'string' ? { m: d.m } : {}), ...(typeof d.n === 'number' ? { n: d.n } : {}),
+        ...(typeof d.title === 'string' ? { title: d.title } : {}), ...(typeof d.as === 'string' ? { as: d.as } : {}),
+        ...(typeof d.due === 'string' ? { due: d.due } : {}), ...(typeof d.done === 'boolean' ? { done: d.done } : {}),
+        ...(Array.isArray(d.o) ? { o: (d.o as unknown[]).map(Number) } : {}),
       };
     });
   }
@@ -401,6 +414,46 @@ export class ChatRemote {
       const d = decodeFields(x.fields);
       return { n: Number(tail(x.name)), body: String(d.body ?? ''), tag: CHAT_TAGS.includes(d.tag as ChatTag) ? (d.tag as ChatTag) : null, at: normTs(d.at) };
     }).sort((a, b) => a.n - b.n);
+  }
+
+  /* ─── الدفعة ٥ (2026-10-08T05:31Z): المهمة من رسالة، والتصويت ─── */
+
+  /**
+   * المهمة من رسالة (st/t_رقمها) · ينشئها من يرسل، ويعدّلها منشئها، وينجزها مسؤولها · ومنشئها يبقى كما هو
+   */
+  async setTask(threadId: string, msgId: string, task: ChatTask): Promise<void> {
+    const sid = 't_' + msgId;
+    let by = this.o.uid;
+    let done = task.done;
+    try {
+      const cur = (await this.req('GET', `${this.root}/${this.orgPath(`chats/${threadId}/st/${sid}`)}`)) as { fields?: Record<string, FsValue> };
+      const d = decodeFields(cur.fields ?? {});
+      if (typeof d.by === 'string') by = d.by;
+      // إنجازها كما في الخادم: تعديل المنشئ لا يرجع ما أنجزه المسؤول
+      if (typeof d.done === 'boolean') done = d.done;
+    } catch (e) { if (!(e instanceof FirestoreHttpError && e.status === 404)) throw e; }
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [this.stWrite(threadId, sid, { k: 'task', m: msgId, title: task.title, as: task.as, due: task.due, done, by })],
+    });
+  }
+
+  /** إنجاز المهمة أو إعادة فتحها · يكتب الإنجاز وحده، فلا تُرجع نسخةٌ قديمة غيره */
+  async setTaskDone(threadId: string, msgId: string, done: boolean): Promise<void> {
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [{
+        update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}/st/t_${msgId}`)}`, fields: encodeFields({ done }) },
+        updateMask: { fieldPaths: ['done'] },
+        currentDocument: { exists: true },
+        updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
+      }],
+    });
+  }
+
+  /** صوتي في استطلاع · أرقام خياراتي · ويُغيَّر */
+  async vote(threadId: string, msgId: string, options: number[]): Promise<void> {
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [this.stWrite(threadId, `v_${msgId}_${this.o.uid}`, { k: 'vote', m: msgId, by: this.o.uid, o: options })],
+    });
   }
 
   /** رسالة واحدة · لتحديث ما عُدِّل منها */

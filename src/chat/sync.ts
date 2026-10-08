@@ -140,7 +140,7 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
     if (m.re && (held.has(m.re) || isUnsentLocal(db, m.re))) { held.add(m.id); continue; }
     try {
       // باسمي الحالي في الدليل لا المحفوظ يوم الكتابة · فتغيّر الاسم لا يحبس الرسالة (قواعد الخادم تطابقه)
-      await remote.sendMessage(m.threadId, { id: m.id, name: me.name, body: m.body, link: m.link, re: m.re, men: m.men, tag: m.tag, ack: m.ack });
+      await remote.sendMessage(m.threadId, { id: m.id, name: me.name, body: m.body, link: m.link, re: m.re, men: m.men, tag: m.tag, ack: m.ack, poll: m.poll });
       markSent(db, m.id, null);
       r.pushedMessages++;
     } catch (e) {

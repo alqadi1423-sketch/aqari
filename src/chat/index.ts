@@ -12,7 +12,7 @@ import { ChatRemote } from './remote';
 import { chatSyncOnce, type ChatSyncResult } from './sync';
 import { ensureChannels, autoJoinChannels } from './channels';
 export { ensureChannels, autoJoinChannels, qualifies, wantedChannels } from './channels';
-import { CHAT_BODY_MAX, CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe, type ChatTag, type GroupSettings } from './types';
+import { CHAT_BODY_MAX, CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe, type ChatTag, type ChatTask, type GroupSettings } from './types';
 import { logAudit } from '../domain/audit';
 import type { RemoteEdit, RemoteMessage, RemoteThread } from './remote';
 import { applyRemoteThread, applyRemoteMessage, applyState, stateCursor } from './store';
@@ -22,6 +22,7 @@ export {
   listThreads, getThread, openDirect, createGroup, listMessages, sendLocal, markRead, listPeople, personName,
   mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft,
   ackersOf, acksOf, ackersFrom, searchMessages, latinDigits, type ChatSearch,
+  tasksIn, myTasks, pollResults, type TaskRow,
 } from './store';
 export { linkTarget, linkCandidates } from './links';
 
@@ -220,6 +221,30 @@ export async function chatEditMessage(db: DB, s: ChatSession, org: string, threa
   if (text.length > CHAT_BODY_MAX) throw new Error('chat: message too long');
   await r.editMessage(threadId, msgId, text, tag);
   applyRemoteMessage(db, threadId, await r.getMessage(threadId, msgId));
+  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+}
+
+/** المهمة من رسالة · ثم الحال كما في الخادم (الدفعة ٥) */
+export async function chatSetTask(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, task: ChatTask,
+  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  const title = task.title.trim().slice(0, 200);
+  if (!title) throw new Error('chat: task needs a title');
+  if (!/^\d{4}-\d\d-\d\d$/.test(task.due)) throw new Error('chat: task due date');
+  await r.setTask(threadId, msgId, { ...task, title });
+  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+}
+
+/** إنجاز المهمة أو إعادة فتحها (الإنجاز وحده) · ثم الحال كما في الخادم */
+export async function chatSetTaskDone(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, done: boolean,
+  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  await r.setTaskDone(threadId, msgId, done);
+  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+}
+
+/** صوتي في استطلاع · ثم الحال كما في الخادم (الدفعة ٥) */
+export async function chatVote(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, options: number[],
+  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  await r.vote(threadId, msgId, Array.from(new Set(options)).sort((a, b) => a - b));
   applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
 }
 

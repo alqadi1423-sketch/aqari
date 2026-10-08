@@ -48,7 +48,8 @@ import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
 import { t } from '../i18n';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, type GroupChange, type ChatTag,
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatVote,
+  type GroupChange, type ChatTag, type ChatTask,
   chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
 import type { RemoteMessage, RemoteThread } from '../chat/remote';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
@@ -851,6 +852,15 @@ export async function chatAckNow(threadId: string, msgId: string): Promise<void>
 }
 export async function chatEditMessageNow(threadId: string, msgId: string, body: string, tag: ChatTag | null): Promise<void> {
   const c = chatOnline(); await chatEditMessage(c.db, c.s, c.org, threadId, msgId, body, tag);
+}
+export async function chatTaskNow(threadId: string, msgId: string, task: ChatTask): Promise<void> {
+  const c = chatOnline(); await chatSetTask(c.db, c.s, c.org, threadId, msgId, task);
+}
+export async function chatTaskDoneNow(threadId: string, msgId: string, done: boolean): Promise<void> {
+  const c = chatOnline(); await chatSetTaskDone(c.db, c.s, c.org, threadId, msgId, done);
+}
+export async function chatVoteNow(threadId: string, msgId: string, options: number[]): Promise<void> {
+  const c = chatOnline(); await chatVote(c.db, c.s, c.org, threadId, msgId, options);
 }
 export async function chatEditsNow(threadId: string, msgId: string) {
   const c = chatOnline(); return chatEditsOf(c.s, c.org, threadId, msgId);

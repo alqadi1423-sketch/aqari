@@ -603,7 +603,38 @@ service cloud.firestore {
             && sid == 'x_' + request.resource.data.m
             && get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.from == request.auth.uid
             && request.resource.data.n is int && request.resource.data.n > 0
-            && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.get('ev', 0) == request.resource.data.n);
+            && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.get('ev', 0) == request.resource.data.n)
+        // المهمة من رسالة (الدفعة ٥): t_رقمها · مسؤولها من أطراف المحادثة، وموعدها سنة-شهر-يوم · ينشئها من يرسل،
+        // ويعدّلها منشئها، وينجزها مسؤولها (الإنجاز وحده) · ومنشئها لا يتغير
+        || (request.resource.data.keys().hasOnly(['k', 'm', 'title', 'as', 'due', 'done', 'by', 'ts']) && request.resource.data.k == 'task'
+            && request.resource.data.m is string && request.resource.data.m.matches('^[A-Za-z0-9_-]{1,64}$')
+            && sid == 't_' + request.resource.data.m
+            && exists(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m))
+            && request.resource.data.title is string && request.resource.data.title.size() > 0 && request.resource.data.title.size() <= 200
+            && request.resource.data.as is string && request.resource.data.as in get(chatPath(org, chatId)).data.p
+            && request.resource.data.due is string && request.resource.data.due.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+            && request.resource.data.done is bool
+            && (resource == null
+                // الإنشاء: لرسالة يقرؤها منشئها وليست سطر نظام · والإنجاز بعدها لمسؤولها ولو انضم بعد الرسالة
+                ? (request.resource.data.by == request.auth.uid && chatMaySend(org, chatId)
+                    && get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.get('sys', null) == null
+                    && chatMsgVisible(org, chatId, request.resource.data.m))
+                : (request.resource.data.by == resource.data.by
+                    && (resource.data.by == request.auth.uid
+                        || (resource.data.as == request.auth.uid
+                            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['done', 'ts']))))))
+        // الصوت في استطلاع (الدفعة ٥): v_رقمها_رقمي · لنفسه وحده ويُغيَّر · خيارٌ واحد إلا إن سُمح بأكثر · لما يقرؤه
+        || (request.resource.data.keys().hasOnly(['k', 'm', 'by', 'o', 'ts']) && request.resource.data.k == 'vote'
+            && request.resource.data.m is string && request.resource.data.m.matches('^[A-Za-z0-9_-]{1,64}$')
+            && request.resource.data.by == request.auth.uid
+            && sid == 'v_' + request.resource.data.m + '_' + request.auth.uid
+            && get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.get('poll', null) != null
+            && request.resource.data.o is list && request.resource.data.o.size() >= 1
+            && request.resource.data.o.size() <= get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.poll.o.size()
+            && request.resource.data.o.toSet().size() == request.resource.data.o.size()
+            && request.resource.data.o.hasOnly([0, 1, 2, 3, 4, 5, 6, 7, 8, 9][0:get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.poll.o.size()])
+            && (get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.poll.m == true || request.resource.data.o.size() == 1)
+            && chatMsgVisible(org, chatId, request.resource.data.m));
     }
     // من يقرأ الرسالة يقرأ ما يتبعها (سجل تعديلها): «كل السابق»، أو بعد انضمامه، أو رسالته هو
     function chatMsgVisible(org, chatId, msgId) {
@@ -697,7 +728,13 @@ service cloud.firestore {
           || (orgOwner(org) && chatReviewing(org, chatId));
         allow create: if chatIn(org) && chatPartyAfter(org, chatId) && chatMaySend(org, chatId)
           && chatQualifies(org, getAfter(chatPath(org, chatId)).data)
-          && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts', 'sys', 're', 'men', 'tag', 'ack'])
+          && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts', 'sys', 're', 'men', 'tag', 'ack', 'poll'])
+          // الاستطلاع (الدفعة ٥): من ٢ إلى ١٠ خيارات نصية، وهل يُختار أكثر من واحد · والسؤال نص الرسالة
+          && (request.resource.data.get('poll', null) == null
+              || (request.resource.data.poll is map && request.resource.data.poll.keys().hasOnly(['o', 'm'])
+                  && request.resource.data.poll.o is list && request.resource.data.poll.o.size() >= 2 && request.resource.data.poll.o.size() <= 10
+                  && request.resource.data.poll.o.join('').size() <= 1000
+                  && request.resource.data.poll.m is bool))
           // الوسم: عاجل أو قرار أو متابعة · والإعلان المهم بتأكيد الاطلاع (الدفعة ٣ · 2026-10-08T05:31Z)
           && (request.resource.data.get('tag', null) == null || request.resource.data.tag in ['urgent', 'decision', 'followup'])
           && (request.resource.data.get('ack', null) == null || request.resource.data.ack is bool)

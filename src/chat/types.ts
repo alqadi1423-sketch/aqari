@@ -79,6 +79,8 @@ export interface ChatMessage {
   tag: ChatTag | null;
   ack: boolean;
   ev: number;
+  /** الدفعة ٥: الاستطلاع */
+  poll: ChatPoll | null;
 }
 
 /** الوسوم (الدفعة ٣ · 2026-10-08T05:31Z): عاجل، قرار، متابعة · مطابقة لقواعد الخادم */
@@ -206,3 +208,12 @@ export function channelId(ch: ChannelRef): string {
 export function channelSettings(ch: ChannelRef): GroupSettings {
   return { h: 'all', w: ch.t === 'announce' ? 'admins' : 'all', ad: 'admins' };
 }
+
+/* ─── الدفعة ٥ (قرار المالك 2026-10-08T05:31Z): المهام والاستطلاعات ─── */
+
+/** الاستطلاع في الرسالة: خياراته (٢ إلى ١٠) وهل يُختار أكثر من واحد · والسؤال نص الرسالة */
+export interface ChatPoll { o: string[]; m: boolean }
+export const POLL_MIN = 2;
+export const POLL_MAX = 10;
+/** المهمة من رسالة: عنوانها ومسؤولها من أطراف المحادثة وموعدها (سنة-شهر-يوم) وإنجازها */
+export interface ChatTask { title: string; as: string; due: string; done: boolean }
