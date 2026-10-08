@@ -50,14 +50,16 @@ describe('المزامنة لا تحجب الواجهة · وأول سحب يظ�
     const progress: string[] = [];
     // زمن المعالج لهذه العملية بين الفسحتين (بالمللي ثانية) · لا الزمن الفعلي الذي يطول بزحام عمّال jest المتوازيين
     const cpu = () => { const u = process.cpuUsage(); return (u.user + u.system) / 1000; };
-    let longest = 0, steps = 0, last = cpu();
+    let longest = 0, longestWall = 0, steps = 0, last = cpu(), lastWall = Date.now();
     const rep = await syncOnce(fresh, remote, getMeta(fresh, 'device_id')!, (m) => progress.push(m), {
-      pause: async () => { const now = cpu(); longest = Math.max(longest, now - last); steps++; await new Promise((r) => setTimeout(r, 0)); last = cpu(); },
+      pause: async () => { const now = cpu(), nowWall = Date.now(); longest = Math.max(longest, now - last); longestWall = Math.max(longestWall, nowWall - lastWall); steps++; await new Promise((r) => setTimeout(r, 0)); last = cpu(); lastWall = Date.now(); },
     });
     expect(rep.pending).toBe(0);
     // صفحات كثيرة لا خطوة واحدة، وكل خطوة قصيرة · والتقدم يُعرض بعددٍ يكبر
     expect(steps).toBeGreaterThan(10);
     expect(longest).toBeLessThan(400);
+    // وسقفٌ واسع بالزمن الفعلي: خطوةٌ تحجب بانتظارٍ لا يحسبه المعالج تفشل أيضاً (التحقق المستقل)
+    expect(longestWall).toBeLessThan(2000);
     expect(progress.filter((m) => m.startsWith('جاري تطبيق الوارد · ')).length).toBeGreaterThan(10);
     // والنتيجة كما في المصدر: لا خصم يظهر متبقياً
     const view = (d: typeof src) => allInstallments(d, T).map((i) => i.installmentId + ':' + i.paid + ':' + i.discount + ':' + i.remaining).sort().join(',');

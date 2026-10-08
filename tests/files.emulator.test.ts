@@ -189,4 +189,39 @@ d('مزامنة الملفات على المحاكي', () => {
     await addTokens(nodeStorageIO, target(W.uid, W.email), name1, f1there, ['handover|FP1']);
     expect((await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name1))!.g).toContain('handover|FP1');
   });
+
+  test('#19 (التحقق المستقل): العضو لا يكتب فوق ملفٍ قائم برفعٍ جديد · ولا يوسّع رؤيته لكل العقارات · والمالك يصلح ملفاً سُبق إليه', async () => {
+    const name7 = objectName(OWNER, sha(bytesOf(7)), 'jpg');
+    const was = (await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name7))!;
+    const p7 = path.join(writer.root, 'f7.jpg');
+    fs.writeFileSync(p7, bytesOf(7));
+    const md5 = (b: Uint8Array) => createHash('md5').update(b).digest('base64');
+    // لا يقرؤه (عقار آخر) فيعيد رفع محتواه برمزه ليقرأه
+    await expect(uploadObject(nodeStorageIO, target(W.uid, W.email), name7, p7,
+      { g: [...was.g, 'contracts|FP1'], op: 'contracts', sha256: sha(bytesOf(7)), md5: md5(bytesOf(7)), contentType: 'image/jpeg' }))
+      .rejects.toThrow('رُفض');
+    // ولا يكتب فوقه محتوىً آخر برموزه
+    const junk = bytesOf(99);
+    const pj = path.join(writer.root, 'junk.bin');
+    fs.writeFileSync(pj, junk);
+    await expect(uploadObject(nodeStorageIO, target(W.uid, W.email), name7, pj,
+      { g: ['contracts|FP1'], op: 'contracts', sha256: sha(bytesOf(7)), md5: md5(junk), contentType: 'image/jpeg' }))
+      .rejects.toThrow('رُفض');
+    const after = (await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name7))!;
+    expect([after.md5, after.g]).toEqual([was.md5, was.g]);
+    // من يقرأ الملف لا يضمّ إليه رمز «كل العقارات» فيقرؤه أعضاء عقارٍ آخر
+    const name1 = objectName(OWNER, sha(f1), 'pdf');
+    const f1there = (await statObject(nodeStorageIO, target(W.uid, W.email), name1))!;
+    await expect(addTokens(nodeStorageIO, target(W.uid, W.email), name1, f1there, ['contracts|*'])).rejects.toThrow('رُفض');
+    // عضوٌ سبق المالك إلى بصمةٍ بمحتوىً آخر: يرفع المالك الملف الصحيح فوقه
+    const f8 = bytesOf(8);
+    const name8 = objectName(OWNER, sha(f8), 'bin');
+    await uploadObject(nodeStorageIO, target(W.uid, W.email), name8, pj,
+      { g: ['contracts|FP1'], op: 'contracts', sha256: sha(f8), md5: md5(junk), contentType: 'application/octet-stream' });
+    const p8 = path.join(owner.root, 'f8.bin');
+    fs.writeFileSync(p8, f8);
+    await uploadObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name8, p8,
+      { g: ['contracts|@', 'contracts|FP1'], op: null, sha256: sha(f8), md5: md5(f8), contentType: 'application/octet-stream' });
+    expect((await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name8))!.md5).toBe(md5(f8));
+  });
 });
