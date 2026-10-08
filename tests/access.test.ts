@@ -2,7 +2,7 @@
  * صلاحيات الأقسام (docs/PERMISSIONS.md) · النموذج والمسارات وكاتب المسودة
  */
 import { memDb } from './helpers/testDb';
-import { canAdd, canEdit, canManage, canView, level, OWNER_ACCESS, propAllowed, type Access } from '@/domain/access/access';
+import { canAdd, canEdit, canManage, canView, level, OWNER_ACCESS, propAllowed, type Access, canMergeTenants } from '@/domain/access/access';
 import { GRANTABLE, levelOf, SECTIONS, TEMPLATES } from '@/domain/access/sections';
 import { normalizeRoute, ROUTE_SECTION, routeAllowed } from '@/domain/access/routes';
 import { readAccess, rowBy, saveMembership } from '@/services/access';
@@ -144,3 +144,12 @@ describe('الهجرة ٢٢ · كاتب المسودة', () => {
     expect(rowBy(db, 'contracts', 'C2')).toBeNull();
   });
 });
+
+test('دمج المستأجرين لمن له القسم كاملاً في كل العقارات وحده (المحصور يُرفض دمجه صامتاً في السحابة)', () => {
+  const m = (all: boolean, lvl: 1 | 2 | 3) => ({ owner: false, uid: 'u1', perms: { tenants: lvl }, allProps: all, props: all ? [] : ['P1'] }) as never;
+  expect(canMergeTenants(OWNER_ACCESS)).toBe(true);
+  expect(canMergeTenants(m(true, 3))).toBe(true);
+  expect(canMergeTenants(m(false, 3))).toBe(false);
+  expect(canMergeTenants(m(true, 2))).toBe(false);
+});
+

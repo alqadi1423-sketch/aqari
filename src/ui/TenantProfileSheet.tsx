@@ -24,6 +24,7 @@ import { useLang } from '../i18n';
 import { reportFailure } from './failureDialog';
 import { useAccess, usePerm } from './access';
 import { routeAllowed } from '../domain/access/routes';
+import { canMergeTenants } from '../domain/access/access';
 import { useSaveAttempt } from './formAttempt';
 
 export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; onClose: () => void }) {
@@ -168,8 +169,8 @@ export function SimilarTenantsSheet({ onClose }: { onClose: () => void }) {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
-  // الدمج يعدّل العقود ويحذف المستأجرين · كامل وحده
-  const canMerge = usePerm('tenants').manage;
+  // الدمج يعدّل العقود ويحذف المستأجرين · كامل في كل العقارات وحده
+  const canMerge = canMergeTenants(useAccess());
   const groups = useMemo(() => similarTenantGroups(db),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);

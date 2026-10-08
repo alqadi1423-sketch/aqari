@@ -28,6 +28,12 @@ export const canAdd = (a: Access, k: SectionKey): boolean => level(a, k) >= 2;
 export const canManage = (a: Access, k: SectionKey): boolean => level(a, k) >= 3;
 
 /**
+ * دمج المستأجرين: يحذف المكرَّرين ويعيد ربط عقودهم في كل العقارات، فهو لصاحب القسم كاملاً في كل العقارات وحده.
+ * المحصور لا يرى عقود غيره، والسحابة ترفض حذفه مستأجراً مشتركاً، فيبقى عنده محذوفاً وعند غيره قائماً.
+ */
+export const canMergeTenants = (a: Access): boolean => canManage(a, 'tenants') && (a.owner || a.allProps);
+
+/**
  * تعديل صفٍّ بعينه: كامل دائماً · وإدخال لمسودته هو وحده قبل ترحيلها (قرار المالك).
  * `by` كاتب الصف الأول، و`draft` أنه مسودة لم تُرحَّل.
  */
