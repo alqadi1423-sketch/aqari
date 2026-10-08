@@ -499,5 +499,11 @@
       "google": "Google sign-in failed (code {{status}})",
       "device": "Unexpected error on the device ({{status}}) · see the copied details"
     }
+  },
+  "statement": {
+    "installmentUpcoming": "Upcoming rent installment",
+    "installmentDiscount": "Installment discount",
+    "claimCollected": "Claim collected",
+    "upcomingTotal": "Upcoming installments not yet due"
   }
 }

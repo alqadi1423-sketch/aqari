@@ -499,5 +499,11 @@
       "google": "تعذّر الدخول بقوقل (الرمز {{status}})",
       "device": "خطأ غير متوقع على الجهاز ({{status}}) · التفاصيل بزر النسخ"
     }
+  },
+  "statement": {
+    "installmentUpcoming": "قسط إيجار قادم",
+    "installmentDiscount": "خصم على القسط",
+    "claimCollected": "تحصيل مطالبة",
+    "upcomingTotal": "أقساط قادمة لم يحلّ موعدها"
   }
 }

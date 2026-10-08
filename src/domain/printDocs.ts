@@ -263,7 +263,7 @@ export function buildInvoiceDoc(co: CompanyInfo, v: InvoiceDocData, issuedAt: st
   </div>`;
 }
 
-export interface StatementRow { date: string; descr: string; debitHalalas: number; creditHalalas: number }
+export interface StatementRow { date: string; descr: string; debitHalalas: number; creditHalalas: number; future?: boolean }
 
 export interface StatementData {
   tenantName: string; contractNo: string; unitLabel: string; start: string | null; end: string | null;
@@ -281,22 +281,26 @@ export function buildStatementDoc(co: CompanyInfo, d: StatementData, issuedAt: s
     if (rowsInBuf) { chunks.push({ html: buf + '</tbody></table>', rows: rowsInBuf + 2 }); buf = head; rowsInBuf = 0; }
   };
   for (const r of d.rows) {
-    running += r.debitHalalas - r.creditHalalas;
+    // القادم (لم يحلّ بتاريخ الكشف) يُعرض ولا يدخل الرصيد (مراجعة التثبيت #12)
+    if (!r.future) running += r.debitHalalas - r.creditHalalas;
     buf += `<tr><td class="num">${dfmt(r.date)}</td><td>${esc(r.descr)}</td>
       <td class="num">${r.debitHalalas ? fmt(r.debitHalalas) : ''}</td>
       <td class="num">${r.creditHalalas ? fmt(r.creditHalalas) : ''}</td>
-      <td class="num">${fmt(running)}</td></tr>`;
+      <td class="num">${r.future ? '' : fmt(running)}</td></tr>`;
     rowsInBuf += 1;
     if (rowsInBuf >= 20) flush();
   }
   flush();
-  const totalDue = d.rows.reduce((s, r) => s + r.debitHalalas, 0);
-  const totalPaid = d.rows.reduce((s, r) => s + r.creditHalalas, 0);
+  const current = d.rows.filter((r) => !r.future);
+  const totalDue = current.reduce((s, r) => s + r.debitHalalas, 0);
+  const totalPaid = current.reduce((s, r) => s + r.creditHalalas, 0);
+  const upcoming = d.rows.filter((r) => r.future).reduce((s, r) => s + r.debitHalalas - r.creditHalalas, 0);
   chunks.push({
     html: `<div class="inv-totals">
       <div class="t-row"><span>إجمالي المستحق</span><span class="num">${fmt(totalDue)} ${SAR}</span></div>
       <div class="t-row"><span>إجمالي المسدَّد</span><span class="num">${fmt(totalPaid)} ${SAR}</span></div>
       <div class="t-row tt"><span>${totalDue - totalPaid >= 0 ? 'الرصيد المستحق على المستأجر' : 'الرصيد الدائن للمستأجر'}</span><span class="num">${fmt(Math.abs(totalDue - totalPaid))} ${SAR}</span></div>
+      ${upcoming > 0 ? `<div class="t-row"><span>${t('statement.upcomingTotal')}</span><span class="num">${fmt(upcoming)} ${SAR}</span></div>` : ''}
     </div>`, rows: 5,
   });
   const intro = `<div class="inv-meta">

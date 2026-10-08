@@ -16,6 +16,10 @@ import { daysBetween, addDays, contractEndFromDuration } from './dates';
 import { TS_DEDUCTIBLE } from './purchases';
 import { DISCOUNT_REDUCES_INSTALLMENT } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
+import { ASSET_CATEGORIES } from './assets/catalog';
+
+/** حسابات فئات الأصول في SQL · بنود الشراء التي صارت أصولاً تُرحَّل مدينةً عليها */
+const ASSET_CATEGORY_SQL = ASSET_CATEGORIES.map((c) => `'${c.code}'`).join(',');
 
 /** أساس القياس المعروض · نص صريح تستعمله الشاشات في الأزرار والعناوين */
 export type Basis = 'استحقاق' | 'نقدي';
@@ -33,8 +37,9 @@ export const BASIS_CASH: Basis = 'نقدي';
  */
 // وتسوية الفائض (ردّاً أو رصيداً) مدينها الإيراد بما قُبض فوق الأقساط · والتوزيع لم يعدّ ذلك الفائض أصلاً
 // فيُستثنى جانب إيرادها كذلك
+// والعربون المحوَّل إلى عقد إيرادٌ من قيمة العقد التي يعدّها التوزيع كاملة (مراجعة التثبيت #11)
 const RENT_SOURCES = ['rent', 'rent_rev', 'rent_payment', 'rent_payment_rev', 'discount', 'discount_rev',
-  'surplus_refund', 'surplus_refund_rev', 'surplus_credit', 'surplus_credit_rev'];
+  'surplus_refund', 'surplus_refund_rev', 'surplus_credit', 'surplus_credit_rev', 'reservation_convert', 'reservation_convert_rev'];
 const PURCHASE_SOURCES = ['purchase', 'purchase_rev'];
 
 // ─── توزيع قيمة على أيامها ───
@@ -260,6 +265,8 @@ export interface PurchaseAccrualRow {
   tax_halalas: number;
   total_halalas: number;
   tax_status?: string | null;
+  /** ما رُسمل أصولاً من الفاتورة (مدين حسابات فئات الأصول في قيدها) */
+  asset_halalas?: number;
 }
 
 export interface AccrualPeriod {
@@ -281,9 +288,10 @@ export function purchaseAccrualPeriod(p: Pick<PurchaseAccrualRow, 'date' | 'amor
  * مصروف الفاتورة كما يراه الدفتر: الإجمالي ناقص ضريبة المدخلات القابلة للخصم وحدها
  * (فهي أصل مستردّ لا تكلفة) · ونفس معادلة postPurchaseToLedger حرفياً بما فيها فرق التقريب.
  */
-export function purchaseExpenseHalalas(p: Pick<PurchaseAccrualRow, 'tax_halalas' | 'total_halalas' | 'tax_status'>): number {
+export function purchaseExpenseHalalas(p: Pick<PurchaseAccrualRow, 'tax_halalas' | 'total_halalas' | 'tax_status'> & { asset_halalas?: number }): number {
   const deductible = p.tax_status === TS_DEDUCTIBLE ? Number(p.tax_halalas) || 0 : 0;
-  return (Number(p.total_halalas) || 0) - deductible;
+  // وبنودها التي صارت أصولاً ليست مصروفاً: إهلاكها يأتي من الدفتر (مراجعة التثبيت #11)
+  return (Number(p.total_halalas) || 0) - deductible - (Number(p.asset_halalas) || 0);
 }
 
 /** نصيب فترة من فاتورة شراء · null في from أو to يعني حدّ الفاتورة نفسه */
@@ -300,13 +308,17 @@ export function purchasePeriodExpense(
 function accrualPurchases(db: DB): PurchaseAccrualRow[] {
   return db.all<{
     id: string; date: string; amortize: number; amortize_months: number | null;
-    subtotal_halalas: number; tax_halalas: number; total_halalas: number; tax_status: string | null;
+    subtotal_halalas: number; tax_halalas: number; total_halalas: number; tax_status: string | null; asset_halalas: number;
   }>(
-    `SELECT id, date, amortize, amortize_months, subtotal_halalas, tax_halalas, total_halalas, tax_status
-     FROM purchases
-     WHERE deleted_at IS NULL AND date IS NOT NULL AND date != ''`
+    // ما رُسمل أصولاً من الفاتورة: مدين قيدها في حسابات فئات الأصول، كما رحّله postPurchaseToLedger
+    `SELECT p.id, p.date, p.amortize, p.amortize_months, p.subtotal_halalas, p.tax_halalas, p.total_halalas, p.tax_status,
+            COALESCE((SELECT SUM(l.debit_halalas) FROM journal_lines l
+                      WHERE l.entry_id = p.journal_entry_id AND l.account_code IN (${ASSET_CATEGORY_SQL})), 0) AS asset_halalas
+     FROM purchases p
+     WHERE p.deleted_at IS NULL AND p.date IS NOT NULL AND p.date != ''`
   ).map((r) => ({
     ...r,
+    asset_halalas: Number(r.asset_halalas),
     amortize: Number(r.amortize),
     amortize_months: r.amortize_months == null ? null : Number(r.amortize_months),
     subtotal_halalas: Number(r.subtotal_halalas),
