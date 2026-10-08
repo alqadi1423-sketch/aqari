@@ -94,9 +94,12 @@ d('إعدادات المجموعة ومسؤولوها (2026-10-08T05:31Z)', () =
     expect(both.status).toBe(403);
     expect(await status(chat(C).addMember(G, D))).toBe(403);
     expect(await status(chat(B).addMember(G, D))).toBe(200);
-    // وقت انضمام من الجهاز مرفوض (مفتاحه وحده في الخريطة، بلا مسّ مفاتيح غيره)
-    expect(await put(`orgs/${ORG}/chats/${G}?updateMask.fieldPaths=p&updateMask.fieldPaths=la&updateMask.fieldPaths=${encodeURIComponent('jt.`' + E + '`')}`,
-      { p: [A, B, C, D, E].sort(), jt: { [E]: new Date('2020-01-01T00:00:00Z') }, la: E }, B)).toBe(403);
+    // وقت انضمام من الجهاز مرفوض (مفتاحه وحده في الخريطة بقيمة وقتٍ صحيحة النوع، بلا مسّ مفاتيح غيره)
+    const forged = await fetch(url(`orgs/${ORG}/chats/${G}?updateMask.fieldPaths=p&updateMask.fieldPaths=la&updateMask.fieldPaths=${encodeURIComponent('jt.`' + E + '`')}`), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(B) },
+      body: JSON.stringify({ fields: { ...encodeFields({ p: [A, B, C, D, E].sort(), la: E }),
+        jt: { mapValue: { fields: { [E]: { timestampValue: '2020-01-01T00:00:00Z' } } } } } }) });
+    expect(forged.status).toBe(403);
     // وقت انضمام لمفتاح غير المضاف مرفوض
     const otherKey = await fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents:commit`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(B) },

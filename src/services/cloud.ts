@@ -47,7 +47,8 @@ import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engin
 import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, type GroupChange,
+import { t } from '../i18n';
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, type GroupChange,
   chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
 import type { RemoteMessage, RemoteThread } from '../chat/remote';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
@@ -838,7 +839,15 @@ export async function removeMemberNow(uid: string, email = '') {
   if (s && cfg && state.user) await chatRemoveMember({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, t.org, uid, email);
 }
 
-/** تعديل أعضاء مجموعة واسمها (#19) · للمالك ومنشئها */
+/** تثبيت رسالة · يحتاج اتصالاً (الدفعة ٢) */
+export async function chatPinNow(threadId: string, msgId: string, on: boolean): Promise<void> {
+  const s = getSession(); const cfg = cloudConfig(); const db = appDb;
+  if (!s || !cfg || !state.user || !db) throw new Error(t('chat.needAccount'));
+  if (!state.online) throw new Error(t('chat.pinOffline'));
+  const org = readMembership(db)?.org ?? state.user.uid;
+  await chatSetPin(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, msgId, on);
+}
+/** تعديل المجموعة: الاسم والإعدادات والأعضاء والمسؤولون (#19 و2026-10-08T05:31Z) · كلٌّ بصلاحيته */
 export async function chatEditGroupNow(threadId: string, change: GroupChange): Promise<void> {
   const s = getSession(); const cfg = cloudConfig(); const db = appDb;
   if (!s || !cfg || !state.user || !db) { teamRemote(); return; }

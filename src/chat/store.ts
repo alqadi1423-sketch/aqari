@@ -4,7 +4,7 @@
 import type { DB } from '../db/adapter';
 import { uid as newId } from '../domain/ids';
 import {
-  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, directId, groupSettings, type GroupSettings,
+  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, directId, groupSettings, tsGte, type GroupSettings,
   type ChatKind, type ChatLink, type ChatMessage, type ChatPerson, type ChatThread,
 } from './types';
 
@@ -132,13 +132,26 @@ export function markRead(db: DB, threadId: string): void {
 interface MsgRow {
   id: string; thread_id: string; sender: string; sender_name: string; body: string;
   link_type: string | null; link_id: string | null; link_label: string | null;
-  local_at: string; server_ts: string | null; sent: number; sys: string | null;
+  local_at: string; server_ts: string | null; sent: number; sys: string | null; x: string | null;
 }
+
+/** ما زاد على الرسالة في x (الدفعة ٢): الرد في سلسلة والإشارات */
+interface MsgExtra { re?: string | null; men?: string[] }
+function extraOf(raw: string | null | undefined): MsgExtra {
+  try { const v = JSON.parse(raw || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+}
+const extraJson = (e: MsgExtra): string | null => {
+  const o: MsgExtra = {};
+  if (e.re) o.re = e.re;
+  if (e.men?.length) o.men = e.men.slice(0, MENTIONS_MAX);
+  return Object.keys(o).length ? JSON.stringify(o) : null;
+};
 
 const msgOf = (r: MsgRow): ChatMessage => ({
   id: r.id, threadId: r.thread_id, sender: r.sender, senderName: r.sender_name, body: r.body,
   link: r.link_type && r.link_id ? { type: r.link_type as ChatLink['type'], id: r.link_id, label: r.link_label ?? '' } : null,
   localAt: r.local_at, serverTs: r.server_ts, sent: Number(r.sent) === 1, rejected: Number(r.sent) === -1, sys: r.sys ?? null,
+  re: extraOf(r.x).re ?? null, men: extraOf(r.x).men ?? [],
 });
 
 /** رسائل محادثة بترتيب وقوعها · وقت الخادم للمرسَل، ووقت الكتابة لما ينتظر */
@@ -148,7 +161,8 @@ export function listMessages(db: DB, threadId: string): ChatMessage[] {
 }
 
 /** رسالة جديدة · تُحفظ على الجهاز فوراً «لم تُرسل» وتُرفع في المزامنة */
-export function sendLocal(db: DB, threadId: string, me: { uid: string; name: string }, body: string, link: ChatLink | null = null): string {
+export function sendLocal(db: DB, threadId: string, me: { uid: string; name: string }, body: string, link: ChatLink | null = null,
+  extra: MsgExtra = {}): string {
   const text = body.trim();
   if (!text && !link) throw new Error('chat: empty message');
   if (link) link = { ...link, id: link.id.slice(0, 64), label: link.label.slice(0, 200) };
@@ -161,9 +175,11 @@ export function sendLocal(db: DB, threadId: string, me: { uid: string; name: str
   const at = nowIso();
   db.transaction(() => {
     db.run(
-      `INSERT INTO chat_messages (id, thread_id, sender, sender_name, body, link_type, link_id, link_label, local_at, sent)
-       VALUES (?,?,?,?,?,?,?,?,?,0)`,
-      [id, threadId, me.uid, me.name, text, link?.type ?? null, link?.id ?? null, link?.label ?? null, at]);
+      `INSERT INTO chat_messages (id, thread_id, sender, sender_name, body, link_type, link_id, link_label, local_at, sent, x)
+       VALUES (?,?,?,?,?,?,?,?,?,0,?)`,
+      [id, threadId, me.uid, me.name, text, link?.type ?? null, link?.id ?? null, link?.label ?? null, at, extraJson(extra)]);
+    // المسودة تُفرَّغ بالإرسال من خانة المحادثة · والرد في سلسلة لا يمسّها
+    if (!extra.re) db.run(`UPDATE chat_threads SET draft = '' WHERE id = ?`, [threadId]);
     db.run(`UPDATE chat_threads SET last_ts = ?, last_body = ?, read_ts = ? WHERE id = ?`, [at, text || link!.label, at, threadId]);
   });
   return id;
@@ -226,14 +242,17 @@ export function applyRemoteThread(db: DB, t: {
     [t.id, t.k, t.name, JSON.stringify([...t.p].sort()), t.by, t.at, meta]);
 }
 
-export function applyRemoteMessage(db: DB, threadId: string, m: { id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null }): void {
+export function applyRemoteMessage(db: DB, threadId: string, m: {
+  id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null; re?: string | null; men?: string[];
+}): void {
   db.transaction(() => {
     const had = db.get(`SELECT 1 FROM chat_messages WHERE id = ?`, [m.id]);
     if (had) db.run(`UPDATE chat_messages SET sent = 1, server_ts = ? WHERE id = ?`, [m.ts, m.id]);
     else db.run(
-      `INSERT INTO chat_messages (id, thread_id, sender, sender_name, body, link_type, link_id, link_label, local_at, server_ts, sent, sys)
-       VALUES (?,?,?,?,?,?,?,?,?,?,1,?)`,
-      [m.id, threadId, m.from, m.name, m.body, m.link?.type ?? null, m.link?.id ?? null, m.link?.label ?? null, m.ts, m.ts, m.sys ?? null]);
+      `INSERT INTO chat_messages (id, thread_id, sender, sender_name, body, link_type, link_id, link_label, local_at, server_ts, sent, sys, x)
+       VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
+      [m.id, threadId, m.from, m.name, m.body, m.link?.type ?? null, m.link?.id ?? null, m.link?.label ?? null, m.ts, m.ts, m.sys ?? null,
+        extraJson({ re: m.re, men: m.men })]);
     db.run(
       `UPDATE chat_threads SET last_ts = ?, last_body = ?, msg_cursor = ?
        WHERE id = ? AND (last_ts IS NULL OR last_ts <= ?)`,
@@ -268,4 +287,105 @@ export function listPeople(db: DB): ChatPerson[] {
 
 export function personName(db: DB, uid: string): string {
   return db.get<{ name: string }>(`SELECT name FROM chat_people WHERE uid = ?`, [uid])?.name ?? '';
+}
+
+/* ─── الدفعة ٢ (قرار المالك 2026-10-08T05:31Z): السلاسل والتثبيت والقراءة والمسودات ─── */
+
+/** خط المحادثة الرئيس: ما ليس ردّاً في سلسلة · والردود تُعدّ لأصلها */
+export function mainLine(msgs: ChatMessage[]): ChatMessage[] {
+  return msgs.filter((m) => !m.re);
+}
+export function repliesOf(msgs: ChatMessage[], parentId: string): ChatMessage[] {
+  return msgs.filter((m) => m.re === parentId);
+}
+export function replyCounts(msgs: ChatMessage[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const m of msgs) if (m.re) out[m.re] = (out[m.re] ?? 0) + 1;
+  return out;
+}
+
+/** حال المحادثة كما في الخادم (التثبيت والقراءة) · ومؤشرها */
+export function applyState(db: DB, threadId: string, items: Array<{ id: string; k: string; ts: string; [key: string]: unknown }>): void {
+  if (!items.length) return;
+  db.transaction(() => {
+    for (const it of items) {
+      const { id, k, ts, ...data } = it;
+      db.run(
+        `INSERT INTO chat_state (thread_id, id, k, data, ts) VALUES (?,?,?,?,?)
+         ON CONFLICT(thread_id, id) DO UPDATE SET k = excluded.k, data = excluded.data, ts = excluded.ts`,
+        [threadId, id, k, JSON.stringify(data), ts]);
+    }
+    const last = items[items.length - 1].ts;
+    db.run(`UPDATE chat_threads SET st_cursor = ? WHERE id = ? AND (st_cursor IS NULL OR st_cursor < ?)`, [last, threadId, last]);
+  });
+}
+export function stateCursor(db: DB, threadId: string): string | null {
+  return db.get<{ c: string | null }>(`SELECT st_cursor AS c FROM chat_threads WHERE id = ?`, [threadId])?.c ?? null;
+}
+function stateRows(db: DB, threadId: string, k: string): Array<{ id: string; data: Record<string, unknown> }> {
+  return db.all<{ id: string; data: string }>(`SELECT id, data FROM chat_state WHERE thread_id = ? AND k = ?`, [threadId, k])
+    .map((r) => { let d: Record<string, unknown> = {}; try { d = JSON.parse(r.data); } catch { d = {}; } return { id: r.id, data: d }; });
+}
+/** الرسائل المثبّتة (أرقامها) */
+export function pinnedIds(db: DB, threadId: string): string[] {
+  return stateRows(db, threadId, 'pin').filter((r) => r.data.on === true).map((r) => r.id.slice(2));
+}
+/** قراءة كل عضو: رقمه ← حتى أي وقت قرأ */
+export function readsOf(db: DB, threadId: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const r of stateRows(db, threadId, 'read')) if (typeof r.data.at === 'string') out[r.id.slice(2)] = r.data.at;
+  return out;
+}
+/** من قرأ الرسالة ومن لم يقرأ (غير مرسلها) */
+export function readersOf(db: DB, threadId: string, m: { sender: string; serverTs: string | null }, members: string[]): { read: string[]; unread: string[] } {
+  return readersFrom(readsOf(db, threadId), m, members);
+}
+/** من قرأ من خريطة القراءة نفسها · لعرضٍ لكل رسالة دون سؤال القاعدة لكلٍّ منها */
+export function readersFrom(reads: Record<string, string>, m: { sender: string; serverTs: string | null }, members: string[],
+  joinedAfter: Record<string, string> = {}): { read: string[]; unread: string[] } {
+  // في «من لحظة انضمامه» من انضم بعد الرسالة لا يراها، فلا يُعدّ قارئاً ولا غير قارئ
+  const others = members.filter((u) => u !== m.sender
+    && !(joinedAfter[u] && m.serverTs && !tsGte(m.serverTs, joinedAfter[u])));
+  const read = m.serverTs ? others.filter((u) => reads[u] && tsGte(reads[u], m.serverTs!)) : [];
+  return { read, unread: others.filter((u) => !read.includes(u)) };
+}
+/**
+ * قراءتي التي لم تُرفع: أحدث وقت خادمٍ لرسالةٍ قرأتها · null إن رُفعت أو لا شيء
+ * (كلٌّ يكتب قراءته وحده بوقت رسالة في الخادم)
+ */
+export function readToPush(db: DB, threadId: string, me: string): string | null {
+  const t = db.get<{ read_ts: string | null }>(`SELECT read_ts FROM chat_threads WHERE id = ?`, [threadId]);
+  if (!t?.read_ts) return null;
+  const upTo = db.get<{ v: string | null }>(
+    // رسائل غيري وحدها: قراءتي رسالتي لا تُرفع (كتابة بلا فائدة مع كل إرسال)
+    `SELECT MAX(server_ts) AS v FROM chat_messages WHERE thread_id = ? AND sender != ? AND server_ts IS NOT NULL AND server_ts <= ?`,
+    [threadId, me, t.read_ts])?.v ?? null;
+  if (!upTo) return null;
+  const mine = readsOf(db, threadId)[me];
+  return mine && tsGte(mine, upTo) ? null : upTo;
+}
+/** بعد رفع قراءتي: تُحفظ كما رُفعت فلا تتكرر */
+export function markReadPushed(db: DB, threadId: string, me: string, at: string): void {
+  db.run(
+    `INSERT INTO chat_state (thread_id, id, k, data, ts) VALUES (?,?,'read',?,NULL)
+     ON CONFLICT(thread_id, id) DO UPDATE SET data = excluded.data`,
+    [threadId, 'r_' + me, JSON.stringify({ at })]);
+}
+/** المسودة على الجهاز وحده · تُحفظ بالكتابة وتُفرَّغ بالإرسال */
+export function setDraft(db: DB, threadId: string, text: string): void {
+  db.run(`UPDATE chat_threads SET draft = ? WHERE id = ?`, [text.slice(0, CHAT_BODY_MAX), threadId]);
+}
+export function getDraft(db: DB, threadId: string): string {
+  return db.get<{ d: string }>(`SELECT draft AS d FROM chat_threads WHERE id = ?`, [threadId])?.d ?? '';
+}
+
+/** رسالة على الجهاز لم تُرسل بعد (أو رُفضت) · فالرد عليها ينتظرها */
+export function isUnsentLocal(db: DB, id: string): boolean {
+  const r = db.get<{ sent: number }>(`SELECT sent FROM chat_messages WHERE id = ?`, [id]);
+  return !!r && Number(r.sent) !== 1;
+}
+
+/** رسالة على الجهاز رفضها الخادم · فالرد عليها يُرفض معها لا ينتظر بلا نهاية */
+export function isRejectedLocal(db: DB, id: string): boolean {
+  return Number(db.get<{ sent: number }>(`SELECT sent FROM chat_messages WHERE id = ?`, [id])?.sent ?? 0) === -1;
 }

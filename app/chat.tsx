@@ -15,12 +15,12 @@ import { useAccess } from '../src/ui/access';
 import { useLang } from '../src/i18n';
 import { dfmt } from '../src/domain/dates';
 import {
-  cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatEditGroupNow,
+  cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatEditGroupNow, chatPinNow,
   chatReviewCandidatesNow, chatOpenReviewNow, chatCloseReviewNow, chatJoinGroupNow,
 } from '../src/services/cloud';
 import type { RemoteMessage, RemoteThread } from '../src/chat/remote';
 import { useToast } from '../src/ui/Toast';
-import { sectionDef } from '../src/domain/access/sections';
+import { sectionDef, SECTION_KEYS, type SectionKey } from '../src/domain/access/sections';
 import { UnitDetailSheet } from '../src/ui/unitSheets';
 import { AssetSheet } from '../src/ui/AssetSheets';
 import { useSaveAttempt } from '../src/ui/formAttempt';
@@ -29,6 +29,8 @@ import {
   chatMe, canCreateGroup, createGroup, getThread, linkCandidates, linkTarget, listMessages, listPeople, listThreads,
   markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup,
   isGroupAdmin, canAppointAdmins, canAddMembers, canSendIn, GROUP_DEFAULTS, type GroupSettings, type GroupChange,
+  mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft, mentionsMe, mentionUser, mentionSection, MENTIONS_MAX,
+  type ChatMessage,
   type ChatLink, type ChatMe, type ChatPerson, type ChatThread,
 } from '../src/chat';
 
@@ -233,13 +235,25 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const fs = useFs();
   const access = useAccess();
   const router = useRouter();
-  const [text, setText] = useState('');
+  const [text, setTextState] = useState(() => getDraft(db, id));
+  const setText = useCallback((v: string) => { setTextState(v); setDraft(db, id, v); }, [db, id]);
+  const [men, setMen] = useState<string[]>([]);
+  const [menOpen, setMenOpen] = useState(false);
+  const [actFor, setActFor] = useState<ChatMessage | null>(null);
+  const [threadOf, setThreadOf] = useState<ChatMessage | null>(null);
+  const [pinsOpen, setPinsOpen] = useState(false);
   const [link, setLink] = useState<ChatLink | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
   const [unitFor, setUnitFor] = useState<string | null>(null);
   const [assetFor, setAssetFor] = useState<string | null>(null);
   const thread = useMemo(() => getThread(db, id, me.uid), [db, version, tick, id, me.uid]); // eslint-disable-line react-hooks/exhaustive-deps
   const msgs = useMemo(() => listMessages(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // الدفعة ٢: الخط الرئيس بلا ردود السلاسل · وعدد ردود كل أصل · والمثبّتة
+  const main = useMemo(() => mainLine(msgs), [msgs]);
+  const counts = useMemo(() => replyCounts(msgs), [msgs]);
+  const pins = useMemo(() => pinnedIds(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const reads = useMemo(() => readsOf(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const mySections = useMemo(() => (access.owner ? SECTION_KEYS : SECTION_KEYS.filter((k) => ((access.perms as Record<string, number>)[k] ?? 0) >= 1)) as string[], [access]);
   const people = useMemo(() => listPeople(db), [db, tick]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { markRead(db, id); }, [db, id, msgs.length]);
   const other = people.find((p) => p.uid === thread?.members.find((u) => u !== me.uid));
@@ -258,14 +272,20 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const send = useCallback(() => {
     if (!text.trim() && !link) return;
     try {
-      sendLocal(db, id, me, text, link);
+      sendLocal(db, id, me, text, link, { men });
     } catch (e) {
       reportFailure({ title: t('chat.sendFailed'), e });
       return;
     }
-    setText(''); setLink(null); bump();
+    setTextState(''); setLink(null); setMen([]); bump();
     chatSyncNow({ threadId: id }).catch(() => {});
-  }, [db, id, me, text, link, bump, t]);
+  }, [db, id, me, text, link, men, bump, t]);
+  const canPin = thread ? (thread.kind !== 'group' || isGroupAdmin(me, thread)) : false;
+  const pin = async (m: ChatMessage, on: boolean) => {
+    try { await chatPinNow(id, m.id, on); bump(); } catch (e) { reportFailure({ title: t('chat.pinFailed'), e }); }
+  };
+  const menLabel = (x: string) => (x.startsWith('s:') ? '@' + (() => { try { return sectionDef(x.slice(2) as SectionKey).label; } catch { return x.slice(2); } })()
+    : '@' + (people.find((p) => p.uid === x.slice(2))?.name || t('chat.member')));
 
   const openLink = (l: ChatLink) => {
     const target = linkTarget(db, access, l);
@@ -287,17 +307,25 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
         </Row>
       )}>
       {!me.owner ? <Note>{t('chat.ownerSees')}</Note> : null}
+      {msgs.some((m) => pins.includes(m.id)) ? (
+        <Pressable onPress={() => setPinsOpen(true)} style={{ paddingVertical: 6 }}>
+          <T size={TYPE.caption} bold color={C.emerald}>{t('chat.pinned', { n: msgs.filter((m) => pins.includes(m.id)).length })}</T>
+        </Pressable>
+      ) : null}
       <FlatList
         style={{ flex: 1 }}
-        data={msgs}
+        data={main}
         keyExtractor={(m) => m.id}
         renderItem={({ item: m }) => {
           const mine = m.sender === me.uid;
           const target = m.link ? linkTarget(db, access, m.link) : null;
           if (m.sys === 'join') return <SysLine label={t('chat.ownerJoined')} />;
+          const toMe = mentionsMe(m, me.uid, mySections);
+          const seen = mine && thread ? readersFrom(reads, m, thread.members, thread.settings.h === 'join' ? thread.joined : {}) : null;
           return (
-            <View style={{ alignSelf: mine ? 'flex-start' : 'flex-end', maxWidth: '85%', marginVertical: 4,
-              backgroundColor: mine ? C.emeraldSoft : C.paper, borderRadius: 12, padding: 9, borderWidth: 1, borderColor: C.line }}>
+            <Pressable onLongPress={() => setActFor(m)} delayLongPress={350}
+              style={{ alignSelf: mine ? 'flex-start' : 'flex-end', maxWidth: '85%', marginVertical: 4,
+              backgroundColor: mine ? C.emeraldSoft : C.paper, borderRadius: 12, padding: 9, borderWidth: toMe ? 2 : 1, borderColor: toMe ? C.emerald : C.line }}>
               {!mine && thread?.kind === 'group' ? <T size={TYPE.caption} bold color={C.emerald}>{senderOf(m.sender, m.senderName)}</T> : null}
               {m.body ? <T size={TYPE.body}>{m.body}</T> : null}
               {m.link ? (
@@ -308,10 +336,20 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
                   {!target?.canOpen ? <T size={TYPE.caption} color={C.muted}>{t('chat.nameOnly')}</T> : null}
                 </Pressable>
               ) : null}
+              {m.men.length ? <T size={TYPE.caption} color={C.emerald}>{m.men.map(menLabel).join(' ')}</T> : null}
+              {pins.includes(m.id) ? <T size={TYPE.caption} color={C.muted}>{t('chat.pinnedOne')}</T> : null}
               <T size={10} color={C.muted} style={{ marginTop: 3 }}>
                 {localTime(m.serverTs ?? m.localAt)}{m.rejected ? ' · ' + t('chat.rejectedMsg') : !m.sent ? ' · ' + t('chat.notSent') : ''}
+                {/* إشعار القراءة: في الفردية «قُرئت»، وفي المجموعة عدد من قرأ */}
+                {(() => {
+                  const label = seen && m.sent ? (thread?.kind === 'group' ? t('chat.readCount', { n: seen.read.length }) : seen.read.length ? t('chat.read') : '') : '';
+                  return label ? ' · ' + label : '';
+                })()}
               </T>
-            </View>
+              {counts[m.id] ? (
+                <Pressable onPress={() => setThreadOf(m)}><T size={TYPE.caption} bold color={C.emerald}>{t('chat.replies', { n: counts[m.id] })}</T></Pressable>
+              ) : null}
+            </Pressable>
           );
         }}
       />
@@ -323,7 +361,13 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
               <Chip label={t('chat.link.' + link.type) + ' · ' + link.label} active onPress={() => setLink(null)} />
             </Row>
           ) : null}
+          {men.length ? (
+            <Row style={{ flexWrap: 'wrap', paddingVertical: 4 }}>
+              {men.map((x) => <Chip key={x} label={menLabel(x)} active onPress={() => setMen((v) => v.filter((y) => y !== x))} />)}
+            </Row>
+          ) : null}
           <Row style={{ paddingVertical: 6, alignItems: 'flex-end' }} gap={6}>
+            <BtnGhost small title={t('chat.mention')} onPress={() => setMenOpen(true)} />
             <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
             <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
               style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
@@ -336,6 +380,31 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
         <GroupEditSheet me={me} people={people} thread={thread} onClose={() => setEditOpen(false)} />
       ) : null}
       {linkOpen ? <LinkSheet onClose={() => setLinkOpen(false)} onPick={(l) => { setLink(l); setLinkOpen(false); }} /> : null}
+      {menOpen && thread ? (
+        <MentionSheet people={people.filter((p) => thread.members.includes(p.uid) && p.uid !== me.uid)} onClose={() => setMenOpen(false)}
+          onPick={(x) => { setMen((v) => (v.includes(x) || v.length >= MENTIONS_MAX ? v : [...v, x])); setMenOpen(false); }} />
+      ) : null}
+      {actFor && thread ? (
+        <MessageActions m={actFor} canReply={canSendIn(me, thread) && actFor.sent && !actFor.rejected} canPin={canPin} pinned={pins.includes(actFor.id)}
+          readers={readersFrom(reads, actFor, thread.members, thread.settings.h === 'join' ? thread.joined : {})} nameOf={(u) => people.find((p) => p.uid === u)?.name || t('chat.member')}
+          onReply={() => { setThreadOf(actFor); setActFor(null); }}
+          onPin={(on) => { pin(actFor, on); setActFor(null); }}
+          onClose={() => setActFor(null)} />
+      ) : null}
+      {threadOf && thread ? (
+        <ReplySheet me={me} threadId={id} parent={threadOf} replies={repliesOf(msgs, threadOf.id)} canSend={canSendIn(me, thread)}
+          nameOf={(u, f) => senderOf(u, f)} onClose={() => setThreadOf(null)} />
+      ) : null}
+      {pinsOpen ? (
+        <Sheet visible onClose={() => setPinsOpen(false)} title={t('chat.pinnedTitle')} tall>
+          {msgs.filter((m) => pins.includes(m.id)).map((m) => (
+            <View key={m.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
+              <T size={TYPE.caption} bold color={C.emerald}>{senderOf(m.sender, m.senderName)}</T>
+              <T size={TYPE.body}>{m.body || m.link?.label}</T>
+            </View>
+          ))}
+        </Sheet>
+      ) : null}
       {unitFor ? <UnitDetailSheet unitId={unitFor} onClose={() => setUnitFor(null)}
         onEdit={() => { setUnitFor(null); router.push('/units' as never); }}
         onReserve={() => { setUnitFor(null); router.push('/units' as never); }} /> : null}
@@ -387,6 +456,87 @@ function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: C
           onToggle={() => toggle(p.uid)}
           onAdmin={() => setAdmins((x) => (x.includes(p.uid) ? x.filter((u) => u !== p.uid) : [...x, p.uid]))} />
       ))}
+    </Sheet>
+  );
+}
+
+/* ─── الدفعة ٢ (قرار المالك 2026-10-08T05:31Z): الرد في سلسلة، والتثبيت، والإشارة، ومن قرأ ─── */
+
+/** ما يُفعل برسالة بضغطة مطوّلة · وما لا يحق لا يظهر */
+function MessageActions({ m, canReply, canPin, pinned, readers, nameOf, onReply, onPin, onClose }: {
+  m: ChatMessage; canReply: boolean; canPin: boolean; pinned: boolean; readers: { read: string[]; unread: string[] };
+  nameOf: (uid: string) => string; onReply: () => void; onPin: (on: boolean) => void; onClose: () => void;
+}) {
+  const { t } = useLang();
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.messageActions')}>
+      <T size={TYPE.body} numberOfLines={3}>{m.body || m.link?.label}</T>
+      <Row style={{ flexWrap: 'wrap', marginTop: 8 }} gap={6}>
+        {canReply ? <BtnGhost small title={t('chat.replyInThread')} onPress={onReply} /> : null}
+        {canPin && m.sent ? <BtnGhost small title={pinned ? t('chat.unpin') : t('chat.pin')} onPress={() => onPin(!pinned)} /> : null}
+      </Row>
+      {m.sent ? (
+        <View style={{ marginTop: 10 }}>
+          <T size={TYPE.cardTitle} bold>{t('chat.whoRead')}</T>
+          <T size={TYPE.caption}>{readers.read.length ? readers.read.map(nameOf).join(LIST_SEP) : t('chat.nobodyYet')}</T>
+          <T size={TYPE.cardTitle} bold style={{ marginTop: 6 }}>{t('chat.notReadYet')}</T>
+          <T size={TYPE.caption}>{readers.unread.length ? readers.unread.map(nameOf).join(LIST_SEP) : t('chat.everyoneRead')}</T>
+        </View>
+      ) : null}
+    </Sheet>
+  );
+}
+
+/** سلسلة الردود على رسالة · ومعها الرد فيها لمن يرسل */
+function ReplySheet({ me, threadId, parent, replies, canSend, nameOf, onClose }: {
+  me: ChatMe; threadId: string; parent: ChatMessage; replies: ChatMessage[]; canSend: boolean;
+  nameOf: (uid: string, fallback: string) => string; onClose: () => void;
+}) {
+  const { db, bump } = useApp();
+  const { t } = useLang();
+  const [text, setText] = useState('');
+  const send = () => {
+    if (!text.trim()) return;
+    try { sendLocal(db, threadId, me, text, null, { re: parent.id }); } catch (e) { reportFailure({ title: t('chat.sendFailed'), e }); return; }
+    setText(''); bump();
+    chatSyncNow({ threadId }).catch(() => {});
+  };
+  const row = (m: ChatMessage) => (
+    <View key={m.id} style={{ paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.line }}>
+      <T size={TYPE.caption} bold color={C.emerald}>{nameOf(m.sender, m.senderName)}</T>
+      <T size={TYPE.body}>{m.body || m.link?.label}</T>
+      <T size={10} color={C.muted}>{localTime(m.serverTs ?? m.localAt)}{!m.sent ? ' · ' + t('chat.notSent') : ''}</T>
+    </View>
+  );
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.thread')} tall
+      footer={canSend ? (
+        <Row style={{ flex: 1, alignItems: 'flex-end' }} gap={6}>
+          <View style={{ flex: 1 }}><Field label={t('chat.typeReply')} value={text} onChange={setText} multiline /></View>
+          <BtnPrimary small title={t('chat.send')} onPress={send} />
+        </Row>
+      ) : undefined}>
+      {row(parent)}
+      {replies.map(row)}
+    </Sheet>
+  );
+}
+
+/** الإشارة: عضو في المحادثة أو قسم */
+function MentionSheet({ people, onClose, onPick }: { people: ChatPerson[]; onClose: () => void; onPick: (x: string) => void }) {
+  const { t } = useLang();
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.mention')} tall>
+      <T size={TYPE.cardTitle} bold>{t('chat.mentionPerson')}</T>
+      {people.map((p) => (
+        <Pressable key={p.uid} onPress={() => onPick(mentionUser(p.uid))} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
+          <T size={TYPE.body}>{p.name || t('chat.member')}</T>
+        </Pressable>
+      ))}
+      <T size={TYPE.cardTitle} bold style={{ marginTop: 8 }}>{t('chat.mentionSection')}</T>
+      <Row style={{ flexWrap: 'wrap' }}>
+        {SECTION_KEYS.map((k) => <Chip key={k} label={sectionDef(k).label} onPress={() => onPick(mentionSection(k))} />)}
+      </Row>
     </Sheet>
   );
 }

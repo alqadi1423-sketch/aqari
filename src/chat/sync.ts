@@ -11,7 +11,7 @@ import type { ChatRemote } from './remote';
 import type { ChatMe } from './types';
 import {
   applyRemoteMessage, applyRemoteThread, heldThreads, markMessageRejected, markSent, markThreadPushed, markThreadRejected,
-  pendingMessages, pendingThreads, forgetObserved, joinFloor,
+  pendingMessages, pendingThreads, forgetObserved, joinFloor, applyState, stateCursor, readToPush, markReadPushed, isUnsentLocal, isRejectedLocal,
   savePeople, threadCursor,
 } from './store';
 
@@ -30,6 +30,16 @@ export interface ChatSyncOptions {
 
 const DIR_EVERY_MS = 10 * 60_000;
 const FULL_EVERY_MS = 2 * 60_000;
+const STATE_EVERY_MS = 10 * 60_000;
+const STATE_OPEN_EVERY_MS = 30_000;
+
+/** حال المحادثة: يُسحب ما جدّ منه، وتُرفع قراءتي إن تقدّمت (الدفعة ٢ · 2026-10-08T05:31Z) */
+async function syncState(db: DB, remote: ChatRemote, threadId: string, me: string): Promise<void> {
+  const up = readToPush(db, threadId, me);
+  if (up) { await remote.markReadUpTo(threadId, up); markReadPushed(db, threadId, me, up); }
+  const items = await remote.stateSince(threadId, stateCursor(db, threadId));
+  applyState(db, threadId, items as unknown as Array<{ id: string; k: string; ts: string }>);
+}
 const PAGE = 200;
 
 const stamp = (db: DB, k: string) => Number(getSyncState(db, k) ?? 0);
@@ -114,22 +124,33 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
   const unpushed = heldThreads(db);
   // لا ترفع قبل أن يُكتب اسمي الحالي في الدليل بنجاح · فالقاعدة تطابقه، ورفضٌ لسببٍ عابر يوسم الرسالة (التحقق ج١١)
   const dirReady = getSyncState(db, 'chat_dir_sig') === sig;
+  const held = new Set<string>();
   for (const m of dirReady ? pendingMessages(db) : []) {
     if (unpushed.has(m.threadId)) continue;
+    // الرد في سلسلة ينتظر أصله: أصلٌ لم يُرسل بعد (أو تعثّر في هذه الدورة) يُبقي ردّه منتظراً لا مرفوضاً
+    if (m.re && isRejectedLocal(db, m.re)) { markMessageRejected(db, m.id); r.failed++; continue; }
+    if (m.re && (held.has(m.re) || isUnsentLocal(db, m.re))) { held.add(m.id); continue; }
     try {
       // باسمي الحالي في الدليل لا المحفوظ يوم الكتابة · فتغيّر الاسم لا يحبس الرسالة (قواعد الخادم تطابقه)
-      await remote.sendMessage(m.threadId, { id: m.id, name: me.name, body: m.body, link: m.link });
+      await remote.sendMessage(m.threadId, { id: m.id, name: me.name, body: m.body, link: m.link, re: m.re, men: m.men });
       markSent(db, m.id, null);
       r.pushedMessages++;
     } catch (e) {
       if (/Firestore 403/.test(String(e))) markMessageRejected(db, m.id);
+      held.add(m.id);
       r.failed++;
     }
   }
 
-  // ٤) السحب: المحادثة المفتوحة وحدها، أو الكل حين يحين أو يُطلب
+  // ٤) السحب: المحادثة المفتوحة وحدها (ومعها حالها وقراءتي)، أو الكل حين يحين أو يُطلب
   if (o.threadId && !o.force) {
-    try { r.pulledMessages += await pullThread(db, remote, o.threadId, me.uid); } catch { r.failed++; }
+    let got = 0;
+    try { got = await pullThread(db, remote, o.threadId, me.uid); r.pulledMessages += got; } catch { r.failed++; }
+    // حال المفتوحة كل ٣٠ ثانية، أو حين يجيء جديد (الحصة: السحب كل ٨ ثوانٍ لا يضاعف القراءة)
+    const key = 'chat_st_open_' + o.threadId;
+    if (got > 0 || now - stamp(db, key) > STATE_OPEN_EVERY_MS) {
+      await syncState(db, remote, o.threadId, me.uid).then(() => setSyncState(db, key, String(now))).catch(() => { r.failed++; });
+    }
     return r;
   }
   if (!o.force && !o.full && now - stamp(db, 'chat_full_at') < FULL_EVERY_MS) return r;
@@ -137,10 +158,15 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
   // محادثاتي وحدها، والمالك كغيره: لا تحديث دوري لمحادثات المنشأة عنده، فلا تُقرأ إلا بمراجعة بسببها
   // (قرار المالك 2026-10-08T04:11Z)
   try { threads = await remote.myThreads(); } catch { r.failed++; return r; }
+  // حال المحادثات (التثبيت والقراءة): لما جاءه جديد، ولكلها كل عشر دقائق أو بطلب (الحصة المجانية)
+  const stateAll = o.force || now - stamp(db, 'chat_state_at') > STATE_EVERY_MS;
   for (const t of threads) {
     applyRemoteThread(db, t);
-    try { r.pulledMessages += await pullThread(db, remote, t.id, me.uid); } catch { r.failed++; }
+    let got = 0;
+    try { got = await pullThread(db, remote, t.id, me.uid); r.pulledMessages += got; } catch { r.failed++; }
+    if (got > 0 || stateAll) await syncState(db, remote, t.id, me.uid).catch(() => { r.failed++; });
   }
+  if (stateAll) setSyncState(db, 'chat_state_at', String(now));
   setSyncState(db, 'chat_full_at', String(now));
   return r;
 }

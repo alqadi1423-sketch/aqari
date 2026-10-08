@@ -6,7 +6,8 @@ import { encodeFields, decodeFields, FirestoreHttpError } from '../cloud/firesto
 
 /** قيمة Firestore كما يفكّها العميل العام · بلا مسّ له */
 type FsValue = Parameters<typeof decodeFields>[0][string];
-import { CHAT_LINK_TYPES, OWNER_JOINED, type ChatKind, type ChatLink, type ChatPerson, type GroupSettings } from './types';
+import { CHAT_LINK_TYPES, OWNER_JOINED, normTs, type ChatKind, type ChatLink, type ChatPerson, type GroupSettings } from './types';
+export { normTs } from './types';
 import { uid as newId } from '../domain/ids';
 
 export interface ChatRemoteOptions {
@@ -28,7 +29,14 @@ export interface RemoteThread {
   s?: GroupSettings; a?: string[]; jt?: Record<string, string>;
 }
 /** sys: سطر نظام لا رسالة · 'join' انضم المالك (قرار المالك 2026-10-08T04:11Z) */
-export interface RemoteMessage { id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null }
+export interface RemoteMessage {
+  id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null;
+  /** الرد في سلسلة: رقم الرسالة الأصل · men الإشارات «u:رقم» و«s:قسم» (الدفعة ٢ · 2026-10-08T05:31Z) */
+  re?: string | null; men?: string[];
+}
+
+/** حال المحادثة (st): التثبيت p_رقم وقراءة كل عضو r_رقمه · بوقت الخادم ts فتُسحب بمؤشر واحد */
+export interface RemoteState { id: string; k: string; ts: string; on?: boolean; by?: string; at?: string }
 
 const tail = (name: string) => name.slice(name.lastIndexOf('/') + 1);
 
@@ -43,10 +51,10 @@ function linkOf(v: unknown): ChatLink | null {
 function threadOf(doc: { name: string; fields: Record<string, FsValue> }): RemoteThread {
   const d = decodeFields(doc.fields);
   const jt: Record<string, string> = {};
-  for (const [k, v] of Object.entries((d.jt && typeof d.jt === 'object' ? d.jt : {}) as Record<string, unknown>)) if (typeof v === 'string') jt[k] = v;
+  for (const [k, v] of Object.entries((d.jt && typeof d.jt === 'object' ? d.jt : {}) as Record<string, unknown>)) if (typeof v === 'string') jt[k] = normTs(v);
   return {
     id: tail(doc.name), k: d.k === 'group' ? 'group' : 'direct', p: Array.isArray(d.p) ? (d.p as string[]) : [],
-    name: String(d.name ?? ''), by: String(d.by ?? ''), at: typeof d.at === 'string' ? d.at : null,
+    name: String(d.name ?? ''), by: String(d.by ?? ''), at: typeof d.at === 'string' ? normTs(d.at) : null,
     s: (d.s && typeof d.s === 'object' ? d.s : {}) as GroupSettings, a: Array.isArray(d.a) ? (d.a as string[]) : [], jt,
   };
 }
@@ -55,9 +63,12 @@ function msgOf(doc: { name: string; fields: Record<string, FsValue> }): RemoteMe
   const d = decodeFields(doc.fields);
   return {
     id: tail(doc.name), from: String(d.from ?? ''), name: String(d.name ?? ''),
-    body: String(d.body ?? ''), link: linkOf(d.link), ts: String(d.ts ?? ''), sys: typeof d.sys === 'string' ? d.sys : null,
+    body: String(d.body ?? ''), link: linkOf(d.link), ts: normTs(d.ts), sys: typeof d.sys === 'string' ? d.sys : null,
+    re: typeof d.re === 'string' ? d.re : null,
+    men: Array.isArray(d.men) ? (d.men as unknown[]).filter((x): x is string => typeof x === 'string') : [],
   };
 }
+
 
 /** مسار حقلٍ في خريطة بمفتاحٍ قد يحوي أي حرف (رقم عضو) */
 const mapKey = (field: string, key: string) => field + '.`' + key.replace(/\\/g, '\\\\').replace(/`/g, '\\`') + '`';
@@ -160,11 +171,12 @@ export class ChatRemote {
    * الرسالة ومعها فهرس رقمها بلا محتوى (ids/{id}) في التزام واحد · المالك يسرد الفهرس ليحذف في نافذة الحذف
    * دون أن يقرأ الرسائل، فلا يقرؤها إلا أطرافها أو المالك بمراجعةٍ بسببها (قرار المالك 2026-10-08T04:11Z)
    */
-  async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null }): Promise<'created' | 'exists'> {
+  async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null; re?: string | null; men?: string[] }): Promise<'created' | 'exists'> {
+    const fields: Record<string, unknown> = { from: this.o.uid, name: m.name, body: m.body, link: m.link, att: null };
+    if (m.re) fields.re = m.re;
+    if (m.men?.length) fields.men = m.men;
     try {
-      await this.req('POST', `${this.root}:commit`, {
-        writes: this.msgWrites(threadId, m.id, { from: this.o.uid, name: m.name, body: m.body, link: m.link, att: null }),
-      });
+      await this.req('POST', `${this.root}:commit`, { writes: this.msgWrites(threadId, m.id, fields) });
       return 'created';
     } catch (e) {
       if (e instanceof FirestoreHttpError && (e.status === 409 || /ALREADY_EXISTS|FAILED_PRECONDITION/.test(e.message))) return 'exists';
@@ -245,6 +257,50 @@ export class ChatRemote {
     });
   }
 
+  /* ─── حال المحادثة: التثبيت والقراءة (الدفعة ٢ · 2026-10-08T05:31Z) ─── */
+
+  private stWrite(threadId: string, sid: string, fields: Record<string, unknown>, raw: Record<string, FsValue> = {}): unknown {
+    return {
+      update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}/st/${sid}`)}`, fields: { ...encodeFields(fields), ...raw } },
+      updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
+    };
+  }
+
+  /** تثبيت رسالة أو إلغاؤه · في المجموعة لمسؤوليها، وفي الفردية لطرفيها (القواعد) */
+  async setPin(threadId: string, msgId: string, on: boolean): Promise<void> {
+    await this.req('POST', `${this.root}:commit`, { writes: [this.stWrite(threadId, 'p_' + msgId, { k: 'pin', on, by: this.o.uid })] });
+  }
+
+  /** قرأتُ حتى وقت رسالةٍ في الخادم · كلٌّ يكتب قراءته وحده */
+  async markReadUpTo(threadId: string, at: string): Promise<void> {
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [this.stWrite(threadId, 'r_' + this.o.uid, { k: 'read' }, { at: { timestampValue: at } as FsValue })],
+    });
+  }
+
+  /** حال المحادثة بعد مؤشر وقت الخادم · بلا محتوى رسائل */
+  async stateSince(threadId: string, cursor: string | null, limit = 300): Promise<RemoteState[]> {
+    const where = cursor
+      ? { fieldFilter: { field: { fieldPath: 'ts' }, op: 'GREATER_THAN_OR_EQUAL', value: { timestampValue: cursor } } }
+      : undefined;
+    const rows = (await this.req('POST', `${this.root}/orgs/${this.o.org}/chats/${threadId}:runQuery`, {
+      structuredQuery: {
+        from: [{ collectionId: 'st' }],
+        ...(where ? { where } : {}),
+        orderBy: [{ field: { fieldPath: 'ts' }, direction: 'ASCENDING' }],
+        limit,
+      },
+    })) as Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
+    return rows.filter((r) => r.document).map((r) => {
+      const d = decodeFields(r.document!.fields);
+      return {
+        id: tail(r.document!.name), k: String(d.k ?? ''), ts: normTs(d.ts),
+        ...(typeof d.on === 'boolean' ? { on: d.on } : {}), ...(typeof d.by === 'string' ? { by: d.by } : {}),
+        ...(typeof d.at === 'string' ? { at: normTs(d.at) } : {}),
+      };
+    });
+  }
+
   /* ─── مراجعة المالك محادثةً بسبب (قرار المالك 2026-10-08T04:11Z) ─── */
 
   /**
@@ -311,10 +367,10 @@ export class ChatRemote {
     const docs = rows.filter((r) => r.document) as Array<{ document: { name: string; fields?: Record<string, FsValue> } }>;
     const names = docs.map((r) => r.document.name.replace('/ids/', '/msgs/'));
     if (!names.length) return { msgs: [], ids: 0, lastTs: null };
-    const lastTs = String(decodeFields(docs[docs.length - 1].document.fields ?? {}).ts ?? '') || null;
+    const lastTs = normTs(decodeFields(docs[docs.length - 1].document.fields ?? {}).ts) || null;
     const got = (await this.req('POST', `${this.root}:batchGet`, { documents: names })) as Array<{ found?: { name: string; fields: Record<string, FsValue> } }>;
     const msgs = got.filter((g) => g.found).map((g) => msgOf(g.found!))
-      .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+      .sort((a, b) => (normTs(a.ts) < normTs(b.ts) ? -1 : normTs(a.ts) > normTs(b.ts) ? 1 : 0));
     return { msgs, ids: names.length, lastTs };
   }
 
@@ -433,6 +489,11 @@ export class ChatRemote {
       if (!chats.length) break;
       for (const c of chats) {
         const rel = c.slice(c.indexOf('/documents/') + '/documents/'.length);
+        for (;;) {
+          const st = await list(`${rel}/st`);
+          if (!st.length) break;
+          await del(st);
+        }
         for (;;) {
           const ids = await list(`${rel}/ids`);
           if (!ids.length) break;

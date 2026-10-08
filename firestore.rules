@@ -608,6 +608,25 @@ service cloud.firestore {
         allow delete: if orgOwner(org) && orgDeletionOpen(org);
       }
 
+      // حال المحادثة (الدفعة ٢ · 2026-10-08T05:31Z) بوقت الخادم ts: يقرؤها أطرافها (بلا محتوى رسائل)، والمالك بمراجعته ·
+      //  r_رقمي قراءتي حتى وقتٍ لا يتجاوز الآن، يكتبها صاحبها وحده
+      //  p_رقم-رسالة تثبيتها: في المجموعة لمسؤوليها، وفي الفردية لطرفيها، ولرسالة موجودة
+      match /st/{sid} {
+        // والمالك في نافذة الحذف يسردها ليحذفها (لا محتوى رسائل فيها)
+        allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && (chatReviewing(org, chatId) || orgDeletionOpen(org)));
+        allow create, update: if chatIn(org) && chatParty(org, chatId)
+          && request.resource.data.ts == request.time
+          && ((sid == 'r_' + request.auth.uid
+                && request.resource.data.keys().hasOnly(['k', 'at', 'ts']) && request.resource.data.k == 'read'
+                && request.resource.data.at is timestamp && request.resource.data.at <= request.time)
+              || (sid.matches('^p_[A-Za-z0-9_-]{1,64}$')
+                && request.resource.data.keys().hasOnly(['k', 'on', 'by', 'ts']) && request.resource.data.k == 'pin'
+                && request.resource.data.on is bool && request.resource.data.by == request.auth.uid
+                && exists(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(sid.replace('^p_', '')))
+                && (get(chatPath(org, chatId)).data.k != 'group' || chatAdmin(org, get(chatPath(org, chatId)).data))));
+        allow delete: if orgOwner(org) && orgDeletionOpen(org);
+      }
+
       match /msgs/{msgId} {
         // أطرافها · والمالك بمراجعة مفتوحة لها وحدها · لا المشرف ولا نافذة الحذف (قرار المالك 2026-10-08T04:11Z)
         // سجل المنضم «من لحظة انضمامه» يُفرض على الرسالة الواحدة (get) · وسرد الرسائل (list) لا يُجاز فيه، لأن القواعد
@@ -619,7 +638,15 @@ service cloud.firestore {
             && (get(chatPath(org, chatId)).data.get('s', {}).get('h', 'all') == 'all' || resource.data.from == request.auth.uid))
           || (orgOwner(org) && chatReviewing(org, chatId));
         allow create: if chatIn(org) && chatPartyAfter(org, chatId) && chatMaySend(org, chatId)
-          && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts', 'sys'])
+          && request.resource.data.keys().hasOnly(['from', 'name', 'body', 'link', 'att', 'ts', 'sys', 're', 'men'])
+          // الرد في سلسلة على رسالة في المحادثة نفسها · والإشارات قائمة لا تتجاوز ثلاثين (الدفعة ٢ · 2026-10-08T05:31Z)
+          && (request.resource.data.get('re', null) == null
+              || (request.resource.data.re is string && request.resource.data.re.matches('^[A-Za-z0-9_-]{1,64}$')
+                  && exists(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.re))))
+          && (request.resource.data.get('men', null) == null
+              || (request.resource.data.men is list && request.resource.data.men.size() <= 30
+                  && (request.resource.data.men.size() == 0
+                      || request.resource.data.men.join(',').matches('^[us]:[A-Za-z0-9_-]{1,128}(,[us]:[A-Za-z0-9_-]{1,128})*$'))))
           && request.resource.data.from == request.auth.uid
           && request.resource.data.ts == request.time
           && request.resource.data.name == chatDirName(org)

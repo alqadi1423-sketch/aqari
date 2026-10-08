@@ -13,11 +13,12 @@ import { chatSyncOnce, type ChatSyncResult } from './sync';
 import { CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe, type GroupSettings } from './types';
 import { logAudit } from '../domain/audit';
 import type { RemoteMessage, RemoteThread } from './remote';
-import { applyRemoteThread } from './store';
+import { applyRemoteThread, applyState, stateCursor } from './store';
 
 export * from './types';
 export {
   listThreads, getThread, openDirect, createGroup, listMessages, sendLocal, markRead, listPeople, personName,
+  mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft,
 } from './store';
 export { linkTarget, linkCandidates } from './links';
 
@@ -181,6 +182,13 @@ export async function chatJoinGroup(db: DB, s: ChatSession, org: string, t: { id
   logAudit(db, CHAT_MODULE, 'update', JOIN_ENTITY, t.name, null, { chat: t.id, line });
   // كما في الخادم بعد الانضمام · بوقت انضمامه وإعداداتها
   applyRemoteThread(db, await r.getThread(t.id).catch(() => ({ id: t.id, k: 'group' as const, p: Array.from(new Set([...t.p, s.uid])), name: t.name, by: t.by ?? '', at: t.at ?? null })));
+}
+
+/** تثبيت رسالة أو إلغاؤه · في المجموعة لمسؤوليها، وفي الفردية لطرفيها · ثم الحال كما في الخادم (الدفعة ٢) */
+export async function chatSetPin(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, on: boolean,
+  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  await r.setPin(threadId, msgId, on);
+  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
 }
 
 /** إشراف عضو بإيميله · للمالك وحده (القواعد) */

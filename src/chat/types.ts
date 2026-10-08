@@ -69,6 +69,19 @@ export interface ChatMessage {
   rejected: boolean;
   /** سطر نظام لا رسالة · 'join' انضم المالك */
   sys: string | null;
+  /** الرد في سلسلة: رقم الرسالة الأصل (الدفعة ٢) */
+  re: string | null;
+  /** الإشارات: «u:رقم عضو» و«s:قسم» */
+  men: string[];
+}
+
+/** إشارة إلى عضو أو قسم في الرسالة (الدفعة ٢ · 2026-10-08T05:31Z) */
+export const mentionUser = (uid: string) => 'u:' + uid;
+export const mentionSection = (key: string) => 's:' + key;
+export const MENTIONS_MAX = 30;
+/** هل تشيرني الرسالة: باسمي، أو بقسمٍ لي عليه صلاحية */
+export function mentionsMe(m: { men: string[] }, me: string, mySections: string[]): boolean {
+  return m.men.some((x) => x === mentionUser(me) || (x.startsWith('s:') && mySections.includes(x.slice(2))));
 }
 
 export interface ChatPerson {
@@ -145,4 +158,21 @@ export function directId(a: string, b: string): string {
 /** من ينشئ المجموعات: المالك والمشرفون */
 export function canCreateGroup(me: ChatMe, mySup: string[]): boolean {
   return me.owner || mySup.length > 0;
+}
+
+/**
+ * وقت الخادم بصيغة واحدة (تسعة أجزاء من الثانية) · فالخادم يكتب «…:00Z» و«…:00.5Z»، ومقارنتهما نصاً تخطئ
+ */
+export function normTs(v: unknown): string {
+  const s = String(v ?? '');
+  const m = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?Z$/.exec(s);
+  return m ? m[1] + '.' + (m[2] ?? '').padEnd(9, '0') + 'Z' : s;
+}
+
+/**
+ * مقارنة وقتين من الخادم بلا تحليل تاريخ على الجهاز (محرّك الجوال قد لا يقرأ أكثر من ثلاثة أجزاء من الثانية) ·
+ * بالصيغة الواحدة نصاً، ودقتها جزء من المليار
+ */
+export function tsGte(a: string, b: string): boolean {
+  return normTs(a) >= normTs(b);
 }

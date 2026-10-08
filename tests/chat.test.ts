@@ -13,7 +13,7 @@ import {
 } from '@/chat';
 import { applyRemoteThread, applyRemoteMessage } from '@/chat/store';
 import { chatSyncOnce } from '@/chat/sync';
-import type { ChatRemote, RemoteMessage, RemoteThread } from '@/chat/remote';
+import type { ChatRemote, RemoteMessage, RemoteState, RemoteThread } from '@/chat/remote';
 
 /** سحابة وهمية مشتركة بين جهازين · وانقطاع يُشغَّل ويُطفأ */
 function fakeCloud() {
@@ -21,7 +21,8 @@ function fakeCloud() {
   const msgs = new Map<string, RemoteMessage[]>();
   const dir = new Map<string, { name: string; sup: string[] }>();
   let clock = 0;
-  const state = { offline: false, sends: 0, joinedCalls: 0 };
+  const state = { offline: false, sends: 0, joinedCalls: 0, readPushes: 0 };
+  const st = new Map<string, RemoteState[]>();
   const ts = () => new Date(Date.UTC(2026, 0, 1) + ++clock * 1000).toISOString();
   const remote = (uid: string): ChatRemote => {
     const guard = () => { if (state.offline) throw new Error('offline'); };
@@ -43,14 +44,29 @@ function fakeCloud() {
         return { msgs: list, ids: list.length, lastTs: list.length ? list[list.length - 1].ts : null };
       },
       async myThreads() { guard(); return [...threads.values()].filter((t) => t.p.includes(uid)); },
-      async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null }) {
+      async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null; re?: string | null; men?: string[] }) {
         guard();
         state.sends++;
         const list = msgs.get(threadId) ?? [];
         if (list.some((x) => x.id === m.id)) return 'exists';
-        list.push({ id: m.id, from: uid, name: m.name, body: m.body, link: m.link, ts: ts() });
+        list.push({ id: m.id, from: uid, name: m.name, body: m.body, link: m.link, ts: ts(), re: m.re ?? null, men: m.men ?? [] });
         msgs.set(threadId, list);
         return 'created';
+      },
+      async setPin(threadId: string, msgId: string, on: boolean) {
+        guard();
+        const list = st.get(threadId) ?? [];
+        st.set(threadId, [...list.filter((x) => x.id !== 'p_' + msgId), { id: 'p_' + msgId, k: 'pin', on, by: uid, ts: ts() }]);
+      },
+      async markReadUpTo(threadId: string, at: string) {
+        guard();
+        state.readPushes++;
+        const list = st.get(threadId) ?? [];
+        st.set(threadId, [...list.filter((x) => x.id !== 'r_' + uid), { id: 'r_' + uid, k: 'read', at, ts: ts() }]);
+      },
+      async stateSince(threadId: string, cursor: string | null) {
+        guard();
+        return (st.get(threadId) ?? []).filter((x) => !cursor || x.ts >= cursor).sort((a, b) => (a.ts < b.ts ? -1 : 1));
       },
       async messagesSince(threadId: string, cursor: string | null) {
         guard();
@@ -427,4 +443,153 @@ test('وقت إنشاء المجموعة من الخادم متى عُرف · و
   applyRemoteThread(a, { id: gid, k: 'group', p: [MEMBER.uid, OWNER.uid], name: 'ساعة الجهاز', by: MEMBER.uid, at: '2026-01-01T00:00:00.000Z', s: { h: 'all' } });
   expect(threadCursor(a, gid)).toBeNull();
   expect(joinFloor(a, gid, MEMBER.uid)).toBeNull();
+});
+
+/* ─── الدفعة ٢: السلاسل والتثبيت والإشارة والمسودات ومن قرأ (قرار المالك 2026-10-08T05:31Z) ─── */
+
+test('الرد في سلسلة: يُرفع بأصله ويصل الطرف الآخر ردّاً لا رسالة في الخط الرئيس · ويُعدّ لأصله', async () => {
+  const { mainLine, repliesOf, replyCounts } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  const parent = sendLocal(a, tid, OWNER, 'أصل');
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  sendLocal(a, tid, OWNER, 'رد أول', null, { re: parent });
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  expect(cloud.msgs.get(tid)!.find((m) => m.body === 'رد أول')!.re).toBe(parent);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  const all = listMessages(b, tid);
+  expect(mainLine(all).map((m) => m.body)).toEqual(['أصل']);
+  expect(repliesOf(all, parent).map((m) => m.body)).toEqual(['رد أول']);
+  expect(replyCounts(all)).toEqual({ [parent]: 1 });
+});
+
+test('الإشارة لعضو أو قسم: تُرفع وتصل · وتشيرني باسمي أو بقسمٍ لي', async () => {
+  const { mentionsMe, mentionUser, mentionSection } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  sendLocal(a, tid, OWNER, 'إليك', null, { men: [mentionUser(MEMBER.uid), mentionSection('contracts')] });
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  const m = listMessages(b, tid)[0];
+  expect(m.men).toEqual(['u:' + MEMBER.uid, 's:contracts']);
+  expect(mentionsMe(m, MEMBER.uid, [])).toBe(true);
+  expect(mentionsMe(m, 'u-other', ['contracts'])).toBe(true);
+  expect(mentionsMe(m, 'u-other', ['props'])).toBe(false);
+});
+
+test('المسودة على الجهاز وحده: تبقى حتى الإرسال ثم تُفرَّغ', async () => {
+  const { setDraft, getDraft } = await import('@/chat');
+  const a = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  setDraft(a, tid, 'نص لم يُرسل');
+  expect(getDraft(a, tid)).toBe('نص لم يُرسل');
+  sendLocal(a, tid, OWNER, 'نص لم يُرسل');
+  expect(getDraft(a, tid)).toBe('');
+});
+
+test('إشعار القراءة ومن قرأ: تُرفع قراءتي بوقت رسالة في الخادم مرة واحدة · ويرى المرسل من قرأ ومن لم يقرأ', async () => {
+  const { readersOf } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  sendLocal(a, tid, OWNER, 'هل قرأت');
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  markRead(b, tid);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { threadId: tid });
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { threadId: tid });
+  expect(cloud.state.readPushes).toBe(1);
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER, { threadId: tid });
+  const m = listMessages(a, tid)[0];
+  expect(readersOf(a, tid, m, [OWNER.uid, MEMBER.uid])).toEqual({ read: [MEMBER.uid], unread: [] });
+});
+
+test('التثبيت: يُكتب في حال المحادثة ويصل كل أطرافها · وإلغاؤه كذلك', async () => {
+  const { pinnedIds } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  const mid = sendLocal(a, tid, OWNER, 'مهمة');
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  await cloud.remote(OWNER.uid).setPin(tid, mid, true);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  expect(pinnedIds(b, tid)).toEqual([mid]);
+  await cloud.remote(OWNER.uid).setPin(tid, mid, false);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { threadId: tid });
+  expect(pinnedIds(b, tid)).toEqual([]);
+});
+
+test('الدفعة ٢ · الرد ينتظر أصلاً لم يُرسل فلا يُرفض · والرد لا يمسّ مسودة المحادثة · ولا قراءة تُرفع لرسالتي', async () => {
+  const { getDraft, setDraft } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  const base = cloud.remote(OWNER.uid);
+  let failParent = true;
+  const flaky = new Proxy(base, {
+    get(t, k) {
+      if (k === 'sendMessage') return async (id: string, m: { id: string; body: string; re?: string | null }) => {
+        if (failParent && m.body === 'أصل') throw new Error('Firestore 503: unavailable');
+        if (m.re && !cloud.msgs.get(id)?.some((x) => x.id === m.re)) throw new Error('Firestore 403: no parent');
+        return (t as unknown as { sendMessage: (i: string, mm: object) => Promise<string> }).sendMessage(id, m);
+      };
+      return (t as unknown as Record<string | symbol, unknown>)[k];
+    },
+  }) as typeof base;
+  const parent = sendLocal(a, tid, OWNER, 'أصل');
+  setDraft(a, tid, 'مسودة المحادثة');
+  sendLocal(a, tid, OWNER, 'رد', null, { re: parent });
+  expect(getDraft(a, tid)).toBe('مسودة المحادثة');
+  await chatSyncOnce(a, flaky, OWNER);
+  // الأصل تعثّر عابراً فالرد ينتظر لا يُرفض
+  expect(listMessages(a, tid).map((m) => [m.body, m.sent, m.rejected])).toEqual([['أصل', false, false], ['رد', false, false]]);
+  failParent = false;
+  await chatSyncOnce(a, flaky, OWNER, { force: true });
+  expect(listMessages(a, tid).map((m) => [m.body, m.sent])).toEqual([['أصل', true], ['رد', true]]);
+  // رسائلي وحدها في المحادثة: لا قراءة تُرفع
+  markRead(a, tid);
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER, { threadId: tid });
+  expect(cloud.state.readPushes).toBe(0);
+});
+
+test('الدفعة ٢ · أوقات الخادم بصيغة واحدة فتصحّ مقارنتها · ومن قرأ بلا من انضم بعد الرسالة', async () => {
+  const { normTs } = await import('@/chat/remote');
+  const { readersFrom } = await import('@/chat');
+  expect(normTs('2026-01-01T00:00:00Z')).toBe('2026-01-01T00:00:00.000000000Z');
+  expect(normTs('2026-01-01T00:00:00.5Z')).toBe('2026-01-01T00:00:00.500000000Z');
+  expect(normTs('2026-01-01T00:00:00Z') < normTs('2026-01-01T00:00:00.5Z')).toBe(true);
+  const m = { sender: 'u-a', serverTs: '2026-01-01T00:00:10.000Z' };
+  const reads = { 'u-b': '2026-01-01T00:01:00.000Z', 'u-late': '2026-01-01T00:01:00.000Z' };
+  expect(readersFrom(reads, m, ['u-a', 'u-b', 'u-late', 'u-c'], { 'u-late': '2026-01-01T00:00:30.000Z' }))
+    .toEqual({ read: ['u-b'], unread: ['u-c'] });
+});
+
+test('الدفعة ٢ · الرد على أصلٍ رفضه الخادم يُرفض معه · ومقارنة الأوقات بلا تحليل تاريخ', async () => {
+  const { tsGte } = await import('@/chat');
+  expect(tsGte('2026-01-01T00:00:00.000000001Z', '2026-01-01T00:00:00Z')).toBe(true);
+  expect(tsGte('2026-01-01T00:00:00Z', '2026-01-01T00:00:00.5Z')).toBe(false);
+  const cloud = fakeCloud();
+  const a = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  const base = cloud.remote(OWNER.uid);
+  const refusing = new Proxy(base, {
+    get(t, k) {
+      if (k === 'sendMessage') return async (id: string, m: { body: string }) => {
+        if (m.body === 'أصل') throw new Error('Firestore 403: denied');
+        return (t as unknown as { sendMessage: (i: string, mm: object) => Promise<string> }).sendMessage(id, m);
+      };
+      return (t as unknown as Record<string | symbol, unknown>)[k];
+    },
+  }) as typeof base;
+  const parent = sendLocal(a, tid, OWNER, 'أصل');
+  sendLocal(a, tid, OWNER, 'رد', null, { re: parent });
+  await chatSyncOnce(a, refusing, OWNER);
+  await chatSyncOnce(a, refusing, OWNER, { force: true });
+  expect(listMessages(a, tid).map((m) => [m.body, m.rejected])).toEqual([['أصل', true], ['رد', true]]);
 });
