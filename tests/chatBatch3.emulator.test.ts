@@ -203,7 +203,11 @@ d('المحادثة · الدفعة ٣ · كل قاعدة وحدها', () => {
   });
 
   test('تأكيد الاطلاع: لا لرسالة من محادثة أخرى · ولا لغير الطرف · والسجل يقرؤه المنضم لما بعده والمالك بمراجعته', async () => {
-    expect(await status(chat(A).sendMessage(dAB, { id: 'DA1', name: NAMES[A], body: 'إعلان فردي', link: null, ack: true }))).toBe(200);
+    // الإعلان المهم للمسؤولين (قرار المالك 2026-10-08T10:24Z): رسالة فردية عادية هنا، وإعلانٌ مهم في المجموعة من منشئها
+    expect(await status(chat(A).sendMessage(dAB, { id: 'DA1', name: NAMES[A], body: 'فردية', link: null }))).toBe(200);
+    expect(await status(chat(B).sendMessage(G, { id: 'GA9', name: NAMES[B], body: 'إعلان مهم', link: null, ack: true }))).toBe(200);
+    // تأكيدٌ في المحادثة الفردية لرقم إعلان المجموعة: مرفوض (رسالة من محادثة أخرى)
+    expect(await status(chat(A).acknowledge(dAB, 'GA9'))).toBe(403);
     const raw = await commit(C, [{ update: { name: `${docs}/orgs/${ORG}/chats/${G}/st/a_DA1_${C}`, fields: encodeFields({ k: 'ack', m: 'DA1', by: C }) },
       currentDocument: { exists: false }, updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }] }]);
     expect(raw).toBe(403);

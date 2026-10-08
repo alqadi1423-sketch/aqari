@@ -153,3 +153,24 @@ d('المحادثة · الدفعة ٥ · المسؤول المنضم بعد ا�
     expect(await rawSt(C, 't_M1x', { k: 'task', m: 'M1', title: 'x', as: C, due: '2026-12-31', done: false, by: C })).toBe(403);
   });
 });
+
+d('أجوبة المالك 2026-10-08T10:24Z', () => {
+  beforeEach(seed);
+
+  test('#٢ الإعلان المهم بتأكيد الاطلاع للمسؤولين وحدهم · وفي الفردية للمالك', async () => {
+    expect(await status(chat(A).sendMessage(G, { id: 'K1', name: NAMES[A], body: 'من عضو', link: null, ack: true }))).toBe(403);
+    expect(await status(chat(B).sendMessage(G, { id: 'K2', name: NAMES[B], body: 'من المنشئ', link: null, ack: true }))).toBe(200);
+    expect(await status(chat(A).sendMessage(dAB, { id: 'K3', name: NAMES[A], body: 'في الفردية', link: null, ack: true }))).toBe(403);
+    // العادي بلا تأكيد كما كان
+    expect(await status(chat(A).sendMessage(G, { id: 'K4', name: NAMES[A], body: 'عادية', link: null }))).toBe(200);
+  });
+
+  test('#٧ المهمة يلغيها منشئها فتبقى «ملغاة» · ولا ينجزها مسؤولها بعد الإلغاء · ولا يلغيها غير منشئها', async () => {
+    expect(await status(chat(A).setTask(G, 'M1', { title: 'تُلغى', as: B, due: '2026-12-31', done: false }))).toBe(200);
+    expect(await status(chat(B).cancelTask(G, 'M1', true))).toBe(403);
+    expect(await status(chat(A).cancelTask(G, 'M1', true))).toBe(200);
+    expect(await status(chat(B).setTaskDone(G, 'M1', true))).toBe(403);
+    const t = (await chat(B).stateSince(G, null)).find((x) => x.k === 'task')!;
+    expect([t.cx, t.done]).toEqual([true, false]);
+  });
+});

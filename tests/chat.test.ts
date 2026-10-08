@@ -79,6 +79,12 @@ function fakeCloud() {
         const cur = list.find((x) => x.id === 't_' + msgId);
         st.set(threadId, [...list.filter((x) => x.id !== 't_' + msgId), { id: 't_' + msgId, k: 'task', m: msgId, ...task, by: cur?.by ?? uid, ts: ts() }]);
       },
+      async cancelTask(threadId: string, msgId: string, cx: boolean) {
+        guard();
+        const list = st.get(threadId) ?? [];
+        const cur = list.find((x) => x.id === 't_' + msgId)!;
+        st.set(threadId, [...list.filter((x) => x.id !== 't_' + msgId), { ...cur, cx, ts: ts() }]);
+      },
       async vote(threadId: string, msgId: string, o: number[]) {
         guard();
         const list = st.get(threadId) ?? [];
@@ -892,4 +898,27 @@ test('التحويل إلى مطالبة أو فاتورة شراء: يفتح ن
   expect(claims).toMatch(/if \(!perm\.add \|\| !contracts\.length\) return;\s*openNew\(\);\s*if \(params\.newReason\) setReason/);
   const purchases = read('purchases.tsx');
   expect(purchases).toMatch(/if \(!perm\.add \|\| !suppliers\.length\) return;\s*openNew\(\);\s*if \(params\.newNote\) setLines/);
+});
+
+/* ─── أجوبة المالك 2026-10-08T10:24Z ─── */
+
+test('#٦ محادثة العقار حين يكون فيها عضو غير المالك · #٧ المهمة الملغاة في آخر «مهامي» بحالتها', async () => {
+  const { wantedChannels, channelId, chatCancelTask, chatSetTask, myTasks } = await import('@/chat');
+  const o = memDb();
+  const p1 = addProperty(o, { name: 'عقار له عضو' });
+  const p2 = addProperty(o, { name: 'عقار بلا عضو' });
+  const ids = wantedChannels(o, [{ uid: 'u-1', perm: { maintenance: 1 }, all: false, props: [p1] }]).map((w) => channelId(w.ch));
+  expect(ids).toContain(channelId({ t: 'prop', id: p1 }));
+  expect(ids).not.toContain(channelId({ t: 'prop', id: p2 }));
+  const cloud = fakeCloud();
+  const a = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  const m1 = sendLocal(a, tid, OWNER, 'أولى');
+  const m2 = sendLocal(a, tid, OWNER, 'ثانية');
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  const s = { projectId: 'p', uid: OWNER.uid, email: OWNER.email, idToken: async () => 't' };
+  await chatSetTask(a, s, 'ORG', tid, m1, { title: 'تُلغى', as: OWNER.uid, due: '2026-01-01', done: false }, cloud.remote(OWNER.uid));
+  await chatSetTask(a, s, 'ORG', tid, m2, { title: 'تبقى', as: OWNER.uid, due: '2026-06-01', done: false }, cloud.remote(OWNER.uid));
+  await chatCancelTask(a, s, 'ORG', tid, m1, true, cloud.remote(OWNER.uid));
+  expect(myTasks(a, OWNER.uid).map((x) => [x.title, x.cx])).toEqual([['تبقى', false], ['تُلغى', true]]);
 });

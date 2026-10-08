@@ -37,8 +37,11 @@ export function wantedChannels(db: DB, members: MemberPerm[]): Array<{ ch: Chann
   for (const s of GRANTABLE) {
     if (members.some((m) => (m.perm[s.key] ?? 0) >= 1)) out.push({ ch: { t: 'section', key: s.key }, name: sectionDef(s.key as SectionKey).label });
   }
-  // رقم العقار بصيغة القواعد وحدها (فلا تُرفض القناة كل دورة)
-  for (const p of activeProperties(db)) if (/^[A-Za-z0-9_-]{1,40}$/.test(p.id)) out.push({ ch: { t: 'prop', id: p.id }, name: p.name });
+  // رقم العقار بصيغة القواعد وحدها (فلا تُرفض القناة كل دورة) · وحين يكون فيها عضو غير المالك (قرار المالك 2026-10-08T10:24Z)
+  for (const p of activeProperties(db)) {
+    if (!/^[A-Za-z0-9_-]{1,40}$/.test(p.id)) continue;
+    if (members.some((m) => qualifies({ t: 'prop', id: p.id }, m))) out.push({ ch: { t: 'prop', id: p.id }, name: p.name });
+  }
   return out;
 }
 

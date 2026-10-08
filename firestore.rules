@@ -606,7 +606,8 @@ service cloud.firestore {
             && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.get('ev', 0) == request.resource.data.n)
         // المهمة من رسالة (الدفعة ٥): t_رقمها · مسؤولها من أطراف المحادثة، وموعدها سنة-شهر-يوم · ينشئها من يرسل،
         // ويعدّلها منشئها، وينجزها مسؤولها (الإنجاز وحده) · ومنشئها لا يتغير
-        || (request.resource.data.keys().hasOnly(['k', 'm', 'title', 'as', 'due', 'done', 'by', 'ts']) && request.resource.data.k == 'task'
+        || (request.resource.data.keys().hasOnly(['k', 'm', 'title', 'as', 'due', 'done', 'by', 'ts', 'cx']) && request.resource.data.k == 'task'
+            && request.resource.data.get('cx', false) is bool
             && request.resource.data.m is string && request.resource.data.m.matches('^[A-Za-z0-9_-]{1,64}$')
             && sid == 't_' + request.resource.data.m
             && exists(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m))
@@ -616,12 +617,13 @@ service cloud.firestore {
             && request.resource.data.done is bool
             && (resource == null
                 // الإنشاء: لرسالة يقرؤها منشئها وليست سطر نظام · والإنجاز بعدها لمسؤولها ولو انضم بعد الرسالة
-                ? (request.resource.data.by == request.auth.uid && chatMaySend(org, chatId)
+                ? (request.resource.data.by == request.auth.uid && chatMaySend(org, chatId) && request.resource.data.get('cx', false) == false
                     && get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.get('sys', null) == null
                     && chatMsgVisible(org, chatId, request.resource.data.m))
                 : (request.resource.data.by == resource.data.by
                     && (resource.data.by == request.auth.uid
-                        || (resource.data.as == request.auth.uid
+                        // المسؤول ينجزها وحده ما لم تُلغَ · والإلغاء لمنشئها (قرار المالك 2026-10-08T10:24Z)
+                        || (resource.data.as == request.auth.uid && resource.data.get('cx', false) == false
                             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['done', 'ts']))))))
         // الصوت في استطلاع (الدفعة ٥): v_رقمها_رقمي · لنفسه وحده ويُغيَّر · خيارٌ واحد إلا إن سُمح بأكثر · لما يقرؤه
         || (request.resource.data.keys().hasOnly(['k', 'm', 'by', 'o', 'ts']) && request.resource.data.k == 'vote'
@@ -738,6 +740,9 @@ service cloud.firestore {
           // الوسم: عاجل أو قرار أو متابعة · والإعلان المهم بتأكيد الاطلاع (الدفعة ٣ · 2026-10-08T05:31Z)
           && (request.resource.data.get('tag', null) == null || request.resource.data.tag in ['urgent', 'decision', 'followup'])
           && (request.resource.data.get('ack', null) == null || request.resource.data.ack is bool)
+          // الإعلان المهم بتأكيد الاطلاع للمسؤولين وحدهم: المالك دائماً، وفي المجموعة مسؤولوها (قرار المالك 2026-10-08T10:24Z)
+          && (request.resource.data.get('ack', false) != true || orgOwner(org)
+              || (getAfter(chatPath(org, chatId)).data.k == 'group' && chatAdmin(org, getAfter(chatPath(org, chatId)).data)))
           // الرد في سلسلة على رسالة في المحادثة نفسها · والإشارات قائمة لا تتجاوز ثلاثين (الدفعة ٢ · 2026-10-08T05:31Z)
           && (request.resource.data.get('re', null) == null
               || (request.resource.data.re is string && request.resource.data.re.matches('^[A-Za-z0-9_-]{1,64}$')

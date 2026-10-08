@@ -481,7 +481,10 @@
     "voteFailed": "تعذّر التصويت",
     "toClaim": "تحويل إلى مطالبة",
     "toPurchase": "تحويل إلى فاتورة شراء",
-    "editTask": "تعديل المهمة"
+    "editTask": "تعديل المهمة",
+    "taskCancelled": "ملغاة",
+    "taskCancel": "إلغاء المهمة",
+    "taskRestore": "إعادة المهمة"
   },
   "auth": {
     "fail": {

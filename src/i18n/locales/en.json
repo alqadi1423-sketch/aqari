@@ -481,7 +481,10 @@
     "voteFailed": "Could not vote",
     "toClaim": "Turn into a claim",
     "toPurchase": "Turn into a purchase invoice",
-    "editTask": "Edit task"
+    "editTask": "Edit task",
+    "taskCancelled": "Cancelled",
+    "taskCancel": "Cancel task",
+    "taskRestore": "Restore task"
   },
   "auth": {
     "fail": {

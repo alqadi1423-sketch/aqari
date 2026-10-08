@@ -491,7 +491,7 @@ export function searchMessages(db: DB, me: string, q: ChatSearch, onlyMine = fal
 
 /* ─── الدفعة ٥ (قرار المالك 2026-10-08T05:31Z): المهام والاستطلاعات ─── */
 
-export interface TaskRow extends ChatTask { threadId: string; msgId: string; by: string }
+export interface TaskRow extends ChatTask { threadId: string; msgId: string; by: string; /** ملغاة (قرار المالك 2026-10-08T10:24Z) */ cx: boolean }
 
 /** مهام المحادثة: رقم الرسالة ← مهمتها */
 export function tasksIn(db: DB, threadId: string): Record<string, TaskRow> {
@@ -499,7 +499,7 @@ export function tasksIn(db: DB, threadId: string): Record<string, TaskRow> {
   for (const r of stateRows(db, threadId, 'task')) {
     const d = r.data;
     out[String(d.m)] = { threadId, msgId: String(d.m), title: String(d.title ?? ''), as: String(d.as ?? ''), due: String(d.due ?? ''),
-      done: d.done === true, by: String(d.by ?? '') };
+      done: d.done === true, by: String(d.by ?? ''), cx: d.cx === true };
   }
   return out;
 }
@@ -508,7 +508,9 @@ export function tasksIn(db: DB, threadId: string): Record<string, TaskRow> {
 export function myTasks(db: DB, me: string, onlyMine = false): TaskRow[] {
   const out: TaskRow[] = [];
   for (const t of listThreads(db, me, onlyMine)) for (const task of Object.values(tasksIn(db, t.id))) if (task.as === me) out.push(task);
-  return out.sort((a, b) => (Number(a.done) - Number(b.done)) || a.due.localeCompare(b.due));
+  // المفتوحة أولاً بموعدها، ثم المنجزة، ثم الملغاة
+  const rank = (x: TaskRow) => (x.cx ? 2 : x.done ? 1 : 0);
+  return out.sort((a, b) => (rank(a) - rank(b)) || a.due.localeCompare(b.due));
 }
 
 /** نتيجة الاستطلاع: عدد كل خيار، ومن صوّت، واختياري أنا */

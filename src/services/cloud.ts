@@ -48,7 +48,7 @@ import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
 import { t } from '../i18n';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatVote,
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatCancelTask, chatVote,
   type GroupChange, type ChatTag, type ChatTask,
   chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
 import type { RemoteMessage, RemoteThread } from '../chat/remote';
@@ -858,6 +858,9 @@ export async function chatTaskNow(threadId: string, msgId: string, task: ChatTas
 }
 export async function chatTaskDoneNow(threadId: string, msgId: string, done: boolean): Promise<void> {
   const c = chatOnline(); await chatSetTaskDone(c.db, c.s, c.org, threadId, msgId, done);
+}
+export async function chatCancelTaskNow(threadId: string, msgId: string, cancelled: boolean): Promise<void> {
+  const c = chatOnline(); await chatCancelTask(c.db, c.s, c.org, threadId, msgId, cancelled);
 }
 export async function chatVoteNow(threadId: string, msgId: string, options: number[]): Promise<void> {
   const c = chatOnline(); await chatVote(c.db, c.s, c.org, threadId, msgId, options);

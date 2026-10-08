@@ -241,6 +241,13 @@ export async function chatSetTaskDone(db: DB, s: ChatSession, org: string, threa
   applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
 }
 
+/** إلغاء المهمة أو إعادتها · لمنشئها · ثم الحال كما في الخادم (قرار المالك 2026-10-08T10:24Z) */
+export async function chatCancelTask(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, cancelled: boolean,
+  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  await r.cancelTask(threadId, msgId, cancelled);
+  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+}
+
 /** صوتي في استطلاع · ثم الحال كما في الخادم (الدفعة ٥) */
 export async function chatVote(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, options: number[],
   r: ChatRemote = remoteFor(s, org)): Promise<void> {

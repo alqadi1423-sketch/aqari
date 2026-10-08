@@ -16,7 +16,7 @@ import { useLang } from '../src/i18n';
 import { dfmt } from '../src/domain/dates';
 import {
   cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatEditGroupNow, chatPinNow, chatAckNow, chatEditMessageNow, chatEditsNow,
-  chatTaskNow, chatTaskDoneNow, chatVoteNow,
+  chatTaskNow, chatTaskDoneNow, chatCancelTaskNow, chatVoteNow,
   chatReviewCandidatesNow, chatOpenReviewNow, chatCloseReviewNow, chatJoinGroupNow,
 } from '../src/services/cloud';
 import type { RemoteMessage, RemoteThread } from '../src/chat/remote';
@@ -307,6 +307,9 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const vote = async (m: ChatMessage, options: number[]) => {
     try { await chatVoteNow(id, m.id, options); bump(); } catch (e) { reportFailure({ title: t('chat.voteFailed'), e }); }
   };
+  const cancelTask = async (task: TaskRow) => {
+    try { await chatCancelTaskNow(id, task.msgId, !task.cx); bump(); } catch (e) { reportFailure({ title: t('chat.taskFailed'), e }); }
+  };
   const toggleTask = async (task: TaskRow) => {
     try { await chatTaskDoneNow(id, task.msgId, !task.done); bump(); }
     catch (e) { reportFailure({ title: t('chat.taskFailed'), e }); }
@@ -383,10 +386,16 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
               {tasks[m.id] ? (
                 <View style={{ marginTop: 4, padding: 6, borderRadius: 8, borderWidth: 1, borderColor: C.line }}>
                   <T size={TYPE.caption} bold>{t('chat.task')}: {tasks[m.id].title}</T>
-                  <T size={TYPE.caption} color={C.muted}>{(people.find((p) => p.uid === tasks[m.id].as)?.name || t('chat.member'))} · {dfmt(tasks[m.id].due)} · {tasks[m.id].done ? t('chat.taskDone') : t('chat.taskOpen')}</T>
-                  {tasks[m.id].as === me.uid || tasks[m.id].by === me.uid ? (
-                    <BtnGhost small title={tasks[m.id].done ? t('chat.taskReopen') : t('chat.taskMarkDone')} onPress={() => toggleTask(tasks[m.id])} />
-                  ) : null}
+                  <T size={TYPE.caption} color={C.muted}>{(people.find((p) => p.uid === tasks[m.id].as)?.name || t('chat.member'))} · {dfmt(tasks[m.id].due)} · {tasks[m.id].cx ? t('chat.taskCancelled') : tasks[m.id].done ? t('chat.taskDone') : t('chat.taskOpen')}</T>
+                  <Row gap={6}>
+                    {!tasks[m.id].cx && (tasks[m.id].as === me.uid || tasks[m.id].by === me.uid) ? (
+                      <BtnGhost small title={tasks[m.id].done ? t('chat.taskReopen') : t('chat.taskMarkDone')} onPress={() => toggleTask(tasks[m.id])} />
+                    ) : null}
+                    {/* الإلغاء لمنشئها وحده · فتبقى «ملغاة» */}
+                    {tasks[m.id].by === me.uid ? (
+                      <BtnGhost small title={tasks[m.id].cx ? t('chat.taskRestore') : t('chat.taskCancel')} onPress={() => cancelTask(tasks[m.id])} />
+                    ) : null}
+                  </Row>
                 </View>
               ) : null}
               {m.ack && thread ? (mine
@@ -421,7 +430,10 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           {/* الوسم والإعلان المهم بتأكيد الاطلاع (الدفعة ٣) */}
           <Row style={{ flexWrap: 'wrap', paddingTop: 4 }}>
             {CHAT_TAGS.map((k) => <Chip key={k} label={t('chat.tag.' + k)} active={tag === k} onPress={() => setTag(tag === k ? null : k)} />)}
-            <Chip label={t('chat.important')} active={ack} onPress={() => setAck(!ack)} />
+            {/* الإعلان المهم بتأكيد الاطلاع للمسؤولين وحدهم (قرار المالك 2026-10-08T10:24Z) */}
+            {me.owner || (thread?.kind === 'group' && isGroupAdmin(me, thread)) ? (
+              <Chip label={t('chat.important')} active={ack} onPress={() => setAck(!ack)} />
+            ) : null}
           </Row>
           {men.length ? (
             <Row style={{ flexWrap: 'wrap', paddingVertical: 4 }}>
@@ -724,9 +736,9 @@ function MyTasksSheet({ me, people, onClose, onOpen }: { me: ChatMe; people: Cha
         <View key={task.threadId + task.msgId} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
           <Pressable onPress={() => onOpen(task.threadId)}>
             <T size={TYPE.body} bold>{task.title}</T>
-            <T size={TYPE.caption} color={C.muted}>{dfmt(task.due)} · {task.done ? t('chat.taskDone') : t('chat.taskOpen')} · {people.find((p) => p.uid === task.by)?.name || t('chat.member')}</T>
+            <T size={TYPE.caption} color={C.muted}>{dfmt(task.due)} · {task.cx ? t('chat.taskCancelled') : task.done ? t('chat.taskDone') : t('chat.taskOpen')} · {people.find((p) => p.uid === task.by)?.name || t('chat.member')}</T>
           </Pressable>
-          <BtnGhost small title={task.done ? t('chat.taskReopen') : t('chat.taskMarkDone')} onPress={() => toggle(task)} />
+          {!task.cx ? <BtnGhost small title={task.done ? t('chat.taskReopen') : t('chat.taskMarkDone')} onPress={() => toggle(task)} /> : null}
         </View>
       )) : <EmptyState>{t('chat.noTasks')}</EmptyState>}
     </Sheet>

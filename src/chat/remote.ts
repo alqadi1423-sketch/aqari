@@ -49,6 +49,8 @@ export interface RemoteState {
   id: string; k: string; ts: string; on?: boolean; by?: string; at?: string; m?: string; n?: number;
   /** الدفعة ٥: المهمة (عنوانها ومسؤولها وموعدها وإنجازها) والصوت (أرقام خياراته) */
   title?: string; as?: string; due?: string; done?: boolean; o?: number[];
+  /** المهمة ملغاة (قرار المالك 2026-10-08T10:24Z) */
+  cx?: boolean;
 }
 
 const tail = (name: string) => name.slice(name.lastIndexOf('/') + 1);
@@ -353,6 +355,7 @@ export class ChatRemote {
         ...(typeof d.title === 'string' ? { title: d.title } : {}), ...(typeof d.as === 'string' ? { as: d.as } : {}),
         ...(typeof d.due === 'string' ? { due: d.due } : {}), ...(typeof d.done === 'boolean' ? { done: d.done } : {}),
         ...(Array.isArray(d.o) ? { o: (d.o as unknown[]).map(Number) } : {}),
+        ...(typeof d.cx === 'boolean' ? { cx: d.cx } : {}),
       };
     });
   }
@@ -434,6 +437,18 @@ export class ChatRemote {
     } catch (e) { if (!(e instanceof FirestoreHttpError && e.status === 404)) throw e; }
     await this.req('POST', `${this.root}:commit`, {
       writes: [this.stWrite(threadId, sid, { k: 'task', m: msgId, title: task.title, as: task.as, due: task.due, done, by })],
+    });
+  }
+
+  /** إلغاء المهمة أو إعادتها · لمنشئها وحده · فتبقى بحالة «ملغاة» (قرار المالك 2026-10-08T10:24Z) */
+  async cancelTask(threadId: string, msgId: string, cancelled: boolean): Promise<void> {
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [{
+        update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}/st/t_${msgId}`)}`, fields: encodeFields({ cx: cancelled }) },
+        updateMask: { fieldPaths: ['cx'] },
+        currentDocument: { exists: true },
+        updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
+      }],
     });
   }
 
