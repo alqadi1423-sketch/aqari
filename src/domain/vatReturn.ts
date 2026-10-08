@@ -47,9 +47,12 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
      FROM invoices WHERE deleted_at IS NULL AND status != 'مسودة'${inPeriod('issue')}`
   )!;
 
-  // ٥ · المبيعات المعفاة = إيرادات الإيجار السكني المحصَّلة
+  // ٥ · المبيعات المعفاة = إيرادات الإيجار السكني المحصَّلة · بلا فائض التحصيل الذي صار رصيداً دائناً للمستأجر
+  // (دائن 2410 في قيد الدفعة): التزامٌ له لا توريد (#31)
   const rent = db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(p.net_halalas),0) AS s FROM contract_payments p WHERE p.cancelled_at IS NULL${inPeriod('p.date')}`
+    `SELECT COALESCE(SUM(p.net_halalas),0) - COALESCE(SUM((SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0)
+       FROM journal_lines l WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410')), 0) AS s
+     FROM contract_payments p WHERE p.cancelled_at IS NULL${inPeriod('p.date')}`
   )!;
 
   // ٧ · المشتريات الخاضعة باسمنا وحدها · لبّ الطلب
@@ -58,10 +61,16 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
      FROM purchases WHERE deleted_at IS NULL AND tax_status = 'فاتورة ضريبية · قابلة للخصم'${inPeriod('date')}`
   )!;
 
-  // ١١ · مشتريات معفاة = إيجار المبنى المستأجر
+  // ١٠ و١١ · المشتريات بالنسبة الصفرية والمعفاة من حالتها الضريبية لا من فئتها (#31)
+  const zeroPur = db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(subtotal_halalas),0) AS s FROM purchases
+     WHERE deleted_at IS NULL AND tax_status = ?${inPeriod('date')}`,
+    ['خاضعة بنسبة صفرية'] // i18n-exempt: حالة مخزّنة
+  )!;
   const exemptPur = db.get<{ s: number }>(
     `SELECT COALESCE(SUM(total_halalas),0) AS s FROM purchases
-     WHERE deleted_at IS NULL AND category = 'إيجار'${inPeriod('date')}`
+     WHERE deleted_at IS NULL AND tax_status = ?${inPeriod('date')}`,
+    ['معفاة من الضريبة'] // i18n-exempt: حالة مخزّنة
   )!;
 
   // سطر الرقابة: المستبعدة بعددها ومبلغها
@@ -73,9 +82,9 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
   const salesSub = Number(sales.sub), salesTax = Number(sales.tax);
   const rentNet = Number(rent.s);
   const dedSub = Number(ded.sub), dedTax = Number(ded.tax);
-  const exemptPurAmt = Number(exemptPur.s);
+  const exemptPurAmt = Number(exemptPur.s), zeroPurAmt = Number(zeroPur.s);
   const totalSales = salesSub + rentNet;
-  const totalPurch = dedSub + exemptPurAmt;
+  const totalPurch = dedSub + zeroPurAmt + exemptPurAmt;
   const netVat = salesTax - dedTax;
 
   const items: VatItem[] = [
@@ -91,8 +100,8 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
     { no: '7.1', label: 'المشتريات الخاضعة لنسبة ٥٪', amountHalalas: 0, taxHalalas: 0 },
     { no: '8', label: 'الاستيرادات الخاضعة المسددة في الجمارك', amountHalalas: 0, taxHalalas: 0 },
     { no: '9', label: 'الاستيرادات الخاضعة للآلية العكسية', amountHalalas: 0, taxHalalas: 0 },
-    { no: '10', label: 'المشتريات بالنسبة الصفرية', amountHalalas: 0, taxHalalas: 0 },
-    { no: '11', label: 'مشتريات معفاة (إيجار المبنى المستأجر)', amountHalalas: exemptPurAmt, taxHalalas: 0 },
+    { no: '10', label: 'المشتريات بالنسبة الصفرية', amountHalalas: zeroPurAmt, taxHalalas: 0 },
+    { no: '11', label: 'المشتريات المعفاة', amountHalalas: exemptPurAmt, taxHalalas: 0 },
     { no: '12', label: 'إجمالي المشتريات', amountHalalas: totalPurch, taxHalalas: dedTax },
     { no: '13', label: 'إجمالي ضريبة القيمة المضافة المستحقة للفترة', amountHalalas: 0, taxHalalas: netVat },
     { no: '14', label: 'تصحيحات من فترات سابقة', amountHalalas: 0, taxHalalas: 0, manual: true },
