@@ -218,6 +218,76 @@ service cloud.firestore {
         || (op == 'purchases' && t == 'meters' && keys.hasOnly(['supplier_id']));
     }
 
+    // حراسات كتابة العضو وحده (مراجعة التثبيت #17 و#18 و#20 و#21 · قرار المالك 2026-10-08): المالك لا يُنتحل، وجهازه
+    // يرفض الوارد المخالف بنفسه (sync/engine.ts applyOne) · وللطلب حدّ ألف تعبير، فالمقارنة بالاسم كما هو ونظيره ~pub
+    // مفتاح الصف داخل d هو مفتاح المستند (#20): فلا يستبدل مستندٌ بمفتاحٍ صفاً آخر عند كل جهاز
+    function keyOk(r) {
+      return r.del == true || (r.d.get('id', null) == r.k && !(r.t in ['accounts', 'accounts~pub', 'property_floor_categories', 'property_floor_categories~pub', 'deposit_settlements', 'deposit_settlements~pub', 'tenant_ratings', 'tenant_ratings~pub', 'depreciation_runs', 'depreciation_runs~pub', 'blobs', 'blobs~pub'])) || (
+        r.t in ['accounts', 'accounts~pub'] ? r.d.code == r.k
+        : r.t in ['property_floor_categories', 'property_floor_categories~pub'] ? r.d.property_id + '|' + r.d.floor_label == r.k
+        : r.t in ['deposit_settlements', 'deposit_settlements~pub'] ? r.d.contract_id == r.k
+        : r.t in ['tenant_ratings', 'tenant_ratings~pub'] ? r.d.contract_id == r.k
+        : r.t in ['depreciation_runs', 'depreciation_runs~pub'] ? r.d.month == r.k
+        : r.t in ['blobs', 'blobs~pub'] ? r.d.sha256 == r.k
+        : false);
+    }
+    // بصمة الملف وامتداده بشكلهما (#21): منهما يُبنى مسار الملف على كل جهاز · والمرفق بصمته وحدها (امتداده في blobs)
+    function blobShapeOk(r) {
+      return r.del == true || !(r.t in ['blobs', 'attachments'])
+        || (r.d.sha256 is string && r.d.sha256.matches('^[0-9a-f]{64}$')
+            && (r.t == 'attachments' || (r.d.ext is string && r.d.ext.matches('^[a-z0-9]{1,5}$'))));
+    }
+    // عقارات الصف من حقيقته لا من إعلان كاتبه (#18) · كما يحسبها rowPids في sync/acl.ts، وما يُشتق من صفٍّ آخر
+    // يُقرأ من مستند ذلك الصف بعد الدفعة نفسها
+    function linked(d, f) {
+      return d.get(f, '') is string && d.get(f, '') != '';
+    }
+    function pidsAt(org, t, id) {
+      return getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$(t + '__' + id)).data.pids;
+    }
+    function pidsBound(org, r) {
+      return r.del == true || r.t in ['tenants', 'tenants~pub', 'journal_entries', 'journal_entries~pub', 'attachments', 'attachments~pub'] || (
+        r.t in ['properties', 'properties~pub'] ? r.pids == [r.d.id]
+        : r.t in ['meters', 'meters~pub'] ? r.pids == (r.d.owner_type == 'property' ? [r.d.owner_id] : pidsAt(org, 'units', r.d.owner_id))
+        : r.t in ['asset_events', 'asset_events~pub'] ? r.pids == pidsAt(org, 'assets', r.d.asset_id)
+        : r.t in ['purchase_lines', 'purchase_lines~pub'] ? r.pids == pidsAt(org, 'purchases', r.d.purchase_id)
+        : linked(r.d, 'property_id') ? r.pids == [r.d.property_id]
+        : linked(r.d, 'unit_id') ? r.pids == pidsAt(org, 'units', r.d.unit_id)
+        : linked(r.d, 'contract_id') ? r.pids == pidsAt(org, 'contracts', r.d.contract_id)
+        : linked(r.d, 'room_id') ? r.pids == pidsAt(org, 'unit_rooms', r.d.room_id)
+        : linked(r.d, 'area_id') ? r.pids == pidsAt(org, 'property_areas', r.d.area_id)
+        : linked(r.d, 'payment_id') ? r.pids == pidsAt(org, 'contract_payments', r.d.payment_id)
+        : linked(r.d, 'meter_id') ? r.pids == pidsAt(org, 'meters', r.d.meter_id)
+        : r.pids == ['*']);
+    }
+    // رموز الرؤية لا تخرج عن عقار الصف (#18): «قسم|عقاره» أو «قسم|@» · والمستأجر المشترك بعقاراته
+    function gOk(g, p) {
+      return g.hasOnly(['props|' + p, 'props|@', 'contracts|' + p, 'contracts|@', 'tenants|' + p, 'tenants|@', 'collect|' + p, 'collect|@', 'deposits|' + p, 'deposits|@', 'reservations|' + p, 'reservations|@', 'claims|' + p, 'claims|@', 'invoices|' + p, 'invoices|@', 'purchases|' + p, 'purchases|@', 'maintenance|' + p, 'maintenance|@', 'handover|' + p, 'handover|@', 'banks|' + p, 'banks|@', 'ledger|' + p, 'ledger|@', 'reports|' + p, 'reports|@', 'library|' + p, 'library|@', 'company|' + p, 'company|@', 'audit|' + p, 'audit|@', 'assets|' + p, 'assets|@', 'admin|' + p, 'admin|@']);
+    }
+    function gBound(r) {
+      return r.t in ['tenants', 'tenants~pub'] || (r.pids.size() == 1 && gOk(r.g, r.pids[0]));
+    }
+    // المبالغ لا يكتبها ولا يغيّرها عضوٌ لا يقرؤها (#17): يقرأ الإسقاط، فقيمتها عنده افتراضها · keys: ما يكتبه في الإنشاء
+    // وما تغيّر في التعديل · ولا يكتب مبلغاً لا يقرؤه إلا قسمٌ غير مالي، أو المحصور في رصيد المستأجر المشترك ·
+    // وقارئ المبالغ من رموزه (قسم|* للمحصور، قسم|@ لذي كل العقارات)
+    function moneyReaderOf(org, r) {
+      return r.t == 'contracts' ? mem(org).tokens.hasAny(['contracts|*', 'contracts|@', 'collect|*', 'collect|@', 'deposits|*', 'deposits|@', 'reservations|*', 'reservations|@', 'claims|*', 'claims|@', 'reports|*', 'reports|@', 'ledger|*', 'ledger|@', 'invoices|*', 'invoices|@'])
+        : r.t == 'properties' ? mem(org).tokens.hasAny(['contracts|*', 'contracts|@', 'collect|*', 'collect|@', 'deposits|*', 'deposits|@', 'reservations|*', 'reservations|@', 'claims|*', 'claims|@', 'invoices|*', 'invoices|@', 'purchases|*', 'purchases|@', 'banks|*', 'banks|@', 'ledger|*', 'ledger|@', 'reports|*', 'reports|@', 'assets|*', 'assets|@'])
+        : r.t == 'tenants' ? mem(org).all == true && mem(org).tokens.hasAny(['contracts|*', 'contracts|@', 'collect|*', 'collect|@', 'deposits|*', 'deposits|@', 'reservations|*', 'reservations|@', 'claims|*', 'claims|@', 'invoices|*', 'invoices|@'])
+        : r.t == 'units' ? mem(org).tokens.hasAny(['contracts|*', 'contracts|@', 'collect|*', 'collect|@', 'deposits|*', 'deposits|@', 'reservations|*', 'reservations|@', 'claims|*', 'claims|@', 'invoices|*', 'invoices|@', 'purchases|*', 'purchases|@', 'banks|*', 'banks|@', 'ledger|*', 'ledger|@', 'reports|*', 'reports|@', 'assets|*', 'assets|@'])
+        : false;
+    }
+    function moneyKeysOk(org, r, keys) {
+      return (!(r.op in ['props', 'maintenance', 'tenants', 'handover', 'library', 'company']) || !keys.hasAny(['cancel_deduction_halalas', 'cancel_refund_halalas', 'credit_halalas', 'deposit_halalas', 'lease_value_halalas', 'parking_halalas', 'rent_monthly_halalas', 'services_halalas', 'value_halalas']) || moneyReaderOf(org, r))
+        && (r.t != 'tenants' || mem(org).all == true || !keys.hasAny(['credit_halalas']));
+    }
+    function moneyKept(org, before, after) {
+      return after.del == true
+        // قسمٌ مالي في غير الصف المشترك: يقرأ ما يكتبه، فلا حاجة إلى حساب الفرق
+        || (!(after.op in ['props', 'maintenance', 'tenants', 'handover', 'library', 'company']) && !(after.t in ['tenants']))
+        || moneyKeysOk(org, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys());
+    }
+
     function validOrgRow(rowId) {
       let r = request.resource.data;
       return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts', 'op', 'g', 'pids', 'by'])
@@ -234,9 +304,12 @@ service cloud.firestore {
     function memberCreates(org) {
       let r = request.resource.data;
       return isMember(org) && r.op is string && (
-        (lvl(org, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(org, r) && (!('by' in r) || r.by == request.auth.uid))
+        // الحراسات أولاً: المزوَّر يُرفض بها رخيصاً قبل أن يبلغ الطلب حدّ ألف تعبير (المراجعة #17 و#18 و#20 و#21) ·
+        // ورموز رؤية الصف الجديد لا تُفحص: كلفتها فوق الحد، وصفوف العضو الجديدة من كتابته هو
+        (keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(org, null, r)
+          && lvl(org, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(org, r) && (!('by' in r) || r.by == request.auth.uid))
         // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
-        || (r.op == 'self' && r.t == 'audit_log' && r.d != null && r.d.entity_type == 'بيانات عضو' && r.pids == ['*']));
+        || (r.op == 'self' && r.t == 'audit_log' && r.d != null && r.d.entity_type == 'بيانات عضو' && r.pids == ['*'] && keyOk(r)));
     }
 
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
@@ -247,13 +320,20 @@ service cloud.firestore {
       // يُحسبان مرة · سلسلة الجداول والمستوى تُعدّ في حدّ الألف تعبير للطلب
       let owns = op is string && opOwns(op, baseT(after.t));
       let level = op is string ? lvl(org, op) : 0;
-      return isMember(org) && op is string
+      // عقارات الصف ورؤيته كما هي، فلا حاجة إلى فحصهما · ويغيّرهما ذو كل العقارات بحقيقة الصف، والرؤية في المرفق
+      // (جهته تحدد قرّاءه) · والمبالغ لقارئها (المراجعة #17 و#18) · الحراسات أولاً، فللطلب حدّ ألف تعبير
+      return (after.pids == before.pids || (mem(org).all == true && pidsBound(org, after)))
+        && (after.g == before.g || ((mem(org).all == true || baseT(after.t) == 'attachments') && gBound(after)))
+        && keyOk(after) && blobShapeOk(after) && moneyKept(org, before, after)
+        && isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)
         && (
           (owns && level >= 3 && propsOk(org, after))
           || (owns && level >= 2 && isDraft(before)
               && before.get('by', '') == request.auth.uid && propsOk(org, after))
+          // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)
           || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(org, before, after)
+              && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g'])
               && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
         );
     }

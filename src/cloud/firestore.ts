@@ -9,7 +9,7 @@ import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, WriteResult } f
 import { planBlocks, planInvoiceSeq, type BlockRequest, type ReservedBlock } from '../domain/numbering';
 import type { DB } from '../db/adapter';
 import { OWNER_ACCESS, type Access } from '../domain/access/access';
-import { annotate as aclAnnotate } from '../sync/acl';
+import { annotate as aclAnnotate, hiddenColumns } from '../sync/acl';
 
 type FsValue =
   | { nullValue: null }
@@ -122,7 +122,13 @@ export class FirestoreRemote implements RemoteStore {
     this.memberMode = !!o.org && !!o.memberTokens?.();
     if (o.org) {
       this.annotate = (db, doc) => {
-        const { doc: d, pub } = aclAnnotate(db, doc, o.access?.() ?? OWNER_ACCESS);
+        const a = o.access?.() ?? OWNER_ACCESS;
+        const { doc: d0, pub } = aclAnnotate(db, doc, a);
+        // ما يقرؤه العضو إسقاطاً لا يُرفع منه: قيمته عنده افتراضها لا الحقيقية (المراجعة #17)
+        const hidden = new Set(hiddenColumns(a, doc.t, doc.d as Record<string, unknown> | null));
+        const d = hidden.size && d0.d
+          ? { ...d0, partial: true, d: Object.fromEntries(Object.entries(d0.d).filter(([k]) => !hidden.has(k))) as typeof d0.d }
+          : d0;
         return pub ? { ...d, companions: [pub] } : d;
       };
     }
@@ -167,10 +173,15 @@ export class FirestoreRemote implements RemoteStore {
       const t0 = Date.now();
       const res = await this.call(`${this.root}:commit`, {
         // المستند وإسقاطه بلا مبالغ (companions) في دفعة واحدة ذرّية
-        writes: docs.flatMap((d) => [d, ...(d.companions ?? [])]).map((d) => ({
-          update: { name: this.docName(d.id), fields: docToFields(d) },
-          updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
-        })),
+        writes: docs.flatMap((d) => [d, ...(d.companions ?? [])]).map((d) => {
+          const fields = docToFields(d);
+          return {
+            update: { name: this.docName(d.id), fields },
+            // الجزئية: حقول المستند وحقول d الحاضرة وحدها · وما سواها يبقى في السحابة (المراجعة #17)
+            ...(d.partial && d.d ? { updateMask: { fieldPaths: [...Object.keys(fields).filter((k) => k !== 'd'), ...Object.keys(d.d).map((c) => 'd.' + c)] } } : {}),
+            updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
+          };
+        }),
       }) as { commitTime?: string };
       const commit = res && typeof res.commitTime === 'string' ? Date.parse(res.commitTime) : NaN;
       if (Number.isFinite(commit)) this.lastClock = { serverMs: commit, localMs: Math.round((t0 + Date.now()) / 2) };

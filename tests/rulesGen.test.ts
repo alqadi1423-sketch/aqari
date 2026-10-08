@@ -6,15 +6,30 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { generateOrgRules, spliceRules, BEGIN, END } from '@/domain/access/rulesGen';
 import { OP_WRITES } from '@/domain/access/opWrites';
+import { SYNC_TABLES } from '@/db/syncTables';
+import { isMoneyColumn } from '@/domain/access/readSections';
+import { memDb } from './helpers/testDb';
+
+/** أعمدة المبالغ في كل جدول مُزامَن من المخطط نفسه (المراجعة #17) */
+function rulesSchema() {
+  const db = memDb();
+  const money: Record<string, string[]> = {};
+  for (const { name } of SYNC_TABLES) {
+    const cols = db.all<{ name: string }>(`PRAGMA table_info("${name}")`).map((c) => c.name).filter(isMoneyColumn);
+    if (cols.length) money[name] = cols;
+  }
+  db.close();
+  return { money };
+}
 
 const FILE = path.join(__dirname, '..', 'firestore.rules');
 
 test('كتلة المنشأة في firestore.rules مطابقة للمولَّد', () => {
   const current = fs.readFileSync(FILE, 'utf8');
-  const next = spliceRules(current);
+  const next = spliceRules(current, rulesSchema());
   if (process.env.UPDATE_RULES === '1' && next !== current) fs.writeFileSync(FILE, next);
   const saved = fs.readFileSync(FILE, 'utf8');
-  expect(saved.includes(generateOrgRules())).toBe(true);
+  expect(saved.includes(generateOrgRules(rulesSchema()))).toBe(true);
   expect(saved.indexOf(BEGIN)).toBeLessThan(saved.indexOf(END));
 });
 

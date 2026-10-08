@@ -244,10 +244,11 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     expect(await putDoc(`orgs/${ORG}/members/U-ALL`, { email: 'u-all@example.test', perm: allCol.perms, all: true, props: [], tokens: memberTokens(allCol) }, ORG)).toBe(200);
     const full = (await pullAll(allCol)).find((x) => x.id === 'tenants__' + tid)!;
     expect(full.d!.credit_halalas).toBe(7000);
-    // المحصِّل المحصور يزيد الرصيد (فائض دفعة) من عقاره
+    // المحصِّل المحصور يقرأ إسقاطه بلا رصيده: فلا يكتب رصيداً لا يعرفه (المراجعة #17) · جهازه لا يرفعه أصلاً،
+    // والقيد (2410) يحمل الفائض إلى الدفتر
     const row = db.get<Record<string, unknown>>(`SELECT * FROM tenants WHERE id = ?`, [tid])!;
     expect(await write(COLLECTOR, { id: 'tenants__' + tid, t: 'tenants', k: tid, u: 'w1', dev: 'dev-col', del: false, d: { ...row, credit_halalas: 7500 } as never }))
-      .toMatchObject({ ok: true });
+      .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
     // ولا يغيّر اسمه (ليس له قسم المستأجرين)
     expect(await write(COLLECTOR, { id: 'tenants__' + tid, t: 'tenants', k: tid, u: 'w2', dev: 'dev-col', del: false, d: { ...row, credit_halalas: 7500, name: 'اسم آخر' } as never }))
       .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });

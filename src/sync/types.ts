@@ -36,6 +36,11 @@ export interface RemoteDoc {
   by?: string;
   /** مستندات تُكتب معه في الدفعة نفسها ولا تُرفع وحدها (إسقاطه بلا مبالغ) · لا تُحفظ في السحابة حقلاً */
   companions?: RemoteDoc[];
+  /**
+   * كتابة جزئية: حقول d الحاضرة وحدها، وما غاب منها يبقى في السحابة كما هو · لعضوٍ يقرأ إسقاط الصف فلا يعرف
+   * مبالغه (المراجعة #17) · لا تُحفظ في السحابة حقلاً
+   */
+  partial?: boolean;
 }
 
 export interface PullPage { docs: RemoteDoc[]; next: Cursor | null; more?: boolean }

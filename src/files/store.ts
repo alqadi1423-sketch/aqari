@@ -203,13 +203,14 @@ export function gcBlobs(env: FilesEnv, retentionDays: number, now: Date = new Da
   );
   let removed = 0;
   for (const o of orphans) {
-    const p = blobPath(env, o.sha256, o.ext);
+    // اسمٌ يخرج بالمسار عن مجلد المرفقات لا يُحذف ملفه (المراجعة #21) · والصفّ وحده يُزال
+    const p = isSafeBlobName(o.sha256, o.ext) ? blobPath(env, o.sha256, o.ext) : null;
     env.db.transaction(() => {
       env.db.run(`DELETE FROM attachments WHERE sha256 = ?`, [o.sha256]);
       env.db.run(`DELETE FROM blobs WHERE sha256 = ?`, [o.sha256]);
       env.db.run(`DELETE FROM file_cache WHERE sha256 = ?`, [o.sha256]);
     });
-    if (env.fs.exists(p)) env.fs.remove(p);
+    if (p && env.fs.exists(p)) env.fs.remove(p);
     removed++;
   }
   return removed;

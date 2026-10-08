@@ -15,6 +15,7 @@
  *    الحفظ فلا يبقى من الصف أثر، ويُحفظ في sync_rejects ويُسجَّل، ولا يكسر بقية الدفعة.
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
+import { isSafeBlobName } from '../files/store';
 import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
@@ -419,6 +420,20 @@ function applyOne(
   const t = syncTable(doc.t);
   if (!t) { reject(db, doc, 'جدول خارج المزامنة'); return 'rejected'; }
   if (doc.dev === deviceId) return 'skipped'; // صدى ما كتبه هذا الجهاز
+  // مفتاح الصف داخل المستند هو مفتاحه (المراجعة #20): وإلا استبدل مستندٌ صفاً آخر
+  if (!doc.del && doc.d) {
+    const want = pkParams(doc.t, doc.k);
+    if (t.pkCols.some((c, i) => String((doc.d as Record<string, unknown>)[c] ?? '') !== want[i])) {
+      reject(db, doc, 'مفتاح الصف لا يطابق مفتاح المستند'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض كأسبابه الأخرى
+      return 'rejected';
+    }
+    // بصمة الملف وامتداده يُبنى منهما مسار على هذا الجهاز (المراجعة #21) · والمرفق بصمته وحدها (امتداده في blobs)
+    if ((doc.t === 'blobs' && !isSafeBlobName(doc.d.sha256, doc.d.ext))
+      || (doc.t === 'attachments' && !isSafeBlobName(doc.d.sha256, 'bin'))) {
+      reject(db, doc, 'اسم ملف غير آمن'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض كأسبابه الأخرى
+      return 'rejected';
+    }
+  }
 
   const cols = (name: string) => {
     let s = cache.get(name);
@@ -764,6 +779,11 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, e
 
 const PULL_PAGE = 500;
 const PUSH_BATCH = 400;
+/**
+ * دفعة العضو صفٌّ واحد (بإسقاطه): قواعده تحرس كل صفٍّ بما يقارب مئتي تعبير وتقرأ مستند أبيه (المراجعة #17 و#18)،
+ * وللطلب الواحد حدّ ألف تعبير وعشرون قراءة تتقاسمها صفوف الدفعة · ورفعُ العضو قليلٌ أصلاً (ما يعدّله هو)
+ */
+const MEMBER_PUSH_BATCH = 1;
 
 /** رفض قواعد الأمان لكتابةٍ على ما لا يُعدَّل (قيد مرحّل، سجل عمليات) · نسخته في السحابة نهائية */
 function immutableDenied(doc: RemoteDoc, code?: string): boolean {
@@ -891,7 +911,7 @@ export async function syncOnce(
   // ٣) الدفع · على دفعات بتقدّم ظاهر «ن من م»، والدفعة تصغر عند الانشغال
   let pushed = 0;
   const total = outboxCount(db);
-  let size = PUSH_BATCH;
+  let size = remote.memberMode ? MEMBER_PUSH_BATCH : PUSH_BATCH;
   let failures = 0;
   for (;;) {
     const batch = pendingOutbox(db, size);
@@ -917,7 +937,7 @@ export async function syncOnce(
       if (!isTransientRemoteError(e)) throw e;
       if (failures >= maxRetries) giveUp(pushed, total);
       // الدفعة تُبنى من جديد أصغر · وتُنتظر مهلة تتضاعف
-      size = Math.max(MIN_PUSH_BATCH, Math.floor(size / 2));
+      size = Math.max(Math.min(MIN_PUSH_BATCH, size), Math.floor(size / 2));
       const delay = Math.min(base * 2 ** failures, MAX_DELAY_MS);
       failures++;
       onProgress?.('السحابة مشغولة · إعادة المحاولة بعد ' + Math.ceil(delay / 1000) + ' ثانية');

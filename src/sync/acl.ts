@@ -10,7 +10,7 @@ import type { RemoteDoc, RowData } from './types';
 import type { Access } from '../domain/access/access';
 import { level } from '../domain/access/access';
 import { SECTION_KEYS, type SectionKey } from '../domain/access/sections';
-import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
+import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, isMoneyColumn, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
 import { OP_WRITES, SELF_OP, SELF_AUDIT_ENTITY } from '../domain/access/opWrites';
 
 export const ORG_WIDE = '*';
@@ -115,6 +115,19 @@ export function chooseOp(a: Access, table: string): SectionKey | null {
 export function fullReadTables(a: Access, tables: string[]): Set<string> {
   return new Set(tables.filter((t) => (!CROSS_PROPERTY[t] || a.owner || a.allProps)
     && readSectionsOf(t, null).some((s) => MONEY_SECTIONS.has(s) && level(a, s) >= 1)));
+}
+
+/**
+ * أعمدةٌ يقرأ العضو إسقاطها لا قيمتها: المبالغ، وما يجمع العقارات في الصف المشترك · فقيمتها على جهازه افتراضها
+ * لا الحقيقية، فلا تُرفع منه أبداً، وتُكتب الحقول الأخرى وحدها فتبقى هذه في السحابة كما هي (المراجعة #17).
+ * ومن لا يقرأ الجدول أصلاً فصفوفه ما أنشأه هو، فقيمها عنده.
+ */
+export function hiddenColumns(a: Access, table: string, row: Record<string, unknown> | null): string[] {
+  if (a.owner || !row) return [];
+  if (!readSectionsOf(table, row).some((s) => level(a, s) >= 1)) return [];
+  if (fullReadTables(a, [table]).has(table)) return [];
+  const drop = new Set(CROSS_PROPERTY[table] ?? []);
+  return Object.keys(row).filter((k) => isMoneyColumn(k) || drop.has(k));
 }
 
 export interface AclDocs {

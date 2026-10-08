@@ -4,8 +4,13 @@
  * إن اختلف الملف عن المولَّد، و UPDATE_RULES=1 يكتبه.
  */
 import { OP_WRITES } from './opWrites';
-import type { SectionKey } from './sections';
+import { SECTION_KEYS, type SectionKey } from './sections';
 import { SELF_OP, SELF_AUDIT_ENTITY } from './opWrites';
+import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, READ_TABLE, readSectionsOf } from './readSections';
+import { SYNC_TABLES } from '../../db/syncTables';
+
+/** ما تحتاجه القواعد من المخطط: أعمدة المبالغ في كل جدول مُزامَن (يبنيه الاختبار من قاعدةٍ مُهاجَرة) */
+export interface RulesSchema { money: Record<string, string[]> }
 
 export const BEGIN = '    // <org:generated> · لا تُعدَّل باليد: src/domain/access/rulesGen.ts';
 export const END = '    // </org:generated>';
@@ -49,7 +54,103 @@ function writesFns(): string {
     }`;
 }
 
-export function generateOrgRules(): string {
+/** أقسامٌ قد تقرأ الجدول · رموز الرؤية g لا تخرج عنها (المراجعة #18) */
+function readersUnion(t: string): SectionKey[] {
+  if (t === 'journal_entries') return [...SECTION_KEYS];
+  if (t === 'attachments') return [...new Set<SectionKey>(['library', ...Object.values(ATTACHMENT_ENTITY_TABLE).flatMap((x) => READ_TABLE[x] ?? [])])];
+  return readSectionsOf(t, null);
+}
+
+/**
+ * ثغرات الأعضاء من مراجعة التثبيت (#17 و#18 و#20 و#21) · قرار المالك 2026-10-08
+ */
+function guardFns(schema: RulesSchema): string {
+  const names = SYNC_TABLES.map((t) => t.name);
+  // الجدول ونظيره «~pub» · المقارنة بالاسم كما هو بلا تقطيع: للطلب حدّ ألف تعبير، والدالة تعيد حساب وسائطها عند كل استعمال
+  const both = (ts: string[]) => q(ts.flatMap((t) => [t, t + '~pub']));
+  const special = SYNC_TABLES.filter((t) => !(t.pkCols.length === 1 && t.pkCols[0] === 'id'));
+  const keyBranches = special.map((t) => `r.t in ${both([t.name])} ? ${t.pkCols.map((c) => 'r.d.' + c).join(" + '|' + ")} == r.k`);
+  // المبالغ: العمليات غير المالية وحدها قد تكتب مبلغاً لا يقرؤه كاتبه، وفي جداولها أعمدتها هذه
+  const nonMoneyOps = (Object.keys(OP_WRITES) as SectionKey[]).filter((x) => !MONEY_SECTIONS.has(x));
+  const nonMoneyTables = new Set<string>();
+  for (const op of nonMoneyOps) {
+    const w = OP_WRITES[op]!;
+    for (const t of [...w.create, ...w.own, ...Object.keys(w.touch ?? {})]) nonMoneyTables.add(t);
+  }
+  const nonMoneyCols = [...new Set([...nonMoneyTables].flatMap((t) => schema.money[t] ?? []))].sort();
+  const moneyTables = [...nonMoneyTables].filter((t) => (schema.money[t] ?? []).length).sort();
+  const readerBranches = moneyTables.map((t) => {
+    const secs = readersUnion(t).filter((x) => MONEY_SECTIONS.has(x));
+    const toks = q(secs.flatMap((x) => [x + '|*', x + '|@']));
+    return `r.t == '${t}' ? ${CROSS_PROPERTY[t] ? 'mem(org).all == true && ' : ''}${secs.length ? `mem(org).tokens.hasAny(${toks})` : 'false'}`;
+  });
+  const crossMoney = Object.keys(CROSS_PROPERTY).map((t) => ({ t, cols: schema.money[t] ?? [] })).filter((x) => x.cols.length);
+  const allToks = SECTION_KEYS.flatMap((x) => [`'${x}|' + p`, `'${x}|@'`]);
+  // i18n-exempt: نص القواعد المولَّدة وتعليقاتها، لا نصّ واجهة
+  return `
+    // حراسات كتابة العضو وحده (مراجعة التثبيت #17 و#18 و#20 و#21 · قرار المالك 2026-10-08): المالك لا يُنتحل، وجهازه
+    // يرفض الوارد المخالف بنفسه (sync/engine.ts applyOne) · وللطلب حدّ ألف تعبير، فالمقارنة بالاسم كما هو ونظيره ~pub
+    // مفتاح الصف داخل d هو مفتاح المستند (#20): فلا يستبدل مستندٌ بمفتاحٍ صفاً آخر عند كل جهاز
+    function keyOk(r) {
+      return r.del == true || (r.d.get('id', null) == r.k && !(r.t in ${both(special.map((t) => t.name))})) || (
+        ${keyBranches.join('\n        : ')}
+        : false);
+    }
+    // بصمة الملف وامتداده بشكلهما (#21): منهما يُبنى مسار الملف على كل جهاز · والمرفق بصمته وحدها (امتداده في blobs)
+    function blobShapeOk(r) {
+      return r.del == true || !(r.t in ['blobs', 'attachments'])
+        || (r.d.sha256 is string && r.d.sha256.matches('^[0-9a-f]{64}$')
+            && (r.t == 'attachments' || (r.d.ext is string && r.d.ext.matches('^[a-z0-9]{1,5}$'))));
+    }
+    // عقارات الصف من حقيقته لا من إعلان كاتبه (#18) · كما يحسبها rowPids في sync/acl.ts، وما يُشتق من صفٍّ آخر
+    // يُقرأ من مستند ذلك الصف بعد الدفعة نفسها
+    function linked(d, f) {
+      return d.get(f, '') is string && d.get(f, '') != '';
+    }
+    function pidsAt(org, t, id) {
+      return getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$(t + '__' + id)).data.pids;
+    }
+    function pidsBound(org, r) {
+      return r.del == true || r.t in ${both(['tenants', 'journal_entries', 'attachments'])} || (
+        r.t in ${both(['properties'])} ? r.pids == [r.d.id]
+        : r.t in ${both(['meters'])} ? r.pids == (r.d.owner_type == 'property' ? [r.d.owner_id] : pidsAt(org, 'units', r.d.owner_id))
+        : r.t in ${both(['asset_events'])} ? r.pids == pidsAt(org, 'assets', r.d.asset_id)
+        : r.t in ${both(['purchase_lines'])} ? r.pids == pidsAt(org, 'purchases', r.d.purchase_id)
+        : linked(r.d, 'property_id') ? r.pids == [r.d.property_id]
+        : linked(r.d, 'unit_id') ? r.pids == pidsAt(org, 'units', r.d.unit_id)
+        : linked(r.d, 'contract_id') ? r.pids == pidsAt(org, 'contracts', r.d.contract_id)
+        : linked(r.d, 'room_id') ? r.pids == pidsAt(org, 'unit_rooms', r.d.room_id)
+        : linked(r.d, 'area_id') ? r.pids == pidsAt(org, 'property_areas', r.d.area_id)
+        : linked(r.d, 'payment_id') ? r.pids == pidsAt(org, 'contract_payments', r.d.payment_id)
+        : linked(r.d, 'meter_id') ? r.pids == pidsAt(org, 'meters', r.d.meter_id)
+        : r.pids == ['*']);
+    }
+    // رموز الرؤية لا تخرج عن عقار الصف (#18): «قسم|عقاره» أو «قسم|@» · والمستأجر المشترك بعقاراته
+    function gOk(g, p) {
+      return g.hasOnly([${allToks.join(', ')}]);
+    }
+    function gBound(r) {
+      return r.t in ${both(['tenants'])} || (r.pids.size() == 1 && gOk(r.g, r.pids[0]));
+    }
+    // المبالغ لا يكتبها ولا يغيّرها عضوٌ لا يقرؤها (#17): يقرأ الإسقاط، فقيمتها عنده افتراضها · keys: ما يكتبه في الإنشاء
+    // وما تغيّر في التعديل · ولا يكتب مبلغاً لا يقرؤه إلا قسمٌ غير مالي، أو المحصور في رصيد المستأجر المشترك ·
+    // وقارئ المبالغ من رموزه (قسم|* للمحصور، قسم|@ لذي كل العقارات)
+    function moneyReaderOf(org, r) {
+      return ${readerBranches.length ? readerBranches.join('\n        : ') + '\n        : false' : 'false'};
+    }
+    function moneyKeysOk(org, r, keys) {
+      return (!(r.op in ${q(nonMoneyOps)}) || !keys.hasAny(${q(nonMoneyCols)}) || moneyReaderOf(org, r))
+${crossMoney.map((x) => `        && (r.t != '${x.t}' || mem(org).all == true || !keys.hasAny(${q(x.cols)}))`).join('\n')};
+    }
+    function moneyKept(org, before, after) {
+      return after.del == true
+        // قسمٌ مالي في غير الصف المشترك: يقرأ ما يكتبه، فلا حاجة إلى حساب الفرق
+        || (!(after.op in ${q(nonMoneyOps)}) && !(after.t in ${q(crossMoney.map((x) => x.t))}))
+        || moneyKeysOk(org, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys());
+    }`;
+}
+
+export function generateOrgRules(schema: RulesSchema = { money: {} }): string {
   return `${BEGIN}
     // صلاحيات الأقسام: المالك (uid == org) يقرأ ويكتب كل شيء بقيود الصف نفسها، والعضو بمستند عضويته
     function orgOwner(org) {
@@ -91,6 +192,7 @@ export function generateOrgRules(): string {
         || (after.pids == before.pids && after.pids.hasAny(mem(org).props.concat(['*'])));
     }
 ${writesFns()}
+${guardFns(schema)}
 
     function validOrgRow(rowId) {
       let r = request.resource.data;
@@ -108,9 +210,12 @@ ${writesFns()}
     function memberCreates(org) {
       let r = request.resource.data;
       return isMember(org) && r.op is string && (
-        (lvl(org, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(org, r) && (!('by' in r) || r.by == request.auth.uid))
+        // الحراسات أولاً: المزوَّر يُرفض بها رخيصاً قبل أن يبلغ الطلب حدّ ألف تعبير (المراجعة #17 و#18 و#20 و#21) ·
+        // ورموز رؤية الصف الجديد لا تُفحص: كلفتها فوق الحد، وصفوف العضو الجديدة من كتابته هو
+        (keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(org, null, r)
+          && lvl(org, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(org, r) && (!('by' in r) || r.by == request.auth.uid))
         // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
-        || (r.op == '${SELF_OP}' && r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*']));
+        || (r.op == '${SELF_OP}' && r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)));
     }
 
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
@@ -121,13 +226,20 @@ ${writesFns()}
       // يُحسبان مرة · سلسلة الجداول والمستوى تُعدّ في حدّ الألف تعبير للطلب
       let owns = op is string && opOwns(op, baseT(after.t));
       let level = op is string ? lvl(org, op) : 0;
-      return isMember(org) && op is string
+      // عقارات الصف ورؤيته كما هي، فلا حاجة إلى فحصهما · ويغيّرهما ذو كل العقارات بحقيقة الصف، والرؤية في المرفق
+      // (جهته تحدد قرّاءه) · والمبالغ لقارئها (المراجعة #17 و#18) · الحراسات أولاً، فللطلب حدّ ألف تعبير
+      return (after.pids == before.pids || (mem(org).all == true && pidsBound(org, after)))
+        && (after.g == before.g || ((mem(org).all == true || baseT(after.t) == 'attachments') && gBound(after)))
+        && keyOk(after) && blobShapeOk(after) && moneyKept(org, before, after)
+        && isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)
         && (
           (owns && level >= 3 && propsOk(org, after))
           || (owns && level >= 2 && isDraft(before)
               && before.get('by', '') == request.auth.uid && propsOk(org, after))
+          // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)
           || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(org, before, after)
+              && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g'])
               && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
         );
     }
@@ -267,8 +379,8 @@ ${END}`;
 }
 
 /** يستبدل الكتلة المولَّدة في نص القواعد · وإن غابت أُدرجت قبل إغلاق documents */
-export function spliceRules(rules: string): string {
-  const gen = generateOrgRules();
+export function spliceRules(rules: string, schema: RulesSchema = { money: {} }): string {
+  const gen = generateOrgRules(schema);
   const a = rules.indexOf(BEGIN);
   const b = rules.indexOf(END);
   if (a >= 0 && b > a) return rules.slice(0, a) + gen + rules.slice(b + END.length);
