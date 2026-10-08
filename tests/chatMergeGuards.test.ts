@@ -12,7 +12,7 @@ import { openNodeDb } from '@/db/nodeAdapter';
 import { migrate } from '@/db/migrations';
 import { chatUnsentCount, openDirect, sendLocal, createGroup } from '@/chat';
 import { markMessageRejected, markThreadRejected, markSent } from '@/chat/store';
-import { permWipeDue, PERM_WIPE_KEY } from '@/services/org';
+import { permWipeDue, notePermWipe, PERM_WIPE_KEY } from '@/services/org';
 import { getSyncState } from '@/sync/engine';
 
 const ROOT = join(__dirname, '..');
@@ -50,6 +50,8 @@ test('ف٢ ف٦ تفريغ الجهاز لتغيّر الصلاحية ينتظر
   const sync = body('src/services/cloud.ts', 'export async function syncNow(');
   expect(sync).toMatch(/const due = permWipeDue\(db, r, moved, queued \+ chatUnsentCount\(db\)\);/);
   expect(sync).toMatch(/setSyncState\(db, PERM_WIPE_KEY, null\)/);
+  // نقل الوحدة يُسجَّل قبل طلب العضوية (التحقق الثالث)
+  expect(sync).toMatch(/const moved = await checkUnitMoves\([^\n]*\);\s*\/\/[^\n]*\n\s*if \(moved === 'lost'\) notePermWipe\(db, 'moved'\);\s*const r0 = await refreshMembership/);
   const wipe = body('src/services/cloud.ts', 'async function wipeLocal(');
   expect(wipe).toMatch(/return holdChat\(async \(\) => \{/);
   const chatNow = body('src/services/cloud.ts', 'export async function chatSyncNow(');
@@ -93,4 +95,16 @@ test('ف٢ (التحقق الثاني) التفريغ المؤجَّل لا يض
   migrate(d3);
   expect(permWipeDue(d3, 'same', 'none', 0)).toBeNull();
   db.close(); d2.close(); d3.close();
+});
+
+test('التحقق الثالث: نقل وحدة سُجّل ثم فشل طلب العضوية · فالدورة التالية «كما هي» بلا نقل جديد تفرّغ', () => {
+  const db = openNodeDb(':memory:');
+  migrate(db);
+  notePermWipe(db, 'moved');
+  // (هنا كان يُرمى استثناء الشبكة فيضيع «lost") · الدورة التالية: لا نقل جديد والعضوية كما هي
+  expect(permWipeDue(db, 'same', 'none', 0)).toBe('moved');
+  // ولا يُنزَّل «moved» بتغيّر صلاحيةٍ بعده
+  notePermWipe(db, 'changed');
+  expect(getSyncState(db, PERM_WIPE_KEY)).toBe('moved');
+  db.close();
 });

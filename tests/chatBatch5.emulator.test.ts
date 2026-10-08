@@ -178,7 +178,14 @@ d('أجوبة المالك 2026-10-08T10:24Z', () => {
     expect(await status(chat(A).setTask(G, 'M1', { title: 'تُلغى', as: B, due: '2026-12-31', done: false }))).toBe(200);
     expect(await status(chat(A).cancelTask(G, 'M1'))).toBe(200);
     expect(await status(chat(A).setTask(G, 'M1', { title: 'معدّلة', as: B, due: '2027-01-01', done: false }))).toBe(403);
-    // ولا إعادة بكتابة الإلغاء وحده · بوقت الخادم كما يكتب التطبيق، فلا يُرفض لغير الإلغاء (التحقق الثاني)
+    const t = (await chat(B).stateSince(G, null)).find((x) => x.k === 'task')!;
+    expect([t.title, t.cx]).toEqual(['تُلغى', true]);
+  });
+
+  test('تحقق الدمج ف١: ولا يعيدها منشئها بكتابة الإلغاء وحده', async () => {
+    expect(await status(chat(A).setTask(G, 'M1', { title: 'تُلغى', as: B, due: '2026-12-31', done: false }))).toBe(200);
+    expect(await status(chat(A).cancelTask(G, 'M1'))).toBe(200);
+    // بوقت الخادم كما يكتب التطبيق، فلا يُرفض لغير الإلغاء (التحقق الثاني)
     const commit = (cx: boolean) => fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents:commit`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(A) },
       body: JSON.stringify({ writes: [{

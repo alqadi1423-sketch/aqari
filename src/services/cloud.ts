@@ -62,7 +62,7 @@ import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
   moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, resolveEpoch, readEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
-  updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, PERM_WIPE_KEY } from './org';
+  updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
 import { throwIfCancelled, CancelledError, type CancelSignal, type ProgressFn } from '../domain/progress';
@@ -282,6 +282,8 @@ export async function syncNow(): Promise<void> {
       // العضوية في الخادم: أُزيلت فيُفرَّغ الجهاز · تغيّرت فيُعاد السحب من أوله بصلاحيته الجديدة،
       // وكذلك إن نُقلت وحدةٌ من عقاراته إلى عقار ليس له
       const moved = await checkUnitMoves(db, remoteOf(db, uid, idToken));
+      // مؤشر النقل تقدّم · فيُسجَّل التفريغ الآن قبل طلب العضوية، فلا يضيع بفشله
+      if (moved === 'lost') notePermWipe(db, 'moved');
       const r0 = await refreshMembership(db, remoteOf(db, uid, idToken));
       const r = r0 === 'same' && moved === 'lost' ? 'changed' : r0;
       // لا تفريغ وفي الطابور ما لم يُرفع (قاعدة المالك ٢٠٢٦-١٠-٠٥): المُزال يُسأل، وتغيّر الصلاحية ينتظر الرفع
