@@ -33,7 +33,10 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
     // توثيق العقد ينشئ مستأجره ونموذج استلامه، وتحويل الحجز يسدّد أقساطه بدفعات من العربون (المراجعة ٤.٤)،
     // وإلغاؤه بخصم يتجاوز التأمين ينشئ مطالبته، وإلغاؤه بتسوية يكتب صفّ التسوية (مراجعة التثبيت #15)
     create: [...POSTS, 'tenants', 'handovers', 'claims', 'bank_tx', 'contract_payments', 'deposit_settlements'],
-    touch: { ...LINKS_REVERSAL, reservations: ['status', 'converted_contract_id', 'deposit_outcome', 'deposit_settled_date'] },
+    // والإلغاء بتسويةٍ بعد تسوية سابقة يعدّل صفّها ويحذف مطالبة زيادتها المفتوحة (مسار التسوية الواحد)
+    touch: { ...LINKS_REVERSAL, reservations: ['status', 'converted_contract_id', 'deposit_outcome', 'deposit_settled_date'],
+      deposit_settlements: ['date', 'deduction_halalas', 'deduction_reason', 'refund_halalas', 'notes', 'deduct_destination'],
+      claims: ['deleted_at'] },
   },
   tenants: {
     own: ['tenants'],
@@ -46,7 +49,8 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
     create: [...POSTS, 'bank_tx'],
     touch: { ...LINKS_REVERSAL, contract_installments: ['paid_halalas', 'status'], tenants: ['credit_halalas'] },
   },
-  deposits: { own: ['deposit_settlements'], create: [...POSTS, 'bank_tx', 'claims'], touch: LINKS_REVERSAL },
+  // وتعديل التسوية يحذف مطالبة زيادتها المفتوحة السابقة ويُنشئ الجديدة (قرار المالك على #27)
+  deposits: { own: ['deposit_settlements'], create: [...POSTS, 'bank_tx', 'claims'], touch: { ...LINKS_REVERSAL, claims: ['deleted_at'] } },
   reservations: { own: ['reservations', 'key_money_deals'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   claims: { own: ['claims'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   invoices: { own: ['invoices', 'invoice_lines'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },

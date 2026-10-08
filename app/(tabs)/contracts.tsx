@@ -40,7 +40,7 @@ import { C } from '../../src/ui/theme';
 import { useContractForm, ContractFormFields, emptyContractForm, formToInput } from '../../src/ui/contractForm';
 import {
   saveDraft, deleteDraft, confirmContract, cancelContract, renewContract, renewWarnings,
-  saveDepositSettlement, saveTenantRating, tenantRatingOverall, RuleViolation,
+  saveDepositSettlement, saveTenantRating, tenantRatingOverall, RuleViolation, depositCarried,
 } from '../../src/domain/contracts/service';
 import {
   contractDisplayId, contractDisplayStatus, contractStatusKind, contractStatusLabel, refreshContractStatuses,
@@ -797,7 +797,7 @@ function ContractDetailSheet({
         <>
           <Row style={{ justifyContent: 'space-between', marginTop: 12, marginBottom: 8 }}>
             <T size={13.5} bold color={C.ink}>التصرف بالتأمين</T>
-            {(settlement ? depPerm.manage : depPerm.add)
+            {(settlement ? depPerm.manage : depPerm.add) && !depositCarried(db, c.id)
               ? <BtnGhost small icon="edit" title={settlement ? 'تعديل التسوية' : 'تسجيل التسوية'} onPress={onOpenSettlement} />
               : null}
           </Row>
@@ -1256,6 +1256,7 @@ function RatingSheet({ contractId, onClose, onDone }: { contractId: string; onCl
 /* ═══════════ التصرف بالتأمين ═══════════ */
 function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg: string) => void }) {
   const { db } = useApp();
+  const { t } = useLang();
   const toast = useToast();
   const c = db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId])!;
   const existing = db.get<{ date: string; deduction_halalas: number; deduction_reason: string; refund_halalas: number; notes: string; deduct_destination: string }>(
@@ -1272,6 +1273,10 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
     (existing?.deduct_destination as 'محفظة إيجار' | 'حسابنا') || 'محفظة إيجار'
   );
   const platformHeld = (c as unknown as { deposit_holder?: string }).deposit_holder === 'منصة إيجار';
+  const otherHeld = (c as unknown as { deposit_holder?: string }).deposit_holder === 'طرف آخر';
+  // «طرف آخر»: وصل المخصوم للمكتب؟ · من قيده إن سُجّل قبضاً سابقاً (قرار المالك على #26)
+  const [received, setReceived] = useState<boolean>(
+    !!db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'deposit_deduct' AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL`, [contractId]));
   const diff = toHalalas(deduction) + toHalalas(refund) - Number(c.deposit_halalas);
   // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق (قرار المالك ٢٠٢٦-١٠-٠٥)
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
@@ -1285,6 +1290,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
         date, deductionHalalas: toHalalas(deduction), deductionReason: dedReason,
         refundHalalas: toHalalas(refund), notes,
         deductDestination: platformHeld ? dest : undefined,
+        deductReceived: otherHeld ? received : undefined,
       });
       onClose();
       onDone('تم حفظ تفاصيل التصرف بالتأمين');
@@ -1294,7 +1300,8 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
     <Sheet visible onClose={onClose} title="تفاصيل التصرف بالتأمين" tall
       footer={
         <>
-          {cashOk ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
+          {/* النقص عن التأمين لا يُحفظ حتى يُوزَّع (قرار المالك على #27) · فلا يظهر الزر ويظهر سببه */}
+          {cashOk && diff >= 0 ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
         </>
       }>
       <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
@@ -1314,12 +1321,19 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
           ]}
           onPick={setDest} />
       ) : null}
+      {otherHeld && toHalalas(deduction) > 0 ? (
+        <SelectField label={t('deposit.received')} value={received ? 'y' : 'n'}
+          options={[{ value: 'y', label: t('deposit.received') }, { value: 'n', label: t('deposit.receivedNo') }]}
+          onPick={(v) => setReceived(v === 'y')} />
+      ) : null}
       <Field label="المبلغ المسترَد للمستأجر" value={refund} onChange={setRefund} keyboard="numeric" ltr />
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 11, marginBottom: 10 }}>
         <Row style={{ justifyContent: 'space-between' }}>
           <T size={12.5} bold>الفرق (خصم + مسترَد مقابل الأصلي):</T>
           <Num size={12.5} bold color={diff === 0 ? C.emerald : C.rose}>{fmt(diff)}</Num>
         </Row>
+        {diff < 0 ? <T size={11.5} color={C.rose} style={{ marginTop: 4 }}>{t('deposit.mustDistribute', { left: fmt(-diff) })}</T> : null}
+        {diff > 0 ? <T size={11.5} color={C.muted} style={{ marginTop: 4 }}>{t('deposit.excessNote')}</T> : null}
       </View>
       <Field label="ملاحظات" value={notes} onChange={setNotes} />
     </Sheet>

@@ -384,6 +384,8 @@ export interface CancelInput {
   deductionHalalas: number;
   refundHalalas: number;
   deductionReason: string;
+  /** التأمين لدى «طرف آخر»: وصل المخصوم إلى المكتب فيُسجَّل قبضاً (قرار المالك على #26) */
+  deductReceived?: boolean;
 }
 
 /** القاعدة ١١: إلغاء العقد · خصم من التأمين، والفائض مطالبة تلقائية */
@@ -401,41 +403,14 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
     let excessClaimCreated = false;
     let deduction = 0, refund = 0;
     if (input.settle) {
-      deduction = input.deductionHalalas || 0;
-      refund = input.refundHalalas || 0;
-      const deposit = Number(c.deposit_halalas) || 0;
-      if (deduction > deposit) {
-        // «إن تجاوز الخصمُ التأمينَ تُنشأ مطالبة تلقائية بالفرق»
-        const excess = deduction - deposit;
-        const claimId = uid();
-        db.run(
-          `INSERT INTO claims (id, contract_id, amount_halalas, reason, date, status, source, created_at)
-           VALUES (?,?,?,?,?,'مفتوحة','تسوية تأمين',?)`,
-          [claimId, contractId, excess,
-           input.deductionReason || 'فرق تسوية التأمين عند إلغاء العقد', date, new Date().toISOString()]
-        );
-        postClaim(db, { id: claimId, amount: excess, reason: input.deductionReason || 'فرق تسوية التأمين عند إلغاء العقد', date });
-        excessClaimCreated = true;
-        refund = 0;
-        deduction = deposit; // يُخصم التأمين كاملاً والفائض صار مطالبة
-      }
-      // ردّ التأمين نقداً حين يقبضه المكتب · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
-      if (depositHolderOf(c) === 'المكتب') requireCash(db, refund, 'ردّ التأمين');
-      postDepositDeduct(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, date);
-      // التأمين لدى المنصة: المخصوم يُقفل من 1260 ويستقر في محفظة إيجار، كالتسوية بعد الانتهاء (مراجعة التثبيت #25)
-      if ((c as unknown as { deposit_holder?: string }).deposit_holder === 'منصة إيجار' && deduction > 0) { // i18n-exempt: جهة مخزّنة
-        postDepositDeductMove(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, date, 'محفظة إيجار'); // i18n-exempt: وجهة مخزّنة
-      }
-      postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder: (c as unknown as { deposit_holder?: string }).deposit_holder }, refund, date);
-      // صف التسوية: فتسجيلها بعد الإلغاء تعديلٌ يعكس هذه القيود لا ترحيلٌ ثانٍ (مراجعة التثبيت #15)
-      db.run(
-        `INSERT INTO deposit_settlements (contract_id, date, deduction_halalas, deduction_reason, refund_halalas, notes, deduct_destination)
-         VALUES (?,?,?,?,?,'',?)
-         ON CONFLICT(contract_id) DO UPDATE SET date = excluded.date, deduction_halalas = excluded.deduction_halalas,
-           deduction_reason = excluded.deduction_reason, refund_halalas = excluded.refund_halalas, deduct_destination = excluded.deduct_destination`,
-        [contractId, date, deduction, (input.deductionReason || '').trim(), refund,
-         (c as unknown as { deposit_holder?: string }).deposit_holder === 'منصة إيجار' ? 'محفظة إيجار' : ''] // i18n-exempt: قيم مخزّنة
-      );
+      // مسار التسوية الواحد (مراجعة التثبيت #15 و#25 و#26 و#27): يعكس تسويةً سابقة إن وُجدت (التحقق المستقل: التسوية
+      // ثم الإلغاء بتسوية كانا يرحّلان مرتين)، والزيادة على التأمين مطالبة تلقائية، والنقص لا يُحفظ
+      const r = applyDepositSettlement(db, c, contractId, {
+        date, deductionHalalas: input.deductionHalalas || 0, deductionReason: input.deductionReason || '',
+        refundHalalas: input.refundHalalas || 0, notes: '', deductReceived: input.deductReceived,
+      }, 'فرق تسوية التأمين عند إلغاء العقد'); // i18n-exempt: سبب مطالبة مخزَّن
+      excessClaimCreated = r.excessClaimCreated;
+      deduction = r.deduction; refund = r.refund;
     }
     if (input.installmentsFate === 'cancel') {
       // ما غطّاه المسدَّدُ والخصمُ لا يُلغى · الخصم يُطرح هنا كما في كل موضع يبني حالة قسط
@@ -687,6 +662,84 @@ export interface DepositSettlementInput {
   notes: string;
   /** وجهة المخصوم حين يكون التأمين لدى المنصة: يبقى في محفظة إيجار أو يُحوَّل لحسابنا */
   deductDestination?: 'محفظة إيجار' | 'حسابنا';
+  /** التأمين لدى «طرف آخر»: وصل المخصوم إلى المكتب فيُسجَّل قبضاً (قرار المالك على #26) */
+  deductReceived?: boolean;
+}
+
+/** رُحِّل تأمين العقد إلى عقده المجدَّد · فلا تسوية له (مراجعة التثبيت #28) */
+export function depositCarried(db: DB, contractId: string): boolean {
+  return !!db.get(
+    `SELECT 1 FROM contracts n JOIN journal_entries e ON e.src_type = 'deposit_carry' AND e.src_id = n.id
+     WHERE n.renewed_from = ? AND n.deleted_at IS NULL AND e.reversed_by IS NULL LIMIT 1`, [contractId]);
+}
+
+/** المطالبة التلقائية لزيادة التسوية على التأمين · مصدرها */
+const SETTLEMENT_CLAIM = 'تسوية تأمين'; // i18n-exempt: مصدر مخزَّن
+
+/**
+ * مسار التسوية الواحد للتسوية بعد الانتهاء وللإلغاء بتسوية:
+ *  - قرار المالك على #27: «تسوية لا تساوي التأمين: الزيادة مطالبة تلقائية، والنقص لا يُحفظ حتى يُوزَّع.»
+ *  - قرار المالك على #26: «الخصم من تأمين «طرف آخر»: لا قيد عند الخصم، ويُسجَّل قبضاً إن وصل المال للمكتب.»
+ *  - تسويةٌ سابقة تُعكس قيودها ومطالبتها المفتوحة قبل الجديدة، فلا يُرحَّل شيء مرتين (#15)
+ *  - والمخصوم من تأمينٍ لدى المنصة يُقفل من 1260 (#25)
+ */
+function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, input: DepositSettlementInput, claimReason: string):
+  { excessClaimCreated: boolean; deduction: number; refund: number; prev: Record<string, unknown> | undefined } {
+  const holder = depositHolderOf(c);
+  const deposit = Number(c.deposit_halalas) || 0;
+  let deduction = Math.max(0, input.deductionHalalas || 0);
+  const refund = Math.max(0, input.refundHalalas || 0);
+  if (refund > deposit) throw new RuleViolation(t('deposit.refundOver'));
+  const sum = deduction + refund;
+  if (sum < deposit) throw new RuleViolation(t('deposit.mustDistribute', { left: fmt(deposit - sum) }));
+  const excess = sum - deposit;
+  deduction -= excess;
+  const prev = db.get<Record<string, unknown>>(`SELECT date, deduction_halalas, refund_halalas FROM deposit_settlements WHERE contract_id = ?`, [contractId]);
+  // مطالبة التسوية السابقة: المحصَّلة لا تتغير، والمفتوحة تُعكس وتُحذف وتُنشأ الجديدة إن بقيت زيادة
+  const prevClaim = db.get<{ id: string; status: string; amount_halalas: number }>(
+    `SELECT id, status, amount_halalas FROM claims WHERE contract_id = ? AND source = ? AND deleted_at IS NULL`, [contractId, SETTLEMENT_CLAIM]);
+  if (prevClaim && prevClaim.status !== 'مفتوحة' && Number(prevClaim.amount_halalas) !== excess) { // i18n-exempt: حالة مخزّنة
+    throw new RuleViolation(t('deposit.claimCollected'));
+  }
+  // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق يُعكس (قرار المالك ٢٠٢٦-١٠-٠٥)
+  if (holder === 'المكتب') requireCash(db, refund - Number(prev?.refund_halalas ?? 0), 'ردّ التأمين'); // i18n-exempt: جهة مخزّنة
+  if (prev) {
+    reverseEntryBySource(db, 'deposit_deduct', contractId, 'تعديل تسوية التأمين · عكس الخصم السابق');
+    reverseEntryBySource(db, 'deposit_refund', contractId, 'تعديل تسوية التأمين · عكس الرد السابق');
+    reverseEntryBySource(db, 'deposit_deduct_move', contractId, 'تعديل تسوية التأمين · عكس استقرار المخصوم');
+  }
+  let excessClaimCreated = false;
+  if (prevClaim && prevClaim.status === 'مفتوحة' && Number(prevClaim.amount_halalas) !== excess) { // i18n-exempt: حالة مخزّنة
+    reverseEntryBySource(db, 'claim', prevClaim.id, 'تعديل تسوية التأمين · عكس مطالبة الزيادة السابقة');
+    db.run(`UPDATE claims SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), prevClaim.id]);
+  }
+  if (excess > 0 && !(prevClaim && Number(prevClaim.amount_halalas) === excess)) {
+    const claimId = uid();
+    db.run(
+      `INSERT INTO claims (id, contract_id, amount_halalas, reason, date, status, source, created_at)
+       VALUES (?,?,?,?,?,'مفتوحة',?,?)`,
+      [claimId, contractId, excess, input.deductionReason.trim() || claimReason, input.date, SETTLEMENT_CLAIM, new Date().toISOString()]
+    );
+    postClaim(db, { id: claimId, amount: excess, reason: input.deductionReason.trim() || claimReason, date: input.date });
+    excessClaimCreated = true;
+  }
+  postDepositDeduct(db, { id: contractId, contract_no: c.contract_no || '', holder, received: !!input.deductReceived }, deduction, input.date);
+  // التأمين لدى المنصة: المخصوم يُقفل من 1260 ويستقر في محفظة إيجار أو حسابنا
+  if (holder === 'منصة إيجار' && deduction > 0) { // i18n-exempt: جهة مخزّنة
+    postDepositDeductMove(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, input.date,
+      input.deductDestination ?? 'محفظة إيجار'); // i18n-exempt: وجهة مخزّنة
+  }
+  postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder }, refund, input.date);
+  db.run(
+    `INSERT INTO deposit_settlements (contract_id, date, deduction_halalas, deduction_reason, refund_halalas, notes, deduct_destination)
+     VALUES (?,?,?,?,?,?,?)
+     ON CONFLICT(contract_id) DO UPDATE SET date = excluded.date, deduction_halalas = excluded.deduction_halalas,
+       deduction_reason = excluded.deduction_reason, refund_halalas = excluded.refund_halalas, notes = excluded.notes,
+       deduct_destination = excluded.deduct_destination`,
+    [contractId, input.date, deduction, input.deductionReason.trim(), refund, input.notes.trim(),
+     holder === 'منصة إيجار' ? (input.deductDestination ?? 'محفظة إيجار') : ''] // i18n-exempt: قيم مخزّنة
+  );
+  return { excessClaimCreated, deduction, refund, prev };
 }
 
 /** القاعدة ٨: التصرف بالتأمين · بعد انتهاء العقد فقط. التعديل يعكس الترحيل السابق ويعيد الترحيل. */
@@ -694,45 +747,12 @@ export function saveDepositSettlement(db: DB, contractId: string, input: Deposit
   const c = getContract(db, contractId);
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
   if (!contractEnded(c)) throw new RuleViolation('التصرف بالتأمين يتاح بعد انتهاء العقد');
+  if (depositCarried(db, contractId)) throw new RuleViolation(t('deposit.carried'));
   db.transaction(() => {
-    const existing = db.get(`SELECT contract_id FROM deposit_settlements WHERE contract_id = ?`, [contractId]);
-    const prevVals = existing
-      ? db.get(`SELECT date, deduction_halalas, refund_halalas FROM deposit_settlements WHERE contract_id = ?`, [contractId])
-      : undefined;
-    // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق يُعكس (قرار المالك ٢٠٢٦-١٠-٠٥)
-    if (depositHolderOf(c) === 'المكتب') {
-      const prev = existing ? Number((prevVals as { refund_halalas?: number } | undefined)?.refund_halalas ?? 0) : 0;
-      requireCash(db, input.refundHalalas - prev, 'ردّ التأمين');
-    }
-    if (existing) {
-      reverseEntryBySource(db, 'deposit_deduct', contractId, 'تعديل تسوية التأمين · عكس الخصم السابق');
-      reverseEntryBySource(db, 'deposit_refund', contractId, 'تعديل تسوية التأمين · عكس الرد السابق');
-      reverseEntryBySource(db, 'deposit_deduct_move', contractId, 'تعديل تسوية التأمين · عكس استقرار المخصوم');
-      db.run(
-        `UPDATE deposit_settlements SET date=?, deduction_halalas=?, deduction_reason=?, refund_halalas=?, notes=?, deduct_destination=?
-         WHERE contract_id = ?`,
-        [input.date, input.deductionHalalas, input.deductionReason.trim(), input.refundHalalas,
-         input.notes.trim(), input.deductDestination ?? '', contractId]
-      );
-    } else {
-      db.run(
-        `INSERT INTO deposit_settlements (contract_id, date, deduction_halalas, deduction_reason, refund_halalas, notes, deduct_destination)
-         VALUES (?,?,?,?,?,?,?)`,
-        [contractId, input.date, input.deductionHalalas, input.deductionReason.trim(),
-         input.refundHalalas, input.notes.trim(), input.deductDestination ?? '']
-      );
-    }
-    postDepositDeduct(db, { id: contractId, contract_no: c.contract_no || '' }, input.deductionHalalas, input.date);
-    // التأمين لدى المنصة: المخصوم يُقفل من 1260 ويستقر في محفظة إيجار أو حسابنا
-    if ((c as unknown as { deposit_holder?: string }).deposit_holder === 'منصة إيجار' && input.deductionHalalas > 0) {
-      postDepositDeductMove(db, { id: contractId, contract_no: c.contract_no || '' }, input.deductionHalalas, input.date,
-        input.deductDestination ?? 'محفظة إيجار');
-    }
-    postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder: (c as unknown as { deposit_holder?: string }).deposit_holder }, input.refundHalalas, input.date);
+    const r = applyDepositSettlement(db, c, contractId, input, 'فرق تسوية التأمين'); // i18n-exempt: سبب مطالبة مخزَّن
     // السجل يوثّق: من ماذا إلى ماذا · والقيود الأولى باقية معكوسة لا ممحوة
-    logAudit(db, 'العقود', 'update', existing ? 'تعديل تسوية تأمين' : 'تسوية تأمين', c.tenant_name,
-      existing ? prevVals : undefined,
-      { deduction_halalas: input.deductionHalalas, refund_halalas: input.refundHalalas, date: input.date });
+    logAudit(db, 'العقود', 'update', r.prev ? 'تعديل تسوية تأمين' : 'تسوية تأمين', c.tenant_name,
+      r.prev, { deduction_halalas: r.deduction, refund_halalas: r.refund, date: input.date });
   });
 }
 

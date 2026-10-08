@@ -216,6 +216,8 @@ service cloud.firestore {
         || (op == 'maintenance' && t == 'units' && keys.hasOnly(['under_maintenance']))
         || (t == 'journal_entries' && op in ['contracts', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'banks', 'assets'] && keys.hasOnly(['reversed_by']))
         || (op == 'contracts' && t == 'reservations' && keys.hasOnly(['status', 'converted_contract_id', 'deposit_outcome', 'deposit_settled_date']))
+        || (op == 'contracts' && t == 'deposit_settlements' && keys.hasOnly(['date', 'deduction_halalas', 'deduction_reason', 'refund_halalas', 'notes', 'deduct_destination']))
+        || (t == 'claims' && op in ['contracts', 'deposits'] && keys.hasOnly(['deleted_at']))
         || (op == 'tenants' && t == 'contracts' && keys.hasOnly(['tenant_id', 'tenant_name']))
         || (op == 'collect' && t == 'contract_installments' && keys.hasOnly(['paid_halalas', 'status']))
         || (op == 'collect' && t == 'tenants' && keys.hasOnly(['credit_halalas']))
@@ -275,6 +277,14 @@ service cloud.firestore {
     }
     function gBound(r) {
       return r.t in ['tenants', 'tenants~pub'] || (r.pids.size() == 1 && gOk(r.g, r.pids[0]));
+    }
+    // المستأجر المشترك (التحقق المستقل، R1): رؤية مستنده الكامل ثابتة (رموز «قسم|@» لقرّائه الماليين)، ورؤية إسقاطه
+    // تزيد برموز عقاره الجديد وحده · فلا يقرأ المحصور رصيده بتغيير رؤيته، ولا يُخفيه عن عقار آخر
+    function tenantGOk(before, after) {
+      let added = after.pids.removeAll(before.pids);
+      return after.t == 'tenants' ? after.g == before.g
+        : added.size() == 0 ? after.g.removeAll(before.g).size() == 0
+        : added.size() == 1 && after.g.removeAll(before.g).hasOnly(['tenants|' + added[0], 'contracts|' + added[0], 'collect|' + added[0], 'deposits|' + added[0], 'reservations|' + added[0], 'claims|' + added[0], 'handover|' + added[0], 'invoices|' + added[0]]);
     }
     // المبالغ لا يكتبها ولا يغيّرها عضوٌ لا يقرؤها (#17): يقرأ الإسقاط، فقيمتها عنده افتراضها · keys: ما يكتبه في الإنشاء
     // وما تغيّر في التعديل · ولا يكتب مبلغاً لا يقرؤه إلا قسمٌ غير مالي، أو المحصور في رصيد المستأجر المشترك ·
@@ -344,9 +354,12 @@ service cloud.firestore {
               // والمستأجر المشترك تتبع عقاراته عقوده: كان في متناول العضو، وعقاراته الجديدة من عقاراته السابقة وعقارات العضو
               : ((m.all == true && pidsBound(org, after))
                   || (after.t in ['tenants', 'tenants~pub'] && (m.all == true
-                      || (before.pids.hasAny(m.props.concat(['*'])) && after.pids.hasOnly(before.pids.concat(m.props).concat(['*'])))))))
+                      || (before.pids.hasAny(m.props.concat(['*'])) && after.pids.hasOnly(before.pids.concat(m.props).concat(['*']))
+                          // ولا يُسقط عقاراً ليس له (العام '*' يزول بأول عقد)
+                          && after.pids.hasAll(before.pids.removeAll(m.props.concat(['*']))))))))
             // ورؤيته كما هي، أو تبعت عقاراته إذ تغيّرت، أو رؤية المرفق (جهته تحدد قرّاءه) في حدود عقاره
-            && (after.g == before.g || after.pids != before.pids || (after.t == 'attachments' && gBound(after))))
+            && (after.t in ['tenants', 'tenants~pub'] ? tenantGOk(before, after)
+                : (after.g == before.g || after.pids != before.pids || (after.t == 'attachments' && gBound(after)))))
         && keyOk(after) && blobShapeOk(after) && moneyKept(m, before, after)
         && isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)

@@ -137,6 +137,14 @@ function guardFns(schema: RulesSchema): string {
     function gBound(r) {
       return r.t in ${both(['tenants'])} || (r.pids.size() == 1 && gOk(r.g, r.pids[0]));
     }
+    // المستأجر المشترك (التحقق المستقل، R1): رؤية مستنده الكامل ثابتة (رموز «قسم|@» لقرّائه الماليين)، ورؤية إسقاطه
+    // تزيد برموز عقاره الجديد وحده · فلا يقرأ المحصور رصيده بتغيير رؤيته، ولا يُخفيه عن عقار آخر
+    function tenantGOk(before, after) {
+      let added = after.pids.removeAll(before.pids);
+      return after.t == 'tenants' ? after.g == before.g
+        : added.size() == 0 ? after.g.removeAll(before.g).size() == 0
+        : added.size() == 1 && after.g.removeAll(before.g).hasOnly([${readSectionsOf('tenants', null).map((x) => `'${x}|' + added[0]`).join(', ')}]);
+    }
     // المبالغ لا يكتبها ولا يغيّرها عضوٌ لا يقرؤها (#17): يقرأ الإسقاط، فقيمتها عنده افتراضها · keys: ما يكتبه في الإنشاء
     // وما تغيّر في التعديل · ولا يكتب مبلغاً لا يقرؤه إلا قسمٌ غير مالي، أو المحصور في رصيد المستأجر المشترك ·
     // وقارئ المبالغ من رموزه (قسم|* للمحصور، قسم|@ لذي كل العقارات)
@@ -250,9 +258,12 @@ ${guardFns(schema)}
               // والمستأجر المشترك تتبع عقاراته عقوده: كان في متناول العضو، وعقاراته الجديدة من عقاراته السابقة وعقارات العضو
               : ((m.all == true && pidsBound(org, after))
                   || (after.t in ['tenants', 'tenants~pub'] && (m.all == true
-                      || (before.pids.hasAny(m.props.concat(['*'])) && after.pids.hasOnly(before.pids.concat(m.props).concat(['*'])))))))
+                      || (before.pids.hasAny(m.props.concat(['*'])) && after.pids.hasOnly(before.pids.concat(m.props).concat(['*']))
+                          // ولا يُسقط عقاراً ليس له (العام '*' يزول بأول عقد)
+                          && after.pids.hasAll(before.pids.removeAll(m.props.concat(['*']))))))))
             // ورؤيته كما هي، أو تبعت عقاراته إذ تغيّرت، أو رؤية المرفق (جهته تحدد قرّاءه) في حدود عقاره
-            && (after.g == before.g || after.pids != before.pids || (after.t == 'attachments' && gBound(after))))
+            && (after.t in ['tenants', 'tenants~pub'] ? tenantGOk(before, after)
+                : (after.g == before.g || after.pids != before.pids || (after.t == 'attachments' && gBound(after)))))
         && keyOk(after) && blobShapeOk(after) && moneyKept(m, before, after)
         && isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)

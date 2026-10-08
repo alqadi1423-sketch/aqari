@@ -504,7 +504,8 @@
     "installmentUpcoming": "Upcoming rent installment",
     "installmentDiscount": "Installment discount",
     "claimCollected": "Claim collected",
-    "upcomingTotal": "Upcoming installments not yet due"
+    "upcomingTotal": "Upcoming installments not yet due",
+    "installmentPrepaid": "Upcoming installment paid in advance"
   },
   "fin": {
     "unclosedEarnings": "Earnings to date (not closed)",
@@ -516,5 +517,14 @@
   "claims": {
     "collectedLocked": "The claim is collected and posted · only its reason can be edited",
     "collectedNoDelete": "The claim is collected and posted · it cannot be deleted"
+  },
+  "deposit": {
+    "refundOver": "The refund exceeds the deposit itself",
+    "mustDistribute": "Distribute the whole deposit between deduction and refund · {{left}} left",
+    "claimCollected": "The settlement excess claim is collected · its amount cannot change",
+    "carried": "This contract's deposit was carried to its renewal · settle it there",
+    "received": "The deduction reached the office",
+    "receivedNo": "Not received · still with the other party",
+    "excessNote": "The excess over the deposit becomes a claim on the tenant"
   }
 }

@@ -20,7 +20,9 @@ const periodLabel = (from: string | null, to: string) =>
 export type FinStatement = 'income' | 'balance' | 'cash' | 'equity';
 
 /** قيود الأصول التي لا نقد فيها: الإهلاك وإهلاك ما فات وإعادة التصنيف والاستبعاد والنقل وإثبات التكلفة (الهجرة ٢٩) */
-const ASSET_ENTRY_TYPES = ['depreciation', 'asset_dep', 'asset_catchup', 'asset_convert', 'asset_convert_rev', 'asset_dispose', 'asset_sell', 'asset_transfer', 'asset_cost'];
+// وعكسها (_rev) مثلها: عكسُ قيدٍ غير نقدي غير نقدي (التحقق المستقل: عكس إهلاك ما فات ظهر تشغيلياً واستثمارياً)
+const ASSET_ENTRY_TYPES = ['depreciation', 'asset_dep', 'asset_catchup', 'asset_convert', 'asset_dispose', 'asset_sell', 'asset_transfer', 'asset_cost']
+  .flatMap((x) => [x, x + '_rev']);
 const FIXED_ASSET_CODES = ['1400', '1410', '1420', '1430', '1440', '1450', '1460', '1470'];
 /** مجمع الإهلاك (استثماري مع الأصول) · والقروض (تمويلية مع حقوق الملكية) */
 const ACC_ACCUM_DEP = '1490';
@@ -166,9 +168,12 @@ export function financialStatementBlock(db: DB, tab: FinStatement, from: string 
   const dayBefore = (d: string) => addDays(d, -1);
   // أول المدة بأرباح ما قبلها، وبلا بداية: الأرصدة الافتتاحية · وحركة حقوق الملكية غير رأس المال (3200) سطرٌ ظاهر،
   // فآخر المدة = حقوق الملكية في المركز بتاريخها (مراجعة التثبيت #13)
+  // وبلا بداية: افتتاحيات حقوق الملكية والإيراد والمصروف (التحقق المستقل: الافتتاحي على 4300 كان يُسقط من أول المدة)
+  const openingOf = (a: { type: string; opening_halalas: number }) => Number(a.opening_halalas || 0)
+    * (a.type === 'حقوق ملكية' || a.type === 'إيراد' ? 1 : a.type === 'مصروف' ? -1 : 0); // i18n-exempt: أنواع الحسابات المخزّنة
   const eqOpen = from
     ? eqAll.reduce((s2, a) => s2 + balAt(a, dayBefore(from)), 0) + earningsAt(dayBefore(from))
-    : (hasDimFilter(dims) ? 0 : eqAll.reduce((s2, a) => s2 + Number(a.opening_halalas || 0), 0));
+    : (hasDimFilter(dims) ? 0 : accounts.reduce((s2, a) => s2 + openingOf(a), 0));
   const otherMove = eqAll.filter((a) => a.code !== '3100').reduce((s2, a) => s2 + mv(a.code).credit - mv(a.code).debit, 0);
   return {
     heading: 'قائمة التغيّرات في حقوق الملكية',
@@ -188,6 +193,44 @@ export function financialStatementBlock(db: DB, tab: FinStatement, from: string 
 }
 
 
+
+/**
+ * يلبس كتلة القائمة صيغ إكسل حيّة لصفوف مجاميعها وإجمالياتها (المراجع الرمزية
+ * تُحل في officeBuild) والقيم المحسوبة تبقى كاشاً · لا أثر لها في PDF ووورد.
+ */
+export function withLiveFormulas(tab: FinStatement, b: ReportBlock): ReportBlock {
+  const totalsWith = (formulas: Array<string | null>): ReportBlock['totals'] =>
+    b.totals.map(([k, v, big], i): [string, Cell, boolean?] => {
+      const f = formulas[i];
+      return f && typeof v === 'object' ? [k, { ...v, f }, big] : [k, v, big];
+    });
+  if (tab === 'income')
+    return { ...b, totals: totalsWith(['SUM({S0})', 'SUM({S1})', '{T0}-{T1}']) };
+  if (tab === 'balance')
+    return { ...b, totals: totalsWith(['SUM({S0})', 'SUM({S1})+SUM({S2})', '{T0}-{T1}']) };
+  if (tab === 'cash') {
+    // الصفوف متغيرة العدد (رأس المال العامل والتمويلي، مراجعة التثبيت #14) · فالصيغ من مواضعها لا من ترتيب ثابت
+    // (التحقق المستقل: كان الإجمالي في إكسل ٤٠٠٠ والحقيقي ٢٥٠٠) · المراجع بالترتيب من ١
+    const rows = b.sections[0]?.rows ?? [];
+    const at = (label: string) => rows.findIndex((r) => r[0] === label);
+    const op = at('صافي التدفق من الأنشطة التشغيلية');
+    const inv = at('شراء وبيع أصول ثابتة');
+    const fin = at(t('fin.financing'));
+    const unexplained = at(t('fin.unexplained'));
+    const formulaAt = new Map<number, string>();
+    if (op > 0) formulaAt.set(op, `SUM({S0R1}:{S0R${op}})`);
+    if (fin > inv + 1) formulaAt.set(fin, `SUM({S0R${inv + 2}}:{S0R${fin}})`);
+    const sections = b.sections.map((s, si) => si !== 0 ? s : {
+      ...s,
+      rows: s.rows.map((row, ri) => !formulaAt.has(ri) ? row : row.map((c) =>
+        typeof c === 'object' ? { ...c, f: formulaAt.get(ri)! } : c)),
+    });
+    const parts = [op, inv, fin, unexplained].filter((i) => i >= 0).map((i) => `{S0R${i + 1}}`);
+    return { ...b, sections, totals: totalsWith([parts.join('+')]) };
+  }
+  // حقوق الملكية: آخر المدة = مجموع صفوف الحركة (أولها + إضافات - مسحوبات + صافي الربح)
+  return { ...b, totals: totalsWith(['SUM({S0})']) };
+}
 
 export const FIN_TITLES: Record<FinStatement, string> = {
   income: 'قائمة الدخل', balance: 'قائمة المركز المالي',

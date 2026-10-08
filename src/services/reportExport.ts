@@ -429,36 +429,9 @@ export async function exportCostCenterReport(db: DB, from: string | null, to: st
 }
 
 /* القوائم المالية الأربع · المنطق النقي في src/domain/finStatements.ts */
-import { financialStatementBlock, FIN_TITLES, type FinStatement } from '../domain/finStatements';
+import { financialStatementBlock, FIN_TITLES, withLiveFormulas, type FinStatement } from '../domain/finStatements';
 import { t } from '../i18n';
 export type { FinStatement };
-
-/**
- * يلبس كتلة القائمة صيغ إكسل حيّة لصفوف مجاميعها وإجمالياتها (المراجع الرمزية
- * تُحل في officeBuild) والقيم المحسوبة تبقى كاشاً · لا أثر لها في PDF ووورد.
- */
-function withLiveFormulas(tab: FinStatement, b: ReportBlock): ReportBlock {
-  const totalsWith = (formulas: Array<string | null>): ReportBlock['totals'] =>
-    b.totals.map(([k, v, big], i): [string, Cell, boolean?] => {
-      const f = formulas[i];
-      return f && typeof v === 'object' ? [k, { ...v, f }, big] : [k, v, big];
-    });
-  if (tab === 'income')
-    return { ...b, totals: totalsWith(['SUM({S0})', 'SUM({S1})', '{T0}-{T1}']) };
-  if (tab === 'balance')
-    return { ...b, totals: totalsWith(['SUM({S0})', 'SUM({S1})+SUM({S2})', '{T0}-{T1}']) };
-  if (tab === 'cash') {
-    // الصف الرابع (صافي التشغيلي) مجموع الصفوف الثلاثة قبله · والإجمالي = التشغيلي + الأصول الثابتة
-    const sections = b.sections.map((s, si) => si !== 0 ? s : {
-      ...s,
-      rows: s.rows.map((row, ri) => ri !== 3 ? row : row.map((c) =>
-        typeof c === 'object' ? { ...c, f: 'SUM({S0R1}:{S0R3})' } : c)),
-    });
-    return { ...b, sections, totals: totalsWith(['{S0R4}+{S0R5}']) };
-  }
-  // حقوق الملكية: آخر المدة = مجموع صفوف الحركة (أولها + إضافات - مسحوبات + صافي الربح)
-  return { ...b, totals: totalsWith(['SUM({S0})']) };
-}
 
 export async function exportFinancialStatement(db: DB, tab: FinStatement, from: string | null, to: string, kind: ExportKind, dims?: DimFilter | null): Promise<void> {
   const base = financialStatementBlock(db, tab, from, to, dims);

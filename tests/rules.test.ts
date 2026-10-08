@@ -199,7 +199,8 @@ describe('قواعد العمل الثلاث عشرة', () => {
     const active = confirmContract(db, contractInput(u, {
       tenant: 'نشط', start: addDays(T, -30), end: addDays(T, 300),
     }));
-    const settlement = { date: T, deductionHalalas: 0, deductionReason: '', refundHalalas: 100000, notes: '' };
+    // التأمين كاملاً بين الخصم والمسترَد (قرار المالك على #27: «والنقص لا يُحفظ حتى يُوزَّع»)
+    const settlement = { date: T, deductionHalalas: 0, deductionReason: '', refundHalalas: 200000, notes: '' };
     const rating = { onTime: 'ممتاز', paymentCommit: 'ممتاز', contractCommit: 'ممتاز', unitCondition: 'ممتاز', neighborComplaints: 'لا توجد', notes: '' };
     expect(() => saveDepositSettlement(db, active, settlement)).toThrow(/يتاح بعد انتهاء العقد/);
     expect(() => saveTenantRating(db, active, rating)).toThrow(/يتاح بعد انتهاء العقد/);

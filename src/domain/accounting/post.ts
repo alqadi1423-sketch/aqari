@@ -289,8 +289,25 @@ export const postContractDeposit = (
   });
 };
 
-export const postDepositDeduct = (db: DB, c: { id: string; contract_no: string }, deduction: number, date: string) =>
-  deduction > 0
+/**
+ * الخصم من التأمين · ولدى «طرف آخر» (لم يدخل 2400): لا قيد عند الخصم، ويُسجَّل قبضاً إن وصل المال للمكتب
+ * (قرار المالك على مراجعة التثبيت #26)
+ */
+export const postDepositDeduct = (db: DB, c: { id: string; contract_no: string; holder?: string; received?: boolean }, deduction: number, date: string) =>
+  deduction > 0 && (c.holder || 'المكتب') === 'طرف آخر' // i18n-exempt: جهة مخزّنة
+    ? (c.received
+      ? postEntry(db, {
+          date,
+          memo: 'قبض المخصوم من تأمين لدى طرف آخر · عقد ' + c.contract_no, // i18n-exempt: نص قيد مخزَّن
+          lines: [
+            { account: CASH, descr: 'المخصوم من التأمين وصل للمكتب', debit: deduction, credit: 0 }, // i18n-exempt: نص قيد مخزَّن
+            { account: '4300', descr: 'إيراد من خصم التأمين', debit: 0, credit: deduction }, // i18n-exempt: نص قيد مخزَّن
+          ],
+          srcType: 'deposit_deduct',
+          srcId: c.id,
+        })
+      : null)
+    : deduction > 0
     ? postEntry(db, {
         date,
         memo: 'خصم من التأمين · عقد ' + c.contract_no,

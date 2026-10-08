@@ -301,5 +301,24 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     expect(await write(CONTR, doc('tenants', 'VT2', { ...row('tenants', 'VT2'), name: 'اسم مزوّر' }), { pids: ['*'], g: ['tenants|*', 'tenants|@'] }))
       .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
+
+  test('R1 المستأجر المشترك: لا يغيّر المحصور رؤيته فيقرأ رصيده، ولا يُسقط عنه عقاراً ليس له', async () => {
+    db.run(`INSERT INTO tenants (id, name, phone, credit_halalas, notes, created_at) VALUES ('VT3', 'مستأجر مشترك مصطنع', '0500000097', 7777, 'ملاحظة مصطنعة', '2026-01-01T00:00:00.000Z')`);
+    const owner = remoteFor(ORG, null);
+    const base = owner.annotate!(db, doc('tenants', 'VT3', row('tenants', 'VT3')));
+    const mainG = base.g!;
+    const pubG = ['tenants|P1', 'tenants|P2', 'tenants|@', 'contracts|P1', 'contracts|P2', 'contracts|@'];
+    expect((await owner.write([{ ...base, pids: ['P1', 'P2'], companions: undefined }]))[0]).toMatchObject({ ok: true });
+    expect((await owner.write([{ ...base.companions![0], pids: ['P1', 'P2'], g: pubG }]))[0]).toMatchObject({ ok: true });
+    const r = remoteFor(CONTR.uid!, CONTR);
+    const mine = annotate(db, doc('tenants', 'VT3', { ...row('tenants', 'VT3'), phone: '0500000098' }), CONTR).doc;
+    // المستند الكامل برؤية قسمه وعقاره وحده
+    expect((await r.write([{ ...mine, pids: ['P1'], g: ['tenants|P1'] }]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    // والإسقاط بلا عقار ليس له
+    const pub = { ...base.companions![0], u: 'r1', dev: 'dev-v', op: 'tenants', d: { ...base.companions![0].d!, phone: '0500000098' } };
+    expect((await r.write([{ ...pub, pids: ['P1'], g: ['tenants|P1', 'tenants|@', 'contracts|P1', 'contracts|@'] }]))[0])
+      .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect(mainG.length).toBeGreaterThan(0);
+  });
 });
 

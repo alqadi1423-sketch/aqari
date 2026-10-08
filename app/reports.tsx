@@ -183,9 +183,11 @@ export default function Reports() {
     // أول المدة بأرباح ما قبلها، وبلا بداية: الأرصدة الافتتاحية · وحركة حقوق الملكية غير رأس المال (3200) سطرٌ ظاهر،
     // فآخر المدة = حقوق الملكية في المركز بتاريخها (مراجعة التثبيت #13)
     const openMap = from ? allAccountMovements(db, null, prevDayOf(from), dimF) : null;
+    // وبلا بداية: افتتاحيات حقوق الملكية والإيراد والمصروف (كالتصدير)
     const eqOpen = openMap
       ? eq.reduce((s2, a) => s2 + balFrom(openMap, a), 0) + earningsFrom(openMap)
-      : (filtered ? 0 : eq.reduce((s2, a) => s2 + Number(a.opening_halalas || 0), 0));
+      : (filtered ? 0 : eq.reduce((s2, a) => s2 + Number(a.opening_halalas || 0), 0)
+        + rev.reduce((s2, a) => s2 + Number(a.opening_halalas || 0), 0) - exp.reduce((s2, a) => s2 + Number(a.opening_halalas || 0), 0));
     const otherMove = eq.filter((a) => a.code !== '3100').reduce((s2, a) => s2 + mv(a.code).credit - mv(a.code).debit, 0);
     const equity = { open: eqOpen, capIn, capOut, move: otherMove, net, close: eqOpen + capIn - capOut + otherMove + net };
     const prevEquity = prev.from ? {

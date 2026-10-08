@@ -11,17 +11,27 @@ import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
 import { today } from './dates';
 import { t } from '../i18n';
 
+/** الكشف وثيقة عربية كلها كبقية سطورها (التحقق المستقل: لغة الواجهة الإنجليزية كانت تخلطها) */
+const ar = (key: string): string => t(key, { lng: 'ar' });
+
 export function tenantStatementRows(db: DB, contractId: string, asOf: string = today()): StatementRow[] {
   const rows: StatementRow[] = [];
-  for (const i of db.all<{ due_date: string; amount_halalas: number; discount: number }>(
-    `SELECT i.due_date, i.amount_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount FROM contract_installments i
+  for (const i of db.all<{ due_date: string; amount_halalas: number; paid_halalas: number; discount: number }>(
+    `SELECT i.due_date, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount FROM contract_installments i
      WHERE i.contract_id = ? AND i.status != 'ملغية' ORDER BY i.due_date`, [contractId])) {
     const future = i.due_date > asOf;
-    rows.push(future
-      ? { date: i.due_date, descr: t('statement.installmentUpcoming'), debitHalalas: Number(i.amount_halalas), creditHalalas: 0, future: true }
-      : { date: i.due_date, descr: 'قسط إيجار مستحق', debitHalalas: Number(i.amount_halalas), creditHalalas: 0 });
+    const amount = Number(i.amount_halalas);
     const d = Number(i.discount) || 0;
-    if (d > 0) rows.push({ date: i.due_date, descr: t('statement.installmentDiscount'), debitHalalas: 0, creditHalalas: d, ...(future ? { future: true } : {}) });
+    if (!future) {
+      rows.push({ date: i.due_date, descr: 'قسط إيجار مستحق', debitHalalas: amount, creditHalalas: 0 });
+    } else {
+      // القسط القادم: ما سُدّد منه مقدماً (أو خُصم) يقابل دفعته في الرصيد الحالي، والباقي قادم لا يدخل الرصيد
+      // (التحقق المستقل: كان القسط المسدَّد مقدماً يظهر رصيداً دائناً للمستأجر)
+      const settled = Math.min(amount, (Number(i.paid_halalas) || 0) + d);
+      if (settled > 0) rows.push({ date: i.due_date, descr: ar('statement.installmentPrepaid'), debitHalalas: settled, creditHalalas: 0 });
+      if (amount - settled > 0) rows.push({ date: i.due_date, descr: ar('statement.installmentUpcoming'), debitHalalas: amount - settled, creditHalalas: 0, future: true });
+    }
+    if (d > 0) rows.push({ date: i.due_date, descr: ar('statement.installmentDiscount'), debitHalalas: 0, creditHalalas: d });
   }
   for (const p of db.all<{ date: string; period: string; net_halalas: number; method_label: string }>(
     `SELECT date, period, net_halalas, method_label FROM contract_payments
@@ -32,7 +42,7 @@ export function tenantStatementRows(db: DB, contractId: string, asOf: string = t
     `SELECT date, amount_halalas, reason, status, collected_at FROM claims WHERE contract_id = ? AND deleted_at IS NULL ORDER BY date`, [contractId])) {
     rows.push({ date: cl.date, descr: 'مطالبة · ' + (cl.reason || ''), debitHalalas: Number(cl.amount_halalas), creditHalalas: 0 });
     if (cl.status === 'محصَّلة') { // i18n-exempt: قيمة مخزّنة
-      rows.push({ date: cl.collected_at || cl.date, descr: t('statement.claimCollected') + ' · ' + (cl.reason || ''), debitHalalas: 0, creditHalalas: Number(cl.amount_halalas) });
+      rows.push({ date: cl.collected_at || cl.date, descr: ar('statement.claimCollected') + ' · ' + (cl.reason || ''), debitHalalas: 0, creditHalalas: Number(cl.amount_halalas) });
     }
   }
   // القادمة بعد المستحقة دائماً · ثم بالتاريخ

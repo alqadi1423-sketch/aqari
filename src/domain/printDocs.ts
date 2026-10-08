@@ -300,7 +300,7 @@ export function buildStatementDoc(co: CompanyInfo, d: StatementData, issuedAt: s
       <div class="t-row"><span>إجمالي المستحق</span><span class="num">${fmt(totalDue)} ${SAR}</span></div>
       <div class="t-row"><span>إجمالي المسدَّد</span><span class="num">${fmt(totalPaid)} ${SAR}</span></div>
       <div class="t-row tt"><span>${totalDue - totalPaid >= 0 ? 'الرصيد المستحق على المستأجر' : 'الرصيد الدائن للمستأجر'}</span><span class="num">${fmt(Math.abs(totalDue - totalPaid))} ${SAR}</span></div>
-      ${upcoming > 0 ? `<div class="t-row"><span>${t('statement.upcomingTotal')}</span><span class="num">${fmt(upcoming)} ${SAR}</span></div>` : ''}
+      ${upcoming > 0 ? `<div class="t-row"><span>${t('statement.upcomingTotal', { lng: 'ar' })}</span><span class="num">${fmt(upcoming)} ${SAR}</span></div>` : ''}
     </div>`, rows: 5,
   });
   const intro = `<div class="inv-meta">
