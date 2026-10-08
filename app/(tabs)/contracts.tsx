@@ -1275,7 +1275,10 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
     `SELECT * FROM deposit_settlements WHERE contract_id = ?`, [contractId]
   );
   const [date, setDate] = useState(existing?.date || today());
-  const [deduction, setDeduction] = useState(existing ? fmt(Number(existing.deduction_halalas)).replace(/,/g, '') : '');
+  // الخصم كما سُجّل كاملاً: المخصوم من التأمين ومطالبة زيادته إن وُجدت (التحقق المستقل E1: كان الحفظ بلا تغيير يُرفض)
+  const excessClaim = Number(db.get<{ a: number }>(
+    `SELECT COALESCE(SUM(amount_halalas), 0) AS a FROM claims WHERE contract_id = ? AND source = 'تسوية تأمين' AND deleted_at IS NULL`, [contractId])?.a ?? 0); // i18n-exempt: مصدر مخزَّن
+  const [deduction, setDeduction] = useState(existing ? fmt(Number(existing.deduction_halalas) + excessClaim).replace(/,/g, '') : '');
   const [dedReason, setDedReason] = useState(existing?.deduction_reason || '');
   const [refund, setRefund] = useState(
     existing ? fmt(Number(existing.refund_halalas)).replace(/,/g, '') : fmt(Number(c.deposit_halalas)).replace(/,/g, '')

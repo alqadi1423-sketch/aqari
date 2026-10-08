@@ -8,6 +8,11 @@ import { memDb } from './helpers/testDb';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { confirmContract, saveDepositSettlement, renewContract, cancelContract } from '@/domain/contracts/service';
 import { deleteClaim } from '@/domain/claims';
+import { postEntry, postDepositDeduct, postDepositRefund } from '@/domain/accounting/post';
+
+/** سحبٌ من النقدية بقيدٍ مصطنع (كمسحوبات المالك) */
+const postEntryOut = (db: import('@/db/adapter').DB, amount: number) =>
+  postEntry(db, { date: '2026-07-10', memo: 'سحب مصطنع', lines: [{ account: '3100', debit: amount, credit: 0 }, { account: '1100', debit: 0, credit: amount }] });
 import { ownerCashIn } from '@/domain/cashOps';
 import { accountBalance } from '@/domain/accounting/ledger';
 import type { DB } from '@/db/adapter';
@@ -90,6 +95,33 @@ test('N2 عقدٌ أُلغي بتسوية قبل صفّها: تسجيل التس
   const cash = accountBalance(db, '1100');
   saveDepositSettlement(db, c, settle({ deductionHalalas: 30000, refundHalalas: 70000 }) as never);
   expect([accountBalance(db, '2400'), accountBalance(db, '4300'), accountBalance(db, '1100')]).toEqual([0, 30000, cash]);
+  db.close();
+});
+
+test('E2 تعديل التسوية لا يُنزل النقدية تحت الصفر بعكس مقبوضٍ سُحب', () => {
+  const db = memDb();
+  const c = contract(db, 'طرف آخر');
+  saveDepositSettlement(db, c, settle({ deductionHalalas: 30000, refundHalalas: 70000, deductReceived: true }) as never);
+  expect(accountBalance(db, '1100')).toBe(30000);
+  postEntryOut(db, 30000);
+  expect(() => saveDepositSettlement(db, c, settle({ deductionHalalas: 30000, refundHalalas: 70000, deductReceived: false }) as never)).toThrow();
+  expect(accountBalance(db, '1100')).toBe(0);
+  db.close();
+});
+
+test('E3 قيود تسويتين حيّتان (بيانات قديمة) تُعكسان كلتاهما عند التعديل', () => {
+  const db = memDb();
+  ownerCashIn(db, { amountHalalas: 500000, date: '2026-01-01' });
+  const c = contract(db, 'المكتب');
+  cancelContract(db, c, { date: '2026-03-01', reason: 'إلغاء مصطنع', installmentsFate: 'cancel', settle: true,
+    deductionHalalas: 30000, refundHalalas: 70000, deductionReason: 'إصلاح مصطنع' });
+  // كما كان قبل صفّ التسوية: إلغاءٌ بتسوية ثم «تسجيل التسوية» فوقه بلا عكس
+  db.run(`DELETE FROM deposit_settlements WHERE contract_id = ?`, [c]);
+  postDepositDeduct(db, { id: c, contract_no: '' }, 30000, '2026-03-02');
+  postDepositRefund(db, { id: c, contract_no: '' }, 70000, '2026-03-02');
+  expect(accountBalance(db, '2400')).toBe(-100000);
+  saveDepositSettlement(db, c, settle({ deductionHalalas: 30000, refundHalalas: 70000 }) as never);
+  expect([accountBalance(db, '2400'), accountBalance(db, '4300')]).toEqual([0, 30000]);
   db.close();
 });
 

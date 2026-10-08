@@ -351,5 +351,37 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     expect((await remoteFor(TALL.uid!, TALL).write([{ ...grown, u: 'g3', g: grown.g!.filter((x) => !x.endsWith('|P2')) }]))[0])
       .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
+
+  test('التحقق المستقل: المحصور يعدّل مستأجراً مشتركاً بين عقاره وعقار غيره (بعقاراته في السحابة كما هي)', async () => {
+    db.run(`INSERT INTO tenants (id, name, phone, created_at) VALUES ('VT5', 'مستأجر مشترك آخر مصطنع', '0500000173', '2026-01-01T00:00:00.000Z')`);
+    const owner = remoteFor(ORG, null);
+    const base = owner.annotate!(db, doc('tenants', 'VT5', row('tenants', 'VT5')));
+    const g2 = (g: string[]) => [...g.filter((x) => x.endsWith('|@')), ...g.filter((x) => x.endsWith('|@')).flatMap((x) => [x.replace('|@', '|P1'), x.replace('|@', '|P2')])].sort();
+    expect((await owner.write([{ ...base, pids: ['P1', 'P2'], companions: [{ ...base.companions![0], pids: ['P1', 'P2'], g: g2(base.companions![0].g!) }] }]))[0])
+      .toMatchObject({ ok: true });
+    // جهاز المحصور حفظ عقاراته في السحابة عند السحب · فيرفع تعديله بها
+    db.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('tenant_pids:VT5', '["P1","P2"]')`);
+    const r = remoteFor(CONTR.uid!, CONTR);
+    const sent = r.annotate!(db, doc('tenants', 'VT5', { ...row('tenants', 'VT5'), phone: '0500000174' }, 't5'));
+    expect(sent.pids).toEqual(['P1', 'P2']);
+    expect((await r.write([sent]))[0]).toMatchObject({ ok: true });
+    db.run(`DELETE FROM sync_state WHERE k = 'tenant_pids:VT5'`);
+  });
+
+  test('التحقق المستقل: نموّ إسقاط المستأجر لا يُنقص رؤية عقارٍ قائم', async () => {
+    db.run(`INSERT INTO tenants (id, name, phone, created_at) VALUES ('VT6', 'مستأجر ثلاثي مصطنع', '0500000175', '2026-01-01T00:00:00.000Z')`);
+    const owner = remoteFor(ORG, null);
+    const base = owner.annotate!(db, doc('tenants', 'VT6', row('tenants', 'VT6')));
+    const at = base.companions![0].g!.filter((x) => x.endsWith('|@'));
+    const toks = (ps: string[]) => [...at, ...at.flatMap((x) => ps.map((p) => x.replace('|@', '|' + p)))].sort();
+    expect((await owner.write([{ ...base, pids: ['P1', 'P2'], companions: [{ ...base.companions![0], pids: ['P1', 'P2'], g: toks(['P1', 'P2']) }] }]))[0])
+      .toMatchObject({ ok: true });
+    const TALL2 = member('U-VTA2', { tenants: 3 }, 'all');
+    expect(await putDoc(`orgs/${ORG}/members/${TALL2.uid}`, { email: 'u-vta2@example.test', perm: TALL2.perms, all: true, props: [], tokens: memberTokens(TALL2) }, ORG)).toBe(200);
+    const pub = { ...base.companions![0], u: 'g6', dev: 'dev-v', op: 'tenants', pids: ['P1', 'P2', 'P3'] };
+    // يضيف عقاراً ويُسقط رموز عقارٍ قائم
+    expect((await remoteFor(TALL2.uid!, TALL2).write([{ ...pub, g: toks(['P1', 'P3']) }]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect((await remoteFor(TALL2.uid!, TALL2).write([{ ...pub, g: toks(['P1', 'P2', 'P3']) }]))[0]).toMatchObject({ ok: true });
+  });
 });
 

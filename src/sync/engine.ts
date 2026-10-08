@@ -446,6 +446,11 @@ function applyOne(
     return s;
   };
 
+  // عقارات المستأجر المشترك كما في السحابة لكل وارد، ولو غلب بعده التعديل المحلي: يرفع المحصور اتحادها بعقاراته فلا يُسقط
+  // عقاراً لا يعرفه (التحقق المستقل)
+  if (doc.t === 'tenants' && !doc.del && doc.pids?.length) {
+    db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [TENANT_PIDS + doc.k, JSON.stringify(doc.pids)]);
+  }
   // التعارض على مستوى الصف · الأحدث تغييراً يغلب
   const pending = db.get<OutRow>(`SELECT tbl, pk, op, changed_at FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
   let conflict: 'conflict-remote' | null = null;
@@ -482,10 +487,6 @@ function applyOne(
       } else {
         // ما أرسله جهازٌ بإصدار أقدم من مسدَّدٍ وحالة يُترك · فهما يُحسبان هنا بعد التطبيق
         upsertRow(db, doc.t, stripDerived(doc.t, doc.d!), cols(doc.t));
-        // عقارات المستأجر المشترك كما في السحابة: يرفع المحصور اتحادها بعقاراته فلا يُسقط عقاراً لا يعرفه (التحقق المستقل)
-        if (doc.t === 'tenants' && doc.pids?.length) {
-          db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [TENANT_PIDS + doc.k, JSON.stringify(doc.pids)]);
-        }
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·

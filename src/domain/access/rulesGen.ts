@@ -144,7 +144,8 @@ function guardFns(schema: RulesSchema): string {
       // بلا عقار جديد: رؤيته كما هي (لا تُنقص فيُخفى عن غيره) · وبعقاراتٍ جديدة (حتى ثلاثة في رفعٍ واحد) تزيد برموزها وحدها
       return after.t == 'tenants' ? after.g == before.g
         : added.size() == 0 ? after.g == before.g
-        : added.size() <= 3 && after.g.removeAll(before.g).hasOnly([${readSectionsOf('tenants', null).map((x) => `'${x}|' + added[0]`).join(', ')}]
+        : added.size() <= 3 && after.g.hasAll(before.g.removeAll([${readSectionsOf('tenants', null).map((x) => `'${x}|*'`).join(', ')}]))
+          && after.g.removeAll(before.g).hasOnly([${readSectionsOf('tenants', null).map((x) => `'${x}|' + added[0]`).join(', ')}]
             .concat(added.size() > 1 ? [${readSectionsOf('tenants', null).map((x) => `'${x}|' + added[1]`).join(', ')}] : [])
             .concat(added.size() > 2 ? [${readSectionsOf('tenants', null).map((x) => `'${x}|' + added[2]`).join(', ')}] : []));
     }
@@ -271,7 +272,9 @@ ${guardFns(schema)}
         && isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)
         && (
-          (owns && level >= 3 && propsOk(m, after))
+          (owns && level >= 3 && (propsOk(m, after)
+              // والمستأجر المشترك بين عقاراته وعقار غيره: عقاراته كما هي وفيها عقارٌ له (التحقق المستقل: تعديله كان يُرفض صامتاً)
+              || (after.t in ['tenants', 'tenants~pub'] && after.pids == before.pids && after.pids.hasAny(m.props.concat(['*'])))))
           || (owns && level >= 2 && isDraft(before)
               && before.get('by', '') == request.auth.uid && propsOk(m, after))
           // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)

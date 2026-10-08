@@ -709,14 +709,20 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   if (prevClaim && Number(prevClaim.amount_halalas) !== excess) throw new RuleViolation(t('deposit.claimFirst'));
   // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق يُعكس (قرار المالك ٢٠٢٦-١٠-٠٥) · والسابق من قيده الحيّ
   // لا من صفّ التسوية وحده (التحقق المستقل N2)
-  const liveRefund = Number(db.get<{ v: number }>(
-    `SELECT COALESCE(SUM(l.debit_halalas), 0) AS v FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
-     WHERE e.src_type = 'deposit_refund' AND e.src_id = ? AND e.reversed_by IS NULL AND e.deleted_at IS NULL AND l.account_code = '2400'`,
-    [contractId])?.v ?? 0);
-  if (holder === 'المكتب') requireCash(db, refund - liveRefund, 'ردّ التأمين'); // i18n-exempt: جهة مخزّنة
-  reverseEntryBySource(db, 'deposit_deduct', contractId, 'تعديل تسوية التأمين · عكس الخصم السابق');
-  reverseEntryBySource(db, 'deposit_refund', contractId, 'تعديل تسوية التأمين · عكس الرد السابق');
-  reverseEntryBySource(db, 'deposit_deduct_move', contractId, 'تعديل تسوية التأمين · عكس استقرار المخصوم');
+  // كفاية النقد بصافي أثر التسوية على النقدية مقابل قيودها الحيّة: الرد نقداً خارجٌ، والمخصوم الواصل (طرف آخر، أو من
+  // المنصة إلى حسابنا) داخل، وعكس الداخل خارج (التحقق المستقل E2) · قرار المالك ٢٠٢٦-١٠-٠٥
+  const liveCash = Number(db.get<{ v: number }>(
+    `SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS v FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type IN ('deposit_deduct', 'deposit_refund', 'deposit_deduct_move') AND e.src_id = ? AND e.reversed_by IS NULL
+       AND e.deleted_at IS NULL AND e.status = 'مرحّل' AND l.account_code = '1100'`, [contractId])?.v ?? 0); // i18n-exempt: حالة مخزّنة
+  const newCash = (holder === 'طرف آخر' && input.deductReceived ? deduction : 0) // i18n-exempt: جهة مخزّنة
+    + (holder === 'منصة إيجار' && (input.deductDestination ?? 'محفظة إيجار') === 'حسابنا' ? deduction : 0) // i18n-exempt: جهة ووجهة مخزّنتان
+    - (holder === 'المكتب' ? refund : 0); // i18n-exempt: جهة مخزّنة
+  requireCash(db, liveCash - newCash, 'تسوية التأمين');
+  // كل قيدٍ حيّ من كل مصدر (التحقق المستقل E3: عقودٌ قبل صفّ التسوية فيها مجموعتا قيود)
+  for (const [src, memo] of [['deposit_deduct', 'عكس الخصم السابق'], ['deposit_refund', 'عكس الرد السابق'], ['deposit_deduct_move', 'عكس استقرار المخصوم']]) {
+    for (let i = 0; i < 20 && reverseEntryBySource(db, src, contractId, 'تعديل تسوية التأمين · ' + memo); i++) { /* حتى لا يبقى حيّ */ }
+  }
   let excessClaimCreated = false;
   if (excess > 0 && !prevClaim) {
     const claimId = uid();
