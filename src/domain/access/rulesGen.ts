@@ -240,15 +240,17 @@ ${guardFns(schema)}
       // عقارات الصف ورؤيته كما هي، فلا حاجة إلى فحصهما · ويغيّرهما ذو كل العقارات بحقيقة الصف، والرؤية في المرفق
       // (جهته تحدد قرّاءه) · والمبالغ لقارئها (المراجعة #17 و#18) · الحراسات أولاً، فللطلب حدّ ألف تعبير
       return (before.del == true || after.del == true
-          // إحياء شاهد الحذف كالإنشاء: عقاراته بحقيقته · وشاهد الحذف بحقول الصف الفارغ (annotate) لصفٍّ كان في عقاراته
-          ? (before.del != true || pidsBound(org, after)) && (after.del != true || propsOk(m, before))
+          // إحياء شاهد الحذف كالإنشاء: عقاراته بحقيقته · وشاهد الحذف فارغٌ (بلا d، فلا يكشف شيئاً برموز رؤيته) لصفٍّ كان
+          // في عقاراته (التحقق المستقل: شاهدٌ يُبقي d برؤية أوسع كان يكشف المبالغ)
+          ? (before.del != true || pidsBound(org, after)) && (after.del != true || (after.d == null && propsOk(m, before)))
           : (after.pids == before.pids
               // عقاراته كما هي: روابطه كما هي، أو تغيّرت بحقيقته (وحدةٌ أخرى في عقاره)
               ? (!linksChanged(before, after) || pidsBound(org, after))
-              // وتتغيّر بحقيقة الصف لذي كل العقارات، وللمحصور بين عقاراته (الجديدة في عقاراته بشرط الفرع) ·
-              // والمستأجر المشترك تتبع عقاراته عقوده، فيكفي أن يمسّ عقاراً للعضو
-              : (((m.all == true || propsOk(m, before)) && pidsBound(org, after))
-                  || (after.t in ['tenants', 'tenants~pub'] && (m.all == true || after.pids.hasAny(m.props.concat(['*']))))))
+              // وتتغيّر بحقيقة الصف لذي كل العقارات وحده (رؤيته لا تُفحص بعدها، فحدّ الألف تعبير لا يسعها: فلا للمحصور) ·
+              // والمستأجر المشترك تتبع عقاراته عقوده: كان في متناول العضو، وعقاراته الجديدة من عقاراته السابقة وعقارات العضو
+              : ((m.all == true && pidsBound(org, after))
+                  || (after.t in ['tenants', 'tenants~pub'] && (m.all == true
+                      || (before.pids.hasAny(m.props.concat(['*'])) && after.pids.hasOnly(before.pids.concat(m.props).concat(['*'])))))))
             // ورؤيته كما هي، أو تبعت عقاراته إذ تغيّرت، أو رؤية المرفق (جهته تحدد قرّاءه) في حدود عقاره
             && (after.g == before.g || after.pids != before.pids || (after.t == 'attachments' && gBound(after))))
         && keyOk(after) && blobShapeOk(after) && moneyKept(m, before, after)

@@ -52,7 +52,8 @@ export function UnitFormSheet({
   const { db } = useApp();
   const toast = useToast();
   // من يقرأ الوحدة بلا مبالغها لا يرى الإيجار ولا يكتبه: لا يُرفع منه (المراجعة #17 · الزر غير المسموح لا يظهر)
-  const rentHidden = hiddenColumns(useAccess(), 'units', { rent_monthly_halalas: 0 }).length > 0;
+  const access = useAccess();
+  const rentHidden = hiddenColumns(access, 'units', { rent_monthly_halalas: 0 }).length > 0;
   const existing = unitId
     ? db.get<{ property_id: string; unit_no: string; floor: string; type: string; subtype: string; rent_monthly_halalas: number }>(
         `SELECT * FROM units WHERE id = ?`, [unitId]
@@ -110,9 +111,13 @@ export function UnitFormSheet({
           <View style={{ flex: 1 }}><BtnPrimary title={unitId ? 'حفظ التعديل' : 'إضافة الوحدة'} onPress={save} /></View>
         </>
       }>
-      <SelectField label="العقار" value={propId}
-        options={properties.map((p) => ({ value: p.id, label: p.name }))}
-        onPick={setPropId} />
+      {/* نقل وحدةٍ قائمة إلى عقار آخر للمالك ولذي كل العقارات وحدهما: القواعد ترفضه من المحصور بعقارات
+          (رؤية الصف بعد النقل لا تُفحص في حدّ الألف تعبير) · فلا يظهر له (الزر غير المسموح لا يظهر) */}
+      {!unitId || access.owner || access.allProps ? (
+        <SelectField label="العقار" value={propId}
+          options={properties.map((p) => ({ value: p.id, label: p.name }))}
+          onPick={setPropId} />
+      ) : null}
       <Row>
         <View style={{ flex: 1 }}><Field label="رقم الوحدة" value={unitNo} onChange={setUnitNo} ltr /></View>
         <View style={{ flex: 1 }}>

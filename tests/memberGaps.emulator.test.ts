@@ -268,16 +268,38 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
       .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
 
-  test('المحصور بعقارين ينقل عقده بينهما بحقيقته · ولا ينقله إلى عقار ليس له', async () => {
+  test('المحصور لا ينقل صفاً بين عقاراته (رؤيته لا تُفحص بعد النقل) · ولا إلى عقار ليس له', async () => {
     const r = remoteFor(TWO.uid!, TWO);
     // عقدٌ له وحده في عقاره الأول (لا يمسّه اختبار قبله)
     const to = (unit: string) => doc('contracts', C3, { ...row('contracts', C3), unit_id: unit }, 'v' + unit);
     db.run(`UPDATE contracts SET unit_id = 'VUN2' WHERE id = ?`, [C3]);
     expect((await r.write([r.annotate!(db, to('VUN2'))]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
     db.run(`UPDATE contracts SET unit_id = 'VUN3' WHERE id = ?`, [C3]);
-    expect((await r.write([r.annotate!(db, to('VUN3'))]))[0]).toMatchObject({ ok: true });
+    expect((await r.write([r.annotate!(db, to('VUN3'))]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
     db.run(`UPDATE contracts SET unit_id = 'VUN4' WHERE id = ?`, [C3]);
-    expect((await r.write([r.annotate!(db, to('VUN4'))]))[0]).toMatchObject({ ok: true });
+  });
+
+  test('شاهد الحذف فارغ: لا يُبقي d برؤية أوسع فيكشف المبالغ', async () => {
+    const unit = row('units', 'VUN1');
+    // كما أرسله المتحقق: شاهدٌ يُبقي d (كتابة جزئية) برموز رؤية قسمه
+    const res = await fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents:commit`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(TECH.uid!) },
+      body: JSON.stringify({ writes: [{
+        update: { name: `projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/rows/units__VUN1`,
+          fields: encodeFields({ del: true, g: ['props|P1'], u: 'x9', dev: 'dev-v', op: 'props' }) },
+        updateMask: { fieldPaths: ['del', 'g', 'u', 'dev', 'op'] },
+        updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }] }] }) });
+    expect(res.status).toBe(403);
+    expect(unit.id).toBe('VUN1');
+  });
+
+  test('المستأجر: لا يأخذه محصورٌ من عقار ليس له', async () => {
+    db.run(`INSERT INTO tenants (id, name, phone, created_at) VALUES ('VT2', 'مستأجر عقار آخر مصطنع', '0500000096', '2026-01-01T00:00:00.000Z')`);
+    const owner = remoteFor(ORG, null);
+    const td = owner.annotate!(db, doc('tenants', 'VT2', row('tenants', 'VT2')));
+    expect((await owner.write([{ ...td, pids: ['P2'], g: ['tenants|P2', 'tenants|@'], companions: undefined }]))[0]).toMatchObject({ ok: true });
+    expect(await write(CONTR, doc('tenants', 'VT2', { ...row('tenants', 'VT2'), name: 'اسم مزوّر' }), { pids: ['*'], g: ['tenants|*', 'tenants|@'] }))
+      .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
 });
 
