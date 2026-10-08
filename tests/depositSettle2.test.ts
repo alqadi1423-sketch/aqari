@@ -6,7 +6,8 @@
  */
 import { memDb } from './helpers/testDb';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
-import { confirmContract, saveDepositSettlement, renewContract } from '@/domain/contracts/service';
+import { confirmContract, saveDepositSettlement, renewContract, cancelContract } from '@/domain/contracts/service';
+import { deleteClaim } from '@/domain/claims';
 import { ownerCashIn } from '@/domain/cashOps';
 import { accountBalance } from '@/domain/accounting/ledger';
 import type { DB } from '@/db/adapter';
@@ -41,10 +42,16 @@ test('#٢٧ النقص عن التأمين لا يُحفظ · والزيادة �
   expect(accountBalance(db, '2400')).toBe(0);
   expect(db.get(`SELECT amount_halalas AS a, source AS s, status AS st FROM claims WHERE contract_id = ?`, [c]))
     .toEqual({ a: 30000, s: 'تسوية تأمين', st: 'مفتوحة' });
-  // تعديلها لا يكرر المطالبة
+  // تعديل الزيادة: مطالبتها تُحذف من المطالبات أولاً (بصلاحيتها)، ثم تُعدَّل التسوية فتُنشأ الجديدة ولا تتكرر
+  expect(() => saveDepositSettlement(db, c, settle({ deductionHalalas: 90000, refundHalalas: 50000 }) as never)).toThrow();
+  const cl = db.get<{ id: string }>(`SELECT id FROM claims WHERE contract_id = ? AND deleted_at IS NULL`, [c])!.id;
+  deleteClaim(db, cl);
   saveDepositSettlement(db, c, settle({ deductionHalalas: 90000, refundHalalas: 50000 }) as never);
   expect(db.all(`SELECT amount_halalas AS a FROM claims WHERE contract_id = ? AND deleted_at IS NULL`, [c])).toEqual([{ a: 40000 }]);
   expect(accountBalance(db, '2400')).toBe(0);
+  // والزيادة نفسها لا تتطلب شيئاً
+  saveDepositSettlement(db, c, settle({ deductionHalalas: 90000, refundHalalas: 50000 }) as never);
+  expect(db.all(`SELECT amount_halalas AS a FROM claims WHERE contract_id = ? AND deleted_at IS NULL`, [c])).toEqual([{ a: 40000 }]);
   db.close();
 });
 
@@ -56,3 +63,33 @@ test('#٢٨ لا تسوية لعقدٍ رُحِّل تأمينه إلى المج
   expect(() => saveDepositSettlement(db, c, settle({ refundHalalas: 100000 }) as never)).toThrow();
   db.close();
 });
+
+test('N1 لا تسوية في إلغاء عقدٍ رُحِّل تأمينه · ولا في إلغاء عقدٍ سُوّي تأمينه', () => {
+  const db = memDb();
+  ownerCashIn(db, { amountHalalas: 500000, date: '2026-01-01' });
+  const c = contract(db, 'المكتب');
+  renewContract(db, c, { start: '2026-07-01', end: '2027-06-30', valueHalalas: 600000, cycle: 'شهرية', carryDeposit: true,
+    extraDepositHalalas: 0, services: '', furnished: 'غير مؤثثة', ejarNo: '', note: '' });
+  expect(() => cancelContract(db, c, { date: '2026-07-05', reason: 'إلغاء مصطنع', installmentsFate: 'keep', settle: true,
+    deductionHalalas: 30000, refundHalalas: 70000, deductionReason: '' })).toThrow();
+  expect(accountBalance(db, '2400')).toBe(100000);
+  const d = contract(db, 'المكتب');
+  saveDepositSettlement(db, d, settle({ deductionHalalas: 30000, refundHalalas: 70000 }) as never);
+  expect(() => cancelContract(db, d, { date: '2026-07-06', reason: 'إلغاء مصطنع', installmentsFate: 'keep', settle: true,
+    deductionHalalas: 30000, refundHalalas: 70000, deductionReason: '' })).toThrow();
+  db.close();
+});
+
+test('N2 عقدٌ أُلغي بتسوية قبل صفّها: تسجيل التسوية يعكس قيودها الحيّة فلا ترحيل مرتين', () => {
+  const db = memDb();
+  ownerCashIn(db, { amountHalalas: 500000, date: '2026-01-01' });
+  const c = contract(db, 'المكتب');
+  cancelContract(db, c, { date: '2026-03-01', reason: 'إلغاء مصطنع', installmentsFate: 'cancel', settle: true,
+    deductionHalalas: 30000, refundHalalas: 70000, deductionReason: 'إصلاح مصطنع' });
+  db.run(`DELETE FROM deposit_settlements WHERE contract_id = ?`, [c]); // كعقدٍ أُلغي قبل صفّ التسوية
+  const cash = accountBalance(db, '1100');
+  saveDepositSettlement(db, c, settle({ deductionHalalas: 30000, refundHalalas: 70000 }) as never);
+  expect([accountBalance(db, '2400'), accountBalance(db, '4300'), accountBalance(db, '1100')]).toEqual([0, 30000, cash]);
+  db.close();
+});
+

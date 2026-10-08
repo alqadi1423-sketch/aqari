@@ -41,7 +41,7 @@ test('D1 صيغ إكسل للتدفقات من مواضع صفوفها: الإج
   db.close();
 });
 
-test('D2 التسوية ثم الإلغاء بتسوية: لا ترحيل مرتين', () => {
+test('D2 التسوية ثم الإلغاء: الإلغاء بتسوية يُرفض، والإلغاء بلا تسوية لا يمسّ التأمين', () => {
   const db = memDb();
   ownerCashIn(db, { amountHalalas: 500000, date: '2025-01-01' });
   const u = addUnit(db, addProperty(db, { name: 'عقار ترتيب مصطنع' }), { unit_no: 'O-1' });
@@ -49,7 +49,8 @@ test('D2 التسوية ثم الإلغاء بتسوية: لا ترحيل مرت
     valueHalalas: 600000, start: '2025-01-01', end: '2025-12-31', depositHalalas: 100000 }));
   saveDepositSettlement(db, cid, { date: '2026-01-05', deductionHalalas: 30000, deductionReason: 'إصلاح مصطنع', refundHalalas: 70000, notes: '' });
   const cash = accountBalance(db, '1100');
-  cancelContract(db, cid, { date: '2026-01-06', reason: 'إلغاء مصطنع', installmentsFate: 'keep', settle: true, deductionHalalas: 30000, refundHalalas: 70000, deductionReason: 'إصلاح مصطنع' });
+  expect(() => cancelContract(db, cid, { date: '2026-01-06', reason: 'إلغاء مصطنع', installmentsFate: 'keep', settle: true, deductionHalalas: 30000, refundHalalas: 70000, deductionReason: 'إصلاح مصطنع' })).toThrow();
+  cancelContract(db, cid, { date: '2026-01-06', reason: 'إلغاء مصطنع', installmentsFate: 'keep', settle: false, deductionHalalas: 0, refundHalalas: 0, deductionReason: '' });
   expect([accountBalance(db, '2400'), accountBalance(db, '1100'), accountBalance(db, '4300')]).toEqual([0, cash, 30000]);
   db.close();
 });

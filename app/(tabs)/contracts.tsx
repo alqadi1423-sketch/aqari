@@ -1128,6 +1128,11 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const [refund, setRefund] = useState('');
   const [dedReason, setDedReason] = useState('');
   const depPerm = usePerm('deposits');
+  const { t } = useLang();
+  // تسوية التأمين في الإلغاء لعقدٍ لم يُسوَّ تأمينه ولم يُرحَّل (التحقق المستقل: D2 وN1) · والإلغاء بلا تسوية متاح دائماً
+  const canSettleHere = !db.get(`SELECT 1 FROM deposit_settlements WHERE contract_id = ?`, [contractId]) && !depositCarried(db, contractId);
+  const otherHeld = (c as unknown as { deposit_holder?: string }).deposit_holder === 'طرف آخر';
+  const [received, setReceived] = useState(false);
 
   const dedH = toHalalas(deduction);
   const depH = Number(c.deposit_halalas) || 0;
@@ -1148,6 +1153,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         deductionHalalas: dedH,
         refundHalalas: settle ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0,
         deductionReason: dedReason,
+        deductReceived: otherHeld ? received : undefined,
       });
       onClose();
       onDone(excessClaimCreated
@@ -1176,7 +1182,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         onPick={setFate}
       />
       {/* تسوية التأمين من قسم التأمينات · بلا صلاحيته يُلغى العقد بلا تسوية وتُسوّى لاحقاً */}
-      {depPerm.add ? (
+      {depPerm.add && canSettleHere ? (
         <Pressable onPress={() => setSettle((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>
           <View style={{
             width: 22, height: 22, borderRadius: 5, borderWidth: 2,
@@ -1199,6 +1205,12 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
             </View>
           </Row>
           <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
+          {/* «طرف آخر»: وصل المخصوم للمكتب فيُسجَّل قبضاً (قرار المالك على #26 · التحقق المستقل N4) */}
+          {otherHeld && dedH > 0 ? (
+            <SelectField label={t('deposit.received')} value={received ? 'y' : 'n'}
+              options={[{ value: 'y', label: t('deposit.received') }, { value: 'n', label: t('deposit.receivedNo') }]}
+              onPick={(v) => setReceived(v === 'y')} />
+          ) : null}
           {excess > 0 && (
             <Note tone="danger">
               مبلغ الخصم ({fmt(dedH)}) أكبر من التأمين المحجوز ({fmt(depH)}) · الفارق {fmt(excess)} سيُحوَّل تلقائياً إلى مطالبة عند تأكيد الإلغاء.

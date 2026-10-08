@@ -525,6 +525,8 @@
     "carried": "This contract's deposit was carried to its renewal · settle it there",
     "received": "The deduction reached the office",
     "receivedNo": "Not received · still with the other party",
-    "excessNote": "The excess over the deposit becomes a claim on the tenant"
+    "excessNote": "The excess over the deposit becomes a claim on the tenant",
+    "claimFirst": "The settlement has an excess claim · delete it from Claims first, then edit the settlement",
+    "alreadySettled": "This contract's deposit is already settled · cancel without settlement and edit the settlement from its screen"
   }
 }

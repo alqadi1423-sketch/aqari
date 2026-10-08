@@ -138,9 +138,24 @@ export interface AclDocs {
 }
 
 /** يزيّن مستنداً خارجاً بحقول الرؤية والكتابة · ويبني إسقاطه إن لزم */
+/**
+ * عقارات المستأجر المشترك للمحصور بعقارات: جهازه يعرف عقوده هو وحدها، فيرفع اتحاد ما يعرفه بعقاراته كما في السحابة
+ * (تُحفظ عند السحب) · والقواعد ترفض أن يُسقط عقاراً ليس له (التحقق المستقل) · و«*» يزول متى كان له عقار
+ */
+function tenantPidsFor(db: DB, key: string, local: string[], a: Access): string[] {
+  if (a.owner || a.allProps) return local;
+  const raw = one(db, `SELECT v FROM sync_state WHERE k = ?`, ['tenant_pids:' + key]);
+  let known: string[] = [];
+  try { known = raw ? (JSON.parse(raw) as string[]) : []; } catch { known = []; }
+  const all = [...new Set([...known, ...local])];
+  const real = all.filter((p) => p !== ORG_WIDE);
+  return (real.length ? real : [ORG_WIDE]).sort();
+}
+
 export function annotate(db: DB, doc: RemoteDoc, a: Access): AclDocs {
   const row = doc.d;
-  const pids = row ? rowPids(db, doc.t, row) : (doc.pids ?? [ORG_WIDE]);
+  const pids0 = row ? rowPids(db, doc.t, row) : (doc.pids ?? [ORG_WIDE]);
+  const pids = row && doc.t === 'tenants' ? tenantPidsFor(db, doc.k, pids0, a) : pids0;
   const readers = readSectionsOf(doc.t, row as Record<string, unknown> | null);
   const { full, pub } = moneySplit(row as Record<string, unknown> | null, readers);
   const extra: Partial<RemoteDoc> = { pids, g: tokensFor(full, pids) };

@@ -141,9 +141,12 @@ function guardFns(schema: RulesSchema): string {
     // تزيد برموز عقاره الجديد وحده · فلا يقرأ المحصور رصيده بتغيير رؤيته، ولا يُخفيه عن عقار آخر
     function tenantGOk(before, after) {
       let added = after.pids.removeAll(before.pids);
+      // بلا عقار جديد: رؤيته كما هي (لا تُنقص فيُخفى عن غيره) · وبعقاراتٍ جديدة (حتى ثلاثة في رفعٍ واحد) تزيد برموزها وحدها
       return after.t == 'tenants' ? after.g == before.g
-        : added.size() == 0 ? after.g.removeAll(before.g).size() == 0
-        : added.size() == 1 && after.g.removeAll(before.g).hasOnly([${readSectionsOf('tenants', null).map((x) => `'${x}|' + added[0]`).join(', ')}]);
+        : added.size() == 0 ? after.g == before.g
+        : added.size() <= 3 && after.g.removeAll(before.g).hasOnly([${readSectionsOf('tenants', null).map((x) => `'${x}|' + added[0]`).join(', ')}]
+            .concat(added.size() > 1 ? [${readSectionsOf('tenants', null).map((x) => `'${x}|' + added[1]`).join(', ')}] : [])
+            .concat(added.size() > 2 ? [${readSectionsOf('tenants', null).map((x) => `'${x}|' + added[2]`).join(', ')}] : []));
     }
     // المبالغ لا يكتبها ولا يغيّرها عضوٌ لا يقرؤها (#17): يقرأ الإسقاط، فقيمتها عنده افتراضها · keys: ما يكتبه في الإنشاء
     // وما تغيّر في التعديل · ولا يكتب مبلغاً لا يقرؤه إلا قسمٌ غير مالي، أو المحصور في رصيد المستأجر المشترك ·

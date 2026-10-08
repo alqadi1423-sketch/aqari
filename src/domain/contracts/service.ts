@@ -403,6 +403,9 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
     let excessClaimCreated = false;
     let deduction = 0, refund = 0;
     if (input.settle) {
+      // لا تسوية في الإلغاء لعقدٍ سُوّي تأمينه (تُعدَّل التسوية من شاشتها بصلاحية التأمين) أو رُحِّل تأمينه إلى المجدَّد
+      if (db.get(`SELECT 1 FROM deposit_settlements WHERE contract_id = ?`, [contractId])) throw new RuleViolation(t('deposit.alreadySettled'));
+      if (depositCarried(db, contractId)) throw new RuleViolation(t('deposit.carried'));
       // مسار التسوية الواحد (مراجعة التثبيت #15 و#25 و#26 و#27): يعكس تسويةً سابقة إن وُجدت (التحقق المستقل: التسوية
       // ثم الإلغاء بتسوية كانا يرحّلان مرتين)، والزيادة على التأمين مطالبة تلقائية، والنقص لا يُحفظ
       const r = applyDepositSettlement(db, c, contractId, {
@@ -701,19 +704,21 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   if (prevClaim && prevClaim.status !== 'مفتوحة' && Number(prevClaim.amount_halalas) !== excess) { // i18n-exempt: حالة مخزّنة
     throw new RuleViolation(t('deposit.claimCollected'));
   }
-  // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق يُعكس (قرار المالك ٢٠٢٦-١٠-٠٥)
-  if (holder === 'المكتب') requireCash(db, refund - Number(prev?.refund_halalas ?? 0), 'ردّ التأمين'); // i18n-exempt: جهة مخزّنة
-  if (prev) {
-    reverseEntryBySource(db, 'deposit_deduct', contractId, 'تعديل تسوية التأمين · عكس الخصم السابق');
-    reverseEntryBySource(db, 'deposit_refund', contractId, 'تعديل تسوية التأمين · عكس الرد السابق');
-    reverseEntryBySource(db, 'deposit_deduct_move', contractId, 'تعديل تسوية التأمين · عكس استقرار المخصوم');
-  }
+  // ومطالبة الزيادة المفتوحة لا يحذفها مسار التسوية: حذفها لصاحب صلاحية المطالبات من شاشتها (التحقق المستقل: لمسُ
+  // «حذف المطالبة» من قسم التأمين كان يجيز لعضوٍ حذف أي مطالبة في عقاره)
+  if (prevClaim && Number(prevClaim.amount_halalas) !== excess) throw new RuleViolation(t('deposit.claimFirst'));
+  // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق يُعكس (قرار المالك ٢٠٢٦-١٠-٠٥) · والسابق من قيده الحيّ
+  // لا من صفّ التسوية وحده (التحقق المستقل N2)
+  const liveRefund = Number(db.get<{ v: number }>(
+    `SELECT COALESCE(SUM(l.debit_halalas), 0) AS v FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type = 'deposit_refund' AND e.src_id = ? AND e.reversed_by IS NULL AND e.deleted_at IS NULL AND l.account_code = '2400'`,
+    [contractId])?.v ?? 0);
+  if (holder === 'المكتب') requireCash(db, refund - liveRefund, 'ردّ التأمين'); // i18n-exempt: جهة مخزّنة
+  reverseEntryBySource(db, 'deposit_deduct', contractId, 'تعديل تسوية التأمين · عكس الخصم السابق');
+  reverseEntryBySource(db, 'deposit_refund', contractId, 'تعديل تسوية التأمين · عكس الرد السابق');
+  reverseEntryBySource(db, 'deposit_deduct_move', contractId, 'تعديل تسوية التأمين · عكس استقرار المخصوم');
   let excessClaimCreated = false;
-  if (prevClaim && prevClaim.status === 'مفتوحة' && Number(prevClaim.amount_halalas) !== excess) { // i18n-exempt: حالة مخزّنة
-    reverseEntryBySource(db, 'claim', prevClaim.id, 'تعديل تسوية التأمين · عكس مطالبة الزيادة السابقة');
-    db.run(`UPDATE claims SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), prevClaim.id]);
-  }
-  if (excess > 0 && !(prevClaim && Number(prevClaim.amount_halalas) === excess)) {
+  if (excess > 0 && !prevClaim) {
     const claimId = uid();
     db.run(
       `INSERT INTO claims (id, contract_id, amount_halalas, reason, date, status, source, created_at)

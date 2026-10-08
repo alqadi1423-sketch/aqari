@@ -320,5 +320,36 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
       .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
     expect(mainG.length).toBeGreaterThan(0);
   });
+
+  test('التحقق المستقل: عضوٌ بإدخال لا يعيد كتابة مبالغ تسوية غيره ولا يحذف مطالبة', async () => {
+    const ADD = member('U-VADD', { contracts: 2, deposits: 2, props: 1 }, ['P1']);
+    expect(await putDoc(`orgs/${ORG}/members/${ADD.uid}`, { email: 'u-vadd@example.test', perm: ADD.perms, all: false, props: ['P1'], tokens: memberTokens(ADD) }, ORG)).toBe(200);
+    db.run(`INSERT INTO deposit_settlements (contract_id, date, deduction_halalas, deduction_reason, refund_halalas, notes, deduct_destination) VALUES (?, '2026-07-01', 100, '', 0, '', '')`, [C1]);
+    db.run(`INSERT INTO claims (id, contract_id, amount_halalas, reason, date, status, source, created_at) VALUES ('VCL', ?, 500, 'مطالبة مصطنعة', '2026-07-01', 'مفتوحة', 'يدوية', 'x')`, [C1]);
+    const owner = remoteFor(ORG, null);
+    const ds = owner.annotate!(db, doc('deposit_settlements', C1, db.get<Record<string, unknown>>(`SELECT * FROM deposit_settlements WHERE contract_id = ?`, [C1])!));
+    const cl = owner.annotate!(db, doc('claims', 'VCL', row('claims', 'VCL')));
+    expect((await owner.write([ds, cl]))).toEqual([{ ok: true, code: 'OK' }, { ok: true, code: 'OK' }]);
+    const dsRow = db.get<Record<string, unknown>>(`SELECT * FROM deposit_settlements WHERE contract_id = ?`, [C1])!;
+    expect(await write(ADD, doc('deposit_settlements', C1, { ...dsRow, deduction_halalas: 999999 }))).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect(await write(ADD, doc('claims', 'VCL', { ...row('claims', 'VCL'), deleted_at: '2026-07-02' }))).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  });
+
+  test('التحقق المستقل: إسقاط المستأجر يزيد برموز عقارين أُضيفا معاً · ولا تُنقص رؤيته وعقاراته كما هي', async () => {
+    db.run(`INSERT INTO tenants (id, name, phone, created_at) VALUES ('VT4', 'مستأجر نمو مصطنع', '0500000172', '2026-01-01T00:00:00.000Z')`);
+    const owner = remoteFor(ORG, null);
+    const base = owner.annotate!(db, doc('tenants', 'VT4', row('tenants', 'VT4')));
+    expect((await owner.write([base]))[0]).toMatchObject({ ok: true });
+    const pub0 = base.companions![0];
+    const TALL = member('U-VTAL', { tenants: 3, contracts: 1 }, 'all');
+    expect(await putDoc(`orgs/${ORG}/members/${TALL.uid}`, { email: 'u-vtal@example.test', perm: TALL.perms, all: true, props: [], tokens: memberTokens(TALL) }, ORG)).toBe(200);
+    // ذو كل العقارات: من «*» إلى عقارين معاً
+    const grown = { ...pub0, u: 'g2', dev: 'dev-v', op: 'tenants', pids: ['P1', 'P2'],
+      g: [...pub0.g!.filter((x) => x.endsWith('|@')), ...pub0.g!.filter((x) => x.endsWith('|@')).flatMap((x) => [x.replace('|@', '|P1'), x.replace('|@', '|P2')])].sort() };
+    expect((await remoteFor(TALL.uid!, TALL).write([grown]))[0]).toMatchObject({ ok: true });
+    // وعقاراته كما هي: لا تُنقص رؤيته
+    expect((await remoteFor(TALL.uid!, TALL).write([{ ...grown, u: 'g3', g: grown.g!.filter((x) => !x.endsWith('|P2')) }]))[0])
+      .toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  });
 });
 

@@ -482,6 +482,10 @@ function applyOne(
       } else {
         // ما أرسله جهازٌ بإصدار أقدم من مسدَّدٍ وحالة يُترك · فهما يُحسبان هنا بعد التطبيق
         upsertRow(db, doc.t, stripDerived(doc.t, doc.d!), cols(doc.t));
+        // عقارات المستأجر المشترك كما في السحابة: يرفع المحصور اتحادها بعقاراته فلا يُسقط عقاراً لا يعرفه (التحقق المستقل)
+        if (doc.t === 'tenants' && doc.pids?.length) {
+          db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [TENANT_PIDS + doc.k, JSON.stringify(doc.pids)]);
+        }
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·
@@ -784,6 +788,8 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, e
 
 const PULL_PAGE = 500;
 const PUSH_BATCH = 400;
+/** مفتاح عقارات المستأجر المشترك كما في السحابة (sync/acl.ts يقرؤه) */
+export const TENANT_PIDS = 'tenant_pids:';
 /**
  * دفعة العضو صغيرة: قواعده تقرأ لكل صفٍّ مستند أبيه (المراجعة #18)، وللطلب الواحد عشرون قراءة تتقاسمها صفوف الدفعة ·
  * وحدّ الألف تعبير لكل مستند (ثبت على المحاكي) · وما زاد يُرفض فتُقسم الدفعة نصفين

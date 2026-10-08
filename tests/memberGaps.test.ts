@@ -124,3 +124,15 @@ test('التحقق المستقل: مسار الملف في مجلد المرف�
   }
 });
 
+test('التحقق المستقل: المحصور يرفع المستأجر المشترك باتحاد عقاراته وعقاراته في السحابة · والمالك بما عنده', async () => {
+  const { annotate } = await import('@/sync/acl');
+  const db = memDb();
+  db.run(`INSERT INTO tenants (id, name, phone, created_at) VALUES ('TS', 'مستأجر مشترك مصطنع', '0500000171', 'x')`);
+  db.run(`INSERT INTO sync_state (k, v) VALUES ('tenant_pids:TS', '["P1","P2"]')`);
+  const row = db.get<Record<string, unknown>>(`SELECT * FROM tenants WHERE id = 'TS'`)!;
+  const doc = { id: 'tenants__TS', t: 'tenants', k: 'TS', u: 'x', dev: 'd', del: false, d: row as never };
+  expect(annotate(db, doc, member({ tenants: 3 }, ['P1'])).doc.pids).toEqual(['P1', 'P2']);
+  expect(annotate(db, doc, { owner: true, uid: 'O', perms: {}, allProps: true, props: [] }).doc.pids).toEqual(['*']);
+  db.close();
+});
+
