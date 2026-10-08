@@ -1,0 +1,71 @@
+/**
+ * تحقق الدمج (قرار المالك 2026-10-08T10:24Z: «يتحقق الوكيل المستقل من الدمج نفسه») · ما وجده المتحقق في تداخل المزامنتين:
+ *  ف٢ تفريغ الجهاز لتغيّر الصلاحية ينتظر ما لم يُرسل من المحادثة كما ينتظر طابور المزامنة
+ *  ف٥ إزالة العضو تمّت فلا يُظهرها فشلُ تنظيف المحادثة بعدها فاشلة
+ *  ف٦ المحادثة موقوفة أثناء تفريغ الجهاز
+ *  ف٧ «إعلان مهم» لا يُرسل ممن ليس مسؤولاً ولو بقي مختاراً
+ * بيانات مصطنعة.
+ */
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import { openNodeDb } from '@/db/nodeAdapter';
+import { migrate } from '@/db/migrations';
+import { chatUnsentCount, openDirect, sendLocal, createGroup } from '@/chat';
+import { markMessageRejected, markThreadRejected, markSent } from '@/chat/store';
+
+const ROOT = join(__dirname, '..');
+const src = (f: string) => readFileSync(join(ROOT, f), 'utf8');
+/** جسم الدالة من تعريفها حتى أول سطر يبدأ بـ «}» */
+function body(file: string, decl: string): string {
+  const s = src(file);
+  const i = s.indexOf(decl);
+  if (i < 0) throw new Error('لا تعريف: ' + decl);
+  return s.slice(i, s.indexOf('\n}', i));
+}
+
+test('ف٢ ما ينتظر الرفع من المحادثة: غير المرسلة في محادثة لم تُرفض · لا المرسلة ولا المرفوضة', () => {
+  const db = openNodeDb(':memory:');
+  migrate(db);
+  const me = { uid: 'u-a', name: 'عضو أ' };
+  const d = openDirect(db, me.uid, 'u-b');
+  const m1 = sendLocal(db, d, me, 'أولى');
+  const m2 = sendLocal(db, d, me, 'ثانية');
+  sendLocal(db, d, me, 'ثالثة');
+  expect(chatUnsentCount(db)).toBe(3);
+  markSent(db, m1, '2026-01-01T00:00:00.000000000Z');
+  markMessageRejected(db, m2);
+  expect(chatUnsentCount(db)).toBe(1);
+  // محادثة رفض الخادم إنشاءها: رسائلها لا تُرفع أبداً فلا تؤخر التفريغ
+  const g = createGroup(db, me.uid, 'مجموعة مرفوضة', ['u-b']);
+  sendLocal(db, g, me, 'في مرفوضة');
+  expect(chatUnsentCount(db)).toBe(2);
+  markThreadRejected(db, g);
+  expect(chatUnsentCount(db)).toBe(1);
+  db.close();
+});
+
+test('ف٢ ف٦ تفريغ الجهاز لتغيّر الصلاحية ينتظر رسائل المحادثة · والمحادثة موقوفة أثناء كل تفريغ', () => {
+  const sync = body('src/services/cloud.ts', 'export async function syncNow(');
+  expect(sync).toMatch(/r === 'changed' && queued === 0 && chatUnsentCount\(db\) === 0/);
+  const wipe = body('src/services/cloud.ts', 'async function wipeLocal(');
+  expect(wipe).toMatch(/return holdChat\(async \(\) => \{/);
+  const chatNow = body('src/services/cloud.ts', 'export async function chatSyncNow(');
+  expect(chatNow).toMatch(/if \(paused \|\| chatHeld \|\|/);
+  // وكل تفريغ في الخدمة يمرّ بـ wipeLocal وحدها
+  const cloud = src('src/services/cloud.ts');
+  const direct = [...cloud.matchAll(/(?<![A-Za-z])wipeAllData\(/g)].length;
+  expect(direct).toBe(1);
+});
+
+test('ف٥ إزالة العضو لا تُظهر فشلاً بعد نجاحها لفشل تنظيف المحادثة', () => {
+  const rm = body('src/services/cloud.ts', 'export async function removeMemberNow(');
+  expect(rm).toMatch(/await removeMember\(/);
+  expect(rm).toMatch(/chatRemoveMember\([^;]*\)\s*\.catch\(\(\) => \{\}\)/);
+});
+
+test('ف٧ «إعلان مهم» يُرسل من المسؤول وحده ولو بقي مختاراً بعد زوال صفته', () => {
+  const chat = src('app/chat.tsx');
+  expect(chat).toMatch(/const canAck = me\.owner \|\| \(thread\?\.kind === 'group' && isGroupAdmin\(me, thread\)\);/);
+  expect(chat).toMatch(/sendLocal\(db, id, me, text, link, \{ men, tag, ack: ack && canAck \}\)/);
+  expect(chat).toMatch(/\{canAck \? \(\s*<Chip label=\{t\('chat\.important'\)\}/);
+});

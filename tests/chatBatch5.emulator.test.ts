@@ -167,10 +167,34 @@ d('أجوبة المالك 2026-10-08T10:24Z', () => {
 
   test('#٧ المهمة يلغيها منشئها فتبقى «ملغاة» · ولا ينجزها مسؤولها بعد الإلغاء · ولا يلغيها غير منشئها', async () => {
     expect(await status(chat(A).setTask(G, 'M1', { title: 'تُلغى', as: B, due: '2026-12-31', done: false }))).toBe(200);
-    expect(await status(chat(B).cancelTask(G, 'M1', true))).toBe(403);
-    expect(await status(chat(A).cancelTask(G, 'M1', true))).toBe(200);
+    expect(await status(chat(B).cancelTask(G, 'M1'))).toBe(403);
+    expect(await status(chat(A).cancelTask(G, 'M1'))).toBe(200);
     expect(await status(chat(B).setTaskDone(G, 'M1', true))).toBe(403);
     const t = (await chat(B).stateSince(G, null)).find((x) => x.k === 'task')!;
     expect([t.cx, t.done]).toEqual([true, false]);
+  });
+
+  test('تحقق الدمج ف١: الملغاة تبقى ملغاة · لا يعدّلها منشئها ولا يعيدها، فلا يُسقط التعديلُ إلغاءها', async () => {
+    expect(await status(chat(A).setTask(G, 'M1', { title: 'تُلغى', as: B, due: '2026-12-31', done: false }))).toBe(200);
+    expect(await status(chat(A).cancelTask(G, 'M1'))).toBe(200);
+    expect(await status(chat(A).setTask(G, 'M1', { title: 'معدّلة', as: B, due: '2027-01-01', done: false }))).toBe(403);
+    // ولا إعادة بكتابة الإلغاء وحده
+    const raw = await fetch(url(`orgs/${ORG}/chats/${G}/st/t_M1?updateMask.fieldPaths=cx`), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(A) },
+      body: JSON.stringify({ fields: encodeFields({ cx: false }) }) });
+    expect(raw.status).toBe(403);
+    const t = (await chat(B).stateSince(G, null)).find((x) => x.k === 'task')!;
+    expect([t.title, t.cx]).toEqual(['تُلغى', true]);
+  });
+
+  test('تحقق الدمج ف٣: منشئ المهمة يلغيها ولو غادر مسؤولها المجموعة · ولا يعدّلها إلى مسؤول ليس من أطرافها', async () => {
+    expect(await status(chat(A).setTask(G, 'M1', { title: 'مسؤولها يغادر', as: B, due: '2026-12-31', done: false }))).toBe(200);
+    expect(await status(chat(A).sendMessage(G, { id: 'M2', name: NAMES[A], body: 'ثانية', link: null }))).toBe(200);
+    expect(await status(chat(A).setTask(G, 'M2', { title: 'تبقى', as: B, due: '2026-12-31', done: false }))).toBe(200);
+    expect(await status(chat(B).leaveGroup(G))).toBe(200);
+    expect(await status(chat(A).setTask(G, 'M2', { title: 'تعديل', as: B, due: '2026-12-31', done: false }))).toBe(403);
+    expect(await status(chat(A).cancelTask(G, 'M1'))).toBe(200);
+    const t = (await chat(A).stateSince(G, null)).find((x) => x.id === 't_M1')!;
+    expect(t.cx).toBe(true);
   });
 });

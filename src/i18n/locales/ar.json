@@ -483,8 +483,7 @@
     "toPurchase": "تحويل إلى فاتورة شراء",
     "editTask": "تعديل المهمة",
     "taskCancelled": "ملغاة",
-    "taskCancel": "إلغاء المهمة",
-    "taskRestore": "إعادة المهمة"
+    "taskCancel": "إلغاء المهمة"
   },
   "auth": {
     "fail": {

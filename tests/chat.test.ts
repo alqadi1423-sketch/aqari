@@ -79,11 +79,11 @@ function fakeCloud() {
         const cur = list.find((x) => x.id === 't_' + msgId);
         st.set(threadId, [...list.filter((x) => x.id !== 't_' + msgId), { id: 't_' + msgId, k: 'task', m: msgId, ...task, by: cur?.by ?? uid, ts: ts() }]);
       },
-      async cancelTask(threadId: string, msgId: string, cx: boolean) {
+      async cancelTask(threadId: string, msgId: string) {
         guard();
         const list = st.get(threadId) ?? [];
         const cur = list.find((x) => x.id === 't_' + msgId)!;
-        st.set(threadId, [...list.filter((x) => x.id !== 't_' + msgId), { ...cur, cx, ts: ts() }]);
+        st.set(threadId, [...list.filter((x) => x.id !== 't_' + msgId), { ...cur, cx: true, ts: ts() }]);
       },
       async vote(threadId: string, msgId: string, o: number[]) {
         guard();
@@ -779,7 +779,7 @@ test('القنوات عند المالك: الإعلانات وقسمٌ له ع�
   expect(cc.threads.get(channelId({ t: 'prop', id: p1 }))!.p).toEqual([OWNER.uid]);
 });
 
-test('العضو ينضم تلقائياً إلى قنوات أقسامه وعقاراته وحدها · وما لم يُنشأ بعد يُعاد بعد ساعة', async () => {
+test('العضو ينضم تلقائياً إلى قنوات أقسامه وعقاراته وحدها · وما لم يُنشأ بعد يُعاد بعد دورة المالك (عشر دقائق · تحقق الدمج ف٤)', async () => {
   const { autoJoinChannels, ensureChannels, channelId } = await import('@/chat');
   const { saveMembership } = await import('@/services/access');
   const o = memDb();
@@ -802,7 +802,7 @@ test('العضو ينضم تلقائياً إلى قنوات أقسامه وعق
   expect(cc.calls.joinTries).toBe(tries + 1);
   await autoJoinChannels(m, cc.remote(MEMBER.uid), MEMBER, 1_000_000 + 60_000);
   expect(cc.calls.joinTries).toBe(tries + 1);
-  await autoJoinChannels(m, cc.remote(MEMBER.uid), MEMBER, 1_000_000 + 61 * 60_000);
+  await autoJoinChannels(m, cc.remote(MEMBER.uid), MEMBER, 1_000_000 + 11 * 60_000);
   expect(cc.calls.joinTries).toBe(tries + 2);
 });
 
@@ -919,6 +919,6 @@ test('#٦ محادثة العقار حين يكون فيها عضو غير ال�
   const s = { projectId: 'p', uid: OWNER.uid, email: OWNER.email, idToken: async () => 't' };
   await chatSetTask(a, s, 'ORG', tid, m1, { title: 'تُلغى', as: OWNER.uid, due: '2026-01-01', done: false }, cloud.remote(OWNER.uid));
   await chatSetTask(a, s, 'ORG', tid, m2, { title: 'تبقى', as: OWNER.uid, due: '2026-06-01', done: false }, cloud.remote(OWNER.uid));
-  await chatCancelTask(a, s, 'ORG', tid, m1, true, cloud.remote(OWNER.uid));
+  await chatCancelTask(a, s, 'ORG', tid, m1, cloud.remote(OWNER.uid));
   expect(myTasks(a, OWNER.uid).map((x) => [x.title, x.cx])).toEqual([['تبقى', false], ['تُلغى', true]]);
 });

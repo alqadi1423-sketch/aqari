@@ -14,7 +14,8 @@ import { channelId, type ChannelRef, type ChatMe } from './types';
 import { getSyncState, setSyncState } from '../sync/engine';
 
 export const ANNOUNCE_NAME = 'إعلانات الإدارة'; // i18n-exempt: اسم القناة المخزّن
-const JOIN_RETRY_MS = 60 * 60_000;
+// القناة التي لم تُنشأ بعد تُعاد بعد دورة جهاز المالك (عشر دقائق) · فمحادثة العقار التي تُنشأ لأول عضو فيه لا تتأخر ساعة (تحقق الدمج ف٤)
+const JOIN_RETRY_MS = 10 * 60_000;
 
 interface MemberPerm { uid: string; perm: Record<string, number>; all: boolean; props: string[] }
 

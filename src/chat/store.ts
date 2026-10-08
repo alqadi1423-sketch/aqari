@@ -194,6 +194,15 @@ export function sendLocal(db: DB, threadId: string, me: { uid: string; name: str
   return id;
 }
 
+/**
+ * ما ينتظر الرفع من المحادثة: رسائل لم تُرسل في محادثة لم يرفضها الخادم · لا يُفرَّغ الجهاز لتغيّر الصلاحية قبل رفعها
+ * (تحقق الدمج ف٢، كطابور المزامنة العامة) · والمرفوضة لا تُعاد فلا تُحتسب
+ */
+export function chatUnsentCount(db: DB): number {
+  return Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM chat_messages m JOIN chat_threads t ON t.id = m.thread_id
+    WHERE m.sent = 0 AND t.pending != 2`)?.n ?? 0);
+}
+
 export function pendingMessages(db: DB): ChatMessage[] {
   return db.all<MsgRow>(`SELECT * FROM chat_messages WHERE sent = 0 ORDER BY local_at`).map(msgOf);
 }

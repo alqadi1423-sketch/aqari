@@ -276,6 +276,8 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const reads = useMemo(() => readsOf(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
   const acks = useMemo(() => acksOf(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
   const tasks = useMemo(() => tasksIn(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // الإعلان المهم بتأكيد الاطلاع للمسؤولين وحدهم (قرار المالك 2026-10-08T10:24Z) · ومن فقد صفته وهو يكتب لا يُرسله (تحقق الدمج ف٧)
+  const canAck = me.owner || (thread?.kind === 'group' && isGroupAdmin(me, thread));
   const joinedAfter = thread?.settings.h === 'join' ? thread.joined : {};
   const mySections = useMemo(() => (access.owner ? SECTION_KEYS : SECTION_KEYS.filter((k) => ((access.perms as Record<string, number>)[k] ?? 0) >= 1)) as string[], [access]);
   const people = useMemo(() => listPeople(db), [db, tick]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -296,19 +298,19 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const send = useCallback(() => {
     if (!text.trim() && !link) return;
     try {
-      sendLocal(db, id, me, text, link, { men, tag, ack });
+      sendLocal(db, id, me, text, link, { men, tag, ack: ack && canAck });
     } catch (e) {
       reportFailure({ title: t('chat.sendFailed'), e });
       return;
     }
     setTextState(''); setLink(null); setMen([]); setTag(null); setAck(false); bump();
     chatSyncNow({ threadId: id }).catch(() => {});
-  }, [db, id, me, text, link, men, tag, ack, bump, t]);
+  }, [db, id, me, text, link, men, tag, ack, canAck, bump, t]);
   const vote = async (m: ChatMessage, options: number[]) => {
     try { await chatVoteNow(id, m.id, options); bump(); } catch (e) { reportFailure({ title: t('chat.voteFailed'), e }); }
   };
   const cancelTask = async (task: TaskRow) => {
-    try { await chatCancelTaskNow(id, task.msgId, !task.cx); bump(); } catch (e) { reportFailure({ title: t('chat.taskFailed'), e }); }
+    try { await chatCancelTaskNow(id, task.msgId); bump(); } catch (e) { reportFailure({ title: t('chat.taskFailed'), e }); }
   };
   const toggleTask = async (task: TaskRow) => {
     try { await chatTaskDoneNow(id, task.msgId, !task.done); bump(); }
@@ -391,9 +393,9 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
                     {!tasks[m.id].cx && (tasks[m.id].as === me.uid || tasks[m.id].by === me.uid) ? (
                       <BtnGhost small title={tasks[m.id].done ? t('chat.taskReopen') : t('chat.taskMarkDone')} onPress={() => toggleTask(tasks[m.id])} />
                     ) : null}
-                    {/* الإلغاء لمنشئها وحده · فتبقى «ملغاة» */}
-                    {tasks[m.id].by === me.uid ? (
-                      <BtnGhost small title={tasks[m.id].cx ? t('chat.taskRestore') : t('chat.taskCancel')} onPress={() => cancelTask(tasks[m.id])} />
+                    {/* الإلغاء لمنشئها وحده · فتبقى «ملغاة» لا تُعدَّل ولا تُعاد */}
+                    {!tasks[m.id].cx && tasks[m.id].by === me.uid ? (
+                      <BtnGhost small title={t('chat.taskCancel')} onPress={() => cancelTask(tasks[m.id])} />
                     ) : null}
                   </Row>
                 </View>
@@ -431,7 +433,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
           <Row style={{ flexWrap: 'wrap', paddingTop: 4 }}>
             {CHAT_TAGS.map((k) => <Chip key={k} label={t('chat.tag.' + k)} active={tag === k} onPress={() => setTag(tag === k ? null : k)} />)}
             {/* الإعلان المهم بتأكيد الاطلاع للمسؤولين وحدهم (قرار المالك 2026-10-08T10:24Z) */}
-            {me.owner || (thread?.kind === 'group' && isGroupAdmin(me, thread)) ? (
+            {canAck ? (
               <Chip label={t('chat.important')} active={ack} onPress={() => setAck(!ack)} />
             ) : null}
           </Row>
@@ -463,7 +465,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
       {actFor && thread ? (
         <MessageActions m={actFor} canReply={canSendIn(me, thread) && actFor.sent && !actFor.rejected} canPin={canPin} pinned={pins.includes(actFor.id)}
           canEdit={actFor.sender === me.uid && actFor.sent && !actFor.sys && canSendIn(me, thread)}
-          canTask={actFor.sent && !actFor.sys && (tasks[actFor.id] ? tasks[actFor.id].by === me.uid : canSendIn(me, thread))}
+          canTask={actFor.sent && !actFor.sys && (tasks[actFor.id] ? !tasks[actFor.id].cx && tasks[actFor.id].by === me.uid : canSendIn(me, thread))}
           onTask={() => { setTaskFor(actFor); setActFor(null); }} hasTask={!!tasks[actFor.id]}
           canClaim={actFor.sent && !actFor.sys && claimsPerm.add} onClaim={() => { toClaim(actFor); setActFor(null); }}
           canPurchase={actFor.sent && !actFor.sys && purchasesPerm.add} onPurchase={() => { toPurchase(actFor); setActFor(null); }} acks={actFor.ack ? ackersFrom(acks, actFor, thread.members, joinedAfter) : null}

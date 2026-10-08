@@ -612,7 +612,10 @@ service cloud.firestore {
             && sid == 't_' + request.resource.data.m
             && exists(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m))
             && request.resource.data.title is string && request.resource.data.title.size() > 0 && request.resource.data.title.size() <= 200
-            && request.resource.data.as is string && request.resource.data.as in get(chatPath(org, chatId)).data.p
+            && request.resource.data.as is string
+            // مسؤولها من أطرافها · إلا الإلغاء وحده، فيُلغيها منشئها ولو غادر مسؤولها (تحقق الدمج ف٣)
+            && (request.resource.data.as in get(chatPath(org, chatId)).data.p
+                || (resource != null && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['cx', 'ts'])))
             && request.resource.data.due is string && request.resource.data.due.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
             && request.resource.data.done is bool
             && (resource == null
@@ -621,9 +624,11 @@ service cloud.firestore {
                     && get(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.m)).data.get('sys', null) == null
                     && chatMsgVisible(org, chatId, request.resource.data.m))
                 : (request.resource.data.by == resource.data.by
+                    // الملغاة تبقى «ملغاة»: لا تُعدَّل ولا تُنجز ولا تُعاد (قرار المالك 2026-10-08T10:24Z · تحقق الدمج ف١)
+                    && resource.data.get('cx', false) == false
                     && (resource.data.by == request.auth.uid
-                        // المسؤول ينجزها وحده ما لم تُلغَ · والإلغاء لمنشئها (قرار المالك 2026-10-08T10:24Z)
-                        || (resource.data.as == request.auth.uid && resource.data.get('cx', false) == false
+                        // والإلغاء لمنشئها · والمسؤول ينجزها وحده
+                        || (resource.data.as == request.auth.uid
                             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['done', 'ts']))))))
         // الصوت في استطلاع (الدفعة ٥): v_رقمها_رقمي · لنفسه وحده ويُغيَّر · خيارٌ واحد إلا إن سُمح بأكثر · لما يقرؤه
         || (request.resource.data.keys().hasOnly(['k', 'm', 'by', 'o', 'ts']) && request.resource.data.k == 'vote'

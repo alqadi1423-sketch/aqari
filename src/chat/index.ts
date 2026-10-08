@@ -22,7 +22,7 @@ export {
   listThreads, getThread, openDirect, createGroup, listMessages, sendLocal, markRead, listPeople, personName,
   mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft,
   ackersOf, acksOf, ackersFrom, searchMessages, latinDigits, type ChatSearch,
-  tasksIn, myTasks, pollResults, type TaskRow,
+  tasksIn, myTasks, pollResults, chatUnsentCount, type TaskRow,
 } from './store';
 export { linkTarget, linkCandidates } from './links';
 
@@ -241,10 +241,10 @@ export async function chatSetTaskDone(db: DB, s: ChatSession, org: string, threa
   applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
 }
 
-/** إلغاء المهمة أو إعادتها · لمنشئها · ثم الحال كما في الخادم (قرار المالك 2026-10-08T10:24Z) */
-export async function chatCancelTask(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, cancelled: boolean,
+/** إلغاء المهمة · لمنشئها · ثم الحال كما في الخادم (قرار المالك 2026-10-08T10:24Z) */
+export async function chatCancelTask(db: DB, s: ChatSession, org: string, threadId: string, msgId: string,
   r: ChatRemote = remoteFor(s, org)): Promise<void> {
-  await r.cancelTask(threadId, msgId, cancelled);
+  await r.cancelTask(threadId, msgId);
   applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
 }
 

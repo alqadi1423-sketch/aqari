@@ -440,11 +440,11 @@ export class ChatRemote {
     });
   }
 
-  /** إلغاء المهمة أو إعادتها · لمنشئها وحده · فتبقى بحالة «ملغاة» (قرار المالك 2026-10-08T10:24Z) */
-  async cancelTask(threadId: string, msgId: string, cancelled: boolean): Promise<void> {
+  /** إلغاء المهمة · لمنشئها وحده · فتبقى بحالة «ملغاة» لا تُعدَّل ولا تُنجز ولا تُعاد (قرار المالك 2026-10-08T10:24Z) */
+  async cancelTask(threadId: string, msgId: string): Promise<void> {
     await this.req('POST', `${this.root}:commit`, {
       writes: [{
-        update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}/st/t_${msgId}`)}`, fields: encodeFields({ cx: cancelled }) },
+        update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}/st/t_${msgId}`)}`, fields: encodeFields({ cx: true }) },
         updateMask: { fieldPaths: ['cx'] },
         currentDocument: { exists: true },
         updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],

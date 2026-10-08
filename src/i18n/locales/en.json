@@ -483,8 +483,7 @@
     "toPurchase": "Turn into a purchase invoice",
     "editTask": "Edit task",
     "taskCancelled": "Cancelled",
-    "taskCancel": "Cancel task",
-    "taskRestore": "Restore task"
+    "taskCancel": "Cancel task"
   },
   "auth": {
     "fail": {
