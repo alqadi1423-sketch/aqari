@@ -110,7 +110,9 @@ export async function updateMemberProfile(
   return { before, after: profile };
 }
 
-export const removeMember = (remote: FirestoreRemote, org: string, uid: string) => remote.deleteDoc(`orgs/${org}/members/${uid}`);
+/** إزالة العضو ومعها دعوةٌ باقية بإيميله، فلا يعود بها بنفسه (مراجعة التثبيت #36) */
+export const removeMember = (remote: FirestoreRemote, org: string, uid: string, email?: string) =>
+  remote.commitDocs([], [`orgs/${org}/members/${uid}`, ...(email ? [`orgs/${org}/invites/${normEmail(email)}`] : [])]);
 export const revokeInvite = (remote: FirestoreRemote, org: string, email: string) => remote.deleteDoc(`orgs/${org}/invites/${normEmail(email)}`);
 
 /**
@@ -148,8 +150,8 @@ export async function findInvites(remote: FirestoreRemote, email: string): Promi
 export async function acceptInvite(db: DB, remote: FirestoreRemote, org: string, uid: string, invite: MemberDoc): Promise<Membership> {
   const raw = await remote.getDoc(`orgs/${org}/invites/${invite.email}`);
   if (!raw) throw new Error('الدعوة لم تعد قائمة · اطلب من صاحب المنشأة دعوة جديدة');
-  await remote.setDoc(`orgs/${org}/members/${uid}`, raw);
-  await remote.deleteDoc(`orgs/${org}/invites/${invite.email}`);
+  // العضوية والدعوة في التزامٍ واحد: القواعد ترفض عضويةً تبقى دعوتها (فلا تُعيد الدعوةُ الباقية المُزالَ) · مراجعة التثبيت #36
+  await remote.commitDocs([{ path: `orgs/${org}/members/${uid}`, data: raw }], [`orgs/${org}/invites/${invite.email}`]);
   const doc = asMemberDoc(raw);
   const m: Membership = { org, uid, perms: doc.perm, allProps: doc.all, props: doc.props, profile: profileOf(doc) };
   db.transaction(() => {

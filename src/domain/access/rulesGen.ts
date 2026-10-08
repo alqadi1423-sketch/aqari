@@ -344,7 +344,9 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
         allow create: if (orgOwner(org) && profileShape(request.resource.data)) || (
           request.auth != null && request.auth.uid == uid && request.auth.token.email_verified == true
           && exists(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email))
-          && request.resource.data == get(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email)).data);
+          && request.resource.data == get(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email)).data
+          // والدعوة تُحذف في الالتزام نفسه: لا تبقى فتُعيد العضو بعد إزالته (مراجعة التثبيت #36)
+          && !existsAfter(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email)));
         allow update: if (orgOwner(org) && profileShape(request.resource.data)) || (
           request.auth != null && request.auth.uid == uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'phone', 'nid', 'title'])
@@ -353,11 +355,12 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
       }
 
       match /invites/{email} {
-        allow read: if orgOwner(org) || (request.auth != null && request.auth.token.email == email);
+        // بإيميلٍ متحقَّق وحده (مراجعة التثبيت #41: لو فُعّل مزوّدٌ يقبل غير المتحقق)
+        allow read: if orgOwner(org) || (request.auth != null && request.auth.token.email_verified == true && request.auth.token.email == email);
         // لا دعوة لإيميل المالك نفسه
         allow create, update: if orgOwner(org) && request.resource.data.email == email
           && email != request.auth.token.email && profileShape(request.resource.data);
-        allow delete: if orgOwner(org) || (request.auth != null && request.auth.token.email == email);
+        allow delete: if orgOwner(org) || (request.auth != null && request.auth.token.email_verified == true && request.auth.token.email == email);
       }
 
       // حروف الأجهزة في ترقيم المنشأة · العضو يضيف حرف جهازه ولا يغيّر حرفاً قائماً
@@ -407,7 +410,7 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
 
     // العضو يجد دعوته بإيميله بين المنشآت
     match /{path=**}/invites/{email} {
-      allow read: if request.auth != null && resource.data.email == request.auth.token.email;
+      allow read: if request.auth != null && request.auth.token.email_verified == true && resource.data.email == request.auth.token.email;
     }
 ${END}`;
 }

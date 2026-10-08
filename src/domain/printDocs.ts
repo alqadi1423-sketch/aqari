@@ -360,7 +360,7 @@ export function buildContractDoc(co: CompanyInfo, c: ContractDocData, issuedAt: 
   </div>
   <div class="inv-meta">
     <div class="inv-box"><b>المدة:</b> <span class="num">${c.start ? dfmt(c.start) : 'لا يوجد'}</span> إلى <span class="num">${c.end ? dfmt(c.end) : 'لا يوجد'}</span><br><b>الدورية:</b> ${esc(c.cycle)}</div>
-    <div class="inv-box"><b>${services || parking ? ar('lease.print.rent') : ar('lease.print.value')}:</b> <span class="num">${fmt(c.valueHalalas)}</span> ${SAR}${splitHtml}<br><b>التأمين:</b> <span class="num">${fmt(c.depositHalalas)}</span> ${SAR}${c.depositHolderLabel ? ' · ' + c.depositHolderLabel : ''}</div>
+    <div class="inv-box"><b>${services || parking ? ar('lease.print.rent') : ar('lease.print.value')}:</b> <span class="num">${fmt(c.valueHalalas)}</span> ${SAR}${splitHtml}<br><b>التأمين:</b> <span class="num">${fmt(c.depositHalalas)}</span> ${SAR}${c.depositHolderLabel ? ' · ' + esc(c.depositHolderLabel) : ''}</div>
   </div>`;
   return pagedDoc(co, 'عقد إيجار · نسخة المكتب', c.contractNo || undefined, issuedAt, intro, chunks);
 }

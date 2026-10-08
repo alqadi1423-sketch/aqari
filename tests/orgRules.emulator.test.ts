@@ -211,9 +211,13 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
       body: JSON.stringify({ fields: encodeFields({ ...inv, perm: { collect: 3 } }) }),
     });
     expect(res.status).toBe(403); // رفع صلاحيته بنفسه
-    const ok = await fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/members/U-NEW`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token('U-NEW', 'new-member@example.test') },
-      body: JSON.stringify({ fields: encodeFields(inv) }),
+    // العضوية والدعوة في التزامٍ واحد (مراجعة التثبيت #36: الدعوة لا تبقى بعد قبولها)
+    const ok = await fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents:commit`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token('U-NEW', 'new-member@example.test') },
+      body: JSON.stringify({ writes: [
+        { update: { name: `projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/members/U-NEW`, fields: encodeFields(inv) } },
+        { delete: `projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/invites/new-member@example.test` },
+      ] }),
     });
     expect(ok.status).toBe(200);
     // غريبٌ بإيميل آخر لا يقبلها

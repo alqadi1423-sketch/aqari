@@ -324,6 +324,16 @@ export class FirestoreRemote implements RemoteStore {
     await this.call(`${this.root}:commit`, { writes: [{ update: { name: `${this.docsRoot}/${path}`, fields: encodeFields(data) } }] });
   }
 
+  /** كتابة مستندات وحذف غيرها في التزامٍ واحد ذرّي (قبول الدعوة يحذفها مع إنشاء العضوية · مراجعة التثبيت #36) */
+  async commitDocs(sets: Array<{ path: string; data: Record<string, unknown> }>, deletes: string[]): Promise<void> {
+    await this.call(`${this.root}:commit`, {
+      writes: [
+        ...sets.map((x) => ({ update: { name: `${this.docsRoot}/${x.path}`, fields: encodeFields(x.data) } })),
+        ...deletes.map((path) => ({ delete: `${this.docsRoot}/${path}` })),
+      ],
+    });
+  }
+
   async deleteDoc(path: string): Promise<void> {
     await this.call(`${this.root}:commit`, { writes: [{ delete: `${this.docsRoot}/${path}` }] });
   }

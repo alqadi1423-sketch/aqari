@@ -871,7 +871,7 @@ export async function setChatSupervisorNow(email: string, sections: string[]): P
 }
 export async function removeMemberNow(uid: string, email = '') {
   const t = teamRemote();
-  await removeMember(t.remote, t.org, uid);
+  await removeMember(t.remote, t.org, uid, email);
   // يخرج من مجموعات المحادثة ودليلها وإشرافها (قرار المالك 2026-10-07: #19)
   const s = getSession(); const cfg = cloudConfig();
   // وفشله لا يُظهر الإزالة فاشلةً وقد تمّت (تحقق الدمج ف٥) · والقواعد تمنع المُزال من المحادثة بعضويته أصلاً

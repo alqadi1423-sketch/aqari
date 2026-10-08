@@ -9,6 +9,7 @@
  *  - العضو الذي ينقصه الاسم أو الجوال تظهر له شاشة الإكمال بعد قبوله الدعوة (توجيه المالك ٢٠٢٦-١٠-٠٥).
  * والبناء بلا إعداد Firebase (بيئة التطوير) يمرّ كما هو.
  */
+import { legalUrls as legalUrlsOf } from '../domain/legal';
 import React, { useEffect, useState } from 'react';
 import { View, Pressable, ActivityIndicator, Linking, ScrollView } from 'react-native';
 import { T, BtnPrimary, BtnGhost, Note } from './components';
@@ -29,11 +30,9 @@ import { MyProfileForm } from './ProfileForm';
 import { getSyncState } from '../sync/engine';
 import { DecisionSheet } from './DecisionSheet';
 
-/** صفحتا الشروط والخصوصية على استضافة المشروع · تُنشران بعد مراجعة المالك لمسودتيهما */
+/** صفحتا الشروط والخصوصية · لا يظهر رابطاهما قبل نشرهما (src/domain/legal.ts · مراجعة التثبيت #45) */
 export function legalUrls(): { terms: string; privacy: string } | null {
-  const cfg = cloudConfig();
-  if (!cfg) return null;
-  return { terms: `https://${cfg.projectId}.web.app/terms`, privacy: `https://${cfg.projectId}.web.app/privacy` };
+  return legalUrlsOf(cloudConfig()?.projectId);
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
