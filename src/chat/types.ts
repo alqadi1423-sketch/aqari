@@ -73,7 +73,15 @@ export interface ChatMessage {
   re: string | null;
   /** الإشارات: «u:رقم عضو» و«s:قسم» */
   men: string[];
+  /** الدفعة ٣: الوسم، والإعلان المهم بتأكيد الاطلاع، وعدد تعديلاتها */
+  tag: ChatTag | null;
+  ack: boolean;
+  ev: number;
 }
+
+/** الوسوم (الدفعة ٣ · 2026-10-08T05:31Z): عاجل، قرار، متابعة · مطابقة لقواعد الخادم */
+export type ChatTag = 'urgent' | 'decision' | 'followup';
+export const CHAT_TAGS: readonly ChatTag[] = ['urgent', 'decision', 'followup'];
 
 /** إشارة إلى عضو أو قسم في الرسالة (الدفعة ٢ · 2026-10-08T05:31Z) */
 export const mentionUser = (uid: string) => 'u:' + uid;

@@ -428,7 +428,33 @@
     "everyoneRead": "Everyone has read it",
     "read": "Read",
     "readCount": "Read by {{n}}",
-    "pinOffline": "Pinning needs an internet connection"
+    "pinOffline": "Pinning needs an internet connection",
+    "search": "Search",
+    "byPerson": "Person",
+    "fromDate": "From date (YYYY/MM/DD)",
+    "toDate": "To date (YYYY/MM/DD)",
+    "noResults": "No results",
+    "tag": {
+      "urgent": "Urgent",
+      "decision": "Decision",
+      "followup": "Follow-up"
+    },
+    "important": "Important notice",
+    "ackNow": "I have read this",
+    "acked": "You confirmed",
+    "ackCount": "{{n}} of {{total}} confirmed",
+    "ackedBy": "Confirmed by",
+    "notAcked": "Not confirmed yet",
+    "everyoneAcked": "Everyone confirmed",
+    "ackFailed": "Could not confirm",
+    "edit": "Edit",
+    "edited": "Edited",
+    "editHistory": "Edit history",
+    "editFailed": "Could not edit",
+    "beforeEdit": "Before edit {{n}}",
+    "nowText": "Current text",
+    "needOnline": "This needs an internet connection",
+    "historyFailed": "Could not load the edit history"
   },
   "auth": {
     "fail": {

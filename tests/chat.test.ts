@@ -9,7 +9,7 @@ import { confirmContract } from '@/domain/contracts/service';
 import { OWNER_ACCESS } from '@/domain/access/access';
 import {
   openDirect, createGroup, sendLocal, listMessages, listThreads, markRead, linkTarget, linkCandidates, directId, canCreateGroup,
-  OWNER_JOINED, REVIEW_ENTITY, JOIN_ENTITY, type ChatMe, type ChatLink,
+  OWNER_JOINED, REVIEW_ENTITY, JOIN_ENTITY, type ChatMe, type ChatLink, type ChatTag,
 } from '@/chat';
 import { applyRemoteThread, applyRemoteMessage } from '@/chat/store';
 import { chatSyncOnce } from '@/chat/sync';
@@ -44,14 +44,34 @@ function fakeCloud() {
         return { msgs: list, ids: list.length, lastTs: list.length ? list[list.length - 1].ts : null };
       },
       async myThreads() { guard(); return [...threads.values()].filter((t) => t.p.includes(uid)); },
-      async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null; re?: string | null; men?: string[] }) {
+      async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null; re?: string | null; men?: string[]; tag?: ChatTag | null; ack?: boolean }) {
         guard();
         state.sends++;
         const list = msgs.get(threadId) ?? [];
         if (list.some((x) => x.id === m.id)) return 'exists';
-        list.push({ id: m.id, from: uid, name: m.name, body: m.body, link: m.link, ts: ts(), re: m.re ?? null, men: m.men ?? [] });
+        list.push({ id: m.id, from: uid, name: m.name, body: m.body, link: m.link, ts: ts(), re: m.re ?? null, men: m.men ?? [], tag: m.tag ?? null, ack: !!m.ack, ev: 0 });
         msgs.set(threadId, list);
         return 'created';
+      },
+      async acknowledge(threadId: string, msgId: string) {
+        guard();
+        const list = st.get(threadId) ?? [];
+        if (list.some((x) => x.id === 'a_' + msgId + '_' + uid)) return 'exists';
+        st.set(threadId, [...list, { id: 'a_' + msgId + '_' + uid, k: 'ack', m: msgId, by: uid, ts: ts() }]);
+        return 'created';
+      },
+      async editMessage(threadId: string, msgId: string, body: string, tag: ChatTag | null) {
+        guard();
+        const m = (msgs.get(threadId) ?? []).find((x) => x.id === msgId)!;
+        if (m.from !== uid) throw new Error('Firestore 403: not sender');
+        m.body = body; m.tag = tag; m.ev = (m.ev ?? 0) + 1;
+        const list = st.get(threadId) ?? [];
+        st.set(threadId, [...list.filter((x) => x.id !== 'x_' + msgId), { id: 'x_' + msgId, k: 'edit', m: msgId, n: m.ev, ts: ts() }]);
+        return m.ev;
+      },
+      async getMessage(threadId: string, msgId: string) {
+        guard();
+        return { ...(msgs.get(threadId) ?? []).find((x) => x.id === msgId)! };
       },
       async setPin(threadId: string, msgId: string, on: boolean) {
         guard();
@@ -598,4 +618,93 @@ test('الدفعة ٢ · تاريخ العرض من وقت الخادم بالم
   const { tsDate } = await import('@/chat');
   expect(tsDate('2026-01-01T10:20:30.123456789Z').toISOString()).toBe('2026-01-01T10:20:30.123Z');
   expect(tsDate('2026-01-01T10:20:30Z').toISOString()).toBe('2026-01-01T10:20:30.000Z');
+});
+
+/* ─── الدفعة ٣: الإعلان المهم والتعديل والوسوم والبحث (قرار المالك 2026-10-08T05:31Z) ─── */
+
+test('الإعلان المهم والوسم: يُرفعان ويصلان · ومن أكّد ومن لم يؤكّد', async () => {
+  const { ackersOf, chatAcknowledge } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  sendLocal(a, tid, OWNER, 'إعلان', null, { tag: 'urgent', ack: true });
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  const m = listMessages(b, tid)[0];
+  expect([m.tag, m.ack]).toEqual(['urgent', true]);
+  const s = { projectId: 'p', uid: MEMBER.uid, email: MEMBER.email, idToken: async () => 't' };
+  await chatAcknowledge(b, s, 'ORG', tid, m.id, cloud.remote(MEMBER.uid));
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER, { force: true });
+  expect(ackersOf(a, tid, listMessages(a, tid)[0], [OWNER.uid, MEMBER.uid])).toEqual({ acked: [MEMBER.uid], pending: [] });
+});
+
+test('التعديل: لمرسلها · ويصل الطرف الآخر نصها الجديد ووسمها وأنها عُدِّلت', async () => {
+  const { chatEditMessage } = await import('@/chat');
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  const mid = sendLocal(a, tid, OWNER, 'أول');
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  const s = { projectId: 'p', uid: OWNER.uid, email: OWNER.email, idToken: async () => 't' };
+  await chatEditMessage(a, s, 'ORG', tid, mid, 'ثانٍ', 'decision', cloud.remote(OWNER.uid));
+  expect(listMessages(a, tid).map((m) => [m.body, m.tag, m.ev])).toEqual([['ثانٍ', 'decision', 1]]);
+  // الطرف الآخر: إشارة التعديل في الحال تجلب الرسالة
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { force: true });
+  expect(listMessages(b, tid).map((m) => [m.body, m.tag, m.ev])).toEqual([['ثانٍ', 'decision', 1]]);
+  // ولا يعدّل غير مرسلها · ولا نصاً فارغاً
+  const sb = { projectId: 'p', uid: MEMBER.uid, email: MEMBER.email, idToken: async () => 't' };
+  await expect(chatEditMessage(b, sb, 'ORG', tid, mid, 'ليس لي', null, cloud.remote(MEMBER.uid))).rejects.toThrow();
+  await expect(chatEditMessage(a, s, 'ORG', tid, mid, '   ', null, cloud.remote(OWNER.uid))).rejects.toThrow();
+});
+
+test('البحث على الجهاز: بالنص والشخص والتاريخ والوسم · وفي محادثاتي وحدها', async () => {
+  const { searchMessages } = await import('@/chat');
+  const a = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  applyRemoteMessage(a, tid, { id: 's1', from: MEMBER.uid, name: 'ب', body: 'عقد الوحدة ١', link: null, ts: '2026-03-01T10:00:00.000000000Z', tag: 'urgent' });
+  applyRemoteMessage(a, tid, { id: 's2', from: OWNER.uid, name: 'أ', body: 'عقد الوحدة ٢', link: null, ts: '2026-04-01T10:00:00.000000000Z' });
+  applyRemoteThread(a, { id: 'd_x_y', k: 'direct', p: ['x', 'y'], name: '', by: 'x', at: null });
+  applyRemoteMessage(a, 'd_x_y', { id: 's3', from: 'x', name: 'س', body: 'عقد ليس لي', link: null, ts: '2026-03-01T10:00:00.000000000Z' });
+  const ids = (q: Parameters<typeof searchMessages>[2], onlyMine = true) => searchMessages(a, OWNER.uid, q, onlyMine).map((m) => m.id).sort();
+  expect(ids({ text: 'عقد' })).toEqual(['s1', 's2']);
+  expect(ids({ sender: MEMBER.uid })).toEqual(['s1']);
+  expect(ids({ from: '2026-03-15' })).toEqual(['s2']);
+  expect(ids({ to: '2026-03-15' })).toEqual(['s1']);
+  expect(ids({ tag: 'urgent' })).toEqual(['s1']);
+});
+
+test('الدفعة ٣ · البحث بلا حالة وبالأرقام العربية والشرطة المائلة · ولا يوم غير موجود · ولا حدّ قبل التصفية', async () => {
+  const { searchMessages } = await import('@/chat');
+  const a = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  applyRemoteMessage(a, tid, { id: 'e1', from: MEMBER.uid, name: 'ب', body: 'Contract Renewal', link: null, ts: '2026-03-01T10:00:00.000000000Z' });
+  for (let i = 0; i < 30; i++) applyRemoteMessage(a, tid, { id: 'n' + i, from: OWNER.uid, name: 'أ', body: 'حديثة ' + i, link: null, ts: '2026-09-01T10:00:' + String(i).padStart(2, '0') + '.000000000Z' });
+  const ids = (q: Parameters<typeof searchMessages>[2], limit = 10) => searchMessages(a, OWNER.uid, q, true, limit).map((m) => m.id);
+  expect(ids({ text: 'contract' })).toEqual(['e1']);
+  expect(ids({ to: '٢٠٢٦/٠٣/٠٢' })).toEqual(['e1']);
+  // يوم لا يوجد لا يُعدّ حداً
+  expect(ids({ to: '2026-02-31' }, 50).length).toBe(31);
+  // الحد بعد التصفية: رسالة قديمة لشخص تظهر وإن سبقها كثير
+  expect(ids({ sender: MEMBER.uid }, 5)).toEqual(['e1']);
+});
+
+test('الدفعة ٣ · من أكّد بلا من انضم بعد الإعلان · وتعديل لا يحق جلبه لا يُوسم «معدَّلة» ويُطلب إن جاء أحدث', async () => {
+  const { ackersFrom } = await import('@/chat');
+  const { applyState, staleEdits, markEditUnreadable } = await import('@/chat/store');
+  const m = { id: 'k1', sender: 'u-a', serverTs: '2026-01-01T00:00:10.000000000Z' };
+  expect(ackersFrom({ k1: ['u-b'] }, m, ['u-a', 'u-b', 'u-late', 'u-c'], { 'u-late': '2026-01-01T00:00:30.000000000Z' }))
+    .toEqual({ acked: ['u-b'], pending: ['u-c'] });
+  const a = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  applyRemoteMessage(a, tid, { id: 'x1', from: MEMBER.uid, name: 'ب', body: 'قديم', link: null, ts: '2026-01-01T00:00:00.000000000Z' });
+  applyState(a, tid, [{ id: 'x_x1', k: 'edit', m: 'x1', n: 1, ts: '2026-01-02T00:00:00.000000000Z' }]);
+  expect(staleEdits(a, tid)).toEqual(['x1']);
+  markEditUnreadable(a, tid, 'x1');
+  expect(staleEdits(a, tid)).toEqual([]);
+  expect(listMessages(a, tid)[0].ev).toBe(0);
+  applyState(a, tid, [{ id: 'x_x1', k: 'edit', m: 'x1', n: 2, ts: '2026-01-03T00:00:00.000000000Z' }]);
+  expect(staleEdits(a, tid)).toEqual(['x1']);
 });

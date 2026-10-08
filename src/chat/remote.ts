@@ -6,7 +6,7 @@ import { encodeFields, decodeFields, FirestoreHttpError } from '../cloud/firesto
 
 /** قيمة Firestore كما يفكّها العميل العام · بلا مسّ له */
 type FsValue = Parameters<typeof decodeFields>[0][string];
-import { CHAT_LINK_TYPES, OWNER_JOINED, normTs, type ChatKind, type ChatLink, type ChatPerson, type GroupSettings } from './types';
+import { CHAT_LINK_TYPES, CHAT_TAGS, OWNER_JOINED, normTs, type ChatKind, type ChatLink, type ChatPerson, type ChatTag, type GroupSettings } from './types';
 export { normTs } from './types';
 import { uid as newId } from '../domain/ids';
 
@@ -33,10 +33,15 @@ export interface RemoteMessage {
   id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null;
   /** الرد في سلسلة: رقم الرسالة الأصل · men الإشارات «u:رقم» و«s:قسم» (الدفعة ٢ · 2026-10-08T05:31Z) */
   re?: string | null; men?: string[];
+  /** الدفعة ٣: الوسم، والإعلان المهم بتأكيد الاطلاع، وعدد تعديلاتها ووقت آخرها */
+  tag?: ChatTag | null; ack?: boolean; ev?: number; et?: string | null;
 }
 
+/** ما قبل تعديلٍ في سجل الرسالة (الدفعة ٣) */
+export interface RemoteEdit { n: number; body: string; tag: ChatTag | null; at: string }
+
 /** حال المحادثة (st): التثبيت p_رقم وقراءة كل عضو r_رقمه · بوقت الخادم ts فتُسحب بمؤشر واحد */
-export interface RemoteState { id: string; k: string; ts: string; on?: boolean; by?: string; at?: string }
+export interface RemoteState { id: string; k: string; ts: string; on?: boolean; by?: string; at?: string; m?: string; n?: number }
 
 const tail = (name: string) => name.slice(name.lastIndexOf('/') + 1);
 
@@ -66,6 +71,8 @@ function msgOf(doc: { name: string; fields: Record<string, FsValue> }): RemoteMe
     body: String(d.body ?? ''), link: linkOf(d.link), ts: normTs(d.ts), sys: typeof d.sys === 'string' ? d.sys : null,
     re: typeof d.re === 'string' ? d.re : null,
     men: Array.isArray(d.men) ? (d.men as unknown[]).filter((x): x is string => typeof x === 'string') : [],
+    tag: CHAT_TAGS.includes(d.tag as ChatTag) ? (d.tag as ChatTag) : null,
+    ack: d.ack === true, ev: typeof d.ev === 'number' ? d.ev : 0, et: typeof d.et === 'string' ? normTs(d.et) : null,
   };
 }
 
@@ -171,10 +178,14 @@ export class ChatRemote {
    * الرسالة ومعها فهرس رقمها بلا محتوى (ids/{id}) في التزام واحد · المالك يسرد الفهرس ليحذف في نافذة الحذف
    * دون أن يقرأ الرسائل، فلا يقرؤها إلا أطرافها أو المالك بمراجعةٍ بسببها (قرار المالك 2026-10-08T04:11Z)
    */
-  async sendMessage(threadId: string, m: { id: string; name: string; body: string; link: ChatLink | null; re?: string | null; men?: string[] }): Promise<'created' | 'exists'> {
+  async sendMessage(threadId: string, m: {
+    id: string; name: string; body: string; link: ChatLink | null; re?: string | null; men?: string[]; tag?: ChatTag | null; ack?: boolean;
+  }): Promise<'created' | 'exists'> {
     const fields: Record<string, unknown> = { from: this.o.uid, name: m.name, body: m.body, link: m.link, att: null };
     if (m.re) fields.re = m.re;
     if (m.men?.length) fields.men = m.men;
+    if (m.tag) fields.tag = m.tag;
+    if (m.ack) fields.ack = true;
     try {
       await this.req('POST', `${this.root}:commit`, { writes: this.msgWrites(threadId, m.id, fields) });
       return 'created';
@@ -297,8 +308,73 @@ export class ChatRemote {
         id: tail(r.document!.name), k: String(d.k ?? ''), ts: normTs(d.ts),
         ...(typeof d.on === 'boolean' ? { on: d.on } : {}), ...(typeof d.by === 'string' ? { by: d.by } : {}),
         ...(typeof d.at === 'string' ? { at: normTs(d.at) } : {}),
+        ...(typeof d.m === 'string' ? { m: d.m } : {}), ...(typeof d.n === 'number' ? { n: d.n } : {}),
       };
     });
+  }
+
+  /* ─── الدفعة ٣ (2026-10-08T05:31Z): تأكيد الاطلاع، وتعديل الرسالة بسجلها ─── */
+
+  /** تأكيد الاطلاع على إعلان مهم · كلٌّ وحده مرة · لرسالةٍ تطلبه */
+  async acknowledge(threadId: string, msgId: string): Promise<'created' | 'exists'> {
+    try {
+      await this.req('POST', `${this.root}:commit`, {
+      writes: [{
+        update: { name: `${this.docsRoot}/${this.orgPath(`chats/${threadId}/st/a_${msgId}_${this.o.uid}`)}`, fields: encodeFields({ k: 'ack', m: msgId, by: this.o.uid }) },
+        currentDocument: { exists: false },
+        updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }],
+      }],
+      });
+      return 'created';
+    } catch (e) {
+      if (e instanceof FirestoreHttpError && (e.status === 409 || /ALREADY_EXISTS|FAILED_PRECONDITION/.test(e.message))) return 'exists';
+      throw e;
+    }
+  }
+
+  /**
+   * تعديل رسالتي · في التزام واحد: النص الجديد ورقم التعديل ووقته، وما قبله في سجلها (edits/رقم)، ورقمه في فهرسها
+   * (فالمسح يحذف السجل بالأرقام دون قراءته)، وإشارةٌ في حال المحادثة يسحبها الأطراف · والحذف ممنوع كما قُرّر
+   */
+  async editMessage(threadId: string, msgId: string, body: string, tag: ChatTag | null): Promise<number> {
+    const base = `${this.docsRoot}/${this.orgPath(`chats/${threadId}`)}`;
+    const cur = msgOf((await this.req('GET', `${this.root}/${this.orgPath(`chats/${threadId}/msgs/${msgId}`)}`)) as { name: string; fields: Record<string, FsValue> });
+    const n = (cur.ev ?? 0) + 1;
+    await this.req('POST', `${this.root}:commit`, {
+      writes: [
+        {
+          update: { name: `${base}/msgs/${msgId}`, fields: encodeFields({ body, tag, ev: n }) },
+          updateMask: { fieldPaths: ['body', 'tag', 'ev'] },
+          currentDocument: { exists: true },
+          updateTransforms: [{ fieldPath: 'et', setToServerValue: 'REQUEST_TIME' }],
+        },
+        {
+          update: { name: `${base}/msgs/${msgId}/edits/${n}`, fields: encodeFields({ body: cur.body, tag: cur.tag ?? null }) },
+          currentDocument: { exists: false },
+          updateTransforms: [{ fieldPath: 'at', setToServerValue: 'REQUEST_TIME' }],
+        },
+        { update: { name: `${base}/ids/${msgId}`, fields: encodeFields({ ev: n }) }, updateMask: { fieldPaths: ['ev'] }, currentDocument: { exists: true } },
+        this.stWrite(threadId, 'x_' + msgId, { k: 'edit', m: msgId, n }),
+      ],
+    });
+    return n;
+  }
+
+  /** سجل تعديلات رسالة · ما قبل كل تعديل */
+  async editsOf(threadId: string, msgId: string): Promise<RemoteEdit[]> {
+    const token = await this.o.idToken();
+    const res = await this.f(`${this.root}/${this.orgPath(`chats/${threadId}/msgs/${msgId}/edits`)}?pageSize=300`, { headers: { Authorization: 'Bearer ' + token } });
+    const text = await res.text();
+    if (!res.ok) throw new FirestoreHttpError(res.status, text);
+    return (((text ? JSON.parse(text) : {}).documents ?? []) as Array<{ name: string; fields: Record<string, FsValue> }>).map((x) => {
+      const d = decodeFields(x.fields);
+      return { n: Number(tail(x.name)), body: String(d.body ?? ''), tag: CHAT_TAGS.includes(d.tag as ChatTag) ? (d.tag as ChatTag) : null, at: normTs(d.at) };
+    }).sort((a, b) => a.n - b.n);
+  }
+
+  /** رسالة واحدة · لتحديث ما عُدِّل منها */
+  async getMessage(threadId: string, msgId: string): Promise<RemoteMessage> {
+    return msgOf((await this.req('GET', `${this.root}/${this.orgPath(`chats/${threadId}/msgs/${msgId}`)}`)) as { name: string; fields: Record<string, FsValue> });
   }
 
   /* ─── مراجعة المالك محادثةً بسبب (قرار المالك 2026-10-08T04:11Z) ─── */
@@ -478,6 +554,15 @@ export class ChatRemote {
       if (!res.ok) throw new FirestoreHttpError(res.status, text);
       return ((text ? JSON.parse(text) : {}).documents ?? []).map((d: { name: string }) => d.name);
     };
+    // أرقام الرسائل ومعها عدد تعديلاتها (ev) · بلا محتوى
+    const listEv = async (rel: string): Promise<Array<{ name: string; ev: number }>> => {
+      const token = await this.o.idToken();
+      const res = await this.f(`${this.root}/${rel}?pageSize=300&mask.fieldPaths=ev`, { headers: { Authorization: 'Bearer ' + token } });
+      const text = await res.text();
+      if (!res.ok) throw new FirestoreHttpError(res.status, text);
+      return (((text ? JSON.parse(text) : {}).documents ?? []) as Array<{ name: string; fields?: Record<string, FsValue> }>)
+        .map((d) => ({ name: d.name, ev: Number(decodeFields(d.fields ?? {}).ev ?? 0) || 0 }));
+    };
     const del = async (names: string[]) => {
       for (let i = 0; i < names.length; i += 300) {
         await this.req('POST', `${this.root}:commit`, { writes: names.slice(i, i + 300).map((name) => ({ delete: name })) });
@@ -495,10 +580,13 @@ export class ChatRemote {
           await del(st);
         }
         for (;;) {
-          const ids = await list(`${rel}/ids`);
+          const ids = await listEv(`${rel}/ids`);
           if (!ids.length) break;
-          // الرسالة وفهرسها معاً · بالأسماء دون قراءة محتوى (المالك لا يقرأ إلا بمراجعة بسببها)
-          await del(ids.flatMap((x) => [x.replace('/ids/', '/msgs/'), x]));
+          // الرسالة وسجل تعديلاتها وفهرسها معاً · بالأسماء دون قراءة محتوى (المالك لا يقرأ إلا بمراجعة بسببها)
+          await del(ids.flatMap(({ name, ev }) => {
+            const msg = name.replace('/ids/', '/msgs/');
+            return [...Array.from({ length: ev }, (_, i) => `${msg}/edits/${i + 1}`), msg, name];
+          }));
           n += ids.length;
         }
       }

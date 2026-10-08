@@ -428,7 +428,33 @@
     "everyoneRead": "قرأها الجميع",
     "read": "قُرئت",
     "readCount": "قرأها {{n}}",
-    "pinOffline": "التثبيت يحتاج اتصالاً بالإنترنت"
+    "pinOffline": "التثبيت يحتاج اتصالاً بالإنترنت",
+    "search": "بحث",
+    "byPerson": "الشخص",
+    "fromDate": "من تاريخ (سنة/شهر/يوم)",
+    "toDate": "إلى تاريخ (سنة/شهر/يوم)",
+    "noResults": "لا نتائج",
+    "tag": {
+      "urgent": "عاجل",
+      "decision": "قرار",
+      "followup": "متابعة"
+    },
+    "important": "إعلان مهم",
+    "ackNow": "أكّدتُ الاطلاع",
+    "acked": "أكّدتَ الاطلاع",
+    "ackCount": "أكّد {{n}} من {{total}}",
+    "ackedBy": "أكّد الاطلاع",
+    "notAcked": "لم يؤكّد بعد",
+    "everyoneAcked": "أكّد الجميع",
+    "ackFailed": "تعذّر تأكيد الاطلاع",
+    "edit": "تعديل",
+    "edited": "معدَّلة",
+    "editHistory": "سجل التعديل",
+    "editFailed": "تعذّر التعديل",
+    "beforeEdit": "قبل التعديل {{n}}",
+    "nowText": "النص الآن",
+    "needOnline": "هذا يحتاج اتصالاً بالإنترنت",
+    "historyFailed": "تعذّر عرض سجل التعديل"
   },
   "auth": {
     "fail": {

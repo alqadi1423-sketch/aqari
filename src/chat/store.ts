@@ -1,10 +1,10 @@
 /**
  * مخزن المحادثة على الجهاز (الهجرة ٣٤) · ما يُكتب بلا اتصال يبقى «لم يُرسل» حتى تُرفع · ولا حذف للرسائل.
  */
-import type { DB } from '../db/adapter';
+import type { DB, SqlValue } from '../db/adapter';
 import { uid as newId } from '../domain/ids';
 import {
-  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, directId, groupSettings, tsGte, type GroupSettings,
+  CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, directId, groupSettings, tsGte, type ChatTag, type GroupSettings,
   type ChatKind, type ChatLink, type ChatMessage, type ChatPerson, type ChatThread,
 } from './types';
 
@@ -136,7 +136,7 @@ interface MsgRow {
 }
 
 /** ما زاد على الرسالة في x (الدفعة ٢): الرد في سلسلة والإشارات */
-interface MsgExtra { re?: string | null; men?: string[] }
+interface MsgExtra { re?: string | null; men?: string[]; tag?: ChatTag | null; ack?: boolean; ev?: number; evk?: number }
 function extraOf(raw: string | null | undefined): MsgExtra {
   try { const v = JSON.parse(raw || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
 }
@@ -144,6 +144,10 @@ const extraJson = (e: MsgExtra): string | null => {
   const o: MsgExtra = {};
   if (e.re) o.re = e.re;
   if (e.men?.length) o.men = e.men.slice(0, MENTIONS_MAX);
+  if (e.tag) o.tag = e.tag;
+  if (e.ack) o.ack = true;
+  if (e.ev) o.ev = e.ev;
+  if (e.evk) o.evk = e.evk;
   return Object.keys(o).length ? JSON.stringify(o) : null;
 };
 
@@ -152,6 +156,7 @@ const msgOf = (r: MsgRow): ChatMessage => ({
   link: r.link_type && r.link_id ? { type: r.link_type as ChatLink['type'], id: r.link_id, label: r.link_label ?? '' } : null,
   localAt: r.local_at, serverTs: r.server_ts, sent: Number(r.sent) === 1, rejected: Number(r.sent) === -1, sys: r.sys ?? null,
   re: extraOf(r.x).re ?? null, men: extraOf(r.x).men ?? [],
+  tag: extraOf(r.x).tag ?? null, ack: extraOf(r.x).ack === true, ev: Number(extraOf(r.x).ev ?? 0) || 0,
 });
 
 /** رسائل محادثة بترتيب وقوعها · وقت الخادم للمرسَل، ووقت الكتابة لما ينتظر */
@@ -244,15 +249,23 @@ export function applyRemoteThread(db: DB, t: {
 
 export function applyRemoteMessage(db: DB, threadId: string, m: {
   id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null; re?: string | null; men?: string[];
+  tag?: ChatTag | null; ack?: boolean; ev?: number;
 }): void {
   db.transaction(() => {
-    const had = db.get(`SELECT 1 FROM chat_messages WHERE id = ?`, [m.id]);
-    if (had) db.run(`UPDATE chat_messages SET sent = 1, server_ts = ? WHERE id = ?`, [m.ts, m.id]);
+    const had = db.get<{ x: string | null }>(`SELECT x FROM chat_messages WHERE id = ?`, [m.id]);
+    if (had) {
+      db.run(`UPDATE chat_messages SET sent = 1, server_ts = ? WHERE id = ?`, [m.ts, m.id]);
+      // ما عُدِّل في الخادم (الدفعة ٣): نصه ووسمه وعدد تعديلاته
+      if ((m.ev ?? 0) > (Number(extraOf(had.x).ev ?? 0) || 0)) {
+        db.run(`UPDATE chat_messages SET body = ?, x = ? WHERE id = ?`,
+          [m.body, extraJson({ re: m.re, men: m.men, tag: m.tag, ack: m.ack, ev: m.ev }), m.id]);
+      }
+    }
     else db.run(
       `INSERT INTO chat_messages (id, thread_id, sender, sender_name, body, link_type, link_id, link_label, local_at, server_ts, sent, sys, x)
        VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?)`,
       [m.id, threadId, m.from, m.name, m.body, m.link?.type ?? null, m.link?.id ?? null, m.link?.label ?? null, m.ts, m.ts, m.sys ?? null,
-        extraJson({ re: m.re, men: m.men })]);
+        extraJson({ re: m.re, men: m.men, tag: m.tag, ack: m.ack, ev: m.ev })]);
     db.run(
       `UPDATE chat_threads SET last_ts = ?, last_body = ?, msg_cursor = ?
        WHERE id = ? AND (last_ts IS NULL OR last_ts <= ?)`,
@@ -388,4 +401,86 @@ export function isUnsentLocal(db: DB, id: string): boolean {
 /** رسالة على الجهاز رفضها الخادم · فالرد عليها يُرفض معها لا ينتظر بلا نهاية */
 export function isRejectedLocal(db: DB, id: string): boolean {
   return Number(db.get<{ sent: number }>(`SELECT sent FROM chat_messages WHERE id = ?`, [id])?.sent ?? 0) === -1;
+}
+
+/* ─── الدفعة ٣ (قرار المالك 2026-10-08T05:31Z): تأكيد الاطلاع، والتعديل، والبحث ─── */
+
+/** من أكّد الاطلاع على إعلان مهم ومن لم يؤكّد (غير مرسله) */
+export function ackersOf(db: DB, threadId: string, m: { id: string; sender: string; serverTs: string | null }, members: string[],
+  joinedAfter: Record<string, string> = {}): { acked: string[]; pending: string[] } {
+  return ackersFrom(acksOf(db, threadId), m, members, joinedAfter);
+}
+/** تأكيدات المحادثة كلها: رقم الرسالة ← من أكّد · خريطة واحدة للعرض */
+export function acksOf(db: DB, threadId: string): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  for (const r of stateRows(db, threadId, 'ack')) {
+    const m = String(r.data.m ?? '');
+    (out[m] ??= []).push(String(r.data.by ?? ''));
+  }
+  return out;
+}
+/** من أكّد ومن لم يؤكّد: غير مرسله، وبلا من انضم بعد الإعلان في «من لحظة انضمامه» */
+export function ackersFrom(acks: Record<string, string[]>, m: { id: string; sender: string; serverTs: string | null }, members: string[],
+  joinedAfter: Record<string, string> = {}): { acked: string[]; pending: string[] } {
+  const by = new Set(acks[m.id] ?? []);
+  const others = members.filter((u) => u !== m.sender
+    && !(joinedAfter[u] && m.serverTs && !tsGte(m.serverTs, joinedAfter[u])));
+  return { acked: others.filter((u) => by.has(u)), pending: others.filter((u) => !by.has(u)) };
+}
+
+/** رسائل عُدِّلت في الخادم بعد ما على الجهاز · من إشارات التعديل في الحال */
+/**
+ * تعديلٌ لا يحق لي جلبه (قبل انضمامي): رقمه «معروف» (evk) فلا يُطلب كل دورة، ورقم العرض (ev) ونصه كما كانا ·
+ * فلا تُوسم «معدَّلة» بلا سجل يُقرأ · وإن جاء تعديلٌ أحدث يُطلب
+ */
+export function markEditUnreadable(db: DB, threadId: string, msgId: string): void {
+  const n = stateRows(db, threadId, 'edit').find((r) => r.data.m === msgId)?.data.n;
+  const local = db.get<{ x: string | null }>(`SELECT x FROM chat_messages WHERE id = ?`, [msgId]);
+  if (!local || typeof n !== 'number') return;
+  db.run(`UPDATE chat_messages SET x = ? WHERE id = ?`, [extraJson({ ...extraOf(local.x), evk: n }), msgId]);
+}
+
+export function staleEdits(db: DB, threadId: string): string[] {
+  return stateRows(db, threadId, 'edit').filter((r) => {
+    const local = db.get<{ x: string | null }>(`SELECT x FROM chat_messages WHERE id = ?`, [String(r.data.m ?? '')]);
+    const e = extraOf(local?.x);
+    return !!local && Number(r.data.n ?? 0) > Math.max(Number(e.ev ?? 0) || 0, Number(e.evk ?? 0) || 0);
+  }).map((r) => String(r.data.m));
+}
+
+/**
+ * البحث في محادثاتي على الجهاز: بالنص، والشخص، والتاريخ (من وإلى، بتوقيت الجهاز YYYY-MM-DD)، والوسم ·
+ * onlyMine للمالك (قائمته محادثاته وحدها)
+ */
+export interface ChatSearch { text?: string; sender?: string; from?: string; to?: string; tag?: ChatTag | null }
+const AR_DIGITS = /[٠-٩۰-۹]/g;
+/** الأرقام العربية والفارسية إلى لاتينية · فالتاريخ المكتوب بها يُقرأ */
+export const latinDigits = (s: string) => s.replace(AR_DIGITS, (c) => String((c.charCodeAt(0) & 0xf) % 10));
+
+export function searchMessages(db: DB, me: string, q: ChatSearch, onlyMine = false, limit = 500): ChatMessage[] {
+  const threads = listThreads(db, me, onlyMine).map((t) => t.id);
+  if (!threads.length) return [];
+  const text = (q.text ?? '').trim().toLowerCase();
+  // حدود اليوم بتوقيت الجهاز إلى وقت الخادم · فالتصفية في الاستعلام قبل الحد لا بعده
+  const bound = (d: string | undefined, end: boolean): string | null => {
+    const v = latinDigits(d ?? '').trim();
+    if (!/^\d{4}[-/]\d{1,2}[-/]\d{1,2}$/.test(v)) return null;
+    const [y, mo, da] = v.split(/[-/]/).map(Number);
+    const day = new Date(y, mo - 1, da);
+    if (day.getFullYear() !== y || day.getMonth() !== mo - 1 || day.getDate() !== da) return null;
+    const t = new Date(y, mo - 1, da + (end ? 1 : 0));
+    return t.toISOString().replace(/\.(\d{3})Z$/, '.$1000000Z');
+  };
+  const from = bound(q.from, false);
+  const to = bound(q.to, true);
+  const where = ['sys IS NULL', `thread_id IN (${threads.map(() => '?').join(',')})`];
+  const args: SqlValue[] = [...threads];
+  if (q.sender) { where.push('sender = ?'); args.push(q.sender); }
+  if (from) { where.push('COALESCE(server_ts, local_at) >= ?'); args.push(from); }
+  if (to) { where.push('COALESCE(server_ts, local_at) < ?'); args.push(to); }
+  if (q.tag) { where.push(`x LIKE ?`); args.push('%"tag":"' + q.tag + '"%'); }
+  return db.all<MsgRow>(`SELECT * FROM chat_messages WHERE ${where.join(' AND ')} ORDER BY COALESCE(server_ts, local_at) DESC`, args).map(msgOf)
+    .filter((m) => (!q.tag || m.tag === q.tag)
+      && (!text || m.body.toLowerCase().includes(text) || (m.link?.label ?? '').toLowerCase().includes(text)))
+    .slice(0, limit);
 }

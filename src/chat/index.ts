@@ -10,15 +10,16 @@ import { readMembership } from '../services/access';
 import { getSyncState, setSyncState } from '../sync/engine';
 import { ChatRemote } from './remote';
 import { chatSyncOnce, type ChatSyncResult } from './sync';
-import { CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe, type GroupSettings } from './types';
+import { CHAT_BODY_MAX, CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe, type ChatTag, type GroupSettings } from './types';
 import { logAudit } from '../domain/audit';
-import type { RemoteMessage, RemoteThread } from './remote';
-import { applyRemoteThread, applyState, stateCursor } from './store';
+import type { RemoteEdit, RemoteMessage, RemoteThread } from './remote';
+import { applyRemoteThread, applyRemoteMessage, applyState, stateCursor } from './store';
 
 export * from './types';
 export {
   listThreads, getThread, openDirect, createGroup, listMessages, sendLocal, markRead, listPeople, personName,
   mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft,
+  ackersOf, acksOf, ackersFrom, searchMessages, latinDigits, type ChatSearch,
 } from './store';
 export { linkTarget, linkCandidates } from './links';
 
@@ -189,6 +190,29 @@ export async function chatSetPin(db: DB, s: ChatSession, org: string, threadId: 
   r: ChatRemote = remoteFor(s, org)): Promise<void> {
   await r.setPin(threadId, msgId, on);
   applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+}
+
+/** تأكيد الاطلاع على إعلان مهم · ثم الحال كما في الخادم (الدفعة ٣) */
+export async function chatAcknowledge(db: DB, s: ChatSession, org: string, threadId: string, msgId: string,
+  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  await r.acknowledge(threadId, msgId);
+  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+}
+
+/** تعديل رسالتي بسجلها · يحتاج اتصالاً · ثم الرسالة كما في الخادم (الدفعة ٣) */
+export async function chatEditMessage(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, body: string, tag: ChatTag | null,
+  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  const text = body.trim();
+  if (!text) throw new Error('chat: empty message');
+  if (text.length > CHAT_BODY_MAX) throw new Error('chat: message too long');
+  await r.editMessage(threadId, msgId, text, tag);
+  applyRemoteMessage(db, threadId, await r.getMessage(threadId, msgId));
+  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+}
+
+/** سجل تعديلات رسالة · ما قبل كل تعديل (الدفعة ٣) */
+export function chatEditsOf(s: ChatSession, org: string, threadId: string, msgId: string, r: ChatRemote = remoteFor(s, org)): Promise<RemoteEdit[]> {
+  return r.editsOf(threadId, msgId);
 }
 
 /** إشراف عضو بإيميله · للمالك وحده (القواعد) */

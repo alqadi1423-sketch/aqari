@@ -48,7 +48,7 @@ import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
 import { t } from '../i18n';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, type GroupChange,
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, type GroupChange, type ChatTag,
   chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
 import type { RemoteMessage, RemoteThread } from '../chat/remote';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
@@ -837,6 +837,23 @@ export async function removeMemberNow(uid: string, email = '') {
   // يخرج من مجموعات المحادثة ودليلها وإشرافها (قرار المالك 2026-10-07: #19)
   const s = getSession(); const cfg = cloudConfig();
   if (s && cfg && state.user) await chatRemoveMember({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, t.org, uid, email);
+}
+
+/** جلسة المحادثة ومنشأتها لما يحتاج اتصالاً (الدفعات ٢ و٣) */
+function chatOnline(): { db: DB; s: ChatSession; org: string } {
+  const sess = getSession(); const cfg = cloudConfig(); const db = appDb;
+  if (!sess || !cfg || !state.user || !db) throw new Error(t('chat.needAccount'));
+  if (!state.online) throw new Error(t('chat.needOnline'));
+  return { db, s: { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => sess.idToken() }, org: readMembership(db)?.org ?? state.user.uid };
+}
+export async function chatAckNow(threadId: string, msgId: string): Promise<void> {
+  const c = chatOnline(); await chatAcknowledge(c.db, c.s, c.org, threadId, msgId);
+}
+export async function chatEditMessageNow(threadId: string, msgId: string, body: string, tag: ChatTag | null): Promise<void> {
+  const c = chatOnline(); await chatEditMessage(c.db, c.s, c.org, threadId, msgId, body, tag);
+}
+export async function chatEditsNow(threadId: string, msgId: string) {
+  const c = chatOnline(); return chatEditsOf(c.s, c.org, threadId, msgId);
 }
 
 /** تثبيت رسالة · يحتاج اتصالاً (الدفعة ٢) */

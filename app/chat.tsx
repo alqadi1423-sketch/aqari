@@ -15,7 +15,7 @@ import { useAccess } from '../src/ui/access';
 import { useLang } from '../src/i18n';
 import { dfmt } from '../src/domain/dates';
 import {
-  cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatEditGroupNow, chatPinNow,
+  cloudState, subscribeCloud, chatSyncNow, chatOwnerName, chatEditGroupNow, chatPinNow, chatAckNow, chatEditMessageNow, chatEditsNow,
   chatReviewCandidatesNow, chatOpenReviewNow, chatCloseReviewNow, chatJoinGroupNow,
 } from '../src/services/cloud';
 import type { RemoteMessage, RemoteThread } from '../src/chat/remote';
@@ -30,7 +30,7 @@ import {
   markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup,
   isGroupAdmin, canAppointAdmins, canAddMembers, canSendIn, GROUP_DEFAULTS, type GroupSettings, type GroupChange,
   mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft, mentionsMe, mentionUser, mentionSection, MENTIONS_MAX,
-  tsDate, type ChatMessage,
+  tsDate, acksOf, ackersFrom, searchMessages, latinDigits, CHAT_TAGS, CHAT_BODY_MAX as BODY_MAX, type ChatMessage, type ChatTag,
   type ChatLink, type ChatMe, type ChatPerson, type ChatThread,
 } from '../src/chat';
 
@@ -85,7 +85,7 @@ export default function Chat() {
 function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; onOpen: (id: string) => void; onReview: (r: Review) => void }) {
   const { db, version } = useApp();
   const { t } = useLang();
-  const [sheet, setSheet] = useState<'person' | 'group' | 'review' | null>(null);
+  const [sheet, setSheet] = useState<'person' | 'group' | 'review' | 'search' | null>(null);
   const people = useMemo(() => listPeople(db), [db, version, tick]); // eslint-disable-line react-hooks/exhaustive-deps
   const threads = useMemo(() => listThreads(db, me.uid, me.owner), [db, version, tick, me.uid, me.owner]); // eslint-disable-line react-hooks/exhaustive-deps
   const mySup = people.find((p) => p.uid === me.uid)?.sup ?? [];
@@ -98,6 +98,7 @@ function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; 
         <Row gap={6}>
           <BtnPrimary small icon="plus" title={t('chat.newChat')} onPress={() => setSheet('person')} />
           {canCreateGroup(me, mySup) ? <BtnGhost small title={t('chat.newGroup')} onPress={() => setSheet('group')} /> : null}
+          <BtnGhost small title={t('chat.search')} onPress={() => setSheet('search')} />
           {/* مراجعة محادثة للمالك وحده (قرار المالك 2026-10-08T04:11Z) · ولغيره لا يظهر الزر */}
           {me.owner ? <BtnGhost small title={t('chat.review')} onPress={() => setSheet('review')} /> : null}
         </Row>
@@ -126,6 +127,9 @@ function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; 
       {sheet === 'group' ? (
         <GroupSheet me={me} people={people} onClose={() => setSheet(null)}
           onCreated={(id) => { setSheet(null); onOpen(id); }} />
+      ) : null}
+      {sheet === 'search' ? (
+        <SearchSheet me={me} people={people} onClose={() => setSheet(null)} onOpen={(tid) => { setSheet(null); onOpen(tid); }} />
       ) : null}
       {sheet === 'review' ? (
         <ReviewPickSheet people={people} onClose={() => setSheet(null)}
@@ -238,6 +242,10 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const [text, setTextState] = useState(() => getDraft(db, id));
   const setText = useCallback((v: string) => { setTextState(v); setDraft(db, id, v); }, [db, id]);
   const [men, setMen] = useState<string[]>([]);
+  const [tag, setTag] = useState<ChatTag | null>(null);
+  const [ack, setAck] = useState(false);
+  const [editing, setEditing] = useState<ChatMessage | null>(null);
+  const [historyOf, setHistoryOf] = useState<ChatMessage | null>(null);
   const [menOpen, setMenOpen] = useState(false);
   const [actFor, setActFor] = useState<ChatMessage | null>(null);
   const [threadOf, setThreadOf] = useState<ChatMessage | null>(null);
@@ -253,6 +261,8 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const counts = useMemo(() => replyCounts(msgs), [msgs]);
   const pins = useMemo(() => pinnedIds(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
   const reads = useMemo(() => readsOf(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const acks = useMemo(() => acksOf(db, id), [db, version, tick, id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const joinedAfter = thread?.settings.h === 'join' ? thread.joined : {};
   const mySections = useMemo(() => (access.owner ? SECTION_KEYS : SECTION_KEYS.filter((k) => ((access.perms as Record<string, number>)[k] ?? 0) >= 1)) as string[], [access]);
   const people = useMemo(() => listPeople(db), [db, tick]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { markRead(db, id); }, [db, id, msgs.length]);
@@ -272,14 +282,17 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const send = useCallback(() => {
     if (!text.trim() && !link) return;
     try {
-      sendLocal(db, id, me, text, link, { men });
+      sendLocal(db, id, me, text, link, { men, tag, ack });
     } catch (e) {
       reportFailure({ title: t('chat.sendFailed'), e });
       return;
     }
-    setTextState(''); setLink(null); setMen([]); bump();
+    setTextState(''); setLink(null); setMen([]); setTag(null); setAck(false); bump();
     chatSyncNow({ threadId: id }).catch(() => {});
-  }, [db, id, me, text, link, men, bump, t]);
+  }, [db, id, me, text, link, men, tag, ack, bump, t]);
+  const acknowledge = async (m: ChatMessage) => {
+    try { await chatAckNow(id, m.id); bump(); } catch (e) { reportFailure({ title: t('chat.ackFailed'), e }); }
+  };
   const canPin = thread ? (thread.kind !== 'group' || isGroupAdmin(me, thread)) : false;
   const pin = async (m: ChatMessage, on: boolean) => {
     try { await chatPinNow(id, m.id, on); bump(); } catch (e) { reportFailure({ title: t('chat.pinFailed'), e }); }
@@ -337,6 +350,13 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
                 </Pressable>
               ) : null}
               {m.men.length ? <T size={TYPE.caption} color={C.emerald}>{m.men.map(menLabel).join(' ')}</T> : null}
+              {m.tag ? <Badge kind={m.tag === 'urgent' ? 'due' : 'info'} label={t('chat.tag.' + m.tag)} /> : null}
+              {m.ev ? <Pressable onPress={() => setHistoryOf(m)}><T size={TYPE.caption} color={C.muted}>{t('chat.edited')}</T></Pressable> : null}
+              {m.ack && thread ? (mine
+                ? (() => { const a = ackersFrom(acks, m, thread.members, joinedAfter); return <T size={TYPE.caption} bold color={C.emerald}>{t('chat.ackCount', { n: a.acked.length, total: a.acked.length + a.pending.length })}</T>; })()
+                : (acks[m.id] ?? []).includes(me.uid)
+                  ? <T size={TYPE.caption} color={C.muted}>{t('chat.acked')}</T>
+                  : <BtnPrimary small title={t('chat.ackNow')} onPress={() => acknowledge(m)} />) : null}
               {pins.includes(m.id) ? <T size={TYPE.caption} color={C.muted}>{t('chat.pinnedOne')}</T> : null}
               <T size={10} color={C.muted} style={{ marginTop: 3 }}>
                 {localTime(m.serverTs ?? m.localAt)}{m.rejected ? ' · ' + t('chat.rejectedMsg') : !m.sent ? ' · ' + t('chat.notSent') : ''}
@@ -361,6 +381,11 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
               <Chip label={t('chat.link.' + link.type) + ' · ' + link.label} active onPress={() => setLink(null)} />
             </Row>
           ) : null}
+          {/* الوسم والإعلان المهم بتأكيد الاطلاع (الدفعة ٣) */}
+          <Row style={{ flexWrap: 'wrap', paddingTop: 4 }}>
+            {CHAT_TAGS.map((k) => <Chip key={k} label={t('chat.tag.' + k)} active={tag === k} onPress={() => setTag(tag === k ? null : k)} />)}
+            <Chip label={t('chat.important')} active={ack} onPress={() => setAck(!ack)} />
+          </Row>
           {men.length ? (
             <Row style={{ flexWrap: 'wrap', paddingVertical: 4 }}>
               {men.map((x) => <Chip key={x} label={menLabel(x)} active onPress={() => setMen((v) => v.filter((y) => y !== x))} />)}
@@ -386,6 +411,8 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
       ) : null}
       {actFor && thread ? (
         <MessageActions m={actFor} canReply={canSendIn(me, thread) && actFor.sent && !actFor.rejected} canPin={canPin} pinned={pins.includes(actFor.id)}
+          canEdit={actFor.sender === me.uid && actFor.sent && !actFor.sys && canSendIn(me, thread)} acks={actFor.ack ? ackersFrom(acks, actFor, thread.members, joinedAfter) : null}
+          onEdit={() => { setEditing(actFor); setActFor(null); }} onHistory={() => { setHistoryOf(actFor); setActFor(null); }}
           readers={readersFrom(reads, actFor, thread.members, thread.settings.h === 'join' ? thread.joined : {})} nameOf={(u) => people.find((p) => p.uid === u)?.name || t('chat.member')}
           onReply={() => { setThreadOf(actFor); setActFor(null); }}
           onPin={(on) => { pin(actFor, on); setActFor(null); }}
@@ -395,6 +422,8 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
         <ReplySheet me={me} threadId={id} parent={threadOf} replies={repliesOf(msgs, threadOf.id)} canSend={canSendIn(me, thread)}
           nameOf={(u, f) => senderOf(u, f)} onClose={() => setThreadOf(null)} />
       ) : null}
+      {editing ? <EditSheet threadId={id} m={editing} onClose={() => setEditing(null)} /> : null}
+      {historyOf ? <HistorySheet threadId={id} m={historyOf} onClose={() => setHistoryOf(null)} /> : null}
       {pinsOpen ? (
         <Sheet visible onClose={() => setPinsOpen(false)} title={t('chat.pinnedTitle')} tall>
           {msgs.filter((m) => pins.includes(m.id)).map((m) => (
@@ -463,9 +492,10 @@ function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: C
 /* ─── الدفعة ٢ (قرار المالك 2026-10-08T05:31Z): الرد في سلسلة، والتثبيت، والإشارة، ومن قرأ ─── */
 
 /** ما يُفعل برسالة بضغطة مطوّلة · وما لا يحق لا يظهر */
-function MessageActions({ m, canReply, canPin, pinned, readers, nameOf, onReply, onPin, onClose }: {
+function MessageActions({ m, canReply, canPin, pinned, readers, nameOf, onReply, onPin, onClose, canEdit, acks, onEdit, onHistory }: {
   m: ChatMessage; canReply: boolean; canPin: boolean; pinned: boolean; readers: { read: string[]; unread: string[] };
   nameOf: (uid: string) => string; onReply: () => void; onPin: (on: boolean) => void; onClose: () => void;
+  canEdit: boolean; acks: { acked: string[]; pending: string[] } | null; onEdit: () => void; onHistory: () => void;
 }) {
   const { t } = useLang();
   return (
@@ -474,7 +504,17 @@ function MessageActions({ m, canReply, canPin, pinned, readers, nameOf, onReply,
       <Row style={{ flexWrap: 'wrap', marginTop: 8 }} gap={6}>
         {canReply ? <BtnGhost small title={t('chat.replyInThread')} onPress={onReply} /> : null}
         {canPin && m.sent ? <BtnGhost small title={pinned ? t('chat.unpin') : t('chat.pin')} onPress={() => onPin(!pinned)} /> : null}
+        {canEdit ? <BtnGhost small title={t('chat.edit')} onPress={onEdit} /> : null}
+        {m.ev ? <BtnGhost small title={t('chat.editHistory')} onPress={onHistory} /> : null}
       </Row>
+      {acks ? (
+        <View style={{ marginTop: 10 }}>
+          <T size={TYPE.cardTitle} bold>{t('chat.ackedBy')}</T>
+          <T size={TYPE.caption}>{acks.acked.length ? acks.acked.map(nameOf).join(LIST_SEP) : t('chat.nobodyYet')}</T>
+          <T size={TYPE.cardTitle} bold style={{ marginTop: 6 }}>{t('chat.notAcked')}</T>
+          <T size={TYPE.caption}>{acks.pending.length ? acks.pending.map(nameOf).join(LIST_SEP) : t('chat.everyoneAcked')}</T>
+        </View>
+      ) : null}
       {m.sent ? (
         <View style={{ marginTop: 10 }}>
           <T size={TYPE.cardTitle} bold>{t('chat.whoRead')}</T>
@@ -518,6 +558,95 @@ function ReplySheet({ me, threadId, parent, replies, canSend, nameOf, onClose }:
       ) : undefined}>
       {row(parent)}
       {replies.map(row)}
+    </Sheet>
+  );
+}
+
+/* ─── الدفعة ٣ (قرار المالك 2026-10-08T05:31Z): التعديل بسجله، والبحث ─── */
+
+/** تعديل رسالتي ووسمها · يحتاج اتصالاً · وما قبله يُحفظ في سجلها */
+function EditSheet({ threadId, m, onClose }: { threadId: string; m: ChatMessage; onClose: () => void }) {
+  const { t } = useLang();
+  const { bump } = useApp();
+  const f = useSaveAttempt();
+  const [body, setBody] = useState(m.body);
+  const [tag, setTag] = useState<ChatTag | null>(m.tag);
+  const changed = body.trim() !== m.body || tag !== m.tag;
+  const save = async () => {
+    if (!changed) { onClose(); return; }
+    try { await chatEditMessageNow(threadId, m.id, body, tag); bump(); onClose(); } catch (e) { reportFailure({ title: t('chat.editFailed'), e }); }
+  };
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.edit')} tall
+      footer={<View style={{ flex: 1 }}><BtnPrimary title={t('common.save')} onPress={() => f.attempt(!!body.trim() && body.length <= BODY_MAX, save)} /></View>}>
+      <Field label={t('chat.typeMessage')} value={body} onChange={(v) => setBody(v.slice(0, BODY_MAX))} multiline error={f.missing(body)} />
+      <Row style={{ flexWrap: 'wrap' }}>
+        {CHAT_TAGS.map((k) => <Chip key={k} label={t('chat.tag.' + k)} active={tag === k} onPress={() => setTag(tag === k ? null : k)} />)}
+      </Row>
+    </Sheet>
+  );
+}
+
+/** سجل تعديلات رسالة: ما قبل كل تعديل، ثم نصها الآن */
+function HistorySheet({ threadId, m, onClose }: { threadId: string; m: ChatMessage; onClose: () => void }) {
+  const { t } = useLang();
+  const [list, setList] = useState<Array<{ n: number; body: string; tag: ChatTag | null; at: string }> | null>(null);
+  useEffect(() => {
+    let live = true;
+    chatEditsNow(threadId, m.id).then((x) => { if (live) setList(x); }).catch((e) => { if (live) { setList([]); reportFailure({ title: t('chat.historyFailed'), e }); } });
+    return () => { live = false; };
+  }, [threadId, m.id, t]);
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.editHistory')} tall>
+      {list === null ? <T size={TYPE.caption} color={C.muted}>{t('chat.loading')}</T> : list.map((e) => (
+        <View key={e.n} style={{ paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.line }}>
+          <T size={TYPE.caption} color={C.muted}>{t('chat.beforeEdit', { n: e.n })} · {dfmt(localDay(e.at))} {localTime(e.at)}{e.tag ? ' · ' + t('chat.tag.' + e.tag) : ''}</T>
+          <T size={TYPE.body}>{e.body}</T>
+        </View>
+      ))}
+      <View style={{ paddingVertical: 6 }}>
+        <T size={TYPE.caption} bold color={C.emerald}>{t('chat.nowText')}</T>
+        <T size={TYPE.body}>{m.body}</T>
+      </View>
+    </Sheet>
+  );
+}
+
+/** البحث في محادثاتي على الجهاز: بالنص والشخص والتاريخ والوسم */
+function SearchSheet({ me, people, onClose, onOpen }: { me: ChatMe; people: ChatPerson[]; onClose: () => void; onOpen: (threadId: string) => void }) {
+  const { db } = useApp();
+  const { t } = useLang();
+  const [text, setText] = useState('');
+  const [sender, setSender] = useState<string | null>(null);
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [tag, setTag] = useState<ChatTag | null>(null);
+  const results = useMemo(() => searchMessages(db, me.uid, {
+    text, sender: sender ?? undefined, from: latinDigits(from), to: latinDigits(to), tag,
+  }, me.owner, 100), [db, me.uid, me.owner, text, sender, from, to, tag]);
+  const nameOf = (uid: string) => (uid === me.uid ? t('chat.you') : people.find((p) => p.uid === uid)?.name || t('chat.member'));
+  return (
+    <Sheet visible onClose={onClose} title={t('chat.search')} tall>
+      <SearchBox value={text} onChange={setText} placeholder={t('common.search')} />
+      <T size={TYPE.caption} color={C.muted} style={{ marginTop: 6 }}>{t('chat.byPerson')}</T>
+      <Row style={{ flexWrap: 'wrap' }}>
+        {[{ uid: me.uid, name: t('chat.you'), sup: [] }, ...people.filter((p) => p.uid !== me.uid)].map((p) => (
+          <Chip key={p.uid} label={p.name || t('chat.member')} active={sender === p.uid} onPress={() => setSender(sender === p.uid ? null : p.uid)} />
+        ))}
+      </Row>
+      <Row gap={6}>
+        <View style={{ flex: 1 }}><Field label={t('chat.fromDate')} value={from} onChange={setFrom} ltr /></View>
+        <View style={{ flex: 1 }}><Field label={t('chat.toDate')} value={to} onChange={setTo} ltr /></View>
+      </Row>
+      <Row style={{ flexWrap: 'wrap' }}>
+        {CHAT_TAGS.map((k) => <Chip key={k} label={t('chat.tag.' + k)} active={tag === k} onPress={() => setTag(tag === k ? null : k)} />)}
+      </Row>
+      {results.length ? results.map((m) => (
+        <Pressable key={m.id} onPress={() => onOpen(m.threadId)} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
+          <T size={TYPE.caption} color={C.muted}>{nameOf(m.sender)} · {dfmt(localDay(m.serverTs ?? m.localAt))}{m.tag ? ' · ' + t('chat.tag.' + m.tag) : ''}</T>
+          <T size={TYPE.body} numberOfLines={2}>{m.body || m.link?.label}</T>
+        </Pressable>
+      )) : <EmptyState>{t('chat.noResults')}</EmptyState>}
     </Sheet>
   );
 }

@@ -11,7 +11,7 @@ import type { ChatRemote } from './remote';
 import type { ChatMe } from './types';
 import {
   applyRemoteMessage, applyRemoteThread, heldThreads, markMessageRejected, markSent, markThreadPushed, markThreadRejected,
-  pendingMessages, pendingThreads, forgetObserved, joinFloor, applyState, stateCursor, readToPush, markReadPushed, isUnsentLocal, isRejectedLocal,
+  pendingMessages, pendingThreads, forgetObserved, joinFloor, applyState, stateCursor, readToPush, markReadPushed, isUnsentLocal, isRejectedLocal, staleEdits, markEditUnreadable,
   savePeople, threadCursor,
 } from './store';
 
@@ -39,6 +39,13 @@ async function syncState(db: DB, remote: ChatRemote, threadId: string, me: strin
   if (up) { await remote.markReadUpTo(threadId, up); markReadPushed(db, threadId, me, up); }
   const items = await remote.stateSince(threadId, stateCursor(db, threadId));
   applyState(db, threadId, items as unknown as Array<{ id: string; k: string; ts: string }>);
+  // ما عُدِّل في الخادم يُجلب رسالةً رسالة (الدفعة ٣) · وما لا يحق لي قراءته (قبل انضمامي) يُترك
+  for (const id of staleEdits(db, threadId)) {
+    try { applyRemoteMessage(db, threadId, await remote.getMessage(threadId, id)); } catch (e) {
+      // لا يحق لي جلبه (قبل انضمامي): يُعدّ معروفاً فلا يُطلب كل دورة · وما سواه يُعاد في الدورة التالية
+      if (/Firestore 403/.test(String(e))) markEditUnreadable(db, threadId, id);
+    }
+  }
 }
 const PAGE = 200;
 
@@ -132,7 +139,7 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
     if (m.re && (held.has(m.re) || isUnsentLocal(db, m.re))) { held.add(m.id); continue; }
     try {
       // باسمي الحالي في الدليل لا المحفوظ يوم الكتابة · فتغيّر الاسم لا يحبس الرسالة (قواعد الخادم تطابقه)
-      await remote.sendMessage(m.threadId, { id: m.id, name: me.name, body: m.body, link: m.link, re: m.re, men: m.men });
+      await remote.sendMessage(m.threadId, { id: m.id, name: me.name, body: m.body, link: m.link, re: m.re, men: m.men, tag: m.tag, ack: m.ack });
       markSent(db, m.id, null);
       r.pushedMessages++;
     } catch (e) {
