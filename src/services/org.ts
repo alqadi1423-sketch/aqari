@@ -254,6 +254,18 @@ export function epochAction(local: number | null, remote: number, hasData: boole
   return hasData ? 'ask' : 'adopt';
 }
 
+/**
+ * مسح المحادثات بمسح المالك الشامل (قرار المالك 2026-10-08): العهد في الخادم بعد آخر عهدٍ مُسحت عنده محادثات هذا الجهاز
+ * (أو آخر عهدٍ اعتمده) وعليه محادثات · والأساس يُقرأ قبل فحص العهد، فاعتماده لا يُخفي المسح
+ */
+export function chatWipeDue(baseline: number | null, remote: number, hasChat: boolean): boolean {
+  return hasChat && remote > (baseline ?? 0);
+}
+export const chatEpochBaseline = (db: DB): number | null => {
+  const v = getSyncState(db, 'chat_epoch') ?? getSyncState(db, 'wipe_epoch');
+  return v === null ? null : Number(v);
+};
+
 /** عهد مسحٍ ينتظر قرار المستخدم · null إن لم يكن */
 export const pendingEpoch = (db: DB): number | null => {
   const v = getSyncState(db, 'epoch_pending');
@@ -286,6 +298,7 @@ export function notePermWipe(db: DB, reason: 'changed' | 'moved'): void {
 /** فحص العهد قبل المزامنة · لا يفرّغ شيئاً: 'ask' يُحفظ عهدها منتظراً قرار المستخدم (resolveEpoch) */
 export async function checkEpoch(db: DB, remote: FirestoreRemote, org: string): Promise<'ask' | 'adopt' | 'same'> {
   const remoteEpoch = await readEpoch(remote, org);
+  setSyncState(db, 'remote_epoch', String(remoteEpoch));
   const raw = getSyncState(db, 'wipe_epoch');
   const act = epochAction(raw === null ? null : Number(raw), remoteEpoch, hasUserData(db));
   if (act === 'adopt') setSyncState(db, 'wipe_epoch', String(remoteEpoch));

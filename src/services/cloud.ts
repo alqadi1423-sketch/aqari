@@ -48,7 +48,7 @@ import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
 import { t } from '../i18n';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatUnsentCount, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatCancelTask, chatVote,
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatUnsentCount, clearChatData, hasChatData, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatCancelTask, chatVote,
   type GroupChange, type ChatTag, type ChatTask,
   chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
 import type { RemoteMessage, RemoteThread } from '../chat/remote';
@@ -61,7 +61,7 @@ import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
-  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, resolveEpoch, readEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
+  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
   updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
@@ -262,7 +262,22 @@ export async function syncNow(): Promise<void> {
     const org = member?.org ?? (getSyncState(db, 'org') === uid ? uid : null);
     if (getSyncState(db, 'removal_pending') === '1') { patch({ decision: { kind: 'removed', pending: outboxCount(db) } }); return; }
     if (org) {
+      const chatBase = chatEpochBaseline(db);
       const act = pendingEpoch(db) !== null ? 'ask' : await checkEpoch(db, remoteOf(db, uid, idToken), org);
+      // مسح المالك الشامل يمسح محادثات المنشأة من هذا الجهاز عند أول اتصال، بنسخة أمان وسطر في سجل العمليات
+      // (قرار المالك 2026-10-08) · قبل سؤال البيانات وبمعزل عنه
+      const remoteEpoch = Number(getSyncState(db, 'remote_epoch') ?? 0);
+      if (chatWipeDue(chatBase, remoteEpoch, hasChatData(db))) {
+        await holdChat(async () => {
+          await makeSafetyBackup(appBackupEnv(db as AppDB), 'pre-wipe');
+          const n = clearChatData(db);
+          setSyncState(db, 'chat_epoch', String(remoteEpoch));
+          logAudit(db, 'المحادثة', 'delete', 'مسح محادثات المنشأة', 'بمسح المالك الشامل · ' + n + ' رسالة'); // i18n-exempt: سطر سجل العمليات المخزَّن
+        });
+        onData();
+      } else if (remoteEpoch > (chatBase ?? 0)) {
+        setSyncState(db, 'chat_epoch', String(remoteEpoch));
+      }
       if (act === 'ask') { patch({ decision: { kind: 'epoch', pending: outboxCount(db) } }); return; }
     }
     patch({ decision: null });

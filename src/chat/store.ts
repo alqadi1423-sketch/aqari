@@ -84,6 +84,25 @@ export function forgetObserved(db: DB, me: string): number {
   return ids.length;
 }
 
+/**
+ * مسح محادثات المنشأة من هذا الجهاز (قرار المالك 2026-10-08: «مسحي الشامل: يمسح محادثات المنشأة من أجهزة الأعضاء
+ * عند أول اتصال، بنسخة أمان وسطر في سجل العمليات.») · النسخة والسطر على المستدعي (services/cloud.ts) ·
+ * يمحو المحادثات ورسائلها وحالها ودليلها ومؤشرات سحبها، ويعيد عدد الرسائل
+ */
+export function clearChatData(db: DB): number {
+  const n = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM chat_messages`)?.n ?? 0);
+  db.transaction(() => {
+    db.run(`DROP TRIGGER IF EXISTS trg_chat_msg_no_delete`);
+    for (const t of ['chat_messages', 'chat_threads', 'chat_state', 'chat_people']) db.run(`DELETE FROM ${t}`);
+    db.run(CHAT_NO_DELETE_TRIGGER);
+    db.run(`DELETE FROM sync_state WHERE k LIKE 'chat_%' AND k != 'chat_epoch'`);
+  });
+  return n;
+}
+
+/** على الجهاز محادثات؟ · فمسحها يسبقه نسخة أمان */
+export const hasChatData = (db: DB): boolean => !!db.get(`SELECT 1 FROM chat_threads LIMIT 1`) || !!db.get(`SELECT 1 FROM chat_messages LIMIT 1`);
+
 /** مطابق للهجرة ٣٤ حرفاً · يُعاد بعد المحو أعلاه */
 const CHAT_NO_DELETE_TRIGGER = `CREATE TRIGGER IF NOT EXISTS trg_chat_msg_no_delete BEFORE DELETE ON chat_messages
 BEGIN SELECT RAISE(ABORT, 'chat message is permanent'); END;`;

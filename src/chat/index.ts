@@ -22,7 +22,7 @@ export {
   listThreads, getThread, openDirect, createGroup, listMessages, sendLocal, markRead, listPeople, personName,
   mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft,
   ackersOf, acksOf, ackersFrom, searchMessages, latinDigits, type ChatSearch,
-  tasksIn, myTasks, pollResults, chatUnsentCount, type TaskRow,
+  tasksIn, myTasks, pollResults, chatUnsentCount, clearChatData, hasChatData, type TaskRow,
 } from './store';
 export { linkTarget, linkCandidates } from './links';
 
