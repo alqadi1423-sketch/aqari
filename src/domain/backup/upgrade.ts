@@ -28,7 +28,8 @@ export function hasUserData(db: BackupEnv['db']): boolean {
   const tables = db.all<{ name: string }>(
     `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).map((t) => t.name);
   for (const t of tables) {
-    if (SYSTEM_TABLES.has(t) || t.startsWith('sync_')) continue;
+    // المحادثة (chat_) وحدة مستقلة · رسائلها ليست بيانات المنشأة فلا تمنع دعوةً ولا تنضمّ بها
+    if (SYSTEM_TABLES.has(t) || t.startsWith('sync_') || t.startsWith('chat_')) continue;
     // مركز «عام» تزرعه الهجرة ٢٨ على كل قاعدة · وما أضافه المستخدم بياناته
     if (t === 'cost_centers') {
       if (db.get(`SELECT 1 FROM cost_centers WHERE is_default = 0 LIMIT 1`)) return true;

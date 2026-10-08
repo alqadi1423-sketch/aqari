@@ -47,6 +47,11 @@ import { setCapture, outboxCount, seedOutbox, setFilesSync } from '../sync/engin
 import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
+import { t } from '../i18n';
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatUnsentCount, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatCancelTask, chatVote,
+  type GroupChange, type ChatTag, type ChatTask,
+  chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
+import type { RemoteMessage, RemoteThread } from '../chat/remote';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
@@ -57,8 +62,7 @@ import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
   moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, resolveEpoch, readEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
-  updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec,
-} from './org';
+  updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
 import { throwIfCancelled, CancelledError, type CancelSignal, type ProgressFn } from '../domain/progress';
@@ -195,9 +199,23 @@ function bindMember(db: DB, m: Membership, email: string, orgName: string | null
 let paused = false;
 
 /** يوقف المزامنة وينتظر انتهاء دورة جارية · فلا تكتب دورةٌ في القاعدة وهي تُستبدل */
+/**
+ * المحادثة موقوفة أثناء تفريغ الجهاز (تحقق الدمج ف٦): لا تبدأ دورة، وتُنتظر الجارية · فلا يقع سحبٌ في قاعدة فُرّغت للتو
+ */
+let chatHeld = 0;
+async function holdChat<T>(fn: () => Promise<T>): Promise<T> {
+  chatHeld++;
+  try {
+    while (chatSyncRunning()) await new Promise((r) => setTimeout(r, 200));
+    return await fn();
+  } finally {
+    chatHeld--;
+  }
+}
+
 export async function pauseSync(): Promise<void> {
   paused = true;
-  while (running) await new Promise((r) => setTimeout(r, 200));
+  while (running || chatSyncRunning()) await new Promise((r) => setTimeout(r, 200));
 }
 export function resumeSync(): void {
   paused = false;
@@ -264,6 +282,8 @@ export async function syncNow(): Promise<void> {
       // العضوية في الخادم: أُزيلت فيُفرَّغ الجهاز · تغيّرت فيُعاد السحب من أوله بصلاحيته الجديدة،
       // وكذلك إن نُقلت وحدةٌ من عقاراته إلى عقار ليس له
       const moved = await checkUnitMoves(db, remoteOf(db, uid, idToken));
+      // مؤشر النقل تقدّم · فيُسجَّل التفريغ الآن قبل طلب العضوية، فلا يضيع بفشله
+      if (moved === 'lost') notePermWipe(db, 'moved');
       const r0 = await refreshMembership(db, remoteOf(db, uid, idToken));
       const r = r0 === 'same' && moved === 'lost' ? 'changed' : r0;
       // لا تفريغ وفي الطابور ما لم يُرفع (قاعدة المالك ٢٠٢٦-١٠-٠٥): المُزال يُسأل، وتغيّر الصلاحية ينتظر الرفع
@@ -277,11 +297,16 @@ export async function syncNow(): Promise<void> {
           patch({ lastError: 'أُزيلت عضويتك من المنشأة · فُرّغ هذا الجهاز من بياناتها بعد نسخة أمان' });
           onData();
         }
-      } else if (r === 'changed' && queued === 0) {
-        const next = readMembership(db)!;
-        await wipeLocal(db as AppDB, undefined, undefined, moved === 'lost' ? 'نُقلت وحدةٌ من عقاراتك إلى عقار ليس لك' : 'تغيّرت صلاحيتك في المنشأة');
-        bindMember(db, next, state.user.email, getSyncState(db, 'org_name'));
-        onData();
+      } else if (r === 'changed' || r === 'same') {
+        // التفريغ منتظرٌ محفوظ حتى يُرفع الطابور وما لم يُرسل من المحادثة (في آخر هذه الدورة)، ثم يقع في أول دورة بعدها (تحقق الدمج ف٢)
+        const due = permWipeDue(db, r, moved, queued + chatUnsentCount(db));
+        if (due) {
+          const next = readMembership(db)!;
+          await wipeLocal(db as AppDB, undefined, undefined, due === 'moved' ? 'نُقلت وحدةٌ من عقاراتك إلى عقار ليس لك' : 'تغيّرت صلاحيتك في المنشأة');
+          setSyncState(db, PERM_WIPE_KEY, null);
+          bindMember(db, next, state.user.email, getSyncState(db, 'org_name'));
+          onData();
+        }
       }
     }
   } catch (e) {
@@ -291,7 +316,28 @@ export async function syncNow(): Promise<void> {
   } finally {
     running = false;
     patch({ syncing: false, progress: null, sync: syncStatus(db) });
+    // المحادثة بعد كل دورة (src/chat) · وحدة مستقلة: فشلها لا يمسّ المزامنة ولا يظهر خطأً عاماً
+    chatSyncNow().catch(() => {});
   }
+}
+
+/** اسم المالك في المحادثة · مصدر واحد للشاشة والمزامنة (التحقق ج١) */
+export const chatOwnerName = (db: DB): string => orgNameOf(db);
+
+/** دورة مزامنة للمحادثة وحدها · تستدعيها شاشتها أيضاً · بلا جلسة أو اتصال لا تفعل شيئاً */
+export async function chatSyncNow(o: { threadId?: string; full?: boolean; force?: boolean } = {}): Promise<void> {
+  const s = getSession();
+  const db = appDb;
+  const cfg = cloudConfig();
+  const u = state.user;
+  if (!s || !db || !cfg || !u || !state.online) return;
+  // ما يوقف المزامنة العامة يوقف المحادثة (مراجعة المحادثة #7)
+  if (paused || chatHeld || activating || state.gate || state.invites?.length || state.decision) return;
+  if (activeAccount(db) !== u.uid) return;
+  if (getSyncState(db, 'restored_unadopted') === '1' || syncBackoffUntil(db)) return;
+  const owner = deviceAccount(db);
+  if (owner && owner.uid !== u.uid) return;
+  await runChatSync(db, { projectId: cfg.projectId, uid: u.uid, email: u.email, idToken: () => s.idToken() }, orgNameOf(db), o);
 }
 
 /**
@@ -546,6 +592,12 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
     // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
     // ملفات المنشأة في الخادم مع صفوفها
     await deleteOrgFiles(uid, onProgress);
+    // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
+    const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.idToken() };
+    const mem = readMembership(db);
+    // محاولة: عضوٌ أُزيل ولم يُحسم قراره لا يُمنع من حذف حسابه (التحقق)
+    if (mem) await chatForgetMe(chatS, mem.org).catch(() => {});
+    else await chatPurgeOrg(chatS, uid);
     for (const remote of [
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() }),
@@ -629,12 +681,14 @@ export async function resolveDecision(choice: 'keep' | 'wipe', onProgress?: (m: 
 
 /** تفريغ الجهاز: القاعدة والمرفقات والمصغّرات ولقطة الودجت · بنسخة أمان، ويبقى الحساب وهوية الجهاز */
 async function wipeLocal(db: AppDB, onProgress?: (m: string) => void, safety?: string, reason?: string): Promise<string> {
-  const env = appBackupEnv(db);
-  const path = await wipeAllData(env, onProgress, safety, reason);
-  for (const d of ['thumbs', 'widget.json']) {
-    try { env.fs.remove(joinPath(appDataRoot(), d)); } catch { /* غير موجود */ }
-  }
-  return path;
+  return holdChat(async () => {
+    const env = appBackupEnv(db);
+    const path = await wipeAllData(env, onProgress, safety, reason);
+    for (const d of ['thumbs', 'widget.json']) {
+      try { env.fs.remove(joinPath(appDataRoot(), d)); } catch { /* غير موجود */ }
+    }
+    return path;
+  });
 }
 
 /**
@@ -661,6 +715,9 @@ export async function wipeEverything(db: AppDB, onProgress?: (m: string) => void
       const sess = s!;
       const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.idToken(), org: user!.uid });
       epoch = await wipeOrgCloud(remote, user!.uid, onProgress);
+      // المسح يشمل المحادثة (قرار المالك 2026-10-07: #28)
+      // الأعضاء والدعوات باقون بعد المسح · فيبقى الدليل والإشراف (التحقق ق٢)
+      await chatPurgeOrg({ projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.idToken() }, user!.uid, { keepDirectory: true });
       await deleteOrgFiles(user!.uid, onProgress);
     }
     await wipeLocal(db, onProgress, safety);
@@ -720,6 +777,9 @@ export async function leaveOrgNow(db: AppDB): Promise<void> {
   const sess = s;
   await pauseSync();
   try {
+    // يخرج من مجموعات المحادثة ومن دليلها قبل عضويته (قرار المالك #19)
+    const cfgL = cloudConfig();
+    if (cfgL) await chatLeaveOrg({ projectId: cfgL.projectId, uid: state.user.uid, email: state.user.email, idToken: () => sess.idToken() }, m.org).catch(() => {});
     await leaveOrg(remoteOf(db, state.user.uid, () => sess.idToken()), m.org, m.uid);
     await resetDeviceData(db);
     await sess.signOut();
@@ -782,7 +842,101 @@ export async function updateMyProfileNow(db: DB, profile: MemberProfile) {
   });
 }
 export async function updateMemberNow(db: DB, uid: string, spec: MemberSpec) { const t = teamRemote(); return updateMember(t.remote, t.org, uid, spec, orgNameOf(db)); }
-export async function removeMemberNow(uid: string) { const t = teamRemote(); return removeMember(t.remote, t.org, uid); }
+/** إشراف عضو في المحادثة بإيميله (src/chat) · للمالك وحده */
+export async function chatSupervisorNow(email: string): Promise<string[]> {
+  const s = getSession(); const cfg = cloudConfig();
+  if (!s || !cfg || !state.user || !email) return [];
+  if (!state.online) throw new Error('offline');
+  return supervisorOf({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email);
+}
+export async function setChatSupervisorNow(email: string, sections: string[]): Promise<void> {
+  const s = getSession(); const cfg = cloudConfig();
+  if (!s || !cfg || !state.user) { teamRemote(); return; }
+  await setSupervisor({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email, sections);
+}
+export async function removeMemberNow(uid: string, email = '') {
+  const t = teamRemote();
+  await removeMember(t.remote, t.org, uid);
+  // يخرج من مجموعات المحادثة ودليلها وإشرافها (قرار المالك 2026-10-07: #19)
+  const s = getSession(); const cfg = cloudConfig();
+  // وفشله لا يُظهر الإزالة فاشلةً وقد تمّت (تحقق الدمج ف٥) · والقواعد تمنع المُزال من المحادثة بعضويته أصلاً
+  if (s && cfg && state.user) {
+    await chatRemoveMember({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, t.org, uid, email)
+      .catch(() => {});
+  }
+}
+
+/** جلسة المحادثة ومنشأتها لما يحتاج اتصالاً (الدفعات ٢ و٣) */
+function chatOnline(): { db: DB; s: ChatSession; org: string } {
+  const sess = getSession(); const cfg = cloudConfig(); const db = appDb;
+  if (!sess || !cfg || !state.user || !db) throw new Error(t('chat.needAccount'));
+  if (!state.online) throw new Error(t('chat.needOnline'));
+  return { db, s: { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => sess.idToken() }, org: readMembership(db)?.org ?? state.user.uid };
+}
+export async function chatAckNow(threadId: string, msgId: string): Promise<void> {
+  const c = chatOnline(); await chatAcknowledge(c.db, c.s, c.org, threadId, msgId);
+}
+export async function chatEditMessageNow(threadId: string, msgId: string, body: string, tag: ChatTag | null): Promise<void> {
+  const c = chatOnline(); await chatEditMessage(c.db, c.s, c.org, threadId, msgId, body, tag);
+}
+export async function chatTaskNow(threadId: string, msgId: string, task: ChatTask): Promise<void> {
+  const c = chatOnline(); await chatSetTask(c.db, c.s, c.org, threadId, msgId, task);
+}
+export async function chatTaskDoneNow(threadId: string, msgId: string, done: boolean): Promise<void> {
+  const c = chatOnline(); await chatSetTaskDone(c.db, c.s, c.org, threadId, msgId, done);
+}
+export async function chatCancelTaskNow(threadId: string, msgId: string): Promise<void> {
+  const c = chatOnline(); await chatCancelTask(c.db, c.s, c.org, threadId, msgId);
+}
+export async function chatVoteNow(threadId: string, msgId: string, options: number[]): Promise<void> {
+  const c = chatOnline(); await chatVote(c.db, c.s, c.org, threadId, msgId, options);
+}
+export async function chatEditsNow(threadId: string, msgId: string) {
+  const c = chatOnline(); return chatEditsOf(c.s, c.org, threadId, msgId);
+}
+
+/** تثبيت رسالة · يحتاج اتصالاً (الدفعة ٢) */
+export async function chatPinNow(threadId: string, msgId: string, on: boolean): Promise<void> {
+  const s = getSession(); const cfg = cloudConfig(); const db = appDb;
+  if (!s || !cfg || !state.user || !db) throw new Error(t('chat.needAccount'));
+  if (!state.online) throw new Error(t('chat.pinOffline'));
+  const org = readMembership(db)?.org ?? state.user.uid;
+  await chatSetPin(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, msgId, on);
+}
+/** تعديل المجموعة: الاسم والإعدادات والأعضاء والمسؤولون (#19 و2026-10-08T05:31Z) · كلٌّ بصلاحيته */
+export async function chatEditGroupNow(threadId: string, change: GroupChange): Promise<void> {
+  const s = getSession(); const cfg = cloudConfig(); const db = appDb;
+  if (!s || !cfg || !state.user || !db) { teamRemote(); return; }
+  if (!state.online) teamRemote();
+  const org = readMembership(db)?.org ?? state.user.uid;
+  await chatEditGroup(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, change);
+}
+/* ─── مراجعة المالك محادثةً بسبب، وانضمامه إلى مجموعة (قرارا المالك 2026-10-08T04:11Z) · للمالك وحده، وتحتاج اتصالاً ─── */
+
+function ownerChatSession(): { s: ChatSession; db: DB } {
+  const t = teamRemote(); // يشترط الدخول والاتصال
+  const sess = getSession()!;
+  const cfg = cloudConfig()!;
+  const db = appDb;
+  if (!db || readMembership(db)) throw new Error('chat: owner only');
+  return { s: { projectId: cfg.projectId, uid: t.org, email: state.user!.email, idToken: () => sess.idToken() }, db };
+}
+export async function chatReviewCandidatesNow(): Promise<RemoteThread[]> {
+  const { s } = ownerChatSession();
+  return chatReviewCandidates(s, s.uid);
+}
+export async function chatOpenReviewNow(chatId: string, reason: string, title: string): Promise<RemoteMessage[]> {
+  const { s, db } = ownerChatSession();
+  return chatOpenReview(db, s, s.uid, chatId, reason, title);
+}
+export async function chatCloseReviewNow(chatId: string): Promise<void> {
+  const { s } = ownerChatSession();
+  await chatCloseReview(s, s.uid, chatId);
+}
+export async function chatJoinGroupNow(t: RemoteThread): Promise<void> {
+  const { s, db } = ownerChatSession();
+  await chatJoinGroup(db, s, s.uid, t, chatMe(db, s, orgNameOf(db)).name);
+}
 export async function revokeInviteNow(email: string) { const t = teamRemote(); return revokeInvite(t.remote, t.org, email); }
 
 /* ═══════════ Google Drive ═══════════ */

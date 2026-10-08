@@ -105,7 +105,9 @@ android {
 
     namespace 'com.aqari.app'
     defaultConfig {
-        applicationId 'com.aqari.app'
+        // الحزمة التجريبية (scripts/build-chat-test.sh) تُثبَّت بجانب حزمة المالك باسم آخر · والافتراضي كما هو
+        applicationId (findProperty('aqariAppId') ?: 'com.aqari.app')
+        manifestPlaceholders = [appLabel: (findProperty('aqariAppLabel') ?: '@string/app_name')]
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

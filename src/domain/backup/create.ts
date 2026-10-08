@@ -228,6 +228,8 @@ export async function createBackup(
     if (review.blocking.length) throw new BackupIntegrityError(review.blocking);
     notes = review.notes;
   }
+  await yieldUi();
+  // العدّ والدفتر ثم اللقطة بلا انتظار بينها: كاتبٌ متزامن (المزامنة، وسحب المحادثة كل ثوانٍ) لا يقع بين العدّ واللقطة (تحقق الدمج ف٦)
   const counts = tableCounts(env.db);
   let ledger: BackupManifest['ledger'];
   try {
@@ -238,7 +240,6 @@ export async function createBackup(
   }
   const schemaVersion = currentSchemaVersion(env.db);
   const deviceRow = env.db.get<{ value: string }>(`SELECT value FROM meta WHERE key='device_id'`);
-  await yieldUi();
 
   // ٢) لقطة القاعدة
   throwIfCancelled(opts.signal);

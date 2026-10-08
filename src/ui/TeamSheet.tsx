@@ -19,7 +19,8 @@ import { routeAllowed } from '../domain/access/routes';
 import { MONEY_SECTIONS } from '../domain/access/readSections';
 import { MORE_SCREENS, screenText } from './moreScreens';
 import { profileOf, type MemberDoc, type MemberSpec } from '../services/org';
-import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow, updateMemberProfileNow } from '../services/cloud';
+import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow, updateMemberProfileNow, chatSupervisorNow, setChatSupervisorNow } from '../services/cloud';
+import { useLang } from '../i18n';
 import { validateProfile, type MemberProfile } from '../domain/access/profile';
 
 type Team = Awaited<ReturnType<typeof listTeamNow>>;
@@ -32,6 +33,7 @@ export function permSummary(perm: Perms): string {
 
 export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
   const { db } = useApp();
+  const { t } = useLang();
   const dialog = useDialog();
   const toast = useToast();
   const [team, setTeam] = useState<Team | null>(null);
@@ -71,7 +73,7 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
                     actions: [
                       { label: 'تراجع', variant: 'ghost' },
                       { label: 'أزِل', variant: 'danger', onPress: async () => {
-                        try { await removeMemberNow(m.uid); toast('أُزيل العضو'); load(); }
+                        try { await removeMemberNow(m.uid, m.doc.email); toast('أُزيل العضو'); load(); }
                         catch (e) { await reportFailure({ title: 'تعذّرت الإزالة', where: 'الأعضاء', db, e }); }
                       } },
                     ],
@@ -102,7 +104,7 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
           initial={edit.doc}
           isNew={!edit.uid}
           onClose={() => setEdit(null)}
-          onSave={async (spec) => {
+          onSave={async (spec, sup) => {
             try {
               if (edit.uid) {
                 // البيانات أولاً بسجلها، ثم الصلاحية بالمستند كاملاً ومعه البيانات نفسها
@@ -114,6 +116,8 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
                 toast('حُفظت · تسري على جهازه عند أول اتصال');
               }
               else { const doc = await inviteMemberNow(db, spec); shareInvite(doc); }
+              // إشراف الأقسام في المحادثة (قرار المالك 2026-10-07) · بعد الصلاحية، وفشله لا يُسقط ما حُفظ
+              if (sup) await setChatSupervisorNow(spec.email, sup).catch((e) => reportFailure({ title: t('chat.supSaveFailed'), where: 'الأعضاء', db, e }));
               setEdit(null);
               load();
             } catch (e) { await reportFailure({ title: 'تعذّر الحفظ', where: 'الأعضاء', db, e }); }
@@ -136,9 +140,18 @@ function shareInvite(doc: MemberDoc): void {
 }
 
 function MemberEditor({ initial, isNew, onClose, onSave }: {
-  initial: MemberDoc | null; isNew: boolean; onClose: () => void; onSave: (spec: MemberSpec) => Promise<void>;
+  initial: MemberDoc | null; isNew: boolean; onClose: () => void; onSave: (spec: MemberSpec, sup: string[] | null) => Promise<void>;
 }) {
   const { db } = useApp();
+  const { t } = useLang();
+  // «مشرف القسم» لكل قسم له فيه صلاحية · ينشئ المجموعات ويظهر إشرافه بجوار اسمه في المحادثة
+  const [sup, setSupRaw] = useState<string[]>([]);
+  // لا يُكتب الإشراف إلا إن حُمِّل أو عدّله المالك · فتعذّر تحميله لا يمحو القائم صامتاً (مراجعة المحادثة #9)
+  const [supKnown, setSupKnown] = useState(isNew);
+  const setSup: typeof setSupRaw = (v) => { setSupKnown(true); setSupRaw(v); };
+  useEffect(() => {
+    if (initial?.email) chatSupervisorNow(initial.email).then((x) => { setSupKnown((k) => { if (!k) setSupRaw(x); return true; }); }).catch(() => {});
+  }, [initial?.email]);
   const [email, setEmail] = useState(initial?.email ?? '');
   const [perms, setPermsRaw] = useState<Perms>(initial?.perm ?? {});
   const [allProps, setAllPropsRaw] = useState(initial?.all ?? true);
@@ -162,7 +175,8 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
       footer={ready ? (
         <BtnPrimary title={isNew ? 'إرسال الدعوة' : 'حفظ الصلاحية'} loading={saving} onPress={async () => {
           setSaving(true);
-          await onSave({ email: isNew ? email : initial!.email, perms, allProps, props, profile: pv.ok ? pv.profile : undefined });
+          await onSave({ email: isNew ? email : initial!.email, perms, allProps, props, profile: pv.ok ? pv.profile : undefined },
+            supKnown ? sup.filter((k) => (perms[k as SectionKey] ?? 0) > 0) : null);
           setSaving(false);
         }} />
       ) : null}>
@@ -206,6 +220,13 @@ function MemberEditor({ initial, isNew, onClose, onSave }: {
                     <Badge kind={cur === 0 ? 'draft' : cur === 3 ? 'paid' : 'due'} label={LEVEL_LABEL[cur]} />
                   </Row>
                 </Pressable>
+                {/* الشارة بعد اكتمال تحميل الإشراف · فضغطةٌ قبله لا تمحو أقساماً لم تظهر بعد (التحقق ج١٢) */}
+                {cur > 0 && supKnown ? (
+                  <Row style={{ marginBottom: 6 }}>
+                    <Chip label={t('chat.supervisor')} active={sup.includes(k)}
+                      onPress={() => setSup((x) => (x.includes(k) ? x.filter((y) => y !== k) : [...x, k]))} />
+                  </Row>
+                ) : null}
                 {open ? levelsOf(k).map((l) => (
                   <Pressable key={l} onPress={() => { setPerms((p) => ({ ...p, [k]: l })); setOpenKey(null); }}>
                     <Row style={{ paddingVertical: 7, paddingHorizontal: 8, marginBottom: 4, borderRadius: 8,

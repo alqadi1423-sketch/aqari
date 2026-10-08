@@ -38,7 +38,7 @@ import { usePerm } from '../src/ui/access';
 
 import { CostCenterField } from '../src/ui/CostCenters';
 import { PurchaseLinesSection, loadLineDrafts } from '../src/ui/PurchaseLines';
-import { toLineInput, type LineDraft } from '../src/ui/AssetSheets';
+import { toLineInput, emptyLine, type LineDraft } from '../src/ui/AssetSheets';
 import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 const CATEGORIES = ['كهرباء', 'مياه', 'اتصالات وإنترنت', 'إيجار', 'رواتب', 'تكلفة مبيعات', 'مصروفات تأسيس', 'مصروفات أخرى'];
 const INCORP_ITEMS = ['رسوم حكومية', 'ديكور وتجهيزات', 'معدات', 'تسويق افتتاحي', 'استشارات'];
@@ -393,11 +393,23 @@ export default function Purchases() {
   }, [db]);
 
   // القدوم من الدفتر أو تقرير: ?detail=<id> يفتح ورقة عرض المستند مباشرة والرجوع يعيد من حيث أتيت
-  const params = useLocalSearchParams<{ detail?: string; property?: string }>();
+  const params = useLocalSearchParams<{ detail?: string; property?: string; newNote?: string; newProperty?: string }>();
   useEffect(() => {
     if (params.detail) setDetailFor(String(params.detail));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.detail]);
+  // القدوم من المحادثة (الدفعة ٥): ?newNote=&newProperty= يفتح فاتورة جديدة ببندٍ وصفه نص الرسالة وعقارها ·
+  // والمبالغ يُدخلها المستخدم، والحفظ بمسار الخدمة وصلاحيتها كما هما
+  useEffect(() => {
+    if (params.newNote === undefined && params.newProperty === undefined) return;
+    if (!perm.add || !suppliers.length) return;
+    openNew();
+    if (params.newNote) setLines([{ ...emptyLine(), descr: String(params.newNote).slice(0, 200) }]);
+    if (params.newProperty && properties.some((p) => p.id === String(params.newProperty))) {
+      setPropertyId(String(params.newProperty)); setUnitSel('P:' + String(params.newProperty));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.newNote, params.newProperty]);
   // القدوم من شاشة العقار: ?property=<id> يفعّل مرشِّح العقار (المرتبط مباشرة أو عبر وحداته أو عداداته)
   useEffect(() => {
     if (params.property) setFProperty(String(params.property));

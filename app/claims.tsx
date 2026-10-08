@@ -180,11 +180,21 @@ export default function Claims() {
   }, [db]);
 
   // القدوم من الدفتر: ?detail=<id> يفتح المستند نفسه لا القائمة
-  const params = useLocalSearchParams<{ detail?: string }>();
+  const params = useLocalSearchParams<{ detail?: string; newReason?: string; newContract?: string }>();
   useEffect(() => {
     if (params.detail) openEdit(String(params.detail));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.detail]);
+  // القدوم من المحادثة (الدفعة ٥): ?newReason=&newContract= يفتح نموذج مطالبة جديدة بنص الرسالة وعقدها المربوط ·
+  // والحفظ بمسار الخدمة وصلاحيتها كما هما
+  useEffect(() => {
+    if (params.newReason === undefined && params.newContract === undefined) return;
+    if (!perm.add || !contracts.length) return;
+    openNew();
+    if (params.newReason) setReason(String(params.newReason).slice(0, 500));
+    if (params.newContract && contracts.some((c) => c.id === String(params.newContract))) setContractId(String(params.newContract));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.newReason, params.newContract]);
 
   const onCollect = useCallback((id: string) => {
     try { collectClaim(db, id); bump(); toast('حُصِّلت المطالبة وقُفلت ذمتها'); }
