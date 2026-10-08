@@ -84,7 +84,10 @@ export async function autoJoinChannels(db: DB, remote: ChatRemote, me: ChatMe, n
   const mine = { perm: m.perms as Record<string, number>, all: m.allProps, props: m.props };
   const cands: ChannelRef[] = [{ t: 'announce' }];
   for (const s of GRANTABLE) if (qualifies({ t: 'section', key: s.key }, mine)) cands.push({ t: 'section', key: s.key });
-  for (const p of activeProperties(db)) if (qualifies({ t: 'prop', id: p.id }, mine)) cands.push({ t: 'prop', id: p.id });
+  // رقم العقار بصيغة القواعد وحدها كما عند المالك · فلا يُطلب ما لا يُنشأ أبداً (التحقق الثاني)
+  for (const p of activeProperties(db)) {
+    if (/^[A-Za-z0-9_-]{1,40}$/.test(p.id) && qualifies({ t: 'prop', id: p.id }, mine)) cands.push({ t: 'prop', id: p.id });
+  }
   const inThreads = new Set(listThreads(db, me.uid, true).map((t) => t.id));
   let joined = 0;
   for (const ch of cands) {

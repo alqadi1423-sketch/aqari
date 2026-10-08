@@ -12,6 +12,8 @@ import { openNodeDb } from '@/db/nodeAdapter';
 import { migrate } from '@/db/migrations';
 import { chatUnsentCount, openDirect, sendLocal, createGroup } from '@/chat';
 import { markMessageRejected, markThreadRejected, markSent } from '@/chat/store';
+import { permWipeDue, PERM_WIPE_KEY } from '@/services/org';
+import { getSyncState } from '@/sync/engine';
 
 const ROOT = join(__dirname, '..');
 const src = (f: string) => readFileSync(join(ROOT, f), 'utf8');
@@ -46,7 +48,8 @@ test('ف٢ ما ينتظر الرفع من المحادثة: غير المرسل
 
 test('ف٢ ف٦ تفريغ الجهاز لتغيّر الصلاحية ينتظر رسائل المحادثة · والمحادثة موقوفة أثناء كل تفريغ', () => {
   const sync = body('src/services/cloud.ts', 'export async function syncNow(');
-  expect(sync).toMatch(/r === 'changed' && queued === 0 && chatUnsentCount\(db\) === 0/);
+  expect(sync).toMatch(/const due = permWipeDue\(db, r, moved, queued \+ chatUnsentCount\(db\)\);/);
+  expect(sync).toMatch(/setSyncState\(db, PERM_WIPE_KEY, null\)/);
   const wipe = body('src/services/cloud.ts', 'async function wipeLocal(');
   expect(wipe).toMatch(/return holdChat\(async \(\) => \{/);
   const chatNow = body('src/services/cloud.ts', 'export async function chatSyncNow(');
@@ -68,4 +71,26 @@ test('ف٧ «إعلان مهم» يُرسل من المسؤول وحده ولو 
   expect(chat).toMatch(/const canAck = me\.owner \|\| \(thread\?\.kind === 'group' && isGroupAdmin\(me, thread\)\);/);
   expect(chat).toMatch(/sendLocal\(db, id, me, text, link, \{ men, tag, ack: ack && canAck \}\)/);
   expect(chat).toMatch(/\{canAck \? \(\s*<Chip label=\{t\('chat\.important'\)\}/);
+});
+
+test('ف٢ (التحقق الثاني) التفريغ المؤجَّل لا يضيع: يُحفظ عند اكتشاف التغيّر ويقع حين يخلو ما ينتظر الرفع ولو عادت العضوية «كما هي»', () => {
+  const db = openNodeDb(':memory:');
+  migrate(db);
+  // الدورة الأولى: تغيّرت الصلاحية وعلى الجهاز رسالة محادثة لم تُرسل
+  expect(permWipeDue(db, 'changed', 'none', 1)).toBeNull();
+  expect(getSyncState(db, PERM_WIPE_KEY)).toBe('changed');
+  // الدورة التالية: العضوية المحفوظة «كما هي» وما زال شيء ينتظر
+  expect(permWipeDue(db, 'same', 'none', 2)).toBeNull();
+  // ثم خلا: يقع التفريغ
+  expect(permWipeDue(db, 'same', 'none', 0)).toBe('changed');
+  // نقل وحدة يغلب في السبب ولو تلاه تغيّر صلاحية
+  const d2 = openNodeDb(':memory:');
+  migrate(d2);
+  expect(permWipeDue(d2, 'changed', 'lost', 3)).toBeNull();
+  expect(permWipeDue(d2, 'changed', 'none', 0)).toBe('moved');
+  // ولا تفريغ بلا تغيّر
+  const d3 = openNodeDb(':memory:');
+  migrate(d3);
+  expect(permWipeDue(d3, 'same', 'none', 0)).toBeNull();
+  db.close(); d2.close(); d3.close();
 });

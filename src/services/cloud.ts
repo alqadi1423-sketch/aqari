@@ -62,8 +62,7 @@ import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
   moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, resolveEpoch, readEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
-  updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec,
-} from './org';
+  updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
 import { throwIfCancelled, CancelledError, type CancelSignal, type ProgressFn } from '../domain/progress';
@@ -296,12 +295,16 @@ export async function syncNow(): Promise<void> {
           patch({ lastError: 'أُزيلت عضويتك من المنشأة · فُرّغ هذا الجهاز من بياناتها بعد نسخة أمان' });
           onData();
         }
-      } else if (r === 'changed' && queued === 0 && chatUnsentCount(db) === 0) {
-        // وما لم يُرسل من المحادثة يُرفع في آخر هذه الدورة، والتفريغ في التالية (تحقق الدمج ف٢)
-        const next = readMembership(db)!;
-        await wipeLocal(db as AppDB, undefined, undefined, moved === 'lost' ? 'نُقلت وحدةٌ من عقاراتك إلى عقار ليس لك' : 'تغيّرت صلاحيتك في المنشأة');
-        bindMember(db, next, state.user.email, getSyncState(db, 'org_name'));
-        onData();
+      } else if (r === 'changed' || r === 'same') {
+        // التفريغ منتظرٌ محفوظ حتى يُرفع الطابور وما لم يُرسل من المحادثة (في آخر هذه الدورة)، ثم يقع في أول دورة بعدها (تحقق الدمج ف٢)
+        const due = permWipeDue(db, r, moved, queued + chatUnsentCount(db));
+        if (due) {
+          const next = readMembership(db)!;
+          await wipeLocal(db as AppDB, undefined, undefined, due === 'moved' ? 'نُقلت وحدةٌ من عقاراتك إلى عقار ليس لك' : 'تغيّرت صلاحيتك في المنشأة');
+          setSyncState(db, PERM_WIPE_KEY, null);
+          bindMember(db, next, state.user.email, getSyncState(db, 'org_name'));
+          onData();
+        }
       }
     }
   } catch (e) {

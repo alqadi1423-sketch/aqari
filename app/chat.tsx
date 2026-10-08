@@ -390,7 +390,8 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
                   <T size={TYPE.caption} bold>{t('chat.task')}: {tasks[m.id].title}</T>
                   <T size={TYPE.caption} color={C.muted}>{(people.find((p) => p.uid === tasks[m.id].as)?.name || t('chat.member'))} · {dfmt(tasks[m.id].due)} · {tasks[m.id].cx ? t('chat.taskCancelled') : tasks[m.id].done ? t('chat.taskDone') : t('chat.taskOpen')}</T>
                   <Row gap={6}>
-                    {!tasks[m.id].cx && (tasks[m.id].as === me.uid || tasks[m.id].by === me.uid) ? (
+                    {/* والمنشئ لا ينجز مهمةً غادر مسؤولها (القواعد) · فلا يظهر له الزر */}
+                    {!tasks[m.id].cx && (tasks[m.id].as === me.uid || (tasks[m.id].by === me.uid && !!thread?.members.includes(tasks[m.id].as))) ? (
                       <BtnGhost small title={tasks[m.id].done ? t('chat.taskReopen') : t('chat.taskMarkDone')} onPress={() => toggleTask(tasks[m.id])} />
                     ) : null}
                     {/* الإلغاء لمنشئها وحده · فتبقى «ملغاة» لا تُعدَّل ولا تُعاد */}

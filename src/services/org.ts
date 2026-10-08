@@ -260,6 +260,23 @@ export const pendingEpoch = (db: DB): number | null => {
   return v === null ? null : Number(v);
 };
 
+/** تفريغٌ لتغيّر الصلاحية ينتظر رفع ما على الجهاز · 'changed' أو 'moved' (نُقلت وحدة من عقاراته) */
+export const PERM_WIPE_KEY = 'perm_wipe_pending';
+
+/**
+ * تفريغ الجهاز لتغيّر الصلاحية (قاعدة المالك ٢٠٢٦-١٠-٠٥: لا تفريغ وفي الطابور ما لم يُرفع) · يُحفظ منتظراً، ويقع في أول دورة
+ * يخلو فيها طابور المزامنة وما لم يُرسل من المحادثة · فالعضوية الجديدة تُحفظ عند اكتشافها والتفريغ لا يضيع بذلك
+ * (تحقق الدمج الثاني، ف٢) · يعيد سببه إن حان، وإلا null
+ */
+export function permWipeDue(db: DB, r: 'same' | 'changed', moved: 'lost' | 'none', waiting: number): 'changed' | 'moved' | null {
+  if (r === 'changed') {
+    const cur = getSyncState(db, PERM_WIPE_KEY);
+    setSyncState(db, PERM_WIPE_KEY, moved === 'lost' || cur === 'moved' ? 'moved' : 'changed');
+  }
+  const pend = getSyncState(db, PERM_WIPE_KEY);
+  return pend === 'changed' || pend === 'moved' ? (waiting === 0 ? pend : null) : null;
+}
+
 /** فحص العهد قبل المزامنة · لا يفرّغ شيئاً: 'ask' يُحفظ عهدها منتظراً قرار المستخدم (resolveEpoch) */
 export async function checkEpoch(db: DB, remote: FirestoreRemote, org: string): Promise<'ask' | 'adopt' | 'same'> {
   const remoteEpoch = await readEpoch(remote, org);
