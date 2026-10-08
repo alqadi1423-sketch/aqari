@@ -31,8 +31,8 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
   contracts: {
     own: ['contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'],
     // توثيق العقد ينشئ مستأجره ونموذج استلامه، وتحويل الحجز يسدّد أقساطه بدفعات من العربون (المراجعة ٤.٤)،
-    // وإلغاؤه بخصم يتجاوز التأمين ينشئ مطالبته
-    create: [...POSTS, 'tenants', 'handovers', 'claims', 'bank_tx', 'contract_payments'],
+    // وإلغاؤه بخصم يتجاوز التأمين ينشئ مطالبته، وإلغاؤه بتسوية يكتب صفّ التسوية (مراجعة التثبيت #15)
+    create: [...POSTS, 'tenants', 'handovers', 'claims', 'bank_tx', 'contract_payments', 'deposit_settlements'],
     touch: { ...LINKS_REVERSAL, reservations: ['status', 'converted_contract_id', 'deposit_outcome', 'deposit_settled_date'] },
   },
   tenants: {

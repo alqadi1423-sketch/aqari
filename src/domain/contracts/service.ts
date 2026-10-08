@@ -422,7 +422,20 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
       // ردّ التأمين نقداً حين يقبضه المكتب · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
       if (depositHolderOf(c) === 'المكتب') requireCash(db, refund, 'ردّ التأمين');
       postDepositDeduct(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, date);
+      // التأمين لدى المنصة: المخصوم يُقفل من 1260 ويستقر في محفظة إيجار، كالتسوية بعد الانتهاء (مراجعة التثبيت #25)
+      if ((c as unknown as { deposit_holder?: string }).deposit_holder === 'منصة إيجار' && deduction > 0) { // i18n-exempt: جهة مخزّنة
+        postDepositDeductMove(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, date, 'محفظة إيجار'); // i18n-exempt: وجهة مخزّنة
+      }
       postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder: (c as unknown as { deposit_holder?: string }).deposit_holder }, refund, date);
+      // صف التسوية: فتسجيلها بعد الإلغاء تعديلٌ يعكس هذه القيود لا ترحيلٌ ثانٍ (مراجعة التثبيت #15)
+      db.run(
+        `INSERT INTO deposit_settlements (contract_id, date, deduction_halalas, deduction_reason, refund_halalas, notes, deduct_destination)
+         VALUES (?,?,?,?,?,'',?)
+         ON CONFLICT(contract_id) DO UPDATE SET date = excluded.date, deduction_halalas = excluded.deduction_halalas,
+           deduction_reason = excluded.deduction_reason, refund_halalas = excluded.refund_halalas, deduct_destination = excluded.deduct_destination`,
+        [contractId, date, deduction, (input.deductionReason || '').trim(), refund,
+         (c as unknown as { deposit_holder?: string }).deposit_holder === 'منصة إيجار' ? 'محفظة إيجار' : ''] // i18n-exempt: قيم مخزّنة
+      );
     }
     if (input.installmentsFate === 'cancel') {
       // ما غطّاه المسدَّدُ والخصمُ لا يُلغى · الخصم يُطرح هنا كما في كل موضع يبني حالة قسط
@@ -501,12 +514,14 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
     db.run(
       `INSERT INTO contracts (id, contract_no, tenant_name, phone, id_number, unit_id, unit_label, unit_type,
         value_halalas, cycle, start, end, deposit_halalas, ejar_no, services, furnished, type_specific,
-        status, renewed_from, renew_count, renew_note, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'سارٍ',?,?,?,?)`,
+        status, renewed_from, renew_count, renew_note, created_at, deposit_holder, deposit_holder_name)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'سارٍ',?,?,?,?,?,?)`,
+      // جهة قبض التأمين واسمها كما في العقد السابق: التأمين المرحَّل لديها (مراجعة التثبيت #16)
       [newId, contractNo, c.tenant_name, c.phone, c.id_number, c.unit_id, c.unit_label, c.unit_type,
        input.valueHalalas, input.cycle, input.start, input.end, totalDeposit,
        input.ejarNo.trim(), input.services.trim(), input.furnished, c.type_specific,
-       c.id, (Number(c.renew_count) || 0) + 1, input.note.trim() || null, new Date().toISOString()]
+       c.id, (Number(c.renew_count) || 0) + 1, input.note.trim() || null, new Date().toISOString(),
+       depositHolderOf(c), (c as unknown as { deposit_holder_name?: string | null }).deposit_holder_name || '']
     );
     const prevSplit = db.all<{ name: string }>(`PRAGMA table_info(contracts)`).some((x) => x.name === 'services_halalas')
       ? db.get<{ s: number; p: number }>(`SELECT services_halalas AS s, parking_halalas AS p FROM contracts WHERE id = ?`, [c.id])

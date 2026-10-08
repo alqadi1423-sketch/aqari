@@ -505,5 +505,12 @@
     "installmentDiscount": "Installment discount",
     "claimCollected": "Claim collected",
     "upcomingTotal": "Upcoming installments not yet due"
+  },
+  "fin": {
+    "unclosedEarnings": "Earnings to date (not closed)",
+    "otherEquityMove": "Retained earnings movement",
+    "changeIn": "Change in {{name}}",
+    "financing": "Net cash from financing activities",
+    "unexplained": "Difference not explained by entries · check reconciliation"
   }
 }

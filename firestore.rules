@@ -172,7 +172,7 @@ service cloud.firestore {
     function opCreates(op, t) {
       return (op == 'props' && t in ['audit_log', 'blobs', 'attachments', 'properties', 'property_areas', 'property_area_items', 'property_floor_categories', 'units', 'unit_rooms', 'unit_room_items', 'meters'])
         || (op == 'maintenance' && t in ['audit_log'])
-        || (op == 'contracts' && t in ['journal_entries', 'audit_log', 'tenants', 'handovers', 'claims', 'bank_tx', 'contract_payments', 'blobs', 'attachments', 'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'])
+        || (op == 'contracts' && t in ['journal_entries', 'audit_log', 'tenants', 'handovers', 'claims', 'bank_tx', 'contract_payments', 'deposit_settlements', 'blobs', 'attachments', 'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'])
         || (op == 'tenants' && t in ['audit_log', 'blobs', 'attachments', 'tenants'])
         || (op == 'collect' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'contract_payments', 'payment_lines', 'payment_allocations'])
         || (op == 'deposits' && t in ['journal_entries', 'audit_log', 'bank_tx', 'claims', 'blobs', 'attachments', 'deposit_settlements'])

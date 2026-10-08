@@ -157,7 +157,13 @@ export default function Reports() {
       at === to ? balFrom(balToMap, a) : at === prev.to ? balFrom(balPrevMap, a) : balFrom(allAccountMovements(db, null, at, dimF), a);
     const assetRows = asset.map((a) => ({ code: a.code, name: a.name, v: balAt(a, to), p: prev.to ? balAt(a, prev.to) : 0 }));
     const liabRows = liab.map((a) => ({ code: a.code, name: a.name, v: balAt(a, to), p: prev.to ? balAt(a, prev.to) : 0 }));
-    const eqRows = eq.map((a) => ({ code: a.code, name: a.name, v: balAt(a, to), p: prev.to ? balAt(a, prev.to) : 0 }));
+    // أرباح الفترات حتى تاريخه سطرٌ في حقوق الملكية (لا إقفال في الدفتر)، فيتوازن المركز (مراجعة التثبيت #13)
+    const earningsFrom = (map: Map<string, { debit: number; credit: number }>) =>
+      rev.reduce((s2, a) => s2 + balFrom(map, a), 0) - exp.reduce((s2, a) => s2 + balFrom(map, a), 0);
+    const eqRows: Array<{ code?: string; name: string; v: number; p: number }> = [
+      ...eq.map((a) => ({ code: a.code, name: a.name, v: balAt(a, to), p: prev.to ? balAt(a, prev.to) : 0 })),
+      { name: t('fin.unclosedEarnings'), v: earningsFrom(balToMap), p: prev.to ? earningsFrom(balPrevMap) : 0 },
+    ];
     const sumA = assetRows.reduce((s2, r) => s2 + r.v, 0);
     const sumL = liabRows.reduce((s2, r) => s2 + r.v, 0);
     const sumE = eqRows.reduce((s2, r) => s2 + r.v, 0);
@@ -174,11 +180,18 @@ export default function Reports() {
     // حقوق الملكية: أولها + إضافات المالك - مسحوباته + صافي الربح = آخرها
     const capIn = mv('3100').credit;
     const capOut = mv('3100').debit;
-    const eqOpen = eq.reduce((s2, a) => s2 + (from ? balAt(a, prevDayOf(from)) : 0), 0);
-    const equity = { open: eqOpen, capIn, capOut, net, close: eqOpen + capIn - capOut + net };
+    // أول المدة بأرباح ما قبلها، وبلا بداية: الأرصدة الافتتاحية · وحركة حقوق الملكية غير رأس المال (3200) سطرٌ ظاهر،
+    // فآخر المدة = حقوق الملكية في المركز بتاريخها (مراجعة التثبيت #13)
+    const openMap = from ? allAccountMovements(db, null, prevDayOf(from), dimF) : null;
+    const eqOpen = openMap
+      ? eq.reduce((s2, a) => s2 + balFrom(openMap, a), 0) + earningsFrom(openMap)
+      : (filtered ? 0 : eq.reduce((s2, a) => s2 + Number(a.opening_halalas || 0), 0));
+    const otherMove = eq.filter((a) => a.code !== '3100').reduce((s2, a) => s2 + mv(a.code).credit - mv(a.code).debit, 0);
+    const equity = { open: eqOpen, capIn, capOut, move: otherMove, net, close: eqOpen + capIn - capOut + otherMove + net };
     const prevEquity = prev.from ? {
       capIn: pv('3100').credit, capOut: pv('3100').debit, net: prevNet,
-    } : { capIn: 0, capOut: 0, net: 0 };
+      move: eq.filter((a) => a.code !== '3100').reduce((s2, a) => s2 + pv(a.code).credit - pv(a.code).debit, 0),
+    } : { capIn: 0, capOut: 0, net: 0, move: 0 };
     // ميزان المراجعة
     const trial = trialBalance(db, from, to, dimF);
     const ccRows = tab === 'cc' ? costCenterReport(db, from, to, dimF) : [];
@@ -189,7 +202,7 @@ export default function Reports() {
       revRows, expRows, totalRev, totalExp, prevRev, prevExp, prevNet,
       assetRows, liabRows, eqRows, sumA, sumL, sumE,
       arChange, apChange, faChange, net, opCash, prevOpCash, nonCash,
-      equity, prevEquity, trial, trialD, trialC, hasEntries, ccRows,
+      equity, prevEquity, trial, trialD, trialC, hasEntries, ccRows, cf,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, from, to, prev.from, prev.to, ready, dimF, tab === 'cc']);
@@ -454,11 +467,14 @@ export default function Reports() {
           <T size={14} bold color={C.ink} style={{ marginBottom: 4 }}>قائمة التدفقات النقدية · {periodLabel}</T>
           {line('صافي الربح', data.net, false)}
           {data.nonCash ? line(t('assets.cashflow.nonCash'), data.nonCash, false) : null}
-          {line('التغير في الذمم المدينة', -data.arChange, false)}
-          {line('التغير في الذمم الدائنة', data.apChange, false)}
+          {/* رأس المال العامل كله، والتمويلي، وصافي التغير = تغيّر النقدية (مراجعة التثبيت #14) */}
+          {data.cf.workingCapital.map((l) => line(t('fin.changeIn', { name: l.name }), l.v, false, false, undefined, undefined, l.code))}
           {line('صافي التدفق من الأنشطة التشغيلية', data.opCash, false, true, undefined, data.prevOpCash)}
           {line('شراء/بيع أصول ثابتة', -data.faChange, false)}
-          {line('صافي التغير في النقدية', data.opCash - data.faChange, false, true, C.emerald)}
+          {data.cf.financingLines.map((l) => line(t('fin.changeIn', { name: l.name }), l.v, false, false, undefined, undefined, l.code))}
+          {line(t('fin.financing'), data.cf.financing, false, true)}
+          {data.cf.unexplained ? line(t('fin.unexplained'), data.cf.unexplained, false, false, C.rose) : null}
+          {line('صافي التغير في النقدية', data.cf.cashChange, false, true, C.emerald)}
         </Card>
       )}
 
@@ -469,6 +485,7 @@ export default function Reports() {
           {line('حقوق الملكية أول المدة', data.equity.open, false)}
           {line('إضافات المالك', data.equity.capIn, false, false, undefined, data.prevEquity.capIn)}
           {line('مسحوبات المالك', -data.equity.capOut, false, false, undefined, -data.prevEquity.capOut)}
+          {data.equity.move || data.prevEquity.move ? line(t('fin.otherEquityMove'), data.equity.move, false, false, undefined, data.prevEquity.move) : null}
           {line('صافي ربح المدة', data.equity.net, false, false, undefined, data.prevEquity.net)}
           {line('حقوق الملكية آخر المدة', data.equity.close, false, true, C.emerald)}
         </Card>

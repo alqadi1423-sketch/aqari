@@ -40,13 +40,13 @@ describe('القوائم المالية الأربع بالصيغ الثلاث',
     db.close();
   });
 
-  test('المركز المالي يطابق الشاشة: قبل إقفال صافي الربح يُعلن عدم التوازن بفارقه بالضبط', () => {
+  test('المركز المالي متوازن: أرباح الفترات حتى تاريخه سطرٌ في حقوق الملكية (مراجعة التثبيت #13)', () => {
     const db = memDb();
     seed(db);
     const b = financialStatementBlock(db, 'balance', null, '2026-12-31');
     const last = b.totals[b.totals.length - 1];
-    expect(last[0]).toBe('الميزانية غير متوازنة · تحقق من القيود');
-    expect(last[1]).toEqual({ money: 110000 });
+    expect(last[0]).toBe('الأصول = الخصوم + حقوق الملكية');
+    expect(last[1]).toEqual({ money: 0 });
     db.close();
   });
 

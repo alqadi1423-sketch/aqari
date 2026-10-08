@@ -505,5 +505,12 @@
     "installmentDiscount": "خصم على القسط",
     "claimCollected": "تحصيل مطالبة",
     "upcomingTotal": "أقساط قادمة لم يحلّ موعدها"
+  },
+  "fin": {
+    "unclosedEarnings": "أرباح الفترات حتى تاريخه (غير مقفلة)",
+    "otherEquityMove": "حركة الأرباح المرحّلة",
+    "changeIn": "التغير في {{name}}",
+    "financing": "صافي التدفق من الأنشطة التمويلية",
+    "unexplained": "فرق لا تفسره القيود · تحقق من المطابقة"
   }
 }
