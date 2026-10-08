@@ -85,3 +85,40 @@ test('#33 حذف حركةٍ يدوية قديمة بلا قيد لا يُنزل 
   expect(() => deleteBankTx(db, inn)).toThrow();
   db.close();
 });
+
+test('#33 (التحقق المستقل) إلغاء رسومٍ أو واردٍ يدويّ من الدفتر يعكس حركة بنكه · والوارد يُفحص برصيد البنك لا المحفظة', () => {
+  const db = memDb();
+  const bank = addBank(db, 'بنك إلغاء مصطنع');
+  ownerCashIn(db, { amountHalalas: 10000, date: '2026-03-01' });
+  recordManualBankTx(db, { kind: 'deposit', bankId: bank, amountHalalas: 10000, date: '2026-03-02', descr: 'إيداع مصطنع' });
+  recordManualBankTx(db, { kind: 'fee', bankId: bank, amountHalalas: 500, date: '2026-03-03', descr: 'رسوم مصطنعة' });
+  const last = () => db.get<{ id: string }>(`SELECT id FROM journal_entries WHERE src_type = 'cash_op' ORDER BY created_at DESC, rowid DESC LIMIT 1`)!.id;
+  const cancel = (id: string) => { const a = entrySourceAction(db, id); if (a?.kind !== 'op') throw new Error('op'); a.run('2026-03-04', 'إلغاء مصطنع'); };
+  cancel(last());
+  expect([walletCashBalance(db), bankBalance(db, bank), accountBalance(db, '5400')]).toEqual([0, 10000, 0]);
+  recordManualBankTx(db, { kind: 'income', bankId: bank, amountHalalas: 700, date: '2026-03-05', descr: 'عائد مصطنع' });
+  const inc = last();
+  // المحفظة صفر والبنك يغطي: الإلغاء يُخرج الوارد من البنك لا من المحفظة
+  cancel(inc);
+  expect([walletCashBalance(db), bankBalance(db, bank), accountBalance(db, '4300')]).toEqual([0, 10000, 0]);
+  // وارد لا يغطيه البنك بعد سحبه كله: إلغاؤه يُرفض
+  recordManualBankTx(db, { kind: 'income', bankId: bank, amountHalalas: 300, date: '2026-03-06', descr: 'عائد مصطنع' });
+  const inc2 = last();
+  recordManualBankTx(db, { kind: 'withdraw', bankId: bank, amountHalalas: 10300, date: '2026-03-07', descr: 'سحب مصطنع' });
+  const a = entrySourceAction(db, inc2);
+  if (a?.kind !== 'op') throw new Error('op');
+  expect(a.blockers.length).toBeGreaterThan(0);
+  db.close();
+});
+
+test('#32 (التحقق المستقل) لا استرداد ولا رفض لفاتورة شراء محذوفة', () => {
+  const db = memDb();
+  db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('S1', 'مورد ضريبي مصطنع', '300000000000003', '2026-01-01')`);
+  const id = savePurchase(db, pur());
+  deletePurchase(db, id);
+  expect(() => markVatRefunded(db, id, '2026-04-20')).toThrow();
+  expect(() => markVatRejected(db, id, '2026-04-20')).toThrow();
+  expect(accountBalance(db, '1270')).toBe(0);
+  db.close();
+});
+

@@ -178,7 +178,8 @@ export function undoConversion(db: DB, purchaseId: string, today: string): void 
         `SELECT COALESCE(SUM(CASE WHEN substr(e.date, 1, 4) >= ? THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS cur,
                 COALESCE(SUM(CASE WHEN substr(e.date, 1, 4) < ? THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS prior
          FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-         WHERE l.asset_id = ? AND l.account_code = ? AND e.status = ? AND e.deleted_at IS NULL AND e.src_type IN ('depreciation', 'asset_dep')`,
+         WHERE l.asset_id = ? AND l.account_code = ? AND e.status = ? AND e.deleted_at IS NULL AND e.reversed_by IS NULL
+           AND e.src_type IN ('depreciation', 'asset_dep')`,
         [year, year, a.id, ACC_ACCUM, POSTED]);
       const cur = Number(r?.cur ?? 0), prior = Number(r?.prior ?? 0);
       if (cur + prior > 0) {

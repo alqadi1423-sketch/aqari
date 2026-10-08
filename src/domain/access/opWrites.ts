@@ -44,7 +44,8 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
   collect: {
     own: ['contract_payments', 'payment_lines', 'payment_allocations'],
     create: [...POSTS, 'bank_tx'],
-    touch: { ...LINKS_REVERSAL, contract_installments: ['paid_halalas', 'status'], tenants: ['credit_halalas'] },
+    // والموعد المتفق عليه ومهلته من شاشة القسط (مراجعة التثبيت #38: كانت الشاشة تتيحهما والقواعد ترفضهما)
+    touch: { ...LINKS_REVERSAL, contract_installments: ['paid_halalas', 'status', 'agreed_date', 'grace_until'], tenants: ['credit_halalas'] },
   },
   deposits: { own: ['deposit_settlements'], create: [...POSTS, 'bank_tx', 'claims'], touch: LINKS_REVERSAL },
   reservations: { own: ['reservations', 'key_money_deals'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },

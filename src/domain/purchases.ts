@@ -417,7 +417,7 @@ export function markVatFiled(db: DB, purchaseId: string): void {
 /** استرداد الضريبة نقداً: مدين 1100 / دائن 1270 · يُقفَل رصيد الفاتورة في 1270 */
 export function markVatRefunded(db: DB, purchaseId: string, date: string): void {
   const p = db.get<{ no: string; supplier_name: string; tax_halalas: number; tax_status: string; refund_status: string }>(
-    `SELECT no, supplier_name, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ?`, [purchaseId]);
+    `SELECT no, supplier_name, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ? AND deleted_at IS NULL`, [purchaseId]);
   if (!p) throw new Error('تعذّر العثور على الفاتورة');
   if (p.tax_status !== TS_DEDUCTIBLE) throw new Error('الاسترداد لفواتير «' + TS_DEDUCTIBLE + '» وحدها · هذه ' + p.tax_status);
   if (p.refund_status.startsWith('مسترَد')) throw new Error('ضريبة الفاتورة ' + p.no + ' مسترَدة من قبل');
@@ -441,7 +441,7 @@ export function markVatRefunded(db: DB, purchaseId: string, date: string): void 
 /** رفض الاسترداد: الضريبة تصير جزءاً من التكلفة · مدين مصروف الفئة / دائن 1270 */
 export function markVatRejected(db: DB, purchaseId: string, date: string): void {
   const p = db.get<{ no: string; supplier_name: string; category: string; tax_halalas: number; tax_status: string; refund_status: string }>(
-    `SELECT no, supplier_name, category, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ?`, [purchaseId]);
+    `SELECT no, supplier_name, category, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ? AND deleted_at IS NULL`, [purchaseId]);
   if (!p) throw new Error('تعذّر العثور على الفاتورة');
   if (isVatSettled(p.refund_status)) throw new Error(t('purchase.vatSettled'));
   if (p.tax_status !== TS_DEDUCTIBLE) throw new Error('الاسترداد لفواتير «' + TS_DEDUCTIBLE + '» وحدها · هذه ' + p.tax_status);

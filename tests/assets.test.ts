@@ -7,7 +7,7 @@ import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import type { DB } from '@/db/adapter';
 import { confirmContract } from '@/domain/contracts/service';
 import { savePurchase, deletePurchase, restorePurchase, type PurchaseInput } from '@/domain/purchases';
-import { postEntry } from '@/domain/accounting/post';
+import { postEntry, reverseEntryById } from '@/domain/accounting/post';
 import { today } from '@/domain/dates';
 import {
   monthlyAmounts, expectedThrough, scheduleByYear, runDepreciation, monthIndex, monthEnd, duplicateDepreciation, postedAccum, bookValue,
@@ -318,5 +318,26 @@ test('#35 بقرار المالك: التراجع في سنةٍ بعد التح�
   expect(Number(pl2027)).toBe(0);
   for (const c of ['1410', '1490']) expect(bal(db, c)).toBe(0);
   expect(listAssets(db)).toHaveLength(0);
+});
+
+test('#35 (التحقق المستقل) قيد إهلاكٍ مكرَّر عُكس في المراجعة لا يُحسب مرةً ثانية عند التراجع', () => {
+  const { db, u1 } = world();
+  const pid = savePurchase(db, purchase({ date: '2025-06-10', category: 'صيانة', subtotalHalalas: 240000, taxHalalas: 0, totalHalalas: 240000 }));
+  const lines = [
+    { descr: 'مكيف شباك تجريبي', qty: 2, amountHalalas: 168000, isAsset: true, category: '1410', unitId: u1 },
+    { descr: 'أجور تركيب', qty: 1, amountHalalas: 72000, isAsset: false },
+  ];
+  convertPurchase(db, pid, lines, '2026-03-10');
+  runDepreciation(db, '2026-06-01');
+  // جهازٌ ثانٍ رحّل مايو مرةً أخرى، والمراجعة عكست المكرَّر
+  const one = db.get<{ id: string }>(`SELECT id FROM journal_entries WHERE src_type = 'depreciation' AND src_id = '2026-05'`)!.id;
+  const copy = db.all<{ account_code: string; debit_halalas: number; credit_halalas: number; asset_id: string | null }>(
+    `SELECT account_code, debit_halalas, credit_halalas, asset_id FROM journal_lines WHERE entry_id = ?`, [one]);
+  const dup = postEntry(db, { date: '2026-05-31', memo: 'جهاز آخر مصطنع', srcType: 'depreciation', srcId: '2026-05',
+    lines: copy.map((l) => ({ account: l.account_code, debit: Number(l.debit_halalas), credit: Number(l.credit_halalas), dims: { assetId: l.asset_id } })) })!;
+  reverseEntryById(db, dup.id, 'عكس تكرار مصطنع');
+  runDepreciation(db, '2027-01-01');
+  undoConversion(db, pid, '2027-02-15');
+  expect(bal(db, '1490')).toBe(0);
 });
 

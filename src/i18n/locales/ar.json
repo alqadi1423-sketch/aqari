@@ -587,6 +587,7 @@
     "kindIncome": "وارد آخر",
     "kind": "نوع الحركة",
     "deleteWhat": "حذف الحركة",
-    "deleteBankShort": "حذف هذا الوارد يُنزل رصيد البنك ({{balance}}) تحت الصفر بـ {{amount}}"
+    "deleteBankShort": "حذف هذا الوارد يُنزل رصيد البنك ({{balance}}) تحت الصفر بـ {{amount}}",
+    "cancelBankShort": "رصيد البنك ({{balance}}) لا يكفي لعكس واردٍ بمبلغ {{amount}}"
   }
 }

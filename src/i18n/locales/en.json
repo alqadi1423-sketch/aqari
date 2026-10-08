@@ -587,6 +587,7 @@
     "kindIncome": "Other income",
     "kind": "Movement type",
     "deleteWhat": "Delete the movement",
-    "deleteBankShort": "Deleting this inflow takes the bank balance ({{balance}}) below zero by {{amount}}"
+    "deleteBankShort": "Deleting this inflow takes the bank balance ({{balance}}) below zero by {{amount}}",
+    "cancelBankShort": "The bank balance ({{balance}}) does not cover reversing an inflow of {{amount}}"
   }
 }

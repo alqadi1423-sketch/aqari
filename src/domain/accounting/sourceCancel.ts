@@ -11,12 +11,13 @@
  *  - وما له عملية في شاشة مستنده (فاتورة · مشتريات · مطالبة · تأمين · حجز) يُفتح مستنده ليُلغى منه.
  * كلٌّ ذرّي بتاريخ وسبب، وفي سجل العمليات · والقيد اليدوي يُعكس من الدفتر كما هو.
  */
+import { t } from '../../i18n';
 import type { DB } from '../../db/adapter';
 import { cashShortfall, reversalCashOut, CashShortfallError } from '../cashGuard';
 import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { reverseEntryById } from './post';
-import { walletCashBalance } from './ledger';
+import { walletCashBalance, bankBalance } from './ledger';
 import { RuleViolation } from '../contracts/service';
 import { DISCOUNT_ENTRY_SRC } from '../contracts/installments';
 import { fmt } from '../money';
@@ -95,10 +96,15 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
   }
 
   if (e.src_type === 'cash_op') {
-    const cashIn = net(db, e.id, '1100'); // ما أدخله القيد في المحفظة · عكسُه يُخرجه
-    const blockers = cashIn > 0 && walletCashBalance(db) < cashIn ? ['النقد في المحفظة (' + fmt(walletCashBalance(db)) + ') لا يكفي لعكس ' + fmt(cashIn)] : [];
-    return op('إلغاء العملية', ['يُعكس القيد ' + e.no], blockers, (date, reason) => {
-      reverse(db, e, date, 'إلغاء عملية نقد · ' + reason);
+    // ما أدخله القيد في المحفظة نفسها (لا ما استقر منه في بنك) يفحصه op بكفاية النقد · والوارد إلى بنكٍ يُخرجه عكسُه من
+    // البنك فيُفحص برصيده، وحركة البنك تُعكس بمثلها (التحقق المستقل على #33: كانت تبقى فتُظهر نقداً في المحفظة ليس فيها)
+    const bankIn = db.all<{ bank_id: string; amount: number }>(
+      `SELECT bank_id, SUM(amount_halalas) AS amount FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL GROUP BY bank_id`, [e.no]);
+    const blockers = bankIn.filter((x) => Number(x.amount) > 0 && bankBalance(db, x.bank_id) < Number(x.amount))
+      .map((x) => t('bankTx.cancelBankShort', { balance: fmt(bankBalance(db, x.bank_id)), amount: fmt(Number(x.amount)) }));
+    return op('إلغاء العملية', ['يُعكس القيد ' + e.no, ...(bankIn.length ? ['وحركة البنك بمثلها'] : [])], blockers, (date, reason) => {
+      const revNo = reverse(db, e, date, 'إلغاء عملية نقد · ' + reason);
+      reverseBankTx(db, e.no, revNo, date, 'إلغاء عملية نقد');
       logAudit(db, 'النقد والبنوك', 'update', 'إلغاء عملية نقد', e.no + ' · ' + reason);
     });
   }

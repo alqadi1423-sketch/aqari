@@ -13,7 +13,7 @@ import { saveProperty, saveUnit, bulkAddUnits, toggleUnitMaintenance } from '@/d
 import { createReservation, cancelReservation } from '@/domain/reservations';
 import {
   saveDraft, confirmContract, recordRentPayment, renewContract, cancelContract,
-  saveDepositSettlement, saveTenantRating, recordBulkRentPayment,
+  saveDepositSettlement, saveTenantRating, recordBulkRentPayment, setInstallmentSchedule,
 } from '@/domain/contracts/service';
 import { cancelPayment } from '@/domain/contracts/cancelPayment';
 import { saveClaim, collectClaim, deleteClaim } from '@/domain/claims';
@@ -104,6 +104,8 @@ test('كل عملية تكتب ما يجيزه جدول OP_WRITES لقسمها �
   }));
   track('collect', () => recordBulkRentPayment(db, contractId, { installmentIds: [insts[1].id, insts[2].id], date: T, lines: [{ method: 'cash', amountHalalas: Number(insts[1].amount_halalas) + Number(insts[2].amount_halalas) }], notes: '' }));
   track('collect', () => cancelPayment(db, pay1, { reason: 'خطأ إدخال' }));
+  // موعد السداد المتفق عليه ومهلته من شاشة القسط بصلاحية التحصيل (مراجعة التثبيت #38)
+  track('collect', () => setInstallmentSchedule(db, insts[3].id, { agreedDate: addDays(T, 20), graceUntil: addDays(T, 25), reason: 'اتفاق مصطنع' }));
   track('contracts', () => addOccupant(db, contractId, { name: 'ساكن تجريبي', nationalId: '2000000001', relation: 'أخرى', movedIn: T }));
   const occ = db.get<{ id: string }>(`SELECT id FROM occupants WHERE contract_id = ? AND name = 'ساكن تجريبي'`, [contractId]);
   if (occ) track('contracts', () => markOccupantLeft(db, occ.id, T));

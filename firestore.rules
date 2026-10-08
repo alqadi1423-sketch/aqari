@@ -218,7 +218,7 @@ service cloud.firestore {
         || (t == 'journal_entries' && op in ['contracts', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'banks', 'assets'] && keys.hasOnly(['reversed_by']))
         || (op == 'contracts' && t == 'reservations' && keys.hasOnly(['status', 'converted_contract_id', 'deposit_outcome', 'deposit_settled_date']))
         || (op == 'tenants' && t == 'contracts' && keys.hasOnly(['tenant_id', 'tenant_name']))
-        || (op == 'collect' && t == 'contract_installments' && keys.hasOnly(['paid_halalas', 'status']))
+        || (op == 'collect' && t == 'contract_installments' && keys.hasOnly(['paid_halalas', 'status', 'agreed_date', 'grace_until']))
         || (op == 'collect' && t == 'tenants' && keys.hasOnly(['credit_halalas']))
         || (op == 'purchases' && t == 'meters' && keys.hasOnly(['supplier_id']));
     }
