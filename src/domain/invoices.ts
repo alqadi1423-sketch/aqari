@@ -162,6 +162,10 @@ export function saveInvoice(
   });
 }
 
+/** تاريخ القيد · لحركة البنك التي تقابله */
+const entryDateOf = (db: DB, id: string): string =>
+  db.get<{ date: string }>(`SELECT date FROM journal_entries WHERE id = ?`, [id])?.date ?? today();
+
 /** تغيير حالة الفاتورة · العودة لمسودة تلغي القيد، والخروج منها يرحّل */
 export type InvoicePayMethod = 'bank' | 'cash' | 'cheque' | 'card';
 export const INV_PAY_LABEL: Record<InvoicePayMethod, string> = { cash: 'نقداً', bank: 'تحويل بنكي', cheque: 'شيك', card: 'بطاقة' };
@@ -216,7 +220,7 @@ export function reverseInvoicePayment(db: DB, id: string, keepTerms = false): vo
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,
-        [uid(), t.bank_id, today(), 'عكس تحصيل الفاتورة ' + v.no, -Number(t.amount_halalas), rev.no, 'عكس تحصيل فاتورة', new Date().toISOString()]);
+        [uid(), t.bank_id, entryDateOf(db, rev.id), 'عكس تحصيل الفاتورة ' + v.no, -Number(t.amount_halalas), rev.no, 'عكس تحصيل فاتورة', new Date().toISOString()]);
     }
   }
   db.run(keepTerms

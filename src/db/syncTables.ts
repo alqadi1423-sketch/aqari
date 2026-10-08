@@ -82,6 +82,11 @@ export const ASSET_SYNC_TABLES: SyncTable[] = [
   { name: 'depreciation_runs', pk: (a) => `${a}.month`, pkCols: ['month'] },
 ];
 
+/** الإقرارات الضريبية المقدَّمة (الهجرة ٣٨ · قرارا المالك على #29 و#30) · يقرؤها كل قسم ليعرف تاريخ قيد التصحيح */
+export const VAT_SYNC_TABLES: SyncTable[] = [
+  { name: 'vat_filings', pk: id, pkCols: ['id'] },
+];
+
 /** كل جداول المزامنة بترتيب التطبيق · البصمة قبل مرفقها، وسجل العمليات آخراً */
 export const SYNC_TABLES: SyncTable[] = [
   ...BASE_SYNC_TABLES.slice(0, 1),
@@ -89,6 +94,7 @@ export const SYNC_TABLES: SyncTable[] = [
   ...BASE_SYNC_TABLES.slice(1).filter((t) => t.name !== 'audit_log'),
   ...ASSET_SYNC_TABLES,
   ...LATER_SYNC_TABLES,
+  ...VAT_SYNC_TABLES,
   ...BASE_SYNC_TABLES.filter((t) => t.name === 'audit_log'),
 ];
 

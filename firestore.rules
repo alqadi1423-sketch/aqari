@@ -27,7 +27,7 @@ service cloud.firestore {
         'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'reservations', 'key_money_deals',
         'contract_payments', 'payment_lines', 'payment_allocations', 'deposit_settlements', 'tenant_ratings', 'claims',
         'invoices', 'invoice_lines', 'purchases', 'bank_tx', 'handovers', 'blobs', 'attachments', 'cost_centers',
-        'purchase_lines', 'assets', 'asset_events', 'depreciation_runs', 'audit_log'
+        'purchase_lines', 'assets', 'asset_events', 'depreciation_runs', 'vat_filings', 'audit_log'
       ];
     }
 
@@ -190,7 +190,7 @@ service cloud.firestore {
         || (op == 'library' && t in ['audit_log', 'blobs', 'attachments'])
         || (op == 'assets' && t in ['journal_entries', 'audit_log', 'bank_tx', 'purchase_lines', 'blobs', 'attachments', 'assets', 'asset_events', 'depreciation_runs'])
         || (op == 'company' && t in ['audit_log', 'blobs', 'attachments', 'company', 'company_docs', 'message_scripts', 'form_templates'])
-        || (op == 'reports' && t in ['audit_log']);
+        || (op == 'reports' && t in ['audit_log', 'vat_filings']);
     }
     // جداول القسم نفسه · تعديلها وحذفها بكامل
     function opOwns(op, t) {
@@ -208,7 +208,8 @@ service cloud.firestore {
         || (op == 'ledger' && t in ['journal_entries', 'accounts', 'cost_centers'])
         || (op == 'library' && t in ['attachments'])
         || (op == 'assets' && t in ['assets', 'asset_events', 'depreciation_runs'])
-        || (op == 'company' && t in ['company', 'company_docs', 'message_scripts', 'form_templates']);
+        || (op == 'company' && t in ['company', 'company_docs', 'message_scripts', 'form_templates'])
+        || (op == 'reports' && t in ['vat_filings']);
     }
     // حقولٌ بعينها في جداول أقسام أخرى تمسّها العملية جانبياً بإدخال
     function opTouches(op, t, keys) {

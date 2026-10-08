@@ -3,10 +3,10 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-import { ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, syncTable } from './syncTables';
+import { ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 37;
+export const SCHEMA_VERSION = 38;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1593,5 +1593,30 @@ CREATE TABLE IF NOT EXISTS chat_state (
 );
 `;
 
+/**
+ * الهجرة ٣٨ · الفاتورة الضريبية بعد إصدارها والإقرار المقدَّم (قرارا المالك 2026-10-07 على #30 و#29):
+ *  - الإشعار الدائن صفٌّ في الفواتير بنوعه (kind: invoice أو credit_note) ومرجعه (ref_invoice_id) وسببه، ومبالغه
+ *    سالبة فتنقص بها المجاميع.
+ *  - الإقرار المقدَّم صفٌّ لربعه (id = «السنة-Qالربع») بلقطة بنوده كما قُدِّمت (snapshot) · تقرؤه أقسام المال، وهي وحدها
+ *    ترحّل القيود، فتعرف أن فترته مقدَّمة فيؤرَّخ قيد تصحيحها بيومه.
+ * إضافةٌ لا تمسّ ما قبلها.
+ */
+export const MIGRATION_38 = `
+ALTER TABLE invoices ADD COLUMN kind TEXT NOT NULL DEFAULT 'invoice';
+ALTER TABLE invoices ADD COLUMN ref_invoice_id TEXT;
+ALTER TABLE invoices ADD COLUMN credit_reason TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS ix_invoices_ref ON invoices(ref_invoice_id);
+CREATE TABLE IF NOT EXISTS vat_filings (
+  id            TEXT PRIMARY KEY,
+  period_from   TEXT NOT NULL,
+  period_to     TEXT NOT NULL,
+  filed_at      TEXT NOT NULL,
+  snapshot      TEXT NOT NULL DEFAULT '{}',
+  created_at    TEXT NOT NULL,
+  deleted_at    TEXT
+);
+${buildSyncTriggers(VAT_SYNC_TABLES)}
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38];

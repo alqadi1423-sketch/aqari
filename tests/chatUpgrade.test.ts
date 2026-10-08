@@ -46,7 +46,10 @@ test.each([33, 34, 35, 36])('قاعدة الإصدار %i ببيانات الد�
   seed(db);
 
   expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
-  expect(SCHEMA_VERSION).toBe(37);
+  expect(SCHEMA_VERSION).toBe(38);
+  // الهجرة ٣٨: نوع الفاتورة بافتراضٍ لكل صفٍّ قائم، وجدول الإقرارات المقدَّمة فارغ
+  expect(db.get<{ d: string }>(`SELECT dflt_value AS d FROM pragma_table_info('invoices') WHERE name = 'kind'`)!.d).toBe("'invoice'");
+  expect(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM vat_filings`)!.n).toBe(0);
   expect(snapshot(db)).toEqual(before);
   expect(semanticIssues(db)).toEqual([]);
   expect(integrityChecks(db).filter((c) => !c.ok)).toEqual([]);

@@ -214,7 +214,7 @@ export function reversePurchasePayment(db: DB, id: string, keepTerms = false): v
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,
-        [uid(), t.bank_id, today(), 'عكس سداد الفاتورة ' + p.no + ' · تراجع',
+        [uid(), t.bank_id, db.get<{ date: string }>(`SELECT date FROM journal_entries WHERE id = ?`, [rev.id])?.date ?? today(), 'عكس سداد الفاتورة ' + p.no + ' · تراجع',
          -Number(t.amount_halalas), rev.no, 'عكس سداد فاتورة · تراجع', new Date().toISOString()]
       );
     }

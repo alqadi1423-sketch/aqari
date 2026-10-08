@@ -528,5 +528,11 @@
     "excessNote": "The excess over the deposit becomes a claim on the tenant",
     "claimFirst": "The settlement has an excess claim · delete it from Claims first, then edit the settlement",
     "alreadySettled": "This contract's deposit is already settled · cancel without settlement and edit the settlement from its screen"
+  },
+  "vat": {
+    "alreadyFiled": "This period's return is already recorded as filed",
+    "auditSection": "VAT return",
+    "auditFiled": "Return recorded as filed",
+    "auditUnfiled": "Filed record undone"
   }
 }

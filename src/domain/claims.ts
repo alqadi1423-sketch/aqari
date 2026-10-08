@@ -30,15 +30,18 @@ export function saveClaim(db: DB, input: ClaimInput, existingId?: string): strin
           throw new Error(t('claims.collectedLocked'));
         }
       }
-      // تعديل مطالبة مفتوحة بمبلغ أو تاريخ مختلف: عكس القيد القديم وترحيل الجديد بتاريخه (المراجعة ٤.١٧)
-      if (cl.status === 'مفتوحة' && (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date)) {
-        reverseEntryBySource(db, 'claim', existingId, 'تعديل مطالبة · عكس القيد السابق');
-        postClaim(db, { id: existingId, amount: input.amountHalalas, reason: input.reason, date: input.date });
-      }
+      const prevContract = db.get<{ contract_id: string }>(`SELECT contract_id FROM claims WHERE id = ?`, [existingId])!.contract_id;
       db.run(
         `UPDATE claims SET contract_id=?, amount_halalas=?, reason=?, date=? WHERE id = ?`,
         [input.contractId, input.amountHalalas, input.reason.trim(), input.date, existingId]
       );
+      // تعديل مطالبة مفتوحة بمبلغ أو تاريخ أو عقد مختلف: عكس القيد القديم بأبعاده وترحيل الجديد بتاريخه (المراجعة ٤.١٧)
+      // بعد تحديثها، فتُشتق أبعاده من عقدها الجديد (#34)
+      if (cl.status === 'مفتوحة' && (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date // i18n-exempt: حالة مخزّنة
+        || prevContract !== input.contractId)) {
+        reverseEntryBySource(db, 'claim', existingId, 'تعديل مطالبة · عكس القيد السابق');
+        postClaim(db, { id: existingId, amount: input.amountHalalas, reason: input.reason, date: input.date });
+      }
       logAudit(db, 'المطالبات', 'update', 'مطالبة', input.reason || existingId);
       return existingId;
     }

@@ -2,6 +2,7 @@ import type { DB } from '../../db/adapter';
 import { requireCash } from '../cashGuard';
 import { uid } from '../ids';
 import { today } from '../dates';
+import { correctionDate } from '../vatFilings';
 import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
@@ -140,42 +141,24 @@ export function postManualEntry(db: DB, args: { date: string; memo: string; line
 
 /** عكس قيد مصدره معروف (للحذف من السلة ونحوه) */
 export function reverseEntryBySource(db: DB, srcType: string, srcId: string, memo?: string): PostedEntry | null {
-  const e = db.get<{ id: string; no: string }>(
-    `SELECT id, no FROM journal_entries
+  const e = db.get<{ id: string }>(
+    `SELECT id FROM journal_entries
      WHERE src_type = ? AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL AND status='مرحّل'
      ORDER BY created_at DESC LIMIT 1`,
     [srcType, srcId]
   );
-  if (!e) return null;
-  const lines = db.all<{ account_code: string; descr: string; debit_halalas: number; credit_halalas: number }>(
-    `SELECT account_code, descr, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`,
-    [e.id]
-  );
-  return db.transaction(() => {
-    const posted = postEntry(db, {
-      date: today(),
-      memo: memo ?? 'عكس قيد ' + e.no,
-      lines: lines.map((l) => ({
-        account: l.account_code,
-        descr: l.descr,
-        debit: Number(l.credit_halalas),
-        credit: Number(l.debit_halalas),
-      })),
-      srcType: srcType + '_rev',
-      srcId,
-    });
-    if (posted) db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [posted.id, e.id]);
-    return posted;
-  });
+  // عكسٌ واحد لكل قيد: بأبعاد أصله سطراً بسطر (#34: كانت تُشتق من المصدر الحالي ومركز الشاشة) وبتاريخ التصحيح (#29)
+  return e ? reverseEntryById(db, e.id, memo) : null;
 }
 
 /**
- * «قيد مرحّل لا يُحذف أبداً · يُعكَس»: يرحَّل قيد مرآة بتاريخ اليوم ويُختم الأصل
- * بـ reversed_by · الأصل والعاكس يبقيان معاً في الدفتر فالتاريخ لا يُمحى.
+ * «قيد مرحّل لا يُحذف أبداً · يُعكَس»: يرحَّل قيد مرآة ويُختم الأصل بـ reversed_by · الأصل والعاكس يبقيان معاً في
+ * الدفتر فالتاريخ لا يُمحى. تاريخه ما اختاره المستخدم لحدثه (إلغاء دفعة بتاريخها)، وإلا فتاريخ التصحيح: تاريخ الأصل،
+ * إلا إن قُدِّم إقرار فترته فاليوم (قرار المالك على #29 · vatFilings.correctionDate).
  */
-export function reverseEntryById(db: DB, entryId: string, memo?: string, date: string = today()): PostedEntry | null {
-  const e = db.get<{ id: string; no: string; src_type: string | null; src_id: string | null }>(
-    `SELECT id, no, src_type, src_id FROM journal_entries
+export function reverseEntryById(db: DB, entryId: string, memo?: string, date?: string): PostedEntry | null {
+  const e = db.get<{ id: string; no: string; date: string; src_type: string | null; src_id: string | null }>(
+    `SELECT id, no, date, src_type, src_id FROM journal_entries
      WHERE id = ? AND reversed_by IS NULL AND deleted_at IS NULL AND status = 'مرحّل'`,
     [entryId]
   );
@@ -190,7 +173,7 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string, date: s
   );
   return db.transaction(() => {
     const posted = postEntry(db, {
-      date,
+      date: date ?? correctionDate(db, e.date),
       memo: memo ?? 'عكس قيد ' + e.no,
       // العاكس بأبعاد أصله سطراً بسطر
       lines: lines.map((l) => ({

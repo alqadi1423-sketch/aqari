@@ -9,6 +9,7 @@ import { fmt } from '../money';
 import { uid } from '../ids';
 import { postEntry, type PostedEntry } from './post';
 import { hasDimColumns } from './dimensions';
+import { correctionDate } from '../vatFilings';
 
 interface Orig { id: string; no: string; date: string; memo: string; auto: number; src_type: string | null; src_id: string | null }
 
@@ -46,8 +47,10 @@ export function repostCopy(db: DB, entryId: string, note: string): PostedEntry |
   const lines = db.all<{ account_code: string; descr: string; debit_halalas: number; credit_halalas: number;
     property_id?: string | null; unit_id?: string | null; contract_id?: string | null; cost_center_id?: string | null; asset_id?: string | null }>(
     `SELECT account_code, descr, debit_halalas, credit_halalas${dimSql} FROM journal_lines WHERE entry_id = ?`, [entryId]);
+  // بتاريخ الأصل، إلا إن قُدِّم إقرار فترته فاليوم (قرار المالك على #29) · كعكسه عند الحذف فلا تتضاعف فترة وتنقص أخرى
+  const date = correctionDate(db, e.date);
   const posted = postEntry(db, {
-    date: e.date,
+    date,
     memo: e.memo + ' · ' + note,
     lines: lines.map((l) => ({
       account: l.account_code, descr: l.descr, debit: Number(l.debit_halalas), credit: Number(l.credit_halalas),
@@ -63,7 +66,7 @@ export function repostCopy(db: DB, entryId: string, note: string): PostedEntry |
     db.run(
       `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
        VALUES (?,?,?,?,?,1,?,?,?)`,
-      [uid(), t.bank_id, t.date, t.descr, Number(t.amount_halalas), posted.no, t.source, new Date().toISOString()]);
+      [uid(), t.bank_id, date === e.date ? t.date : date, t.descr, Number(t.amount_halalas), posted.no, t.source, new Date().toISOString()]);
   }
   return posted;
 }

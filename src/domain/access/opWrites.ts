@@ -67,7 +67,7 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
     touch: LINKS_REVERSAL,
   },
   company: { own: ['company', 'company_docs', 'message_scripts', 'form_templates'], create: ['audit_log'] },
-  reports: { own: [], create: ['audit_log'] },
+  reports: { own: ['vat_filings'], create: ['audit_log'] },
 };
 
 // كل قسمٍ يُرفق ملفاتٍ بسجلّاته ينشئ صفوفها ويدير بيانات ملفاته · والمكتبة تملك المرفقات كلها

@@ -58,6 +58,8 @@ export const READ_TABLE: Record<string, SectionKey[]> = {
   asset_events: ['assets', 'ledger', 'reports'],
   purchase_lines: ['purchases', 'assets', 'ledger', 'reports'],
   depreciation_runs: ['assets', 'ledger', 'reports'],
+  // الإقرار المقدَّم ولقطة بنوده: لأقسام المال، وهي وحدها ترحّل القيود فتعرف أن الفترة مقدَّمة (تاريخ قيد التصحيح #29)
+  vat_filings: ['contracts', 'collect', 'deposits', 'reservations', 'claims', 'invoices', 'purchases', 'banks', 'ledger', 'reports', 'assets'],
 };
 
 /** جدول الجهة التي يرتبط بها المرفق · فيقرؤه من يقرأ جهته (READ_TABLE)، والمكتبة دائماً */
