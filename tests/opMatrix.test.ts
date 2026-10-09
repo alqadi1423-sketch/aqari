@@ -8,7 +8,7 @@ import { SYNC_TABLES } from '@/db/syncTables';
 import { setCapture, setSyncState } from '@/sync/engine';
 import type { DB } from '@/db/adapter';
 import type { SectionKey } from '@/domain/access/sections';
-import { OP_WRITES, opAllows } from '@/domain/access/opWrites';
+import { OP_WRITES, opAllows, journalSrcAllowed } from '@/domain/access/opWrites';
 import { saveProperty, saveUnit, bulkAddUnits, toggleUnitMaintenance } from '@/domain/propertiesService';
 import { createReservation, cancelReservation } from '@/domain/reservations';
 import {
@@ -42,7 +42,11 @@ function snapshot(db: DB): Map<string, Map<string, Record<string, unknown>>> {
 
 function tracker(db: DB) {
   const seen: Seen = new Map();
-  const track = <T>(op: SectionKey, fn: () => T): T => {
+  // مصادر القيود التي أنشأتها كل عملية بأقسامها (العملية المزدوجة تُجيزها أحد قسميها) · مراجعة التثبيت #40
+  const sources: Array<{ gates: SectionKey[]; src: string | null }> = [];
+  const track = <T>(gate: SectionKey | SectionKey[], fn: () => T): T => {
+    const gates = Array.isArray(gate) ? gate : [gate];
+    const op = gates[0];
     db.run(`DELETE FROM sync_outbox`);
     const before = snapshot(db);
     const r = fn();
@@ -56,20 +60,24 @@ function tracker(db: DB) {
       const prev = before.get(o.tbl)?.get(o.pk);
       const next = after.get(o.tbl)?.get(o.pk);
       if (o.op === 'delete') { e.del = true; continue; }
-      if (!prev) { e.create = true; continue; }
+      if (!prev) {
+        e.create = true;
+        if (o.tbl === 'journal_entries' && next) sources.push({ gates, src: (next.src_type as string | null) ?? null });
+        continue;
+      }
       if (!next) continue;
       for (const k of Object.keys(next)) if (k !== '__pk' && prev[k] !== next[k]) e.update.add(k);
     }
     return r;
   };
-  return { seen, track };
+  return { seen, track, sources };
 }
 
 test('كل عملية تكتب ما يجيزه جدول OP_WRITES لقسمها وحده', () => {
   const db = memDb();
   setSyncState(db, 'uid', 'U-matrix');
   setCapture(db, true);
-  const { seen, track } = tracker(db);
+  const { seen, track, sources } = tracker(db);
   const T = today();
 
   const propertyId = track('props', () => saveProperty(db, {
@@ -119,7 +127,8 @@ test('كل عملية تكتب ما يجيزه جدول OP_WRITES لقسمها �
     start: addDays(T, 31), end: addDays(addDays(T, 31), 364), valueHalalas: 3300000, cycle: 'شهرية', carryDeposit: true,
     extraDepositHalalas: 50000, services: '', furnished: 'غير مؤثثة', ejarNo: '', note: '',
   }));
-  track('contracts', () => cancelContract(db, c3, {
+  // الإلغاء مع التسوية يشترط في الشاشة «العقود» كاملاً و«التأمينات» إدخالاً
+  track(['contracts', 'deposits'], () => cancelContract(db, c3, {
     date: addDays(T, 40), reason: 'إخلال', installmentsFate: 'cancel', settle: true, deductionHalalas: 250000, refundHalalas: 0, deductionReason: 'أضرار',
   }));
   const autoClaim = db.get<{ id: string }>(`SELECT id FROM claims WHERE contract_id = ?`, [c3])!;
@@ -178,6 +187,9 @@ test('كل عملية تكتب ما يجيزه جدول OP_WRITES لقسمها �
       if (e.update.size && !opAllows(op, t, 'update', [...e.update])) offending.push(`${op} يعدّل ${t}: ${[...e.update].join(',')}`);
       if (e.del && !opAllows(op, t, 'delete')) offending.push(`${op} يحذف ${t}`);
     }
+  }
+  for (const x of sources) {
+    if (!x.gates.some((g) => journalSrcAllowed(g, x.src))) offending.push(`${x.gates.join('+')} ينشئ قيداً مصدره ${x.src}`);
   }
   if (process.env.OP_MATRIX_PRINT) console.log(JSON.stringify(report, null, 1));
   expect(offending).toEqual([]);

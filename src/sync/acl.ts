@@ -11,7 +11,8 @@ import type { Access } from '../domain/access/access';
 import { level } from '../domain/access/access';
 import { SECTION_KEYS, type SectionKey } from '../domain/access/sections';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, isMoneyColumn, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
-import { OP_WRITES, SELF_OP, SELF_AUDIT_ENTITY } from '../domain/access/opWrites';
+import { OP_WRITES, OP_JOURNAL_SRC, SELF_OP, SELF_AUDIT_ENTITY, journalSrcAllowed } from '../domain/access/opWrites';
+import { journalSection } from '../domain/access/readSections';
 
 export const ORG_WIDE = '*';
 export const ANY_PROP = '@';
@@ -105,9 +106,16 @@ export function memberTokens(a: Pick<Access, 'owner' | 'perms' | 'allProps' | 'p
 /** صفوفٌ للمنشأة كلها لا لعقار: يقرؤها ويكتبها ذو كل العقارات وحده (القواعد تشترط m.all) */
 export const ORG_WIDE_ROWS: ReadonlySet<string> = new Set(['vat_filings']);
 
-export function chooseOp(a: Access, table: string): SectionKey | null {
+export function chooseOp(a: Access, table: string, row?: Record<string, unknown> | null): SectionKey | null {
   const entries = Object.entries(OP_WRITES) as Array<[SectionKey, NonNullable<(typeof OP_WRITES)[SectionKey]>]>;
   const lv = (s: SectionKey) => level(a, s);
+  // القيد بقسم مصدره (#40): القواعد تشترط مصدر القيد الجديد من قسم العملية · قسمه أولاً، ثم ما يرحّله عابراً، ثم الدفتر
+  if (table === 'journal_entries' && row) {
+    const src = (row.src_type as string | null | undefined) ?? null;
+    const order: SectionKey[] = [journalSection(src), ...(Object.keys(OP_JOURNAL_SRC) as SectionKey[]), 'ledger'];
+    const pick = order.find((s) => journalSrcAllowed(s, src) && lv(s) >= 2);
+    if (pick) return pick;
+  }
   return entries.find(([s, w]) => w.own.includes(table) && lv(s) >= 3)?.[0]
     ?? entries.find(([s, w]) => (w.create.includes(table) || w.own.includes(table)) && lv(s) >= 2)?.[0]
     ?? entries.find(([s, w]) => !!w.touch?.[table] && lv(s) >= 2)?.[0]
@@ -164,7 +172,7 @@ export function annotate(db: DB, doc: RemoteDoc, a: Access): AclDocs {
   const extra: Partial<RemoteDoc> = { pids, g: tokensFor(full, pids) };
   if (!a.owner) {
     const self = doc.t === 'audit_log' && (row as Record<string, unknown> | null)?.entity_type === SELF_AUDIT_ENTITY;
-    const op = chooseOp(a, doc.t) ?? (self ? SELF_OP : null);
+    const op = chooseOp(a, doc.t, row as Record<string, unknown> | null) ?? (self ? SELF_OP : null);
     if (op) extra.op = op;
   }
   if (DRAFT_TABLES.has(doc.t)) {

@@ -432,5 +432,26 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     // ذو كل العقارات ينشئ
     expect((await remoteFor(RALL.uid!, RALL).write([as(RALL, q3, 'f3')]))[0]).toMatchObject({ ok: true });
   });
+
+  test('#40 مصدر القيد من قسم العضو: المحصِّل لا ينشئ قيداً مصدره عملية نقد · وقيد التحصيل يُقبل', async () => {
+    const C40 = member('U-V40C', { collect: 2, contracts: 1, props: 1 }, ['P1']);
+    expect(await putDoc(`orgs/${ORG}/members/${C40.uid}`, { email: 'u-v40c@example.test', perm: C40.perms, all: false, props: ['P1'], tokens: memberTokens(C40) }, ORG)).toBe(200);
+    const mk = (id: string, src: string) => {
+      db.run(`INSERT INTO journal_entries (id, no, date, memo, status, auto, src_type, src_id, created_at) VALUES (?,?,?,?,?,1,?,?,?)`,
+        [id, 'JE-' + id, '2026-03-01', 'قيد مصطنع', 'قيد الإنشاء', src, 'SRC-' + id, '2026-03-01T00:00:00.000Z']);
+      db.run(`INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas, property_id) VALUES (?,?,?,?,?,?,?)`,
+        [id + '-1', id, '1100', '', 5000, 0, 'P1']);
+      db.run(`INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas, property_id) VALUES (?,?,?,?,?,?,?)`,
+        [id + '-2', id, '4300', '', 0, 5000, 'P1']);
+      // قيدٌ كتبه العضو نفسه: لا كاتب مسجَّلاً من جهاز المالك (التحقق المستقل)
+      db.run(`DELETE FROM row_by WHERE tbl = 'journal_entries' AND pk = ?`, [id]);
+      return remoteFor(C40.uid!, C40).annotate!(db, doc('journal_entries', id, row('journal_entries', id), 'j-' + id));
+    };
+    const forged = mk('VJ40A', 'cash_op');
+    expect((await remoteFor(C40.uid!, C40).write([forged]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    const legit = mk('VJ40B', 'rent');
+    expect(legit.op).toBe('collect');
+    expect((await remoteFor(C40.uid!, C40).write([legit]))[0]).toMatchObject({ ok: true });
+  });
 });
 

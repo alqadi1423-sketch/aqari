@@ -236,6 +236,20 @@ service cloud.firestore {
         : r.t in ['blobs', 'blobs~pub'] ? r.d.sha256 == r.k
         : false);
     }
+    // مصدر القيد الجديد من قسم العملية (#40): لا ينشئ العضو قيداً لعملية قسمٍ ليس له · والدفتر يدويّه وكل عكس
+    function srcOk(op, s) {
+      return op == 'ledger' ? (s == null || (s is string && s.matches('.*_rev$')))
+        : op == 'contracts' ? s in ['contract_deposit', 'deposit_carry', 'reservation_convert']
+        : op == 'collect' ? s in ['rent', 'rent_rev', 'reservation_convert_rev', 'discount_rev', 'rent_payment_rev']
+        : op == 'deposits' ? s in ['deposit_deduct', 'deposit_deduct_move', 'deposit_refund', 'deposit_deduct_rev', 'deposit_deduct_move_rev', 'deposit_refund_rev', 'claim']
+        : op == 'reservations' ? s in ['reservation', 'reservation_forfeit', 'reservation_refund', 'key_money']
+        : op == 'claims' ? s in ['claim', 'claim_collect', 'claim_rev']
+        : op == 'invoices' ? s in ['invoice', 'invoice_rev', 'invoice_pay', 'invoice_pay_rev']
+        : op == 'purchases' ? s in ['purchase', 'purchase_rev', 'purchase_pay', 'purchase_pay_rev', 'vat_refund', 'asset_catchup']
+        : op == 'banks' ? s in ['cash_op']
+        : op == 'assets' ? s in ['asset_cost', 'asset_transfer', 'asset_dispose', 'asset_sell', 'asset_dep', 'depreciation', 'asset_convert', 'asset_convert_rev', 'asset_catchup', 'asset_catchup_rev']
+        : false;
+    }
     // بصمة الملف وامتداده بشكلهما (#21): منهما يُبنى مسار الملف على كل جهاز · والمرفق بصمته وحدها (امتداده في blobs)
     function blobShapeOk(r) {
       return r.del == true || !(r.t in ['blobs', 'attachments'])
@@ -332,7 +346,8 @@ service cloud.firestore {
         (keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(m, null, r)
           && lvlOf(m, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
-          && (baseT(r.t) != 'vat_filings' || m.all == true))
+          && (baseT(r.t) != 'vat_filings' || m.all == true)
+          && (r.del == true || baseT(r.t) != 'journal_entries' || srcOk(r.op, r.d.get('src_type', null))))
         // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
         || (r.op == 'self' && r.t == 'audit_log' && r.d != null && r.d.entity_type == 'بيانات عضو' && r.pids == ['*'] && keyOk(r)));
     }

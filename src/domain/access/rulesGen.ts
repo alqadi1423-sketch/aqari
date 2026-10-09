@@ -3,7 +3,7 @@
  * الذي يتحقق منه tests/opMatrix.test.ts هو نفسه ما يفرضه الخادم. tests/rulesGen.test.ts يُسقط الحزمة
  * إن اختلف الملف عن المولَّد، و UPDATE_RULES=1 يكتبه.
  */
-import { OP_WRITES } from './opWrites';
+import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
 import { SELF_OP, SELF_AUDIT_ENTITY } from './opWrites';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, READ_TABLE, readSectionsOf } from './readSections';
@@ -96,6 +96,12 @@ function guardFns(schema: RulesSchema): string {
       return r.del == true || (string(r.d.get('id', null)) == r.k && !(r.t in ${both(special.map((t) => t.name))})) || (
         ${keyBranches.join('\n        : ')}
         : false);
+    }
+    // مصدر القيد الجديد من قسم العملية (#40): لا ينشئ العضو قيداً لعملية قسمٍ ليس له · والدفتر يدويّه وكل عكس
+    function srcOk(op, s) {
+      return op == 'ledger' ? (s == null || (s is string && s.matches('.*_rev$')))
+        : ${Object.entries(OP_JOURNAL_SRC).map(([op, list]) => `op == '${op}' ? s in ${q(list ?? [])}`).join('\n        : ')}
+        : false;
     }
     // بصمة الملف وامتداده بشكلهما (#21): منهما يُبنى مسار الملف على كل جهاز · والمرفق بصمته وحدها (امتداده في blobs)
     function blobShapeOk(r) {
@@ -238,7 +244,8 @@ ${guardFns(schema)}
         (keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(m, null, r)
           && lvlOf(m, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
-          && (baseT(r.t) != 'vat_filings' || m.all == true))
+          && (baseT(r.t) != 'vat_filings' || m.all == true)
+          && (r.del == true || baseT(r.t) != 'journal_entries' || srcOk(r.op, r.d.get('src_type', null))))
         // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
         || (r.op == '${SELF_OP}' && r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)));
     }
