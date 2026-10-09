@@ -426,6 +426,9 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     const res = await fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/rows/${base.id}`,
       { headers: { Authorization: 'Bearer ' + token(RREST.uid!) } });
     expect(res.status).toBe(403);
+    // ولا ينشئ نسخة الإسقاط بمحتوىً ورؤيةٍ من عنده (التحقق المستقل: كان الشرط على اسم الجدول لا أصله)
+    const fake = { ...as(RREST, { ...q3, id: '2026-Q4' }, 'f4'), id: 'vat_filings~pub__2026-Q4', t: 'vat_filings~pub', k: '2026-Q4', g: ['props|*'] };
+    expect((await remoteFor(RREST.uid!, RREST).write([fake]))[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
     // ذو كل العقارات ينشئ
     expect((await remoteFor(RALL.uid!, RALL).write([as(RALL, q3, 'f3')]))[0]).toMatchObject({ ok: true });
   });

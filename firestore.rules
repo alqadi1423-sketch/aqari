@@ -332,7 +332,7 @@ service cloud.firestore {
         (keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(m, null, r)
           && lvlOf(m, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
-          && (r.t != 'vat_filings' || m.all == true))
+          && (baseT(r.t) != 'vat_filings' || m.all == true))
         // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
         || (r.op == 'self' && r.t == 'audit_log' && r.d != null && r.d.entity_type == 'بيانات عضو' && r.pids == ['*'] && keyOk(r)));
     }
@@ -368,7 +368,7 @@ service cloud.firestore {
         && keyOk(after) && blobShapeOk(after) && moneyKept(m, before, after)
         && isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)
-        && (after.t != 'vat_filings' || m.all == true)
+        && (baseT(after.t) != 'vat_filings' || m.all == true)
         && (
           (owns && level >= 3 && (propsOk(m, after)
               // والمستأجر المشترك بين عقاراته وعقار غيره: عقاراته كما هي وفيها عقارٌ له (التحقق المستقل: تعديله كان يُرفض صامتاً)
