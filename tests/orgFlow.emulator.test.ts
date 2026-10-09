@@ -9,7 +9,8 @@ import type { DB } from '@/db/adapter';
 import { memberTokens, fullReadTables } from '@/sync/acl';
 import { SYNC_TABLES } from '@/db/syncTables';
 import { readAccess, readMembership } from '@/services/access';
-import { moveOwnerToOrg, sendInvite, findInvites, acceptInvite, refreshMembership, updateMember, removeMember, updateMemberProfile } from '@/services/org';
+import { moveOwnerToOrg, sendInvite, findInvites, acceptInvite, refreshMembership, updateMember, removeMember, updateMemberProfile, readCompat, raiseCompat, appTooOld } from '@/services/org';
+import { SCHEMA_VERSION } from '@/db/schema';
 
 const HOST = process.env.FIRESTORE_EMULATOR_HOST;
 const PROJECT = 'demo-aqari';
@@ -116,6 +117,38 @@ d('رحلة المنشأة', () => {
     const pay = owner.get<{ net_halalas: number }>(`SELECT net_halalas FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [C1]);
     expect(Number(pay!.net_halalas)).toBe(50000);
     expect(owner.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = 'FU1'`)!.unit_no).not.toBe('معدّل محلياً');
+  });
+
+  // #36 (قرار المالك 2026-10-09): «حد أدنى لإصدار التطبيق، والإصدار الأقدم يطلب التحديث قبل الانضمام أو المزامنة»
+  test('#٣٦ الحد الأدنى للإصدار: الأقدم لا يكتب ويعرف أن عليه التحديث · والحد لا يُخفَض', async () => {
+    const { recordRentPayment } = await import('@/domain/contracts/service');
+    const { syncOnce } = await import('@/sync/engine');
+    const orgR = new FirestoreRemote({ ...base(OWNER, 'owner@example.test'), org: OWNER });
+    const m = readMembership(mem)!;
+    const withSv = new FirestoreRemote({ ...base(MEMBER, MEMBER_EMAIL), org: m.org, sv: () => SCHEMA_VERSION,
+      memberTokens: () => memberTokens(readAccess(mem)), fullReadTables: () => fullReadTables(readAccess(mem), tables), access: () => readAccess(mem) });
+    const rejects = () => Number(mem.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects WHERE tbl = 'contract_payments'`)!.n);
+    // القواعد منشورة: العضو يقرأ الحد ولا حدّ بعد
+    expect(await readCompat(withSv, OWNER)).toEqual({ live: true, min: 0 });
+    expect(await raiseCompat(orgR, OWNER, SCHEMA_VERSION)).toBe(true);
+    expect(await raiseCompat(orgR, OWNER, SCHEMA_VERSION - 1)).toBe(false);
+    const before = rejects();
+    // بإصداره الحالي يكتب
+    recordRentPayment(mem, C1, { installmentId: I1, period: 'الأول', date: '2026-05-02', lines: [{ method: 'cash', amountHalalas: 1000 }], discountHalalas: 0, notes: '' });
+    expect((await syncOnce(mem, withSv, 'dev-member-1')).pending).toBe(0);
+    expect(rejects()).toBe(before);
+    // وجهازٌ لا يحمل الإصدار (أقدم من الحد) يُرفض
+    recordRentPayment(mem, C1, { installmentId: I1, period: 'الأول', date: '2026-05-03', lines: [{ method: 'cash', amountHalalas: 1000 }], discountHalalas: 0, notes: '' });
+    await syncOnce(mem, deviceRemote(mem, MEMBER, MEMBER_EMAIL), 'dev-member-1');
+    expect(rejects()).toBe(before + 1);
+    // حدٌّ أحدث من إصداره: يعرف العضو أن عليه التحديث
+    await orgR.setDoc(`orgs/${OWNER}/meta/compat`, { min: SCHEMA_VERSION + 1 });
+    expect(appTooOld((await readCompat(withSv, OWNER)).min)).toBe(true);
+    // والحد لا يُخفَض · والعضو لا يكتبه
+    await expect(orgR.setDoc(`orgs/${OWNER}/meta/compat`, { min: SCHEMA_VERSION })).rejects.toThrow();
+    await expect(withSv.setDoc(`orgs/${OWNER}/meta/compat`, { min: SCHEMA_VERSION + 2 })).rejects.toThrow();
+    // يُرفع للاختبارات التالية
+    await orgR.deleteDoc(`orgs/${OWNER}/meta/compat`);
   });
 
   // دراسة القائم (قرار المالك 2026-10-09 أولاً ٥): تعديل الصلاحية لا يمسح ما عدّله العضو من بياناته، ويعيد ما قبله وما بعده للسجل

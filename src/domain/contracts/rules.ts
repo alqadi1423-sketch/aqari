@@ -173,8 +173,10 @@ export function contractLocked(c: Pick<ContractRow, 'status'>): boolean {
 
 /** انتهاء العقد (يفتح التقييم والتصرف بالتأمين) */
 export function contractEnded(c: Pick<ContractRow, 'status' | 'end'>, T: string = today()): boolean {
-  if (c.status === 'ملغى' || c.status === 'منتهٍ') return true;
-  return !!(c.end && c.end < T);
+  if (c.status === 'ملغى') return true;
+  // التجديد يجعل الحالة «منتهٍ» قبل نهايته، فالحكم بالتاريخ · وعقدٌ بلا نهاية بحالته
+  if (!c.end) return c.status === 'منتهٍ';
+  return c.end < T;
 }
 
 export function daysToContractEnd(c: { end?: string | null }, T: string = today()): number | null {

@@ -4,7 +4,8 @@
  *  #٤١ الدعوة تُقرأ وتُحذف بإيميلٍ متحقَّق وحده
  */
 import { FirestoreRemote, encodeFields } from '@/cloud/firestore';
-import { removeMember } from '@/services/org';
+import { removeMember, acceptInvite } from '@/services/org';
+import { SCHEMA_VERSION } from '@/db/schema';
 
 const HOST = process.env.FIRESTORE_EMULATOR_HOST;
 const PROJECT = 'demo-aqari';
@@ -44,6 +45,16 @@ d('الدعوات (مراجعة التثبيت #36 و#41)', () => {
     await removeMember(remote(ORG, 'owner-x@example.test'), ORG, 'U-OLD', EMAIL);
     expect(await get(`orgs/${ORG}/invites/${EMAIL}`, token(ORG, 'owner-x@example.test'))).toBe(404);
     expect(await get(`orgs/${ORG}/members/U-OLD`, token(ORG, 'owner-x@example.test'))).toBe(404);
+  });
+
+  // #36 (قرار المالك 2026-10-09): «والإصدار الأقدم يطلب التحديث قبل الانضمام»
+  test('#٣٦ دعوةٌ تطلب إصداراً أحدث لا تُقبل قبل التحديث', async () => {
+    expect(await put(`orgs/${ORG}/invites/${EMAIL}`, { ...inv, minApp: SCHEMA_VERSION + 1 }, token(ORG, 'owner-x@example.test'))).toBe(200);
+    const { memDb } = await import('./helpers/testDb');
+    const db = memDb();
+    await expect(acceptInvite(db, remote('U-NEW', EMAIL), ORG, 'U-NEW', { email: EMAIL } as never)).rejects.toThrow();
+    expect(await get(`orgs/${ORG}/members/U-NEW`, token(ORG, 'owner-x@example.test'))).toBe(404);
+    db.close();
   });
 
   test('#٤١ الدعوة لا تُقرأ ولا تُحذف بإيميلٍ غير متحقَّق', async () => {

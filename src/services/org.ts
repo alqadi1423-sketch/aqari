@@ -3,6 +3,9 @@
  * رقم المنشأة = uid المالك. الأعضاء في orgs/{org}/members/{uid}، والدعوات في orgs/{org}/invites/{email}.
  */
 import type { DB } from '../db/adapter';
+import { SCHEMA_VERSION } from '../db/schema';
+import { FirestoreHttpError } from '../cloud/firestore';
+import { t } from '../i18n';
 import type { FirestoreRemote } from '../cloud/firestore';
 import { getSyncState, setSyncState, seedOutbox } from '../sync/engine';
 import { hasUserData } from '../domain/backup/upgrade';
@@ -75,7 +78,8 @@ export async function sendInvite(
   if (doc.email === normEmail(ownerEmail)) throw new Error('هذا إيميلك أنت · المالك لا يُدعى إلى منشأته');
   const team = await listTeam(remote, org);
   if (team.members.some((m) => normEmail(m.doc.email) === doc.email)) throw new Error('هذا الإيميل عضو في المنشأة بالفعل · عدّل صلاحيته بدل دعوته');
-  await remote.setDoc(`orgs/${org}/invites/${doc.email}`, doc as unknown as Record<string, unknown>);
+  // والدعوة تحمل إصدار المالك حدّاً أدنى، فيطلب الأقدمُ التحديث قبل الانضمام (#36)
+  await remote.setDoc(`orgs/${org}/invites/${doc.email}`, { ...doc, minApp: SCHEMA_VERSION } as unknown as Record<string, unknown>);
   return doc;
 }
 
@@ -158,6 +162,7 @@ export async function findInvites(remote: FirestoreRemote, email: string): Promi
 export async function acceptInvite(db: DB, remote: FirestoreRemote, org: string, uid: string, invite: MemberDoc): Promise<Membership> {
   const raw = await remote.getDoc(`orgs/${org}/invites/${invite.email}`);
   if (!raw) throw new Error('الدعوة لم تعد قائمة · اطلب من صاحب المنشأة دعوة جديدة');
+  if (appTooOld(Number(raw.minApp ?? 0))) throw new Error(t('compat.updateBeforeJoin'));
   // العضوية والدعوة في التزامٍ واحد: القواعد ترفض عضويةً تبقى دعوتها (فلا تُعيد الدعوةُ الباقية المُزالَ) · مراجعة التثبيت #36
   await remote.commitDocs([{ path: `orgs/${org}/members/${uid}`, data: raw }], [`orgs/${org}/invites/${invite.email}`]);
   const doc = asMemberDoc(raw);
@@ -191,6 +196,33 @@ export async function refreshMembership(db: DB, remote: FirestoreRemote): Promis
   saveMembership(db, next);
   return 'changed';
 }
+
+/* ─── الحد الأدنى لإصدار التطبيق (#36 · قرار المالك 2026-10-09: «حد أدنى لإصدار التطبيق، والإصدار الأقدم يطلب
+   التحديث قبل الانضمام أو المزامنة») · الإصدار رقم المخطط ─── */
+
+const compatPath = (org: string) => `orgs/${org}/meta/compat`;
+
+/** الحد وهل قواعده منشورة (قواعدٌ أقدم ترفض قراءته) · فلا يُرفع الإصدار مع الصفوف قبل نشرها */
+export async function readCompat(remote: FirestoreRemote, org: string): Promise<{ live: boolean; min: number }> {
+  try {
+    const d = await remote.getDoc(compatPath(org));
+    return { live: true, min: typeof d?.min === 'number' ? d.min : 0 };
+  } catch (e) {
+    if (e instanceof FirestoreHttpError && e.status === 403) return { live: false, min: 0 };
+    throw e;
+  }
+}
+
+/** جهاز المالك يرفع الحد إلى إصداره ولا يخفضه · يعيد هل رفعه */
+export async function raiseCompat(remote: FirestoreRemote, org: string, v: number = SCHEMA_VERSION): Promise<boolean> {
+  const cur = await readCompat(remote, org);
+  if (!cur.live || cur.min >= v) return false;
+  await remote.setDoc(compatPath(org), { min: v });
+  return true;
+}
+
+/** إصدار هذا التطبيق أقدم من حدّ المنشأة */
+export const appTooOld = (min: number, v: number = SCHEMA_VERSION): boolean => min > v;
 
 /** مغادرة العضو المنشأة بنفسه · تُحذف عضويته من الخادم، ومسح الجهاز على المستدعي */
 export const leaveOrg = (remote: FirestoreRemote, org: string, uid: string) => remote.deleteDoc(`orgs/${org}/members/${uid}`);

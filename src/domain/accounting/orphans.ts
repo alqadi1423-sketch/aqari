@@ -17,6 +17,14 @@ export const KEPT_REVIEWED_ENTITY = 'مراجعة قيد بعد الاستعاد
 /** نوع المستند وجدوله · ومعرّف المستند في src_id */
 export const SOURCE_DOC: Record<string, [label: string, tables: string[]]> = {
   invoice: ['فاتورة', ['invoices']],
+  invoice_pay: ['سداد فاتورة', ['invoices']], // i18n-exempt: نوع مستند في سجل العمليات
+  asset_cost: ['تكلفة أصل', ['assets']], // i18n-exempt: نوع مستند في سجل العمليات
+  asset_transfer: ['نقل أصل', ['assets']], // i18n-exempt: نوع مستند في سجل العمليات
+  asset_dispose: ['استبعاد أصل', ['assets']], // i18n-exempt: نوع مستند في سجل العمليات
+  asset_sell: ['بيع أصل', ['assets']], // i18n-exempt: نوع مستند في سجل العمليات
+  asset_dep: ['إهلاك أصل', ['assets']], // i18n-exempt: نوع مستند في سجل العمليات
+  asset_convert: ['تحويل شراء إلى أصل', ['purchases']], // i18n-exempt: نوع مستند في سجل العمليات
+  asset_catchup: ['إهلاك لاحق لأصل', ['purchases']], // i18n-exempt: نوع مستند في سجل العمليات
   purchase: ['فاتورة شراء', ['purchases']],
   purchase_pay: ['سداد فاتورة شراء', ['purchases']],
   vat_refund: ['استرداد ضريبة', ['purchases']],
@@ -38,12 +46,16 @@ export const SOURCE_DOC: Record<string, [label: string, tables: string[]]> = {
   rent: ['دفعة إيجار', []],
 };
 
-/** شرط SQL: القيد (بالاسم e) مستنده غائب · قيد الدفعة بدفعته، وغيره بجدول مستنده */
-function orphanSql(): string {
+/**
+ * شرط SQL: القيد (بالاسم e) مستنده غائب · قيد الدفعة بدفعته، وغيره بجدول مستنده · والمصدر الذي لم يُنشأ جدوله بعد في هذه
+ * القاعدة (نسخةٌ قبل الترقية يُفحص تكاملها) لا قيد له فيها
+ */
+function orphanSql(db: DB): string {
+  const exists = (t: string) => !!db.get(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`, [t]);
   // تشمل الملغاة: صفّها باقٍ مستنداً لقيدها المعكوس
   const parts = [`(e.src_type = 'rent' AND NOT EXISTS (SELECT 1 FROM contract_payments p WHERE p.journal_entry_id = e.id /* تشمل الملغاة: مستند لقيدها المعكوس */))`];
   for (const [type, [, tables]] of Object.entries(SOURCE_DOC)) {
-    if (!tables.length) continue;
+    if (!tables.length || !tables.every(exists)) continue;
     parts.push(`(e.src_type = '${type}' AND ${tables.map((t) => `NOT EXISTS (SELECT 1 FROM "${t}" x WHERE x.id = e.src_id)`).join(' AND ')})`);
   }
   return '(' + parts.join(' OR ') + ')';
@@ -70,13 +82,13 @@ export function unmarkedOrphans(db: DB): Array<{ id: string; no: string; src_typ
     `SELECT e.id, e.no, e.src_type FROM journal_entries e
      WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.auto = 1 AND e.reversed_by IS NULL
        AND e.src_type IS NOT NULL AND e.src_type NOT LIKE '%\\_rev' ESCAPE '\\'
-       AND ${orphanSql()} AND NOT ${MARKED('e')}
+       AND ${orphanSql(db)} AND NOT ${MARKED('e')}
      ORDER BY e.date, e.no`);
 }
 
 /** القيد غائب المستند؟ · لعكسه من الدفتر حين لا مستند يُلغى منه */
 export function isOrphanEntry(db: DB, entryId: string): boolean {
-  return !!db.get(`SELECT 1 FROM journal_entries e WHERE e.id = ? AND e.src_type IS NOT NULL AND ${orphanSql()}`, [entryId]);
+  return !!db.get(`SELECT 1 FROM journal_entries e WHERE e.id = ? AND e.src_type IS NOT NULL AND ${orphanSql(db)}`, [entryId]);
 }
 
 export function markForReview(db: DB, entry: { id: string; no: string }, reason: string): void {

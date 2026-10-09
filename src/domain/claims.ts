@@ -8,6 +8,7 @@ import { today } from './dates';
 import { postClaim, postClaimCollection, reverseEntryBySource } from './accounting/post';
 import { logAudit } from './audit';
 import { correctionDate } from './vatFilings';
+import { propertyMoveLocked, type Access } from './access/access';
 
 export interface ClaimInput {
   contractId: string;
@@ -16,10 +17,17 @@ export interface ClaimInput {
   date: string;
 }
 
-export function saveClaim(db: DB, input: ClaimInput, existingId?: string): string {
+/** access: صلاحية من يعدّل · المحصور لا ينقل مطالبةً قائمة إلى عقد عقارٍ آخر (قرار المالك 2026-10-09 · التحقق المستقل) */
+export function saveClaim(db: DB, input: ClaimInput, existingId?: string, opts: { access?: Access } = {}): string {
   if (!input.contractId || !input.amountHalalas) throw new Error('اختر العقد وأدخل المبلغ');
   return db.transaction(() => {
     if (existingId) {
+      if (opts.access && propertyMoveLocked(opts.access, true)) {
+        const propOf = (contractId: string) => db.get<{ p: string }>(
+          `SELECT u.property_id AS p FROM contracts c JOIN units u ON u.id = c.unit_id WHERE c.id = ?`, [contractId])?.p ?? null;
+        const cur = db.get<{ c: string }>(`SELECT contract_id AS c FROM claims WHERE id = ?`, [existingId])?.c;
+        if (cur && propOf(cur) !== propOf(input.contractId)) throw new Error(t('access.moveAllPropsOnly'));
+      }
       const cl = db.get<{ amount_halalas: number; status: string; date: string }>(
         `SELECT amount_halalas, status, date FROM claims WHERE id = ?`, [existingId]
       );

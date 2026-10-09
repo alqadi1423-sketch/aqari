@@ -200,8 +200,10 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
                 {!p.cancelled_at && perm.manage ? (
                   <BtnGhost small danger title="إلغاء الدفعة" onPress={() => setCancelFor((c) => (c === p.id ? null : p.id))} />
                 ) : null}
-                <BtnGhost small icon="print" title="سند القبض"
-                  onPress={() => printReceipt(db, p.id, 'tenant').catch(() => toast('تعذّرت الطباعة'))} />
+                {!p.cancelled_at ? (
+                  <BtnGhost small icon="print" title="سند القبض"
+                    onPress={() => printReceipt(db, p.id, 'tenant').catch(() => toast('تعذّرت الطباعة'))} />
+                ) : null}
                 {p.journal_entry_id ? (
                   <BtnGhost small title="عرض القيد" onPress={() => setEntryFor((c) => (c === p.journal_entry_id ? null : p.journal_entry_id))} />
                 ) : null}

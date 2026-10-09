@@ -25,6 +25,7 @@ import { depositState } from '../domain/contracts/vocab';
 import { contractStatusLabel } from '../domain/contracts/rules';
 import { tenantStatementRows } from '../domain/statement';
 import { isTempInvoiceNo } from '../domain/invoices';
+import { receiptBlocked } from '../domain/contracts/cancelPayment';
 
 export function companyInfo(db: DB): CompanyInfo {
   const co = db.get<{ name: string; vatno: string; cr: string; phone: string; address: string; vat_enabled: number }>(
@@ -127,6 +128,8 @@ export async function printReceipt(db: DB, paymentId: string, copy: CopyKind = '
     [paymentId]
   );
   if (!p) return;
+  const blocked = receiptBlocked(db, paymentId);
+  if (blocked) throw new Error(blocked);
   const no = 'RCP-' + p.id.slice(0, 8).toUpperCase();
   const body = buildReceiptDoc(companyInfo(db), {
     no, tenantName: p.tenant_name, contractNo: p.contract_no || '', unitLabel: p.unit_label,

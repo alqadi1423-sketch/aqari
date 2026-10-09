@@ -1,6 +1,6 @@
 import type { DB } from '../../db/adapter';
 import { accountBalance, allAccounts, ledgerNet } from './ledger';
-import { KEPT_REVIEW_ENTITY, markedNetOn } from './orphans';
+import { markedNetOn, unmarkedOrphans } from './orphans';
 import { fmt } from '../money';
 
 export interface IntegrityCheck {
@@ -110,17 +110,9 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     value: fmt(A) + ' / ' + fmt(L + E + (Rv - Ex)),
   });
 
-  // ٧) لا قيود تحصيل يتيمة: كل قيد إيجار مرحّل غير معكوس تشير إليه دفعة حيّة
-  const orphans = db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM journal_entries e
-     WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.auto = 1
-       AND e.reversed_by IS NULL AND e.src_type = 'rent'
-       /* تشمل الملغاة: قيد الملغاة معكوس فلا يبلغ هذا الشرط، وصفّها باقٍ مستنداً له */
-       AND NOT EXISTS (SELECT 1 FROM contract_payments p WHERE p.journal_entry_id = e.id)
-       -- قيدٌ بقي بالاستعادة ومستنده ليس في النسخة · معروفٌ في أداة المراجعة لا مستندٌ حُذف (keepPosted.ts)
-       AND NOT EXISTS (SELECT 1 FROM audit_log a WHERE a.entity_type = ? AND json_extract(a.after_json, '$.id') = e.id)`,
-    [KEPT_REVIEW_ENTITY]
-  )!;
+  // ٧) لا قيود يتيمة: كل قيد آلي مرحّل غير معكوس مستنده قائم، من كل المصادر بجداولها (SOURCE_DOC) لا الإيجار وحده
+  // (دراسة القائم) · والمعلَّم في أداة المراجعة بعد الاستعادة خارجه (keepPosted.ts)
+  const orphans = { n: unmarkedOrphans(db).length };
   out.push({
     name: 'لا قيود يتيمة لمصادر محذوفة',
     ok: Number(orphans.n) === 0,

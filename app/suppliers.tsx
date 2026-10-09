@@ -20,7 +20,9 @@ import { C, TYPE } from '../src/ui/theme';
 import { usePager, Pager } from '../src/ui/Pager';
 import { useDeferredReady } from '../src/ui/useDeferredReady';
 import { Skeleton } from '../src/ui/Skeleton';
-import { supplierMeters, METER_ICON, type LabeledMeter } from '../src/domain/meters';
+import { supplierMeters, METER_ICON, UTILITY_KINDS, type LabeledMeter } from '../src/domain/meters';
+import { saveSupplier } from '../src/domain/suppliers';
+import { t } from '../src/i18n';
 import { TS_DEDUCTIBLE, TS_EXEMPT } from '../src/domain/purchases';
 import { uid } from '../src/domain/ids';
 import { fmt, toHalalas } from '../src/domain/money';
@@ -41,11 +43,15 @@ const LINKED_SQL = `(EXISTS(SELECT 1 FROM purchases WHERE supplier_name = s.name
   OR EXISTS(SELECT 1 FROM meters WHERE supplier_id = s.id AND deleted_at IS NULL)
   OR EXISTS(SELECT 1 FROM attachments WHERE entity_type = 'supplier' AND entity_id = s.id AND deleted_at IS NULL))`;
 
-const UTILITY_LABELS: Record<string, string> = { 'كهرباء': 'مورد كهرباء', 'ماء': 'مورد مياه', plain: 'مورد عادي' };
-const UTILITY_OPTIONS = [{ value: '', label: 'كل الأنواع' },
-  { value: 'كهرباء', label: 'مورد كهرباء', icon: 'bolt' as IconName },
-  { value: 'ماء', label: 'مورد مياه', icon: 'drop' as IconName },
-  { value: 'plain', label: 'مورد عادي' }];
+// نوع الخدمة باسمه وشعاره ولونه · والغاز معها (الهجرة ٤٠)
+const UTILITY_KEY: Record<string, string> = { 'كهرباء': 'power', 'ماء': 'water', 'غاز': 'gas' }; // i18n-exempt: أنواع الخدمة المخزّنة
+const UTILITY_COLOR: Record<string, string> = { power: C.gold, water: '#2E7CB8', gas: '#C2410C' };
+const utilityLabel = (v: string) => t('suppliers.utility.' + (UTILITY_KEY[v] ?? 'plain'));
+const utilityColor = (v: string) => UTILITY_COLOR[UTILITY_KEY[v]] ?? C.muted;
+const utilityIcon = (v: string) => (METER_ICON[v] ?? 'bolt') as IconName;
+const utilityOptions = () => [{ value: '', label: t('suppliers.utility.all') },
+  ...UTILITY_KINDS.map((v) => ({ value: v as string, label: utilityLabel(v), icon: utilityIcon(v) })),
+  { value: 'plain', label: utilityLabel('') }];
 const STATE_OPTIONS = [{ value: 'active', label: 'الموردون النشطون' }, { value: 'archived', label: 'الأرشيف' }];
 
 /** بطاقة مورد واحدة · معزولة وممذكَّرة كي لا يعاد رسم القائمة كلها */
@@ -72,9 +78,8 @@ const SupplierCard = React.memo(function SupplierCard({
         <Row gap={6}>
           {utilityType ? (
             <>
-              <Icon name={utilityType === 'كهرباء' ? 'bolt' : 'drop'} size={15}
-                color={utilityType === 'كهرباء' ? C.gold : '#2E7CB8'} />
-              <Badge kind="due" label={(utilityType === 'كهرباء' ? 'مورد كهرباء' : 'مورد مياه')} />
+              <Icon name={utilityIcon(utilityType)} size={15} color={utilityColor(utilityType)} />
+              <Badge kind="due" label={utilityLabel(utilityType)} />
             </>
           ) : null}
           {archived ? <Badge kind="draft" label="مؤرشف" /> : null}
@@ -180,29 +185,10 @@ export default function Suppliers() {
     setUtility(s.utility_type); setFormOpen(true);
   }, [db]);
   const save = () => {
-    if (!name.trim()) { toast('الرجاء إدخال اسم المورد'); return; }
-    const dup = db.get(
-      `SELECT id FROM suppliers WHERE deleted_at IS NULL AND id != ? AND (TRIM(name)=TRIM(?) OR (? != '' AND TRIM(vat)=TRIM(?)))`,
-      [editingId ?? '', name, vat, vat]
-    );
-    if (dup) { toast('يوجد مورد مسجَّل بنفس الاسم أو الرقم الضريبي بالفعل · تحقق من القائمة قبل الإضافة'); return; }
-    db.transaction(() => {
-      const fields = [name.trim(), vat.trim(), phone.trim(), category.trim(), category.trim(),
-        amount.trim() ? toHalalas(amount) : null, utility];
-      if (editingId) {
-        db.run(
-          `UPDATE suppliers SET name=?, vat=?, phone=?, category=?, default_category=?, default_amount_halalas=?, utility_type=? WHERE id=?`,
-          [...fields, editingId]
-        );
-      } else {
-        db.run(
-          `INSERT INTO suppliers (id, name, vat, phone, category, default_category, default_amount_halalas, utility_type, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?)`,
-          [uid(), ...fields, new Date().toISOString()]
-        );
-      }
-      logAudit(db, 'الموردون', editingId ? 'update' : 'create', 'مورد', name.trim());
-    });
+    // الحفظ في المنطق (src/domain/suppliers.ts): تعديل الاسم يتبعه في فواتير شرائه (دراسة القائم)
+    try {
+      saveSupplier(db, editingId, { name, vat, phone, category, amountHalalas: amount.trim() ? toHalalas(amount) : null, utility });
+    } catch (e) { toast((e as Error).message); return; }
     setFormOpen(false); bump();
     toast(editingId ? 'تم تحديث المورد' : `تمت إضافة المورد "${name.trim()}"`);
   };
@@ -250,7 +236,7 @@ export default function Suppliers() {
   }, []);
   const chips: ActiveChip[] = [
     ...(fState === 'archived' ? [{ key: 'state', label: 'الأرشيف', onClear: () => setFState('active') }] : []),
-    ...(fUtility ? [{ key: 'utility', label: UTILITY_LABELS[fUtility] ?? fUtility, onClear: () => setFUtility('') }] : []),
+    ...(fUtility ? [{ key: 'utility', label: utilityLabel(fUtility), onClear: () => setFUtility('') }] : []),
     ...(fCategory ? [{ key: 'category', label: fCategory, onClear: () => setFCategory('') }] : []),
   ];
 
@@ -280,7 +266,7 @@ export default function Suppliers() {
 
       <FilterSheet open={fsheet.open} onClose={fsheet.hide} onClearAll={clearFilters} resultCount={total}>
         <SelectField label="الحالة" value={fState} options={STATE_OPTIONS} onPick={setFState} />
-        <SelectField label="نوع الخدمة" value={fUtility} options={UTILITY_OPTIONS} onPick={setFUtility} />
+        <SelectField label="نوع الخدمة" value={fUtility} options={utilityOptions()} onPick={setFUtility} />
         <SelectField label="الفئة" value={fCategory}
           options={[{ value: '', label: 'كل الفئات' }, ...categories.map((c) => ({ value: c, label: c }))]}
           onPick={setFCategory} />
@@ -308,11 +294,8 @@ export default function Suppliers() {
           <View style={{ flex: 1 }}><Field label="المبلغ المعتاد" value={amount} onChange={setAmount} keyboard="numeric" ltr /></View>
         </Row>
         <SelectField label="نوع الخدمة" value={utility}
-          options={[
-            { value: '', label: 'مورد عادي' },
-            { value: 'كهرباء', icon: 'bolt', label: 'مورد كهرباء' },
-            { value: 'ماء', icon: 'drop', label: 'مورد مياه' },
-          ]}
+          options={[{ value: '', label: utilityLabel('') },
+            ...UTILITY_KINDS.map((v) => ({ value: v as string, icon: utilityIcon(v), label: utilityLabel(v) }))]}
           onPick={setUtility} />
         {utility ? (
           <View style={{ marginBottom: 8 }}>
@@ -461,9 +444,8 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
           <View style={{ flex: 1 }}>
             <T size={TYPE.caption} color={C.muted}>نوع الخدمة</T>
             <Row gap={5}>
-              <Icon name={s.utility_type === 'كهرباء' ? 'bolt' : 'drop'} size={13}
-                color={s.utility_type === 'كهرباء' ? C.gold : '#2E7CB8'} />
-              <T size={TYPE.cardTitle}>{s.utility_type === 'كهرباء' ? 'مورد كهرباء' : 'مورد مياه'}</T>
+              <Icon name={utilityIcon(s.utility_type)} size={13} color={utilityColor(s.utility_type)} />
+              <T size={TYPE.cardTitle}>{utilityLabel(s.utility_type)}</T>
             </Row>
           </View>
         ) : null}

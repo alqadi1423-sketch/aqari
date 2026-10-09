@@ -160,6 +160,8 @@ function dropDraftOrphan(db: DB, tenantId: string, draftId: string): void {
   const draft = db.get<{ created_at: string }>(`SELECT created_at FROM contracts WHERE id = ?`, [draftId]);
   if (!t || !draft || t.created_at < draft.created_at || Number(t.credit_halalas) || (t.notes ?? '').trim()) return;
   if (db.get(`SELECT 1 FROM contracts WHERE tenant_id = ? AND deleted_at IS NULL`, [tenantId])) return;
+  // وله مرفقات (صورة هويته مثلاً) يبقى، فلا تُعلَّق بمستأجرٍ محذوف لا تصلها الواجهة (التحقق المستقل)
+  if (db.get(`SELECT 1 FROM attachments WHERE entity_type = 'tenant' AND entity_id = ? AND deleted_at IS NULL`, [tenantId])) return;
   db.run(`UPDATE tenants SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), tenantId]);
 }
 
@@ -455,6 +457,11 @@ export interface RenewInput {
   /** الخدمات والمواقف في العقد الجديد · وغيابهما ينقلهما من العقد السابق (المراجعة #3) */
   servicesHalalas?: number;
   parkingHalalas?: number;
+  /**
+   * جواب «هل غادر الساكنون؟» (قرار المالك 2026-08-20 · دراسة القائم): نعم فتُسجَّل مغادرتهم بنهاية العقد، ولا فينتقلون
+   * للعقد الجديد · والمستأجر نفسه ينتقل دائماً
+   */
+  occupantsLeft?: boolean;
 }
 
 /** تحذيرات التجديد · بنصوص النموذج (تُعرض قبل التنفيذ وتمنع التأكيد) */
@@ -537,7 +544,7 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
     // التجديد لمستأجر العقد نفسه (ولو دُمج): لا يُعاد البحث بنصّ هويته القديمة فيُنشأ مستأجرٌ ثانٍ (التحقق المستقل)
     db.run(`UPDATE contracts SET tenant_id = (SELECT tenant_id FROM contracts WHERE id = ?) WHERE id = ?`, [contractId, newId]);
     linkContractTenant(db, newId);
-    carryOccupantsToRenewal(db, contractId, newId);
+    carryOccupantsToRenewal(db, contractId, newId, input.occupantsLeft ? { leftOn: c.end || input.start } : {});
     seedTenantOccupant(db, newId);
     return newId;
   });

@@ -6,7 +6,7 @@
 import { ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 39;
+export const SCHEMA_VERSION = 40;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1627,5 +1627,32 @@ export const MIGRATION_39 = `
 ALTER TABLE invoice_lines ADD COLUMN tax_code TEXT NOT NULL DEFAULT '';
 `;
 
+/**
+ * الهجرة ٤٠ · مورد الغاز نوعاً للخدمة (دراسة القائم 2026-10-09 · قرار 2026-10-07: «عداد الغاز: يُضاف نوعاً للعدادات»)
+ * SQLite لا يعدّل قيد CHECK فيُعاد بناء الجدول بأعمدته وصفوفه كما هي (المفاتيح الأجنبية مطفأة أثناء الهجرات، والعدادات
+ * تشير إليه باسمه)، ثم محفّزات مزامنته · كما في الهجرة ٣١
+ */
+// i18n-exempt: أنواع الخدمة المخزّنة
+export const MIGRATION_40 = `
+CREATE TABLE suppliers_new (
+  id                     TEXT PRIMARY KEY,
+  name                   TEXT NOT NULL,
+  vat                    TEXT NOT NULL DEFAULT '',
+  phone                  TEXT NOT NULL DEFAULT '',
+  category               TEXT NOT NULL DEFAULT '',
+  default_category       TEXT NOT NULL DEFAULT '',
+  default_amount_halalas INTEGER,
+  utility_type           TEXT NOT NULL DEFAULT '' CHECK (utility_type IN ('','كهرباء','ماء','غاز')),
+  archived               INTEGER NOT NULL DEFAULT 0,
+  created_at             TEXT NOT NULL,
+  deleted_at             TEXT
+);
+INSERT INTO suppliers_new (id, name, vat, phone, category, default_category, default_amount_halalas, utility_type, archived, created_at, deleted_at)
+  SELECT id, name, vat, phone, category, default_category, default_amount_halalas, utility_type, archived, created_at, deleted_at FROM suppliers;
+DROP TABLE suppliers;
+ALTER TABLE suppliers_new RENAME TO suppliers;
+${buildSyncTriggers([syncTable('suppliers')!])}
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40];

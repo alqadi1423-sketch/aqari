@@ -7,7 +7,7 @@ import type { DB } from '../db/adapter';
 import { uid } from './ids';
 
 export const METER_KINDS = ['كهرباء', 'ماء', 'إنترنت', 'غاز'] as const; // i18n-exempt: أنواع العدادات المخزّنة (الغاز: الهجرة ٣١)
-export const UTILITY_KINDS = ['كهرباء', 'ماء'] as const;
+export const UTILITY_KINDS = ['كهرباء', 'ماء', 'غاز'] as const; // i18n-exempt: أنواع الخدمة المخزّنة (الغاز: الهجرة ٤٠)
 /** شعار كل خدمة: الكهرباء برق · المياه قطرة · الإنترنت واي فاي */
 export const METER_ICON: Record<string, string> = { 'كهرباء': 'bolt', 'ماء': 'drop', 'إنترنت': 'wifi', 'غاز': 'flame' }; // i18n-exempt: أنواع العدادات المخزّنة
 

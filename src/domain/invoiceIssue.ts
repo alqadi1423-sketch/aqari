@@ -12,6 +12,7 @@ import {
   saveInvoice, setInvoiceStatus, needsIssueNumber, invoiceNoFor, isTempInvoiceNo, saveCreditNote, type InvoiceInput, type CreditNoteInput,
 } from './invoices';
 import { t } from '../i18n';
+import { isFiledDate } from './vatFilings';
 
 export interface InvoiceNumberSource { takeInvoiceSeq(floor: number): Promise<number> }
 
@@ -97,6 +98,9 @@ export async function issuePendingInvoices(db: DB, src: InvoiceNumberSource): Pr
       setPending(db, pendingIssues(db).filter((x) => x !== id));
       continue;
     }
+    // تاريخها في ربعٍ قُدِّم إقراره بعد حفظها: لا تصدر فيه، وتبقى ظاهرةً للمستخدم يغيّر تاريخها، ولا توقف ما بعدها (التحقق المستقل)
+    const issue = db.get<{ issue: string }>(`SELECT issue FROM invoices WHERE id = ?`, [id])?.issue;
+    if (issue && isFiledDate(db, issue)) continue;
     const r = await setInvoiceStatusIssued(db, src, id, 'مستحقة');
     if (r.pending) break;
     issued++;

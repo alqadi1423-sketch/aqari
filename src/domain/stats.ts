@@ -237,7 +237,7 @@ function aggregatedStats(db: DB, propertyId: string | null, T: string): Property
   const p = propertyId ? [propertyId] : [];
 
   const total = Number(db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM units u WHERE u.deleted_at IS NULL ${unitFilter}`, p
+    `SELECT COUNT(*) AS n FROM units u WHERE u.deleted_at IS NULL AND COALESCE(u.archived, 0) = 0 ${unitFilter}`, p
   )!.n);
   const occupied = Number(db.get<{ n: number }>(
     `SELECT COUNT(DISTINCT c.unit_id) AS n FROM contracts c
@@ -293,7 +293,7 @@ export function allPropertyStats(db: DB, T: string = today()): Map<string, Prope
   };
   for (const r of db.all<{ pid: string; n: number }>(
     `SELECT u.property_id AS pid, COUNT(*) AS n FROM units u
-     WHERE u.deleted_at IS NULL GROUP BY u.property_id`
+     WHERE u.deleted_at IS NULL AND COALESCE(u.archived, 0) = 0 GROUP BY u.property_id`
   )) ensure(r.pid).total = Number(r.n);
   for (const r of db.all<{ pid: string; n: number }>(
     `SELECT u.property_id AS pid, COUNT(DISTINCT c.unit_id) AS n
@@ -427,7 +427,7 @@ export function occupancyByDays(
   const unitFilter = propertyId ? `AND u.property_id = ?` : '';
   const p: string[] = propertyId ? [propertyId] : [];
   const units = Number(db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM units u WHERE u.deleted_at IS NULL ${unitFilter}`, p
+    `SELECT COUNT(*) AS n FROM units u WHERE u.deleted_at IS NULL AND COALESCE(u.archived, 0) = 0 ${unitFilter}`, p
   )!.n);
   if (!units) return { ...empty, days };
 
@@ -436,7 +436,7 @@ export function occupancyByDays(
             c.status AS status, c.cancel_date AS cancelDate
      FROM contracts c
      JOIN units u ON u.id = c.unit_id
-     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL AND c.status != 'مسودة'
+     WHERE c.deleted_at IS NULL AND u.deleted_at IS NULL AND COALESCE(u.archived, 0) = 0 AND c.status != 'مسودة'
        AND c.start IS NOT NULL AND c.end IS NOT NULL AND c.start != '' AND c.end != ''
        AND c.start <= ? AND c.end >= ? ${unitFilter}`,
     [to, from, ...p]

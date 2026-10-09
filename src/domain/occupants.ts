@@ -121,11 +121,25 @@ export function seedTenantOccupant(db: DB, contractId: string): void {
   });
 }
 
-/** انتقال الساكنين الحاليين مع تجديد العقد */
-export function carryOccupantsToRenewal(db: DB, oldContractId: string, newContractId: string): number {
-  const current = db.all<OccupantRow>(
+/** الساكنون الحاليون غير المستأجر نفسه · يُسأل عنهم عند التجديد «هل غادر الساكنون؟» */
+export function otherCurrentOccupants(db: DB, contractId: string): number {
+  return Number(db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM occupants WHERE contract_id = ? AND deleted_at IS NULL AND moved_out IS NULL AND relation != ?`,
+    [contractId, 'نفسه'])?.n ?? 0); // i18n-exempt: صلة مخزّنة
+}
+
+/**
+ * انتقال الساكنين الحاليين مع تجديد العقد · leftOn: غادر الساكنون (جواب «نعم» · قرار المالك 2026-08-20) فتُسجَّل
+ * مغادرتهم بتاريخها وينتقل المستأجر نفسه وحده
+ */
+export function carryOccupantsToRenewal(db: DB, oldContractId: string, newContractId: string, opts: { leftOn?: string } = {}): number {
+  let current = db.all<OccupantRow>(
     `SELECT * FROM occupants WHERE contract_id = ? AND deleted_at IS NULL AND moved_out IS NULL`,
     [oldContractId]);
+  if (opts.leftOn) {
+    for (const o of current.filter((x) => x.relation !== 'نفسه')) markOccupantLeft(db, o.id, opts.leftOn); // i18n-exempt: صلة مخزّنة
+    current = current.filter((x) => x.relation === 'نفسه'); // i18n-exempt: صلة مخزّنة
+  }
   const c = db.get<{ unit_id: string | null; start: string | null }>(
     `SELECT unit_id, start FROM contracts WHERE id = ?`, [newContractId]);
   db.transaction(() => {

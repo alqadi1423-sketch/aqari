@@ -160,16 +160,18 @@ export function mergeTenants(db: DB, keepId: string, dropIds: string[], opts: { 
   db.transaction(() => {
     for (const dropId of dropIds) {
       if (dropId === keepId) continue;
+      // الوجهة كما صارت بعد المدموج السابق، فلا يكتب الثاني فوق ما أكمله الأول (التحقق المستقل)
+      const cur = db.get<{ national_id: string; phone: string }>(`SELECT national_id, phone FROM tenants WHERE id = ?`, [keepId])!;
       const drop = db.get<{ national_id: string; phone: string }>(
         `SELECT national_id, phone FROM tenants WHERE id = ?`, [dropId]);
       db.run(`UPDATE contracts SET tenant_id = ?, tenant_name = ? WHERE tenant_id = ?`, [keepId, keep.name, dropId]);
-      // إكمال الناقص من المدموج
-      if (drop?.national_id && !keep.national_id) db.run(`UPDATE tenants SET national_id = ? WHERE id = ?`, [drop.national_id, keepId]);
-      if (drop?.phone && !keep.phone) db.run(`UPDATE tenants SET phone = ? WHERE id = ?`, [drop.phone, keepId]);
       // الرصيد الدائن ينتقل إلى الوجهة (التزامٌ للمستأجر نفسه في 2410، لا يتغيّر مجموعه)
       db.run(`UPDATE tenants SET credit_halalas = credit_halalas + COALESCE((SELECT credit_halalas FROM tenants WHERE id = ?), 0) WHERE id = ?`, [dropId, keepId]);
-      db.run(`UPDATE tenants SET credit_halalas = 0 WHERE id = ?`, [dropId]);
-      db.run(`UPDATE tenants SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), dropId]);
+      // المدموج يُحذف قبل نسخ هويته: الفهرس الفريد للهوية على الحيّ وحده (التحقق المستقل: كان الدمج ينهار)
+      db.run(`UPDATE tenants SET credit_halalas = 0, deleted_at = ? WHERE id = ?`, [new Date().toISOString(), dropId]);
+      // إكمال الناقص من المدموج
+      if (drop?.national_id && !cur.national_id) db.run(`UPDATE tenants SET national_id = ? WHERE id = ?`, [drop.national_id, keepId]);
+      if (drop?.phone && !cur.phone) db.run(`UPDATE tenants SET phone = ? WHERE id = ?`, [drop.phone, keepId]);
     }
     logAudit(db, 'العملاء', 'update', 'دمج مستأجرين', keep.name);
   });

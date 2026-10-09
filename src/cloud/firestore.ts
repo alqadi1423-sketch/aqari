@@ -53,8 +53,10 @@ export function decodeFields(f: Record<string, FsValue>): Record<string, unknown
 }
 
 /** حقول المستند · ts يملؤه الخادم بتحويل REQUEST_TIME لا الجهاز */
-export function docToFields(d: RemoteDoc): Record<string, FsValue> {
+/** sv: رقم إصدار التطبيق (#36) · يُرفع مع صفوف المنشأة حين تكون قواعد الحد منشورة، وإلا فلا (مفتاحٌ لا تعرفه قواعدٌ أقدم) */
+export function docToFields(d: RemoteDoc, sv: number | null = null): Record<string, FsValue> {
   const f: Record<string, unknown> = { t: d.t, k: d.k, d: d.d, u: d.u, dev: d.dev, del: d.del };
+  if (sv != null && d.g) f.sv = sv;
   if (d.lines) f.lines = d.lines;
   // حقول الرؤية في المنشأة وحدها (sync/acl.ts)
   if (d.g) f.g = d.g;
@@ -102,6 +104,8 @@ export interface FirestoreOptions {
   fullReadTables?: () => Set<string>;
   /** صلاحية من يكتب · لحقول الكتابة op و by */
   access?: () => Access;
+  /** رقم إصدار التطبيق مع كل صف (#36) · null ما لم تُنشر قواعد الحد */
+  sv?: () => number | null;
   fetchImpl?: typeof fetch;
 }
 
@@ -174,7 +178,7 @@ export class FirestoreRemote implements RemoteStore {
       const res = await this.call(`${this.root}:commit`, {
         // المستند وإسقاطه بلا مبالغ (companions) في دفعة واحدة ذرّية
         writes: docs.flatMap((d) => [d, ...(d.companions ?? [])]).map((d) => {
-          const fields = docToFields(d);
+          const fields = docToFields(d, this.o.sv?.() ?? null);
           return {
             update: { name: this.docName(d.id), fields },
             // الجزئية: حقول المستند وحقول d الحاضرة وحدها · وما سواها يبقى في السحابة (المراجعة #17)

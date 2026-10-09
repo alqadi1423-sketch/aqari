@@ -7,6 +7,7 @@
  * ما دام التطبيق ظاهراً · ولا تجري بلا اتصال أو بلا دخول، ولا تجريان معاً.
  */
 import { AppState } from 'react-native';
+import { SCHEMA_VERSION } from '../db/schema';
 import * as SecureStore from 'expo-secure-store';
 import * as Network from 'expo-network';
 import * as LegacyFS from 'expo-file-system/legacy';
@@ -63,7 +64,7 @@ import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
-  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite,
+  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite, readCompat, raiseCompat, appTooOld,
   updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
@@ -164,6 +165,10 @@ const arabic = (e: unknown) => {
  * عميل السحابة لهذا الجهاز (docs/PERMISSIONS.md) · العضو: منشأته برموزه، والمالك: منشأته orgs/{uid}
  * بعد انتقاله، وقبله المسار القديم users/{uid} (legacy=true يفرضه، لقراءة حروف الأجهزة القديمة).
  */
+/** قواعد الحد الأدنى للإصدار منشورة (#36) · فتُرفع صفوف المنشأة بإصدارها · يُعرف من قراءة الحد في كل دورة */
+let compatLive = false;
+const svOf = () => (compatLive ? SCHEMA_VERSION : null);
+
 function remoteOf(db: DB, uid: string, idToken: () => Promise<string>, legacy = false): FirestoreRemote {
   const cfg = cloudConfig()!;
   const m = readMembership(db);
@@ -173,11 +178,11 @@ function remoteOf(db: DB, uid: string, idToken: () => Promise<string>, legacy = 
       projectId: cfg.projectId, uid, idToken, org: m.org,
       memberTokens: () => memberTokens(readAccess(db)),
       fullReadTables: () => fullReadTables(readAccess(db), tables),
-      access: () => readAccess(db),
+      access: () => readAccess(db), sv: svOf,
     });
   }
   if (!legacy && getSyncState(db, 'org') === uid) {
-    return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid, access: () => readAccess(db) });
+    return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid, access: () => readAccess(db), sv: svOf });
   }
   return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken });
 }
@@ -282,6 +287,12 @@ export async function syncNow(): Promise<void> {
       }
       if (act === 'ask') { patch({ decision: { kind: 'epoch', pending: outboxCount(db) } }); return; }
     }
+    // الحد الأدنى لإصدار التطبيق (#36 · قرار المالك 2026-10-09): العضو بإصدارٍ أقدم من حدّ المنشأة لا يزامن ويُطلب منه التحديث
+    if (org) {
+      const compat = await readCompat(remoteOf(db, uid, idToken), org);
+      compatLive = compat.live;
+      if (member && appTooOld(compat.min)) { patch({ lastError: t('compat.updateApp') }); return; }
+    }
     patch({ decision: null });
     // الشاشات تتحدث بما وصل أثناء التطبيق لا بعده كله · أول سحب يظهر تدريجياً (أعطال ٢٠٢٦-١٠-٠٥)
     const rep = await syncOnce(db, remoteOf(db, uid, idToken), ensureDeviceId(db), (msg) => patch({ progress: msg }), { onApplied: () => onData() });
@@ -295,6 +306,8 @@ export async function syncNow(): Promise<void> {
     pumpFilesInBackground(db).catch(() => {});
     // المالك ينشر نقل الوحدات بعد رفع صفوفها بوسمها الجديد (ملاحظة المالك على ٤.١٢)
     if (!member && org === uid) await publishUnitMoves(db, remoteOf(db, uid, idToken), org);
+    // جهاز المالك يرفع حدّ الإصدار إلى إصداره بعد رفع صفوفه (#36) · ولا يخفضه · وفشله لا يُسقط الدورة
+    if (!member && org === uid && compatLive) await raiseCompat(remoteOf(db, uid, idToken), org).catch(() => false);
     if (member) {
       // العضوية في الخادم: أُزيلت فيُفرَّغ الجهاز · تغيّرت فيُعاد السحب من أوله بصلاحيته الجديدة،
       // وكذلك إن نُقلت وحدةٌ من عقاراته إلى عقار ليس له

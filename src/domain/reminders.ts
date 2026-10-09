@@ -61,7 +61,8 @@ export function computeReminders(db: DB, T: string = today()): Reminder[] {
 
   const contracts = db.all<{ id: string; contract_no: string | null; end: string }>(
     `SELECT id, contract_no, end FROM contracts
-     WHERE status NOT IN ('مسودة','ملغى') AND deleted_at IS NULL AND end IS NOT NULL`
+     WHERE status NOT IN ('مسودة','ملغى') AND deleted_at IS NULL AND end IS NOT NULL
+       AND COALESCE(renewed_to, '') = ''`
   );
   for (const c of contracts) {
     const d = daysBetween(c.end, T);
@@ -150,7 +151,8 @@ export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[
   const cs = db.all<{ id: string; contract_no: string | null; end: string; unit_no: string | null; prop: string | null }>(
     `SELECT c.id, c.contract_no, c.end, u.unit_no, p.name AS prop FROM contracts c
      LEFT JOIN units u ON u.id = c.unit_id LEFT JOIN properties p ON p.id = u.property_id
-     WHERE c.status NOT IN ('مسودة','ملغى') AND c.deleted_at IS NULL AND c.end >= ?`,
+     WHERE c.status NOT IN ('مسودة','ملغى') AND c.deleted_at IS NULL AND c.end >= ?
+       AND COALESCE(c.renewed_to, '') = ''`,
     [T]
   );
   for (const c of cs) {

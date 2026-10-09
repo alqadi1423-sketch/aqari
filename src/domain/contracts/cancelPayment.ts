@@ -16,6 +16,7 @@ import { today } from '../dates';
 import { logAudit } from '../audit';
 import { reverseEntryById } from '../accounting/post';
 import { RuleViolation } from './service';
+import { t } from '../../i18n';
 import { DISCOUNT_ENTRY_SRC, DISCOUNT_REDUCES_INSTALLMENT } from './installments';
 import { recomputeInstallments, installmentsOfPayment, DERIVED_PAID_SQL } from './paid';
 
@@ -122,6 +123,12 @@ export function planCancelPayment(db: DB, paymentId: string, date: string = toda
     paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, net: Number(p.net_halalas),
     entries: liveEntries(db, p), installments, bank, creditReversal: credit, restoreAmount, blockers, cashShort,
   };
+}
+
+/** سند القبض لا يُصدر لدفعةٍ ملغاة (دراسة القائم) · يعيد السبب أو null */
+export function receiptBlocked(db: DB, paymentId: string): string | null {
+  const p = db.get<{ c: string | null }>(`SELECT cancelled_at AS c FROM contract_payments WHERE id = ?`, [paymentId]);
+  return p?.c ? t('receipt.cancelledPayment') : null;
 }
 
 /** التنفيذ · ذرّي كله أو لا شيء · يعيد معاينة ما جرى */

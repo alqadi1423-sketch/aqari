@@ -4,6 +4,7 @@
  * نماذج الاستلام والتسليم، وقراءة العقد من PDF.
  */
 import React, { useMemo, useState, useEffect } from 'react';
+import { otherCurrentOccupants } from '../../src/domain/occupants';
 import { CashShortNote, useCashOk } from '../../src/ui/CashGate';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { View, Pressable, FlatList } from 'react-native';
@@ -1008,11 +1009,15 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
     if (!isNaN(pct)) setValue(String(Math.round((Number(c.value_halalas) * (1 + pct / 100))) / 100));
   };
 
+  // «هل غادر الساكنون؟» يُسأل إن كان مع المستأجر ساكنون (قرار المالك 2026-08-20) · ولا تجديد قبل جوابه
+  const otherOccupants = otherCurrentOccupants(db, contractId);
+  const [occLeft, setOccLeft] = useState<'' | 'yes' | 'no'>('');
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
   const confirm = (...a: Parameters<typeof confirmIn>) => withCostCenter(cc, () => confirmIn(...a));
   const confirmIn = () => {
     try {
       renewContract(db, contractId, {
+        occupantsLeft: occLeft === 'yes',
         start, end, valueHalalas: valueH, cycle,
         carryDeposit: carry, extraDepositHalalas: toHalalas(extraDeposit),
         services, furnished, ejarNo: ejar, note,
@@ -1028,7 +1033,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
       footer={
         <>
           {/* التجديد المرفوض لا يُعرض زره · سببه معروض فوق بلونه */}
-          {!block && warns.length === 0 && start && end && valueH > 0 ? (
+          {!block && warns.length === 0 && start && end && valueH > 0 && (otherOccupants === 0 || occLeft) ? (
             <View style={{ flex: 1 }}><BtnPrimary title="تنفيذ التجديد" onPress={confirm} /></View>
           ) : null}
         </>
@@ -1090,6 +1095,12 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
             onPick={setFurnished} display={furnished || undefined} />
         </View>
       </Row>
+      {otherOccupants > 0 ? (
+        <SelectField label={t('occupants.leftQuestion', { n: otherOccupants })} value={occLeft}
+          placeholder={t('occupants.leftPick')}
+          options={[{ value: 'no', label: t('occupants.leftNo') }, { value: 'yes', label: t('occupants.leftYes', { date: dfmt(c.end) }) }]}
+          onPick={(v) => setOccLeft(v as 'yes' | 'no')} />
+      ) : null}
       <Row>
         <View style={{ flex: 1 }}><Field label="رقم عقد إيجار الجديد" value={ejar} onChange={setEjar} ltr /></View>
         <View style={{ flex: 1 }}><Field label="ملاحظة التجديد" value={note} onChange={setNote} /></View>

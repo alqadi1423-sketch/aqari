@@ -224,7 +224,7 @@ ${guardFns(schema)}
 
     function validOrgRow(rowId) {
       let r = request.resource.data;
-      return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts', 'op', 'g', 'pids', 'by'])
+      return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts', 'op', 'g', 'pids', 'by', 'sv'])
         && r.t is string && syncedOrPub(r.t) && (!('lines' in r) || (r.t == 'journal_entries' && r.lines is list))
         && r.k is string && rowId == r.t + '__' + r.k
         && r.u is string && r.dev is string && r.del is bool
@@ -233,6 +233,12 @@ ${guardFns(schema)}
         && r.g is list && r.pids is list && r.pids.size() > 0
         && (!('by' in r) || r.by is string)
         && amountsAreIntegers(r);
+    }
+
+    // الحد الأدنى لإصدار التطبيق (#36 · قرار المالك 2026-10-09): من يكتب بإصدارٍ أقدم من حدّ المنشأة يُرفض، المالك والعضو
+    function svOk(org) {
+      let c = /databases/$(database)/documents/orgs/$(org)/meta/compat;
+      return !exists(c) || request.resource.data.get('sv', 0) >= get(c).data.min;
     }
 
     function memberCreates(org) {
@@ -335,8 +341,8 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
 
       match /rows/{rowId} {
         allow read: if orgOwner(org) || (isMember(org) && resource.data.g.hasAny(mem(org).tokens));
-        allow create: if validOrgRow(rowId) && (orgOwner(org) || memberCreates(org));
-        allow update: if validOrgRow(rowId)
+        allow create: if validOrgRow(rowId) && svOk(org) && (orgOwner(org) || memberCreates(org));
+        allow update: if validOrgRow(rowId) && svOk(org)
           && resource.data.t != 'audit_log'
           && (!isPostedEntry(resource.data) || orgOnlyLinksReversal() || (orgOwner(org) && (orgOnlyVisibility() || orgOnlyLineDims())))
           && (orgOwner(org) || memberUpdates(org));
@@ -396,6 +402,14 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
       match /meta/epoch {
         allow read: if orgOwner(org) || isMember(org);
         allow write: if orgOwner(org) && request.resource.data.keys().hasOnly(['n', 'at']) && request.resource.data.n is int;
+      }
+
+      // الحد الأدنى لإصدار التطبيق (#36): يرفعه جهاز المالك ولا يُخفَض، ويقرؤه العضو قبل المزامنة
+      match /meta/compat {
+        allow read: if orgOwner(org) || isMember(org);
+        allow create, update: if orgOwner(org) && request.resource.data.keys().hasOnly(['min']) && request.resource.data.min is int
+          && (resource == null || request.resource.data.min >= resource.data.min);
+        allow delete: if orgOwner(org);
       }
 
       // سجل نقل الوحدات بين العقارات · العضو يقرؤه ليعرف هل خرجت وحدةٌ من عقاراته

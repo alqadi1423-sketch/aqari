@@ -26,7 +26,9 @@ import { appFilesEnv } from '../src/services/filesEnv';
 import { putAttachment } from '../src/files/store';
 import { printClaim } from '../src/services/print';
 import { reportFailure } from '../src/ui/failureDialog';
-import { usePerm } from '../src/ui/access';
+import { usePerm, useAccess } from '../src/ui/access';
+import { propertyMoveLocked } from '../src/domain/access/access';
+import { useLang } from '../src/i18n';
 
 import { CostCenterField } from '../src/ui/CostCenters';
 import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
@@ -94,6 +96,8 @@ const ClaimCard = React.memo(function ClaimCard({
 export default function Claims() {
   const { db, version, bump } = useApp();
   const perm = usePerm('claims');
+  const access = useAccess();
+  const { t } = useLang();
   const toast = useToast();
   const dialog = useDialog();
   const ready = useDeferredReady();
@@ -158,8 +162,9 @@ export default function Claims() {
   }, [db, version, ready]);
 
   const contracts = useMemo(
-    () => db.all<{ id: string; contract_no: string | null; tenant_name: string }>(
-      `SELECT id, contract_no, tenant_name FROM contracts WHERE deleted_at IS NULL AND status != 'مسودة' ORDER BY created_at DESC`
+    () => db.all<{ id: string; contract_no: string | null; tenant_name: string; property_id: string | null }>(
+      `SELECT c.id, c.contract_no, c.tenant_name, u.property_id FROM contracts c LEFT JOIN units u ON u.id = c.unit_id
+       WHERE c.deleted_at IS NULL AND c.status != 'مسودة' ORDER BY c.created_at DESC`
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]
@@ -238,7 +243,7 @@ export default function Claims() {
   const save = (...a: Parameters<typeof saveIn>) => withCostCenter(cc, () => saveIn(...a));
   const saveIn = async () => {
     try {
-      const id = saveClaim(db, { contractId, amountHalalas: toHalalas(amount), reason, date }, editingId ?? undefined);
+      const id = saveClaim(db, { contractId, amountHalalas: toHalalas(amount), reason, date }, editingId ?? undefined, { access });
       const env = appFilesEnv(db);
       for (const f of pendingFiles) {
         try {
@@ -260,6 +265,10 @@ export default function Claims() {
 
   // الجديدة بإدخال · وتعديل المفتوحة بكامل · وما سوى ذلك عرضٌ بلا حفظ ولا إرفاق
   const canSave = !editingId ? perm.add : editingStatus === 'مفتوحة' && perm.manage;
+  // النقل بين العقارات لمن له كلها (قرار المالك 2026-10-09): المطالبة القائمة عند المحصور في عقود عقارها وحدها
+  const claimProp = editingId && propertyMoveLocked(access, true)
+    ? db.get<{ p: string }>(`SELECT u.property_id AS p FROM claims cl JOIN contracts c ON c.id = cl.contract_id JOIN units u ON u.id = c.unit_id WHERE cl.id = ?`, [editingId])?.p ?? null
+    : null;
 
   const clearFilters = useCallback(() => { setQ(''); setFStatus(''); setFSource(''); setFPeriod(''); }, []);
   const chips: ActiveChip[] = [
@@ -320,8 +329,10 @@ export default function Claims() {
           </>
         }>
         <SelectField label="العقد المرتبط" value={contractId}
-          options={contracts.map((c) => ({ value: c.id, label: [c.contract_no, c.tenant_name].filter(Boolean).join(' · ') }))}
+          options={contracts.filter((c) => !claimProp || c.property_id === claimProp)
+            .map((c) => ({ value: c.id, label: [c.contract_no, c.tenant_name].filter(Boolean).join(' · ') }))}
           onPick={setContractId} />
+        {claimProp ? <T size={11.5} color={C.muted} style={{ marginTop: -4, marginBottom: 8 }}>{t('access.moveAllPropsOnly')}</T> : null}
         <Field label="المبلغ" value={amount} onChange={setAmount} keyboard="numeric" ltr />
         <Field label="السبب / وصف المشكلة" value={reason} onChange={setReason} multiline />
         {editingId ? (

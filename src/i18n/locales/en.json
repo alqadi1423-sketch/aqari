@@ -630,5 +630,30 @@
   },
   "access": {
     "moveAllPropsOnly": "Moving between properties is for members with all properties"
+  },
+  "receipt": {
+    "cancelledPayment": "The payment is cancelled, so it has no receipt"
+  },
+  "occupants": {
+    "leftQuestion": "Have the occupants left? ({{n}} with the tenant)",
+    "leftPick": "Choose an answer before renewing",
+    "leftNo": "No · they move to the new contract",
+    "leftYes": "Yes · their departure is recorded on {{date}}"
+  },
+  "suppliers": {
+    "nameRequired": "Enter the supplier name",
+    "duplicate": "A supplier with the same name or VAT number already exists · check the list first",
+    "badUtility": "Unknown service type",
+    "utility": {
+      "power": "Electricity supplier",
+      "water": "Water supplier",
+      "gas": "Gas supplier",
+      "plain": "Regular supplier",
+      "all": "All types"
+    }
+  },
+  "compat": {
+    "updateApp": "Update the app to continue syncing · the organization requires a newer version",
+    "updateBeforeJoin": "Update the app before accepting the invitation · the organization requires a newer version"
   }
 }

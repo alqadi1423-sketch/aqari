@@ -438,8 +438,13 @@ export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput
        'مستحقة', // i18n-exempt: حالة مخزّنة · الإشعار لا يُحصَّل ولا يتأخر، وذمته تتبع فاتورته
        -sub, -tax, -total, v.unit_id, v.property_id, new Date().toISOString(), KIND_CREDIT, invoiceId, reason]);
     const pct = Number(v.subtotal_halalas) ? Math.round((Number(v.tax_halalas) * 100) / Number(v.subtotal_halalas)) : 0;
+    // رمز الإشعار رمز فاتورته (التحقق المستقل: كان من مبلغ ضريبته، فالصفري يُرمَّز معفى، والخاضع الصغير معفى) ·
+    // والفاتورة المختلطة بالضريبة كما كانت حتى قرار المالك
+    const codes = new Set(db.all<{ c: string; p: number }>(
+      `SELECT tax_code AS c, tax_pct AS p FROM invoice_lines WHERE invoice_id = ?`, [invoiceId]).map((l) => lineTaxCode(l.c, Number(l.p))));
+    const code = codes.size === 1 ? [...codes][0] : tax > 0 ? 'S' : 'E';
     db.run(`INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort, tax_code) VALUES (?,?,?,?,?,?,0,?)`,
-      [uid(), id, reason, 1, -sub, pct, tax > 0 ? 'S' : 'E']);
+      [uid(), id, reason, 1, -sub, pct, code]);
     const entry = postCreditNoteToLedger(db, { id, no, refNo: v.no, customer: v.customer_name, date: input.date, subtotal: sub, tax, total });
     if (entry) db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = ?`, [entry.id, id]);
     logAudit(db, 'الفواتير', 'create', t('invoice.creditNote', { lng: 'ar' }), no + ' · ' + v.no); // i18n-exempt: سجل العمليات بالعربية
