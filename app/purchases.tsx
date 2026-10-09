@@ -7,7 +7,7 @@ import { View, Pressable, FlatList, type ListRenderItemInfo } from 'react-native
 import { Screen } from '../src/ui/Screen';
 import {
   Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, BtnIcon, Field, ChipGroup,
-  KV,
+  KV, Note,
 } from '../src/ui/components';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { DateField } from '../src/ui/DateField';
@@ -34,7 +34,9 @@ import { attachPicked, pickFile } from '../src/ui/attach';
 import { FileViewer, type ViewerFile } from '../src/ui/FileViewer';
 import { AttachStrip } from '../src/ui/AttachStrip';
 import { reportFailure } from '../src/ui/failureDialog';
-import { usePerm } from '../src/ui/access';
+import { usePerm, useAccess } from '../src/ui/access';
+import { propertyMoveLocked } from '../src/domain/access/access';
+import { useLang } from '../src/i18n';
 
 import { CostCenterField } from '../src/ui/CostCenters';
 import { PurchaseLinesSection, loadLineDrafts } from '../src/ui/PurchaseLines';
@@ -190,6 +192,9 @@ export default function Purchases() {
   const [amortizeMonths, setAmortizeMonths] = useState('');
   const [propertyId, setPropertyId] = useState('');
   const [unitSel, setUnitSel] = useState('');
+  // قرار المالك 2026-10-09: النقل بين العقارات لمن له كلها · فاتورةٌ قائمة عند المحصور تبقى في عقارها
+  const { t } = useLang();
+  const purchaseAccess = useAccess();
   const [meterId, setMeterId] = useState('');
   const [meterReading, setMeterReading] = useState('');
   const [subtotal, setSubtotal] = useState('');
@@ -679,9 +684,11 @@ export default function Purchases() {
             {amortize && <Field label="عدد أشهر الاستهلاك" value={amortizeMonths} onChange={setAmortizeMonths} keyboard="numeric" ltr />}
           </>
         )}
-        <SelectField label="العقار المرتبط" value={propertyId}
-          options={[{ value: '', label: 'بدون ربط' }, ...properties.map((p) => ({ value: p.id, label: p.name }))]}
-          onPick={(v) => { setPropertyId(v); setUnitSel(v ? 'P:' + v : ''); setMeterId(''); }} />
+        {!propertyMoveLocked(purchaseAccess, !!editingId) ? (
+          <SelectField label="العقار المرتبط" value={propertyId}
+            options={[{ value: '', label: 'بدون ربط' }, ...properties.map((p) => ({ value: p.id, label: p.name }))]}
+            onPick={(v) => { setPropertyId(v); setUnitSel(v ? 'P:' + v : ''); setMeterId(''); }} />
+        ) : <Note>{t('access.moveAllPropsOnly')}</Note>}
         {propertyId ? (
           <SelectField label="تحديد الوحدة أو العقار بالكامل" value={unitSel}
             options={[

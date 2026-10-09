@@ -697,6 +697,9 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   let deduction = Math.max(0, input.deductionHalalas || 0);
   const refund = Math.max(0, input.refundHalalas || 0);
   if (refund > deposit) throw new RuleViolation(t('deposit.refundOver'));
+  // قرار المالك 2026-10-09: «لا مسترد أكبر من الباقي بعد الخصم» · فالزيادة على التأمين لا تأتي إلا من خصمٍ يتجاوزه
+  const refundLeft = Math.max(0, deposit - deduction);
+  if (refund > refundLeft) throw new RuleViolation(t('deposit.refundOverLeft', { left: fmt(refundLeft) }));
   const sum = deduction + refund;
   if (sum < deposit) throw new RuleViolation(t('deposit.mustDistribute', { left: fmt(deposit - sum) }));
   const excess = sum - deposit;

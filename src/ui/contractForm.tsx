@@ -3,6 +3,8 @@
  * والحقول الخاصة بنوع الوحدة.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import { useAccess } from './access';
+import { propertyMoveLocked } from '../domain/access/access';
 import { View, Share, Animated } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { File } from 'expo-file-system';
@@ -138,9 +140,14 @@ export function useContractForm() {
   return { state, set, reset, errorField, setErrorField };
 }
 
-export function ContractFormFields({ form }: { form: ReturnType<typeof useContractForm> }) {
+export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof useContractForm>; draftId?: string | null }) {
   const { db } = useApp();
   const { t } = useLang();
+  // مسودةٌ قائمة عند المحصور تبقى في عقارها (قرار المالك 2026-10-09 · القواعد ترفض نقلها)
+  const moveLocked = propertyMoveLocked(useAccess(), !!draftId);
+  const draftProp = moveLocked
+    ? db.get<{ p: string }>(`SELECT u.property_id AS p FROM contracts c JOIN units u ON u.id = c.unit_id WHERE c.id = ?`, [draftId ?? ''])?.p ?? null
+    : null;
   const { state, set } = form;
   const amountText = (h?: number) => (h ? fmt(h).replace(/,/g, '') : '');
   const [servicesText, setServicesText] = useState(() => amountText(formSplit(state).servicesHalalas));
@@ -159,7 +166,7 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
 
   const properties = db.all<{ id: string; name: string }>(
     `SELECT id, name FROM properties WHERE deleted_at IS NULL AND archived = 0 ORDER BY name`
-  );
+  ).filter((p) => !draftProp || p.id === draftProp);
   const units = propertyId
     ? db.all<{ id: string; unit_no: string; floor: string }>(
         `SELECT id, unit_no, floor FROM units WHERE property_id = ? AND deleted_at IS NULL AND archived = 0 ORDER BY COALESCE(unit_no_key, unit_no), unit_no`,
@@ -318,6 +325,7 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
         placeholder="اختر العقار أولاً"
         emptyText="أضف عقاراً أولاً من شاشة العقارات"
       />
+      {draftProp ? <T size={11.5} color={C.muted} style={{ marginTop: -4, marginBottom: 8 }}>{t('access.moveAllPropsOnly')}</T> : null}
       {propertyId ? (
         <SelectField
           label="الوحدة"

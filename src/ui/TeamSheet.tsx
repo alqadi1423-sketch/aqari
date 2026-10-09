@@ -21,14 +21,14 @@ import { MORE_SCREENS, screenText } from './moreScreens';
 import { profileOf, type MemberDoc, type MemberSpec } from '../services/org';
 import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow, updateMemberProfileNow, chatSupervisorNow, setChatSupervisorNow } from '../services/cloud';
 import { useLang } from '../i18n';
+import { permLine } from '../domain/memberAudit';
 import { validateProfile, type MemberProfile } from '../domain/access/profile';
 
 type Team = Awaited<ReturnType<typeof listTeamNow>>;
 
 /** ملخص الصلاحية بسطر: الأقسام المفتوحة بمستوياتها */
 export function permSummary(perm: Perms): string {
-  const parts = GRANTABLE.filter((s) => (perm[s.key] ?? 0) > 0).map((s) => s.label + ': ' + LEVEL_LABEL[perm[s.key] as Level]);
-  return parts.length ? parts.join(' · ') : 'لا أقسام';
+  return permLine(perm);
 }
 
 export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
@@ -73,7 +73,7 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
                     actions: [
                       { label: 'تراجع', variant: 'ghost' },
                       { label: 'أزِل', variant: 'danger', onPress: async () => {
-                        try { await removeMemberNow(m.uid, m.doc.email); toast('أُزيل العضو'); load(); }
+                        try { await removeMemberNow(db, m.uid, m.doc.email, m.doc); toast('أُزيل العضو'); load(); }
                         catch (e) { await reportFailure({ title: 'تعذّرت الإزالة', where: 'الأعضاء', db, e }); }
                       } },
                     ],
@@ -90,7 +90,7 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
                 <Row style={{ marginTop: 6 }}>
                   <BtnGhost small title="إرسال بالواتساب" onPress={() => shareInvite(inv)} />
                   <BtnGhost small danger title="إلغاء الدعوة" onPress={async () => {
-                    try { await revokeInviteNow(inv.email); toast('أُلغيت الدعوة'); load(); }
+                    try { await revokeInviteNow(db, inv.email, inv); toast('أُلغيت الدعوة'); load(); }
                     catch (e) { await reportFailure({ title: 'تعذّر الإلغاء', where: 'الأعضاء', db, e }); }
                   }} />
                 </Row>

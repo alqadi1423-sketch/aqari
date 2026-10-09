@@ -9,7 +9,7 @@ import type { DB } from '@/db/adapter';
 import { memberTokens, fullReadTables } from '@/sync/acl';
 import { SYNC_TABLES } from '@/db/syncTables';
 import { readAccess, readMembership } from '@/services/access';
-import { moveOwnerToOrg, sendInvite, findInvites, acceptInvite, refreshMembership, updateMember, removeMember } from '@/services/org';
+import { moveOwnerToOrg, sendInvite, findInvites, acceptInvite, refreshMembership, updateMember, removeMember, updateMemberProfile } from '@/services/org';
 
 const HOST = process.env.FIRESTORE_EMULATOR_HOST;
 const PROJECT = 'demo-aqari';
@@ -116,6 +116,20 @@ d('رحلة المنشأة', () => {
     const pay = owner.get<{ net_halalas: number }>(`SELECT net_halalas FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [C1]);
     expect(Number(pay!.net_halalas)).toBe(50000);
     expect(owner.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = 'FU1'`)!.unit_no).not.toBe('معدّل محلياً');
+  });
+
+  // دراسة القائم (قرار المالك 2026-10-09 أولاً ٥): تعديل الصلاحية لا يمسح ما عدّله العضو من بياناته، ويعيد ما قبله وما بعده للسجل
+  test('تعديل الصلاحية لا يمسح بيانات العضو · ويعيد الصلاحية قبله وبعده', async () => {
+    const orgR = new FirestoreRemote({ ...base(OWNER, 'owner@example.test'), org: OWNER });
+    const mr = deviceRemote(mem, MEMBER, MEMBER_EMAIL);
+    await updateMemberProfile(mr, OWNER, MEMBER, { name: 'عضو معدّل مصطنع', phone: '0500000901', nid: '', title: '' });
+    const r = await updateMember(orgR, OWNER, MEMBER, { email: MEMBER_EMAIL, perms: { collect: 2 }, allProps: true, props: [],
+      profile: { name: 'اسم قديم مصطنع', phone: '', nid: '', title: '' } }, 'منشأة الرحلة');
+    const d = await orgR.getDoc(`orgs/${OWNER}/members/${MEMBER}`);
+    expect([d!.name, d!.phone]).toEqual(['عضو معدّل مصطنع', '0500000901']);
+    expect(r.after.perm).toEqual({ collect: 2 });
+    expect(r.before.perm).not.toEqual(r.after.perm);
+    await refreshMembership(mem, mr);
   });
 
   test('تعديل الصلاحية يُلتقط · والإزالة تُلتقط', async () => {

@@ -89,11 +89,19 @@ export async function listTeam(remote: FirestoreRemote, org: string): Promise<{
   };
 }
 
-/** تعديل صلاحية عضو · يُكتب المستند كاملاً برموزه الجديدة، وبياناته كما هي ما لم تُمرَّر */
-export async function updateMember(remote: FirestoreRemote, org: string, uid: string, spec: MemberSpec, orgName: string): Promise<void> {
-  const cur = spec.profile ? null : await remote.getDoc(`orgs/${org}/members/${uid}`);
-  const profile = spec.profile ?? (cur ? profileOf(asMemberDoc(cur)) : EMPTY_PROFILE);
-  await remote.setDoc(`orgs/${org}/members/${uid}`, memberDoc({ ...spec, profile }, orgName) as unknown as Record<string, unknown>);
+const MEMBERSHIP_GONE = 'العضوية لم تعد قائمة';
+
+/**
+ * تعديل صلاحية عضو · يُكتب المستند كاملاً برموزه الجديدة، وبياناته من المستند القائم لا من النموذج، فلا يمسح ما عدّله
+ * العضو بعد فتحه (دراسة القائم) · والبيانات تُكتب بمسارها (updateMemberProfile) · ويعيد الصلاحية قبله وبعده لسجل العمليات
+ */
+export async function updateMember(remote: FirestoreRemote, org: string, uid: string, spec: MemberSpec, orgName: string): Promise<{ before: MemberDoc; after: MemberDoc }> {
+  const cur = await remote.getDoc(`orgs/${org}/members/${uid}`);
+  if (!cur) throw new Error(MEMBERSHIP_GONE);
+  const before = asMemberDoc(cur);
+  const after = memberDoc({ ...spec, profile: profileOf(before) }, orgName);
+  await remote.setDoc(`orgs/${org}/members/${uid}`, after as unknown as Record<string, unknown>);
+  return { before, after };
 }
 
 /**
@@ -104,7 +112,7 @@ export async function updateMemberProfile(
   remote: FirestoreRemote, org: string, uid: string, profile: MemberProfile,
 ): Promise<{ before: MemberProfile; after: MemberProfile }> {
   const cur = await remote.getDoc(`orgs/${org}/members/${uid}`);
-  if (!cur) throw new Error('العضوية لم تعد قائمة');
+  if (!cur) throw new Error(MEMBERSHIP_GONE);
   const before = profileOf(asMemberDoc(cur));
   await remote.setDoc(`orgs/${org}/members/${uid}`, { ...cur, ...profile });
   return { before, after: profile };

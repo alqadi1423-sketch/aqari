@@ -43,19 +43,20 @@ test('#٢٧ النقص عن التأمين لا يُحفظ · والزيادة �
   const c = contract(db, 'المكتب');
   expect(() => saveDepositSettlement(db, c, settle({ deductionHalalas: 30000, refundHalalas: 50000 }) as never)).toThrow();
   expect(db.get(`SELECT 1 FROM deposit_settlements WHERE contract_id = ?`, [c])).toBeUndefined();
-  saveDepositSettlement(db, c, settle({ deductionHalalas: 80000, refundHalalas: 50000 }) as never);
+  // قرار المالك 2026-10-09: «لا مسترد أكبر من الباقي بعد الخصم» · فالزيادة من خصمٍ يتجاوز التأمين وحده
+  saveDepositSettlement(db, c, settle({ deductionHalalas: 130000, refundHalalas: 0 }) as never);
   expect(accountBalance(db, '2400')).toBe(0);
   expect(db.get(`SELECT amount_halalas AS a, source AS s, status AS st FROM claims WHERE contract_id = ?`, [c]))
     .toEqual({ a: 30000, s: 'تسوية تأمين', st: 'مفتوحة' });
   // تعديل الزيادة: مطالبتها تُحذف من المطالبات أولاً (بصلاحيتها)، ثم تُعدَّل التسوية فتُنشأ الجديدة ولا تتكرر
-  expect(() => saveDepositSettlement(db, c, settle({ deductionHalalas: 90000, refundHalalas: 50000 }) as never)).toThrow();
+  expect(() => saveDepositSettlement(db, c, settle({ deductionHalalas: 140000, refundHalalas: 0 }) as never)).toThrow();
   const cl = db.get<{ id: string }>(`SELECT id FROM claims WHERE contract_id = ? AND deleted_at IS NULL`, [c])!.id;
   deleteClaim(db, cl);
-  saveDepositSettlement(db, c, settle({ deductionHalalas: 90000, refundHalalas: 50000 }) as never);
+  saveDepositSettlement(db, c, settle({ deductionHalalas: 140000, refundHalalas: 0 }) as never);
   expect(db.all(`SELECT amount_halalas AS a FROM claims WHERE contract_id = ? AND deleted_at IS NULL`, [c])).toEqual([{ a: 40000 }]);
   expect(accountBalance(db, '2400')).toBe(0);
   // والزيادة نفسها لا تتطلب شيئاً
-  saveDepositSettlement(db, c, settle({ deductionHalalas: 90000, refundHalalas: 50000 }) as never);
+  saveDepositSettlement(db, c, settle({ deductionHalalas: 140000, refundHalalas: 0 }) as never);
   expect(db.all(`SELECT amount_halalas AS a FROM claims WHERE contract_id = ? AND deleted_at IS NULL`, [c])).toEqual([{ a: 40000 }]);
   db.close();
 });

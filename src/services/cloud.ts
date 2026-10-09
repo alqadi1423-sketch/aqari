@@ -57,6 +57,7 @@ import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
 import { makeSafetyBackup } from '../domain/backup/create';
 import { leaveSafely } from '../domain/leaveOrg';
+import { logMemberAccess } from '../domain/memberAudit';
 import { appDataRoot } from '../files/expoFs';
 import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
@@ -612,8 +613,11 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
     const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.idToken() };
     const mem = readMembership(db);
     // محاولة: عضوٌ أُزيل ولم يُحسم قراره لا يُمنع من حذف حسابه (التحقق)
-    if (mem) await chatForgetMe(chatS, mem.org).catch(() => {});
-    else await chatPurgeOrg(chatS, uid);
+    if (mem) {
+      await chatForgetMe(chatS, mem.org).catch(() => {});
+      // ومستند عضويته في منشأة المالك (اسمه وجواله وهويته) يُحذف معه · محاولة: عضوٌ أُزيل لا مستند له (دراسة القائم)
+      await leaveOrg(new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: mem.org }), mem.org, mem.uid).catch(() => {});
+    } else await chatPurgeOrg(chatS, uid);
     for (const remote of [
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() }),
@@ -832,6 +836,7 @@ export async function listTeamNow() { const t = teamRemote(); return listTeam(t.
 export async function inviteMemberNow(db: DB, spec: MemberSpec) {
   const t = teamRemote();
   const doc = await sendInvite(t.remote, t.org, spec, orgNameOf(db), state.user!.email);
+  logMemberAccess(db, 'invite', doc.email, null, doc);
   if (spec.profile && (spec.profile.name || spec.profile.phone)) logProfileEdit(db, doc.email, null, spec.profile);
   return doc;
 }
@@ -870,7 +875,11 @@ export async function updateMyProfileNow(db: DB, profile: MemberProfile) {
     logProfileEdit(db, profile.name, r.before, r.after);
   });
 }
-export async function updateMemberNow(db: DB, uid: string, spec: MemberSpec) { const t = teamRemote(); return updateMember(t.remote, t.org, uid, spec, orgNameOf(db)); }
+export async function updateMemberNow(db: DB, uid: string, spec: MemberSpec) {
+  const t = teamRemote();
+  const r = await updateMember(t.remote, t.org, uid, spec, orgNameOf(db));
+  logMemberAccess(db, 'grant', r.after.email, r.before, r.after);
+}
 /** إشراف عضو في المحادثة بإيميله (src/chat) · للمالك وحده */
 export async function chatSupervisorNow(email: string): Promise<string[]> {
   const s = getSession(); const cfg = cloudConfig();
@@ -883,9 +892,10 @@ export async function setChatSupervisorNow(email: string, sections: string[]): P
   if (!s || !cfg || !state.user) { teamRemote(); return; }
   await setSupervisor({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email, sections);
 }
-export async function removeMemberNow(uid: string, email = '') {
+export async function removeMemberNow(db: DB, uid: string, email = '', before: MemberDoc | null = null) {
   const t = teamRemote();
   await removeMember(t.remote, t.org, uid, email);
+  logMemberAccess(db, 'remove', email, before, null);
   // يخرج من مجموعات المحادثة ودليلها وإشرافها (قرار المالك 2026-10-07: #19)
   const s = getSession(); const cfg = cloudConfig();
   // وفشله لا يُظهر الإزالة فاشلةً وقد تمّت (تحقق الدمج ف٥) · والقواعد تمنع المُزال من المحادثة بعضويته أصلاً
@@ -966,7 +976,11 @@ export async function chatJoinGroupNow(t: RemoteThread): Promise<void> {
   const { s, db } = ownerChatSession();
   await chatJoinGroup(db, s, s.uid, t, chatMe(db, s, orgNameOf(db)).name);
 }
-export async function revokeInviteNow(email: string) { const t = teamRemote(); return revokeInvite(t.remote, t.org, email); }
+export async function revokeInviteNow(db: DB, email: string, before: MemberDoc | null = null) {
+  const t = teamRemote();
+  await revokeInvite(t.remote, t.org, email);
+  logMemberAccess(db, 'revoke', email, before, null);
+}
 
 /* ═══════════ Google Drive ═══════════ */
 

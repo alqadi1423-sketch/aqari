@@ -477,7 +477,7 @@ export default function Contracts() {
           </>
         }
       >
-        <ContractFormFields form={form} />
+        <ContractFormFields form={form} draftId={editingDraftId} />
       </Sheet>
 
       {/* صفحة المراجعة الإلزامية */}
@@ -1145,6 +1145,8 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
   const refundCash = settle && officeHeld ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0;
   const cashOk = useCashOk(refundCash);
+  // «لا مسترد أكبر من الباقي بعد الخصم» (قرار المالك 2026-10-09) · autoRefund هو الباقي نفسه
+  const refundOver = settle && refund.trim() !== '' && toHalalas(refund) > autoRefund;
 
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
   const confirm = (...a: Parameters<typeof confirmIn>) => withCostCenter(cc, () => confirmIn(...a));
@@ -1168,7 +1170,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
     <Sheet visible onClose={onClose} title="إلغاء العقد" tall
       footer={
         <>
-          {cashOk ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
+          {cashOk && !refundOver ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
         </>
       }>
       <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
@@ -1206,6 +1208,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
               <Field label="المبلغ المسترَد للمستأجر" value={refund || (dedH ? fmt(autoRefund).replace(/,/g, '') : '')} onChange={setRefund} keyboard="numeric" ltr />
             </View>
           </Row>
+          {refundOver ? <T size={11.5} color={C.rose} style={{ marginBottom: 10 }}>{t('deposit.refundOverLeft', { left: fmt(autoRefund) })}</T> : null}
           <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
           {/* «طرف آخر»: وصل المخصوم للمكتب فيُسجَّل قبضاً (قرار المالك على #26 · التحقق المستقل N4) */}
           {otherHeld && dedH > 0 ? (
@@ -1295,6 +1298,9 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
   const [received, setReceived] = useState<boolean>(
     !!db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'deposit_deduct' AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL`, [contractId]));
   const diff = toHalalas(deduction) + toHalalas(refund) - Number(c.deposit_halalas);
+  // «لا مسترد أكبر من الباقي بعد الخصم» (قرار المالك 2026-10-09)
+  const refundLeft = Math.max(0, Number(c.deposit_halalas) - toHalalas(deduction));
+  const refundOver = toHalalas(refund) > refundLeft;
   // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق (قرار المالك ٢٠٢٦-١٠-٠٥)
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
   const refundCash = officeHeld ? toHalalas(refund) - Number(existing?.refund_halalas ?? 0) : 0;
@@ -1318,7 +1324,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
       footer={
         <>
           {/* النقص عن التأمين لا يُحفظ حتى يُوزَّع (قرار المالك على #27) · فلا يظهر الزر ويظهر سببه */}
-          {cashOk && diff >= 0 ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
+          {cashOk && diff >= 0 && !refundOver ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
         </>
       }>
       <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
@@ -1350,7 +1356,8 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
           <Num size={12.5} bold color={diff === 0 ? C.emerald : C.rose}>{fmt(diff)}</Num>
         </Row>
         {diff < 0 ? <T size={11.5} color={C.rose} style={{ marginTop: 4 }}>{t('deposit.mustDistribute', { left: fmt(-diff) })}</T> : null}
-        {diff > 0 ? <T size={11.5} color={C.muted} style={{ marginTop: 4 }}>{t('deposit.excessNote')}</T> : null}
+        {refundOver ? <T size={11.5} color={C.rose} style={{ marginTop: 4 }}>{t('deposit.refundOverLeft', { left: fmt(refundLeft) })}</T>
+          : diff > 0 ? <T size={11.5} color={C.muted} style={{ marginTop: 4 }}>{t('deposit.excessNote')}</T> : null}
       </View>
       <Field label="ملاحظات" value={notes} onChange={setNotes} />
     </Sheet>

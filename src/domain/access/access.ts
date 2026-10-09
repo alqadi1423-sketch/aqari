@@ -50,3 +50,16 @@ export function propAllowed(a: Access, propertyId: string | null | undefined): b
 }
 
 export const isAdmin = (a: Access): boolean => a.owner;
+
+/**
+ * قرار المالك 2026-10-09 (ثانياً · المسائل الثلاث ٢): «النقل بين العقارات لمن له كلها، ويُخفى عن المحصور مع سببه» ·
+ * القواعد ترفض تغيير عقار صفٍّ قائم من المحصور (رؤيته بعد النقل لا تسعها حدود الخادم)
+ */
+export function canMoveAcrossProperties(a: Access): boolean {
+  return a.owner || a.allProps;
+}
+
+/** هل يُقفل عقار الصف في النموذج: صفٌّ قائم عند المحصور يبقى في عقاره، والجديد يختار من عقاراته */
+export function propertyMoveLocked(a: Access, existing: boolean): boolean {
+  return existing && !canMoveAcrossProperties(a);
+}

@@ -6,6 +6,8 @@
  *  - ContentsSheet: محتويات الوحدات إلى أصول.
  */
 import React, { useMemo, useState } from 'react';
+import { useAccess } from './access';
+import { canMoveAcrossProperties } from '../domain/access/access';
 import { View, Pressable } from 'react-native';
 import { Sheet, SelectField } from './Sheet';
 import { Badge, BtnGhost, BtnPrimary, ChipGroup, EmptyState, Field, Money, Note, Row, SearchBox, T } from './components';
@@ -224,7 +226,10 @@ function TransferSheet({ a, onClose }: { a: AssetRow; onClose: () => void }) {
   const { db, bump } = useApp();
   const { t } = useLang();
   const toast = useToast();
-  const units = useUnitOptions();
+  const access = useAccess();
+  const moveLocked = !canMoveAcrossProperties(access);
+  const unitProp = (id: string) => db.get<{ p: string }>(`SELECT property_id AS p FROM units WHERE id = ?`, [id])?.p ?? null;
+  const units = useUnitOptions().filter((u) => !moveLocked || unitProp(u.value) === a.property_id);
   const [unit, setUnit] = useState('');
   const [room, setRoom] = useState('');
   const [date, setDate] = useState(today());
@@ -237,6 +242,7 @@ function TransferSheet({ a, onClose }: { a: AssetRow; onClose: () => void }) {
       footer={unit && date ? <View style={{ flex: 1 }}><BtnPrimary title={t('common.confirm')} onPress={save} /></View> : undefined}>
       {a.cost_halalas != null ? <Note>{t('assets.ui.transferNote')}</Note> : null}
       <SelectField label={t('assets.ui.toUnit')} value={unit} options={units} onPick={setUnit} />
+      {moveLocked ? <T size={11.5} color={C.muted} style={{ marginTop: -4, marginBottom: 8 }}>{t('access.moveAllPropsOnly')}</T> : null}
       <Field label={t('common.room')} value={room} onChange={setRoom} />
       <DateField label={t('common.date')} value={date} onChange={setDate} />
     </Sheet>

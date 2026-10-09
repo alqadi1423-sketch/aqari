@@ -46,6 +46,7 @@ import { GENERAL_COST_CENTER, withCostCenter } from '../domain/accounting/dimens
 import { UnitAssetsSection } from './UnitAssets';
 import { contractTotalSql, contractTotalOf } from '../domain/accounting/rentSplit';
 import { useLang } from '../i18n';
+import { propertyMoveLocked } from '../domain/access/access';
 export function UnitFormSheet({
   propertyId, unitId, onClose, onSaved,
 }: { propertyId?: string; unitId?: string; onClose: () => void; onSaved: () => void }) {
@@ -53,6 +54,7 @@ export function UnitFormSheet({
   const toast = useToast();
   // من يقرأ الوحدة بلا مبالغها لا يرى الإيجار ولا يكتبه: لا يُرفع منه (المراجعة #17 · الزر غير المسموح لا يظهر)
   const access = useAccess();
+  const { t } = useLang();
   const rentHidden = hiddenColumns(access, 'units', { rent_monthly_halalas: 0 }).length > 0;
   const existing = unitId
     ? db.get<{ property_id: string; unit_no: string; floor: string; type: string; subtype: string; rent_monthly_halalas: number }>(
@@ -113,11 +115,11 @@ export function UnitFormSheet({
       }>
       {/* نقل وحدةٍ قائمة إلى عقار آخر للمالك ولذي كل العقارات وحدهما: القواعد ترفضه من المحصور بعقارات
           (رؤية الصف بعد النقل لا تُفحص في حدّ الألف تعبير) · فلا يظهر له (الزر غير المسموح لا يظهر) */}
-      {!unitId || access.owner || access.allProps ? (
+      {!propertyMoveLocked(access, !!unitId) ? (
         <SelectField label="العقار" value={propId}
           options={properties.map((p) => ({ value: p.id, label: p.name }))}
           onPick={setPropId} />
-      ) : null}
+      ) : <Note>{t('access.moveAllPropsOnly')}</Note>}
       <Row>
         <View style={{ flex: 1 }}><Field label="رقم الوحدة" value={unitNo} onChange={setUnitNo} ltr /></View>
         <View style={{ flex: 1 }}>

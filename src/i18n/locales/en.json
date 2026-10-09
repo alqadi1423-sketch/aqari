@@ -529,7 +529,8 @@
     "receivedNo": "Not received · still with the other party",
     "excessNote": "The excess over the deposit becomes a claim on the tenant",
     "claimFirst": "The settlement has an excess claim · delete it from Claims first, then edit the settlement",
-    "alreadySettled": "This contract's deposit is already settled · cancel without settlement and edit the settlement from its screen"
+    "alreadySettled": "This contract's deposit is already settled · cancel without settlement and edit the settlement from its screen",
+    "refundOverLeft": "The refund exceeds what is left after the deduction · left {{left}}"
   },
   "vat": {
     "alreadyFiled": "This period's return is already recorded as filed",
@@ -626,5 +627,8 @@
     "mergeAction": "Merge",
     "merged": "Merged into one record with their contracts",
     "mergeFailed": "Merge failed"
+  },
+  "access": {
+    "moveAllPropsOnly": "Moving between properties is for members with all properties"
   }
 }
