@@ -109,6 +109,9 @@ export interface FirestoreOptions {
   fetchImpl?: typeof fetch;
 }
 
+/** أقصى كتابات الالتزام الواحد (حدّ Firestore التاريخي ٥٠٠ · دراسة ٨) */
+export const MAX_COMMIT_WRITES = 500;
+
 export class FirestoreRemote implements RemoteStore {
   private root: string;
   private docsRoot: string;
@@ -173,6 +176,12 @@ export class FirestoreRemote implements RemoteStore {
 
   async write(docs: RemoteDoc[]): Promise<WriteResult[]> {
     if (!docs.length) return [];
+    // سقف ٥٠٠ كتابة للالتزام (دراسة ٨ · قرار المالك 2026-10-09): الصف وإسقاطاته معاً، فتُقسم الدفعة بالصفوف لا بالكتابات
+    const writes = docs.reduce((s, d) => s + 1 + (d.companions?.length ?? 0), 0);
+    if (writes > MAX_COMMIT_WRITES && docs.length > 1) {
+      const mid = Math.ceil(docs.length / 2);
+      return [...(await this.write(docs.slice(0, mid))), ...(await this.write(docs.slice(mid)))];
+    }
     try {
       const t0 = Date.now();
       const res = await this.call(`${this.root}:commit`, {
@@ -191,6 +200,11 @@ export class FirestoreRemote implements RemoteStore {
       if (Number.isFinite(commit)) this.lastClock = { serverMs: commit, localMs: Math.round((t0 + Date.now()) / 2) };
       return docs.map(() => ({ ok: true, code: 'OK' }));
     } catch (e) {
+      // ٤٠٠ (التزامٌ أكبر مما يقبله الخادم) يُقسم كما يُقسم ٤٠٣ (قرار المالك 2026-10-09) · والصف الواحد بـ٤٠٠ خطأٌ حقيقي
+      if (e instanceof FirestoreHttpError && e.status === 400 && docs.length > 1) {
+        const mid = Math.ceil(docs.length / 2);
+        return [...(await this.write(docs.slice(0, mid))), ...(await this.write(docs.slice(mid)))];
+      }
       if (!(e instanceof FirestoreHttpError) || e.status !== 403) throw e;
       if (docs.length === 1) return [{ ok: false, code: 'PERMISSION_DENIED', message: e.message }];
       const mid = Math.ceil(docs.length / 2);

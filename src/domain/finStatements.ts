@@ -3,7 +3,7 @@
  * لا استيراد لأي شيء أصلي فتُختبر آلياً وتُولَّد عيناتها من بيئة الاختبار.
  */
 import type { DB } from '../db/adapter';
-import { allAccounts, accountMovement, accountPeriodChange, hasDimFilter, dimConds, type DimFilter } from './accounting/ledger';
+import { allAccounts, accountPeriodChange, hasDimFilter, dimConds, type DimFilter, allAccountMovements } from './accounting/ledger';
 import { fmt } from './money';
 import { dfmt, addDays } from './dates';
 import type { ReportBlock, Cell } from './officeBuild';
@@ -84,9 +84,18 @@ export function cashFlowFigures(db: DB, from: string | null, to: string | null, 
 /** قائمة مالية واحدة كتلةً قابلة للعرض بالصيغ الثلاث · نفس أرقام الشاشة حرفياً */
 export function financialStatementBlock(db: DB, tab: FinStatement, from: string | null, to: string, dims?: DimFilter | null): ReportBlock {
   const accounts = allAccounts(db);
-  const mv = (code: string) => accountMovement(db, code, from, to, dims);
+  // حركات كل الحسابات بعبارة مجمّعة واحدة لكل مدة (دراسة ٨ · قرار المالك 2026-10-09) · لا استعلامٌ لكل حساب
+  const periods = new Map<string, Map<string, { debit: number; credit: number }>>();
+  const movesOf = (f: string | null, t: string | null) => {
+    const k = (f ?? '') + '|' + (t ?? '');
+    let m = periods.get(k);
+    if (!m) { m = allAccountMovements(db, f, t, dims); periods.set(k, m); }
+    return m;
+  };
+  const ZERO = { debit: 0, credit: 0 };
+  const mv = (code: string) => movesOf(from, to).get(code) ?? ZERO;
   const balAt = (a: { code: string; type: string; opening_halalas: number }, at: string | null) => {
-    const m = accountMovement(db, a.code, null, at, dims);
+    const m = movesOf(null, at).get(a.code) ?? ZERO;
     const net = m.debit - m.credit;
     const oriented = ['أصل', 'مصروف'].includes(a.type) ? net : -net;
     // الافتتاحي المزروع بلا أبعاد · فلا يدخل قائمةً مصفّاة ببُعد
