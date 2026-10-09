@@ -116,11 +116,12 @@ test('#29 (التحقق المستقل) تعديل مستندٍ في فترةٍ 
   fileVatReturn(db, 2026, 1, '2026-04-20');
   saveClaim(db, { contractId: c, amountHalalas: 15000, reason: 'سبب مصطنع', date: '2026-02-10' }, id);
   expect(byQuarter(db, id, '4300')).toEqual({ '2026-Q1': 12000, [qOf(today())]: 3000 });
-  savePurchase(db, {
+  // فاتورة الشراء في فترةٍ قُدِّم إقرارها مقفلة (قرار المالك 2026-10-09: «تُقفل، والتصحيح بقيد في فترة مفتوحة»)
+  expect(() => savePurchase(db, {
     supplier: 'مورد مصطنع', date: '2026-02-11', due: '2026-03-11', category: 'صيانة', incorpItem: '', amortize: false,
     amortizeMonths: null, exempt: false, excludeFromVat: true, subtotalHalalas: 26000, taxHalalas: 0, totalHalalas: 26000,
-  } as PurchaseInput, pid);
-  expect(byQuarter(db, pid, '2100')).toEqual({ '2026-Q1': 20000, [qOf(today())]: 6000 });
+  } as PurchaseInput, pid)).toThrow();
+  expect(byQuarter(db, pid, '2100')).toEqual({ '2026-Q1': 20000 });
   db.close();
 });
 

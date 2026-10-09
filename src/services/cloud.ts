@@ -56,6 +56,7 @@ import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
 import { makeSafetyBackup } from '../domain/backup/create';
+import { leaveSafely } from '../domain/leaveOrg';
 import { appDataRoot } from '../files/expoFs';
 import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
@@ -792,11 +793,24 @@ export async function leaveOrgNow(db: AppDB): Promise<void> {
   const sess = s;
   await pauseSync();
   try {
-    // يخرج من مجموعات المحادثة ومن دليلها قبل عضويته (قرار المالك #19)
-    const cfgL = cloudConfig();
-    if (cfgL) await chatLeaveOrg({ projectId: cfgL.projectId, uid: state.user.uid, email: state.user.email, idToken: () => sess.idToken() }, m.org).catch(() => {});
-    await leaveOrg(remoteOf(db, state.user.uid, () => sess.idToken()), m.org, m.uid);
-    await resetDeviceData(db);
+    const user = state.user;
+    // نسخة أمان أولاً، ثم الخروج، ثم التفريغ بها وبسببه في سجل العمليات كالإزالة (#65)
+    await leaveSafely({
+      backup: () => makeSafetyBackup(appBackupEnv(db), 'pre-wipe'),
+      leaveCloud: async () => {
+        // يخرج من مجموعات المحادثة ومن دليلها قبل عضويته (قرار المالك #19)
+        const cfgL = cloudConfig();
+        if (cfgL) await chatLeaveOrg({ projectId: cfgL.projectId, uid: user.uid, email: user.email, idToken: () => sess.idToken() }, m.org).catch(() => {});
+        await leaveOrg(remoteOf(db, user.uid, () => sess.idToken()), m.org, m.uid);
+      },
+      wipe: async (safety, why) => {
+        await wipeLocal(db, undefined, safety, why);
+        db.transaction(() => {
+          saveMembership(db, null);
+          for (const k of ['org', 'org_name', 'wipe_epoch', 'epoch_pending', 'removal_pending', 'cursor', 'moves_seen']) setSyncState(db, k, null);
+        });
+      },
+    }, t('org.leftReason', { lng: 'ar' }));
     await sess.signOut();
     patch({ user: null, sync: syncStatus(db) });
   } finally {

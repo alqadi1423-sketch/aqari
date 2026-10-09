@@ -7,7 +7,8 @@
  */
 import { memDb } from './helpers/testDb';
 import { addBank } from './helpers/fixtures';
-import { savePurchase, deletePurchase, markVatRefunded, markVatRejected, TS_DEDUCTIBLE, type PurchaseInput } from '@/domain/purchases';
+import { savePurchase, deletePurchase, markVatRefunded, markVatRejected, markVatFiled, payPurchase, isPurchaseFiled, TS_DEDUCTIBLE, type PurchaseInput } from '@/domain/purchases';
+import { fileVatReturn } from '@/domain/vatFilings';
 import { entrySourceAction } from '@/domain/accounting/sourceCancel';
 import { recordManualBankTx, ownerCashIn } from '@/domain/cashOps';
 import { deleteBankTx } from '@/domain/bankTx';
@@ -119,6 +120,30 @@ test('#32 (التحقق المستقل) لا استرداد ولا رفض لفا
   expect(() => markVatRefunded(db, id, '2026-04-20')).toThrow();
   expect(() => markVatRejected(db, id, '2026-04-20')).toThrow();
   expect(accountBalance(db, '1270')).toBe(0);
+  db.close();
+});
+
+test('قرار المالك 2026-10-09: فاتورة الشراء المقدَّمة في إقرار تُقفل · والسداد باقٍ', () => {
+  const db = memDb();
+  db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('S1', 'مورد ضريبي مصطنع', '300000000000003', '2026-01-01')`);
+  // «مُقدَّمة في الإقرار» بحالتها
+  const a = savePurchase(db, pur());
+  markVatFiled(db, a);
+  expect(() => deletePurchase(db, a)).toThrow();
+  expect(() => savePurchase(db, pur({ subtotalHalalas: 20000, taxHalalas: 3000, totalHalalas: 23000 }), a)).toThrow();
+  expect(isPurchaseFiled(db, a)).toBe(true);
+  // وبتاريخٍ في ربعٍ سُجّل إقراره مقدَّماً
+  const b = savePurchase(db, pur({ taxStatus: 'غير قابلة للخصم' as never, date: '2026-02-20' }));
+  fileVatReturn(db, 2026, 1, '2026-04-15');
+  expect(() => deletePurchase(db, b)).toThrow();
+  expect(isPurchaseFiled(db, b)).toBe(true);
+  // والسداد ليس تعديلاً لها
+  ownerCashIn(db, { amountHalalas: 20000, date: '2026-04-16' });
+  payPurchase(db, b, 'cash', null, '2026-04-16');
+  // وفاتورةٌ في فترةٍ مفتوحة كما هي
+  const c = savePurchase(db, pur({ taxStatus: 'غير قابلة للخصم' as never, date: '2026-05-02' }));
+  expect(isPurchaseFiled(db, c)).toBe(false);
+  deletePurchase(db, c);
   db.close();
 });
 

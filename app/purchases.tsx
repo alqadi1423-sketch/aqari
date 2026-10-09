@@ -24,7 +24,7 @@ import { Icon } from '../src/ui/icons';
 import {
   savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax, priorPaymentCashOut,
   TAX_STATUSES, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
-  type PurchasePayMethod, type TaxStatus, isVatSettled,
+  type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled,
 } from '../src/domain/purchases';
 import { today as todayFn } from '../src/domain/dates';
 import { metersForPurchase } from '../src/domain/meters';
@@ -85,13 +85,15 @@ function statusBadge(p: { paid: number; due: string }) {
  * الضغط على البطاقة يفتح ورقة العرض الشاملة · السداد المسدَّد لا يُعدَّل بل يُتراجع عنه */
 const PurchaseCard = React.memo(function PurchaseCard({
   id, no, supplierName, date, due, category, subtotalHalalas, taxHalalas, totalHalalas,
-  exempt, excludeFromVat, paid, taxStatus, refundStatus, hasOriginal, canManage,
+  exempt, excludeFromVat, paid, taxStatus, refundStatus, filedLocked, hasOriginal, canManage,
   onDetail, onPay, onEdit, onUndoPay, onPrint, onDelete, onVatFiled, onVatRefunded, onVatRejected,
 }: {
   id: string; no: string; supplierName: string; date: string; due: string; category: string;
   subtotalHalalas: number; taxHalalas: number; totalHalalas: number;
   exempt: number; excludeFromVat: number; paid: number; taxStatus: string;
   refundStatus: string; hasOriginal: boolean;
+  /** مقدَّمة في إقرار ضريبي: لا تعديل ولا حذف (قرار المالك 2026-10-09) */
+  filedLocked: boolean;
   /** «المشتريات والموردون: كامل» · السداد والتراجع والتعديل والحذف واسترداد الضريبة */
   canManage: boolean;
   onDetail: (id: string) => void;
@@ -106,6 +108,7 @@ const PurchaseCard = React.memo(function PurchaseCard({
 }) {
   // الضريبة إذا استُردت أو رُفضت فقد انتهت قصتها · لا يُعرض لها فعل استرداد بعدها
   const vatSettled = isVatSettled(refundStatus);
+  const contentLocked = vatSettled || filedLocked;
   const vatActions = canManage && taxStatus === TS_DEDUCTIBLE && !vatSettled ? [
     ...(refundStatus.startsWith('مُقدَّم') ? [] : [
       { icon: 'reload' as const, label: 'الضريبة: مُقدَّمة في الإقرار', onPress: () => onVatFiled(id) },
@@ -126,11 +129,11 @@ const PurchaseCard = React.memo(function PurchaseCard({
               { icon: 'eye', label: 'عرض التفاصيل', onPress: () => onDetail(id) },
               canManage && !paid ? { icon: 'card', label: 'تسديد الفاتورة', onPress: () => onPay(id, totalHalalas) } : null,
               canManage && paid ? { icon: 'undo', label: 'التراجع عن السداد', onPress: () => onUndoPay(id) } : null,
-              paid || !canManage || vatSettled ? null : { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) },
+              paid || !canManage || contentLocked ? null : { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) },
               hasOriginal ? { icon: 'print' as const, label: 'الفاتورة الأصلية', onPress: () => onPrint(id, no) } : null,
               ...vatActions,
               // الضريبة المسترَدة أو المرفوضة تقفل الفاتورة حتى يُلغى قيدها من الدفتر (#32)
-              canManage && !vatSettled ? {
+              canManage && !contentLocked ? {
                 icon: 'trash', label: 'حذف', danger: true,
                 onPress: () => onDelete(id),
               } : null,
@@ -541,7 +544,7 @@ export default function Purchases() {
       category={item.category} subtotalHalalas={Number(item.subtotal_halalas)} taxHalalas={Number(item.tax_halalas)}
       totalHalalas={Number(item.total_halalas)} exempt={Number(item.exempt)} excludeFromVat={Number(item.exclude_from_vat)}
       paid={Number(item.paid)} taxStatus={item.tax_status ?? ''} refundStatus={item.refund_status ?? ''}
-      hasOriginal={!!Number(item.att_n)} canManage={perm.manage}
+      hasOriginal={!!Number(item.att_n)} canManage={perm.manage} filedLocked={isPurchaseFiled(db, item.id)}
       onDetail={openDetail} onPay={openPay} onEdit={openEdit} onUndoPay={undoPay} onPrint={printOriginal} onDelete={doDelete}
       onVatFiled={vatFiled} onVatRefunded={vatRefunded} onVatRejected={vatRejected}
     />

@@ -11,7 +11,7 @@ import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryB
 import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
-import { correctionDate } from './vatFilings';
+import { correctionDate, isFiledDate } from './vatFilings';
 import { t } from '../i18n';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber } from './numbering';
@@ -345,9 +345,20 @@ export function unmarkPurchasePaid(db: DB, id: string): void {
 export const isVatSettled = (refundStatus: string | null | undefined): boolean =>
   !!refundStatus && (refundStatus.startsWith('مسترَد') || refundStatus === 'مرفوض'); // i18n-exempt: حالة مخزّنة
 
+/**
+ * فاتورة الشراء المقدَّمة في إقرار: «مُقدَّمة» بحالتها، أو بتاريخٍ في ربعٍ سُجّل إقراره مقدَّماً · تُقفل، والتصحيح بقيد في
+ * فترة مفتوحة (قرار المالك 2026-10-09)
+ */
+export function isPurchaseFiled(db: DB, id: string): boolean {
+  const p = db.get<{ s: string | null; date: string }>(`SELECT refund_status AS s, date FROM purchases WHERE id = ?`, [id]);
+  if (!p) return false;
+  return (p.s ?? '').startsWith('مُقدَّم') || isFiledDate(db, p.date); // i18n-exempt: حالة مخزّنة
+}
+
 function failVatSettled(db: DB, id: string): void {
   const r = db.get<{ s: string | null }>(`SELECT refund_status AS s FROM purchases WHERE id = ?`, [id])?.s;
   if (isVatSettled(r)) throw new Error(t('purchase.vatSettled'));
+  if (isPurchaseFiled(db, id)) throw new Error(t('purchase.filedLocked'));
 }
 
 /** حذف ناعم · قيدا التسجيل والسداد يُعكَسان بقيدي مرآة ولا يُخفيان */

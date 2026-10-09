@@ -895,6 +895,9 @@ export default function Settings() {
         <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 8 }}>
           إن أردت الاحتفاظ بنسخة فصدّرها من «النسخ الاحتياطي» قبل الحذف. ويُطلب منك الدخول بقوقل مرة أخرى لتأكيد هويتك.
         </T>
+        {/* حفظ نسخة خارج التطبيق قبل الحذف (قرار المالك على #65) */}
+        <BtnGhost icon="export" title={t('account.saveCopyBeforeDelete')} disabled={busy} onPress={() => { doBackup(); }} />
+        <View style={{ height: 8 }} />
         <Field label="اكتب: احذف حسابي" value={delTyped} onChange={setDelTyped} />
         {delTyped.trim() === 'احذف حسابي' ? (
           <BtnPrimary danger icon="trash" title="احذف حسابي نهائياً" loading={busy} onPress={async () => {

@@ -576,7 +576,8 @@
     "creditFiledPeriod": "This date's period has a filed return · pick a date in an open period"
   },
   "purchase": {
-    "vatSettled": "This invoice's VAT is refunded or its refund was rejected, and its entry closed the account · cancel that entry from the ledger first"
+    "vatSettled": "This invoice's VAT is refunded or its refund was rejected, and its entry closed the account · cancel that entry from the ledger first",
+    "filedLocked": "This purchase is in a filed VAT return, so it is not edited or deleted · correct it with an entry in an open period from the ledger"
   },
   "bankTx": {
     "descrRequired": "Enter a description",
@@ -592,5 +593,11 @@
   },
   "props": {
     "geoSearchNote": "Searching sends the address text to the OpenStreetMap service outside the app, and the map loads from it."
+  },
+  "account": {
+    "saveCopyBeforeDelete": "Save a copy outside the app first"
+  },
+  "org": {
+    "leftReason": "You left the organization"
   }
 }
