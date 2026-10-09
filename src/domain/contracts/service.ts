@@ -148,23 +148,6 @@ function unitLabel(db: DB, unitId: string): string {
   return (p ? p.name : 'لا يوجد') + ' · ' + u.unit_no;
 }
 
-/** مزامنة المستأجر إلى قائمة المستأجرين */
-export function syncTenantToCustomer(db: DB, name: string, phone: string): void {
-  if (!name.trim()) return;
-  const existing = db.get<{ id: string; phone: string }>(
-    `SELECT id, phone FROM tenants WHERE TRIM(name) = ? AND deleted_at IS NULL`,
-    [name.trim()]
-  );
-  if (existing) {
-    if (phone && !existing.phone)
-      db.run(`UPDATE tenants SET phone = ? WHERE id = ?`, [phone, existing.id]);
-    return;
-  }
-  db.run(`INSERT INTO tenants (id, name, phone, created_at) VALUES (?,?,?,?)`, [
-    uid(), name.trim(), phone || '', new Date().toISOString(),
-  ]);
-}
-
 /** حفظ مسودة (جديدة أو تعديل مسودة قائمة) · بلا رقم، بلا جدول دفعات */
 export function saveDraft(db: DB, input: ContractDraftInput, draftId?: string): string {
   if (!input.tenant.trim()) throw new RuleViolation('الرجاء إدخال اسم المستأجر');
@@ -205,7 +188,8 @@ export function saveDraft(db: DB, input: ContractDraftInput, draftId?: string): 
     if (ej) db.run(`UPDATE contracts SET ejar_schedule = ?, installments_source = ? WHERE id = ?`, [ej.schedule, ej.source, id]);
     // الخدمات والمواقف تُحفظ مع المسودة وتعود عند فتحها (المراجعة #1)
     saveRevenueSplit(db, id, input);
-    syncTenantToCustomer(db, input.tenant, input.phone);
+    // تغيير مستأجر المسودة يغيّر ربطها (دراسة القائم): يُعاد البحث بهويته واسمه في كل حفظ
+    if (draftId) db.run(`UPDATE contracts SET tenant_id = NULL WHERE id = ?`, [id]);
     linkContractTenant(db, id);
     seedTenantOccupant(db, id);
     return id;
@@ -316,7 +300,6 @@ export function confirmContract(db: DB, inputRaw: ContractDraftInput, draftId?: 
     });
     // تحويل الحجز لعقد · بمعرّف الحجز الذي اختاره المستخدم، والعربون يسدّد الأقساط بالترتيب بتاريخ العقد (المراجعة ٤.٤)
     if (input.reservationId) convertReservation(db, input.reservationId, id, contractNo, input.tenant, input.start);
-    syncTenantToCustomer(db, input.tenant, input.phone);
     // نموذج الاستلام والتسليم يُنشأ تلقائياً من تفاصيل الوحدة · واحد لكل عقد
     createHandoverForContract(db, id);
     logAudit(db, 'العقود', 'create', 'عقد إيجار', input.tenant, null, { contractNo });
@@ -638,7 +621,8 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
     for (const l of rawLines) {
       db.run(
         `INSERT INTO payment_lines (id, payment_id, method, bank_id, amount_halalas) VALUES (?,?,?,?,?)`,
-        [uid(), paymentId, l.method, l.method === 'bank' ? l.bankId! : null, l.amountHalalas]
+        // الشيك والبطاقة يستقران في حسابٍ بنكي: السطر بنكيٌّ ببنكه، واسم الطريقة في بيان الدفعة (دراسة القائم)
+        [uid(), paymentId, l.method === 'cash' ? 'cash' : 'bank', l.method === 'cash' ? null : l.bankId!, l.amountHalalas]
       );
       if (l.method !== 'cash') {
         db.run(
@@ -894,7 +878,8 @@ export function recordBulkRentPayment(
     for (const l of rawLines) {
       db.run(
         `INSERT INTO payment_lines (id, payment_id, method, bank_id, amount_halalas) VALUES (?,?,?,?,?)`,
-        [uid(), paymentId, l.method, l.method === 'bank' ? l.bankId! : null, l.amountHalalas]
+        // الشيك والبطاقة يستقران في حسابٍ بنكي: السطر بنكيٌّ ببنكه، واسم الطريقة في بيان الدفعة (دراسة القائم)
+        [uid(), paymentId, l.method === 'cash' ? 'cash' : 'bank', l.method === 'cash' ? null : l.bankId!, l.amountHalalas]
       );
       if (l.method !== 'cash') {
         db.run(

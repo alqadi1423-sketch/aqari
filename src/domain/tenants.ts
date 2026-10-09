@@ -31,7 +31,9 @@ export function findOrCreateTenant(
     ? db.get<{ id: string; name: string; phone: string }>(
         `SELECT id, name, phone FROM tenants WHERE national_id = ? AND deleted_at IS NULL`, [nat])
     : undefined;
-  if (!row) {
+  // بالاسم حين لا هوية يُبحث بها وحده: الهوية مفتاحٌ فريد، فلا يُدمج حاملا هويتين مختلفتين باسمٍ واحد (قرار المالك
+  // 2026-08-20: «ابحث بالهوية أولاً · وُجد فاربط، لم يوجد فأنشئ»، والمتشابهون يُعرضون في «مستأجرون متشابهون»)
+  if (!row && !nat) {
     row = db.get<{ id: string; name: string; phone: string; national_id: string }>(
       `SELECT id, name, phone, national_id FROM tenants
        WHERE TRIM(name) = ? AND deleted_at IS NULL`, [name]) as typeof row;
