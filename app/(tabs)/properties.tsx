@@ -42,6 +42,7 @@ import { LeafletMap } from '../../src/ui/LeafletMap';
 import { useDialog } from '../../src/ui/AppDialog';
 import { reportFailure } from '../../src/ui/failureDialog';
 import { useSaveAttempt } from '../../src/ui/formAttempt';
+import { useLang } from '../../src/i18n';
 
 /** أسماء الشهور كاملةً · لتسمية بطاقة «إشغال أغسطس» */
 const MONTHS_FULL = [
@@ -350,6 +351,7 @@ function PropertyFormSheet({
   const [lat, setLat] = useState(existing?.lat != null ? String(existing.lat) : '');
   const [lng, setLng] = useState(existing?.lng != null ? String(existing.lng) : '');
   const [geoQuery, setGeoQuery] = useState('');
+  const { t } = useLang();
   const [floorCats, setFloorCats] = useState<Record<string, string>>(() => {
     if (!propertyId) return {};
     const out: Record<string, string> = {};
@@ -520,6 +522,8 @@ function PropertyFormSheet({
           } catch { toast('تعذّر البحث · تحقق من الاتصال بالإنترنت'); }
         }} /> : null}
       </Row>
+      {/* البحث يرسل نص العنوان إلى خدمة خرائط خارج التطبيق (قرار المالك على #46) */}
+      <T size={11} color={C.muted} style={{ marginTop: -4, marginBottom: 8 }}>{t('props.geoSearchNote')}</T>
       <View style={{ marginBottom: 8 }}>
         <LeafletMap
           height={220}

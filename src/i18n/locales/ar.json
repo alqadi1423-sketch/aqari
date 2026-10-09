@@ -589,5 +589,8 @@
     "deleteWhat": "حذف الحركة",
     "deleteBankShort": "حذف هذا الوارد يُنزل رصيد البنك ({{balance}}) تحت الصفر بـ {{amount}}",
     "cancelBankShort": "رصيد البنك ({{balance}}) لا يكفي لعكس واردٍ بمبلغ {{amount}}"
+  },
+  "props": {
+    "geoSearchNote": "البحث يرسل نص العنوان إلى خدمة الخرائط المفتوحة (OpenStreetMap) خارج التطبيق، والخريطة تُحمَّل منها."
   }
 }
