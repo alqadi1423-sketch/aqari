@@ -618,7 +618,10 @@
     "systemDelete": "A system account is not deleted · automatic posting relies on it",
     "usedDelete": "Not deleted · used in {{count}} entry lines",
     "auditModule": "Chart of accounts",
-    "auditEntity": "Account"
+    "auditEntity": "Account",
+    "openingDiff": "Opening balances are not balanced: difference {{amount}} ({{side}}). They are saved as entered; complete the missing side to correct them.",
+    "openingDebit": "debit is larger",
+    "openingCredit": "credit is larger"
   },
   "tenants": {
     "mergeDifferentIds": "Two different ID numbers are merged only with explicit confirmation",
@@ -660,5 +663,17 @@
     "openOwn": "Open my organization",
     "ownNote": "Your account already has an organization with its data. The invitation below is from another organization; accepting it makes this device a member there.",
     "from": "Invitation from {{email}}"
+  },
+  "credit": {
+    "amountRequired": "Enter the amount",
+    "overBalance": "The amount exceeds the tenant's credit balance",
+    "overRemaining": "The amount exceeds what is left on the installment",
+    "use": "The tenant has a credit balance of {{amount}} · use it for this installment",
+    "used": "Paid from the credit balance",
+    "apply": "Use the balance for this installment",
+    "failed": "Could not use the balance"
+  },
+  "members": {
+    "ownerNameReserved": "«المالك» (owner) is reserved · enter your name"
   }
 }

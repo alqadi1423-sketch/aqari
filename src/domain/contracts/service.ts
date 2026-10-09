@@ -336,6 +336,48 @@ function openInstallments(db: DB, contractId: string) {
     .map((i) => ({ ...i, remaining: installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount)) }));
 }
 
+/** رصيد مستأجر العقد الدائن (2410) · يظهر عند التحصيل (مراجعة التثبيت #63) */
+export function tenantCreditOf(db: DB, contractId: string): number {
+  return Number(db.get<{ v: number }>(
+    `SELECT t.credit_halalas AS v FROM contracts c JOIN tenants t ON t.id = c.tenant_id WHERE c.id = ?`, [contractId])?.v ?? 0);
+}
+
+/**
+ * استعمال رصيد المستأجر الدائن في قسطٍ باختيار المستخدم (مراجعة التثبيت #63 · قرار المالك 2026-10-07: «يظهر عند التحصيل
+ * ويختار المستخدم») · دفعةٌ بقيدها: مدين 2410 / دائن الإيراد، وينقص رصيده · وإلغاؤها يعيده (cancelPayment)
+ */
+export function applyTenantCredit(db: DB, contractId: string, input: { installmentId: string; amountHalalas: number; date: string }): string {
+  const c = getContract(db, contractId);
+  if (!c) throw new RuleViolation('تعذّر العثور على العقد');
+  const amount = Math.round(input.amountHalalas);
+  if (!(amount > 0)) throw new RuleViolation(t('credit.amountRequired'));
+  if (amount > tenantCreditOf(db, contractId)) throw new RuleViolation(t('credit.overBalance'));
+  const inst = openInstallments(db, contractId).find((i) => i.id === input.installmentId);
+  if (!inst || amount > inst.remaining) throw new RuleViolation(t('credit.overRemaining'));
+  return db.transaction(() => {
+    const paymentId = uid();
+    const period = 'قسط ' + dfmt(inst.due_date); // i18n-exempt: بيان الدفعة المخزَّن كأخواته
+    const entry = postEntry(db, {
+      date: input.date,
+      memo: 'سداد قسط من الرصيد الدائن · ' + c.tenant_name + ' (عقد ' + (c.contract_no || '') + ') · ' + period, // i18n-exempt: بيان القيد المخزَّن
+      lines: [
+        { account: '2410', descr: 'استعمال رصيد المستأجر الدائن', debit: amount, credit: 0 }, // i18n-exempt: بيان السطر
+        ...rentRevenueLines(db, contractId, amount, 'إيراد إيجار', 'credit'), // i18n-exempt: بيان السطر
+      ],
+      srcType: 'rent', srcId: paymentId,
+    });
+    db.run(
+      `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
+        discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
+       VALUES (?,?,?,?,?,?,0,?,?,?,?,?)`,
+      [paymentId, contractId, inst.id, period, input.date, amount, amount, 'من الرصيد الدائن', '', entry ? entry.id : null, new Date().toISOString()]); // i18n-exempt: طريقة مخزّنة
+    db.run(`UPDATE tenants SET credit_halalas = credit_halalas - ? WHERE id = ?`, [amount, (c as unknown as { tenant_id: string | null }).tenant_id]);
+    recomputeInstallments(db, [inst.id]);
+    logAudit(db, 'التحصيل', 'create', 'سداد من الرصيد الدائن', c.tenant_name + ' · ' + fmt(amount)); // i18n-exempt: سجل العمليات
+    return paymentId;
+  });
+}
+
 /** مجموع المتبقي على أقساط العقد القائمة · سقف ما يسدّده العربون */
 export function depositRoom(db: DB, contractId: string): number {
   return openInstallments(db, contractId).reduce((sum, i) => sum + i.remaining, 0);
@@ -529,7 +571,7 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
 
     if (input.carryDeposit && Number(c.deposit_halalas) > 0) {
       postDepositCarry(db, {
-        fromNo: c.contract_no || '', toNo: contractNo, toId: newId,
+        fromNo: c.contract_no || '', toNo: contractNo, toId: newId, fromId: c.id,
         deposit: Number(c.deposit_halalas), date: input.start,
       });
     }

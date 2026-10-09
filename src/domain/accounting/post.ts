@@ -353,14 +353,15 @@ export const postDepositRefund = (
 /** ترحيل التأمين عند التجديد: 2400/2400 · لا يزيد الرصيد */
 export const postDepositCarry = (
   db: DB,
-  args: { fromNo: string; toNo: string; toId: string; deposit: number; date: string }
+  args: { fromNo: string; toNo: string; toId: string; fromId?: string; deposit: number; date: string }
 ) =>
   args.deposit > 0
     ? postEntry(db, {
         date: args.date,
         memo: 'ترحيل تأمين من عقد ' + args.fromNo + ' إلى ' + args.toNo,
         lines: [
-          { account: '2400', descr: 'إقفال التزام العقد السابق', debit: args.deposit, credit: 0 },
+          // سطر الإقفال بأبعاد العقد القديم، فيُقفل التزامه في تصفيته (مراجعة التثبيت #59)
+          { account: '2400', descr: 'إقفال التزام العقد السابق', debit: args.deposit, credit: 0, dims: args.fromId ? { contractId: args.fromId } : undefined },
           { account: '2400', descr: 'التزام تأمين العقد الجديد', debit: 0, credit: args.deposit },
         ],
         srcType: 'deposit_carry',
@@ -415,6 +416,8 @@ export const postReservationConvert = (
         ],
         srcType: 'reservation_convert',
         srcId: rv.id,
+        // العقد بُعداً صريحاً: القيد يُرحَّل قبل ربط الحجز بعقده (مراجعة التثبيت #58)
+        dims: rv.contractId ? { contractId: rv.contractId } : undefined,
       })
     : null;
 

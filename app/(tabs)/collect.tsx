@@ -29,7 +29,8 @@ import {
   allInstallments, filterInstallments, collectKpis,
   type CollectFilter, type InstallmentView,
 } from '../../src/domain/stats';
-import { recordRentPayment, paymentForInstallment, type RentPaymentLine, type PayMethod } from '../../src/domain/contracts/service';
+import { recordRentPayment, paymentForInstallment, applyTenantCredit, tenantCreditOf, type RentPaymentLine, type PayMethod } from '../../src/domain/contracts/service';
+import { t } from '../../src/i18n';
 import { DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind } from '../../src/domain/contracts/installments';
 import { today, dfmt, periodLabel } from '../../src/domain/dates';
 import { collectionMessage } from '../../src/domain/templates';
@@ -261,6 +262,20 @@ export default function Collect() {
     setPayFile(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, T_]);
+
+  // رصيد المستأجر الدائن لقسط الدفعة (مراجعة التثبيت #63)
+  const payCredit = paying ? tenantCreditOf(db, paying.contractId) : 0;
+  const spendCredit = () => {
+    if (!paying) return;
+    try {
+      withCostCenter(cc, () => applyTenantCredit(db, paying.contractId, {
+        installmentId: paying.installmentId, amountHalalas: Math.min(payCredit, paying.remaining), date: payDate,
+      }));
+      setPaying(null);
+      bump();
+      toast(t('credit.used'));
+    } catch (e) { reportFailure({ title: t('credit.failed'), e }); }
+  };
 
   /** التسجيل الفعلي بعد التأكيد · منطق الترحيل كما هو */
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
@@ -545,6 +560,13 @@ export default function Collect() {
         <Field label="الفترة/الدفعة المستحقة" value={payPeriod} onChange={setPayPeriod} />
         <DateField label="تاريخ الدفعة" value={payDate} onChange={setPayDate} />
         <CostCenterField value={cc} onChange={setCc} />
+        {/* رصيد المستأجر الدائن يظهر هنا ويختار المستخدم استعماله (مراجعة التثبيت #63 · قرار المالك) */}
+        {paying && payCredit > 0 ? (
+          <View style={{ backgroundColor: C.paper, borderRadius: 9, padding: 9, marginBottom: 10 }}>
+            <T size={12}>{t('credit.use', { amount: fmt(Math.min(payCredit, paying.remaining)) })}</T>
+            <View style={{ marginTop: 6 }}><BtnGhost small title={t('credit.apply')} onPress={spendCredit} /></View>
+          </View>
+        ) : null}
         <T size={11.5} color={C.muted} style={{ marginBottom: 6 }}>طرق السداد</T>
         {payLines.map((l, i) => (
           <View key={i} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 9, marginBottom: 8 }}>

@@ -119,6 +119,17 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     value: Number(orphans.n) + ' يتيم',
   });
 
+  // رصيد المستأجرين الدائن في سجلاتهم يطابق حسابه 2410 (مراجعة التثبيت #63 · قرار المالك)
+  {
+    const ledger2410 = accountBalance(db, '2410');
+    const tenants = Number(db.get<{ s: number }>(`SELECT COALESCE(SUM(credit_halalas), 0) AS s FROM tenants WHERE deleted_at IS NULL`)?.s ?? 0);
+    out.push({
+      name: 'الرصيد الدائن للمستأجرين يطابق حسابه 2410', // i18n-exempt: اسم فحصٍ مخزَّن في بيان النسخة كأخواته
+      ok: ledger2410 === tenants,
+      value: fmt(tenants) + ' / ' + fmt(ledger2410),
+    });
+  }
+
   // ٨) كل دفعة إيجار محصَّلة لها قيدها المرحّل (الربط بين التحصيل والدفتر)
   const unposted = db.get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM contract_payments p

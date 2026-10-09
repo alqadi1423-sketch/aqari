@@ -209,6 +209,9 @@ export function outboxCount(db: DB): number {
 
 /* ═══════════ الوارد: الحفظ ثم التطبيق ═══════════ */
 
+/** أسباب رفضٍ مصدرها مخطط الجهاز الأقدم: قيد CHECK أو عمودٌ أو جدولٌ لا يعرفه · يُعاد واردها بعد الترقية */
+const SCHEMA_REJECT = /CHECK constraint failed|has no column named|no such column|no such table/i;
+
 /** مفتاح آخر إصدارٍ أُعيد فيه المرفوض */
 export const REJECTS_REPLAYED_KEY = 'rejects_replayed_sv';
 
@@ -232,6 +235,8 @@ export function replayRejectsAfterUpgrade(db: DB, sv: number): { requeued: numbe
           [r.tbl, r.pk, exists ? 'upsert' : 'delete', nowIso()]);
         requeued++;
       } else {
+        // لسبب المخطط وحده: ما رُفض لغيره قد طُبّق بعده أحدث منه، فإعادته تُرجع الصف إلى نسخته القديمة (التحقق المستقل من 21ff082)
+        if (!SCHEMA_REJECT.test(r.reason)) continue;
         let doc: RemoteDoc | null = null;
         try { doc = JSON.parse(r.payload) as RemoteDoc; } catch { doc = null; }
         if (!doc || !doc.id || !doc.t) continue;

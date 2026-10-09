@@ -1,6 +1,7 @@
 /** دليل الحسابات · مجموعات الأنواع الخمسة بأرصدتها وحركة الفترة وكشف لكل حساب */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { saveAccount, deleteAccount, deleteBlocker } from '../src/domain/accounting/chart';
+import { t } from '../src/i18n';
+import { saveAccount, deleteAccount, deleteBlocker, openingDifference } from '../src/domain/accounting/chart';
 import { View, Pressable, FlatList, type ListRenderItem } from 'react-native';
 import { Screen } from '../src/ui/Screen';
 import { EntrySheet, srcTypeLabel } from '../src/ui/EntrySheet';
@@ -311,6 +312,8 @@ export default function Accounts() {
 
   let running = stmtCarry;
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const openingDiff = useMemo(() => openingDifference(db), [db, version]);
   const listHeader = (
     <>
       <View style={{ marginBottom: 8 }}><SearchBox value={q} onChange={setQ} /></View>
@@ -322,6 +325,10 @@ export default function Accounts() {
         options={[['month', 'هذا الشهر'], ['quarter', 'هذا الربع'], ['year', 'هذه السنة'], ['all', 'الكل']]}
         value={period} onChange={setPeriod} />
       <View style={{ marginTop: 8 }} />
+      {/* الأرصدة الافتتاحية تُحفظ ويظهر فرقها (مراجعة التثبيت #60 · قرار المالك) */}
+      {openingDiff !== 0 ? (
+        <Card><T size={12} color={C.rose}>{t('accounts.openingDiff', { amount: fmt(Math.abs(openingDiff)), side: t(openingDiff > 0 ? 'accounts.openingDebit' : 'accounts.openingCredit') })}</T></Card>
+      ) : null}
     </>
   );
 

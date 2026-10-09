@@ -170,7 +170,7 @@ describe('المحرّك المحاسبي — الأساس', () => {
     });
     postContractDeposit(db, c);
     const checks = integrityChecks(db);
-    expect(checks).toHaveLength(11);
+    expect(checks).toHaveLength(12); // ومعها مطابقة الرصيد الدائن 2410 (مراجعة التثبيت #63)
     for (const ch of checks) expect(ch.ok).toBe(true);
     db.close();
   });

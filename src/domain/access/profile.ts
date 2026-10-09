@@ -1,3 +1,5 @@
+import { OWNER_ACTOR } from './opWrites';
+import { t } from '../../i18n';
 /**
  * بيانات العضو (توجيه المالك ٢٠٢٦-١٠-٠٥ · ثانياً): الاسم الكامل والجوال إلزاميان، والهوية/الإقامة والمسمى
  * الوظيفي اختياريان. الجوال سعودي موحَّد 05XXXXXXXX، والهوية عشرة أرقام أولها ١ أو ٢.
@@ -42,6 +44,8 @@ export function validateProfile(input: Partial<MemberProfile>, required: boolean
   if (required || name) {
     if (name.length < 2) return { ok: false, field: 'name', error: 'اكتب الاسم الكامل' };
     if (name.length > 80) return { ok: false, field: 'name', error: 'الاسم أطول من ٨٠ حرفاً' };
+    // يُنتحل به المالك في سجل العمليات، وترفض القواعد سطور من يحمله (مراجعة التثبيت #54)
+    if (name === OWNER_ACTOR) return { ok: false, field: 'name', error: t('members.ownerNameReserved') };
   }
   let phone = '';
   if (required || rawPhone) {

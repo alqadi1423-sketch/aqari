@@ -145,6 +145,8 @@ d('قواعد Firestore · users/{uid}', () => {
     await syncOnce(a, ra, getMeta(a, 'device_id')!);
     // عبث بقيد مرحّل في أ ثم تعديل عادي · الأول يُرفض في السحابة والثاني يمرّ في الدفعة نفسها
     const je = a.get<{ id: string }>(`SELECT id FROM journal_entries WHERE status = 'مرحّل' LIMIT 1`)!.id;
+    // القاعدة تمنع العبث بالرأس (الهجرة ٤١) · فالعميل المعدَّل يحذف محفّزه أولاً، والسحابة تعزله كما كانت
+    a.run(`DROP TRIGGER IF EXISTS trg_je_frozen_hdr`);
     a.run(`UPDATE journal_entries SET memo = 'معدَّل' WHERE id = ?`, [je]);
     a.run(`UPDATE tenants SET phone = '0599999999'`);
     const rep = await syncOnce(a, ra, getMeta(a, 'device_id')!);

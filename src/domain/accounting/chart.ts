@@ -36,6 +36,21 @@ export function saveAccount(db: DB, input: AccountInput, editingCode?: string): 
 }
 
 /** يعيد سبب منع الحذف، أو null إن جاز */
+/**
+ * فرق الأرصدة الافتتاحية (مراجعة التثبيت #60 · قرار المالك 2026-10-07: «يُحفظ ويظهر الفرق»): مدينها (الأصول والمصروفات
+ * وافتتاحيات البنوك، وهي خارج الدفتر حتى تُسجَّل فيه) ناقص دائنها (الخصوم وحقوق الملكية والإيرادات) · صفرٌ إن توازنت
+ */
+export function openingDifference(db: DB): number {
+  const acc = Number(db.get<{ d: number }>(
+    `SELECT COALESCE(SUM(CASE WHEN type IN (?, ?) THEN opening_halalas ELSE -opening_halalas END), 0) AS d
+     FROM accounts WHERE deleted_at IS NULL`, ['أصل', 'مصروف'])?.d ?? 0); // i18n-exempt: أنواع الحسابات المخزّنة
+  let banks = 0;
+  try {
+    banks = Number(db.get<{ b: number }>(`SELECT COALESCE(SUM(opening_halalas), 0) AS b FROM banks WHERE deleted_at IS NULL`)?.b ?? 0);
+  } catch { /* قاعدة بلا جدول البنوك */ }
+  return acc + banks;
+}
+
 export function deleteBlocker(db: DB, code: string): string | null {
   if (isSystemAccount(db, code)) return t('accounts.systemDelete');
   const n = usedCount(db, code);

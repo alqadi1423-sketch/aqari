@@ -354,6 +354,8 @@ service cloud.firestore {
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
           && (baseT(r.t) != 'vat_filings' || m.all == true)
           && (r.del == true || baseT(r.t) != 'journal_entries' || srcOk(r.op, r.d.get('src_type', null)))
+          // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53)
+          && (r.t != 'invoices' || r.d == null || lvlOf(m, 'invoices') >= 3 || r.d.get('status', '') == 'مسودة')
           // العضو لا ينتحل المالك في سجل العمليات (مراجعة التثبيت #54)
           && (r.t != 'audit_log' || (r.d != null && r.d.get('user_name', '') != 'المالك')))
         // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
@@ -400,11 +402,15 @@ service cloud.firestore {
                   // ولا يحذفه أو يؤرشفه عن عقارٍ ليس له (التحقق المستقل)
                   && !after.d.diff(before.d).affectedKeys().hasAny(['deleted_at', 'archived']))))
           || (owns && level >= 2 && isDraft(before)
-              && before.get('by', '') == request.auth.uid && propsOk(m, after))
+              && before.get('by', '') == request.auth.uid && propsOk(m, after)
+              // والفاتورة تبقى مسودة: إصدارها لـ«كامل» (مراجعة التثبيت #53)
+              && (after.t != 'invoices' || isDraft(after)))
           // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)
           || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(m, before, after)
               && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'sv'])
-              && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
+              && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys())
+              // ولا يُلغي القسط: إلغاؤه بإلغاء العقد لـ«كامل» العقود (مراجعة التثبيت #53)
+              && (baseT(after.t) != 'contract_installments' || after.d.get('status', '') != 'ملغية'))
         );
     }
 

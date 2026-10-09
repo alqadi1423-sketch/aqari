@@ -6,7 +6,7 @@
 import { ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 40;
+export const SCHEMA_VERSION = 41;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1654,5 +1654,35 @@ ALTER TABLE suppliers_new RENAME TO suppliers;
 ${buildSyncTriggers([syncTable('suppliers')!])}
 `;
 
+/**
+ * الهجرة ٤١ · ثغرات تجميد القيد المرحّل (مراجعة التثبيت #61): رأس القيد المرحّل لا يُعدَّل (التاريخ والبيان والرقم والمصدر
+ * والآلية والإنشاء · وربطه بعاكسه بـreversed_by جائز كما كان) · ولا يُنقل سطرٌ إلى قيدٍ مرحّل (المحفّز القائم يفحص القديم
+ * وحده) · ومبالغ السطر أعداد صحيحة
+ */
+// i18n-exempt: رسائل محفّزات القاعدة كأخواتها
+export const MIGRATION_41 = `
+CREATE TRIGGER IF NOT EXISTS trg_je_frozen_hdr
+BEFORE UPDATE ON journal_entries
+WHEN OLD.status = 'مرحّل'
+  AND (NEW.date IS NOT OLD.date OR NEW.memo IS NOT OLD.memo OR NEW.no IS NOT OLD.no OR NEW.src_type IS NOT OLD.src_type
+    OR NEW.src_id IS NOT OLD.src_id OR NEW.auto IS NOT OLD.auto OR NEW.created_at IS NOT OLD.created_at)
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُعدَّل'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_jl_frozen_move
+BEFORE UPDATE OF entry_id ON journal_lines
+WHEN NEW.entry_id IS NOT OLD.entry_id AND (SELECT status FROM journal_entries WHERE id = NEW.entry_id) = 'مرحّل'
+BEGIN SELECT RAISE(ABORT, 'قيد مرحّل لا يُعدَّل'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_jl_int_ins
+BEFORE INSERT ON journal_lines
+WHEN typeof(NEW.debit_halalas) != 'integer' OR typeof(NEW.credit_halalas) != 'integer'
+BEGIN SELECT RAISE(ABORT, 'مبلغ السطر بالهللات عددٌ صحيح'); END;
+
+CREATE TRIGGER IF NOT EXISTS trg_jl_int_upd
+BEFORE UPDATE OF debit_halalas, credit_halalas ON journal_lines
+WHEN typeof(NEW.debit_halalas) != 'integer' OR typeof(NEW.credit_halalas) != 'integer'
+BEGIN SELECT RAISE(ABORT, 'مبلغ السطر بالهللات عددٌ صحيح'); END;
+`;
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41];

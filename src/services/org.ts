@@ -156,7 +156,8 @@ export async function moveOwnerToOrg(db: DB, legacy: FirestoreRemote, org: Fires
 
 /** هل للحساب منشأةٌ قائمة في السحابة (حروف أجهزتها في المسار الجديد أو القديم) · ليُعرض قبل دعوات غيره (#52) */
 export async function ownOrgExists(remote: FirestoreRemote, uid: string): Promise<boolean> {
-  for (const path of [`orgs/${uid}/meta/devices`, `users/${uid}/meta/devices`]) {
+  // عدّاد الترقيم يُنشأ مع أول مزامنة للمالك الجديد · وحروف الأجهزة تأتي من المسار القديم (التحقق المستقل من 21ff082)
+  for (const path of [`orgs/${uid}/meta/counters`, `orgs/${uid}/meta/devices`, `users/${uid}/meta/devices`]) {
     try { if (await remote.getDoc(path)) return true; } catch { /* لا صلاحية أو لا اتصال · يُجرَّب التالي */ }
   }
   return false;

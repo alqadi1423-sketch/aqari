@@ -432,7 +432,9 @@ describe('هـ · المسدَّد مع الخصم لا يتجاوز مبلغ ا
   test('الاستعادة: مبلغ بالهللات ليس عدداً صحيحاً في أي جدول يرفض النسخة كاملة ويُسمّى الجدول والعمود', async () => {
     const archive = await craftArchive((db) => {
       contractWithInstallments(db, 100000, 'سلوى التجريبية');
-      // قيد متوازن بسطور كسرية · محفّز التوازن يمرّره فلا يمسكه إلا فحص الأعداد
+      // قيد متوازن بسطور كسرية · محفّز التوازن يمرّره · ومحفّز الأعداد الصحيحة (الهجرة ٤١) يحذفه المزوِّر من نسخته، فلا يمسكه
+      // إلا فحص الاستعادة الدلالي (ومحفّزات النسخة لا تُصدََّق: مراجعة التثبيت #48)
+      db.run(`DROP TRIGGER IF EXISTS trg_jl_int_ins`);
       db.run(`INSERT INTO journal_entries (id,no,date,memo,status,auto,created_at) VALUES ('XF','JE-9002','2026-01-01','م','قيد الإنشاء',0,'x')`);
       db.run(`INSERT INTO journal_lines (id,entry_id,account_code,descr,debit_halalas,credit_halalas) VALUES ('LF1','XF','1100','',500.5,0)`);
       db.run(`INSERT INTO journal_lines (id,entry_id,account_code,descr,debit_halalas,credit_halalas) VALUES ('LF2','XF','4200','',0,500.5)`);

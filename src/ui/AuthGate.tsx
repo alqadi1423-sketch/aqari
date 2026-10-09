@@ -54,6 +54,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   const [cloud, setCloud] = useState(cloudState());
   useEffect(() => { primeSession(); return subscribeCloud(() => setCloud(cloudState())); }, []);
   const [busy, setBusy] = useState(false);
+  const { t } = useLang();
   void version; // تُعاد القراءة بعد فتح نسخة حساب
 
   const active = cloud.configured && cloud.restored ? activeAccount(db) : null;
@@ -81,7 +82,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (cloud.user) {
     const email = cloud.user.email;
-    const { t } = useLang();
     if (cloud.gate === 'switching' || needsActivation) return spinner('جاري فتح بيانات حساب ' + email);
     // التحقق من الدعوات لم يتمّ · لا يُفترض الداخل مالكاً ولا تُنشأ له منشأة
     if (cloud.gate === 'retry') {

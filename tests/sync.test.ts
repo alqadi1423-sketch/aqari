@@ -121,8 +121,8 @@ describe('القيد المرحّل إضافة فقط', () => {
     const e = postEntry(a, { date: '2026-01-01', memo: 'الأصل', lines: [
       { account: '1100', debit: 1000, credit: 0 }, { account: '4200', debit: 0, credit: 1000 }] })!;
     await sync(a, r); await sync(b, r);
-    // عبث محلي بالبيان في أ · يُرفض في السحابة ويُترك
-    a.run(`UPDATE journal_entries SET memo = 'معدَّل' WHERE id = ?`, [e.id]);
+    // عبث محلي بالبيان في أ · تمنعه القاعدة نفسها الآن (الهجرة ٤١ · مراجعة التثبيت #61)، وما تجاوزها يُرفض في السحابة ويُترك
+    expect(() => a.run(`UPDATE journal_entries SET memo = 'معدَّل' WHERE id = ?`, [e.id])).toThrow('قيد مرحّل لا يُعدَّل');
     await sync(a, r);
     expect((r.docs.get(docId('journal_entries', e.id))!.d as Record<string, unknown>).memo).toBe('الأصل');
     expect(outboxCount(a)).toBe(0);
@@ -250,7 +250,8 @@ describe('فحص الاستعادة نفسه على كل صف وارد · قبل
     r.inject(postedEntry('JF', 'JE-9200', [{ debit: 500.5, credit: 0 }, { debit: 0, credit: 500.5 }]));
     const rep = await sync(b, r);
     expect(rep.rejected).toBe(1);
-    expect(reasonOf(b, 'JF')).toBe('الوارد مرفوض · مبلغ بالهللات ليس عدداً صحيحاً: سطور القيود · مدين (1 سطر)، سطور القيود · دائن (1 سطر)');
+    // يرفضه محفّز الأعداد الصحيحة قبل فحص الاستعادة (الهجرة ٤١ · مراجعة التثبيت #61)
+    expect(reasonOf(b, 'JF')).toContain('مبلغ السطر بالهللات عددٌ صحيح');
     expect(b.get(`SELECT id FROM journal_entries WHERE id = 'JF'`)).toBeFalsy();
     expect(count(b, `SELECT COUNT(*) AS n FROM journal_lines WHERE entry_id = 'JF'`)).toBe(0);
     b.close();

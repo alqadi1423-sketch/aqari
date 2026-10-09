@@ -160,7 +160,8 @@ export function cancelPayment(db: DB, paymentId: string, input: { date?: string;
          VALUES (?,?,?,?,?,1,?,?,?)`,
         [uid(), b.bankId, date, 'إلغاء دفعة إيجار · ' + plan.tenant, -b.amount, cancelNo, 'إلغاء دفعة إيجار', new Date().toISOString()]);
     }
-    if (plan.creditReversal > 0) {
+    // الفائض يُطرح من الرصيد، والمستعمَل منه (دفعة من الرصيد الدائن · قيمته سالبة) يعود إليه (مراجعة التثبيت #63)
+    if (plan.creditReversal !== 0) {
       db.run(`UPDATE tenants SET credit_halalas = credit_halalas - ?
               WHERE id = (SELECT tenant_id FROM contracts WHERE id = ?)`, [plan.creditReversal, plan.contractId]);
     }

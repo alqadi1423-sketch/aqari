@@ -187,6 +187,22 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     expect(await write(COLLECTOR, { ...doc, u: 'z2', d: { ...doc.d!, amount_halalas: 1 } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
 
+  // مراجعة التثبيت #53: «إدخال» لا يتيح على الخادم ما تجعله الشاشة لـ«كامل»
+  test('#٥٣ إدخال لا يُلغي القسط · ولا يُصدر الفاتورة (يحفظها مسودة)', async () => {
+    const inst = db.get<Record<string, unknown>>(`SELECT * FROM contract_installments WHERE id = ?`, [I1])!;
+    const doc: RemoteDoc = { id: 'contract_installments__' + I1, t: 'contract_installments', k: I1, u: 'y1', dev: 'dev-col', del: false, d: { ...inst, status: 'ملغية' } as never };
+    expect(await write(COLLECTOR, doc)).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    const INV2 = member('U-INV2', { invoices: 2, props: 1 }, 'all');
+    expect(await putDoc(`orgs/${ORG}/members/U-INV2`, { email: 'u-inv2@example.test', perm: INV2.perms, all: true, props: [], tokens: memberTokens(INV2) }, ORG)).toBe(200);
+    db.run(`INSERT OR REPLACE INTO row_by (tbl, pk, uid) VALUES ('invoices','IVD1','U-INV2')`);
+    const inv: RemoteDoc = { id: 'invoices__IVD1', t: 'invoices', k: 'IVD1', u: 'i1', dev: 'dev-inv', del: false,
+      d: { id: 'IVD1', no: 'TMP-1', customer_name: 'عميل تجريبي', property_id: 'P1', issue: '2026-05-01', due: '2026-05-01', status: 'مستحقة',
+        subtotal_halalas: 100, tax_halalas: 15, total_halalas: 115, created_at: '2026-05-01' } };
+    expect(await write(INV2, inv)).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect(await write(INV2, { ...inv, u: 'i2', d: { ...inv.d!, status: 'مسودة' } })).toMatchObject({ ok: true });
+    expect(await write(INV2, { ...inv, u: 'i3', d: { ...inv.d!, status: 'مستحقة' } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  });
+
   test('مسودة كاتبها يعدّلها بإدخال · ومسودة غيره لا', async () => {
     db.run(`INSERT OR REPLACE INTO row_by (tbl, pk, uid) VALUES ('contracts','CD1','U-DRF')`);
     const draft: RemoteDoc = { id: 'contracts__CD1', t: 'contracts', k: 'CD1', u: 'a', dev: 'dev-drf', del: false,
