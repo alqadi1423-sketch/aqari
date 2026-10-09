@@ -374,6 +374,9 @@ export function ContractFormFields({ form }: { form: ReturnType<typeof useContra
         <View style={{ flex: 1 }}>
           <Field label={t('lease.renewParking')} keyboard="numeric" ltr value={parkingText}
             onChange={(v) => { setParkingText(v); set('split', { ...formSplit(state), parkingHalalas: toHalalas(v) }); }} />
+          {/* ما بقي من إجمالي الملف بعد الإيجار والخدمات والمواقف: فرقٌ يُعرض ولا يُوزَّع (دراسة القائم) */}
+          {state.extras && revenueSplitOf(state.extras).otherHalalas
+            ? <T size={11.5} color={C.muted}>{t('lease.splitOther', { amount: fmt(revenueSplitOf(state.extras).otherHalalas ?? 0) })}</T> : null}
         </View>
       </Row>
       <Row>

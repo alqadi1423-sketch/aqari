@@ -25,6 +25,10 @@ import {
   type InvoiceLineInput, type InvoicePayMethod,
 } from '../src/domain/invoices';
 import { useLang } from '../src/i18n';
+import { lineTaxCode, type TaxCode } from '../src/domain/taxCode';
+
+/** قيمة خانة الضريبة من رمز السطر ونسبته */
+const taxFieldOf = (code: TaxCode, pct: number): string => (code === 'Z' ? '0z' : code === 'E' ? '0e' : String(pct || 15));
 import { isIssuePending } from '../src/domain/invoiceIssue';
 import { saveInvoiceNow, setInvoiceStatusNow, issueCreditNoteNow } from '../src/services/cloud';
 import { today, dfmt, addDays } from '../src/domain/dates';
@@ -201,7 +205,8 @@ export default function Invoices() {
     () => !!Number(db.get<{ vat_enabled: number }>(`SELECT vat_enabled FROM company WHERE id = 1`)?.vat_enabled ?? 0),
     [db, version]
   );
-  const defTax = vatOn ? '15' : '0';
+  // قيمة الخانة: نسبة الخاضع «15»، و«0z» الصفري، و«0e» المعفى (رمز ضريبة السطر · الهجرة ٣٩)
+  const defTax = vatOn ? '15' : '0e';
 
   const openNew = () => {
     setEditingId(null); setCustomer(''); setIssue(today()); setDue(addDays(today(), 30));
@@ -212,12 +217,13 @@ export default function Invoices() {
       `SELECT customer_name, issue, due, notes FROM invoices WHERE id = ?`, [id]
     );
     if (!v) return;
-    const ls = db.all<{ descr: string; qty: number; price_halalas: number; tax_pct: number }>(
-      `SELECT descr, qty, price_halalas, tax_pct FROM invoice_lines WHERE invoice_id = ? ORDER BY sort`, [id]
+    const ls = db.all<{ descr: string; qty: number; price_halalas: number; tax_pct: number; tax_code: string }>(
+      `SELECT descr, qty, price_halalas, tax_pct, tax_code FROM invoice_lines WHERE invoice_id = ? ORDER BY sort`, [id]
     );
     setEditingId(id); setCustomer(v.customer_name); setIssue(v.issue); setDue(v.due); setNotes(v.notes);
     setLines(ls.length ? ls.map((l) => ({
-      descr: l.descr, qty: String(l.qty), price: fmt(Number(l.price_halalas)).replace(/,/g, ''), tax: String(l.tax_pct),
+      descr: l.descr, qty: String(l.qty), price: fmt(Number(l.price_halalas)).replace(/,/g, ''),
+      tax: taxFieldOf(lineTaxCode(l.tax_code, Number(l.tax_pct)), Number(l.tax_pct)),
     })) : [{ descr: '', qty: '1', price: '', tax: defTax }]);
     setFormOpen(true);
   }, [db, defTax]);
@@ -273,7 +279,8 @@ export default function Invoices() {
   ), [onView, openEdit, onStatus, onPrint, onDelete, onCredit, mayEdit, perm.manage]);
 
   const toInputs = (): InvoiceLineInput[] =>
-    lines.map((l) => ({ descr: l.descr, qty: parseFloat(l.qty) || 0, priceHalalas: toHalalas(l.price), taxPct: parseFloat(l.tax) || 0 }));
+    lines.map((l) => ({ descr: l.descr, qty: parseFloat(l.qty) || 0, priceHalalas: toHalalas(l.price), taxPct: parseFloat(l.tax) || 0,
+      taxCode: l.tax === '0z' ? 'Z' as const : l.tax === '0e' ? 'E' as const : 'S' as const }));
 
   // الإصدار يأخذ رقم الفاتورة من عدّاد السحابة · وبلا اتصال تُحفظ مسودةً تصدر برقمها عند عودته
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
@@ -396,8 +403,8 @@ export default function Invoices() {
               <View style={{ flex: 1 }}>
                 <SelectField label="الضريبة" value={l.tax}
                   options={vatOn
-                    ? [{ value: '15', label: '15٪' }, { value: '0', label: '0٪ (معفى)' }]
-                    : [{ value: '0', label: '0٪ (معفى)' }]}
+                    ? [{ value: '15', label: t('invoice.taxStandard') }, { value: '0z', label: t('invoice.taxZero') }, { value: '0e', label: t('invoice.taxExempt') }]
+                    : [{ value: '0e', label: t('invoice.taxExempt') }]}
                   onPick={(v) => setLines((p) => p.map((x, xi) => (xi === i ? { ...x, tax: v } : x)))} />
               </View>
             </Row>

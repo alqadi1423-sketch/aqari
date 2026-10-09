@@ -112,6 +112,8 @@ describe('المعيار الوحيد: هل الفاتورة باسم المنش
 describe('الإقرار الضريبي · البند ٧ لا يشمل المستبعدة إطلاقاً', () => {
   test('ربع 2026-Q1 مبني من المصادر الصحيحة والمستبعدة في سطر رقابة بعددها ومبلغها', () => {
     const db = seed();
+    // المنشأة مسجّلة في الضريبة: فواتيرها الخاضعة في البند ١ (دراسة القائم: غير المسجّلة لا مبيعات خاضعة لها)
+    db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`);
     const pid = addProperty(db);
     const u = addUnit(db, pid, { unit_no: 'A-1' });
     const cid = confirmContract(db, contractInput(u, {

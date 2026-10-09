@@ -106,3 +106,29 @@ export function resolveTemplateTokens(text: string, ctx: Record<string, string>)
   }
   return out.replace(/\{الاسم\}|\[الاسم\]/g, ctx['{المستأجر}'] || '');
 }
+
+/**
+ * رسالة التحصيل لقسطٍ بعينه (دراسة القائم 2026-10-09): قالبٌ يُملأ بسياق عقده كله كالمعاينة، والمبلغ والموعد والتأخير من
+ * القسط نفسه بالدالة الواحدة مع شاشة التحصيل (قرار المالك ٤.١٠) · ورمزا {الاسم} و{تاريخ الاستحقاق} القديمان يُملآن أيضاً
+ */
+export function collectionMessage(
+  db: DB, body: string, row: { installmentId: string; contractId: string; tenant: string; unitNo?: string | null },
+): string {
+  const ctx = templateContext(db, row.contractId, row.tenant);
+  const i = db.get<{ due_date: string; agreed_date: string | null; grace_until: string | null; amount_halalas: number; paid_halalas: number; discount: number; status: string }>(
+    `SELECT i.due_date, i.agreed_date, i.grace_until, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount, i.status
+     FROM contract_installments i WHERE i.id = ?`, [row.installmentId]);
+  if (i) {
+    const st = installmentState({
+      dueDate: i.due_date, agreedDate: i.agreed_date, graceUntil: i.grace_until,
+      amount: Number(i.amount_halalas), paid: Number(i.paid_halalas), discount: Number(i.discount), status: i.status,
+    }, today());
+    ctx['{المبلغ}'] = fmt(st.remaining); // i18n-exempt: رمز قالب مخزَّن
+    ctx['{التاريخ}'] = dfmt(st.effectiveDue); // i18n-exempt: رمز قالب مخزَّن
+    ctx['{أيام_التأخير}'] = String(Math.max(0, st.daysLate)); // i18n-exempt: رمز قالب مخزَّن
+  }
+  if (row.unitNo) ctx['{الوحدة}'] = row.unitNo; // i18n-exempt: رمز قالب مخزَّن
+  ctx['{تاريخ الاستحقاق}'] = ctx['{التاريخ}'] ?? ''; // i18n-exempt: رمز قالب قديم مخزَّن
+  return resolveTemplateTokens(body, ctx);
+}
+

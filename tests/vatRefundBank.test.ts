@@ -7,7 +7,7 @@
  */
 import { memDb } from './helpers/testDb';
 import { addBank } from './helpers/fixtures';
-import { savePurchase, deletePurchase, markVatRefunded, markVatRejected, markVatFiled, payPurchase, isPurchaseFiled, TS_DEDUCTIBLE, type PurchaseInput } from '@/domain/purchases';
+import { savePurchase, deletePurchase, markVatRefunded, markVatRejected, markVatFiled, payPurchase, isPurchaseFiled, restorePurchase, TS_DEDUCTIBLE, type PurchaseInput } from '@/domain/purchases';
 import { fileVatReturn } from '@/domain/vatFilings';
 import { entrySourceAction } from '@/domain/accounting/sourceCancel';
 import { recordManualBankTx, ownerCashIn } from '@/domain/cashOps';
@@ -144,6 +144,16 @@ test('قرار المالك 2026-10-09: فاتورة الشراء المقدَّ
   const c = savePurchase(db, pur({ taxStatus: 'غير قابلة للخصم' as never, date: '2026-05-02' }));
   expect(isPurchaseFiled(db, c)).toBe(false);
   deletePurchase(db, c);
+  db.close();
+});
+
+test('(التحقق المستقل) فاتورة شراء حُذفت قبل التقديم لا تُستعاد إلى فترةٍ قُدِّم إقرارها', () => {
+  const db = memDb();
+  const id = savePurchase(db, pur({ taxStatus: 'غير قابلة للخصم' as never, date: '2026-02-10' }));
+  deletePurchase(db, id);
+  fileVatReturn(db, 2026, 1, '2026-04-15');
+  expect(() => restorePurchase(db, id)).toThrow();
+  expect(db.get<{ d: string | null }>(`SELECT deleted_at AS d FROM purchases WHERE id = ?`, [id])!.d).not.toBeNull();
   db.close();
 });
 

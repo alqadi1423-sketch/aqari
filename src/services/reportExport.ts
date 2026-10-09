@@ -318,6 +318,8 @@ export async function exportVatReturn(
     ],
     totals: [
       ['فواتير غير قابلة للخصم خلال الفترة (لا تدخل البند ٧)', String(d.excluded.count) + ' فاتورة'],
+      // سطر رقابة: الإيجار التجاري المحصَّل خارج البند ٥ حتى تُبنى ضريبة التجاري (دراسة القائم)
+      ...(live.commercialRentHalalas ? [[t('vat.commercialRentControl', { lng: 'ar' }), M(live.commercialRentHalalas)] as [string, string]] : []),
       ['مبلغها شاملاً ضريبتها غير المخصومة', M(d.excluded.amountHalalas), true],
     ],
   };

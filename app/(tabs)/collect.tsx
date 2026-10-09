@@ -32,6 +32,7 @@ import {
 import { recordRentPayment, paymentForInstallment, type RentPaymentLine, type PayMethod } from '../../src/domain/contracts/service';
 import { DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind } from '../../src/domain/contracts/installments';
 import { today, dfmt, periodLabel } from '../../src/domain/dates';
+import { collectionMessage } from '../../src/domain/templates';
 import { fmt, toHalalas } from '../../src/domain/money';
 import { dialPhone } from '../../src/domain/phone';
 import { rescheduleAllNotifications } from '../../src/services/notifications';
@@ -366,12 +367,9 @@ export default function Collect() {
        WHERE deleted_at IS NULL AND audience IN ('مستأجرون','عام') ORDER BY title`),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
-  const fillScript = (body: string, x: (typeof data.rows)[number]) => body
-    .replace(/\{الاسم\}/g, x.tenant)
-    .replace(/\{المبلغ\}/g, fmt(x.remaining) + ' ريال')
-    .replace(/\{التاريخ\}/g, dfmt(x.dueDate))
-    .replace(/\{تاريخ الاستحقاق\}/g, dfmt(x.effectiveDue ?? x.dueDate))
-    .replace(/\{الوحدة\}/g, x.unitNo || '');
+  // القالب يُملأ بالدالة نفسها التي تعرض المعاينة، فلا يصل رمزٌ إلى المستأجر حرفياً (دراسة القائم)
+  const fillScript = (body: string, x: (typeof data.rows)[number]) =>
+    collectionMessage(db, body, { installmentId: x.installmentId, contractId: x.contractId, tenant: x.tenant, unitNo: x.unitNo });
   const openChannel = (x: (typeof data.rows)[number], via: 'wa' | 'sms', text: string) => {
     if (via === 'wa') {
       Linking.openURL('https://wa.me/' + (dialPhone(x.phone) ?? '+966' + x.phone.replace(/^0/, '')).replace('+', '')

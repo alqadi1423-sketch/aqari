@@ -148,6 +148,21 @@ function unitLabel(db: DB, unitId: string): string {
   return (p ? p.name : 'لا يوجد') + ' · ' + u.unit_no;
 }
 
+/**
+ * مستأجرٌ أنشأته المسودة ثم تغيّر مستأجرها: إن بقي بلا عقد ولا رصيد ولا ملاحظات، وأُنشئ بعد المسودة، يُحذف ناعماً فلا يبقى
+ * يتيماً (التحقق المستقل) · وما سبقها أو تعلّق به شيء يبقى
+ */
+function dropDraftOrphan(db: DB, tenantId: string, draftId: string): void {
+  const now = db.get<{ t: string | null }>(`SELECT tenant_id AS t FROM contracts WHERE id = ?`, [draftId])?.t;
+  if (now === tenantId) return;
+  const t = db.get<{ created_at: string; credit_halalas: number; notes: string }>(
+    `SELECT created_at, credit_halalas, notes FROM tenants WHERE id = ? AND deleted_at IS NULL`, [tenantId]);
+  const draft = db.get<{ created_at: string }>(`SELECT created_at FROM contracts WHERE id = ?`, [draftId]);
+  if (!t || !draft || t.created_at < draft.created_at || Number(t.credit_halalas) || (t.notes ?? '').trim()) return;
+  if (db.get(`SELECT 1 FROM contracts WHERE tenant_id = ? AND deleted_at IS NULL`, [tenantId])) return;
+  db.run(`UPDATE tenants SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), tenantId]);
+}
+
 /** حفظ مسودة (جديدة أو تعديل مسودة قائمة) · بلا رقم، بلا جدول دفعات */
 export function saveDraft(db: DB, input: ContractDraftInput, draftId?: string): string {
   if (!input.tenant.trim()) throw new RuleViolation('الرجاء إدخال اسم المستأجر');
@@ -189,8 +204,10 @@ export function saveDraft(db: DB, input: ContractDraftInput, draftId?: string): 
     // الخدمات والمواقف تُحفظ مع المسودة وتعود عند فتحها (المراجعة #1)
     saveRevenueSplit(db, id, input);
     // تغيير مستأجر المسودة يغيّر ربطها (دراسة القائم): يُعاد البحث بهويته واسمه في كل حفظ
+    const prevTenant = draftId ? db.get<{ t: string | null }>(`SELECT tenant_id AS t FROM contracts WHERE id = ?`, [id])?.t ?? null : null;
     if (draftId) db.run(`UPDATE contracts SET tenant_id = NULL WHERE id = ?`, [id]);
     linkContractTenant(db, id);
+    if (prevTenant) dropDraftOrphan(db, prevTenant, id);
     seedTenantOccupant(db, id);
     return id;
   });
@@ -517,6 +534,8 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
     }
     createHandoverForContract(db, newId); // العقد الجديد له نموذجه الواحد
     logAudit(db, 'العقود', 'create', 'تجديد عقد', (c.contract_no || '') + ' ← ' + contractNo);
+    // التجديد لمستأجر العقد نفسه (ولو دُمج): لا يُعاد البحث بنصّ هويته القديمة فيُنشأ مستأجرٌ ثانٍ (التحقق المستقل)
+    db.run(`UPDATE contracts SET tenant_id = (SELECT tenant_id FROM contracts WHERE id = ?) WHERE id = ?`, [contractId, newId]);
     linkContractTenant(db, newId);
     carryOccupantsToRenewal(db, contractId, newId);
     seedTenantOccupant(db, newId);

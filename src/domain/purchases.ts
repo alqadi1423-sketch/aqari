@@ -87,6 +87,8 @@ export function nextPurchaseNo(db: DB): string {
 export function savePurchase(db: DB, input: PurchaseInput, existingId?: string): string {
   if (!input.subtotalHalalas && !input.totalHalalas) throw new Error('الرجاء إدخال مبالغ الفاتورة');
   if (existingId) failVatSettled(db, existingId);
+  // لا شراء جديد ولا نقلُ تاريخٍ إلى فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم)
+  if (isFiledDate(db, input.date)) throw new Error(t('purchase.filedPeriod'));
   return db.transaction(() => {
     // الافتراض مستبعدة ما لم يُثبَت العكس · و«خاضعة باسمنا» تشترط الرقم الضريبي للمورد
     const taxStatus: TaxStatus = input.taxStatus ?? (input.exempt ? TS_EXEMPT : TS_EXCLUDED);
@@ -396,6 +398,8 @@ export function restorePurchase(db: DB, id: string): void {
     const p = db.get<{ no: string; journal_entry_id: string | null; payment_journal_entry_id: string | null; paid: number; deleted_at: string | null }>(
       `SELECT no, journal_entry_id, payment_journal_entry_id, paid, deleted_at FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
+    // لا تعود إلى فترةٍ قُدِّم إقرارها (التحقق المستقل · قرار المالك 2026-10-09)
+    if (isPurchaseFiled(db, id)) throw new Error(t('purchase.filedPeriod'));
     const reg = reversedEntry(db, p.journal_entry_id);
     const pay = Number(p.paid) ? reversedEntry(db, p.payment_journal_entry_id) : null;
     const blockers = [...(reg ? repostBlockers(db, reg) : []), ...(pay ? repostBlockers(db, pay) : [])];

@@ -2,7 +2,7 @@
  * بنود عقد إيجار التي لها خانة ولم تكن تُقرأ (قرارات تفصيل العقد ٢٠٢٦-١٠-٠٧) · نصوص مصطنعة على هيئة
  * المستخرج: «التسمية الإنجليزية القيمة:التسمية العربية»، وتسمياتٌ تنكسر على سطرين.
  */
-import { parseEjarExtras, scheduleChecks, compareExtras, applyExtras, unitByNumber, mapFurnished, mapUnitType, mapUsage, mapFloor } from '@/domain/pdf/ejarExtras';
+import { parseEjarExtras, scheduleChecks, compareExtras, applyExtras, unitByNumber, mapFurnished, mapUnitType, mapUsage, mapFloor, revenueSplitOf } from '@/domain/pdf/ejarExtras';
 import { memDb } from './helpers/testDb';
 import { addProperty, addUnit } from './helpers/fixtures';
 
@@ -128,3 +128,17 @@ test('قيمة العقد «كامل قيمة الإيجار» لا «إجمال
   const sp = revenueSplitOf(parseEjarExtras(TEXT));
   expect(600000 + (sp.servicesHalalas ?? 0) + (sp.parkingHalalas ?? 0)).toBe(690000);
 });
+
+test('دراسة القائم: المواقف من خانتها في ملف العقد، وما بقي من الإجمالي فرقٌ يُعرض لا يدخل المواقف', () => {
+  const fin = (f: Record<string, number>) => revenueSplitOf({ financial: f } as never);
+  // إجمالي ١٣٠٠ = إيجار ١٠٠٠ + غاز ١٠٠ + مواقف ١٥٠ + ٥٠ غير مفصَّل
+  expect(fin({ totalValue: 130000, rentValue: 100000, gas: 10000, parking: 15000 }))
+    .toEqual({ servicesHalalas: 10000, parkingHalalas: 15000, otherHalalas: 5000 });
+  // بلا فرق: لا خانة له
+  expect(fin({ totalValue: 125000, rentValue: 100000, gas: 10000, parking: 15000 }))
+    .toEqual({ servicesHalalas: 10000, parkingHalalas: 15000 });
+  // خانة المواقف غائبة: المواقف صفر والفرق ظاهر
+  expect(fin({ totalValue: 120000, rentValue: 100000, gas: 10000 }))
+    .toEqual({ servicesHalalas: 10000, parkingHalalas: 0, otherHalalas: 10000 });
+});
+

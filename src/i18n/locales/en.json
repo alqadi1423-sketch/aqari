@@ -86,7 +86,8 @@
       "parking": "Parking",
       "total": "Contract total",
       "value": "Contract value"
-    }
+    },
+    "splitOther": "The file total has an unexplained amount: {{amount}} (not rent, services or parking) · check the file"
   },
   "dataLabels": {
     "table": {
@@ -505,7 +506,8 @@
     "installmentDiscount": "Installment discount",
     "claimCollected": "Claim collected",
     "upcomingTotal": "Upcoming installments not yet due",
-    "installmentPrepaid": "Upcoming installment paid in advance"
+    "installmentPrepaid": "Upcoming installment paid in advance",
+    "installmentCancelledPaid": "Cancelled installment · paid portion"
   },
   "fin": {
     "unclosedEarnings": "Earnings to date (not closed)",
@@ -543,7 +545,8 @@
     "changedSince": "Changed since filing · correct in item 14 of a later return",
     "unfile": "Undo filing record",
     "unfileBody": "If recorded by mistake: the return is computed from its documents again, and correction entries in its period return to their original dates. Continue?",
-    "unfiledDone": "Filing record undone"
+    "unfiledDone": "Filing record undone",
+    "commercialRentControl": "Commercial rent collected outside item 5 (its VAT comes with commercial leasing)"
   },
   "invoice": {
     "locked": "An issued invoice can't be edited, returned to draft or deleted · correct it with a credit note",
@@ -573,11 +576,16 @@
     "dueDateLabel": "Due date",
     "totalDue": "Total due",
     "creditBeforeInvoice": "The note is dated before its invoice",
-    "creditFiledPeriod": "This date's period has a filed return · pick a date in an open period"
+    "creditFiledPeriod": "This date's period has a filed return · pick a date in an open period",
+    "filedPeriod": "This date's period has a filed return, so no invoice is issued in it · pick a date in an open period",
+    "taxStandard": "15% (standard)",
+    "taxZero": "0% (zero-rated)",
+    "taxExempt": "Exempt"
   },
   "purchase": {
     "vatSettled": "This invoice's VAT is refunded or its refund was rejected, and its entry closed the account · cancel that entry from the ledger first",
-    "filedLocked": "This purchase is in a filed VAT return, so it is not edited or deleted · correct it with an entry in an open period from the ledger"
+    "filedLocked": "This purchase is in a filed VAT return, so it is not edited or deleted · correct it with an entry in an open period from the ledger",
+    "filedPeriod": "This date's period has a filed return, so no purchase is recorded in it · use a date in an open period"
   },
   "bankTx": {
     "descrRequired": "Enter a description",
@@ -599,5 +607,24 @@
   },
   "org": {
     "leftReason": "You left the organization"
+  },
+  "accounts": {
+    "required": "Enter the account name and code",
+    "notFound": "Account not found",
+    "systemType": "A system account keeps its type · only its name can change",
+    "usedType": "An account used by posted entries keeps its type",
+    "codeTaken": "Account code «{{code}}» is taken · choose another",
+    "systemDelete": "A system account is not deleted · automatic posting relies on it",
+    "usedDelete": "Not deleted · used in {{count}} entry lines",
+    "auditModule": "Chart of accounts",
+    "auditEntity": "Account"
+  },
+  "tenants": {
+    "mergeDifferentIds": "Two different ID numbers are merged only with explicit confirmation",
+    "mergeDifferentIdsTitle": "Different ID numbers",
+    "mergeDifferentIdsBody": "The group has tenants with different ID numbers, most likely different people. Merge them anyway?",
+    "mergeAction": "Merge",
+    "merged": "Merged into one record with their contracts",
+    "mergeFailed": "Merge failed"
   }
 }

@@ -33,6 +33,14 @@ export function tenantStatementRows(db: DB, contractId: string, asOf: string = t
     }
     if (d > 0) rows.push({ date: i.due_date, descr: ar('statement.installmentDiscount'), debitHalalas: 0, creditHalalas: d });
   }
+  // القسط الملغى بعد سدادٍ جزئي: المسدَّد منه مدينٌ يقابل دفعته، فلا يظهر رصيدٌ دائن وهمي (دراسة القائم)
+  for (const i of db.all<{ due_date: string; amount_halalas: number; paid_halalas: number }>(
+    `SELECT due_date, amount_halalas, paid_halalas FROM contract_installments
+     WHERE contract_id = ? AND status = ? AND paid_halalas > 0 ORDER BY due_date`,
+    [contractId, 'ملغية'])) { // i18n-exempt: حالة مخزّنة
+    const paid = Math.min(Number(i.amount_halalas), Number(i.paid_halalas));
+    if (paid > 0) rows.push({ date: i.due_date, descr: ar('statement.installmentCancelledPaid'), debitHalalas: paid, creditHalalas: 0 });
+  }
   for (const p of db.all<{ date: string; period: string; net_halalas: number; method_label: string }>(
     `SELECT date, period, net_halalas, method_label FROM contract_payments
      WHERE contract_id = ? AND cancelled_at IS NULL ORDER BY date`, [contractId])) {

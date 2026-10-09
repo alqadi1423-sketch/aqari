@@ -249,7 +249,9 @@ export default function Contracts() {
       const id = confirmContract(db, formToInput(form.state), editingDraftId ?? undefined);
       // ما وافق عليه المستخدم من بنود العقد المقروءة يُكتب في العقار والوحدة والمستأجر والعدادات
       if (leaseDiffs.length && approvedExtras.size) {
-        applyExtras(db, leaseDiffs, approvedExtras, { unitId: form.state.unitId, tenantName: form.state.tenant, start: form.state.start, handoverRef: t('lease.handoverReading', { lng: 'ar' }) });
+        applyExtras(db, leaseDiffs, approvedExtras, { unitId: form.state.unitId, tenantName: form.state.tenant,
+          tenantId: db.get<{ t: string | null }>(`SELECT tenant_id AS t FROM contracts WHERE id = ?`, [id])?.t ?? null,
+          start: form.state.start, handoverRef: t('lease.handoverReading', { lng: 'ar' }) });
       }
       if (form.state.pendingFile) {
         attachPicked(db, form.state.pendingFile, 'contract', id, 'lease').catch((e) => reportFailure({ title: 'تعذّر حفظ ملف العقد', e }));

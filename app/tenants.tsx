@@ -176,7 +176,7 @@ export default function Tenants() {
     if (dup) { toast('يوجد مستأجر مسجَّل بنفس الاسم أو الرقم الضريبي بالفعل · تحقق من القائمة قبل الإضافة'); return; }
     db.transaction(() => {
       db.run(`INSERT INTO tenants (id, name, vat, phone, credit_halalas, created_at) VALUES (?,?,?,?,?,?)`, [
-        uid(), tName.trim(), tVat.trim(), tPhone.trim(), toHalalas(tCredit), new Date().toISOString(),
+        uid(), tName.trim(), tVat.trim(), tPhone.trim(), 0, new Date().toISOString(),
       ]);
       logAudit(db, 'العملاء', 'create', 'مستأجر', tName.trim());
     });
@@ -253,7 +253,7 @@ export default function Tenants() {
           {/* الرصيد مبلغ من التحصيل · لمن يرى التحصيل وحده */}
           {seesMoney ? (
             <View style={{ flex: 1 }}>
-              <Field label="حد الائتمان" value={tCredit} onChange={setTCredit} keyboard="numeric" ltr />
+
             </View>
           ) : null}
         </Row>

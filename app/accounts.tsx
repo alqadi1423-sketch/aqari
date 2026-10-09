@@ -1,5 +1,6 @@
 /** دليل الحسابات · مجموعات الأنواع الخمسة بأرصدتها وحركة الفترة وكشف لكل حساب */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { saveAccount, deleteAccount, deleteBlocker } from '../src/domain/accounting/chart';
 import { View, Pressable, FlatList, type ListRenderItem } from 'react-native';
 import { Screen } from '../src/ui/Screen';
 import { EntrySheet, srcTypeLabel } from '../src/ui/EntrySheet';
@@ -46,7 +47,7 @@ type AccListItem =
   | { kind: 'row'; key: string; a: AccountItem; last: boolean };
 
 const AccountRowItem = React.memo(function AccountRowItem({
-  code, name, type, opening, debit, credit, balance, tagBg, tagFg, canManage, onOpen, onEdit, onDelete,
+  code, name, type, opening, debit, credit, balance, tagBg, tagFg, canManage, onOpen, onEdit, onDelete, isSystem,
 }: {
   code: string; name: string; type: string; opening: number; debit: number; credit: number;
   balance: number; tagBg: string; tagFg: string;
@@ -55,6 +56,8 @@ const AccountRowItem = React.memo(function AccountRowItem({
   onOpen: (code: string, name: string) => void;
   onEdit: (code: string) => void;
   onDelete: (code: string) => void;
+  /** حساب نظامي: لا حذف ولا تغيير نوع */
+  isSystem: boolean;
 }) {
   return (
     <Row style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.paperLine, alignItems: 'flex-start' }}>
@@ -90,7 +93,8 @@ const AccountRowItem = React.memo(function AccountRowItem({
       </Pressable>
       <ActionMenuButton title={name} actions={canManage ? [
         { icon: 'edit', label: 'تعديل', onPress: () => onEdit(code) },
-        { icon: 'trash', label: 'حذف', danger: true, onPress: () => onDelete(code) },
+        // الحساب النظامي لا يُحذف فلا يظهر زره (دراسة القائم)
+        ...(isSystem ? [] : [{ icon: 'trash' as const, label: 'حذف', danger: true, onPress: () => onDelete(code) }]),
       ] : []} />
     </Row>
   );
@@ -137,6 +141,9 @@ export default function Accounts() {
   }, [stmt?.code, from, to]);
 
   // الأساس الثقيل: كل الحسابات بأرصدتها وحركة الفترة · ثلاثة استعلامات تجميعية فقط
+  const systemCodes = useMemo(() => new Set(db.all<{ code: string }>(`SELECT code FROM accounts WHERE is_system = 1`).map((r) => r.code)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version]);
   const base = useMemo<AccountItem[]>(() => {
     if (!ready) return EMPTY_ACCOUNTS;
     const balances = allAccountBalances(db);
@@ -226,22 +233,8 @@ export default function Accounts() {
   const save = () => {
     if (!name.trim() || !code.trim()) { toast('الرجاء تعبئة اسم ورمز الحساب'); return; }
     try {
-      db.transaction(() => {
-        if (editingCode) {
-          const used = db.get(`SELECT id FROM journal_lines WHERE account_code = ? LIMIT 1`, [editingCode]);
-          const acc = db.get<{ type: string }>(`SELECT type FROM accounts WHERE code = ?`, [editingCode])!;
-          if (used && acc.type !== type) throw new Error('لا يمكن تغيير نوع حساب مستخدَم بقيود مرحّلة');
-          db.run(`UPDATE accounts SET name = ?, type = ?${used ? '' : ', opening_halalas = ?'} WHERE code = ?`,
-            used ? [name.trim(), type, editingCode] : [name.trim(), type, toHalalas(opening), editingCode]);
-        } else {
-          if (db.get(`SELECT code FROM accounts WHERE code = ?`, [code.trim()]))
-            throw new Error(`رمز الحساب "${code.trim()}" مستخدَم بالفعل · اختر رمزاً آخر`);
-          db.run(`INSERT INTO accounts (code, name, type, opening_halalas, created_at) VALUES (?,?,?,?,?)`, [
-            code.trim(), name.trim(), type, toHalalas(opening), new Date().toISOString(),
-          ]);
-        }
-        logAudit(db, 'دليل الحسابات', editingCode ? 'update' : 'create', 'حساب', name.trim());
-      });
+      // الحساب النظامي لا يتغيّر نوعه ولا يُحذف (دراسة القائم) · الخدمة تحرسه
+      saveAccount(db, { code, name, type, openingHalalas: toHalalas(opening) }, editingCode ?? undefined);
       setFormOpen(false); bump();
       toast(editingCode ? 'تم تحديث الحساب' : `تمت إضافة الحساب "${name.trim()}" بنجاح`);
     } catch (e) { reportFailure({ title: 'تعذّر الحفظ', e }); }
@@ -249,11 +242,8 @@ export default function Accounts() {
   const doDelete = useCallback((accCode: string) => {
     const a = base.find((x) => x.code === accCode);
     if (!a) return;
-    const used = db.all<{ id: string }>(`SELECT id FROM journal_lines WHERE account_code = ?`, [a.code]);
-    if (used.length) {
-      toast(`لا يمكن حذف "${a.name}" · مستخدَم في ${used.length} ${used.length === 1 ? 'قيد مرحّل' : 'قيود مرحّلة'}`);
-      return;
-    }
+    const why = deleteBlocker(db, a.code);
+    if (why) { toast(why); return; }
     dialog({
       title: 'حذف الحساب',
       body: `حذف الحساب "${a.name}"؟`,
@@ -263,8 +253,8 @@ export default function Accounts() {
         {
           label: 'حذف', variant: 'danger',
           onPress: () => {
-            db.transaction(() => db.run(`UPDATE accounts SET deleted_at = ? WHERE code = ?`, [new Date().toISOString(), a.code]));
-            bump(); toast(`تم حذف الحساب "${a.name}" · يمكن استعادته من الإعدادات`);
+            try { deleteAccount(db, a.code); bump(); toast(`تم حذف الحساب "${a.name}" · يمكن استعادته من الإعدادات`); }
+            catch (e) { reportFailure({ title: 'تعذّر الحذف', e }); }
           },
         },
       ],
@@ -313,11 +303,11 @@ export default function Accounts() {
         <AccountRowItem
           code={item.a.code} name={item.a.name} type={item.a.type}
           opening={item.a.opening} debit={item.a.debit} credit={item.a.credit} balance={item.a.balance}
-          tagBg={tag.bg} tagFg={tag.fg} canManage={perm.manage}
+          tagBg={tag.bg} tagFg={tag.fg} canManage={perm.manage} isSystem={systemCodes.has(item.a.code)}
           onOpen={openStmt} onEdit={openEdit} onDelete={doDelete} />
       </View>
     );
-  }, [openStmt, openEdit, doDelete, perm.manage]);
+  }, [openStmt, openEdit, doDelete, perm.manage, systemCodes]);
 
   let running = stmtCarry;
 
@@ -372,8 +362,10 @@ export default function Accounts() {
             <Field label="رمز الحساب" value={code} onChange={setCode} keyboard="numeric" ltr disabled={!!editingCode} />
           </View>
           <View style={{ flex: 1 }}>
-            <SelectField label="النوع" value={type}
-              options={GROUPS.map((g) => ({ value: g, label: g }))} onPick={setType} />
+            {/* نوع الحساب النظامي ثابت (دراسة القائم) */}
+            {editingCode && systemCodes.has(editingCode)
+              ? <Field label="النوع" value={type} onChange={() => {}} disabled />
+              : <SelectField label="النوع" value={type} options={GROUPS.map((g) => ({ value: g, label: g }))} onPick={setType} />}
           </View>
         </Row>
         <Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr />

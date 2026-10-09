@@ -7,6 +7,8 @@ import {
   saveInvoice, setInvoiceStatus, deleteInvoice, payInvoice, saveCreditNote, invoiceRemaining, type InvoiceInput,
 } from '@/domain/invoices';
 import { savePurchase, type PurchaseInput } from '@/domain/purchases';
+import { confirmContract, recordRentPayment } from '@/domain/contracts/service';
+import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { accountBalance } from '@/domain/accounting/ledger';
 import { integrityChecks } from '@/domain/accounting/integrity';
 import { vatReturnData } from '@/domain/vatReturn';
@@ -39,6 +41,8 @@ test('#30 الصادرة لا تُعدَّل ولا تعود مسودة ولا �
 
 test('#30 الإشعار الدائن: مرتبط بفاتورته، بضريبتها، ينقص الذمة والإقرار، والتحصيل بالمتبقي', () => {
   const db = memDb();
+  // المنشأة مسجّلة في الضريبة: فواتيرها الخاضعة في البند ١ (دراسة القائم: غير المسجّلة لا مبيعات خاضعة لها)
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`);
   const id = saveInvoice(db, inv(), 'مستحقة');
   expect(accountBalance(db, '1200')).toBe(115000);
   const cn = saveCreditNote(db, id, { date: '2026-02-20', reason: 'خصم مصطنع', subtotalHalalas: 40000 });
@@ -65,19 +69,26 @@ test('#30 الإشعار الدائن: مرتبط بفاتورته، بضريب�
 
 test('#30 الإقرار المقدَّم يُجمَّد بلقطته · وما تغيّر بعده يظهر فرقاً', () => {
   const db = memDb();
+  // المنشأة مسجّلة في الضريبة: فواتيرها الخاضعة في البند ١ (دراسة القائم: غير المسجّلة لا مبيعات خاضعة لها)
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`);
   saveInvoice(db, inv(), 'مستحقة');
   fileVatReturn(db, 2026, 1, '2026-04-15');
   const snap = filedReturn(db, 2026, 1)!;
   expect(snap.items.find((x) => x.no === '1')!.taxHalalas).toBe(15000);
   expect(() => fileVatReturn(db, 2026, 1)).toThrow();
-  // شراءٌ أُدخل بعد التقديم بتاريخٍ في فترته: اللقطة كما هي، والفرق ظاهر في البند ٧
-  savePurchase(db, {
+  // الشراء بتاريخٍ في فترته لا يُسجَّل بعد التقديم (دراسة القائم) · والدفعة المحصّلة فيها تُسجَّل: اللقطة كما هي، والفرق ظاهر في البند ٥
+  expect(() => savePurchase(db, {
     supplier: 'مورد مصطنع', date: '2026-03-01', due: '2026-03-30', category: 'صيانة', incorpItem: '', amortize: false,
     amortizeMonths: null, exempt: false, excludeFromVat: false, subtotalHalalas: 5000, taxHalalas: 0, totalHalalas: 5000,
     taxStatus: 'خاضعة بنسبة صفرية',
-  } as PurchaseInput);
+  } as PurchaseInput)).toThrow();
+  const cid = confirmContract(db, contractInput(addUnit(db, addProperty(db, { name: 'عقار فرق مصطنع' })),
+    { tenant: 'مستأجر فرق مصطنع', idNumber: '1000000727', phone: '0500000727', start: '2026-01-01', depositHalalas: 0 }));
+  const i1 = db.get<{ id: string; amount_halalas: number }>(`SELECT id, amount_halalas FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1`, [cid])!;
+  recordRentPayment(db, cid, { installmentId: i1.id, period: 'الأول', date: '2026-03-01',
+    lines: [{ method: 'cash', amountHalalas: Number(i1.amount_halalas) }], discountHalalas: 0, notes: '' });
   expect(filedReturn(db, 2026, 1)!.items).toEqual(snap.items);
-  expect(filedDiff(db, 2026, 1).map((d) => d.no)).toEqual(expect.arrayContaining(['10', '12']));
+  expect(filedDiff(db, 2026, 1).map((d) => d.no)).toEqual(expect.arrayContaining(['5', '6']));
   db.close();
 });
 

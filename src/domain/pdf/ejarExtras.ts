@@ -284,7 +284,7 @@ export function compareExtras(db: DB, x: EjarExtras, ctx: { unitId: string; tena
  * يكتب ما وافق عليه المستخدم وحده · بعد إنشاء العقد (فالمستأجر قد أُنشئ) ·
  * وقراءة العداد الحالية قراءة استلام بتاريخ بداية العقد
  */
-export function applyExtras(db: DB, diffs: ExtraDiff[], approved: Set<ExtraKey>, ctx: { unitId: string; tenantName: string; start: string; handoverRef: string }): number {
+export function applyExtras(db: DB, diffs: ExtraDiff[], approved: Set<ExtraKey>, ctx: { unitId: string; tenantName: string; tenantId?: string | null; start: string; handoverRef: string }): number {
   const u = db.get<{ property_id: string }>(`SELECT property_id FROM units WHERE id = ?`, [ctx.unitId]);
   if (!u) return 0;
   let n = 0;
@@ -308,7 +308,10 @@ export function applyExtras(db: DB, diffs: ExtraDiff[], approved: Set<ExtraKey>,
           }
           break;
         }
-        case 'tenant.email': db.run(`UPDATE tenants SET email = ? WHERE name = ? AND deleted_at IS NULL`, [d.read, ctx.tenantName.trim()]); break;
+        // لمستأجر العقد بمعرّفه: الاسم لا يميّز صاحبي هويتين (التحقق المستقل) · وبالاسم لما لا معرّف له
+        case 'tenant.email': if (ctx.tenantId) db.run(`UPDATE tenants SET email = ? WHERE id = ?`, [d.read, ctx.tenantId]);
+          else db.run(`UPDATE tenants SET email = ? WHERE name = ? AND deleted_at IS NULL`, [d.read, ctx.tenantName.trim()]);
+          break;
         case 'meter.electricity':
         case 'meter.water':
         case 'meter.gas': {
@@ -340,12 +343,15 @@ export function unitByNumber(db: DB, propertyId: string, unitNo: string): string
  * الخدمات والمواقف من بيانات العقد المالية المقروءة (قرار المالك ٢٠٢٦-١٠-٠٧) · الخدمات مجموع الغاز والكهرباء
  * والمياه، والمواقف ما بقي من إجمالي قيمة العقد بعد كامل قيمة الإيجار والخدمات
  */
-export function revenueSplitOf(x?: EjarExtras | null): { servicesHalalas?: number; parkingHalalas?: number } {
+export function revenueSplitOf(x?: EjarExtras | null): { servicesHalalas?: number; parkingHalalas?: number; otherHalalas?: number } {
   const f = x?.financial;
   if (!f || f.totalValue == null || f.rentValue == null) return {};
   const services = (f.gas ?? 0) + (f.electricity ?? 0) + (f.water ?? 0);
-  const parking = Math.max(0, f.totalValue - f.rentValue - services);
-  return services || parking ? { servicesHalalas: services, parkingHalalas: parking } : {};
+  // المواقف من خانتها (ParkingAnnualAmount)، وما بقي من الإجمالي فرقٌ يُعرض ولا يدخل المواقف (دراسة القائم · قرار المالك 2026-10-09)
+  const parking = f.parking ?? 0;
+  const other = f.totalValue - f.rentValue - services - parking;
+  if (!services && !parking && !other) return {};
+  return { servicesHalalas: services, parkingHalalas: parking, ...(other ? { otherHalalas: other } : {}) };
 }
 
 /** أسماء الغرف من «النوع وعدده»: الواحدة باسم نوعها، والأكثر مرقّمة */

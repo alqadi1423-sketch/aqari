@@ -8,6 +8,7 @@ import { uid } from './ids';
 import { ambientCostCenter } from './accounting/dimensions';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment, postCreditNoteToLedger } from './accounting/post';
 import { t } from '../i18n';
+import { lineTaxCode, type TaxCode } from './taxCode';
 import { lastReversedOf, repostDate } from './accounting/repost';
 import { isFiledDate } from './vatFilings';
 import { mulQty, pctOf } from './money';
@@ -20,7 +21,10 @@ export interface InvoiceLineInput {
   qty: number;
   priceHalalas: number;
   taxPct: number;
+  /** رمز الضريبة (الهجرة ٣٩): خاضع S، صفري Z، معفى E · وبدونه يُشتق من النسبة */
+  taxCode?: TaxCode;
 }
+export type { TaxCode } from './taxCode';
 
 export interface InvoiceInput {
   customer: string;
@@ -86,6 +90,8 @@ export function saveInvoice(
   /** رقم الإصدار من عدّاد السحابة · وبدونه تسلسل الجهاز */
   issuedNo?: string,
 ): string {
+  // لا فاتورة تصدر بتاريخٍ في فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم · بروح قرار المالك 2026-10-09)
+  if (status !== 'مسودة' && isFiledDate(db, input.issue)) throw new Error(t('invoice.filedPeriod')); // i18n-exempt: حالة مخزّنة
   return db.transaction(() => {
     const { subtotal, tax, total } = invoiceTotals(input.lines);
     let beforeSnap: Record<string, unknown> | undefined;
@@ -144,9 +150,9 @@ export function saveInvoice(
     }
     input.lines.forEach((l, i) => {
       db.run(
-        `INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort)
-         VALUES (?,?,?,?,?,?,?)`,
-        [uid(), id, l.descr, l.qty, l.priceHalalas, l.taxPct, i]
+        `INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort, tax_code)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [uid(), id, l.descr, l.qty, l.priceHalalas, l.taxPct, i, lineTaxCode(l.taxCode, l.taxPct)]
       );
     });
     // مركز التكلفة الذي اختارته شاشة الفاتورة يُحفظ معها · فترثه إن صدرت لاحقاً بلا شاشة (الهجرة ٣٠)
@@ -257,6 +263,7 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
     }>(`SELECT no, customer_name, issue, subtotal_halalas, tax_halalas, total_halalas, journal_entry_id, status
         FROM invoices WHERE id = ?`, [id]);
     if (!v) return;
+    if (newStatus !== 'مسودة' && v.status === 'مسودة' && isFiledDate(db, v.issue)) throw new Error(t('invoice.filedPeriod')); // i18n-exempt: حالة مخزّنة
     // مسودةٌ برقم مؤقت تصدر الآن: رقمها الحقيقي لحظة إصدارها
     if (newStatus !== 'مسودة' && isTempInvoiceNo(v.no)) {
       v.no = issuedNo ?? nextInvoiceNo(db, v.issue);
@@ -431,8 +438,8 @@ export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput
        'مستحقة', // i18n-exempt: حالة مخزّنة · الإشعار لا يُحصَّل ولا يتأخر، وذمته تتبع فاتورته
        -sub, -tax, -total, v.unit_id, v.property_id, new Date().toISOString(), KIND_CREDIT, invoiceId, reason]);
     const pct = Number(v.subtotal_halalas) ? Math.round((Number(v.tax_halalas) * 100) / Number(v.subtotal_halalas)) : 0;
-    db.run(`INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort) VALUES (?,?,?,?,?,?,0)`,
-      [uid(), id, reason, 1, -sub, pct]);
+    db.run(`INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort, tax_code) VALUES (?,?,?,?,?,?,0,?)`,
+      [uid(), id, reason, 1, -sub, pct, tax > 0 ? 'S' : 'E']);
     const entry = postCreditNoteToLedger(db, { id, no, refNo: v.no, customer: v.customer_name, date: input.date, subtotal: sub, tax, total });
     if (entry) db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = ?`, [entry.id, id]);
     logAudit(db, 'الفواتير', 'create', t('invoice.creditNote', { lng: 'ar' }), no + ' · ' + v.no); // i18n-exempt: سجل العمليات بالعربية

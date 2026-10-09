@@ -24,7 +24,7 @@ import { useLang } from '../src/i18n';
 import { vatReturnData } from '../src/domain/vatReturn';
 import { filedReturn, filedDiff, fileVatReturn, unfileVatReturn } from '../src/domain/vatFilings';
 import { useDialog } from '../src/ui/AppDialog';
-import { dataYears, dataQuarters, defaultPeriod, quarterRange, QUARTER_AR } from '../src/domain/periods';
+import { dataYears, dataQuarters, defaultPeriod, quarterRange, QUARTER_AR, previousPeriod } from '../src/domain/periods';
 import { useRouter } from 'expo-router';
 import { today, toLocalISODate, dfmt } from '../src/domain/dates';
 import { fmt } from '../src/domain/money';
@@ -117,15 +117,10 @@ export default function Reports() {
     return { from: (finYear + '-01-01') as string | null, to: finYear + '-12-31' };
   }, [finYear, finQ, customFrom, customTo, version]); // «اليوم» نهاية الفترة · يتجدد بتغيّره (المراجعة ٤.١٥)
 
-  // الفترة السابقة المساوية طولاً · للمقارنة في كل قائمة
+  // الفترة المقابلة بالتقويم (السنة والربع والأشهر الكاملة بمثلها) · للمقارنة في كل قائمة (دراسة القائم)
   const prev = useMemo(() => {
     if (!from) return { from: null as string | null, to: null as string | null };
-    const f = new Date(from + 'T00:00:00');
-    const t = new Date(to + 'T00:00:00');
-    const days = Math.max(1, Math.round((t.getTime() - f.getTime()) / 86400000) + 1);
-    const pTo = new Date(f.getTime() - 86400000);
-    const pFrom = new Date(pTo.getTime() - (days - 1) * 86400000);
-    return { from: toLocalISODate(pFrom), to: toLocalISODate(pTo) };
+    return previousPeriod(from, to);
   }, [from, to]);
 
   const data = useMemo(() => {

@@ -16,7 +16,7 @@ import { attachPicked, pickFile } from './attach';
 import { useToast } from './Toast';
 import { useDialog } from './AppDialog';
 import { C, TYPE } from './theme';
-import { tenantProfile, renameTenant, similarTenantGroups, mergeTenants } from '../domain/tenants';
+import { tenantProfile, renameTenant, similarTenantGroups, mergeTenants, mergeHasDifferentIds } from '../domain/tenants';
 import { contractStatusKind, contractStatusLabel } from '../domain/contracts/rules';
 import { today, dfmt } from '../domain/dates';
 import { fmt } from '../domain/money';
@@ -166,6 +166,7 @@ export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; on
 
 /** المتشابهون · الدمج قرار المستخدم لا التطبيق */
 export function SimilarTenantsSheet({ onClose }: { onClose: () => void }) {
+  const { t } = useLang();
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
@@ -196,7 +197,22 @@ export function SimilarTenantsSheet({ onClose }: { onClose: () => void }) {
                     label: 'دمج', variant: 'danger',
                     onPress: () => {
                       try {
-                        mergeTenants(db, g.tenants[0].id, g.tenants.slice(1).map((x) => x.id));
+                        // هويتان مختلفتان: تأكيدٌ ثانٍ صريح قبل الدمج (دراسة القائم)
+                        const keepId = g.tenants[0].id, drops = g.tenants.slice(1).map((x) => x.id);
+                        if (mergeHasDifferentIds(db, keepId, drops)) {
+                          dialog({
+                            title: t('tenants.mergeDifferentIdsTitle'), body: t('tenants.mergeDifferentIdsBody'), tone: 'danger',
+                            actions: [
+                              { label: t('common.cancel'), variant: 'ghost' },
+                              { label: t('tenants.mergeAction'), variant: 'danger', onPress: () => {
+                                try { mergeTenants(db, keepId, drops, { allowDifferentIds: true }); bump(); toast(t('tenants.merged')); }
+                                catch (e) { reportFailure({ title: t('tenants.mergeFailed'), e }); }
+                              } },
+                            ],
+                          });
+                          return;
+                        }
+                        mergeTenants(db, keepId, drops);
                         bump(); toast('دُمجوا في سجل واحد وتبعته العقود');
                       } catch (e) {
                         reportFailure({ title: 'تعذّر الدمج', e });

@@ -5,6 +5,7 @@
  * المتشابهات تُجمع وتُعرض ليقرّر المستخدم دمجها · لا دمج صامت.
  */
 import type { DB } from '../db/adapter';
+import { t } from '../i18n';
 import { uid } from './ids';
 import { logAudit } from './audit';
 import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
@@ -139,11 +140,23 @@ export function similarTenantGroups(db: DB): SimilarGroup[] {
     .map(([key, tenants]) => ({ key, tenants }));
 }
 
-/** دمج مستأجرين في سجل واحد: العقود تُعاد للوجهة والمكرَّرون يُحذفون ناعماً */
-export function mergeTenants(db: DB, keepId: string, dropIds: string[]): void {
+/** هل في الدمج هويتان مختلفتان (كلٌّ له هوية) · يُطلب له تأكيدٌ صريح (دراسة القائم) */
+export function mergeHasDifferentIds(db: DB, keepId: string, dropIds: string[]): boolean {
+  const ids = db.all<{ n: string }>(
+    `SELECT TRIM(national_id) AS n FROM tenants WHERE id IN (${[keepId, ...dropIds].map(() => '?').join(',')}) AND TRIM(national_id) != ''`,
+    [keepId, ...dropIds]).map((r) => r.n);
+  return new Set(ids).size > 1;
+}
+
+/**
+ * دمج مستأجرين في سجل واحد: العقود تُعاد للوجهة والمكرَّرون يُحذفون ناعماً، ورصيدهم الدائن ينتقل إلى الوجهة (دراسة القائم) ·
+ * وهويتان مختلفتان لا تُدمجان إلا بتأكيدٍ صريح (allowDifferentIds)
+ */
+export function mergeTenants(db: DB, keepId: string, dropIds: string[], opts: { allowDifferentIds?: boolean } = {}): void {
   const keep = db.get<{ name: string; national_id: string; phone: string }>(
     `SELECT name, national_id, phone FROM tenants WHERE id = ?`, [keepId]);
   if (!keep) throw new Error('تعذّر العثور على المستأجر الوجهة');
+  if (!opts.allowDifferentIds && mergeHasDifferentIds(db, keepId, dropIds)) throw new Error(t('tenants.mergeDifferentIds'));
   db.transaction(() => {
     for (const dropId of dropIds) {
       if (dropId === keepId) continue;
@@ -153,6 +166,9 @@ export function mergeTenants(db: DB, keepId: string, dropIds: string[]): void {
       // إكمال الناقص من المدموج
       if (drop?.national_id && !keep.national_id) db.run(`UPDATE tenants SET national_id = ? WHERE id = ?`, [drop.national_id, keepId]);
       if (drop?.phone && !keep.phone) db.run(`UPDATE tenants SET phone = ? WHERE id = ?`, [drop.phone, keepId]);
+      // الرصيد الدائن ينتقل إلى الوجهة (التزامٌ للمستأجر نفسه في 2410، لا يتغيّر مجموعه)
+      db.run(`UPDATE tenants SET credit_halalas = credit_halalas + COALESCE((SELECT credit_halalas FROM tenants WHERE id = ?), 0) WHERE id = ?`, [dropId, keepId]);
+      db.run(`UPDATE tenants SET credit_halalas = 0 WHERE id = ?`, [dropId]);
       db.run(`UPDATE tenants SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), dropId]);
     }
     logAudit(db, 'العملاء', 'update', 'دمج مستأجرين', keep.name);

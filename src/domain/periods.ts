@@ -61,3 +61,28 @@ export function quarterRange(year: number, q: 1 | 2 | 3 | 4): { from: string; to
   const p = (n: number) => String(n).padStart(2, '0');
   return { from: `${year}-${p(mFrom)}-01`, to: `${year}-${p(q * 3)}-${p(lastDay)}` };
 }
+
+/**
+ * الفترة المقابلة للمقارنة (دراسة القائم 2026-10-09): أشهرٌ كاملة (سنة أو ربع أو شهر أو غيرها) بمثلها من الأشهر قبلها، وغيرها
+ * بعدد أيامها قبلها مباشرة · فلا تُزاح بيوم أو يومين في الكبيسة وحدود الأرباع.
+ */
+export function previousPeriod(from: string, to: string): { from: string; to: string } {
+  const [fy, fm, fd] = from.split('-').map(Number);
+  const [ty, tm, td] = to.split('-').map(Number);
+  const lastDay = (y: number, m: number) => new Date(y, m, 0).getDate();
+  const iso = (y: number, m: number, d: number) => `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  if (fd === 1 && td === lastDay(ty, tm)) {
+    const months = (ty - fy) * 12 + (tm - fm) + 1;
+    const start = (fy * 12 + (fm - 1)) - months;
+    const sy = Math.floor(start / 12), sm = (start % 12) + 1;
+    const end = fy * 12 + (fm - 1) - 1;
+    const ey = Math.floor(end / 12), em = (end % 12) + 1;
+    return { from: iso(sy, sm, 1), to: iso(ey, em, lastDay(ey, em)) };
+  }
+  const f = new Date(fy, fm - 1, fd), t = new Date(ty, tm - 1, td);
+  const days = Math.max(1, Math.round((t.getTime() - f.getTime()) / 86400000) + 1);
+  const pTo = new Date(fy, fm - 1, fd - 1);
+  const pFrom = new Date(pTo.getFullYear(), pTo.getMonth(), pTo.getDate() - (days - 1));
+  return { from: iso(pFrom.getFullYear(), pFrom.getMonth() + 1, pFrom.getDate()), to: iso(pTo.getFullYear(), pTo.getMonth() + 1, pTo.getDate()) };
+}
+
