@@ -242,8 +242,8 @@ export default function Collect() {
     return db.all<{ id: string; date: string; net_halalas: number; tenant_name: string; contract_id: string; period: string }>(
       `SELECT p.id, p.date, p.net_halalas, p.period, c.tenant_name, c.id AS contract_id
        FROM contract_payments p JOIN contracts c ON c.id = p.contract_id AND c.deleted_at IS NULL
-       WHERE substr(p.date, 1, 7) = ? AND p.cancelled_at IS NULL
-       ORDER BY p.date DESC`, [mo]);
+       WHERE p.date >= ? AND p.date <= ? AND p.cancelled_at IS NULL
+       ORDER BY p.date DESC`, [mo + '-01', mo + '-31']); // نطاق التاريخ فيُستعمل فهرسه (مراجعة التثبيت #44)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, paidSheet]);
 

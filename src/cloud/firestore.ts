@@ -205,6 +205,8 @@ export class FirestoreRemote implements RemoteStore {
         const mid = Math.ceil(docs.length / 2);
         return [...(await this.write(docs.slice(0, mid))), ...(await this.write(docs.slice(mid)))];
       }
+      // الصف الواحد بـ٤٠٠ مرفوضٌ وحده ويبقى في الطابور بسببه، فلا يوقف ما بعده (التحقق المستقل من c789999)
+      if (e instanceof FirestoreHttpError && e.status === 400) return [{ ok: false, code: 'INVALID_ARGUMENT', message: e.message }];
       if (!(e instanceof FirestoreHttpError) || e.status !== 403) throw e;
       if (docs.length === 1) return [{ ok: false, code: 'PERMISSION_DENIED', message: e.message }];
       const mid = Math.ceil(docs.length / 2);
@@ -241,7 +243,8 @@ export class FirestoreRemote implements RemoteStore {
         return out;
       } catch (e) {
         // جهاز آخر حجز في اللحظة نفسها · يُعاد القراءة والحساب
-        if (e instanceof FirestoreHttpError && [400, 409].includes(e.status)) continue;
+        // وتقيّمها القواعد على العدد الأحدث فترفض بـ٤٠٣ (التحقق المستقل: سباق جهازين)
+        if (e instanceof FirestoreHttpError && [400, 403, 409].includes(e.status)) continue;
         throw e;
       }
     }

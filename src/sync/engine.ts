@@ -209,6 +209,42 @@ export function outboxCount(db: DB): number {
 
 /* ═══════════ الوارد: الحفظ ثم التطبيق ═══════════ */
 
+/** مفتاح آخر إصدارٍ أُعيد فيه المرفوض */
+export const REJECTS_REPLAYED_KEY = 'rejects_replayed_sv';
+
+/**
+ * بعد ترقية التطبيق، مرة لكل إصدار (التحقق المستقل من #36 والهجرة ٤٠): ما رُفض رفعه لصلاحيته يعود إلى الطابور، وما رُفض
+ * تطبيقه من الوارد (قيد مخططٍ أقدم كمورد الغاز) يعود إلى صندوق الوارد · فلا يضيع ما كتبه إصدارٌ أقدم أو ما وصله
+ */
+export function replayRejectsAfterUpgrade(db: DB, sv: number): { requeued: number; restaged: number } {
+  if (getSyncState(db, REJECTS_REPLAYED_KEY) === String(sv)) return { requeued: 0, restaged: 0 };
+  let requeued = 0, restaged = 0;
+  const rows = db.all<{ id: number; tbl: string; pk: string; reason: string; payload: string }>(
+    `SELECT id, tbl, pk, reason, payload FROM sync_rejects ORDER BY id`);
+  db.transaction(() => {
+    for (const r of rows) {
+      const t = syncTable(r.tbl);
+      if (r.reason.startsWith('خارج صلاحيتك')) { // i18n-exempt: بادئة سبب الرفض المخزَّن
+        if (!t) continue;
+        const where = t.pkCols.map((c) => `"${c}" = ?`).join(' AND ');
+        const exists = !!db.get(`SELECT 1 FROM "${r.tbl}" WHERE ${where}`, pkParams(r.tbl, r.pk));
+        db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?, ?, ?, ?) ON CONFLICT(tbl, pk) DO NOTHING`,
+          [r.tbl, r.pk, exists ? 'upsert' : 'delete', nowIso()]);
+        requeued++;
+      } else {
+        let doc: RemoteDoc | null = null;
+        try { doc = JSON.parse(r.payload) as RemoteDoc; } catch { doc = null; }
+        if (!doc || !doc.id || !doc.t) continue;
+        stageInbox(db, [doc]);
+        restaged++;
+      }
+      db.run(`DELETE FROM sync_rejects WHERE id = ?`, [r.id]);
+    }
+    setSyncState(db, REJECTS_REPLAYED_KEY, String(sv));
+  });
+  return { requeued, restaged };
+}
+
 export function stageInbox(db: DB, docs: RemoteDoc[]): void {
   db.transaction(() => {
     for (const d of docs) {
@@ -238,6 +274,20 @@ function stable(v: unknown): string {
   return '{' + Object.keys(v as object).sort().map((k) => JSON.stringify(k) + ':' + stable((v as Record<string, unknown>)[k])).join(',') + '}';
 }
 /** مقارنة المضمون لا الشكل · فـ 5 و 5.0 والترتيب لا تُحسب اختلافاً */
+/**
+ * المستند الوارد بمعرّف هذا الجهاز صدىً حقاً: محتواه كالصف المحلي (أو الصف محذوفٌ والمستند حذف) · أو للصف تعديلٌ هنا لم يُرفع
+ * بعد، فالوارد كتابته الأقدم وتغلبه الأحدث عند رفعها (لا «تعارض» مع نفسه)
+ */
+function isEcho(db: DB, doc: RemoteDoc, deviceId: string): boolean {
+  if (db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])) return true;
+  try {
+    const local = buildDoc(db, doc.t, doc.k, doc.del ? 'delete' : 'upsert', doc.u, deviceId);
+    return sameContent(local, doc);
+  } catch {
+    return false;
+  }
+}
+
 function sameContent(a: RemoteDoc, b: RemoteDoc): boolean {
   const bare = (d: RowData | null) => (d ? { ...d, created_at: null } : null);
   return a.del === b.del && stable(bare(a.d)) === stable(bare(b.d)) && stable(a.lines ?? null) === stable(b.lines ?? null);
@@ -419,7 +469,8 @@ function applyOne(
 ): ApplyOutcome {
   const t = syncTable(doc.t);
   if (!t) { reject(db, doc, 'جدول خارج المزامنة'); return 'rejected'; }
-  if (doc.dev === deviceId) return 'skipped'; // صدى ما كتبه هذا الجهاز
+  // صدى ما كتبه هذا الجهاز · بمحتواه لا بمعرّف الجهاز وحده: العضو يكتب «dev» فينتحل الجهاز (مراجعة التثبيت #56)
+  if (doc.dev === deviceId && isEcho(db, doc, deviceId)) return 'skipped';
   // مفتاح الصف داخل المستند هو مفتاحه (المراجعة #20): وإلا استبدل مستندٌ صفاً آخر
   if (!doc.del && doc.d) {
     const want = pkParams(doc.t, doc.k);
@@ -462,7 +513,9 @@ function applyOne(
     }
     // الطرفان بساعة الخادم: تعديل هذا الجهاز مصحَّحاً بفرق ساعته، والوارد مكتوب مصحَّحاً من جهازه
     const mine = toServerClock(db, pending.changed_at);
-    const localWins = !joining && (mine > doc.u || (mine === doc.u && deviceId > doc.dev));
+    // الوقت الوارد لا يتجاوز وقت كتابته في الخادم: «u» يكتبه الجهاز فيقدّمه العضو ليغلب كل تعارض (مراجعة التثبيت #56)
+    const theirs = doc.ts && doc.ts < doc.u ? doc.ts : doc.u;
+    const localWins = !joining && (mine > theirs || (mine === theirs && deviceId > doc.dev));
     if (localWins) {
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', `${doc.t} · ${doc.k} · غلب تعديل هذا الجهاز (${mine}) على الوارد (${doc.u})`);
       return 'conflict-local';

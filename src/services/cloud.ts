@@ -28,8 +28,7 @@ import { resetDeviceData } from './deviceReset';
 import { hasUserData } from '../domain/backup/upgrade';
 import {
   enableSync, syncOnce, syncStatus, setSyncState, getSyncState, planCloudReplace, adoptAsCloudTruth, readCloud, planFromSnapshot, syncBackoffUntil,
-  type SyncStatus, type CloudReplacePlan, type CloudSnapshot,
-} from '../sync/engine';
+  type SyncStatus, type CloudReplacePlan, type CloudSnapshot, replayRejectsAfterUpgrade } from '../sync/engine';
 import type { DB } from '../db/adapter';
 import { ensureDeviceId } from '../db/seed';
 import { expoHasher, expoMd5Base64 } from '../files/expoFs';
@@ -64,7 +63,7 @@ import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
-  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite, readCompat, raiseCompat, appTooOld,
+  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, ownOrgExists, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite, readCompat, appTooOld,
   updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
@@ -124,6 +123,8 @@ export interface CloudState {
   restored: boolean;
   /** دعوات منشآت لإيميل الداخل على جهاز جديد · تعرضها بوابة الدخول قبل أي مزامنة */
   invites: Array<{ org: string; doc: MemberDoc }> | null;
+  /** للحساب منشأةٌ قائمة في السحابة · تُعرض قبل الدعوات (مراجعة التثبيت #52) */
+  ownOrg?: boolean;
   /**
    * ما تنتظره بوابة الدخول قبل فتح التطبيق: 'retry' تعذّر التحقق من الدعوات (يلزم اتصال) ·
    * 'unbound' على الجهاز بيانات بلا حساب ينتظر قرار الداخل فيها · 'switching' تُفتح نسخة الحساب
@@ -291,9 +292,12 @@ export async function syncNow(): Promise<void> {
     if (org) {
       const compat = await readCompat(remoteOf(db, uid, idToken), org);
       compatLive = compat.live;
-      if (member && appTooOld(compat.min)) { patch({ lastError: t('compat.updateApp') }); return; }
+      // المالك والعضو كلاهما: جهازٌ أقدم من الحد لا يكتب فيُرفض ما يكتبه (التحقق المستقل من f07ad73)
+      if (appTooOld(compat.min)) { patch({ lastError: t('compat.updateApp') }); return; }
     }
     patch({ decision: null });
+    // ما رُفض لإصدارٍ أقدم يعود بعد الترقية، مرة لكل إصدار (التحقق المستقل من #36 والهجرة ٤٠)
+    replayRejectsAfterUpgrade(db, SCHEMA_VERSION);
     // الشاشات تتحدث بما وصل أثناء التطبيق لا بعده كله · أول سحب يظهر تدريجياً (أعطال ٢٠٢٦-١٠-٠٥)
     const rep = await syncOnce(db, remoteOf(db, uid, idToken), ensureDeviceId(db), (msg) => patch({ progress: msg }), { onApplied: () => onData() });
     setSyncState(db, 'last_error', null);
@@ -306,8 +310,6 @@ export async function syncNow(): Promise<void> {
     pumpFilesInBackground(db).catch(() => {});
     // المالك ينشر نقل الوحدات بعد رفع صفوفها بوسمها الجديد (ملاحظة المالك على ٤.١٢)
     if (!member && org === uid) await publishUnitMoves(db, remoteOf(db, uid, idToken), org);
-    // جهاز المالك يرفع حدّ الإصدار إلى إصداره بعد رفع صفوفه (#36) · ولا يخفضه · وفشله لا يُسقط الدورة
-    if (!member && org === uid && compatLive) await raiseCompat(remoteOf(db, uid, idToken), org).catch(() => false);
     if (member) {
       // العضوية في الخادم: أُزيلت فيُفرَّغ الجهاز · تغيّرت فيُعاد السحب من أوله بصلاحيته الجديدة،
       // وكذلك إن نُقلت وحدةٌ من عقاراته إلى عقار ليس له
@@ -478,7 +480,10 @@ export async function activateAccount(u: SessionUser): Promise<void> {
       if (inv.length) {
         // بيانات الجهاز التي بلا حساب لا تُعرض على مدعوّ · تُركن كما هي
         if (r === 'unbound') { parkActive(env, UNBOUND); onData(); }
-        patch({ invites: inv, gate: null });
+        // منشأة الحساب القائمة تُعرض قبل دعوات غيره (مراجعة التثبيت #52)
+        const sess = s;
+        const ownOrg = await ownOrgExists(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.uid);
+        patch({ invites: inv, ownOrg, gate: null });
         return;
       }
       if (r === 'unbound') { patch({ gate: 'unbound' }); return; }

@@ -5,6 +5,7 @@
  * الذاكرة لا تحمل الأرشيف والمرفقات معاً أثناء نسخة الأمان · هذا ما كان يقتل التطبيق.
  */
 import { throwIfCancelled, isCancelled, type CancelSignal, type ProgressFn } from '../progress';
+import { enforceReferenceSchema } from './schemaTrust';
 import { joinPath } from '../../files/fsAdapter';
 import { liveBlobs, isSafeBlobName } from '../../files/store';
 import { reconcileCache } from '../../files/cloudFiles';
@@ -204,6 +205,21 @@ export async function prepareRestore(
         const found = currentSchemaVersion(probe);
         if (found > SCHEMA_VERSION) throw new NewerSchemaError(found, SCHEMA_VERSION);
         if (found < SCHEMA_VERSION) { migrate(probe); migrated = true; }
+        // المحفّزات والعروض من الهجرات لا من الملف (مراجعة التثبيت #48): مرجعٌ يُبنى بجانب النسخة ويُطابَق به
+        {
+          const refPath = stagedDbPath + '.ref';
+          const ref = env.openDb(refPath);
+          try {
+            migrate(ref);
+            const fixed = enforceReferenceSchema(probe, ref);
+            if (fixed.dropped.length || fixed.created.length) {
+              notes = [...notes, 'أُعيدت حمايات القاعدة كما في التطبيق (' + (fixed.dropped.length + fixed.created.length) + ')']; // i18n-exempt: ملاحظة الاستعادة بالعربية كأخواتها
+            }
+          } finally {
+            ref.close();
+            for (const sfx of ['', '-wal', '-shm', '-journal']) { try { if (env.fs.exists(refPath + sfx)) env.fs.remove(refPath + sfx); } catch { /* تجاهل */ } }
+          }
+        }
         const ic = probe.get<Record<string, string>>(`PRAGMA integrity_check`);
         if (!ic || String(Object.values(ic)[0]) !== 'ok')
           throw new RestoreError('قاعدة النسخة تالفة (integrity_check)');
@@ -240,7 +256,7 @@ export async function prepareRestore(
         const keep = planKeepPosted(probe, { device: env.db, cloud: cloudDocs });
         if (keep.entries.length) kept = applyKeepPosted(probe, keep).entries;
         // الفحوص نفسها بالحكم نفسه في النسخ (checks.ts): الفرق المحاسبي ملاحظةٌ تُعرض ولا ترفض الاستعادة
-        notes = reviewData(probe).notes;
+        notes = [...notes, ...reviewData(probe).notes];
         incoming = ledgerRepair || paidRecomputed.length || kept.length ? tableCounts(probe) : counted;
         probe.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
       } finally {

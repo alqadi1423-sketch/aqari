@@ -4,7 +4,7 @@
  *  #٤١ الدعوة تُقرأ وتُحذف بإيميلٍ متحقَّق وحده
  */
 import { FirestoreRemote, encodeFields } from '@/cloud/firestore';
-import { removeMember, acceptInvite } from '@/services/org';
+import { removeMember, acceptInvite, sendInvite, ownOrgExists } from '@/services/org';
 import { SCHEMA_VERSION } from '@/db/schema';
 
 const HOST = process.env.FIRESTORE_EMULATOR_HOST;
@@ -55,6 +55,18 @@ d('الدعوات (مراجعة التثبيت #36 و#41)', () => {
     await expect(acceptInvite(db, remote('U-NEW', EMAIL), ORG, 'U-NEW', { email: EMAIL } as never)).rejects.toThrow();
     expect(await get(`orgs/${ORG}/members/U-NEW`, token(ORG, 'owner-x@example.test'))).toBe(404);
     db.close();
+  });
+
+  // مراجعة التثبيت #52: بريد صاحب الدعوة فيها، وتُعرف منشأة الحساب القائمة
+  test('#٥٢ الدعوة تحمل بريد صاحبها · ومنشأة الحساب القائمة تُعرف', async () => {
+    const owner = remote(ORG, 'owner-x@example.test');
+    await sendInvite(owner, ORG, { email: 'second-x@example.test', perms: { collect: 1 }, allProps: true, props: [] }, 'منشأة مصطنعة', 'owner-x@example.test');
+    const tok = token(ORG, 'owner-x@example.test');
+    const res = await fetch(docUrl(`orgs/${ORG}/invites/second-x@example.test`), { headers: { Authorization: 'Bearer ' + tok } });
+    expect(JSON.stringify(await res.json())).toContain('owner-x@example.test');
+    expect(await ownOrgExists(remote('U-FRESH', 'fresh-x@example.test'), 'U-FRESH')).toBe(false);
+    expect(await put(`orgs/${ORG}/meta/devices`, { letters: {} }, tok)).toBe(200);
+    expect(await ownOrgExists(owner, ORG)).toBe(true);
   });
 
   test('#٤١ الدعوة لا تُقرأ ولا تُحذف بإيميلٍ غير متحقَّق', async () => {

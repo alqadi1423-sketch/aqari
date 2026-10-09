@@ -4,7 +4,7 @@
  * فك FlateDecode عبر fflate، خرائط ToUnicode (bfchar/bfrange) لفك رموز CID،
  * ومجاري الكائنات المضغوطة ObjStm، وتجميع الأسطر بفارق عمودي > 3 كمنطق النموذج.
  */
-import { unzlibSync, inflateSync } from 'fflate';
+import { Unzlib, Inflate } from 'fflate';
 
 const latin1 = (b: Uint8Array) => {
   let s = '';
@@ -15,9 +15,34 @@ const latin1 = (b: Uint8Array) => {
   return s;
 };
 
+/** أقصى ما يُفكّ من مجرى PDF واحد (مراجعة التثبيت #49: فكّ PDF بلا سقف) · عقد إيجار نصّي أصغر منه بكثير */
+const MAX_PDF_STREAM = 16 << 20;
+
+/** فكّ zlib أو الخام بسقف · null إن تعذّر أو تجاوز السقف */
+export function inflateCapped(data: Uint8Array, max: number = MAX_PDF_STREAM): Uint8Array | null {
+  for (const Kind of [Unzlib, Inflate]) {
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    try {
+      const z = new Kind((chunk: Uint8Array) => {
+        total += chunk.length;
+        if (total > max) throw new Error('cap');
+        parts.push(chunk);
+      });
+      z.push(data, true);
+      const out = new Uint8Array(total);
+      let o = 0;
+      for (const p of parts) { out.set(p, o); o += p.length; }
+      return out;
+    } catch (e) {
+      if ((e as Error).message === 'cap') return null;
+    }
+  }
+  return null;
+}
+
 function tryInflate(data: Uint8Array): Uint8Array | null {
-  try { return unzlibSync(data); } catch { /* جرّب خام */ }
-  try { return inflateSync(data); } catch { return null; }
+  return inflateCapped(data);
 }
 
 /** فك مرشِّح PNG Predictor (يشيع في مجاري ObjStm/xref بـ /Predictor 12) */

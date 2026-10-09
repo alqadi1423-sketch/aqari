@@ -85,6 +85,9 @@ OP_WRITES.library = { own: ['attachments'], create: ['audit_log', ...FILES] };
  */
 export const SELF_OP = 'self';
 export const SELF_AUDIT_ENTITY = 'بيانات عضو';
+/** وحدة سطر بيانات العضو · وفاعل المالك في سجل العمليات (auditActor) لا يكتبه عضو (مراجعة التثبيت #54) */
+export const SELF_AUDIT_MODULE = 'الأعضاء'; // i18n-exempt: وحدة مخزّنة في سجل العمليات
+export const OWNER_ACTOR = 'المالك'; // i18n-exempt: فاعلٌ مخزَّن في سجل العمليات
 
 export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update' | 'delete', cols: string[] = []): boolean {
   const w = OP_WRITES[op];

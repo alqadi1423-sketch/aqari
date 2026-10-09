@@ -24,8 +24,8 @@ export class MemoryRemote implements RemoteStore {
   writes = 0;
 
   private stamp(): string {
-    this.clock += 1;
-    return new Date(Date.UTC(2026, 0, 1) + this.clock).toISOString();
+    this.clock = Math.max(Date.now(), this.clock + 1);
+    return new Date(this.clock).toISOString();
   }
 
   private allowed(prev: RemoteDoc | undefined, next: RemoteDoc): boolean {

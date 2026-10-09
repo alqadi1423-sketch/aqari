@@ -151,6 +151,20 @@ d('رحلة المنشأة', () => {
     await orgR.deleteDoc(`orgs/${OWNER}/meta/compat`);
   });
 
+  // مراجعة التثبيت #54: العضو لا ينتحل «المالك» في سجل العمليات
+  test('#٥٤ سطر سجلٍ يكتبه العضو باسم المالك يُرفض · وسطره باسمه يُقبل', async () => {
+    const { syncOnce } = await import('@/sync/engine');
+    const { logAudit } = await import('@/domain/audit');
+    const rejects = () => Number(mem.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects WHERE tbl = 'audit_log'`)!.n);
+    const before = rejects();
+    logAudit(mem, 'العقود', 'update', 'سطر مصطنع', 'باسم العضو');
+    // سجل العمليات لا يُعدَّل (محفّزه) · فالمنتحل يُكتب سطراً جديداً باسم المالك كما يفعل عميلٌ معدَّل
+    mem.run(`INSERT INTO audit_log (id, ts, user_name, module, action_type, entity_type, entity_name) VALUES ('AUD-FORGED', '2026-05-04T00:00:00', 'المالك', 'العقود', 'update', 'سطر مصطنع', 'منتحل')`);
+    await syncOnce(mem, deviceRemote(mem, MEMBER, MEMBER_EMAIL), 'dev-member-1');
+    expect(rejects()).toBe(before + 1);
+    expect(mem.get(`SELECT reason FROM sync_rejects WHERE tbl = 'audit_log' ORDER BY id DESC LIMIT 1`)).toBeTruthy();
+  });
+
   // دراسة القائم (قرار المالك 2026-10-09 أولاً ٥): تعديل الصلاحية لا يمسح ما عدّله العضو من بياناته، ويعيد ما قبله وما بعده للسجل
   test('تعديل الصلاحية لا يمسح بيانات العضو · ويعيد الصلاحية قبله وبعده', async () => {
     const orgR = new FirestoreRemote({ ...base(OWNER, 'owner@example.test'), org: OWNER });

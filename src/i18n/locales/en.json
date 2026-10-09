@@ -655,5 +655,10 @@
   "compat": {
     "updateApp": "Update the app to continue syncing · the organization requires a newer version",
     "updateBeforeJoin": "Update the app before accepting the invitation · the organization requires a newer version"
+  },
+  "invites": {
+    "openOwn": "Open my organization",
+    "ownNote": "Your account already has an organization with its data. The invitation below is from another organization; accepting it makes this device a member there.",
+    "from": "Invitation from {{email}}"
   }
 }

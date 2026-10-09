@@ -280,12 +280,12 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     expect(await putDoc(`orgs/${ORG}/members/${COLLECTOR.uid}`, { email: 'u-col@example.test', perm: { collect: 3 }, all: true, props: [], tokens: ['collect|@'] }, COLLECTOR.uid!)).toBe(403);
   });
 
-  test('عدّاد الترقيم: العضو يحجز كتلةً ورقم فاتورة · ولا يُنقص عدداً ولا يضيف سلسلةً غريبة', async () => {
+  test('عدّاد الترقيم: العضو يحجز كتلةً · ورقم الفاتورة لمن يصدرها وحده (#55) · ولا يُنقص عدداً ولا يضيف سلسلةً غريبة', async () => {
     const r = remoteFor(COLLECTOR.uid!, COLLECTOR);
     const [b] = await r.reserveBlocks([{ series: 'JE', size: 20, floor: 0, gap: 0 }]);
     expect(b.hi - b.lo + 1).toBe(20);
-    const n = await r.takeInvoiceSeq(0);
-    expect(await r.takeInvoiceSeq(0)).toBe(n + 1);
+    // المحصِّل بلا الفواتير لا يحرّك تسلسل الفاتورة الضريبية (مراجعة التثبيت #55) · ومن يصدرها في counters.emulator
+    await expect(r.takeInvoiceSeq(0)).rejects.toThrow();
     // العدّاد كما هو مع تعديلٍ واحد · وحذف سلسلة قائمة مرفوض أيضاً
     const cur = (await remoteFor(ORG, null).getDoc(`orgs/${ORG}/meta/counters`))!;
     expect(await putDoc(`orgs/${ORG}/meta/counters`, { ...cur, JE: 1 }, COLLECTOR.uid!)).toBe(403);

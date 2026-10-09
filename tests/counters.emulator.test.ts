@@ -1,0 +1,49 @@
+/**
+ * مراجعة التثبيت #55 على محاكي Firestore: عدّاد الترقيم (ومنه INV للفاتورة الضريبية) كان يرفعه أي عضو ولو بـ«عرض»،
+ * فيصنع فجوة في تسلسل الفواتير · INV لمن يصدر الفاتورة وبواحدٍ لا غير، وقفزة غيره محدودة · بيانات مصطنعة.
+ */
+import { encodeFields } from '@/cloud/firestore';
+
+const HOST = process.env.FIRESTORE_EMULATOR_HOST;
+const PROJECT = 'demo-aqari';
+const ORG = 'CNTOWNER';
+const d = HOST ? describe : describe.skip;
+
+function token(uid: string, email = uid.toLowerCase() + '@example.test'): string {
+  const b = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const now = Math.floor(Date.now() / 1000);
+  return b({ alg: 'none', typ: 'JWT' }) + '.' + b({
+    iss: 'https://securetoken.google.com/' + PROJECT, aud: PROJECT, iat: now, exp: now + 3600, auth_time: now,
+    sub: uid, user_id: uid, email, email_verified: true, firebase: { sign_in_provider: 'google.com', identities: {} },
+  }) + '.';
+}
+const put = async (path: string, data: Record<string, unknown>, uid: string) => (await fetch(
+  `http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents/${path}`,
+  { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(uid) }, body: JSON.stringify({ fields: encodeFields(data) }) },
+)).status;
+const member = (perm: Record<string, number>) => ({ email: 'm@example.test', perm, all: true, props: [], tokens: [], orgName: 'منشأة مصطنعة' });
+const C = `orgs/${ORG}/meta/counters`;
+
+d('عدّاد الترقيم (مراجعة التثبيت #55)', () => {
+  beforeAll(async () => {
+    await fetch(`http://${HOST}/emulator/v1/projects/${PROJECT}/databases/(default)/documents`, { method: 'DELETE' });
+    expect(await put(`orgs/${ORG}/members/U-VIEW`, member({ collect: 1 }), ORG)).toBe(200);
+    expect(await put(`orgs/${ORG}/members/U-INV`, member({ invoices: 3 }), ORG)).toBe(200);
+    expect(await put(C, { JE: 10, EJ: 0, PUR: 0, INV: 5 }, ORG)).toBe(200);
+  });
+
+  test('عضوٌ بلا الفواتير لا يحرّك INV · ويحجز كتل القيود', async () => {
+    expect(await put(C, { JE: 10, EJ: 0, PUR: 0, INV: 6 }, 'U-VIEW')).toBe(403);
+    expect(await put(C, { JE: 510, EJ: 0, PUR: 0, INV: 5 }, 'U-VIEW')).toBe(200);
+  });
+
+  test('من يصدر الفاتورة يرفع INV بواحدٍ لا غير', async () => {
+    expect(await put(C, { JE: 510, EJ: 0, PUR: 0, INV: 6 }, 'U-INV')).toBe(200);
+    expect(await put(C, { JE: 510, EJ: 0, PUR: 0, INV: 8 }, 'U-INV')).toBe(403);
+  });
+
+  test('قفزة العضو في غير INV محدودة · والمالك كما كان', async () => {
+    expect(await put(C, { JE: 510 + 200000, EJ: 0, PUR: 0, INV: 6 }, 'U-VIEW')).toBe(403);
+    expect(await put(C, { JE: 510, EJ: 0, PUR: 0, INV: 20 }, ORG)).toBe(200);
+  });
+});

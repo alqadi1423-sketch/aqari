@@ -121,6 +121,11 @@ const crc32Final = (c: number) => (c ^ -1) >>> 0;
  * يفسح للواجهة بين القطع ويبلّغ بالبايتات · والضغط بالمجرى نفسه فيخرج كما يخرج دفعة واحدة.
  */
 const CHUNK = 1 << 20;
+/** أقصى نسبة فكٍّ لـ deflate (نحو ١٠٣٢ إلى ١) · وأقصى مدخلٍ واحد · قنابل فكّ الضغط (مراجعة التثبيت #49) */
+const MAX_DEFLATE_RATIO = 1100;
+const MAX_ENTRY_BYTES = 1 << 30;
+/** حجمٌ بعد الفك لا يطابق الفهرس، أو معلنٌ غير معقول (مراجعة التثبيت #49) */
+const sizeMismatch = (name: string) => new ZipFormatError('حجم «' + name + '» بعد الفك لا يطابق الفهرس');
 async function prepareEntry(
   e: ZipEntry, breathe: () => Promise<void>, onBytes: (n: number) => void,
 ): Promise<{ data: Uint8Array; crc: number }> {
@@ -391,6 +396,10 @@ export async function unzipYielding(
       throw new ZipFormatError('بيانات «' + name + '» تتجاوز حجم الملف');
     }
     const raw = data.subarray(start, start + csize);
+    // الحجم المعلن لا يُصدَّق فوق ما يمكن أن ينتجه المضغوط، ولا فوق أقصى مدخل (مراجعة التثبيت #49)
+    if (usize > MAX_ENTRY_BYTES || (method === 8 && usize > csize * MAX_DEFLATE_RATIO + 1024)) {
+      throw sizeMismatch(name);
+    }
     if (method === 0) {
       out[name] = raw.slice();
       readBytes += csize;
@@ -402,7 +411,13 @@ export async function unzipYielding(
     } else if (method === 8) {
       // المضغوط الكبير (القاعدة) على قطع يفسح بينها ويبلّغ · فلا تتجمد الشاشة في «فكّ الأرشيف»
       const parts: Uint8Array[] = [];
-      const z = new Inflate((chunk) => { parts.push(chunk); });
+      let produced = 0;
+      // يتوقف عند تجاوز الحجم المعلن · فلا تمتلئ الذاكرة بمدخلٍ أعلن حجماً أصغر (مراجعة التثبيت #49)
+      const z = new Inflate((chunk) => {
+        produced += chunk.length;
+        if (produced > usize) throw sizeMismatch(name);
+        parts.push(chunk);
+      });
       for (let at = 0; at < csize; at += CHUNK) {
         const end = Math.min(csize, at + CHUNK);
         z.push(raw.subarray(at, end), end === csize);
@@ -414,7 +429,7 @@ export async function unzipYielding(
       const inflated = new Uint8Array(total);
       let o = 0;
       for (const x of parts) { inflated.set(x, o); o += x.length; }
-      if (usize && total !== usize) throw new ZipFormatError('حجم «' + name + '» بعد الفك لا يطابق الفهرس');
+      if (usize && total !== usize) throw sizeMismatch(name);
       out[name] = inflated;
     } else {
       throw new ZipFormatError('طريقة ضغط غير مدعومة (' + method + ') في «' + name + '»');

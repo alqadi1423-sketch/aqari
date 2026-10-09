@@ -473,8 +473,8 @@ export default function Dashboard() {
           {db.all<{ id: string; no: string; date: string; memo: string; d: number; c2: number; src_type: string | null; src_id: string | null }>(
             `SELECT e.id, e.no, e.date, e.memo, COALESCE(SUM(l.debit_halalas),0) AS d, COALESCE(SUM(l.credit_halalas),0) AS c2, e.src_type, e.src_id
              FROM journal_entries e LEFT JOIN journal_lines l ON l.entry_id = e.id
-             WHERE e.status='مرحّل' AND e.deleted_at IS NULL AND substr(e.date,1,7) = ?
-             GROUP BY e.id ORDER BY e.date`, [monthDrill.key]
+             WHERE e.status='مرحّل' AND e.deleted_at IS NULL AND e.date >= ? AND e.date <= ?
+             GROUP BY e.id ORDER BY e.date`, [monthDrill.key + '-01', monthDrill.key + '-31']
           ).map((e) => (
             <Pressable key={e.id} onPress={() => { setMonthDrill(null); openSource(e.src_type, e.src_id); }}>
               <Row style={{ justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>

@@ -5,7 +5,7 @@
  */
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
-import { SELF_OP, SELF_AUDIT_ENTITY } from './opWrites';
+import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR } from './opWrites';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, READ_TABLE, readSectionsOf } from './readSections';
 import { SYNC_TABLES } from '../../db/syncTables';
 
@@ -251,9 +251,12 @@ ${guardFns(schema)}
           && lvlOf(m, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
           && (baseT(r.t) != 'vat_filings' || m.all == true)
-          && (r.del == true || baseT(r.t) != 'journal_entries' || srcOk(r.op, r.d.get('src_type', null))))
+          && (r.del == true || baseT(r.t) != 'journal_entries' || srcOk(r.op, r.d.get('src_type', null)))
+          // العضو لا ينتحل المالك في سجل العمليات (مراجعة التثبيت #54)
+          && (r.t != 'audit_log' || (r.d != null && r.d.get('user_name', '') != '${OWNER_ACTOR}')))
         // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
-        || (r.op == '${SELF_OP}' && r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)));
+        || (r.op == '${SELF_OP}' && r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)
+          && r.d.get('module', '') == '${SELF_AUDIT_MODULE}' && r.d.get('user_name', '') != '${OWNER_ACTOR}'));
     }
 
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
@@ -298,7 +301,7 @@ ${guardFns(schema)}
               && before.get('by', '') == request.auth.uid && propsOk(m, after))
           // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)
           || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(m, before, after)
-              && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g'])
+              && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'sv'])
               && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
         );
     }
@@ -307,7 +310,7 @@ ${guardFns(schema)}
     function orgOnlyLinksReversal() {
       let before = resource.data;
       let after = request.resource.data;
-      return after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'pids'])
+      return after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'pids', 'sv'])
         && after.d.diff(before.d).affectedKeys().hasOnly(['reversed_by'])
         && (!('reversed_by' in before.d) || before.d.reversed_by == null)
         && after.d.reversed_by is string;
@@ -315,7 +318,7 @@ ${guardFns(schema)}
 
     // وجهاز المالك يعيد كتابة حقول الرؤية وحدها على قيد مرحّل حين يتسع قرّاؤه (engine.requeueForAcl) · ومحتواه كما هو
     function orgOnlyVisibility() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['u', 'dev', 'ts', 'op', 'g', 'pids']);
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['u', 'dev', 'ts', 'op', 'g', 'pids', 'sv']);
     }
 
     // وجهاز المالك يملأ أبعاد سطور القيد المرحّل القديم (الهجرة ٢٨) · السطور بعددها وبكل حقولها كما هي إلا أبعادها
@@ -325,7 +328,7 @@ ${guardFns(schema)}
     function orgOnlyLineDims() {
       let a = request.resource.data.lines;
       let b = resource.data.lines;
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lines', 'u', 'dev', 'ts', 'op', 'g', 'pids'])
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lines', 'u', 'dev', 'ts', 'op', 'g', 'pids', 'sv'])
         && a.size() == b.size() && b.size() <= ${DIM_LINES_MAX}
 ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} || lineDimsOnly(a[${i}], b[${i}]))`).join('\n')};
     }
@@ -428,10 +431,23 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
           && counterOk(d, b, 'JE') && counterOk(d, b, 'EJ') && counterOk(d, b, 'PUR') && counterOk(d, b, 'INV')
           && (b == null || d.keys().hasAll(b.keys()));
       }
+      // العضو (مراجعة التثبيت #55): INV لمن يصدر الفاتورة (كامل الفواتير) وبواحدٍ لا غير فلا فجوة في تسلسلها ·
+      // وقفزة غيره من السلاسل محدودة (أكبر كتلة ٥٠٠)
+      function memberJump(d, b, k) {
+        return !(k in d) || d[k] - (b != null && k in b ? b[k] : 0) <= 100000;
+      }
+      function memberCountersOk(org, d, b) {
+        let before = b != null && 'INV' in b ? b.INV : 0;
+        let after = 'INV' in d ? d.INV : 0;
+        return memberJump(d, b, 'JE') && memberJump(d, b, 'EJ') && memberJump(d, b, 'PUR')
+          && (after == before || (lvl(org, 'invoices') >= 3 && after == before + 1));
+      }
       match /meta/counters {
         allow read: if orgOwner(org) || isMember(org);
-        allow create: if (orgOwner(org) || isMember(org)) && countersOk(request.resource.data, null);
-        allow update: if (orgOwner(org) || isMember(org)) && countersOk(request.resource.data, resource.data);
+        allow create: if countersOk(request.resource.data, null)
+          && (orgOwner(org) || (isMember(org) && memberCountersOk(org, request.resource.data, null)));
+        allow update: if countersOk(request.resource.data, resource.data)
+          && (orgOwner(org) || (isMember(org) && memberCountersOk(org, request.resource.data, resource.data)));
       }
 
       match /meta/deletion {

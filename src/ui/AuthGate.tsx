@@ -10,6 +10,8 @@
  * والبناء بلا إعداد Firebase (بيئة التطوير) يمرّ كما هو.
  */
 import { legalUrls as legalUrlsOf } from '../domain/legal';
+import { useLang } from '../i18n';
+import { inviteChoices } from '../services/org';
 import React, { useEffect, useState } from 'react';
 import { View, Pressable, ActivityIndicator, Linking, ScrollView } from 'react-native';
 import { T, BtnPrimary, BtnGhost, Note } from './components';
@@ -79,6 +81,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (cloud.user) {
     const email = cloud.user.email;
+    const { t } = useLang();
     if (cloud.gate === 'switching' || needsActivation) return spinner('جاري فتح بيانات حساب ' + email);
     // التحقق من الدعوات لم يتمّ · لا يُفترض الداخل مالكاً ولا تُنشأ له منشأة
     if (cloud.gate === 'retry') {
@@ -104,10 +107,20 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         <Shell>
           <T size={TYPE.cardTitle} bold style={{ textAlign: 'center', marginBottom: 6 }}>دعوة للانضمام</T>
           <T size={TYPE.body} color={C.muted} style={{ textAlign: 'center', marginBottom: 12 }}>{'لحساب ' + email}</T>
-          {cloud.invites.map((inv) => (
-            <View key={inv.org} style={{ marginBottom: 10 }}>
-              <BtnPrimary title={'انضم إلى «' + (inv.doc.orgName || 'منشأة عقاري') + '»'} loading={busy}
-                onPress={() => run(() => acceptInviteNow(db, inv.org, inv.doc), 'تعذّر الانضمام', 'قبول الدعوة')} />
+          {/* منشأة الحساب القائمة أولاً، والدعوات ببريد أصحابها (مراجعة التثبيت #52) */}
+          {inviteChoices(!!cloud.ownOrg, cloud.invites).map((c) => c.kind === 'own' ? (
+            <View key="own" style={{ marginBottom: 12 }}>
+              <BtnPrimary title={t('invites.openOwn')} loading={busy} onPress={() => { declineInvites(db); bump(); }} />
+              <Note>{t('invites.ownNote')}</Note>
+            </View>
+          ) : (
+            <View key={c.org} style={{ marginBottom: 10 }}>
+              {/* مع منشأة الحساب القائمة تصير الدعوة زراً ثانوياً تحتها */}
+              {React.createElement((cloud.ownOrg ? BtnGhost : BtnPrimary) as typeof BtnGhost, {
+                title: 'انضم إلى «' + (c.orgName || 'منشأة عقاري') + '»', disabled: busy,
+                onPress: () => run(() => acceptInviteNow(db, c.org, c.doc), 'تعذّر الانضمام', 'قبول الدعوة'),
+              })}
+              {c.by ? <T size={TYPE.caption} color={C.muted} style={{ textAlign: 'center', marginTop: 4 }}>{t('invites.from', { email: c.by })}</T> : null}
             </View>
           ))}
           <Note>ترى في المنشأة ما تجيزه لك صلاحيتك وحدها.</Note>

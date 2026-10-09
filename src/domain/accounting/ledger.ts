@@ -163,9 +163,9 @@ export function monthlyRevenueExpense(
      JOIN accounts a ON a.code = l.account_code
      WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL
        AND a.type IN ('إيراد','مصروف')
-       AND substr(e.date, 1, 7) >= ? AND substr(e.date, 1, 7) <= ?
+       AND e.date >= ? AND e.date <= ?
      GROUP BY m, a.type`,
-    [fromMonth, toMonth]
+    [fromMonth + '-01', toMonth + '-31'] // نطاق التاريخ لا substr فيُستعمل فهرسه (مراجعة التثبيت #44)
   );
   const out = new Map<string, { revenue: number; expense: number }>();
   for (const r of rows) {
@@ -215,9 +215,9 @@ export function monthlyRevenue(db: DB, fromMonth: string, toMonth: string): Map<
      JOIN journal_entries e ON e.id = l.entry_id
      JOIN accounts a ON a.code = l.account_code
      WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL AND a.type = 'إيراد'
-       AND substr(e.date,1,7) >= ? AND substr(e.date,1,7) <= ?
+       AND e.date >= ? AND e.date <= ?
      GROUP BY 1`,
-    [fromMonth, toMonth]
+    [fromMonth + '-01', toMonth + '-31'] // نطاق التاريخ لا substr فيُستعمل فهرسه (مراجعة التثبيت #44)
   );
   return new Map(rows.map((r) => [r.month, Number(r.net)]));
 }

@@ -76,8 +76,17 @@ export function markedNetOn(db: DB, account: string): number {
     [KEPT_REVIEW_ENTITY, account])!.s);
 }
 
+/**
+ * جهاز العضو نسخته جزئية بصلاحيته: تصله قيود عقاره ولا تصله مستندات أقسامٍ ليست له · فلا يُحكم فيه بغياب المستند
+ * (التحقق المستقل من f07ad73: كان يُظهر «عكس القيد» لسداد فاتورة وإهلاك أصل، وفحص المطابقة ٧ أحمر)
+ */
+function memberDevice(db: DB): boolean {
+  try { return !!db.get(`SELECT 1 FROM sync_state WHERE k = 'membership' AND v IS NOT NULL`); } catch { return false; }
+}
+
 /** قيود مرحّلة قائمة الأثر مستندها غائب ولم تُعلَّم بعد */
 export function unmarkedOrphans(db: DB): Array<{ id: string; no: string; src_type: string }> {
+  if (memberDevice(db)) return [];
   return db.all(
     `SELECT e.id, e.no, e.src_type FROM journal_entries e
      WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.auto = 1 AND e.reversed_by IS NULL
@@ -88,6 +97,7 @@ export function unmarkedOrphans(db: DB): Array<{ id: string; no: string; src_typ
 
 /** القيد غائب المستند؟ · لعكسه من الدفتر حين لا مستند يُلغى منه */
 export function isOrphanEntry(db: DB, entryId: string): boolean {
+  if (memberDevice(db)) return false;
   return !!db.get(`SELECT 1 FROM journal_entries e WHERE e.id = ? AND e.src_type IS NOT NULL AND ${orphanSql(db)}`, [entryId]);
 }
 

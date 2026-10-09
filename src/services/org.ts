@@ -78,8 +78,8 @@ export async function sendInvite(
   if (doc.email === normEmail(ownerEmail)) throw new Error('هذا إيميلك أنت · المالك لا يُدعى إلى منشأته');
   const team = await listTeam(remote, org);
   if (team.members.some((m) => normEmail(m.doc.email) === doc.email)) throw new Error('هذا الإيميل عضو في المنشأة بالفعل · عدّل صلاحيته بدل دعوته');
-  // والدعوة تحمل إصدار المالك حدّاً أدنى، فيطلب الأقدمُ التحديث قبل الانضمام (#36)
-  await remote.setDoc(`orgs/${org}/invites/${doc.email}`, { ...doc, minApp: SCHEMA_VERSION } as unknown as Record<string, unknown>);
+  // والدعوة تحمل إصدار المالك حدّاً أدنى، فيطلب الأقدمُ التحديث قبل الانضمام (#36) · وبريد صاحبها ظاهراً للمدعوّ (#52)
+  await remote.setDoc(`orgs/${org}/invites/${doc.email}`, { ...doc, minApp: SCHEMA_VERSION, invitedBy: normEmail(ownerEmail) } as unknown as Record<string, unknown>);
   return doc;
 }
 
@@ -153,6 +153,24 @@ export async function moveOwnerToOrg(db: DB, legacy: FirestoreRemote, org: Fires
 }
 
 /* ─── العضو ─── */
+
+/** هل للحساب منشأةٌ قائمة في السحابة (حروف أجهزتها في المسار الجديد أو القديم) · ليُعرض قبل دعوات غيره (#52) */
+export async function ownOrgExists(remote: FirestoreRemote, uid: string): Promise<boolean> {
+  for (const path of [`orgs/${uid}/meta/devices`, `users/${uid}/meta/devices`]) {
+    try { if (await remote.getDoc(path)) return true; } catch { /* لا صلاحية أو لا اتصال · يُجرَّب التالي */ }
+  }
+  return false;
+}
+
+export type InviteChoice = { kind: 'own' } | { kind: 'invite'; org: string; orgName: string; by: string; doc: MemberDoc };
+
+/** ما تعرضه بوابة الدخول بترتيبه: منشأة الحساب القائمة أولاً، ثم الدعوات ببريد أصحابها (مراجعة التثبيت #52) */
+export function inviteChoices(ownOrg: boolean, invites: Array<{ org: string; doc: MemberDoc }>): InviteChoice[] {
+  const list: InviteChoice[] = invites.map((i) => ({
+    kind: 'invite', org: i.org, orgName: i.doc.orgName, by: String((i.doc as unknown as { invitedBy?: string }).invitedBy ?? ''), doc: i.doc,
+  }));
+  return ownOrg ? [{ kind: 'own' }, ...list] : list;
+}
 
 export async function findInvites(remote: FirestoreRemote, email: string): Promise<Array<{ org: string; doc: MemberDoc }>> {
   return (await remote.invitesFor(normEmail(email))).map((x) => ({ org: x.org, doc: asMemberDoc(x.data) }));

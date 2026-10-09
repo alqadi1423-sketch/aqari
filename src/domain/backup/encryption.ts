@@ -17,6 +17,8 @@
 export const ENC_MAGIC = 'AQBKENC1';
 export const KDF_PBKDF2_SHA256 = 1;
 export const DEFAULT_ITERATIONS = 600_000;
+/** أقصى دورات يقبلها الفكّ من رأس الملف (مراجعة التثبيت #49: كانت حتى ٥٠ مليوناً يتجمد بها الجهاز) */
+export const MAX_ITERATIONS = 2_000_000;
 const HEADER = 41;
 const TAG = 16;
 const CHUNK = 1 << 20;
@@ -106,7 +108,7 @@ export async function decryptArchive(
   const salt = bytes.slice(13, 29);
   const prefix = bytes.slice(29, 37);
   const chunk = readU32(bytes, 37);
-  if (!iterations || iterations > 50_000_000 || !chunk || chunk > 64 << 20) throw new WrongPasswordError();
+  if (!iterations || iterations > MAX_ITERATIONS || !chunk || chunk > 64 << 20) throw new WrongPasswordError();
   if (!knownKey) onProgress?.('جاري تجهيز مفتاح فكّ التشفير');
   const key = knownKey ?? await p.pbkdf2(password, salt, iterations);
   const parts: Uint8Array[] = [];
