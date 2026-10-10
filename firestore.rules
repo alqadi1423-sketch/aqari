@@ -53,44 +53,114 @@ service cloud.firestore {
     function intOrAbsent(m, f) {
       return !(f in m) || m[f] == null || m[f] is int;
     }
-    // مبالغ الصف أعداد صحيحة · بأعمدة جدوله وحده · أربع مجموعاتٍ بالاسم كلٌّ في دالة: القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو
-    // في فرعٍ متروك، ولا تستدعي دالةً في فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10) · فلا يُحسب إلا جدول المجموعة
+    // مبالغ الصف أعداد صحيحة · بأعمدة جدوله وحده: مجموعةٌ بالاسم، ثم دالة الجدول وحدها
+    // نموذج الكلفة (معايرة المحاكي 2026-10-10): كل تعبيرٍ مكتوب في دالةٍ مستدعاة يُحسب ولو في فرعٍ متروك، ولا تُستدعى دالةٌ في فرعٍ متروك ·
+    // فكل بديلٍ دالةٌ صغيرة، ولا يُحسب إلا ما يُسلك
     function amountsAreIntegers(r) {
-      return r.del == true || (r.t < 'contract_payments' ? amtG1(r)
-        : r.t < 'key_money_deals' ? amtG2(r)
-        : r.t < 'purchases' ? amtG3(r)
-        : amtG4(r));
+      // بلا بوابة بأسماء الجداول: كانت أغلى من المجموعات نفسها (قياس الهامش 2026-10-10) · والجدول بلا مبالغ لا يطابق ورقةً في مجموعته
+      return r.del == true ? true : (r.t < 'contract_payments' ? amtG1(r) : r.t < 'key_money_deals' ? amtG2(r) : r.t < 'purchases' ? amtG3(r) : amtG4(r));
     }
     function amtG1(r) {
-      return (r.t != 'accounts' || (intOrAbsent(r.d, 'opening_halalas')))
-        && (r.t != 'assets' || (intOrAbsent(r.d, 'cost_halalas') && intOrAbsent(r.d, 'salvage_halalas') && intOrAbsent(r.d, 'sale_halalas')))
-        && (r.t != 'bank_tx' || (intOrAbsent(r.d, 'amount_halalas')))
-        && (r.t != 'banks' || (intOrAbsent(r.d, 'opening_halalas')))
-        && (r.t != 'claims' || (intOrAbsent(r.d, 'amount_halalas')))
-        && (r.t != 'contract_installments' || (intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'paid_halalas')));
+      return r.t == 'accounts' ? amt_accounts(r)
+        : r.t == 'assets' ? amt_assets(r)
+        : r.t == 'bank_tx' ? amt_bank_tx(r)
+        : r.t == 'banks' ? amt_banks(r)
+        : r.t == 'claims' ? amt_claims(r)
+        : r.t == 'contract_installments' ? amt_contract_installments(r)
+        : true;
     }
     function amtG2(r) {
-      return (r.t != 'contract_payments' || (intOrAbsent(r.d, 'gross_halalas') && intOrAbsent(r.d, 'discount_halalas') && intOrAbsent(r.d, 'net_halalas')))
-        && (r.t != 'contracts' || (intOrAbsent(r.d, 'value_halalas') && intOrAbsent(r.d, 'deposit_halalas') && intOrAbsent(r.d, 'cancel_deduction_halalas') && intOrAbsent(r.d, 'cancel_refund_halalas') && intOrAbsent(r.d, 'services_halalas') && intOrAbsent(r.d, 'parking_halalas')))
-        && (r.t != 'deposit_settlements' || (intOrAbsent(r.d, 'deduction_halalas') && intOrAbsent(r.d, 'refund_halalas')))
-        && (r.t != 'invoice_lines' || (intOrAbsent(r.d, 'price_halalas')))
-        && (r.t != 'invoices' || (intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas') && intOrAbsent(r.d, 'total_halalas')));
+      return r.t == 'contract_payments' ? amt_contract_payments(r)
+        : r.t == 'contracts' ? amt_contracts(r)
+        : r.t == 'deposit_settlements' ? amt_deposit_settlements(r)
+        : r.t == 'invoice_lines' ? amt_invoice_lines(r)
+        : r.t == 'invoices' ? amt_invoices(r)
+        : true;
     }
     function amtG3(r) {
-      return (r.t != 'key_money_deals' || (intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'commission_halalas')))
-        && (r.t != 'meter_readings' || (intOrAbsent(r.d, 'amount_halalas')))
-        && (r.t != 'payment_allocations' || (intOrAbsent(r.d, 'amount_halalas')))
-        && (r.t != 'payment_lines' || (intOrAbsent(r.d, 'amount_halalas')))
-        && (r.t != 'properties' || (intOrAbsent(r.d, 'lease_value_halalas')))
-        && (r.t != 'purchase_lines' || (intOrAbsent(r.d, 'amount_halalas')));
+      return r.t == 'key_money_deals' ? amt_key_money_deals(r)
+        : r.t == 'meter_readings' ? amt_meter_readings(r)
+        : r.t == 'payment_allocations' ? amt_payment_allocations(r)
+        : r.t == 'payment_lines' ? amt_payment_lines(r)
+        : r.t == 'properties' ? amt_properties(r)
+        : r.t == 'purchase_lines' ? amt_purchase_lines(r)
+        : true;
     }
     function amtG4(r) {
-      return (r.t != 'purchases' || (intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas') && intOrAbsent(r.d, 'total_halalas')))
-        && (r.t != 'reservations' || (intOrAbsent(r.d, 'deposit_halalas')))
-        && (r.t != 'suppliers' || (intOrAbsent(r.d, 'default_amount_halalas')))
-        && (r.t != 'tenants' || (intOrAbsent(r.d, 'credit_halalas')))
-        && (r.t != 'units' || (intOrAbsent(r.d, 'rent_monthly_halalas')));
+      return r.t == 'purchases' ? amt_purchases(r)
+        : r.t == 'reservations' ? amt_reservations(r)
+        : r.t == 'suppliers' ? amt_suppliers(r)
+        : r.t == 'tenants' ? amt_tenants(r)
+        : r.t == 'units' ? amt_units(r)
+        : true;
     }
+    function amt_accounts(r) {
+      return (!('opening_halalas' in r.d) || r.d.opening_halalas == null || r.d.opening_halalas is int);
+    }
+    function amt_assets(r) {
+      return (!('cost_halalas' in r.d) || r.d.cost_halalas == null || r.d.cost_halalas is int) && (!('salvage_halalas' in r.d) || r.d.salvage_halalas == null || r.d.salvage_halalas is int) && (!('sale_halalas' in r.d) || r.d.sale_halalas == null || r.d.sale_halalas is int);
+    }
+    function amt_bank_tx(r) {
+      return (!('amount_halalas' in r.d) || r.d.amount_halalas == null || r.d.amount_halalas is int);
+    }
+    function amt_banks(r) {
+      return (!('opening_halalas' in r.d) || r.d.opening_halalas == null || r.d.opening_halalas is int);
+    }
+    function amt_claims(r) {
+      return (!('amount_halalas' in r.d) || r.d.amount_halalas == null || r.d.amount_halalas is int);
+    }
+    function amt_contract_installments(r) {
+      return (!('amount_halalas' in r.d) || r.d.amount_halalas == null || r.d.amount_halalas is int) && (!('paid_halalas' in r.d) || r.d.paid_halalas == null || r.d.paid_halalas is int);
+    }
+    function amt_contract_payments(r) {
+      return (!('gross_halalas' in r.d) || r.d.gross_halalas == null || r.d.gross_halalas is int) && (!('discount_halalas' in r.d) || r.d.discount_halalas == null || r.d.discount_halalas is int) && (!('net_halalas' in r.d) || r.d.net_halalas == null || r.d.net_halalas is int);
+    }
+    function amt_contracts(r) {
+      return (!('value_halalas' in r.d) || r.d.value_halalas == null || r.d.value_halalas is int) && (!('deposit_halalas' in r.d) || r.d.deposit_halalas == null || r.d.deposit_halalas is int) && (!('cancel_deduction_halalas' in r.d) || r.d.cancel_deduction_halalas == null || r.d.cancel_deduction_halalas is int) && (!('cancel_refund_halalas' in r.d) || r.d.cancel_refund_halalas == null || r.d.cancel_refund_halalas is int) && (!('services_halalas' in r.d) || r.d.services_halalas == null || r.d.services_halalas is int) && (!('parking_halalas' in r.d) || r.d.parking_halalas == null || r.d.parking_halalas is int);
+    }
+    function amt_deposit_settlements(r) {
+      return (!('deduction_halalas' in r.d) || r.d.deduction_halalas == null || r.d.deduction_halalas is int) && (!('refund_halalas' in r.d) || r.d.refund_halalas == null || r.d.refund_halalas is int);
+    }
+    function amt_invoice_lines(r) {
+      return (!('price_halalas' in r.d) || r.d.price_halalas == null || r.d.price_halalas is int);
+    }
+    function amt_invoices(r) {
+      return (!('subtotal_halalas' in r.d) || r.d.subtotal_halalas == null || r.d.subtotal_halalas is int) && (!('tax_halalas' in r.d) || r.d.tax_halalas == null || r.d.tax_halalas is int) && (!('total_halalas' in r.d) || r.d.total_halalas == null || r.d.total_halalas is int);
+    }
+    function amt_key_money_deals(r) {
+      return (!('amount_halalas' in r.d) || r.d.amount_halalas == null || r.d.amount_halalas is int) && (!('commission_halalas' in r.d) || r.d.commission_halalas == null || r.d.commission_halalas is int);
+    }
+    function amt_meter_readings(r) {
+      return (!('amount_halalas' in r.d) || r.d.amount_halalas == null || r.d.amount_halalas is int);
+    }
+    function amt_payment_allocations(r) {
+      return (!('amount_halalas' in r.d) || r.d.amount_halalas == null || r.d.amount_halalas is int);
+    }
+    function amt_payment_lines(r) {
+      return (!('amount_halalas' in r.d) || r.d.amount_halalas == null || r.d.amount_halalas is int);
+    }
+    function amt_properties(r) {
+      return (!('lease_value_halalas' in r.d) || r.d.lease_value_halalas == null || r.d.lease_value_halalas is int);
+    }
+    function amt_purchase_lines(r) {
+      return (!('amount_halalas' in r.d) || r.d.amount_halalas == null || r.d.amount_halalas is int);
+    }
+    function amt_purchases(r) {
+      return (!('subtotal_halalas' in r.d) || r.d.subtotal_halalas == null || r.d.subtotal_halalas is int) && (!('tax_halalas' in r.d) || r.d.tax_halalas == null || r.d.tax_halalas is int) && (!('total_halalas' in r.d) || r.d.total_halalas == null || r.d.total_halalas is int);
+    }
+    function amt_reservations(r) {
+      return (!('deposit_halalas' in r.d) || r.d.deposit_halalas == null || r.d.deposit_halalas is int);
+    }
+    function amt_suppliers(r) {
+      return (!('default_amount_halalas' in r.d) || r.d.default_amount_halalas == null || r.d.default_amount_halalas is int);
+    }
+    function amt_tenants(r) {
+      return (!('credit_halalas' in r.d) || r.d.credit_halalas == null || r.d.credit_halalas is int);
+    }
+    function amt_units(r) {
+      return (!('rent_monthly_halalas' in r.d) || r.d.rent_monthly_halalas == null || r.d.rent_monthly_halalas is int);
+    }
+
 
     function isPostedEntry(data) {
       return data.t == 'journal_entries' && data.d != null && data.d.status == 'مرحّل';
@@ -165,14 +235,14 @@ service cloud.firestore {
       return t.split('~')[0];
     }
     // الإسقاط (t~pub) للجداول التي لها مبالغٌ يُخفى بعضها، وللمستأجر المشترك وحده (المراجعات الخارجية «ثالثاً أ ٦»)
+    // تعبيرٌ نمطي واحد بكلفةٍ ثابتة: طلب commit يُقيَّم مرةً تُستدعى فيها حتى دوال الفروع المتروكة (حدّ الألف تعبير · المتحقق المستقل على 356a528)
     function syncedOrPub(t) {
-      return syncedTable(baseT(t)) && (t == baseT(t) || (t == baseT(t) + '~pub' && baseT(t) in ['accounts','assets','bank_tx','banks','claims','contract_installments','contract_payments','contracts','deposit_settlements','invoice_lines','invoices','key_money_deals','meter_readings','payment_allocations','payment_lines','properties','purchase_lines','purchases','reservations','suppliers','tenants','units']));
+      return t is string && t.matches('(accounts|cost_centers|tenants|suppliers|banks|properties|property_areas|property_area_items|property_floor_categories|units|unit_rooms|unit_room_items|meters|meter_readings|company|company_docs|message_scripts|form_templates|journal_entries|contracts|contract_installments|contract_occupants|occupants|reservations|key_money_deals|contract_payments|payment_lines|payment_allocations|deposit_settlements|tenant_ratings|claims|invoices|invoice_lines|purchases|bank_tx|handovers|purchase_lines|assets|asset_events|depreciation_runs|blobs|attachments|vat_filings|audit_log)|(accounts|assets|bank_tx|banks|claims|contract_installments|contract_payments|contracts|deposit_settlements|invoice_lines|invoices|key_money_deals|meter_readings|payment_allocations|payment_lines|properties|purchase_lines|purchases|reservations|suppliers|tenants|units)~pub');
     }
+    // تعبيرٌ نمطي واحد بكلفةٍ ثابتة: طلب commit يُقيَّم مرةً تُستدعى فيها حتى دوال الفروع المتروكة (حدّ الألف تعبير · المتحقق المستقل على 356a528)
     function isDraft(data) {
-      return data.d != null && (
-        (baseT(data.t) == 'contracts' && data.d.status == 'مسودة')
-        || (baseT(data.t) == 'invoices' && data.d.status == 'مسودة')
-        || (data.t == 'journal_entries' && data.d.status == 'قيد الإنشاء'));
+      // i18n-exempt: حالات المسودة المخزّنة في نص القواعد
+      return data.d != null && (data.t + ':' + string(data.d.get('status', ''))).matches('(contracts|contracts~pub|invoices|invoices~pub):مسودة|journal_entries:قيد الإنشاء');
     }
     // عقارات الصف ضمن عقارات العضو · والصف العام '*' مسموح لمن له القسم
     function propsOk(m, r) {
@@ -209,37 +279,31 @@ service cloud.firestore {
     // يرفض الوارد المخالف بنفسه (sync/engine.ts applyOne) · وللطلب حدّ ألف تعبير، فالمقارنة بالاسم كما هو ونظيره ~pub
     // مفتاح الصف داخل d هو مفتاح المستند (#20): فلا يستبدل مستندٌ بمفتاحٍ صفاً آخر عند كل جهاز
     // القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10)
+    // القوائم المكتوبة تُحسب عناصرها في حدّ الألف تعبير عنصراً عنصراً، والتعبير النمطي بكلفةٍ ثابتة (معايرة المحاكي 2026-10-10)
     function keyOk(r) {
-      return r.del == true || (r.t in ['accounts', 'accounts~pub', 'property_floor_categories', 'property_floor_categories~pub', 'deposit_settlements', 'deposit_settlements~pub', 'tenant_ratings', 'tenant_ratings~pub', 'depreciation_runs', 'depreciation_runs~pub', 'blobs', 'blobs~pub'] ? keyOkSpecial(r) : string(r.d.get('id', null)) == r.k);
+      return r.del == true ? true : (r.t.matches('(accounts|property_floor_categories|deposit_settlements|tenant_ratings|depreciation_runs|blobs)(~pub)?') ? keyOkSpecial(r, baseT(r.t)) : string(r.d.get('id', null)) == r.k);
     }
-    function keyOkSpecial(r) {
-      return r.t in ['accounts', 'accounts~pub'] ? r.d.code == r.k
-        : r.t in ['property_floor_categories', 'property_floor_categories~pub'] ? r.d.property_id + '|' + r.d.floor_label == r.k
-        : r.t in ['deposit_settlements', 'deposit_settlements~pub'] ? r.d.contract_id == r.k
-        : r.t in ['tenant_ratings', 'tenant_ratings~pub'] ? r.d.contract_id == r.k
-        : r.t in ['depreciation_runs', 'depreciation_runs~pub'] ? r.d.month == r.k
-        : r.t in ['blobs', 'blobs~pub'] ? r.d.sha256 == r.k
+    function keyOkSpecial(r, bt) {
+      return bt == 'accounts' ? r.d.code == r.k
+        : bt == 'property_floor_categories' ? r.d.property_id + '|' + r.d.floor_label == r.k
+        : bt == 'deposit_settlements' ? r.d.contract_id == r.k
+        : bt == 'tenant_ratings' ? r.d.contract_id == r.k
+        : bt == 'depreciation_runs' ? r.d.month == r.k
+        : bt == 'blobs' ? r.d.sha256 == r.k
         : false;
     }
     // مصدر القيد الجديد من قسم العملية (#40): لا ينشئ العضو قيداً لعملية قسمٍ ليس له · والدفتر يدويّه وكل عكس
+    // تعبيرٌ نمطي واحد بكلفةٍ ثابتة: طلب commit يُقيَّم مرةً تُستدعى فيها حتى دوال الفروع المتروكة (حدّ الألف تعبير · المتحقق المستقل على 356a528)
     function srcOk(op, s) {
       return op == 'ledger' ? (s == null || (s is string && s.matches('.*_rev$')))
-        : op == 'contracts' ? s in ['contract_deposit', 'deposit_carry', 'reservation_convert']
-        : op == 'collect' ? s in ['rent', 'rent_rev', 'reservation_convert_rev', 'discount_rev', 'rent_payment_rev']
-        : op == 'deposits' ? s in ['deposit_deduct', 'deposit_deduct_move', 'deposit_refund', 'deposit_deduct_rev', 'deposit_deduct_move_rev', 'deposit_refund_rev', 'claim']
-        : op == 'reservations' ? s in ['reservation', 'reservation_forfeit', 'reservation_refund', 'key_money']
-        : op == 'claims' ? s in ['claim', 'claim_collect', 'claim_rev']
-        : op == 'invoices' ? s in ['invoice', 'invoice_rev', 'invoice_pay', 'invoice_pay_rev']
-        : op == 'purchases' ? s in ['purchase', 'purchase_rev', 'purchase_pay', 'purchase_pay_rev', 'vat_refund', 'asset_catchup']
-        : op == 'banks' ? s in ['cash_op']
-        : op == 'assets' ? s in ['asset_cost', 'asset_transfer', 'asset_dispose', 'asset_sell', 'asset_dep', 'depreciation', 'asset_convert', 'asset_convert_rev', 'asset_catchup', 'asset_catchup_rev']
-        : false;
+        : op is string && s is string && (op + ':' + s).matches('contracts:(contract_deposit|deposit_carry|reservation_convert)|collect:(rent|rent_rev|reservation_convert_rev|discount_rev|rent_payment_rev)|deposits:(deposit_deduct|deposit_deduct_move|deposit_refund|deposit_deduct_rev|deposit_deduct_move_rev|deposit_refund_rev|claim)|reservations:(reservation|reservation_forfeit|reservation_refund|key_money)|claims:(claim|claim_collect|claim_rev)|invoices:(invoice|invoice_rev|invoice_pay|invoice_pay_rev)|purchases:(purchase|purchase_rev|purchase_pay|purchase_pay_rev|vat_refund|asset_catchup)|banks:(cash_op)|assets:(asset_cost|asset_transfer|asset_dispose|asset_sell|asset_dep|depreciation|asset_convert|asset_convert_rev|asset_catchup|asset_catchup_rev)');
     }
     // بصمة الملف وامتداده بشكلهما (#21): منهما يُبنى مسار الملف على كل جهاز · والمرفق بصمته وحدها (امتداده في blobs)
     function blobShapeOk(r) {
-      return r.del == true || !(r.t in ['blobs', 'attachments'])
-        || (r.d.sha256 is string && r.d.sha256.matches('^[0-9a-f]{64}$')
-            && (r.t == 'attachments' || (r.d.ext is string && r.d.ext.matches('^[a-z0-9]{1,5}$'))));
+      return r.del != true && (r.t == 'blobs' || r.t == 'attachments')
+        ? (r.d.sha256 is string && r.d.sha256.matches('^[0-9a-f]{64}$')
+            && (r.t == 'attachments' || (r.d.ext is string && r.d.ext.matches('^[a-z0-9]{1,5}$'))))
+        : true;
     }
     // عقارات الصف من حقيقته لا من إعلان كاتبه (#18) · كما يحسبها rowPids في sync/acl.ts، وما يُشتق من صفٍّ آخر
     // يُقرأ من مستند ذلك الصف بعد الدفعة نفسها
@@ -251,31 +315,46 @@ service cloud.firestore {
     }
     // القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10)
     function pidsBound(org, r) {
-      return r.del == true || pidsBoundBy(org, r, baseT(r.t));
+      return r.del == true ? true : pidsBoundBy(org, r, baseT(r.t));
     }
     function pidsBoundBy(org, r, t) {
       // والمرفق تُحصر رموز ملفه في قواعد التخزين (linkedOk) لا هنا: كلفته على كل كتابة عضو (حدّ الألف تعبير)
+      // كل استدعاء دالةٍ نحو تسعة تعابير في حدّ الألف (معايرة المحاكي 2026-10-10): فما يُستدعى لكل صفّ مكتوبٌ في موضعه
+      // البديل المتروك يُحسب بمعاملاته وإن لم يُستدعَ (معايرة المحاكي 2026-10-10): فكل بديلٍ يُستدعى بالصف وحده
       return t == 'tenants' || t == 'journal_entries' || t == 'attachments' ? true
-        : t == 'properties' ? pbSelf(r)
-        : t == 'meters' ? pbMeter(org, r)
-        : t == 'asset_events' ? pbAt(org, r, 'assets', 'asset_id')
-        : t == 'purchase_lines' ? pbAt(org, r, 'purchases', 'purchase_id')
-        : pidsBoundLinked(org, r);
+        : t.matches('properties|meters|asset_events|purchase_lines') ? pbSpecial(org, r, t)
+        : pidsBoundLinked(org, r, t);
     }
-    function pbSelf(r) { return r.pids == [r.d.id]; }
-    function pbProp(r) { return r.pids == [r.d.property_id]; }
-    function pbWide(r) { return r.pids == ['*']; }
-    function pbAt(org, r, tbl, f) { return r.pids == pidsAt(org, tbl, r.d[f]); }
-    function pbMeter(org, r) { return r.d.owner_type == 'property' ? r.pids == [r.d.owner_id] : pbAt(org, r, 'units', 'owner_id'); }
-    function pidsBoundLinked(org, r) {
-      return linked(r.d, 'property_id') ? pbProp(r)
-        : linked(r.d, 'unit_id') ? pbAt(org, r, 'units', 'unit_id')
-        : linked(r.d, 'contract_id') ? pbAt(org, r, 'contracts', 'contract_id')
-        : linked(r.d, 'room_id') ? pbAt(org, r, 'unit_rooms', 'room_id')
-        : linked(r.d, 'area_id') ? pbAt(org, r, 'property_areas', 'area_id')
-        : linked(r.d, 'payment_id') ? pbAt(org, r, 'contract_payments', 'payment_id')
-        : linked(r.d, 'meter_id') ? pbAt(org, r, 'meters', 'meter_id')
-        : pbWide(r);
+    function pbSpecial(org, r, t) {
+      return t == 'properties' ? r.pids == [r.d.id]
+        : t == 'meters' ? (r.d.owner_type == 'property' ? r.pids == [r.d.owner_id] : pbAt(org, r, 'units', r.d.owner_id))
+        : t == 'asset_events' ? pbAt(org, r, 'assets', r.d.asset_id)
+        : pbAt(org, r, 'purchases', r.d.purchase_id);
+    }
+    function pbAt(org, r, tbl, id) {
+      return r.pids == getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$(tbl + '__' + id)).data.pids;
+    }
+    // أعمدة ربط جدول الصف وحدها من جدول بحثٍ بالاسم، لا السبعة كلها (اختبار الميزانية 2026-10-10: كانت أثقل فحصٍ في الإنشاء)
+    function pidsBoundLinked(org, r, t) {
+      let parts = '|property_areas=property_id:properties|property_area_items=area_id:property_areas|property_floor_categories=property_id:properties|units=property_id:properties|unit_rooms=unit_id:units|unit_room_items=room_id:unit_rooms|meter_readings=meter_id:meters|contracts=unit_id:units|contract_installments=contract_id:contracts|contract_occupants=contract_id:contracts|occupants=unit_id:units,contract_id:contracts|reservations=unit_id:units|key_money_deals=unit_id:units,contract_id:contracts|contract_payments=contract_id:contracts|payment_lines=payment_id:contract_payments|payment_allocations=payment_id:contract_payments|deposit_settlements=contract_id:contracts|tenant_ratings=contract_id:contracts|claims=contract_id:contracts|invoices=property_id:properties,unit_id:units|purchases=property_id:properties,unit_id:units,meter_id:meters|handovers=unit_id:units,contract_id:contracts|purchase_lines=unit_id:units|assets=property_id:properties,unit_id:units|'.split('[|]' + t + '=');
+      let fs = parts.size() > 1 ? parts[1].split('[|]')[0].split(',') : [];
+      return pbFrom0(org, r, fs);
+    }
+    function pbFrom0(org, r, fs) {
+      let c = fs.size() > 0 ? fs[0].split(':') : ['', ''];
+      return c[0] == '' ? r.pids == ['*'] : (r.d.get(c[0], '') is string && r.d.get(c[0], '') != '' ? pbLink(org, r, c) : pbFrom1(org, r, fs));
+    }
+    function pbFrom1(org, r, fs) {
+      let c = fs.size() > 1 ? fs[1].split(':') : ['', ''];
+      return c[0] == '' ? r.pids == ['*'] : (r.d.get(c[0], '') is string && r.d.get(c[0], '') != '' ? pbLink(org, r, c) : pbFrom2(org, r, fs));
+    }
+    function pbFrom2(org, r, fs) {
+      let c = fs.size() > 2 ? fs[2].split(':') : ['', ''];
+      return c[0] == '' ? r.pids == ['*'] : (r.d.get(c[0], '') is string && r.d.get(c[0], '') != '' ? pbLink(org, r, c) : r.pids == ['*']);
+    }
+    // [عمود، جدوله] · عمود العقار نفسه بلا قراءة
+    function pbLink(org, r, ct) {
+      return ct[0] == 'property_id' ? r.pids == [r.d.property_id] : pbAt(org, r, ct[1], r.d[ct[0]]);
     }
     // روابط الصف التي تحدد عقاره (كما في rowPids): تغيّرها في التعديل يُفحص بحقيقة الصف
     function linksChanged(before, after) {
@@ -290,8 +369,14 @@ service cloud.firestore {
     // طلبُ العضو حدَّ الألف تعبير كما تبلغه قائمة الأقسام كلها (المراجعات الخارجية «ثالثاً أ ٢») · ومعرّف العقار حروفٌ وأرقام
     // صفٌّ غير المستأجر بعقارٍ واحد، ورموز رؤيته لعقاره أو «@» (المراجعات الخارجية «ثالثاً أ ٢») · والمستأجر المشترك له tenantGOk
     function pidsGOk(r) {
+      return r.t == 'tenants' ? tenantFullGOk(r) : (r.pids.size() == 1 ? gPropOk(r.g, r.pids[0]) : pidsGOkMulti(r));
+    }
+    function tenantFullGOk(r) {
       return r.pids.toSet().size() == r.pids.size() && (r.pids.size() == 1 || !('*' in r.pids))
-        && (r.t == 'tenants' ? (',' + r.g.join(',') + ',').matches('(,[a-z]+[|]@)*,') : gPropsOk(r.g, r.pids));
+        && (',' + r.g.join(',') + ',').matches('(,[a-z]+[|]@)*,');
+    }
+    function pidsGOkMulti(r) {
+      return r.pids.toSet().size() == r.pids.size() && !('*' in r.pids) && gPropsOk(r.g, r.pids);
     }
     // رموز الصف لعقاراته أو «@» · صفٌّ بأكثر من عقار (المستأجر ومرفقه) بعقاراتٍ معرّفاتها حروفٌ وأرقام (المتحقق المستقل على 61cfcd4:
     // كان يُشترط عقارٌ واحد فيُرفض مرفق المستأجر المشروع، وصفّ المستأجر بلا فحص)
@@ -323,21 +408,21 @@ service cloud.firestore {
     // وما تغيّر في التعديل · ولا يكتب مبلغاً لا يقرؤه إلا قسمٌ غير مالي، أو المحصور في رصيد المستأجر المشترك ·
     // وقارئ المبالغ من رموزه (قسم|* للمحصور، قسم|@ لذي كل العقارات)
     function moneyReaderOf(m, r) {
-      return r.t == 'contracts' ? m.tokens.hasAny(['contracts|*', 'contracts|@', 'collect|*', 'collect|@', 'deposits|*', 'deposits|@', 'reservations|*', 'reservations|@', 'claims|*', 'claims|@', 'reports|*', 'reports|@', 'ledger|*', 'ledger|@', 'invoices|*', 'invoices|@'])
-        : r.t == 'properties' ? m.tokens.hasAny(['contracts|*', 'contracts|@', 'collect|*', 'collect|@', 'deposits|*', 'deposits|@', 'reservations|*', 'reservations|@', 'claims|*', 'claims|@', 'invoices|*', 'invoices|@', 'purchases|*', 'purchases|@', 'banks|*', 'banks|@', 'ledger|*', 'ledger|@', 'reports|*', 'reports|@', 'assets|*', 'assets|@'])
-        : r.t == 'tenants' ? m.all == true && m.tokens.hasAny(['contracts|*', 'contracts|@', 'collect|*', 'collect|@', 'deposits|*', 'deposits|@', 'reservations|*', 'reservations|@', 'claims|*', 'claims|@', 'invoices|*', 'invoices|@'])
-        : r.t == 'units' ? m.tokens.hasAny(['contracts|*', 'contracts|@', 'collect|*', 'collect|@', 'deposits|*', 'deposits|@', 'reservations|*', 'reservations|@', 'claims|*', 'claims|@', 'invoices|*', 'invoices|@', 'purchases|*', 'purchases|@', 'banks|*', 'banks|@', 'ledger|*', 'ledger|@', 'reports|*', 'reports|@', 'assets|*', 'assets|@'])
+      return r.t == 'contracts' ? (',' + m.tokens.join(',') + ',').matches('.*,(contracts|collect|deposits|reservations|claims|reports|ledger|invoices)[|][*@],.*')
+        : r.t == 'properties' ? (',' + m.tokens.join(',') + ',').matches('.*,(contracts|collect|deposits|reservations|claims|invoices|purchases|banks|ledger|reports|assets)[|][*@],.*')
+        : r.t == 'tenants' ? m.all == true && (',' + m.tokens.join(',') + ',').matches('.*,(contracts|collect|deposits|reservations|claims|invoices)[|][*@],.*')
+        : r.t == 'units' ? (',' + m.tokens.join(',') + ',').matches('.*,(contracts|collect|deposits|reservations|claims|invoices|purchases|banks|ledger|reports|assets)[|][*@],.*')
         : false;
     }
     function moneyKeysOk(m, r, keys) {
-      return (!(r.op in ['props', 'maintenance', 'tenants', 'handover', 'library', 'company']) || !keys.hasAny(['cancel_deduction_halalas', 'cancel_refund_halalas', 'credit_halalas', 'deposit_halalas', 'lease_value_halalas', 'parking_halalas', 'rent_monthly_halalas', 'services_halalas', 'value_halalas']) || moneyReaderOf(m, r))
+      return (!(r.op is string && r.op.matches('props|maintenance|tenants|handover|library|company')) ? true : (!keys.hasAny(['cancel_deduction_halalas', 'cancel_refund_halalas', 'credit_halalas', 'deposit_halalas', 'lease_value_halalas', 'parking_halalas', 'rent_monthly_halalas', 'services_halalas', 'value_halalas']) ? true : moneyReaderOf(m, r)))
         && (r.t != 'tenants' || m.all == true || !keys.hasAny(['credit_halalas', 'notes']));
     }
     function moneyKept(m, before, after) {
-      return after.del == true || ((after.t != 'tenants~pub' || !after.d.keys().hasAny(['credit_halalas', 'notes']))) && (false
+      return after.del == true ? true : (((after.t != 'tenants~pub' || !after.d.keys().hasAny(['credit_halalas', 'notes'])))
         // قسمٌ مالي في غير الصف المشترك: يقرأ ما يكتبه، فلا حاجة إلى حساب الفرق
-        || (!(after.op in ['props', 'maintenance', 'tenants', 'handover', 'library', 'company']) && !(after.t in ['tenants']))
-        || moneyKeysOk(m, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys()));
+        && (!(after.op is string && after.op.matches('props|maintenance|tenants|handover|library|company')) && !after.t.matches('tenants') ? true
+          : moneyKeysOk(m, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys())));
     }
 
     function validOrgRow(rowId) {
@@ -350,7 +435,7 @@ service cloud.firestore {
         && (r.del == true || r.d is map)
         && r.g is list && r.pids is list && r.pids.size() > 0
         && (!('by' in r) || r.by is string)
-        && amountsAreIntegers(r) && entrySumsOk(r);
+        && amountsAreIntegers(r) && (r.t == 'journal_entries' ? entrySumsOfEntry(r) : true);
     }
 
     // القيد بمجموعَي مدينه ودائنه صحيحين متساويين (المراجعات الخارجية «ثالثاً أ ٥» · قرار المالك 2026-10-09) · يصطادان خطأ
@@ -358,11 +443,11 @@ service cloud.firestore {
     // ومسودة «قيد الإنشاء» تُحفظ قبل توازنها
     // ما بعد «ليس قيداً» في دالة: القواعد تحسب المكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (حدّ الألف تعبير)
     function entrySumsOk(r) {
-      return r.t != 'journal_entries' || entrySumsOfEntry(r);
+      return r.t == 'journal_entries' ? entrySumsOfEntry(r) : true;
     }
     function entrySumsOfEntry(r) {
-      return r.del == true || !('sv' in r) || isDraft(r)
-        || (r.get('dr', null) is int && r.get('cr', null) is int && r.dr == r.cr);
+      return r.del == true || !('sv' in r) ? true
+        : (isDraft(r) ? true : (r.get('dr', null) is int && r.get('cr', null) is int && r.dr == r.cr));
     }
 
     // الحد الأدنى لإصدار التطبيق (#36 · قرار المالك 2026-10-09): من يكتب بإصدارٍ أقدم من حدّ المنشأة يُرفض، المالك والعضو
@@ -374,22 +459,29 @@ service cloud.firestore {
     function memberCreates(org) {
       let r = request.resource.data;
       let m = mem(org);
-      return isMember(org) && r.op is string && (
+      // الاسم الأصلي مرةً (كل استدعاءٍ نحو تسعة تعابير في حدّ الألف · معايرة المحاكي 2026-10-10)
+      let bt = r.t.split('~')[0];
+      // شرطٌ ثلاثي لا «أو»: في طلب commit تُستدعى الدالة بعد «أو» و«و» ولو حُسمت النتيجة، والثلاثي لا يستدعي دالة فرعه المتروك (تجربة المحاكي 2026-10-10 · حدّ الألف تعبير)
+      return isMember(org) && r.op is string && (r.op == 'self' ? memberSelfAudit(r) : (
         // الحراسات أولاً: المزوَّر يُرفض بها رخيصاً قبل أن يبلغ الطلب حدّ ألف تعبير (المراجعة #17 و#18 و#20 و#21)
         // ورموز رؤية الصف الجديد في حدود عقاره أولها (المراجعات الخارجية «ثالثاً أ ٢» · والمتحقق المستقل: عقاراتٌ مكررة أو معها
         // «*» كانت تتخطى الفحص، والرفض كان بنفاد الحد لا بالمنطق) · فالصف غير المستأجر بعقارٍ واحد ورموزه له
         (pidsGOk(r) && keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(m, null, r)
-          && lvlOf(m, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
+          && lvlOf(m, r.op) >= 2 && opCreates(r.op, bt) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
-          && (baseT(r.t) != 'vat_filings' || m.all == true)
-          && (r.del == true || baseT(r.t) != 'journal_entries' || srcOk(r.op, r.d.get('src_type', null)))
+          && (bt != 'vat_filings' || m.all == true)
+          && (r.del != true && bt == 'journal_entries' ? srcOk(r.op, r.d.get('src_type', null)) : true)
           // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53)
-          && (baseT(r.t) != 'invoices' || r.d == null || lvlOf(m, 'invoices') >= 3 || r.d.get('status', '') == 'مسودة')
+          // i18n-exempt: حالة الفاتورة المخزّنة في نص القواعد
+          && (bt == 'invoices' && r.d != null ? (r.d.get('status', '') == 'مسودة' ? true : lvlOf(m, 'invoices') >= 3) : true)
           // العضو لا ينتحل المالك في سجل العمليات (مراجعة التثبيت #54)
-          && (baseT(r.t) != 'audit_log' || (r.d != null && r.d.get('user_name', '') != 'المالك')))
-        // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
-        || (r.op == 'self' && r.t == 'audit_log' && r.d != null && r.d.entity_type == 'بيانات عضو' && r.pids == ['*'] && keyOk(r)
-          && r.d.get('module', '') == 'الأعضاء' && r.d.get('user_name', '') != 'المالك'));
+          && (bt != 'audit_log' || (r.d != null && r.d.get('user_name', '') != 'المالك')))));
+    }
+    // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥) · وما سواه لا يُكتب
+    // بهذه العملية (مستواها صفر)
+    function memberSelfAudit(r) {
+      return r.t == 'audit_log' && r.d != null && r.d.entity_type == 'بيانات عضو' && r.pids == ['*'] && keyOk(r)
+        && r.d.get('module', '') == 'الأعضاء' && r.d.get('user_name', '') != 'المالك';
     }
 
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
@@ -533,16 +625,16 @@ service cloud.firestore {
 
       match /rows/{rowId} {
         allow read: if orgOwner(org) || (isMember(org) && resource.data.g.hasAny(mem(org).tokens));
-        // الكتابة تُقيَّم بالقاعدتين معاً وحدّ الألف تعبير للطلب كله (قياس التغطية على المحاكي 2026-10-10): فكلٌّ تسقط أولاً
-        // بشرطٍ رخيص حين لا تنطبق (الإنشاء لمستندٍ قائم، والتعديل لمستندٍ غائب) قبل فحص الصف الغالي
-        allow create: if resource == null && validOrgRow(rowId) && svOk(org) && (orgOwner(org) || memberCreates(org));
-        allow update: if resource != null && baseT(resource.data.t) != 'audit_log'
-          && validOrgRow(rowId) && svOk(org)
+        // الكتابة تُقيَّم بقواعد الإنشاء والتعديل والحذف كلها، وفي طلب commit تُستدعى الدالة بعد «و» ولو حُسمت النتيجة، والشرط الثلاثي
+        // لا يستدعي دالة فرعه المتروك (تجربة المحاكي واختبار الميزانية 2026-10-10 · حدّ الألف تعبير): فكلُّ قاعدةٍ تسقط بثلاثيٍّ حين لا تنطبق
+        allow create: if resource != null ? false : (validOrgRow(rowId) && svOk(org) && (orgOwner(org) ? true : memberCreates(org)));
+        allow update: if resource == null ? false : (baseT(resource.data.t) == 'audit_log' ? false : (
+          validOrgRow(rowId) && svOk(org)
           && (isPostedEntry(resource.data)
-              ? (orgOnlyLinksReversal(org) && (orgOwner(org) || memberLinksReversal(org)))
-                || (orgOwner(org) && (orgOnlyVisibility() || orgOnlyLineDims()))
-              : (orgOwner(org) || memberUpdates(org)));
-        allow delete: if orgOwner(org) && orgDeletionOpen(org);
+              ? (orgOnlyLinksReversal(org) && (orgOwner(org) ? true : memberLinksReversal(org)))
+                || (orgOwner(org) ? (orgOnlyVisibility() || orgOnlyLineDims()) : false)
+              : (orgOwner(org) ? true : memberUpdates(org)))));
+        allow delete: if orgOwner(org) ? orgDeletionOpen(org) : false;
       }
 
       // بيانات العضو (توجيه المالك ٢٠٢٦-١٠-٠٥): الجوال سعودي موحَّد والهوية عشرة أرقام أولها ١ أو ٢،

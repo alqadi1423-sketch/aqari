@@ -11,7 +11,17 @@ import { SYNC_TABLES } from '../../db/syncTables';
 import { BLOCK_SIZE, FIRST_GAP } from '../numbering';
 
 /** ما تحتاجه القواعد من المخطط: أعمدة المبالغ في كل جدول مُزامَن (يبنيه الاختبار من قاعدةٍ مُهاجَرة) */
-export interface RulesSchema { money: Record<string, string[]> }
+export interface RulesSchema {
+  money: Record<string, string[]>;
+  /** أعمدة الربط التي تحدد عقار الصف (LINK_COLS) الموجودة في كل جدول · بلا هذا يُجرَّب كلها (حدّ الألف تعبير) */
+  links?: Record<string, string[]>;
+}
+
+/** أعمدة الربط بترتيب rowPids في sync/acl.ts · وجدول كلٍّ منها */
+export const LINK_COLS: Array<[string, string]> = [
+  ['property_id', 'properties'], ['unit_id', 'units'], ['contract_id', 'contracts'], ['room_id', 'unit_rooms'],
+  ['area_id', 'property_areas'], ['payment_id', 'contract_payments'], ['meter_id', 'meters'],
+];
 
 export const BEGIN = '    // <org:generated> · لا تُعدَّل باليد: src/domain/access/rulesGen.ts';
 export const END = '    // </org:generated>';
@@ -84,12 +94,36 @@ export function pubTables(schema: RulesSchema): string[] {
   return [...new Set([...Object.keys(schema.money).filter((t) => (schema.money[t] ?? []).length > 0), ...Object.keys(CROSS_PROPERTY)])].sort();
 }
 
+/** «|جدول=عمود,عمود|…|» لأعمدة الربط في كل جدول · وبلا مخطط: كل الأعمدة لكل جدول (السلوك القديم) */
+function linkLookup(schema: RulesSchema): string {
+  const all = LINK_COLS.map(([c]) => c);
+  return '|' + SYNC_TABLES.map((t) => [t.name, schema.links ? (schema.links[t.name] ?? []) : all] as const)
+    .filter(([, cs]) => cs.length).map(([t, cs]) => `${t}=${cs.map((c) => c + ':' + LINK_COLS.find(([x]) => x === c)![1]).join(',')}`).join('|') + '|';
+}
+/** أول عمود ربطٍ قيمته غير فارغة بترتيبه · بشروطٍ ثلاثية متداخلة (الثلاثي لا يستدعي دالة فرعه المتروك) */
+function linkChain(schema: RulesSchema): string {
+  return 'pbFrom0(org, r, fs)';
+}
+/** مستويات السلسلة دوالٌ (لا يُستدعى إلا ما يُسلك) · المستوى i يجرّب العمود i ثم ما بعده */
+function linkLevels(schema: RulesSchema): string {
+  const max = Math.max(1, ...(schema.links ? Object.values(schema.links).map((x) => x.length) : [LINK_COLS.length]));
+  const out: string[] = [];
+  for (let i = 0; i < max; i++) {
+    const next = i + 1 < max ? `pbFrom${i + 1}(org, r, fs)` : "r.pids == ['*']";
+    out.push(`    function pbFrom${i}(org, r, fs) {
+      let c = fs.size() > ${i} ? fs[${i}].split(':') : ['', ''];
+      return c[0] == '' ? r.pids == ['*'] : (r.d.get(c[0], '') is string && r.d.get(c[0], '') != '' ? pbLink(org, r, c) : ${next});
+    }`);
+  }
+  return out.join('\n');
+}
+
 function guardFns(schema: RulesSchema): string {
   const names = SYNC_TABLES.map((t) => t.name);
   // الجدول ونظيره «~pub» · المقارنة بالاسم كما هو بلا تقطيع: للطلب حدّ ألف تعبير، والدالة تعيد حساب وسائطها عند كل استعمال
   const both = (ts: string[]) => q(ts.flatMap((t) => [t, t + '~pub']));
   const special = SYNC_TABLES.filter((t) => !(t.pkCols.length === 1 && t.pkCols[0] === 'id'));
-  const keyBranches = special.map((t) => `r.t in ${both([t.name])} ? ${t.pkCols.map((c) => 'r.d.' + c).join(" + '|' + ")} == r.k`);
+  const keyBranches = special.map((t) => `bt == '${t.name}' ? ${t.pkCols.map((c) => 'r.d.' + c).join(" + '|' + ")} == r.k`);
   // المبالغ: العمليات غير المالية وحدها قد تكتب مبلغاً لا يقرؤه كاتبه، وفي جداولها أعمدتها هذه
   const nonMoneyOps = (Object.keys(OP_WRITES) as SectionKey[]).filter((x) => !MONEY_SECTIONS.has(x));
   const nonMoneyTables = new Set<string>();
@@ -101,8 +135,10 @@ function guardFns(schema: RulesSchema): string {
   const moneyTables = [...nonMoneyTables].filter((t) => (schema.money[t] ?? []).length).sort();
   const readerBranches = moneyTables.map((t) => {
     const secs = readersUnion(t).filter((x) => MONEY_SECTIONS.has(x));
-    const toks = q(secs.flatMap((x) => [x + '|*', x + '|@']));
-    return `r.t == '${t}' ? ${CROSS_PROPERTY[t] ? 'm.all == true && ' : ''}${secs.length ? `m.tokens.hasAny(${toks})` : 'false'}`;
+    // تعبيرٌ نمطي واحد على رموز العضو مجموعةً بدل قائمةٍ تُحسب عناصرها كلها في كل تقييم (حدّ الألف تعبير · المتحقق المستقل على
+    // 356a528: صفّ blobs من قسمٍ غير مالي كان يبلغ الحد)
+    const rx = `.*,(${secs.join('|')})[|][*@],.*`;
+    return `r.t == '${t}' ? ${CROSS_PROPERTY[t] ? 'm.all == true && ' : ''}${secs.length ? `(',' + m.tokens.join(',') + ',').matches('${rx}')` : 'false'}`;
   });
   // الحقول الجامعة للعقارات في الصف المشترك (مبالغه وCROSS_PROPERTY): لا يكتبها المحصور، ولا تُكتب في إسقاطه (التحقق المستقل)
   const crossMoney = Object.keys(CROSS_PROPERTY).map((t) => ({ t, cols: [...(schema.money[t] ?? []), ...CROSS_PROPERTY[t]] })).filter((x) => x.cols.length);
@@ -113,24 +149,26 @@ function guardFns(schema: RulesSchema): string {
     // يرفض الوارد المخالف بنفسه (sync/engine.ts applyOne) · وللطلب حدّ ألف تعبير، فالمقارنة بالاسم كما هو ونظيره ~pub
     // مفتاح الصف داخل d هو مفتاح المستند (#20): فلا يستبدل مستندٌ بمفتاحٍ صفاً آخر عند كل جهاز
     // القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10)
+    // القوائم المكتوبة تُحسب عناصرها في حدّ الألف تعبير عنصراً عنصراً، والتعبير النمطي بكلفةٍ ثابتة (معايرة المحاكي 2026-10-10)
     function keyOk(r) {
-      return r.del == true || (r.t in ${both(special.map((t) => t.name))} ? keyOkSpecial(r) : string(r.d.get('id', null)) == r.k);
+      return r.del == true ? true : (r.t.matches('(${special.map((t) => t.name).join('|')})(~pub)?') ? keyOkSpecial(r, baseT(r.t)) : string(r.d.get('id', null)) == r.k);
     }
-    function keyOkSpecial(r) {
+    function keyOkSpecial(r, bt) {
       return ${keyBranches.join('\n        : ')}
         : false;
     }
     // مصدر القيد الجديد من قسم العملية (#40): لا ينشئ العضو قيداً لعملية قسمٍ ليس له · والدفتر يدويّه وكل عكس
+    // تعبيرٌ نمطي واحد بكلفةٍ ثابتة: طلب commit يُقيَّم مرةً تُستدعى فيها حتى دوال الفروع المتروكة (حدّ الألف تعبير · المتحقق المستقل على 356a528)
     function srcOk(op, s) {
       return op == 'ledger' ? (s == null || (s is string && s.matches('.*_rev$')))
-        : ${Object.entries(OP_JOURNAL_SRC).map(([op, list]) => `op == '${op}' ? s in ${q(list ?? [])}`).join('\n        : ')}
-        : false;
+        : op is string && s is string && (op + ':' + s).matches('${Object.entries(OP_JOURNAL_SRC).filter(([, list]) => (list ?? []).length).map(([op, list]) => `${op}:(${(list ?? []).join('|')})`).join('|')}');
     }
     // بصمة الملف وامتداده بشكلهما (#21): منهما يُبنى مسار الملف على كل جهاز · والمرفق بصمته وحدها (امتداده في blobs)
     function blobShapeOk(r) {
-      return r.del == true || !(r.t in ['blobs', 'attachments'])
-        || (r.d.sha256 is string && r.d.sha256.matches('^[0-9a-f]{64}$')
-            && (r.t == 'attachments' || (r.d.ext is string && r.d.ext.matches('^[a-z0-9]{1,5}$'))));
+      return r.del != true && (r.t == 'blobs' || r.t == 'attachments')
+        ? (r.d.sha256 is string && r.d.sha256.matches('^[0-9a-f]{64}$')
+            && (r.t == 'attachments' || (r.d.ext is string && r.d.ext.matches('^[a-z0-9]{1,5}$'))))
+        : true;
     }
     // عقارات الصف من حقيقته لا من إعلان كاتبه (#18) · كما يحسبها rowPids في sync/acl.ts، وما يُشتق من صفٍّ آخر
     // يُقرأ من مستند ذلك الصف بعد الدفعة نفسها
@@ -142,31 +180,35 @@ function guardFns(schema: RulesSchema): string {
     }
     // القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10)
     function pidsBound(org, r) {
-      return r.del == true || pidsBoundBy(org, r, baseT(r.t));
+      return r.del == true ? true : pidsBoundBy(org, r, baseT(r.t));
     }
     function pidsBoundBy(org, r, t) {
       // والمرفق تُحصر رموز ملفه في قواعد التخزين (linkedOk) لا هنا: كلفته على كل كتابة عضو (حدّ الألف تعبير)
+      // كل استدعاء دالةٍ نحو تسعة تعابير في حدّ الألف (معايرة المحاكي 2026-10-10): فما يُستدعى لكل صفّ مكتوبٌ في موضعه
+      // البديل المتروك يُحسب بمعاملاته وإن لم يُستدعَ (معايرة المحاكي 2026-10-10): فكل بديلٍ يُستدعى بالصف وحده
       return t == 'tenants' || t == 'journal_entries' || t == 'attachments' ? true
-        : t == 'properties' ? pbSelf(r)
-        : t == 'meters' ? pbMeter(org, r)
-        : t == 'asset_events' ? pbAt(org, r, 'assets', 'asset_id')
-        : t == 'purchase_lines' ? pbAt(org, r, 'purchases', 'purchase_id')
-        : pidsBoundLinked(org, r);
+        : t.matches('properties|meters|asset_events|purchase_lines') ? pbSpecial(org, r, t)
+        : pidsBoundLinked(org, r, t);
     }
-    function pbSelf(r) { return r.pids == [r.d.id]; }
-    function pbProp(r) { return r.pids == [r.d.property_id]; }
-    function pbWide(r) { return r.pids == ['*']; }
-    function pbAt(org, r, tbl, f) { return r.pids == pidsAt(org, tbl, r.d[f]); }
-    function pbMeter(org, r) { return r.d.owner_type == 'property' ? r.pids == [r.d.owner_id] : pbAt(org, r, 'units', 'owner_id'); }
-    function pidsBoundLinked(org, r) {
-      return linked(r.d, 'property_id') ? pbProp(r)
-        : linked(r.d, 'unit_id') ? pbAt(org, r, 'units', 'unit_id')
-        : linked(r.d, 'contract_id') ? pbAt(org, r, 'contracts', 'contract_id')
-        : linked(r.d, 'room_id') ? pbAt(org, r, 'unit_rooms', 'room_id')
-        : linked(r.d, 'area_id') ? pbAt(org, r, 'property_areas', 'area_id')
-        : linked(r.d, 'payment_id') ? pbAt(org, r, 'contract_payments', 'payment_id')
-        : linked(r.d, 'meter_id') ? pbAt(org, r, 'meters', 'meter_id')
-        : pbWide(r);
+    function pbSpecial(org, r, t) {
+      return t == 'properties' ? r.pids == [r.d.id]
+        : t == 'meters' ? (r.d.owner_type == 'property' ? r.pids == [r.d.owner_id] : pbAt(org, r, 'units', r.d.owner_id))
+        : t == 'asset_events' ? pbAt(org, r, 'assets', r.d.asset_id)
+        : pbAt(org, r, 'purchases', r.d.purchase_id);
+    }
+    function pbAt(org, r, tbl, id) {
+      return r.pids == getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$(tbl + '__' + id)).data.pids;
+    }
+    // أعمدة ربط جدول الصف وحدها من جدول بحثٍ بالاسم، لا السبعة كلها (اختبار الميزانية 2026-10-10: كانت أثقل فحصٍ في الإنشاء)
+    function pidsBoundLinked(org, r, t) {
+      let parts = '${linkLookup(schema)}'.split('[|]' + t + '=');
+      let fs = parts.size() > 1 ? parts[1].split('[|]')[0].split(',') : [];
+      return ${linkChain(schema)};
+    }
+${linkLevels(schema)}
+    // [عمود، جدوله] · عمود العقار نفسه بلا قراءة
+    function pbLink(org, r, ct) {
+      return ct[0] == 'property_id' ? r.pids == [r.d.property_id] : pbAt(org, r, ct[1], r.d[ct[0]]);
     }
     // روابط الصف التي تحدد عقاره (كما في rowPids): تغيّرها في التعديل يُفحص بحقيقة الصف
     function linksChanged(before, after) {
@@ -181,8 +223,14 @@ function guardFns(schema: RulesSchema): string {
     // طلبُ العضو حدَّ الألف تعبير كما تبلغه قائمة الأقسام كلها (المراجعات الخارجية «ثالثاً أ ٢») · ومعرّف العقار حروفٌ وأرقام
     // صفٌّ غير المستأجر بعقارٍ واحد، ورموز رؤيته لعقاره أو «@» (المراجعات الخارجية «ثالثاً أ ٢») · والمستأجر المشترك له tenantGOk
     function pidsGOk(r) {
+      return r.t == 'tenants' ? tenantFullGOk(r) : (r.pids.size() == 1 ? gPropOk(r.g, r.pids[0]) : pidsGOkMulti(r));
+    }
+    function tenantFullGOk(r) {
       return r.pids.toSet().size() == r.pids.size() && (r.pids.size() == 1 || !('*' in r.pids))
-        && (r.t == 'tenants' ? (',' + r.g.join(',') + ',').matches('(,[a-z]+[|]@)*,') : gPropsOk(r.g, r.pids));
+        && (',' + r.g.join(',') + ',').matches('(,[a-z]+[|]@)*,');
+    }
+    function pidsGOkMulti(r) {
+      return r.pids.toSet().size() == r.pids.size() && !('*' in r.pids) && gPropsOk(r.g, r.pids);
     }
     // رموز الصف لعقاراته أو «@» · صفٌّ بأكثر من عقار (المستأجر ومرفقه) بعقاراتٍ معرّفاتها حروفٌ وأرقام (المتحقق المستقل على 61cfcd4:
     // كان يُشترط عقارٌ واحد فيُرفض مرفق المستأجر المشروع، وصفّ المستأجر بلا فحص)
@@ -217,14 +265,14 @@ function guardFns(schema: RulesSchema): string {
       return ${readerBranches.length ? readerBranches.join('\n        : ') + '\n        : false' : 'false'};
     }
     function moneyKeysOk(m, r, keys) {
-      return (!(r.op in ${q(nonMoneyOps)}) || !keys.hasAny(${q(nonMoneyCols)}) || moneyReaderOf(m, r))
+      return (!(r.op is string && r.op.matches('${nonMoneyOps.join('|')}')) ? true : (!keys.hasAny(${q(nonMoneyCols)}) ? true : moneyReaderOf(m, r)))
 ${crossMoney.map((x) => `        && (r.t != '${x.t}' || m.all == true || !keys.hasAny(${q(x.cols)}))`).join('\n')};
     }
     function moneyKept(m, before, after) {
-      return after.del == true || (${crossMoney.map((x) => `(after.t != '${x.t}~pub' || !after.d.keys().hasAny(${q(x.cols)}))`).join(' && ') || 'true'}) && (false
+      return after.del == true ? true : ((${crossMoney.map((x) => `(after.t != '${x.t}~pub' || !after.d.keys().hasAny(${q(x.cols)}))`).join(' && ') || 'true'})
         // قسمٌ مالي في غير الصف المشترك: يقرأ ما يكتبه، فلا حاجة إلى حساب الفرق
-        || (!(after.op in ${q(nonMoneyOps)}) && !(after.t in ${q(crossMoney.map((x) => x.t))}))
-        || moneyKeysOk(m, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys()));
+        && (!(after.op is string && after.op.matches('${nonMoneyOps.join('|')}')) && !after.t.matches('${crossMoney.map((x) => x.t).join('|') || '^$'}') ? true
+          : moneyKeysOk(m, after, before == null || before.d == null ? after.d.keys() : after.d.diff(before.d).affectedKeys())));
     }`;
 }
 
@@ -255,14 +303,14 @@ export function generateOrgRules(schema: RulesSchema = { money: {} }): string {
       return t.split('~')[0];
     }
     // الإسقاط (t~pub) للجداول التي لها مبالغٌ يُخفى بعضها، وللمستأجر المشترك وحده (المراجعات الخارجية «ثالثاً أ ٦»)
+    // تعبيرٌ نمطي واحد بكلفةٍ ثابتة: طلب commit يُقيَّم مرةً تُستدعى فيها حتى دوال الفروع المتروكة (حدّ الألف تعبير · المتحقق المستقل على 356a528)
     function syncedOrPub(t) {
-      return syncedTable(baseT(t)) && (t == baseT(t) || (t == baseT(t) + '~pub' && baseT(t) in ${JSON.stringify(pubTables(schema)).replace(/"/g, "'")}));
+      return t is string && t.matches('(${SYNC_TABLES.map((x) => x.name).join('|')})|(${pubTables(schema).filter((x) => SYNC_TABLES.some((y) => y.name === x)).join('|')})~pub');
     }
+    // تعبيرٌ نمطي واحد بكلفةٍ ثابتة: طلب commit يُقيَّم مرةً تُستدعى فيها حتى دوال الفروع المتروكة (حدّ الألف تعبير · المتحقق المستقل على 356a528)
     function isDraft(data) {
-      return data.d != null && (
-        (baseT(data.t) == 'contracts' && data.d.status == 'مسودة')
-        || (baseT(data.t) == 'invoices' && data.d.status == 'مسودة')
-        || (data.t == 'journal_entries' && data.d.status == 'قيد الإنشاء'));
+      // i18n-exempt: حالات المسودة المخزّنة في نص القواعد
+      return data.d != null && (data.t + ':' + string(data.d.get('status', ''))).matches('(contracts|contracts~pub|invoices|invoices~pub):مسودة|journal_entries:قيد الإنشاء');
     }
     // عقارات الصف ضمن عقارات العضو · والصف العام '*' مسموح لمن له القسم
     function propsOk(m, r) {
@@ -287,7 +335,7 @@ ${guardFns(schema)}
         && (r.del == true || r.d is map)
         && r.g is list && r.pids is list && r.pids.size() > 0
         && (!('by' in r) || r.by is string)
-        && amountsAreIntegers(r) && entrySumsOk(r);
+        && amountsAreIntegers(r) && (r.t == 'journal_entries' ? entrySumsOfEntry(r) : true);
     }
 
     // القيد بمجموعَي مدينه ودائنه صحيحين متساويين (المراجعات الخارجية «ثالثاً أ ٥» · قرار المالك 2026-10-09) · يصطادان خطأ
@@ -295,11 +343,11 @@ ${guardFns(schema)}
     // ومسودة «قيد الإنشاء» تُحفظ قبل توازنها
     // ما بعد «ليس قيداً» في دالة: القواعد تحسب المكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (حدّ الألف تعبير)
     function entrySumsOk(r) {
-      return r.t != 'journal_entries' || entrySumsOfEntry(r);
+      return r.t == 'journal_entries' ? entrySumsOfEntry(r) : true;
     }
     function entrySumsOfEntry(r) {
-      return r.del == true || !('sv' in r) || isDraft(r)
-        || (r.get('dr', null) is int && r.get('cr', null) is int && r.dr == r.cr);
+      return r.del == true || !('sv' in r) ? true
+        : (isDraft(r) ? true : (r.get('dr', null) is int && r.get('cr', null) is int && r.dr == r.cr));
     }
 
     // الحد الأدنى لإصدار التطبيق (#36 · قرار المالك 2026-10-09): من يكتب بإصدارٍ أقدم من حدّ المنشأة يُرفض، المالك والعضو
@@ -311,22 +359,29 @@ ${guardFns(schema)}
     function memberCreates(org) {
       let r = request.resource.data;
       let m = mem(org);
-      return isMember(org) && r.op is string && (
+      // الاسم الأصلي مرةً (كل استدعاءٍ نحو تسعة تعابير في حدّ الألف · معايرة المحاكي 2026-10-10)
+      let bt = r.t.split('~')[0];
+      // شرطٌ ثلاثي لا «أو»: في طلب commit تُستدعى الدالة بعد «أو» و«و» ولو حُسمت النتيجة، والثلاثي لا يستدعي دالة فرعه المتروك (تجربة المحاكي 2026-10-10 · حدّ الألف تعبير)
+      return isMember(org) && r.op is string && (r.op == '${SELF_OP}' ? memberSelfAudit(r) : (
         // الحراسات أولاً: المزوَّر يُرفض بها رخيصاً قبل أن يبلغ الطلب حدّ ألف تعبير (المراجعة #17 و#18 و#20 و#21)
         // ورموز رؤية الصف الجديد في حدود عقاره أولها (المراجعات الخارجية «ثالثاً أ ٢» · والمتحقق المستقل: عقاراتٌ مكررة أو معها
         // «*» كانت تتخطى الفحص، والرفض كان بنفاد الحد لا بالمنطق) · فالصف غير المستأجر بعقارٍ واحد ورموزه له
         (pidsGOk(r) && keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(m, null, r)
-          && lvlOf(m, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
+          && lvlOf(m, r.op) >= 2 && opCreates(r.op, bt) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
-          && (baseT(r.t) != 'vat_filings' || m.all == true)
-          && (r.del == true || baseT(r.t) != 'journal_entries' || srcOk(r.op, r.d.get('src_type', null)))
+          && (bt != 'vat_filings' || m.all == true)
+          && (r.del != true && bt == 'journal_entries' ? srcOk(r.op, r.d.get('src_type', null)) : true)
           // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53)
-          && (baseT(r.t) != 'invoices' || r.d == null || lvlOf(m, 'invoices') >= 3 || r.d.get('status', '') == 'مسودة')
+          // i18n-exempt: حالة الفاتورة المخزّنة في نص القواعد
+          && (bt == 'invoices' && r.d != null ? (r.d.get('status', '') == 'مسودة' ? true : lvlOf(m, 'invoices') >= 3) : true)
           // العضو لا ينتحل المالك في سجل العمليات (مراجعة التثبيت #54)
-          && (baseT(r.t) != 'audit_log' || (r.d != null && r.d.get('user_name', '') != '${OWNER_ACTOR}')))
-        // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
-        || (r.op == '${SELF_OP}' && r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)
-          && r.d.get('module', '') == '${SELF_AUDIT_MODULE}' && r.d.get('user_name', '') != '${OWNER_ACTOR}'));
+          && (bt != 'audit_log' || (r.d != null && r.d.get('user_name', '') != '${OWNER_ACTOR}')))));
+    }
+    // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥) · وما سواه لا يُكتب
+    // بهذه العملية (مستواها صفر)
+    function memberSelfAudit(r) {
+      return r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)
+        && r.d.get('module', '') == '${SELF_AUDIT_MODULE}' && r.d.get('user_name', '') != '${OWNER_ACTOR}';
     }
 
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
@@ -447,16 +502,16 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
 
       match /rows/{rowId} {
         allow read: if orgOwner(org) || (isMember(org) && resource.data.g.hasAny(mem(org).tokens));
-        // الكتابة تُقيَّم بالقاعدتين معاً وحدّ الألف تعبير للطلب كله (قياس التغطية على المحاكي 2026-10-10): فكلٌّ تسقط أولاً
-        // بشرطٍ رخيص حين لا تنطبق (الإنشاء لمستندٍ قائم، والتعديل لمستندٍ غائب) قبل فحص الصف الغالي
-        allow create: if resource == null && validOrgRow(rowId) && svOk(org) && (orgOwner(org) || memberCreates(org));
-        allow update: if resource != null && baseT(resource.data.t) != 'audit_log'
-          && validOrgRow(rowId) && svOk(org)
+        // الكتابة تُقيَّم بقواعد الإنشاء والتعديل والحذف كلها، وفي طلب commit تُستدعى الدالة بعد «و» ولو حُسمت النتيجة، والشرط الثلاثي
+        // لا يستدعي دالة فرعه المتروك (تجربة المحاكي واختبار الميزانية 2026-10-10 · حدّ الألف تعبير): فكلُّ قاعدةٍ تسقط بثلاثيٍّ حين لا تنطبق
+        allow create: if resource != null ? false : (validOrgRow(rowId) && svOk(org) && (orgOwner(org) ? true : memberCreates(org)));
+        allow update: if resource == null ? false : (baseT(resource.data.t) == 'audit_log' ? false : (
+          validOrgRow(rowId) && svOk(org)
           && (isPostedEntry(resource.data)
-              ? (orgOnlyLinksReversal(org) && (orgOwner(org) || memberLinksReversal(org)))
-                || (orgOwner(org) && (orgOnlyVisibility() || orgOnlyLineDims()))
-              : (orgOwner(org) || memberUpdates(org)));
-        allow delete: if orgOwner(org) && orgDeletionOpen(org);
+              ? (orgOnlyLinksReversal(org) && (orgOwner(org) ? true : memberLinksReversal(org)))
+                || (orgOwner(org) ? (orgOnlyVisibility() || orgOnlyLineDims()) : false)
+              : (orgOwner(org) ? true : memberUpdates(org)))));
+        allow delete: if orgOwner(org) ? orgDeletionOpen(org) : false;
       }
 
       // بيانات العضو (توجيه المالك ٢٠٢٦-١٠-٠٥): الجوال سعودي موحَّد والهوية عشرة أرقام أولها ١ أو ٢،

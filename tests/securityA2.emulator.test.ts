@@ -57,6 +57,9 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
   const INV = member('S2-INV', { invoices: 2, props: 1 }, ['P1']);
   const TEN = member('S2-TEN', { tenants: 2, contracts: 1, props: 1 }, 'all');
   const TEN1 = member('S2-TEN1', { tenants: 2, contracts: 1, props: 1 }, ['P1']);
+  const HAND = member('S2-HAND', { handover: 2, contracts: 1, props: 1 }, ['P1']);
+  const LIBM = member('S2-LIB', { library: 2 }, ['P1']);
+  const TEN3 = member('S2-TEN3', { tenants: 3, props: 1 }, ['P1']);
   let db: import('@/db/adapter').DB;
   let C1 = '';
   const pays: string[] = [];
@@ -79,7 +82,7 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     pays.push(...db.all<{ id: string }>(`SELECT id FROM journal_entries WHERE status = 'مرحّل' AND src_type = 'rent' ORDER BY date`).map((x) => x.id));
     enableSync(db, ORG);
     expect((await syncOnce(db, remoteFor(null), 'dev-owner')).pending).toBe(0);
-    for (const a of [COL, COLALL, LED, PRO, INV, TEN, TEN1]) {
+    for (const a of [COL, COLALL, LED, PRO, INV, TEN, TEN1, HAND, LIBM, TEN3]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
       }, ORG)).toBe(200);
@@ -154,7 +157,7 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
   test('٦ الفاتورة بإسقاطها (~pub) كأصلها: عضو الإدخال يحفظ المسودة وحدها', async () => {
     const inv = (status: string, k: string): RemoteDoc => ({ id: 'invoices~pub__' + k, t: 'invoices~pub', k, u: 'i', dev: 'dev-i', del: false,
       pids: ['P1'], g: ['invoices|P1', 'invoices|@'], op: 'invoices', by: INV.uid!,
-      d: { id: k, no: 'INV-' + k, issue: '2026-02-04', status, contract_id: C1, created_at: '2026-02-04' } });
+      d: { id: k, no: 'INV-' + k, issue: '2026-02-04', status, property_id: 'P1', created_at: '2026-02-04' } });
     deniedByLogic(await write(INV, inv('مستحقة', 'S2I1')));
     accepted(await write(INV, inv('مسودة', 'S2I2')));
   });
@@ -176,5 +179,15 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     deniedByLogic(await write(TEN1, { ...tdoc.doc, k: 'S2TN', id: 'tenants__S2TN', u: 't1', pids: ['P1'], g: [...tdoc.doc.g!, 'contracts|P2', 'collect|P2'], d: { ...tdoc.doc.d!, id: 'S2TN' } }));
     deniedByLogic(await write(TEN1, { ...pubDoc, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't2', pids: ['P1'], g: ['tenants|P1', 'contracts|P2', 'collect|P2'], d: { ...pubDoc.d!, id: 'S2TN' } }));
     accepted(await write(TEN1, { ...pubDoc, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't3', pids: ['P1'], g: ['tenants|@', 'tenants|P1'], d: { ...pubDoc.d!, id: 'S2TN' } }));
+  });
+
+  test('الجولة ٣ للمتحقق: صفّ blobs من أعضاء الأقسام غير المالية يُقبل (كان يبلغ حدّ الألف تعبير)', async () => {
+    for (const [a, i] of [[PRO, 1], [TEN3, 2], [HAND, 3], [LIBM, 4]] as const) {
+      const sha = String(i).repeat(64);
+      const blob = ann(a, { id: 'blobs__' + sha, t: 'blobs', k: sha, u: 'b', dev: 'dev-b', del: false,
+        d: { sha256: sha, ext: 'pdf', size_bytes: 1, created_at: '2026-02-06T00:00:00.000Z' } });
+      const r = await write(a, blob);
+      if (!r.ok) throw new Error(a.uid + ' ' + String(r.message).slice(0, 300));
+    }
   });
 });

@@ -4,7 +4,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { generateOrgRules, spliceRules, BEGIN, END } from '@/domain/access/rulesGen';
+import { generateOrgRules, spliceRules, BEGIN, END, LINK_COLS } from '@/domain/access/rulesGen';
 import { OP_WRITES } from '@/domain/access/opWrites';
 import { SYNC_TABLES } from '@/db/syncTables';
 import { isMoneyColumn } from '@/domain/access/readSections';
@@ -14,12 +14,16 @@ import { memDb } from './helpers/testDb';
 function rulesSchema() {
   const db = memDb();
   const money: Record<string, string[]> = {};
+  const links: Record<string, string[]> = {};
   for (const { name } of SYNC_TABLES) {
-    const cols = db.all<{ name: string }>(`PRAGMA table_info("${name}")`).map((c) => c.name).filter(isMoneyColumn);
+    const all = db.all<{ name: string }>(`PRAGMA table_info("${name}")`).map((c) => c.name);
+    const cols = all.filter(isMoneyColumn);
     if (cols.length) money[name] = cols;
+    // أعمدة الربط الموجودة في الجدول بترتيب rowPids (حدّ الألف تعبير)
+    links[name] = LINK_COLS.map(([c]) => c).filter((c) => all.includes(c));
   }
   db.close();
-  return { money };
+  return { money, links };
 }
 
 const FILE = path.join(__dirname, '..', 'firestore.rules');
