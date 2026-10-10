@@ -47,12 +47,26 @@ service firebase.storage {
     function tokens(md) {
       return md != null && 'g' in md && md.g is string ? md.g.split(',') : [];
     }
+    // أو ربط مرفقٍ حقيقي (نص قرار المالك 2026-10-09: «أو يُحصر تعديل الرموز في المالك وربط مرفق حقيقي» · والمتحقق المستقل: قرّاء
+    // المرفق من أقسامٍ لا يكتب فيها العضو كانوا لا يرونه): الرموز المضافة من رموز صفّ مرفقٍ لهذا الملف ببصمته (metadata.att)،
+    // وصفّ المرفق محصورٌ في عقار كاتبه بقواعد Firestore · ورمز «كل العقارات» منه لمرفقٍ للمنشأة كلها وحده
+    function attRow(org, md) {
+      return firestore.get(/databases/(default)/documents/orgs/$(org)/rows/$('attachments__' + md.att)).data;
+    }
+    function linkedOk(org, md, name, added) {
+      return md != null && 'att' in md && md.att is string && md.att.matches('^[A-Za-z0-9_-]{1,64}$')
+        && attRow(org, md).del != true && attRow(org, md).d.sha256 == name.split('[.]')[0]
+        && added.hasOnly(attRow(org, md).g)
+        && (!added.hasAny(orgWideTokens()) || attRow(org, md).pids == ['*']);
+    }
 
     match /orgs/{org}/files/{name} {
       // السؤال عن ملفٍ غير موجود يعيد «غير موجود» للعضو (لا يكشف شيئاً) · فيعرف الطابور أن عليه رفعه
       allow get: if isOwner(org)
         || (isMember(org) && (resource == null || tokens(resource.metadata).hasAny(firestore.get(memberDoc(org)).data.tokens)));
-      allow create: if (isOwner(org) || (resource == null && isMember(org) && 'op' in request.resource.metadata && lvl(org, request.resource.metadata.op) >= 2))
+      allow create: if (isOwner(org) || (resource == null && isMember(org) && 'op' in request.resource.metadata && lvl(org, request.resource.metadata.op) >= 2
+          && ((!tokens(request.resource.metadata).hasAny(orgWideTokens()) && addedOk(org, tokens(request.resource.metadata)))
+            || linkedOk(org, request.resource.metadata, name, tokens(request.resource.metadata)))))
         && request.resource.size < 50 * 1024 * 1024
         && name.matches('^[0-9a-f]{64}[.][a-z0-9]{1,5}$')
         && request.resource.metadata.md5 == request.resource.md5Hash;
@@ -63,8 +77,9 @@ service firebase.storage {
           && request.resource.md5Hash == resource.md5Hash
           && request.resource.metadata.md5 == resource.metadata.md5
           && tokens(request.resource.metadata).hasAll(tokens(resource.metadata))
-          && !tokens(request.resource.metadata).removeAll(tokens(resource.metadata)).hasAny(orgWideTokens())
-          && addedOk(org, tokens(request.resource.metadata).removeAll(tokens(resource.metadata))));
+          && ((!tokens(request.resource.metadata).removeAll(tokens(resource.metadata)).hasAny(orgWideTokens())
+              && addedOk(org, tokens(request.resource.metadata).removeAll(tokens(resource.metadata))))
+            || linkedOk(org, request.resource.metadata, name, tokens(request.resource.metadata).removeAll(tokens(resource.metadata)))));
       allow delete: if isOwner(org);
     }
 

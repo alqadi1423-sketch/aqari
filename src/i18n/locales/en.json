@@ -688,5 +688,8 @@
   "wipe": {
     "deletingFiles": "Deleting files from the server · {{n}} of {{total}}",
     "deletingCloud": "Deleting your data from the cloud · {{n}}"
+  },
+  "numbering": {
+    "counterBehind": "This device's numbers are far ahead of the organization counter. Open the app on the owner's device to sync, then try again."
   }
 }

@@ -104,16 +104,37 @@ export interface ReservedBlock { series: Series; lo: number; hi: number }
  * حساب الحجز على العدّاد (آخر رقمٍ محجوز لكل سلسلة) · بعد أعلى ما فيه وما يعرفه الجهاز،
  * وأول إنشاءٍ للسلسلة بعد أرضيته بفجوة · يعيد العدّاد الجديد والكتل.
  */
-export function planBlocks(cur: Record<string, number>, req: BlockRequest[]): { next: Record<string, number>; out: ReservedBlock[] } {
+export function planBlocks(
+  cur: Record<string, number>, req: BlockRequest[], capped = false,
+): { next: Record<string, number>; out: ReservedBlock[]; pending: BlockRequest[] } {
   const next: Record<string, number> = {};
   const out: ReservedBlock[] = [];
+  const pending: BlockRequest[] = [];
   for (const r of req) {
     const have = Number.isInteger(cur[r.series]) ? cur[r.series] : null;
     const base = have === null ? r.floor + r.gap : Math.max(have, r.floor);
+    // العضو لا يقفز فوق سقف القواعد (memberJump): أرضيته فوق العدّاد بأكثر من كتلة يتقدم العدّادُ خطوةً بالسقف بلا كتلة، ولا تُعطى
+    // كتلةٌ قبل أن تتخطى أرضيته فلا يتكرر رقم (المتحقق المستقل: كانت القفزة تُرفض بلا نهاية)
+    const cap = memberJumpCap(r.series, have === null);
+    if (capped && base + r.size - (have ?? 0) > cap) {
+      next[r.series] = (have ?? 0) + cap;
+      pending.push(r);
+      continue;
+    }
     next[r.series] = base + r.size;
     out.push({ series: r.series, lo: base + 1, hi: base + r.size });
   }
-  return { next, out };
+  return { next, out, pending };
+}
+
+/** سقف قفزة العضو في العدّاد كما في القواعد (memberJump): حجم كتلة السلسلة، وأول إنشائها فجوتها وكتلتها */
+export function memberJumpCap(s: Series, first: boolean): number {
+  return first ? FIRST_GAP[s] + BLOCK_SIZE[s] : BLOCK_SIZE[s];
+}
+/** أقصى خطوات العضو حتى تتخطى كتلتُه أرضيتَه · وبعدها يزامن جهاز المالك أولاً */
+export const MAX_COUNTER_STEPS = 40;
+export class CounterBehindError extends Error {
+  constructor() { super(t('numbering.counterBehind')); this.name = 'CounterBehindError'; }
 }
 
 /**

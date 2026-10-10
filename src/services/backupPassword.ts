@@ -14,7 +14,8 @@ export const MIN_PASSWORD = 8;
 const flagFile = () => new File(Paths.document, 'backup-password.flag');
 const store: PasswordStore = {
   get: async () => (await SecureStore.getItemAsync(KEY)) || null,
-  flagged: () => { try { return flagFile().exists; } catch { return false; } },
+  // تعذّر فحص العلامة يُعدّ «وُضعت»: لا تخرج نسخةٌ بلا تشفير بالشك (المتحقق المستقل)
+  flagged: () => { try { return flagFile().exists; } catch { return true; } },
   setFlag: (on) => {
     const f = flagFile();
     if (on) { if (!f.exists) f.write('1'); } else if (f.exists) f.delete();

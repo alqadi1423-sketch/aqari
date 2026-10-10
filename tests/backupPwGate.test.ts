@@ -30,8 +30,16 @@ test('إيجابي: بلا كلمة يُصدَّر كما كان · وبكلمة
   expect(old.flag).toBe(true);
 });
 
-test('التصدير والرفع إلى Drive يأخذان الكلمة من البوابة لا من القراءة الصامتة', () => {
+test('قراءةٌ واحدة: إن قُرئت الكلمة ثم تعذّرت قراءةٌ ثانية لا تخرج النسخة بلا تشفير (المتحقق المستقل)', async () => {
+  let n = 0;
+  const s = { flag: true, get: async () => { n++; if (n > 1) throw new Error('keystore'); return 'كلمة-مصطنعة-3'; }, flagged: () => true, setFlag: () => {} };
+  expect(await passwordForSealing(s)).toBe('كلمة-مصطنعة-3');
+  expect(n).toBe(1);
+});
+
+test('التصدير والرفع إلى Drive يأخذان الكلمة من البوابة لا من القراءة الصامتة · وتعذّر فحص العلامة يُعدّ «وُضعت»', () => {
   const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  expect(read('src/services/backupPassword.ts')).toContain('flagged: () => { try { return flagFile().exists; } catch { return true; } }');
   for (const f of ['src/services/backupService.ts', 'src/services/cloud.ts']) {
     const s = read(f);
     expect(s).toMatch(/backupPasswordForSealing\(\)/);

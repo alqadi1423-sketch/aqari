@@ -6,7 +6,7 @@
  * تبقى صحيحة لا كسرية في Firestore كما هي في القاعدة المحلية.
  */
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, WriteResult } from '../sync/types';
-import { planBlocks, planInvoiceSeq, FirstIssueByOwnerError, type BlockRequest, type ReservedBlock } from '../domain/numbering';
+import { planBlocks, planInvoiceSeq, FirstIssueByOwnerError, type BlockRequest, type ReservedBlock, MAX_COUNTER_STEPS, CounterBehindError } from '../domain/numbering';
 import type { DB } from '../db/adapter';
 import { OWNER_ACCESS, type Access } from '../domain/access/access';
 import { annotate as aclAnnotate, hiddenColumns } from '../sync/acl';
@@ -268,7 +268,19 @@ export class FirestoreRemote implements RemoteStore {
   /** كتلٌ لكل سلسلة بعد أعلى ما في العدّاد وما يعرفه الجهاز · وأول إنشاءٍ للسلسلة بعد أرضيته بفجوة */
   async reserveBlocks(req: BlockRequest[]): Promise<ReservedBlock[]> {
     if (!req.length) return [];
-    return this.bumpCounters((cur) => planBlocks(cur, req));
+    // العضو بخطواتٍ لا تتجاوز سقف القواعد حتى تتخطى كتلتُه أرضيتَه (المتحقق المستقل) · والمالك بخطوةٍ واحدة
+    const out: ReservedBlock[] = [];
+    let left = req;
+    for (let step = 0; left.length && step < MAX_COUNTER_STEPS; step++) {
+      const p = await this.bumpCounters((cur) => {
+        const plan = planBlocks(cur, left, !!this.memberMode);
+        return { next: plan.next, out: plan };
+      });
+      out.push(...p.out);
+      left = p.pending;
+    }
+    if (left.length) throw new CounterBehindError();
+    return out;
   }
 
   /** رقم الفاتورة الضريبية التالي · العدّاد يتقدم واحداً فلا فجوة */
@@ -334,15 +346,15 @@ export class FirestoreRemote implements RemoteStore {
       deleted += names.length;
       onProgress?.(deleted);
     }
-    // ومع meta في المنشأة: أعضاؤها ودعواتها (والمسار القديم لا شيء فيهما)
-    const meta = [
-      ...(await list('meta')).filter((n) => !n.endsWith('/meta/deletion')),
-      ...(await list('members')),
-      ...(await list('invites')),
-    ];
-    await this.call(`${this.root}:commit`, {
-      writes: [...meta.map((name) => ({ delete: name })), { delete: this.userPath }, { delete: `${this.userPath}/meta/deletion` }],
-    });
+    // ومع meta في المنشأة: أعضاؤها ودعواتها (والمسار القديم لا شيء فيهما) · صفحاتٍ حتى تفرغ (المتحقق المستقل: كانت صفحةً واحدة)
+    for (const coll of ['meta', 'members', 'invites']) {
+      for (;;) {
+        const names = (await list(coll)).filter((n) => !n.endsWith('/meta/deletion'));
+        if (!names.length) break;
+        await this.call(`${this.root}:commit`, { writes: names.map((name) => ({ delete: name })) });
+      }
+    }
+    await this.call(`${this.root}:commit`, { writes: [{ delete: this.userPath }, { delete: `${this.userPath}/meta/deletion` }] });
     return deleted;
   }
 
@@ -371,6 +383,11 @@ export class FirestoreRemote implements RemoteStore {
         ...deletes.map((path) => ({ delete: `${this.docsRoot}/${path}` })),
       ],
     });
+  }
+
+  /** إنشاء مستندٍ بشرط ألا يكون موجوداً · يرمي 409/400 إن سبقه غيره */
+  async createDoc(path: string, data: Record<string, unknown>): Promise<void> {
+    await this.call(`${this.root}:commit`, { writes: [{ update: { name: `${this.docsRoot}/${path}`, fields: encodeFields(data) }, currentDocument: { exists: false } }] });
   }
 
   async deleteDoc(path: string): Promise<void> {

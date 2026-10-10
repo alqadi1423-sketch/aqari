@@ -142,6 +142,8 @@ d('مزامنة الملفات على المحاكي', () => {
     await syncOnce(writer.db, deviceRemote(writer.db, W.uid, W.email), 'dev-' + W.uid);
     const f3 = bytesOf(3);
     await putAttachment(fe(writer), f3, { entityType: 'contract', entityId: C1, kind: 'صورة', originalName: 'صورة.jpg', mime: 'image/jpeg' });
+    // كالتطبيق: الرفع بعد المزامنة (cloud.ts: pumpFilesInBackground) فصفّ المرفق قائمٌ يسوّغ رموز الملف (storage.rules: linkedOk)
+    await syncOnce(writer.db, deviceRemote(writer.db, W.uid, W.email), 'dev-' + W.uid);
     expect(await pumpUploads(fe(writer), filesRemote(writer.db, W.uid, W.email))).toEqual({ uploaded: 1, failed: 0, lost: 0 });
 
     const f4 = bytesOf(4);

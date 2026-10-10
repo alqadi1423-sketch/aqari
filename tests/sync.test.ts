@@ -356,7 +356,8 @@ describe('قواعد Firestore والمحرّك على قائمة واحدة', (
     const synced = new Set(SYNC_TABLES.map((t) => t.name));
     for (const [t, cs] of money) {
       if (!synced.has(t)) continue;
-      for (const c of cs) expect(rules).toMatch(new RegExp(`r\\.t == '${t}' &&[^\\n]*intOrAbsent\\(r\\.d, '${c}'\\)`));
+      // ورقة الجدول في شجرة البحث الثنائي: «r.t != 'الجدول' || (أعمدته)» (حدّ الألف تعبير)
+      for (const c of cs) expect(rules).toMatch(new RegExp(`r\\.t != '${t}' \\|\\| \\((?:intOrAbsent\\(r\\.d, '[a-z_]+'\\) && )*intOrAbsent\\(r\\.d, '${c}'\\)`));
     }
     for (const [t, cs] of money) {
       expect(tableLabel(t)).not.toBe('جدول مالي');

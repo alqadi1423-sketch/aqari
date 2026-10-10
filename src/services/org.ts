@@ -168,8 +168,29 @@ export async function ownOrgExists(remote: FirestoreRemote, uid: string): Promis
  * عمل محلياً ثم بدأ المزامنة لا ينتج رقماً مكرراً»): تسلسلاته المحلية (الفواتير والقيود والمشتريات) تتكرر فيها، والقيد المرحّل لا
  * يُعاد ترقيمه · فتُركن على الجهاز، ويُدمج في حسابٍ لا منشأة له بعد وحده
  */
-export async function localBindAllowed(remote: FirestoreRemote, uid: string): Promise<boolean> {
-  return !(await ownOrgExists(remote, uid));
+export async function localBindAllowed(remote: FirestoreRemote, uid: string, deviceId: string): Promise<boolean> {
+  // صارم (المتحقق المستقل): خطأ الشبكة أو الخادم يُرمى ولا يُعدّ «لا منشأة» فيُفتح الربط
+  for (const path of [`orgs/${uid}/meta/counters`, `orgs/${uid}/meta/devices`, `users/${uid}/meta/devices`]) {
+    if (await remote.getDoc(path)) return false;
+  }
+  // وحجز جهازٍ آخر للربط منشأةٌ قائمة · والجهاز نفسه يعيد المحاولة
+  const claim = await remote.getDoc(`orgs/${uid}`);
+  return !claim || claim.bindDev === deviceId;
+}
+
+/**
+ * يحجز الربط لهذا الجهاز ذرّياً قبل أول مزامنة (المتحقق المستقل: جهازان بلا حساب يربطان معاً قبل أن تُنشئ أولُ مزامنةٍ العدّادَ
+ * فتتكرر أرقامهما): مستند المنشأة يُنشأ بشرط ألا يكون موجوداً باسم الجهاز · false إن سبقه غيره
+ */
+export async function claimLocalBind(remote: FirestoreRemote, uid: string, deviceId: string): Promise<boolean> {
+  try {
+    await remote.createDoc(`orgs/${uid}`, { bindDev: deviceId });
+    return true;
+  } catch (e) {
+    if (!(e instanceof FirestoreHttpError) || ![400, 409].includes(e.status)) throw e;
+    const claim = await remote.getDoc(`orgs/${uid}`);
+    return !!claim && claim.bindDev === deviceId;
+  }
 }
 
 export type InviteChoice = { kind: 'own' } | { kind: 'invite'; org: string; orgName: string; by: string; doc: MemberDoc };

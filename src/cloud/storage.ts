@@ -77,6 +77,8 @@ export interface UploadMeta {
   sha256: string;
   md5: string;
   contentType: string;
+  /** صفّ المرفق الذي يسوّغ رموز العضو (storage.rules: linkedOk) */
+  att?: string;
 }
 
 /**
@@ -91,6 +93,8 @@ export async function uploadObject(
   const size = io.sizeOf(path);
   const metadata: Record<string, string> = { g: meta.g.join(','), sha256: meta.sha256, md5: meta.md5 };
   if (meta.op) metadata.op = meta.op;
+  // صفّ المرفق الذي يسوّغ رموز العضو (storage.rules: linkedOk)
+  if (meta.att) metadata.att = meta.att;
   const start = await io.fetch(`${t.base}/v0/b/${t.bucket}/o?name=${encodeURIComponent(name)}&uploadType=resumable`, {
     method: 'POST',
     headers: await auth(t, {
@@ -125,7 +129,7 @@ export async function uploadObject(
 /** أقصى ما يُضاف من رموز في تعديلٍ واحد · القواعد تفحص كل رمزٍ مضاف بموضعه (storage.rules: addedOk) */
 export const MAX_TOKENS_PER_PATCH = 6;
 
-export async function addTokens(io: StorageIO, t: StorageTarget, name: string, current: RemoteFile, g: string[]): Promise<void> {
+export async function addTokens(io: StorageIO, t: StorageTarget, name: string, current: RemoteFile, g: string[], att?: string): Promise<void> {
   const missing = [...new Set(g)].filter((x) => !current.g.includes(x)).sort();
   let have = [...current.g];
   for (let i = 0; i < missing.length; i += MAX_TOKENS_PER_PATCH) {
@@ -133,7 +137,7 @@ export async function addTokens(io: StorageIO, t: StorageTarget, name: string, c
     const res = await io.fetch(objUrl(t, name), {
       method: 'PATCH',
       headers: await auth(t, { 'Content-Type': 'application/json; charset=utf-8' }),
-      body: JSON.stringify({ metadata: { g: have.join(',') } }),
+      body: JSON.stringify({ metadata: { g: have.join(','), ...(att ? { att } : {}) } }),
     });
     if (!res.ok) throw failure(res.status, 'تحديث رؤية الملف');
   }

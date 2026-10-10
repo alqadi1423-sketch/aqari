@@ -8,7 +8,7 @@ import { t } from '../../i18n';
 export interface PasswordStore {
   /** الكلمة من المخزن الآمن · قد يرمي */
   get(): Promise<string | null>;
-  /** علامة «وُضعت كلمة مرور» · خارج المخزن الآمن */
+  /** علامة «وُضعت كلمة مرور» · خارج المخزن الآمن · وتعذّر فحصها يُعدّ «وُضعت» (لا تخرج نسخةٌ بلا تشفير بالشك) */
   flagged(): boolean;
   setFlag(on: boolean): void;
 }
@@ -26,19 +26,24 @@ async function read(s: PasswordStore): Promise<string | null> {
   try { return (await s.get()) || null; } catch { return null; }
 }
 
-export async function passwordState(s: PasswordStore): Promise<PasswordState> {
+/** الحال والكلمة من قراءةٍ واحدة (المتحقق المستقل: قراءةٌ ثانية تتعذّر عابرةً كانت تُخرج النسخة بلا تشفير) */
+async function stateAndPassword(s: PasswordStore): Promise<{ st: PasswordState; pw: string | null }> {
   const pw = await read(s);
   if (pw) {
     // كلمةٌ وُضعت قبل العلامة: تُعلَّم الآن
     if (!s.flagged()) { try { s.setFlag(true); } catch { /* تُعلَّم في المرة التالية */ } }
-    return 'on';
+    return { st: 'on', pw };
   }
-  return s.flagged() ? 'lost' : 'off';
+  return { st: s.flagged() ? 'lost' : 'off', pw: null };
+}
+
+export async function passwordState(s: PasswordStore): Promise<PasswordState> {
+  return (await stateAndPassword(s)).st;
 }
 
 /** الكلمة التي تُختم بها النسخة قبل تصديرها أو رفعها · null بلا كلمة · وترمي إن وُضعت كلمةٌ تعذّرت قراءتها */
 export async function passwordForSealing(s: PasswordStore): Promise<string | null> {
-  const st = await passwordState(s);
+  const { st, pw } = await stateAndPassword(s);
   if (st === 'lost') throw new BackupPasswordLostError();
-  return st === 'on' ? await read(s) : null;
+  return pw;
 }

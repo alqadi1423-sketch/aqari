@@ -69,4 +69,48 @@ d('توسيع رؤية الملف (ثالثاً أ ١)', () => {
     expect(await add('claims|P1')).toBe('ok');
     expect(await add('claims|@')).toBe('ok');
   });
+
+  // المتحقق المستقل على 1fe4557 · وقرار المالك «أو ربط مرفق حقيقي»: رموز صفّ مرفقٍ لهذا الملف ببصمته
+  const adminRow = async (k: string, d: Record<string, unknown>, g: string[], pids: string[]) => {
+    const res = await fetch(`http://${FS_HOST}/v1/projects/${PROJECT}/databases/(default)/documents/orgs/${OWNER}/rows/attachments__${k}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+      body: JSON.stringify({ fields: encodeFields({ t: 'attachments', k, u: '1', dev: 'd', del: false, d: { id: k, ...d }, g, pids }) }),
+    });
+    expect(res.status).toBe(200);
+  };
+  const shaOf = (n: string) => n.split('/').pop()!.split('.')[0];
+  const addLinked = async (toks: string[], att: string) => {
+    const cur = (await statObject(nodeStorageIO, target(OWNER), name))!;
+    try { await addTokens(nodeStorageIO, target(MEMBER), name, cur, toks, att); return 'ok'; } catch { return 'denied'; }
+  };
+
+  test('بربط مرفقٍ حقيقي: المحصّل يرفق ملف المالك بحركة بنك فيضمّ «banks|P1» · ولا يضمّ ما ليس في صفّ المرفق ولا بمرفق ملفٍ آخر', async () => {
+    await adminRow('ATT-BANK', { sha256: shaOf(name), entity_type: 'bank_tx' }, ['banks|@', 'banks|P1', 'collect|@', 'collect|P1'], ['P1']);
+    await adminRow('ATT-OTHER', { sha256: 'f'.repeat(64), entity_type: 'bank_tx' }, ['banks|@', 'banks|P1'], ['P1']);
+    expect(await add('banks|P1')).toBe('denied');
+    expect(await addLinked(['banks|P1', 'banks|@'], 'ATT-OTHER')).toBe('denied');
+    expect(await addLinked(['banks|P1', 'ledger|P2'], 'ATT-BANK')).toBe('denied');
+    expect(await addLinked(['banks|P1', 'banks|@'], 'ATT-BANK')).toBe('ok');
+  });
+
+  test('الإنشاء كالإضافة: ملفٌ جديد برموز عقارٍ آخر يُرفض · وبرموز صفّ مرفقه يُقبل', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aq-sttok2-'));
+    const up = async (label: string, g: string[], att?: string) => {
+      const file = path.join(dir, label + '.bin');
+      const bytes = Buffer.from('ملف مصطنع جديد ' + label + ' ' + Date.now());
+      fs.writeFileSync(file, bytes);
+      const sha = createHash('sha256').update(bytes).digest('hex');
+      if (att) await adminRow(att, { sha256: sha, entity_type: 'contract_payment' }, ['collect|@', 'collect|P1', 'ledger|@', 'ledger|P1', 'reports|@', 'reports|P1'], ['P1']);
+      try {
+        await uploadObject(nodeStorageIO, target(MEMBER), objectName(OWNER, sha, 'bin'), file,
+          { g, op: 'collect', sha256: sha, md5: createHash('md5').update(bytes).digest('base64'), contentType: 'application/octet-stream', ...(att ? { att } : {}) });
+        return 'ok';
+      } catch { return 'denied'; }
+    };
+    expect(await up('forged', ['collect|P1', 'ledger|P2', 'banks|P2', 'reports|@'])).toBe('denied');
+    expect(await up('wide', ['collect|*'])).toBe('denied');
+    expect(await up('own', ['collect|P1', 'collect|@'])).toBe('ok');
+    expect(await up('linked', ['collect|@', 'collect|P1', 'ledger|@', 'ledger|P1', 'reports|@', 'reports|P1'], 'ATT-NEW1')).toBe('ok');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });

@@ -67,16 +67,20 @@ export function pendingUploads(db: DB): Array<{ sha256: string; ext: string; byt
  * رموز رؤية الملف ومن يرفعه · اتحاد رموز كل مرفقٍ يشير إلى بصمته (الملف الواحد قد يرتبط بأكثر من جهة) ·
  * والعضو يرفع بقسمٍ له فيه «إدخال» من أقسام قرّائه.
  */
-export function fileVisibility(db: DB, sha256: string, access: Access): { g: string[]; op: string | null } {
-  const rows = db.all<RowData>(`SELECT * FROM attachments WHERE sha256 = ?`, [sha256]);
+export function fileVisibility(db: DB, sha256: string, access: Access): { g: string[]; op: string | null; groups: Array<{ att: string; g: string[] }> } {
+  const rows = db.all<RowData>(`SELECT * FROM attachments WHERE sha256 = ? ORDER BY id`, [sha256]);
   const g = new Set<string>();
+  const groups: Array<{ att: string; g: string[] }> = [];
   let op: string | null = null;
   for (const r of rows) {
     const readers = readSectionsOf('attachments', r as Record<string, unknown>);
-    for (const tkn of tokensFor(readers, rowPids(db, 'attachments', r))) g.add(tkn);
+    // رموز صفّ المرفق كما يرفعها الجهاز في Firestore (annotate) · العضو يضمّها إلى الملف بربط هذا الصف (storage.rules: linkedOk)
+    const own = tokensFor(readers, rowPids(db, 'attachments', r));
+    groups.push({ att: String(r.id), g: own });
+    for (const tkn of own) g.add(tkn);
     if (!access.owner && !op) op = readers.find((s) => level(access, s) >= 2) ?? null;
   }
-  return { g: [...g].sort(), op: access.owner ? null : op };
+  return { g: [...g].sort(), op: access.owner ? null : op, groups };
 }
 
 /* ═══════════ الرفع في الخلفية ═══════════ */
@@ -110,15 +114,27 @@ export async function pumpUploads(
       const vis = fileVisibility(env.db, f.sha256, remote.access);
       const md5 = await remote.io.md5OfFile(path);
       const there = await statObject(remote.io, remote.target, name);
-      if (there && there.md5 === md5) {
-        if (vis.g.some((x) => !there.g.includes(x))) await addTokens(remote.io, remote.target, name, there, vis.g);
-      } else {
-        await uploadObject(remote.io, remote.target, name, path,
-          { g: vis.g, op: vis.op, sha256: f.sha256, md5, contentType: contentTypeOf(f.ext) },
+      // العضو يرفع برموز أول صفّ مرفقٍ للملف ويضمّ رموز كل صفٍّ بربطه (المتحقق المستقل: كانت الرموز كلها تُضمّ معاً فترفض القواعد
+      // رمز قسمٍ لا يكتب فيه، ويُعاد الملف كل دورة) · والمالك برموزه كلها كما كان
+      const member = !remote.access.owner;
+      const first = member ? vis.groups[0] ?? null : null;
+      let cur = there && there.md5 === md5 ? there : null;
+      if (!cur) {
+        cur = await uploadObject(remote.io, remote.target, name, path,
+          { g: first ? first.g : vis.g, op: vis.op, sha256: f.sha256, md5, contentType: contentTypeOf(f.ext), ...(first ? { att: first.att } : {}) },
           {
             signal: opts.signal,
             onBytes: (d) => opts.onProgress?.('جاري رفع الملفات', { done: done + d, total, unit: 'bytes' }),
           });
+      }
+      if (member) {
+        for (const grp of vis.groups) {
+          if (!grp.g.some((x) => !cur!.g.includes(x))) continue;
+          await addTokens(remote.io, remote.target, name, cur, grp.g, grp.att);
+          cur = { ...cur, g: [...new Set([...cur.g, ...grp.g])].sort() };
+        }
+      } else if (vis.g.some((x) => !cur!.g.includes(x))) {
+        await addTokens(remote.io, remote.target, name, cur, vis.g);
       }
       env.db.run(`UPDATE file_cache SET uploaded = 1, attempts = 0, last_error = NULL WHERE sha256 = ?`, [f.sha256]);
       out.uploaded++;

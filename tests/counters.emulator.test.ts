@@ -63,3 +63,19 @@ d('عدّاد الترقيم (مراجعة التثبيت #55)', () => {
     expect(await put(C, { JE: 510, EJ: 50, PUR: 100, INV: 20 }, ORG)).toBe(200);
   });
 });
+
+d('العضو وأرضيته فوق العدّاد (المتحقق المستقل على «ثالثاً أ ٧»)', () => {
+  const ORG3 = 'CNTOWNER3';
+  test('يحجز بخطواتٍ تحت سقف القواعد حتى تتخطى كتلتُه أرضيتَه · ولا قفزة واحدة فوق السقف', async () => {
+    const { FirestoreRemote } = await import('@/cloud/firestore');
+    expect(await put(`orgs/${ORG3}/members/U-STEP`, member({ collect: 2 }), ORG3)).toBe(200);
+    expect(await put(`orgs/${ORG3}/meta/counters`, { JE: 1504 }, ORG3)).toBe(200);
+    // قفزةٌ واحدة إلى ما بعد الأرضية تُرفض (السقف قائم)
+    expect(await put(`orgs/${ORG3}/meta/counters`, { JE: 2905 }, 'U-STEP')).toBe(403);
+    const r = new FirestoreRemote({ projectId: PROJECT, uid: 'U-STEP', org: ORG3, idToken: async () => token('U-STEP'), baseUrl: 'http://' + HOST,
+      memberTokens: () => ['collect|@'] });
+    const [b] = await r.reserveBlocks([{ series: 'JE', size: 500, floor: 2400, gap: 1000 }]);
+    expect(b.lo).toBeGreaterThan(2400);
+    expect(b.hi - b.lo + 1).toBe(500);
+  });
+});

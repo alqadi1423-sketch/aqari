@@ -143,6 +143,19 @@ d('المسح الكامل (ثالثاً أ ٨)', () => {
     expect(await listObjects(nodeStorageIO, files().t, filesPrefix(ORG))).toEqual([]);
   });
 
+  test('«حذف حسابي» للمالك بأكثر من صفحة دعوات (٣٢٠): لا يبقى شيء (المتحقق المستقل: كانت صفحةً واحدة)', async () => {
+    const writes = Array.from({ length: 320 }, (_, i) => ({
+      update: { name: `projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/invites/x${i}@example.test`, fields: encodeFields({ perm: { contracts: 1 }, all: true, props: [] }) },
+    }));
+    const res = await fetch(`${DOCS()}:commit`, { method: 'POST', headers: ADMIN, body: JSON.stringify({ writes }) });
+    // الجسم يُقرأ فيُغلق الاتصال (وإلا بقي مفتوحاً وتأخر خروج jest)
+    await res.text();
+    expect(res.status).toBe(200);
+    await deleteOwnerCloud({ remotes: [orgRemote(), legacyRemote()], chat: chatSession, org: ORG, files: files() });
+    expect(await walk(`orgs/${ORG}`)).toEqual([]);
+    expect(await exists(`orgs/${ORG}`)).toBe(false);
+  });
+
   test('«حذف حسابي» للعضو: مساره ومساره القديم يُحذفان بلا رفض (السرد نفسه كان مرفوضاً)', async () => {
     await adminPut(`users/${A}`, { langPref: 'ar', langAt: '2026-01-01T00:00:00Z' });
     const mine = (org: boolean) => new FirestoreRemote({ projectId: PROJECT, uid: A, ...(org ? { org: A } : {}), idToken: async () => token(A), baseUrl: 'http://' + FS_HOST });

@@ -4,7 +4,7 @@
  *  #٤١ الدعوة تُقرأ وتُحذف بإيميلٍ متحقَّق وحده
  */
 import { FirestoreRemote, encodeFields } from '@/cloud/firestore';
-import { removeMember, acceptInvite, sendInvite, ownOrgExists, localBindAllowed } from '@/services/org';
+import { removeMember, acceptInvite, sendInvite, ownOrgExists, localBindAllowed, claimLocalBind } from '@/services/org';
 import { SCHEMA_VERSION } from '@/db/schema';
 
 const HOST = process.env.FIRESTORE_EMULATOR_HOST;
@@ -68,8 +68,15 @@ d('الدعوات (مراجعة التثبيت #36 و#41)', () => {
     expect(await put(`orgs/${ORG}/meta/devices`, { letters: {} }, tok)).toBe(200);
     expect(await ownOrgExists(owner, ORG)).toBe(true);
     // «ثالثاً أ ١١»: بيانات جهازٍ عمل بلا حساب لا تُدمج في منشأةٍ قائمة (تتكرر أرقامه) · وتُدمج في حسابٍ بلا منشأة
-    expect(await localBindAllowed(owner, ORG)).toBe(false);
-    expect(await localBindAllowed(remote('U-FRESH', 'fresh-x@example.test'), 'U-FRESH')).toBe(true);
+    expect(await localBindAllowed(owner, ORG, 'dev-a')).toBe(false);
+    const fresh = remote('U-FRESH', 'fresh-x@example.test');
+    expect(await localBindAllowed(fresh, 'U-FRESH', 'dev-a')).toBe(true);
+    // جهازان بلا حساب معاً (المتحقق المستقل): الأول يحجز، والثاني يُرفض فحصاً وحجزاً، والأول يعيد المحاولة
+    expect(await claimLocalBind(fresh, 'U-FRESH', 'dev-a')).toBe(true);
+    expect(await claimLocalBind(fresh, 'U-FRESH', 'dev-b')).toBe(false);
+    expect(await localBindAllowed(fresh, 'U-FRESH', 'dev-b')).toBe(false);
+    expect(await localBindAllowed(fresh, 'U-FRESH', 'dev-a')).toBe(true);
+    expect(await claimLocalBind(fresh, 'U-FRESH', 'dev-a')).toBe(true);
   });
 
   test('#٤١ الدعوة لا تُقرأ ولا تُحذف بإيميلٍ غير متحقَّق', async () => {

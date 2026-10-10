@@ -64,7 +64,7 @@ import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
-  moveOwnerToOrg, refreshMembership, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, ownOrgExists, localBindAllowed, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite, readCompat, appTooOld,
+  moveOwnerToOrg, refreshMembership, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, ownOrgExists, localBindAllowed, claimLocalBind, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite, readCompat, appTooOld,
   updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
@@ -490,7 +490,8 @@ export async function activateAccount(u: SessionUser): Promise<void> {
       if (r === 'unbound') {
         // للحساب منشأةٌ قائمة: بيانات الجهاز لا تُدمج فيها (تتكرر أرقامها) · يظهر الركن وحده وسببه (ثالثاً أ ١١)
         const sess2 = s;
-        const ownOrg = !(await localBindAllowed(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess2.idToken() }), u.uid));
+        // تعذّر الفحص يُظهر الزر · والربط نفسه يفحص صارماً ويحجز
+        const ownOrg = !(await localBindAllowed(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess2.idToken() }), u.uid, ensureDeviceId(db)).catch(() => true));
         patch({ gate: 'unbound', ownOrg });
         return;
       }
@@ -511,10 +512,14 @@ export async function bindUnboundToAccount(db: AppDB): Promise<void> {
   if (!state.user) return;
   const s = getSession(); const cfg = cloudConfig();
   if (!s || !cfg) throw new Error(t('bind.needConnection'));
-  // منشأةٌ قائمة للحساب: لا دمج (تتكرر أرقام الجهاز المحلية فيها) · المراجعات الخارجية «ثالثاً أ ١١»
-  if (!(await localBindAllowed(new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => s.idToken() }), state.user.uid))) {
-    throw new Error(t('bind.orgHasData'));
-  }
+  // منشأةٌ قائمة للحساب: لا دمج (تتكرر أرقام الجهاز المحلية فيها) · المراجعات الخارجية «ثالثاً أ ١١» · فحصٌ صارم ثم حجزٌ ذرّي
+  // لهذا الجهاز (المتحقق المستقل: خطأ الشبكة كان يفتح الربط، وجهازان معاً كانا يربطان)
+  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => s.idToken() });
+  const dev = ensureDeviceId(db);
+  let allowed: boolean;
+  try { allowed = (await localBindAllowed(remote, state.user.uid, dev)) && (await claimLocalBind(remote, state.user.uid, dev)); }
+  catch { throw new Error(t('bind.needConnection')); }
+  if (!allowed) throw new Error(t('bind.orgHasData'));
   enableSync(db, state.user.uid);
   setSyncState(db, 'email', state.user.email);
   patch({ gate: null, sync: syncStatus(db) });

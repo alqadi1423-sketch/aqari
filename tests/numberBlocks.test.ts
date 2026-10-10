@@ -42,6 +42,20 @@ describe('الكتل', () => {
     const b = planBlocks(a.next, [{ series: 'JE', size: 200, floor: 5000, gap: 1000 }]);
     expect(b.out[0].lo).toBe(5001);
     const c = planBlocks({ JE: 9000 }, [{ series: 'JE', size: 200, floor: 10, gap: 1000 }]);
+    // العضو (المتحقق المستقل): أرضيته فوق العدّاد بأكثر من كتلة · خطواتٌ بالسقف بلا كتلة حتى تتخطى كتلتُه أرضيتَه
+    let cur: Record<string, number> = { JE: 1504 };
+    const steps: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const p = planBlocks(cur, [{ series: 'JE', size: 500, floor: 2400, gap: 1000 }], true);
+      steps.push(p.next.JE - cur.JE);
+      cur = { ...cur, ...p.next };
+      if (p.out.length) { expect(p.out[0].lo).toBeGreaterThan(2400); break; }
+      expect(p.pending.length).toBe(1);
+    }
+    expect(steps.every((x) => x <= 500)).toBe(true);
+    // وأول إنشاء السلسلة بأرضيةٍ فوق الصفر: لا يتجاوز الفجوة والكتلة
+    const first = planBlocks({}, [{ series: 'JE', size: 500, floor: 30, gap: 1000 }], true);
+    expect(first.next.JE).toBeLessThanOrEqual(1500);
     expect(c.out[0].lo).toBe(9001);
     expect(planInvoiceSeq({}, 7).out).toBe(8);
     expect(planInvoiceSeq({ INV: 20 }, 7).out).toBe(21);

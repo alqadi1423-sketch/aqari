@@ -23,6 +23,7 @@ const q = (xs: string[]) => '[' + xs.map((x) => `'${x}'`).join(', ') + ']';
 
 function writesFns(): string {
   const entries = Object.entries(OP_WRITES) as Array<[SectionKey, NonNullable<(typeof OP_WRITES)[SectionKey]>]>;
+  // سلسلةٌ تتوقف عند أول قسمٍ مطابق · لا خريطة قيم: الخريطة تُقيَّم كلها بقوائمها في كل طلب (قياس التغطية على المحاكي 2026-10-10)
   const create = entries.map(([s, w]) => `(op == '${s}' && t in ${q([...new Set([...w.create, ...w.own])])})`);
   const own = entries.filter(([, w]) => w.own.length).map(([s, w]) => `(op == '${s}' && t in ${q(w.own)})`);
   // الجدول والحقول نفسها في أكثر من قسم سطرٌ واحد بأقسامه · فالسلسلة قصيرة ولا تبلغ حدّ ألف تعبير في الطلب
@@ -149,6 +150,10 @@ function guardFns(schema: RulesSchema): string {
     }
     // عقار كل رمزٍ في رؤية الصف عقارُ الصف (أو «@» لقرّاء كل العقارات) · بتعبيرٍ نمطيٍّ واحد على الرموز مجموعةً، فلا يبلغ
     // طلبُ العضو حدَّ الألف تعبير كما تبلغه قائمة الأقسام كلها (المراجعات الخارجية «ثالثاً أ ٢») · ومعرّف العقار حروفٌ وأرقام
+    // صفٌّ غير المستأجر بعقارٍ واحد، ورموز رؤيته لعقاره أو «@» (المراجعات الخارجية «ثالثاً أ ٢») · والمستأجر المشترك له tenantGOk
+    function pidsGOk(r) {
+      return r.t in ['tenants', 'tenants~pub'] || (r.pids.size() == 1 && gPropOk(r.g, r.pids[0]));
+    }
     function gPropOk(g, p) {
       return g.size() == 0 || (p.matches('[*]|[A-Za-z0-9_-]+')
         && (',' + g.join(',') + ',').matches('(,[a-z]+[|](' + (p == '*' ? '[*]' : p) + '|@))+,'));
@@ -219,7 +224,7 @@ export function generateOrgRules(schema: RulesSchema = { money: {} }): string {
     function isDraft(data) {
       return data.d != null && (
         (baseT(data.t) == 'contracts' && data.d.status == 'مسودة')
-        || (data.t == 'invoices' && data.d.status == 'مسودة')
+        || (baseT(data.t) == 'invoices' && data.d.status == 'مسودة')
         || (data.t == 'journal_entries' && data.d.status == 'قيد الإنشاء'));
     }
     // عقارات الصف ضمن عقارات العضو · والصف العام '*' مسموح لمن له القسم
@@ -266,17 +271,16 @@ ${guardFns(schema)}
       let r = request.resource.data;
       let m = mem(org);
       return isMember(org) && r.op is string && (
-        // الحراسات أولاً: المزوَّر يُرفض بها رخيصاً قبل أن يبلغ الطلب حدّ ألف تعبير (المراجعة #17 و#18 و#20 و#21) ·
-        // ورموز رؤية الصف الجديد لا تُفحص: كلفتها فوق الحد، وصفوف العضو الجديدة من كتابته هو
-        (keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(m, null, r)
-          // رموز رؤية الصف الجديد في حدود عقاره: صفٌّ بعقارٍ واحد لا يحمل رمز عقارٍ آخر (المراجعات الخارجية «ثالثاً أ ٢»)
-          && (r.pids.size() != 1 || baseT(r.t) == 'tenants' || gPropOk(r.g, r.pids[0]))
+        // الحراسات أولاً: المزوَّر يُرفض بها رخيصاً قبل أن يبلغ الطلب حدّ ألف تعبير (المراجعة #17 و#18 و#20 و#21)
+        // ورموز رؤية الصف الجديد في حدود عقاره أولها (المراجعات الخارجية «ثالثاً أ ٢» · والمتحقق المستقل: عقاراتٌ مكررة أو معها
+        // «*» كانت تتخطى الفحص، والرفض كان بنفاد الحد لا بالمنطق) · فالصف غير المستأجر بعقارٍ واحد ورموزه له
+        (pidsGOk(r) && keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(m, null, r)
           && lvlOf(m, r.op) >= 2 && opCreates(r.op, baseT(r.t)) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
           && (baseT(r.t) != 'vat_filings' || m.all == true)
           && (r.del == true || baseT(r.t) != 'journal_entries' || srcOk(r.op, r.d.get('src_type', null)))
           // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53)
-          && (r.t != 'invoices' || r.d == null || lvlOf(m, 'invoices') >= 3 || r.d.get('status', '') == 'مسودة')
+          && (baseT(r.t) != 'invoices' || r.d == null || lvlOf(m, 'invoices') >= 3 || r.d.get('status', '') == 'مسودة')
           // العضو لا ينتحل المالك في سجل العمليات (مراجعة التثبيت #54)
           && (baseT(r.t) != 'audit_log' || (r.d != null && r.d.get('user_name', '') != '${OWNER_ACTOR}')))
         // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥)
@@ -298,13 +302,13 @@ ${guardFns(schema)}
       return (before.del == true || after.del == true
           // إحياء شاهد الحذف كالإنشاء: عقاراته بحقيقته · وشاهد الحذف فارغٌ (بلا d، فلا يكشف شيئاً برموز رؤيته) لصفٍّ كان
           // في عقاراته (التحقق المستقل: شاهدٌ يُبقي d برؤية أوسع كان يكشف المبالغ)
-          ? (before.del != true || pidsBound(org, after)) && (after.del != true || (after.d == null && propsOk(m, before)))
+          ? (before.del != true || (pidsGOk(after) && pidsBound(org, after))) && (after.del != true || (after.d == null && propsOk(m, before)))
           : (after.pids == before.pids
               // عقاراته كما هي: روابطه كما هي، أو تغيّرت بحقيقته (وحدةٌ أخرى في عقاره)
               ? (!linksChanged(before, after) || pidsBound(org, after))
               // وتتغيّر بحقيقة الصف لذي كل العقارات وحده (رؤيته لا تُفحص بعدها، فحدّ الألف تعبير لا يسعها: فلا للمحصور) ·
               // والمستأجر المشترك تتبع عقاراته عقوده: كان في متناول العضو، وعقاراته الجديدة من عقاراته السابقة وعقارات العضو
-              : ((m.all == true && pidsBound(org, after))
+              : ((m.all == true && pidsGOk(after) && pidsBound(org, after))
                   || (after.t in ['tenants', 'tenants~pub'] && (m.all == true
                       || (before.pids.hasAny(m.props.concat(['*'])) && after.pids.hasOnly(before.pids.concat(m.props).concat(['*']))
                           // ولا يُسقط عقاراً ليس له (العام '*' يزول بأول عقد)
@@ -316,6 +320,8 @@ ${guardFns(schema)}
         && isMember(org) && op is string
         && after.get('by', null) == before.get('by', null)
         && (baseT(after.t) != 'vat_filings' || m.all == true)
+        // مصدر القيد عند التعديل كالإنشاء (المراجعات الخارجية «ثالثاً أ ٤» · المتحقق المستقل: كان يُفحص عند الإنشاء وحده)
+        && (after.del == true || baseT(after.t) != 'journal_entries' || srcOk(op, after.d.get('src_type', null)))
         && (
           (owns && level >= 3 && (propsOk(m, after)
               // والمستأجر المشترك بين عقاراته وعقار غيره: عقاراته كما هي وفيها عقارٌ له (التحقق المستقل: تعديله كان يُرفض صامتاً)
@@ -325,10 +331,10 @@ ${guardFns(schema)}
           || (owns && level >= 2 && isDraft(before)
               && before.get('by', '') == request.auth.uid && propsOk(m, after)
               // والفاتورة تبقى مسودة: إصدارها لـ«كامل» (مراجعة التثبيت #53)
-              && (after.t != 'invoices' || isDraft(after)))
+              && (baseT(after.t) != 'invoices' || isDraft(after)))
           // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)
           || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(m, before, after)
-              && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'sv'])
+              && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'sv', 'dr', 'cr'])
               && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys())
               // ولا يُلغي القسط: إلغاؤه بإلغاء العقد لـ«كامل» العقود (مراجعة التثبيت #53)
               && (baseT(after.t) != 'contract_installments' || after.d.get('status', '') != 'ملغية'))
@@ -343,16 +349,33 @@ ${guardFns(schema)}
         && after.d.diff(before.d).affectedKeys().hasOnly(['reversed_by'])
         && (!('reversed_by' in before.d) || before.d.reversed_by == null)
         && after.d.reversed_by is string
-        && reversalReal(org, before, after.d.reversed_by);
+        && reversalReal(org, before, after, after.d.reversed_by);
+    }
+    // العضو يربط القيد المرحّل بعكسه (الربط وحده فحصه orgOnlyLinksReversal): ذو «كامل» الدفتر، أو قسمٌ يمسّه جانبياً بإدخال ·
+    // عقاراته ورؤيته كما هي وفي متناوله · طريقٌ قصير لا يمرّ بتعديل العضو العام فلا يبلغ حدّ الألف تعبير (المتحقق المستقل)
+    function memberLinksReversal(org) {
+      let before = resource.data;
+      let after = request.resource.data;
+      let m = mem(org);
+      return isMember(org) && after.op is string
+        && (opOwns(after.op, 'journal_entries') ? lvlOf(m, after.op) >= 3
+            : (lvlOf(m, after.op) >= 2 && opTouches(after.op, 'journal_entries', ['reversed_by'])))
+        && after.pids == before.pids && after.g == before.g && propsTouch(m, before, after);
     }
     // العكس قيدٌ قائم بعد الالتزام نفسه (يُرفع معه في الدفعة)، مصدره مصدر الأصل بـ«_rev» ومعرّف مصدره معرّف مصدر الأصل أو الأصل
     // نفسه (post.ts: reverseEntryById) · فلا يُربط القيد بعكسٍ وهمي فيُحسب ملغى (المراجعات الخارجية «ثالثاً أ ٣»)
-    function reversalReal(org, before, revId) {
+    // ومرحّلٌ بعدد سطور الأصل، وبمجموعه حين يحملان مجموعيهما (المتحقق المستقل: مسودةٌ بلا سطور كانت تُلغي الأصل) · والقيد
+    // اليدوي مصدره فارغ فعكسه «manual_rev» (كان الربط يُرفض) · والمطابقة سطراً بسطر ومنع العكس الواحد لقيدين لدالة الخادم («ج ١»)
+    function reversalReal(org, before, after, revId) {
       let p = /databases/$(database)/documents/orgs/$(org)/rows/$('journal_entries__' + revId);
       let rev = getAfter(p);
-      return rev != null && rev.data.d != null
-        && rev.data.d.get('src_type', '') == before.d.get('src_type', 'manual') + '_rev'
-        && rev.data.d.get('src_id', '') == (before.d.get('src_id', null) == null ? before.k : before.d.src_id);
+      let s = before.d.get('src_type', null);
+      return rev != null && rev.data.del != true && rev.data.d != null
+        && rev.data.d.get('status', '') == 'مرحّل'
+        && rev.data.d.get('src_type', '') == (s == null ? 'manual' : s) + '_rev'
+        && rev.data.d.get('src_id', '') == (before.d.get('src_id', null) == null ? before.k : before.d.src_id)
+        && rev.data.get('lines', []).size() > 0 && rev.data.get('lines', []).size() == before.get('lines', []).size()
+        && (!('dr' in after) || !('dr' in rev.data) || rev.data.dr == after.dr);
     }
 
     // وجهاز المالك يعيد كتابة حقول الرؤية وحدها على قيد مرحّل حين يتسع قرّاؤه (engine.requeueForAcl) · ومحتواه كما هو
@@ -383,11 +406,15 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
 
       match /rows/{rowId} {
         allow read: if orgOwner(org) || (isMember(org) && resource.data.g.hasAny(mem(org).tokens));
-        allow create: if validOrgRow(rowId) && svOk(org) && (orgOwner(org) || memberCreates(org));
-        allow update: if validOrgRow(rowId) && svOk(org)
-          && baseT(resource.data.t) != 'audit_log'
-          && (!isPostedEntry(resource.data) || orgOnlyLinksReversal(org) || (orgOwner(org) && (orgOnlyVisibility() || orgOnlyLineDims())))
-          && (orgOwner(org) || memberUpdates(org));
+        // الكتابة تُقيَّم بالقاعدتين معاً وحدّ الألف تعبير للطلب كله (قياس التغطية على المحاكي 2026-10-10): فكلٌّ تسقط أولاً
+        // بشرطٍ رخيص حين لا تنطبق (الإنشاء لمستندٍ قائم، والتعديل لمستندٍ غائب) قبل فحص الصف الغالي
+        allow create: if resource == null && validOrgRow(rowId) && svOk(org) && (orgOwner(org) || memberCreates(org));
+        allow update: if resource != null && baseT(resource.data.t) != 'audit_log'
+          && validOrgRow(rowId) && svOk(org)
+          && (isPostedEntry(resource.data)
+              ? (orgOnlyLinksReversal(org) && (orgOwner(org) || memberLinksReversal(org)))
+                || (orgOwner(org) && (orgOnlyVisibility() || orgOnlyLineDims()))
+              : (orgOwner(org) || memberUpdates(org)));
         allow delete: if orgOwner(org) && orgDeletionOpen(org);
       }
 
