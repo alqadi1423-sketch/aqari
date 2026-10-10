@@ -55,6 +55,8 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
   const LED = member('S2-LED', { ledger: 3, props: 1 }, 'all');
   const PRO = member('S2-PRO', { props: 3 }, ['P1']);
   const INV = member('S2-INV', { invoices: 2, props: 1 }, ['P1']);
+  const TEN = member('S2-TEN', { tenants: 2, contracts: 1, props: 1 }, 'all');
+  const TEN1 = member('S2-TEN1', { tenants: 2, contracts: 1, props: 1 }, ['P1']);
   let db: import('@/db/adapter').DB;
   let C1 = '';
   const pays: string[] = [];
@@ -69,6 +71,7 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     const p1 = addProperty(db, { id: 'P1', name: 'عقار أول مصطنع' });
     addProperty(db, { id: 'P2', name: 'عقار ثانٍ مصطنع' });
     C1 = confirmContract(db, contractInput(addUnit(db, p1, { id: 'UN1' }), { tenant: 'مستأجر مصطنع', idNumber: '1000000033', phone: '0500000011' }));
+    confirmContract(db, contractInput(addUnit(db, 'P2', { id: 'UN2' }), { tenant: 'مستأجر مصطنع', idNumber: '1000000033', phone: '0500000011' }));
     const inst = db.all<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 3`, [C1]);
     for (const [i, it] of inst.entries()) {
       recordRentPayment(db, C1, { installmentId: it.id, period: 'الدفعة ' + (i + 1), date: '2026-01-0' + (i + 5), lines: [{ method: 'cash', amountHalalas: 1000 }], discountHalalas: 0, notes: '' });
@@ -76,7 +79,7 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     pays.push(...db.all<{ id: string }>(`SELECT id FROM journal_entries WHERE status = 'مرحّل' AND src_type = 'rent' ORDER BY date`).map((x) => x.id));
     enableSync(db, ORG);
     expect((await syncOnce(db, remoteFor(null), 'dev-owner')).pending).toBe(0);
-    for (const a of [COL, COLALL, LED, PRO, INV]) {
+    for (const a of [COL, COLALL, LED, PRO, INV, TEN, TEN1]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
       }, ORG)).toBe(200);
@@ -154,5 +157,24 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
       d: { id: k, no: 'INV-' + k, issue: '2026-02-04', status, contract_id: C1, created_at: '2026-02-04' } });
     deniedByLogic(await write(INV, inv('مستحقة', 'S2I1')));
     accepted(await write(INV, inv('مسودة', 'S2I2')));
+  });
+
+  // الجولة الثانية للمتحقق (61cfcd4)
+  const att = (k: string, d: Record<string, unknown>, pids: string[], g: string[], op: string, by: string): RemoteDoc => ({
+    id: 'attachments__' + k, t: 'attachments', k, u: 'a', dev: 'dev-a', del: false, pids, g, op, by,
+    d: { id: k, sha256: 'a'.repeat(64), kind: 'صورة', original_name: 'x.jpg', mime: 'image/jpeg', created_at: '2026-02-05', ...d } });
+
+  // ورموز ملف المرفق تُحصر في قواعد التخزين (storageTokens.emulator: الجولة ٢) لا في صفّه هنا: كلفته على كل كتابة عضو
+
+  test('٢ (الجولة ٢) مرفق المستأجر بعقاريه يُقبل · وصفّ المستأجر برموز عقارٍ آخر يُرفض', async () => {
+    const tenantId = db.get<{ id: string }>(`SELECT id FROM tenants LIMIT 1`)!.id;
+    const ta = ann(TEN, att('S2T1', { entity_type: 'tenant', entity_id: tenantId }, ['P1'], [], 'tenants', TEN.uid!));
+    expect(ta.pids).toEqual(['P1', 'P2']);
+    accepted(await write(TEN, ta));
+    const tdoc = annotate(db, await built('tenants', tenantId), TEN1);
+    const pubDoc = tdoc.pub!;
+    deniedByLogic(await write(TEN1, { ...tdoc.doc, k: 'S2TN', id: 'tenants__S2TN', u: 't1', pids: ['P1'], g: [...tdoc.doc.g!, 'contracts|P2', 'collect|P2'], d: { ...tdoc.doc.d!, id: 'S2TN' } }));
+    deniedByLogic(await write(TEN1, { ...pubDoc, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't2', pids: ['P1'], g: ['tenants|P1', 'contracts|P2', 'collect|P2'], d: { ...pubDoc.d!, id: 'S2TN' } }));
+    accepted(await write(TEN1, { ...pubDoc, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't3', pids: ['P1'], g: ['tenants|@', 'tenants|P1'], d: { ...pubDoc.d!, id: 'S2TN' } }));
   });
 });

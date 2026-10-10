@@ -93,6 +93,14 @@ d('توسيع رؤية الملف (ثالثاً أ ١)', () => {
     expect(await addLinked(['banks|P1', 'banks|@'], 'ATT-BANK')).toBe('ok');
   });
 
+  test('الجولة ٢ للمتحقق: الربط لا يوسّع ملفاً قائماً إلى «كل العقارات» ولا بأقسامٍ ليست من قرّاء جهته', async () => {
+    await adminRow('ATT-FORGED', { sha256: shaOf(name), entity_type: 'bank_tx' }, ['maintenance|P1', 'handover|P1'], ['P1']);
+    expect(await addLinked(['maintenance|P1', 'handover|P1'], 'ATT-FORGED')).toBe('denied');
+    await adminRow('ATT-WIDE', { sha256: shaOf(name), entity_type: '' }, ['library|*', 'contracts|*'], ['*']);
+    expect(await addLinked(['contracts|*'], 'ATT-WIDE')).toBe('denied');
+    expect(await addLinked(['library|*'], 'ATT-WIDE')).toBe('denied');
+  });
+
   test('الإنشاء كالإضافة: ملفٌ جديد برموز عقارٍ آخر يُرفض · وبرموز صفّ مرفقه يُقبل', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aq-sttok2-'));
     const up = async (label: string, g: string[], att?: string) => {
@@ -100,7 +108,7 @@ d('توسيع رؤية الملف (ثالثاً أ ١)', () => {
       const bytes = Buffer.from('ملف مصطنع جديد ' + label + ' ' + Date.now());
       fs.writeFileSync(file, bytes);
       const sha = createHash('sha256').update(bytes).digest('hex');
-      if (att) await adminRow(att, { sha256: sha, entity_type: 'contract_payment' }, ['collect|@', 'collect|P1', 'ledger|@', 'ledger|P1', 'reports|@', 'reports|P1'], ['P1']);
+      if (att) await adminRow(att, { sha256: sha, entity_type: att.startsWith('ATT-LIB') ? '' : 'payment' }, g, att.startsWith('ATT-LIB') ? ['*'] : ['P1']);
       try {
         await uploadObject(nodeStorageIO, target(MEMBER), objectName(OWNER, sha, 'bin'), file,
           { g, op: 'collect', sha256: sha, md5: createHash('md5').update(bytes).digest('base64'), contentType: 'application/octet-stream', ...(att ? { att } : {}) });
@@ -111,6 +119,13 @@ d('توسيع رؤية الملف (ثالثاً أ ١)', () => {
     expect(await up('wide', ['collect|*'])).toBe('denied');
     expect(await up('own', ['collect|P1', 'collect|@'])).toBe('ok');
     expect(await up('linked', ['collect|@', 'collect|P1', 'ledger|@', 'ledger|P1', 'reports|@', 'reports|P1'], 'ATT-NEW1')).toBe('ok');
+    // الجولة ٢ للمتحقق: صفّ المرفق يكتبه العضو فلا يسوّغ وحده · أقسامٌ ليست من قرّاء الدفعة، وعقارٌ آخر، و«*» لغير ملف مكتبة
+    expect(await up('sections', ['maintenance|P1', 'handover|P1', 'collect|P1'], 'ATT-NEW2')).toBe('denied');
+    expect(await up('otherprop', ['ledger|P2', 'collect|P1'], 'ATT-NEW3')).toBe('denied');
+    expect(await up('widepay', ['collect|*', 'ledger|*'], 'ATT-NEW4')).toBe('denied');
+    expect(await up('widelib', ['contracts|*', 'library|*'], 'ATT-LIB1')).toBe('denied');
+    // وملف مكتبةٍ جديد برموز المكتبة يُقبل
+    expect(await up('library', ['library|*', 'library|@'], 'ATT-LIB2')).toBe('ok');
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

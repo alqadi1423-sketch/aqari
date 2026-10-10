@@ -48,16 +48,35 @@ service firebase.storage {
       return md != null && 'g' in md && md.g is string ? md.g.split(',') : [];
     }
     // أو ربط مرفقٍ حقيقي (نص قرار المالك 2026-10-09: «أو يُحصر تعديل الرموز في المالك وربط مرفق حقيقي» · والمتحقق المستقل: قرّاء
-    // المرفق من أقسامٍ لا يكتب فيها العضو كانوا لا يرونه): الرموز المضافة من رموز صفّ مرفقٍ لهذا الملف ببصمته (metadata.att)،
-    // وصفّ المرفق محصورٌ في عقار كاتبه بقواعد Firestore · ورمز «كل العقارات» منه لمرفقٍ للمنشأة كلها وحده
+    // المرفق من أقسامٍ لا يكتب فيها العضو كانوا لا يرونه): الرموز المضافة من رموز صفّ مرفقٍ لهذا الملف ببصمته (metadata.att) ·
+    // وصفّ المرفق يكتبه العضو فلا يُوثق به وحده (المتحقق المستقل على 61cfcd4): أقسام الرموز من قرّاء جهته (attachmentGRegex في
+    // rulesGen.ts، ويطابقها اختبار storageRulesTokens)، وعقاراتها من عقارات العضو أو «@» · و«*» لملف مكتبةٍ جديد وحده
     function attRow(org, md) {
       return firestore.get(/databases/(default)/documents/orgs/$(org)/rows/$('attachments__' + md.att)).data;
     }
-    function linkedOk(org, md, name, added) {
+    function attSectionsRx() {
+      return 'contract:(,(library|contracts|collect|deposits|reservations|claims|tenants|handover|reports|ledger|invoices)[|][^,]+)*,|unit:(,(library|props|contracts|tenants|collect|deposits|reservations|claims|invoices|purchases|maintenance|handover|banks|ledger|reports|assets)[|][^,]+)*,|property:(,(library|props|contracts|tenants|collect|deposits|reservations|claims|invoices|purchases|maintenance|handover|banks|ledger|reports|assets)[|][^,]+)*,|tenant:(,(library|tenants|contracts|collect|deposits|reservations|claims|handover|invoices)[|][^,]+)*,|occupant:(,(library|contracts|handover)[|][^,]+)*,|purchase:(,(library|purchases|reports|ledger|banks)[|][^,]+)*,|supplier:(,(library|purchases|ledger|reports|banks)[|][^,]+)*,|invoice:(,(library|invoices|reports|ledger)[|][^,]+)*,|claim:(,(library|claims|contracts|deposits|reports|ledger)[|][^,]+)*,|handover:(,(library|handover|contracts)[|][^,]+)*,|payment:(,(library|collect|contracts|reports|ledger)[|][^,]+)*,|reservation:(,(library|reservations|contracts|props|reports|ledger)[|][^,]+)*,|bank:(,(library|banks|collect|purchases|reservations|deposits|claims|ledger|reports)[|][^,]+)*,|bank_tx:(,(library|banks|reports|ledger)[|][^,]+)*,|company:(,(library|company)[|][^,]+)*,|company_doc:(,(library|company)[|][^,]+)*,|asset:(,(library|assets|props|maintenance|handover|ledger|reports|purchases)[|][^,]+)*,|[^:]*:(,library[|][^,]+)*,';
+    }
+    function attKnownRx() {
+      return 'contract|unit|property|tenant|occupant|purchase|supplier|invoice|claim|handover|payment|reservation|bank|bank_tx|company|company_doc|asset';
+    }
+    function linkPropsOk(org, added) {
+      let m = firestore.get(memberDoc(org)).data;
+      let flat = ',' + added.join(',') + ',';
+      return m.all == true ? !flat.matches('.*[|][*],.*')
+        : m.props.join(',').matches('[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*')
+          && flat.matches('(,[a-z]+[|](' + m.props.join('|') + '|@))+,');
+    }
+    function linkedOk(org, md, name, added, isNew) {
+      let a = attRow(org, md);
+      let et = string(a.d.get('entity_type', ''));
       return md != null && 'att' in md && md.att is string && md.att.matches('^[A-Za-z0-9_-]{1,64}$')
-        && attRow(org, md).del != true && attRow(org, md).d.sha256 == name.split('[.]')[0]
-        && added.hasOnly(attRow(org, md).g)
-        && (!added.hasAny(orgWideTokens()) || attRow(org, md).pids == ['*']);
+        && a.del != true && a.d.sha256 == name.split('[.]')[0]
+        && added.hasOnly(a.g)
+        && et.matches('[a-z_]*') && (et + ':,' + added.join(',') + ',').matches(attSectionsRx())
+        && (linkPropsOk(org, added)
+          // ملف مكتبةٍ جديد (بلا جهةٍ معروفة) برموز المكتبة «*» و«@» وحدها
+          || (isNew && !et.matches(attKnownRx()) && added.hasOnly(['library|*', 'library|@'])));
     }
 
     match /orgs/{org}/files/{name} {
@@ -66,7 +85,7 @@ service firebase.storage {
         || (isMember(org) && (resource == null || tokens(resource.metadata).hasAny(firestore.get(memberDoc(org)).data.tokens)));
       allow create: if (isOwner(org) || (resource == null && isMember(org) && 'op' in request.resource.metadata && lvl(org, request.resource.metadata.op) >= 2
           && ((!tokens(request.resource.metadata).hasAny(orgWideTokens()) && addedOk(org, tokens(request.resource.metadata)))
-            || linkedOk(org, request.resource.metadata, name, tokens(request.resource.metadata)))))
+            || linkedOk(org, request.resource.metadata, name, tokens(request.resource.metadata), true))))
         && request.resource.size < 50 * 1024 * 1024
         && name.matches('^[0-9a-f]{64}[.][a-z0-9]{1,5}$')
         && request.resource.metadata.md5 == request.resource.md5Hash;
@@ -79,7 +98,9 @@ service firebase.storage {
           && tokens(request.resource.metadata).hasAll(tokens(resource.metadata))
           && ((!tokens(request.resource.metadata).removeAll(tokens(resource.metadata)).hasAny(orgWideTokens())
               && addedOk(org, tokens(request.resource.metadata).removeAll(tokens(resource.metadata))))
-            || linkedOk(org, request.resource.metadata, name, tokens(request.resource.metadata).removeAll(tokens(resource.metadata)))));
+            // والربط لا يوسّع ملفاً قائماً إلى «كل العقارات» (المتحقق المستقل على 61cfcd4)
+            || (!tokens(request.resource.metadata).removeAll(tokens(resource.metadata)).hasAny(orgWideTokens())
+              && linkedOk(org, request.resource.metadata, name, tokens(request.resource.metadata).removeAll(tokens(resource.metadata)), false))));
       allow delete: if isOwner(org);
     }
 

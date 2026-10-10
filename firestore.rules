@@ -53,36 +53,43 @@ service cloud.firestore {
     function intOrAbsent(m, f) {
       return !(f in m) || m[f] == null || m[f] is int;
     }
-    // مبالغ الصف أعداد صحيحة · بأعمدة جدوله وحده، بشجرة بحثٍ ثنائي على اسم الجدول: نحو خمس مقارناتٍ أياً كان الجدول
-    // (حدّ الألف تعبير في الطلب · قياس التغطية على المحاكي 2026-10-10) · والإسقاط (~pub) بلا مبالغ فلا يطابق ورقة
+    // مبالغ الصف أعداد صحيحة · بأعمدة جدوله وحده · أربع مجموعاتٍ بالاسم كلٌّ في دالة: القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو
+    // في فرعٍ متروك، ولا تستدعي دالةً في فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10) · فلا يُحسب إلا جدول المجموعة
     function amountsAreIntegers(r) {
-      return r.del == true || (r.t < 'key_money_deals'
-        ? (r.t < 'contract_payments'
-          ? (r.t < 'banks'
-            ? (r.t < 'bank_tx'
-              ? (r.t != 'accounts' || (intOrAbsent(r.d, 'opening_halalas'))) && (r.t != 'assets' || (intOrAbsent(r.d, 'cost_halalas') && intOrAbsent(r.d, 'salvage_halalas') && intOrAbsent(r.d, 'sale_halalas')))
-              : (r.t != 'bank_tx' || (intOrAbsent(r.d, 'amount_halalas'))))
-            : (r.t < 'contract_installments'
-              ? (r.t != 'banks' || (intOrAbsent(r.d, 'opening_halalas'))) && (r.t != 'claims' || (intOrAbsent(r.d, 'amount_halalas')))
-              : (r.t != 'contract_installments' || (intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'paid_halalas')))))
-          : (r.t < 'invoice_lines'
-            ? (r.t < 'deposit_settlements'
-              ? (r.t != 'contract_payments' || (intOrAbsent(r.d, 'gross_halalas') && intOrAbsent(r.d, 'discount_halalas') && intOrAbsent(r.d, 'net_halalas'))) && (r.t != 'contracts' || (intOrAbsent(r.d, 'value_halalas') && intOrAbsent(r.d, 'deposit_halalas') && intOrAbsent(r.d, 'cancel_deduction_halalas') && intOrAbsent(r.d, 'cancel_refund_halalas') && intOrAbsent(r.d, 'services_halalas') && intOrAbsent(r.d, 'parking_halalas')))
-              : (r.t != 'deposit_settlements' || (intOrAbsent(r.d, 'deduction_halalas') && intOrAbsent(r.d, 'refund_halalas'))))
-            : (r.t != 'invoice_lines' || (intOrAbsent(r.d, 'price_halalas'))) && (r.t != 'invoices' || (intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas') && intOrAbsent(r.d, 'total_halalas')))))
-        : (r.t < 'purchases'
-          ? (r.t < 'payment_lines'
-            ? (r.t < 'payment_allocations'
-              ? (r.t != 'key_money_deals' || (intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'commission_halalas'))) && (r.t != 'meter_readings' || (intOrAbsent(r.d, 'amount_halalas')))
-              : (r.t != 'payment_allocations' || (intOrAbsent(r.d, 'amount_halalas'))))
-            : (r.t < 'purchase_lines'
-              ? (r.t != 'payment_lines' || (intOrAbsent(r.d, 'amount_halalas'))) && (r.t != 'properties' || (intOrAbsent(r.d, 'lease_value_halalas')))
-              : (r.t != 'purchase_lines' || (intOrAbsent(r.d, 'amount_halalas')))))
-          : (r.t < 'tenants'
-            ? (r.t < 'suppliers'
-              ? (r.t != 'purchases' || (intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas') && intOrAbsent(r.d, 'total_halalas'))) && (r.t != 'reservations' || (intOrAbsent(r.d, 'deposit_halalas')))
-              : (r.t != 'suppliers' || (intOrAbsent(r.d, 'default_amount_halalas'))))
-            : (r.t != 'tenants' || (intOrAbsent(r.d, 'credit_halalas'))) && (r.t != 'units' || (intOrAbsent(r.d, 'rent_monthly_halalas'))))));
+      return r.del == true || (r.t < 'contract_payments' ? amtG1(r)
+        : r.t < 'key_money_deals' ? amtG2(r)
+        : r.t < 'purchases' ? amtG3(r)
+        : amtG4(r));
+    }
+    function amtG1(r) {
+      return (r.t != 'accounts' || (intOrAbsent(r.d, 'opening_halalas')))
+        && (r.t != 'assets' || (intOrAbsent(r.d, 'cost_halalas') && intOrAbsent(r.d, 'salvage_halalas') && intOrAbsent(r.d, 'sale_halalas')))
+        && (r.t != 'bank_tx' || (intOrAbsent(r.d, 'amount_halalas')))
+        && (r.t != 'banks' || (intOrAbsent(r.d, 'opening_halalas')))
+        && (r.t != 'claims' || (intOrAbsent(r.d, 'amount_halalas')))
+        && (r.t != 'contract_installments' || (intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'paid_halalas')));
+    }
+    function amtG2(r) {
+      return (r.t != 'contract_payments' || (intOrAbsent(r.d, 'gross_halalas') && intOrAbsent(r.d, 'discount_halalas') && intOrAbsent(r.d, 'net_halalas')))
+        && (r.t != 'contracts' || (intOrAbsent(r.d, 'value_halalas') && intOrAbsent(r.d, 'deposit_halalas') && intOrAbsent(r.d, 'cancel_deduction_halalas') && intOrAbsent(r.d, 'cancel_refund_halalas') && intOrAbsent(r.d, 'services_halalas') && intOrAbsent(r.d, 'parking_halalas')))
+        && (r.t != 'deposit_settlements' || (intOrAbsent(r.d, 'deduction_halalas') && intOrAbsent(r.d, 'refund_halalas')))
+        && (r.t != 'invoice_lines' || (intOrAbsent(r.d, 'price_halalas')))
+        && (r.t != 'invoices' || (intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas') && intOrAbsent(r.d, 'total_halalas')));
+    }
+    function amtG3(r) {
+      return (r.t != 'key_money_deals' || (intOrAbsent(r.d, 'amount_halalas') && intOrAbsent(r.d, 'commission_halalas')))
+        && (r.t != 'meter_readings' || (intOrAbsent(r.d, 'amount_halalas')))
+        && (r.t != 'payment_allocations' || (intOrAbsent(r.d, 'amount_halalas')))
+        && (r.t != 'payment_lines' || (intOrAbsent(r.d, 'amount_halalas')))
+        && (r.t != 'properties' || (intOrAbsent(r.d, 'lease_value_halalas')))
+        && (r.t != 'purchase_lines' || (intOrAbsent(r.d, 'amount_halalas')));
+    }
+    function amtG4(r) {
+      return (r.t != 'purchases' || (intOrAbsent(r.d, 'subtotal_halalas') && intOrAbsent(r.d, 'tax_halalas') && intOrAbsent(r.d, 'total_halalas')))
+        && (r.t != 'reservations' || (intOrAbsent(r.d, 'deposit_halalas')))
+        && (r.t != 'suppliers' || (intOrAbsent(r.d, 'default_amount_halalas')))
+        && (r.t != 'tenants' || (intOrAbsent(r.d, 'credit_halalas')))
+        && (r.t != 'units' || (intOrAbsent(r.d, 'rent_monthly_halalas')));
     }
 
     function isPostedEntry(data) {
@@ -180,42 +187,11 @@ service cloud.firestore {
 
     // ما ينشئه كل قسم (create + own في OP_WRITES)
     function opCreates(op, t) {
-      return (op == 'props' && t in ['audit_log', 'blobs', 'attachments', 'properties', 'property_areas', 'property_area_items', 'property_floor_categories', 'units', 'unit_rooms', 'unit_room_items', 'meters'])
-        || (op == 'maintenance' && t in ['audit_log'])
-        || (op == 'contracts' && t in ['journal_entries', 'audit_log', 'tenants', 'handovers', 'claims', 'bank_tx', 'contract_payments', 'deposit_settlements', 'blobs', 'attachments', 'contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'])
-        || (op == 'tenants' && t in ['audit_log', 'blobs', 'attachments', 'tenants'])
-        || (op == 'collect' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'contract_payments', 'payment_lines', 'payment_allocations'])
-        || (op == 'deposits' && t in ['journal_entries', 'audit_log', 'bank_tx', 'claims', 'blobs', 'attachments', 'deposit_settlements'])
-        || (op == 'reservations' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'reservations', 'key_money_deals'])
-        || (op == 'claims' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'claims'])
-        || (op == 'invoices' && t in ['journal_entries', 'audit_log', 'bank_tx', 'blobs', 'attachments', 'invoices', 'invoice_lines'])
-        || (op == 'purchases' && t in ['journal_entries', 'audit_log', 'bank_tx', 'assets', 'asset_events', 'blobs', 'attachments', 'suppliers', 'purchases', 'meter_readings', 'purchase_lines'])
-        || (op == 'handover' && t in ['audit_log', 'blobs', 'attachments', 'handovers'])
-        || (op == 'banks' && t in ['journal_entries', 'audit_log', 'blobs', 'attachments', 'banks', 'bank_tx'])
-        || (op == 'ledger' && t in ['audit_log', 'journal_entries', 'accounts', 'cost_centers'])
-        || (op == 'library' && t in ['audit_log', 'blobs', 'attachments'])
-        || (op == 'assets' && t in ['journal_entries', 'audit_log', 'bank_tx', 'purchase_lines', 'blobs', 'attachments', 'assets', 'asset_events', 'depreciation_runs'])
-        || (op == 'company' && t in ['audit_log', 'blobs', 'attachments', 'company', 'company_docs', 'message_scripts', 'form_templates'])
-        || (op == 'reports' && t in ['audit_log', 'vat_filings']);
+      return op is string && (op + ':' + t).matches('props:(audit_log|blobs|attachments|properties|property_areas|property_area_items|property_floor_categories|units|unit_rooms|unit_room_items|meters)|maintenance:(audit_log)|contracts:(journal_entries|audit_log|tenants|handovers|claims|bank_tx|contract_payments|deposit_settlements|blobs|attachments|contracts|contract_installments|contract_occupants|occupants|tenant_ratings)|tenants:(audit_log|blobs|attachments|tenants)|collect:(journal_entries|audit_log|bank_tx|blobs|attachments|contract_payments|payment_lines|payment_allocations)|deposits:(journal_entries|audit_log|bank_tx|claims|blobs|attachments|deposit_settlements)|reservations:(journal_entries|audit_log|bank_tx|blobs|attachments|reservations|key_money_deals)|claims:(journal_entries|audit_log|bank_tx|blobs|attachments|claims)|invoices:(journal_entries|audit_log|bank_tx|blobs|attachments|invoices|invoice_lines)|purchases:(journal_entries|audit_log|bank_tx|assets|asset_events|blobs|attachments|suppliers|purchases|meter_readings|purchase_lines)|handover:(audit_log|blobs|attachments|handovers)|banks:(journal_entries|audit_log|blobs|attachments|banks|bank_tx)|ledger:(audit_log|journal_entries|accounts|cost_centers)|library:(audit_log|blobs|attachments)|assets:(journal_entries|audit_log|bank_tx|purchase_lines|blobs|attachments|assets|asset_events|depreciation_runs)|company:(audit_log|blobs|attachments|company|company_docs|message_scripts|form_templates)|reports:(audit_log|vat_filings)');
     }
     // جداول القسم نفسه · تعديلها وحذفها بكامل
     function opOwns(op, t) {
-      return (op == 'props' && t in ['properties', 'property_areas', 'property_area_items', 'property_floor_categories', 'units', 'unit_rooms', 'unit_room_items', 'meters'])
-        || (op == 'contracts' && t in ['contracts', 'contract_installments', 'contract_occupants', 'occupants', 'tenant_ratings'])
-        || (op == 'tenants' && t in ['tenants'])
-        || (op == 'collect' && t in ['contract_payments', 'payment_lines', 'payment_allocations'])
-        || (op == 'deposits' && t in ['deposit_settlements'])
-        || (op == 'reservations' && t in ['reservations', 'key_money_deals'])
-        || (op == 'claims' && t in ['claims'])
-        || (op == 'invoices' && t in ['invoices', 'invoice_lines'])
-        || (op == 'purchases' && t in ['suppliers', 'purchases', 'meter_readings', 'purchase_lines'])
-        || (op == 'handover' && t in ['handovers'])
-        || (op == 'banks' && t in ['banks', 'bank_tx'])
-        || (op == 'ledger' && t in ['journal_entries', 'accounts', 'cost_centers'])
-        || (op == 'library' && t in ['attachments'])
-        || (op == 'assets' && t in ['assets', 'asset_events', 'depreciation_runs'])
-        || (op == 'company' && t in ['company', 'company_docs', 'message_scripts', 'form_templates'])
-        || (op == 'reports' && t in ['vat_filings']);
+      return op is string && (op + ':' + t).matches('props:(properties|property_areas|property_area_items|property_floor_categories|units|unit_rooms|unit_room_items|meters)|contracts:(contracts|contract_installments|contract_occupants|occupants|tenant_ratings)|tenants:(tenants)|collect:(contract_payments|payment_lines|payment_allocations)|deposits:(deposit_settlements)|reservations:(reservations|key_money_deals)|claims:(claims)|invoices:(invoices|invoice_lines)|purchases:(suppliers|purchases|meter_readings|purchase_lines)|handover:(handovers)|banks:(banks|bank_tx)|ledger:(journal_entries|accounts|cost_centers)|library:(attachments)|assets:(assets|asset_events|depreciation_runs)|company:(company|company_docs|message_scripts|form_templates)|reports:(vat_filings)');
     }
     // حقولٌ بعينها في جداول أقسام أخرى تمسّها العملية جانبياً بإدخال
     function opTouches(op, t, keys) {
@@ -232,15 +208,18 @@ service cloud.firestore {
     // حراسات كتابة العضو وحده (مراجعة التثبيت #17 و#18 و#20 و#21 · قرار المالك 2026-10-08): المالك لا يُنتحل، وجهازه
     // يرفض الوارد المخالف بنفسه (sync/engine.ts applyOne) · وللطلب حدّ ألف تعبير، فالمقارنة بالاسم كما هو ونظيره ~pub
     // مفتاح الصف داخل d هو مفتاح المستند (#20): فلا يستبدل مستندٌ بمفتاحٍ صفاً آخر عند كل جهاز
+    // القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10)
     function keyOk(r) {
-      return r.del == true || (string(r.d.get('id', null)) == r.k && !(r.t in ['accounts', 'accounts~pub', 'property_floor_categories', 'property_floor_categories~pub', 'deposit_settlements', 'deposit_settlements~pub', 'tenant_ratings', 'tenant_ratings~pub', 'depreciation_runs', 'depreciation_runs~pub', 'blobs', 'blobs~pub'])) || (
-        r.t in ['accounts', 'accounts~pub'] ? r.d.code == r.k
+      return r.del == true || (r.t in ['accounts', 'accounts~pub', 'property_floor_categories', 'property_floor_categories~pub', 'deposit_settlements', 'deposit_settlements~pub', 'tenant_ratings', 'tenant_ratings~pub', 'depreciation_runs', 'depreciation_runs~pub', 'blobs', 'blobs~pub'] ? keyOkSpecial(r) : string(r.d.get('id', null)) == r.k);
+    }
+    function keyOkSpecial(r) {
+      return r.t in ['accounts', 'accounts~pub'] ? r.d.code == r.k
         : r.t in ['property_floor_categories', 'property_floor_categories~pub'] ? r.d.property_id + '|' + r.d.floor_label == r.k
         : r.t in ['deposit_settlements', 'deposit_settlements~pub'] ? r.d.contract_id == r.k
         : r.t in ['tenant_ratings', 'tenant_ratings~pub'] ? r.d.contract_id == r.k
         : r.t in ['depreciation_runs', 'depreciation_runs~pub'] ? r.d.month == r.k
         : r.t in ['blobs', 'blobs~pub'] ? r.d.sha256 == r.k
-        : false);
+        : false;
     }
     // مصدر القيد الجديد من قسم العملية (#40): لا ينشئ العضو قيداً لعملية قسمٍ ليس له · والدفتر يدويّه وكل عكس
     function srcOk(op, s) {
@@ -270,20 +249,33 @@ service cloud.firestore {
     function pidsAt(org, t, id) {
       return getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$(t + '__' + id)).data.pids;
     }
+    // القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10)
     function pidsBound(org, r) {
-      return r.del == true || r.t in ['tenants', 'tenants~pub', 'journal_entries', 'journal_entries~pub', 'attachments', 'attachments~pub'] || (
-        r.t in ['properties', 'properties~pub'] ? r.pids == [r.d.id]
-        : r.t in ['meters', 'meters~pub'] ? r.pids == (r.d.owner_type == 'property' ? [r.d.owner_id] : pidsAt(org, 'units', r.d.owner_id))
-        : r.t in ['asset_events', 'asset_events~pub'] ? r.pids == pidsAt(org, 'assets', r.d.asset_id)
-        : r.t in ['purchase_lines', 'purchase_lines~pub'] ? r.pids == pidsAt(org, 'purchases', r.d.purchase_id)
-        : linked(r.d, 'property_id') ? r.pids == [r.d.property_id]
-        : linked(r.d, 'unit_id') ? r.pids == pidsAt(org, 'units', r.d.unit_id)
-        : linked(r.d, 'contract_id') ? r.pids == pidsAt(org, 'contracts', r.d.contract_id)
-        : linked(r.d, 'room_id') ? r.pids == pidsAt(org, 'unit_rooms', r.d.room_id)
-        : linked(r.d, 'area_id') ? r.pids == pidsAt(org, 'property_areas', r.d.area_id)
-        : linked(r.d, 'payment_id') ? r.pids == pidsAt(org, 'contract_payments', r.d.payment_id)
-        : linked(r.d, 'meter_id') ? r.pids == pidsAt(org, 'meters', r.d.meter_id)
-        : r.pids == ['*']);
+      return r.del == true || pidsBoundBy(org, r, baseT(r.t));
+    }
+    function pidsBoundBy(org, r, t) {
+      // والمرفق تُحصر رموز ملفه في قواعد التخزين (linkedOk) لا هنا: كلفته على كل كتابة عضو (حدّ الألف تعبير)
+      return t == 'tenants' || t == 'journal_entries' || t == 'attachments' ? true
+        : t == 'properties' ? pbSelf(r)
+        : t == 'meters' ? pbMeter(org, r)
+        : t == 'asset_events' ? pbAt(org, r, 'assets', 'asset_id')
+        : t == 'purchase_lines' ? pbAt(org, r, 'purchases', 'purchase_id')
+        : pidsBoundLinked(org, r);
+    }
+    function pbSelf(r) { return r.pids == [r.d.id]; }
+    function pbProp(r) { return r.pids == [r.d.property_id]; }
+    function pbWide(r) { return r.pids == ['*']; }
+    function pbAt(org, r, tbl, f) { return r.pids == pidsAt(org, tbl, r.d[f]); }
+    function pbMeter(org, r) { return r.d.owner_type == 'property' ? r.pids == [r.d.owner_id] : pbAt(org, r, 'units', 'owner_id'); }
+    function pidsBoundLinked(org, r) {
+      return linked(r.d, 'property_id') ? pbProp(r)
+        : linked(r.d, 'unit_id') ? pbAt(org, r, 'units', 'unit_id')
+        : linked(r.d, 'contract_id') ? pbAt(org, r, 'contracts', 'contract_id')
+        : linked(r.d, 'room_id') ? pbAt(org, r, 'unit_rooms', 'room_id')
+        : linked(r.d, 'area_id') ? pbAt(org, r, 'property_areas', 'area_id')
+        : linked(r.d, 'payment_id') ? pbAt(org, r, 'contract_payments', 'payment_id')
+        : linked(r.d, 'meter_id') ? pbAt(org, r, 'meters', 'meter_id')
+        : pbWide(r);
     }
     // روابط الصف التي تحدد عقاره (كما في rowPids): تغيّرها في التعديل يُفحص بحقيقة الصف
     function linksChanged(before, after) {
@@ -298,7 +290,15 @@ service cloud.firestore {
     // طلبُ العضو حدَّ الألف تعبير كما تبلغه قائمة الأقسام كلها (المراجعات الخارجية «ثالثاً أ ٢») · ومعرّف العقار حروفٌ وأرقام
     // صفٌّ غير المستأجر بعقارٍ واحد، ورموز رؤيته لعقاره أو «@» (المراجعات الخارجية «ثالثاً أ ٢») · والمستأجر المشترك له tenantGOk
     function pidsGOk(r) {
-      return r.t in ['tenants', 'tenants~pub'] || (r.pids.size() == 1 && gPropOk(r.g, r.pids[0]));
+      return r.pids.toSet().size() == r.pids.size() && (r.pids.size() == 1 || !('*' in r.pids))
+        && (r.t == 'tenants' ? (',' + r.g.join(',') + ',').matches('(,[a-z]+[|]@)*,') : gPropsOk(r.g, r.pids));
+    }
+    // رموز الصف لعقاراته أو «@» · صفٌّ بأكثر من عقار (المستأجر ومرفقه) بعقاراتٍ معرّفاتها حروفٌ وأرقام (المتحقق المستقل على 61cfcd4:
+    // كان يُشترط عقارٌ واحد فيُرفض مرفق المستأجر المشروع، وصفّ المستأجر بلا فحص)
+    function gPropsOk(g, pids) {
+      return pids.size() == 1 ? gPropOk(g, pids[0])
+        : (pids.join(',').matches('[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*')
+          && (g.size() == 0 || (',' + g.join(',') + ',').matches('(,[a-z]+[|](' + pids.join('|') + '|@))+,')));
     }
     function gPropOk(g, p) {
       return g.size() == 0 || (p.matches('[*]|[A-Za-z0-9_-]+')
@@ -356,8 +356,12 @@ service cloud.firestore {
     // القيد بمجموعَي مدينه ودائنه صحيحين متساويين (المراجعات الخارجية «ثالثاً أ ٥» · قرار المالك 2026-10-09) · يصطادان خطأ
     // الجهاز لا المهاجم: الجهاز يكتبهما والقواعد لا تجمع السطور · ومع sv وحده (الإصدار الذي يكتبهما) فلا يُرفض إصدارٌ أقدم ·
     // ومسودة «قيد الإنشاء» تُحفظ قبل توازنها
+    // ما بعد «ليس قيداً» في دالة: القواعد تحسب المكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (حدّ الألف تعبير)
     function entrySumsOk(r) {
-      return r.t != 'journal_entries' || r.del == true || !('sv' in r) || isDraft(r)
+      return r.t != 'journal_entries' || entrySumsOfEntry(r);
+    }
+    function entrySumsOfEntry(r) {
+      return r.del == true || !('sv' in r) || isDraft(r)
         || (r.get('dr', null) is int && r.get('cr', null) is int && r.dr == r.cr);
     }
 
@@ -408,7 +412,7 @@ service cloud.firestore {
               ? (!linksChanged(before, after) || pidsBound(org, after))
               // وتتغيّر بحقيقة الصف لذي كل العقارات وحده (رؤيته لا تُفحص بعدها، فحدّ الألف تعبير لا يسعها: فلا للمحصور) ·
               // والمستأجر المشترك تتبع عقاراته عقوده: كان في متناول العضو، وعقاراته الجديدة من عقاراته السابقة وعقارات العضو
-              : ((m.all == true && pidsGOk(after) && pidsBound(org, after))
+              : ((m.all == true && (after.t in ['tenants', 'tenants~pub', 'attachments'] || (after.pids.size() == 1 && gPropOk(after.g, after.pids[0]))) && pidsBound(org, after))
                   || (after.t in ['tenants', 'tenants~pub'] && (m.all == true
                       || (before.pids.hasAny(m.props.concat(['*'])) && after.pids.hasOnly(before.pids.concat(m.props).concat(['*']))
                           // ولا يُسقط عقاراً ليس له (العام '*' يزول بأول عقد)

@@ -24,8 +24,10 @@ const q = (xs: string[]) => '[' + xs.map((x) => `'${x}'`).join(', ') + ']';
 function writesFns(): string {
   const entries = Object.entries(OP_WRITES) as Array<[SectionKey, NonNullable<(typeof OP_WRITES)[SectionKey]>]>;
   // سلسلةٌ تتوقف عند أول قسمٍ مطابق · لا خريطة قيم: الخريطة تُقيَّم كلها بقوائمها في كل طلب (قياس التغطية على المحاكي 2026-10-10)
-  const create = entries.map(([s, w]) => `(op == '${s}' && t in ${q([...new Set([...w.create, ...w.own])])})`);
-  const own = entries.filter(([, w]) => w.own.length).map(([s, w]) => `(op == '${s}' && t in ${q(w.own)})`);
+  // تعبيرٌ نمطي واحد على «قسم:جدول» بكلفةٍ ثابتة · القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10)
+  const rx = (rows: Array<[string, string[]]>) => rows.filter(([, ts]) => ts.length).map(([k, ts]) => `${k}:(${ts.join('|')})`).join('|');
+  const create = rx(entries.map(([s, w]) => [s, [...new Set([...w.create, ...w.own])]]));
+  const own = rx(entries.filter(([, w]) => w.own.length).map(([s, w]) => [s, w.own]));
   // الجدول والحقول نفسها في أكثر من قسم سطرٌ واحد بأقسامه · فالسلسلة قصيرة ولا تبلغ حدّ ألف تعبير في الطلب
   // (وجده المحاكي حين دخلت حقول المرفقات اثني عشر قسماً)
   const grouped = new Map<string, { t: string; cols: string[]; ops: string[] }>();
@@ -44,16 +46,27 @@ function writesFns(): string {
   return `
     // ما ينشئه كل قسم (create + own في OP_WRITES)
     function opCreates(op, t) {
-      return ${join(create)};
+      return op is string && (op + ':' + t).matches('${create}');
     }
     // جداول القسم نفسه · تعديلها وحذفها بكامل
     function opOwns(op, t) {
-      return ${join(own)};
+      return op is string && (op + ':' + t).matches('${own}');
     }
     // حقولٌ بعينها في جداول أقسام أخرى تمسّها العملية جانبياً بإدخال
     function opTouches(op, t, keys) {
       return ${join(touch)};
     }`;
+}
+
+/**
+ * أقسام رموز صفّ المرفق من قرّاء جهته وحدهم (readSectionsOf: المكتبة وقرّاء جدول الجهة) · تعبيرٌ نمطي واحد ثابت الكلفة على
+ * «نوع_الجهة:,رمز,رمز,» (المتحقق المستقل على 61cfcd4: صفّ المرفق يكتبه العضو، وقواعد التخزين تثق برموزه في ربط الملف)
+ */
+export function attachmentGRegex(): string {
+  const branches = Object.entries(ATTACHMENT_ENTITY_TABLE).map(([et, tbl]) =>
+    `${et}:(,(${[...new Set(['library', ...(READ_TABLE[tbl] ?? [])])].join('|')})[|][^,]+)*,`);
+  // جهةٌ غير معروفة أو بلا جهة: المكتبة وحدها
+  return [...branches, '[^:]*:(,library[|][^,]+)*,'].join('|');
 }
 
 /** أقسامٌ قد تقرأ الجدول · رموز الرؤية g لا تخرج عنها (المراجعة #18) */
@@ -99,10 +112,13 @@ function guardFns(schema: RulesSchema): string {
     // حراسات كتابة العضو وحده (مراجعة التثبيت #17 و#18 و#20 و#21 · قرار المالك 2026-10-08): المالك لا يُنتحل، وجهازه
     // يرفض الوارد المخالف بنفسه (sync/engine.ts applyOne) · وللطلب حدّ ألف تعبير، فالمقارنة بالاسم كما هو ونظيره ~pub
     // مفتاح الصف داخل d هو مفتاح المستند (#20): فلا يستبدل مستندٌ بمفتاحٍ صفاً آخر عند كل جهاز
+    // القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10)
     function keyOk(r) {
-      return r.del == true || (string(r.d.get('id', null)) == r.k && !(r.t in ${both(special.map((t) => t.name))})) || (
-        ${keyBranches.join('\n        : ')}
-        : false);
+      return r.del == true || (r.t in ${both(special.map((t) => t.name))} ? keyOkSpecial(r) : string(r.d.get('id', null)) == r.k);
+    }
+    function keyOkSpecial(r) {
+      return ${keyBranches.join('\n        : ')}
+        : false;
     }
     // مصدر القيد الجديد من قسم العملية (#40): لا ينشئ العضو قيداً لعملية قسمٍ ليس له · والدفتر يدويّه وكل عكس
     function srcOk(op, s) {
@@ -124,20 +140,33 @@ function guardFns(schema: RulesSchema): string {
     function pidsAt(org, t, id) {
       return getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$(t + '__' + id)).data.pids;
     }
+    // القواعد تحسب كل تعبيرٍ مكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (تجربة التغطية على المحاكي 2026-10-10)
     function pidsBound(org, r) {
-      return r.del == true || r.t in ${both(['tenants', 'journal_entries', 'attachments'])} || (
-        r.t in ${both(['properties'])} ? r.pids == [r.d.id]
-        : r.t in ${both(['meters'])} ? r.pids == (r.d.owner_type == 'property' ? [r.d.owner_id] : pidsAt(org, 'units', r.d.owner_id))
-        : r.t in ${both(['asset_events'])} ? r.pids == pidsAt(org, 'assets', r.d.asset_id)
-        : r.t in ${both(['purchase_lines'])} ? r.pids == pidsAt(org, 'purchases', r.d.purchase_id)
-        : linked(r.d, 'property_id') ? r.pids == [r.d.property_id]
-        : linked(r.d, 'unit_id') ? r.pids == pidsAt(org, 'units', r.d.unit_id)
-        : linked(r.d, 'contract_id') ? r.pids == pidsAt(org, 'contracts', r.d.contract_id)
-        : linked(r.d, 'room_id') ? r.pids == pidsAt(org, 'unit_rooms', r.d.room_id)
-        : linked(r.d, 'area_id') ? r.pids == pidsAt(org, 'property_areas', r.d.area_id)
-        : linked(r.d, 'payment_id') ? r.pids == pidsAt(org, 'contract_payments', r.d.payment_id)
-        : linked(r.d, 'meter_id') ? r.pids == pidsAt(org, 'meters', r.d.meter_id)
-        : r.pids == ['*']);
+      return r.del == true || pidsBoundBy(org, r, baseT(r.t));
+    }
+    function pidsBoundBy(org, r, t) {
+      // والمرفق تُحصر رموز ملفه في قواعد التخزين (linkedOk) لا هنا: كلفته على كل كتابة عضو (حدّ الألف تعبير)
+      return t == 'tenants' || t == 'journal_entries' || t == 'attachments' ? true
+        : t == 'properties' ? pbSelf(r)
+        : t == 'meters' ? pbMeter(org, r)
+        : t == 'asset_events' ? pbAt(org, r, 'assets', 'asset_id')
+        : t == 'purchase_lines' ? pbAt(org, r, 'purchases', 'purchase_id')
+        : pidsBoundLinked(org, r);
+    }
+    function pbSelf(r) { return r.pids == [r.d.id]; }
+    function pbProp(r) { return r.pids == [r.d.property_id]; }
+    function pbWide(r) { return r.pids == ['*']; }
+    function pbAt(org, r, tbl, f) { return r.pids == pidsAt(org, tbl, r.d[f]); }
+    function pbMeter(org, r) { return r.d.owner_type == 'property' ? r.pids == [r.d.owner_id] : pbAt(org, r, 'units', 'owner_id'); }
+    function pidsBoundLinked(org, r) {
+      return linked(r.d, 'property_id') ? pbProp(r)
+        : linked(r.d, 'unit_id') ? pbAt(org, r, 'units', 'unit_id')
+        : linked(r.d, 'contract_id') ? pbAt(org, r, 'contracts', 'contract_id')
+        : linked(r.d, 'room_id') ? pbAt(org, r, 'unit_rooms', 'room_id')
+        : linked(r.d, 'area_id') ? pbAt(org, r, 'property_areas', 'area_id')
+        : linked(r.d, 'payment_id') ? pbAt(org, r, 'contract_payments', 'payment_id')
+        : linked(r.d, 'meter_id') ? pbAt(org, r, 'meters', 'meter_id')
+        : pbWide(r);
     }
     // روابط الصف التي تحدد عقاره (كما في rowPids): تغيّرها في التعديل يُفحص بحقيقة الصف
     function linksChanged(before, after) {
@@ -152,7 +181,15 @@ function guardFns(schema: RulesSchema): string {
     // طلبُ العضو حدَّ الألف تعبير كما تبلغه قائمة الأقسام كلها (المراجعات الخارجية «ثالثاً أ ٢») · ومعرّف العقار حروفٌ وأرقام
     // صفٌّ غير المستأجر بعقارٍ واحد، ورموز رؤيته لعقاره أو «@» (المراجعات الخارجية «ثالثاً أ ٢») · والمستأجر المشترك له tenantGOk
     function pidsGOk(r) {
-      return r.t in ['tenants', 'tenants~pub'] || (r.pids.size() == 1 && gPropOk(r.g, r.pids[0]));
+      return r.pids.toSet().size() == r.pids.size() && (r.pids.size() == 1 || !('*' in r.pids))
+        && (r.t == 'tenants' ? (',' + r.g.join(',') + ',').matches('(,[a-z]+[|]@)*,') : gPropsOk(r.g, r.pids));
+    }
+    // رموز الصف لعقاراته أو «@» · صفٌّ بأكثر من عقار (المستأجر ومرفقه) بعقاراتٍ معرّفاتها حروفٌ وأرقام (المتحقق المستقل على 61cfcd4:
+    // كان يُشترط عقارٌ واحد فيُرفض مرفق المستأجر المشروع، وصفّ المستأجر بلا فحص)
+    function gPropsOk(g, pids) {
+      return pids.size() == 1 ? gPropOk(g, pids[0])
+        : (pids.join(',').matches('[A-Za-z0-9_-]+(,[A-Za-z0-9_-]+)*')
+          && (g.size() == 0 || (',' + g.join(',') + ',').matches('(,[a-z]+[|](' + pids.join('|') + '|@))+,')));
     }
     function gPropOk(g, p) {
       return g.size() == 0 || (p.matches('[*]|[A-Za-z0-9_-]+')
@@ -256,8 +293,12 @@ ${guardFns(schema)}
     // القيد بمجموعَي مدينه ودائنه صحيحين متساويين (المراجعات الخارجية «ثالثاً أ ٥» · قرار المالك 2026-10-09) · يصطادان خطأ
     // الجهاز لا المهاجم: الجهاز يكتبهما والقواعد لا تجمع السطور · ومع sv وحده (الإصدار الذي يكتبهما) فلا يُرفض إصدارٌ أقدم ·
     // ومسودة «قيد الإنشاء» تُحفظ قبل توازنها
+    // ما بعد «ليس قيداً» في دالة: القواعد تحسب المكتوب في الدالة ولو تُرك فرعه، ولا تستدعي دالة فرعٍ متروك (حدّ الألف تعبير)
     function entrySumsOk(r) {
-      return r.t != 'journal_entries' || r.del == true || !('sv' in r) || isDraft(r)
+      return r.t != 'journal_entries' || entrySumsOfEntry(r);
+    }
+    function entrySumsOfEntry(r) {
+      return r.del == true || !('sv' in r) || isDraft(r)
         || (r.get('dr', null) is int && r.get('cr', null) is int && r.dr == r.cr);
     }
 
@@ -308,7 +349,7 @@ ${guardFns(schema)}
               ? (!linksChanged(before, after) || pidsBound(org, after))
               // وتتغيّر بحقيقة الصف لذي كل العقارات وحده (رؤيته لا تُفحص بعدها، فحدّ الألف تعبير لا يسعها: فلا للمحصور) ·
               // والمستأجر المشترك تتبع عقاراته عقوده: كان في متناول العضو، وعقاراته الجديدة من عقاراته السابقة وعقارات العضو
-              : ((m.all == true && pidsGOk(after) && pidsBound(org, after))
+              : ((m.all == true && (after.t in ['tenants', 'tenants~pub', 'attachments'] || (after.pids.size() == 1 && gPropOk(after.g, after.pids[0]))) && pidsBound(org, after))
                   || (after.t in ['tenants', 'tenants~pub'] && (m.all == true
                       || (before.pids.hasAny(m.props.concat(['*'])) && after.pids.hasOnly(before.pids.concat(m.props).concat(['*']))
                           // ولا يُسقط عقاراً ليس له (العام '*' يزول بأول عقد)

@@ -35,7 +35,10 @@ test('كتلة المنشأة في firestore.rules مطابقة للمولَّد
 
 test('كل قسم في OP_WRITES تظهر جداوله في القواعد', () => {
   const gen = generateOrgRules();
+  // opCreates تعبيرٌ نمطي على «قسم:جدول» (حدّ الألف تعبير): كل جدولٍ في مجموعة قسمه
+  const createRx = /function opCreates\(op, t\) \{\s*return op is string && \(op \+ ':' \+ t\)\.matches\('([^']*)'\);/.exec(gen)![1];
   for (const [s, w] of Object.entries(OP_WRITES)) {
-    for (const t of [...w!.create, ...w!.own]) expect([s, t, gen.includes(`'${t}'`)]).toEqual([s, t, true]);
+    const group = new RegExp(`(?:^|\\|)${s}:\\(([^)]*)\\)`).exec(createRx)?.[1].split('|') ?? [];
+    for (const t of [...w!.create, ...w!.own]) expect([s, t, group.includes(t)]).toEqual([s, t, true]);
   }
 });
