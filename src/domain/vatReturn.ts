@@ -50,7 +50,7 @@ const RESIDENTIAL_SQL = `(COALESCE(c.unit_type, '') = '' OR c.unit_type IN (${RE
 /** الإيجار التجاري المحصَّل في الفترة (خارج البند ٥) */
 function commercialRent(db: DB, from: string, to: string): number {
   return Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas - l.debit_halalas) FROM journal_lines l
+    `SELECT COALESCE(SUM(p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas) FROM journal_lines l
        WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410'), 0)), 0) AS s
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
      WHERE p.cancelled_at IS NULL AND p.date >= ? AND p.date <= ? AND NOT ${RESIDENTIAL_SQL}`, [from, to])?.s ?? 0);
@@ -91,7 +91,7 @@ function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
   const none = 'لا يوجد'; // i18n-exempt: نص الكشف المصدَّر بالعربية
   const pays = db.all<ExemptRow>(
     `SELECT p.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
-            p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas - l.debit_halalas) FROM journal_lines l
+            p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas) FROM journal_lines l
               WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410'), 0) AS net
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
      WHERE p.cancelled_at IS NULL AND p.date >= ? AND p.date <= ? AND ${RESIDENTIAL_SQL} ORDER BY p.date`, [none, from, to]);

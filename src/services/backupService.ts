@@ -15,7 +15,7 @@ import { setSetting } from '../repos/settings';
 import { toLocalISODate } from '../domain/dates';
 import { openNodeDbCompat } from './openTempDb';
 import { deviceCipher } from './cipher';
-import { getBackupPassword } from './backupPassword';
+import { backupPasswordForSealing } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
 import type { CancelSignal, ProgressFn } from '../domain/progress';
 
@@ -51,8 +51,8 @@ export async function createAndShareBackup(
   const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
   const outPath = joinPath(env.tmpDir, name);
   const manifest = await createBackup(env, outPath, onProgress, { signal });
-  // بكلمة مرور النسخ إن وُضعت · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق
-  const pw = await getBackupPassword();
+  // بكلمة مرور النسخ إن وُضعت · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق · ووُضعت وتعذّرت قراءتها: لا تصدير (ثالثاً أ ٩)
+  const pw = await backupPasswordForSealing();
   if (pw) await sealBackupFile(env, outPath, pw, onProgress);
   setSetting(db, 'lastBackupAt', new Date().toISOString());
   onProgress?.('جاري فتح نافذة المشاركة');

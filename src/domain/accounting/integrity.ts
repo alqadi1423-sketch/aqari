@@ -1,6 +1,6 @@
 import type { DB } from '../../db/adapter';
 import { accountBalance, allAccounts, ledgerNet } from './ledger';
-import { markedNetOn, unmarkedOrphans } from './orphans';
+import { markedNetOn, unmarkedOrphans, memberDevice } from './orphans';
 import { fmt } from '../money';
 
 export interface IntegrityCheck {
@@ -119,8 +119,9 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     value: Number(orphans.n) + ' يتيم',
   });
 
-  // رصيد المستأجرين الدائن في سجلاتهم يطابق حسابه 2410 (مراجعة التثبيت #63 · قرار المالك)
-  {
+  // رصيد المستأجرين الدائن في سجلاتهم يطابق حسابه 2410 (مراجعة التثبيت #63 · قرار المالك) · وجهاز العضو تصله القيود ولا تصله
+  // أرصدة المستأجرين بلا قسمٍ يقرأ مبالغهم، فلا يُحكم فيه به (التحقق المستقل من 37085a3)
+  if (!memberDevice(db)) {
     const ledger2410 = accountBalance(db, '2410');
     const tenants = Number(db.get<{ s: number }>(`SELECT COALESCE(SUM(credit_halalas), 0) AS s FROM tenants WHERE deleted_at IS NULL`)?.s ?? 0);
     out.push({

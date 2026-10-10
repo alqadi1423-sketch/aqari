@@ -581,7 +581,8 @@
     "filedPeriod": "This date's period has a filed return, so no invoice is issued in it · pick a date in an open period",
     "taxStandard": "15% (standard)",
     "taxZero": "0% (zero-rated)",
-    "taxExempt": "Exempt"
+    "taxExempt": "Exempt",
+    "firstIssueOwner": "The first tax invoice after activation is issued by the owner · your invoice is saved as a draft; issue it after the owner issues the first one"
   },
   "purchase": {
     "vatSettled": "This invoice's VAT is refunded or its refund was rejected, and its entry closed the account · cancel that entry from the ledger first",
@@ -675,5 +676,17 @@
   },
   "members": {
     "ownerNameReserved": "«المالك» (owner) is reserved · enter your name"
+  },
+  "bind": {
+    "orgHasData": "Your account already has an organization with data, so this device's data is not merged into it (its invoice and entry numbers would repeat). It stays saved on this device while you open your account's data.",
+    "needConnection": "Linking needs an internet connection"
+  },
+  "backup": {
+    "passwordLost": "A backup password was set on this device but cannot be read, so no backup is exported or uploaded unencrypted. Set the password again, or remove it if you want unencrypted backups.",
+    "passwordLostShort": "Unreadable"
+  },
+  "wipe": {
+    "deletingFiles": "Deleting files from the server · {{n}} of {{total}}",
+    "deletingCloud": "Deleting your data from the cloud · {{n}}"
   }
 }

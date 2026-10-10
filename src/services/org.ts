@@ -163,6 +163,15 @@ export async function ownOrgExists(remote: FirestoreRemote, uid: string): Promis
   return false;
 }
 
+/**
+ * بيانات جهازٍ عمل بلا حساب لا تُدمج في منشأةٍ قائمة (المراجعات الخارجية «ثالثاً أ ١١» · قرار المالك 2026-10-09: «الجهاز الذي
+ * عمل محلياً ثم بدأ المزامنة لا ينتج رقماً مكرراً»): تسلسلاته المحلية (الفواتير والقيود والمشتريات) تتكرر فيها، والقيد المرحّل لا
+ * يُعاد ترقيمه · فتُركن على الجهاز، ويُدمج في حسابٍ لا منشأة له بعد وحده
+ */
+export async function localBindAllowed(remote: FirestoreRemote, uid: string): Promise<boolean> {
+  return !(await ownOrgExists(remote, uid));
+}
+
 export type InviteChoice = { kind: 'own' } | { kind: 'invite'; org: string; orgName: string; by: string; doc: MemberDoc };
 
 /** ما تعرضه بوابة الدخول بترتيبه: منشأة الحساب القائمة أولاً، ثم الدعوات ببريد أصحابها (مراجعة التثبيت #52) */

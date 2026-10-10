@@ -15,7 +15,7 @@ import { File } from 'expo-file-system';
 import { GoogleSignin, isSuccessResponse } from '@react-native-google-signin/google-signin';
 import type { AppDB } from '../db/expoAdapter';
 import { cloudConfig, filesCloudConfig, DRIVE_SCOPE } from '../cloud/config';
-import { listObjects, deleteObject, filesPrefix, type StorageIO } from '../cloud/storage';
+import { type StorageIO } from '../cloud/storage';
 import { pumpUploads, ensureLocal, fileState, cacheUsage, clearCache, type FilesRemote } from '../files/cloudFiles';
 import { liveBlobs } from '../files/store';
 import { appFilesEnv } from './filesEnv';
@@ -39,7 +39,7 @@ import type { BackupEnv } from '../domain/backup/types';
 import { planKeepPosted, applyKeepPosted, type KeepPlan } from '../domain/backup/keepPosted';
 import { toLocalISODate } from '../domain/dates';
 import { appBackupEnv } from './backupService';
-import { getBackupPassword } from './backupPassword';
+import { backupPasswordForSealing } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
 import { SYNC_TABLES } from '../db/syncTables';
 import { memberTokens, fullReadTables } from '../sync/acl';
@@ -48,7 +48,7 @@ import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
 import { t } from '../i18n';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatUnsentCount, clearChatData, hasChatData, chatPurgeOrg, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatCancelTask, chatVote,
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatUnsentCount, clearChatData, hasChatData, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatCancelTask, chatVote,
   type GroupChange, type ChatTag, type ChatTask,
   chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
 import type { RemoteMessage, RemoteThread } from '../chat/remote';
@@ -57,13 +57,14 @@ import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
 import { makeSafetyBackup } from '../domain/backup/create';
 import { leaveSafely } from '../domain/leaveOrg';
+import { wipeCloud, deleteOwnerCloud, type CloudFiles } from './cloudWipe';
 import { logMemberAccess } from '../domain/memberAudit';
 import { appDataRoot } from '../files/expoFs';
 import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
-  moveOwnerToOrg, refreshMembership, wipeOrgCloud, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, ownOrgExists, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite, readCompat, appTooOld,
+  moveOwnerToOrg, refreshMembership, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, ownOrgExists, localBindAllowed, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite, readCompat, appTooOld,
   updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
@@ -486,7 +487,13 @@ export async function activateAccount(u: SessionUser): Promise<void> {
         patch({ invites: inv, ownOrg, gate: null });
         return;
       }
-      if (r === 'unbound') { patch({ gate: 'unbound' }); return; }
+      if (r === 'unbound') {
+        // للحساب منشأةٌ قائمة: بيانات الجهاز لا تُدمج فيها (تتكرر أرقامها) · يظهر الركن وحده وسببه (ثالثاً أ ١١)
+        const sess2 = s;
+        const ownOrg = !(await localBindAllowed(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess2.idToken() }), u.uid));
+        patch({ gate: 'unbound', ownOrg });
+        return;
+      }
       // لا دعوة: صاحب الحساب مالكٌ لمنشأته · نسخته الجديدة تسحب ما في سحابته (الانضمام: السحابة تغلب)
       enableSync(db, u.uid);
     }
@@ -500,8 +507,14 @@ export async function activateAccount(u: SessionUser): Promise<void> {
 }
 
 /** بيانات بلا حساب على الجهاز: يربطها الداخل بحسابه بقراره */
-export function bindUnboundToAccount(db: AppDB): void {
+export async function bindUnboundToAccount(db: AppDB): Promise<void> {
   if (!state.user) return;
+  const s = getSession(); const cfg = cloudConfig();
+  if (!s || !cfg) throw new Error(t('bind.needConnection'));
+  // منشأةٌ قائمة للحساب: لا دمج (تتكرر أرقام الجهاز المحلية فيها) · المراجعات الخارجية «ثالثاً أ ١١»
+  if (!(await localBindAllowed(new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => s.idToken() }), state.user.uid))) {
+    throw new Error(t('bind.orgHasData'));
+  }
   enableSync(db, state.user.uid);
   setSyncState(db, 'email', state.user.email);
   patch({ gate: null, sync: syncStatus(db) });
@@ -625,8 +638,6 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
   try {
     onProgress?.('جاري حذف بياناتك من السحابة');
     // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
-    // ملفات المنشأة في الخادم مع صفوفها
-    await deleteOrgFiles(uid, onProgress);
     // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
     const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.idToken() };
     const mem = readMembership(db);
@@ -635,12 +646,16 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
       await chatForgetMe(chatS, mem.org).catch(() => {});
       // ومستند عضويته في منشأة المالك (اسمه وجواله وهويته) يُحذف معه · محاولة: عضوٌ أُزيل لا مستند له (دراسة القائم)
       await leaveOrg(new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: mem.org }), mem.org, mem.uid).catch(() => {});
-    } else await chatPurgeOrg(chatS, uid);
-    for (const remote of [
+    }
+    // المالك: الملفات والمحادثات كلها والمنشأة والمسار القديم بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨)
+    const remotes = [
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() }),
-    ]) {
-      await remote.deleteAllData((n) => onProgress?.('جاري حذف بياناتك من السحابة · ' + n));
+    ];
+    if (mem) {
+      for (const remote of remotes) await remote.deleteAllData((n) => onProgress?.('جاري حذف بياناتك من السحابة · ' + n));
+    } else {
+      await deleteOwnerCloud({ remotes, chat: chatS, org: uid, files: orgFilesTarget(uid) }, onProgress);
     }
     onProgress?.('جاري حذف نسخك على Google Drive');
     await deleteAllAppDataFiles(driveIO, await s.driveToken());
@@ -752,11 +767,9 @@ export async function wipeEverything(db: AppDB, onProgress?: (m: string) => void
     if (cloud) {
       const sess = s!;
       const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.idToken(), org: user!.uid });
-      epoch = await wipeOrgCloud(remote, user!.uid, onProgress);
-      // المسح يشمل المحادثة (قرار المالك 2026-10-07: #28)
-      // الأعضاء والدعوات باقون بعد المسح · فيبقى الدليل والإشراف (التحقق ق٢)
-      await chatPurgeOrg({ projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.idToken() }, user!.uid, { keepDirectory: true });
-      await deleteOrgFiles(user!.uid, onProgress);
+      // الصفوف والمحادثات وملفات التخزين بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨ · قرار المالك #28)
+      epoch = await wipeCloud({ remote, chat: { projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.idToken() },
+        org: user!.uid, files: orgFilesTarget(user!.uid) }, onProgress);
     }
     await wipeLocal(db, onProgress, safety);
     if (epoch !== null) {
@@ -1048,8 +1061,8 @@ export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?:
   // الملفات في الخادم: نسخة Drive للبيانات وقائمة الملفات وبصماتها، ومعها ما لم يُرفع بعد · فتصير صغيرة وسريعة
   const manifest = await createBackup(env, out, onProgress, { signal, dataOnly: filesCloudOn() });
   try {
-    // نسخة Drive تُشفَّر أيضاً إن وُضعت كلمة مرور النسخ
-    const pw = await getBackupPassword();
+    // نسخة Drive تُشفَّر أيضاً إن وُضعت كلمة مرور النسخ · ووُضعت وتعذّرت قراءتها: لا رفع (ثالثاً أ ٩)
+    const pw = await backupPasswordForSealing();
     if (pw) await sealBackupFile(env, out, pw, onProgress);
     throwIfCancelled(signal);
     const token = await driveToken();
@@ -1218,18 +1231,11 @@ export const fileCacheUsage = (db: DB) => cacheUsage(db);
 export const clearFileCacheNow = (db: DB) => clearCache(appFilesEnv(db));
 
 /** المسح الشامل وحذف الحساب: ملفات المنشأة في الخادم تُحذف مع صفوفها · المالك وحده */
-async function deleteOrgFiles(org: string, onProgress?: (m: string) => void): Promise<number> {
+/** هدف ملفات المنشأة في التخزين · null بلا تخزين ملفات أو بلا جلسة */
+function orgFilesTarget(org: string): CloudFiles | null {
   const fc = filesCloudConfig();
   const s = getSession();
-  if (!fc || !s) return 0;
+  if (!fc || !s) return null;
   const sess = s;
-  const t = { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.idToken() };
-  const names = await listObjects(storageIO, t, filesPrefix(org));
-  let n = 0;
-  for (const name of names) {
-    await deleteObject(storageIO, t, name);
-    n++;
-    onProgress?.('جاري حذف الملفات من الخادم · ' + n + ' من ' + names.length);
-  }
-  return n;
+  return { io: storageIO, t: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.idToken() } };
 }

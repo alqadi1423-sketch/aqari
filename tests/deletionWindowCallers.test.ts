@@ -22,10 +22,13 @@ function enclosing(src: string, at: number): string {
 // ما يفتح النافذة ← من يجوز أن يستدعيه
 const ALLOWED: Record<string, string[]> = {
   openDeletionWindow: ['chatPurgeOrg'],
-  chatPurgeOrg: ['deleteMyAccount', 'wipeEverything'],
-  deleteAllData: ['deleteMyAccount'],
+  // وخطوات السحابة في services/cloudWipe.ts يختبرها المحاكي كما تجري (المراجعات الخارجية «ثالثاً أ ٨»)
+  chatPurgeOrg: ['wipeCloud', 'deleteOwnerCloud'],
+  deleteAllData: ['deleteMyAccount', 'deleteOwnerCloud'],
   deleteRowsOnly: ['wipeOrgCloud'],
-  wipeOrgCloud: ['wipeEverything'],
+  wipeOrgCloud: ['wipeCloud'],
+  wipeCloud: ['wipeEverything'],
+  deleteOwnerCloud: ['deleteMyAccount'],
 };
 
 test('نافذة الحذف لا تُفتح إلا من حذف الحساب أو المسح الشامل', () => {

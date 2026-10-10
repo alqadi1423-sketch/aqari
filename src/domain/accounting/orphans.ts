@@ -80,7 +80,7 @@ export function markedNetOn(db: DB, account: string): number {
  * جهاز العضو نسخته جزئية بصلاحيته: تصله قيود عقاره ولا تصله مستندات أقسامٍ ليست له · فلا يُحكم فيه بغياب المستند
  * (التحقق المستقل من f07ad73: كان يُظهر «عكس القيد» لسداد فاتورة وإهلاك أصل، وفحص المطابقة ٧ أحمر)
  */
-function memberDevice(db: DB): boolean {
+export function memberDevice(db: DB): boolean {
   try { return !!db.get(`SELECT 1 FROM sync_state WHERE k = 'membership' AND v IS NOT NULL`); } catch { return false; }
 }
 

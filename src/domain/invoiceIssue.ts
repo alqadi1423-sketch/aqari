@@ -7,7 +7,7 @@
  * والحالتان (المحجوز وما ينتظر الإصدار) تخصّان التثبيت: تبقيان مع المسح ولا تأتيان مع نسخة مستعادة.
  */
 import type { DB } from '../db/adapter';
-import { localMaxNumber } from './numbering';
+import { localMaxNumber, FirstIssueByOwnerError } from './numbering';
 import {
   saveInvoice, setInvoiceStatus, needsIssueNumber, invoiceNoFor, isTempInvoiceNo, saveCreditNote, type InvoiceInput, type CreditNoteInput,
 } from './invoices';
@@ -52,8 +52,10 @@ export async function saveInvoiceIssued(
   let seq: number;
   try {
     seq = await reserveSeq(db, src);
-  } catch {
+  } catch (e) {
     const id = saveInvoice(db, input, 'مسودة', existingId);
+    // أول فاتورة بعد التفعيل للمالك: تُحفظ مسودة بلا انتظار، ويصل العضوَ السببُ (قرار المالك على #55)
+    if (e instanceof FirstIssueByOwnerError) throw e;
     setPending(db, [...pendingIssues(db).filter((x) => x !== id), id]);
     return { id, pending: true };
   }
@@ -75,7 +77,8 @@ export async function setInvoiceStatusIssued(
   let seq: number;
   try {
     seq = await reserveSeq(db, src);
-  } catch {
+  } catch (e) {
+    if (e instanceof FirstIssueByOwnerError) throw e;
     setPending(db, [...pendingIssues(db).filter((x) => x !== id), id]);
     return { id, pending: true };
   }
@@ -101,7 +104,14 @@ export async function issuePendingInvoices(db: DB, src: InvoiceNumberSource): Pr
     // تاريخها في ربعٍ قُدِّم إقراره بعد حفظها: لا تصدر فيه، وتبقى ظاهرةً للمستخدم يغيّر تاريخها، ولا توقف ما بعدها (التحقق المستقل)
     const issue = db.get<{ issue: string }>(`SELECT issue FROM invoices WHERE id = ?`, [id])?.issue;
     if (issue && isFiledDate(db, issue)) continue;
-    const r = await setInvoiceStatusIssued(db, src, id, 'مستحقة');
+    let r: IssueResult;
+    try {
+      r = await setInvoiceStatusIssued(db, src, id, 'مستحقة');
+    } catch (e) {
+      // أول فاتورة بعد التفعيل للمالك: تبقى منتظرةً حتى يصدرها، ولا توقف ما بعدها
+      if (e instanceof FirstIssueByOwnerError) break;
+      throw e;
+    }
     if (r.pending) break;
     issued++;
   }

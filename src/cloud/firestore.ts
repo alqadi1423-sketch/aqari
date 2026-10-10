@@ -6,7 +6,7 @@
  * تبقى صحيحة لا كسرية في Firestore كما هي في القاعدة المحلية.
  */
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, WriteResult } from '../sync/types';
-import { planBlocks, planInvoiceSeq, type BlockRequest, type ReservedBlock } from '../domain/numbering';
+import { planBlocks, planInvoiceSeq, FirstIssueByOwnerError, type BlockRequest, type ReservedBlock } from '../domain/numbering';
 import type { DB } from '../db/adapter';
 import { OWNER_ACCESS, type Access } from '../domain/access/access';
 import { annotate as aclAnnotate, hiddenColumns } from '../sync/acl';
@@ -58,6 +58,11 @@ export function docToFields(d: RemoteDoc, sv: number | null = null): Record<stri
   const f: Record<string, unknown> = { t: d.t, k: d.k, d: d.d, u: d.u, dev: d.dev, del: d.del };
   if (sv != null && d.g) f.sv = sv;
   if (d.lines) f.lines = d.lines;
+  // مجموعا مدين القيد ودائنه بالهللة (المراجعات الخارجية «ثالثاً أ ٥») · القواعد تشترط تساويهما مع sv · يصطادان خطأ الجهاز لا المهاجم
+  if (sv != null && d.g && d.t === 'journal_entries' && !d.del && d.lines) {
+    f.dr = d.lines.reduce((s, l) => s + Number(l.debit_halalas ?? 0), 0);
+    f.cr = d.lines.reduce((s, l) => s + Number(l.credit_halalas ?? 0), 0);
+  }
   // حقول الرؤية في المنشأة وحدها (sync/acl.ts)
   if (d.g) f.g = d.g;
   if (d.pids) f.pids = d.pids;
@@ -111,6 +116,8 @@ export interface FirestoreOptions {
 
 /** أقصى كتابات الالتزام الواحد (حدّ Firestore التاريخي ٥٠٠ · دراسة ٨) */
 export const MAX_COMMIT_WRITES = 500;
+/** أقصى طلبات الكتابة لدفعةٍ واحدة حين تُقسم عند الرفض (المراجعات الخارجية «ثالثاً أ ١٠») */
+export const MAX_SPLIT_REQUESTS = 64;
 
 export class FirestoreRemote implements RemoteStore {
   private root: string;
@@ -175,13 +182,24 @@ export class FirestoreRemote implements RemoteStore {
   }
 
   async write(docs: RemoteDoc[]): Promise<WriteResult[]> {
+    return this.writeWithin(docs, { left: MAX_SPLIT_REQUESTS });
+  }
+
+  /**
+   * الكتابة بميزانية طلبات (المراجعات الخارجية «ثالثاً أ ١٠»): التقسيم عند الرفض لا يتجاوز MAX_SPLIT_REQUESTS طلباً للدفعة،
+   * وما بعدها يعود مرفوضاً لهذه الدورة فيبقى في الطابور ويُعاد في التالية
+   */
+  private async writeWithin(docs: RemoteDoc[], budget: { left: number }): Promise<WriteResult[]> {
     if (!docs.length) return [];
-    // سقف ٥٠٠ كتابة للالتزام (دراسة ٨ · قرار المالك 2026-10-09): الصف وإسقاطاته معاً، فتُقسم الدفعة بالصفوف لا بالكتابات
-    const writes = docs.reduce((s, d) => s + 1 + (d.companions?.length ?? 0), 0);
-    if (writes > MAX_COMMIT_WRITES && docs.length > 1) {
+    if (budget.left <= 0) return docs.map(() => ({ ok: false, code: 'SPLIT_LIMIT' }));
+    const split = async () => {
       const mid = Math.ceil(docs.length / 2);
-      return [...(await this.write(docs.slice(0, mid))), ...(await this.write(docs.slice(mid)))];
-    }
+      return [...(await this.writeWithin(docs.slice(0, mid), budget)), ...(await this.writeWithin(docs.slice(mid), budget))];
+    };
+    // سقف ٥٠٠ كتابة للالتزام (دراسة ٨ · قرار المالك 2026-10-09): الصف وإسقاطاته معاً، فتُقسم الدفعة بالصفوف لا بالكتابات
+    const writes = docs.reduce((n, d) => n + 1 + (d.companions?.length ?? 0), 0);
+    if (writes > MAX_COMMIT_WRITES && docs.length > 1) return split();
+    budget.left--;
     try {
       const t0 = Date.now();
       const res = await this.call(`${this.root}:commit`, {
@@ -201,16 +219,12 @@ export class FirestoreRemote implements RemoteStore {
       return docs.map(() => ({ ok: true, code: 'OK' }));
     } catch (e) {
       // ٤٠٠ (التزامٌ أكبر مما يقبله الخادم) يُقسم كما يُقسم ٤٠٣ (قرار المالك 2026-10-09) · والصف الواحد بـ٤٠٠ خطأٌ حقيقي
-      if (e instanceof FirestoreHttpError && e.status === 400 && docs.length > 1) {
-        const mid = Math.ceil(docs.length / 2);
-        return [...(await this.write(docs.slice(0, mid))), ...(await this.write(docs.slice(mid)))];
-      }
+      if (e instanceof FirestoreHttpError && e.status === 400 && docs.length > 1) return split();
       // الصف الواحد بـ٤٠٠ مرفوضٌ وحده ويبقى في الطابور بسببه، فلا يوقف ما بعده (التحقق المستقل من c789999)
       if (e instanceof FirestoreHttpError && e.status === 400) return [{ ok: false, code: 'INVALID_ARGUMENT', message: e.message }];
       if (!(e instanceof FirestoreHttpError) || e.status !== 403) throw e;
       if (docs.length === 1) return [{ ok: false, code: 'PERMISSION_DENIED', message: e.message }];
-      const mid = Math.ceil(docs.length / 2);
-      return [...(await this.write(docs.slice(0, mid))), ...(await this.write(docs.slice(mid)))];
+      return split();
     }
   }
 
@@ -259,7 +273,11 @@ export class FirestoreRemote implements RemoteStore {
 
   /** رقم الفاتورة الضريبية التالي · العدّاد يتقدم واحداً فلا فجوة */
   async takeInvoiceSeq(floor: number): Promise<number> {
-    return this.bumpCounters((cur) => planInvoiceSeq(cur, floor));
+    return this.bumpCounters((cur) => {
+      // أول رقمٍ بعد التفعيل للمالك · والقواعد ترفضه من العضو (قرار المالك على #55)
+      if (this.memberMode && !Number.isInteger(cur.INV)) throw new FirstIssueByOwnerError();
+      return planInvoiceSeq(cur, floor);
+    });
   }
 
   /**

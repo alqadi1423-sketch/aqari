@@ -4,7 +4,7 @@
  *  #٤١ الدعوة تُقرأ وتُحذف بإيميلٍ متحقَّق وحده
  */
 import { FirestoreRemote, encodeFields } from '@/cloud/firestore';
-import { removeMember, acceptInvite, sendInvite, ownOrgExists } from '@/services/org';
+import { removeMember, acceptInvite, sendInvite, ownOrgExists, localBindAllowed } from '@/services/org';
 import { SCHEMA_VERSION } from '@/db/schema';
 
 const HOST = process.env.FIRESTORE_EMULATOR_HOST;
@@ -67,6 +67,9 @@ d('الدعوات (مراجعة التثبيت #36 و#41)', () => {
     expect(await ownOrgExists(remote('U-FRESH', 'fresh-x@example.test'), 'U-FRESH')).toBe(false);
     expect(await put(`orgs/${ORG}/meta/devices`, { letters: {} }, tok)).toBe(200);
     expect(await ownOrgExists(owner, ORG)).toBe(true);
+    // «ثالثاً أ ١١»: بيانات جهازٍ عمل بلا حساب لا تُدمج في منشأةٍ قائمة (تتكرر أرقامه) · وتُدمج في حسابٍ بلا منشأة
+    expect(await localBindAllowed(owner, ORG)).toBe(false);
+    expect(await localBindAllowed(remote('U-FRESH', 'fresh-x@example.test'), 'U-FRESH')).toBe(true);
   });
 
   test('#٤١ الدعوة لا تُقرأ ولا تُحذف بإيميلٍ غير متحقَّق', async () => {

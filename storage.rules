@@ -29,6 +29,21 @@ service firebase.storage {
     function orgWideTokens() {
       return ['props|*', 'contracts|*', 'tenants|*', 'collect|*', 'deposits|*', 'reservations|*', 'claims|*', 'invoices|*', 'purchases|*', 'maintenance|*', 'handover|*', 'banks|*', 'ledger|*', 'reports|*', 'library|*', 'company|*', 'audit|*', 'assets|*', 'admin|*'];
     }
+    // رمزٌ يضيفه العضو إلى ملف (المراجعات الخارجية «ثالثاً أ ١» · قرار المالك 2026-10-09): قسمٌ له فيه «إدخال» فأعلى، وعقارٌ
+    // من عقاراته (أو كلها له)، أو «@» لقرّاء كل العقارات في قسمٍ يكتب فيه (مرفقه في قسمه يحمله) · ولا «*» ولا قسمٌ غير معروف
+    function tokOk(org, t) {
+      let m = firestore.get(memberDoc(org)).data;
+      let parts = t.split('[|]');
+      return parts.size() == 2 && lvl(org, parts[0]) >= 2
+        && (parts[1] == '@' || (parts[1] != '*' && (m.all == true || parts[1] in m.props)));
+    }
+    // لا تمرّ القواعد على قائمة · فالمضاف ستة رموز على الأكثر في التعديل الواحد، ويُفحص كلٌّ بموضعه (والعميل يضيفها دفعاتٍ)
+    function addedOk(org, added) {
+      return added.size() <= 6
+        && (added.size() < 1 || tokOk(org, added[0])) && (added.size() < 2 || tokOk(org, added[1]))
+        && (added.size() < 3 || tokOk(org, added[2])) && (added.size() < 4 || tokOk(org, added[3]))
+        && (added.size() < 5 || tokOk(org, added[4])) && (added.size() < 6 || tokOk(org, added[5]));
+    }
     function tokens(md) {
       return md != null && 'g' in md && md.g is string ? md.g.split(',') : [];
     }
@@ -48,7 +63,8 @@ service firebase.storage {
           && request.resource.md5Hash == resource.md5Hash
           && request.resource.metadata.md5 == resource.metadata.md5
           && tokens(request.resource.metadata).hasAll(tokens(resource.metadata))
-          && !tokens(request.resource.metadata).removeAll(tokens(resource.metadata)).hasAny(orgWideTokens()));
+          && !tokens(request.resource.metadata).removeAll(tokens(resource.metadata)).hasAny(orgWideTokens())
+          && addedOk(org, tokens(request.resource.metadata).removeAll(tokens(resource.metadata))));
       allow delete: if isOwner(org);
     }
 

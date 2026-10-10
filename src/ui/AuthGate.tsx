@@ -135,7 +135,10 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
       return (
         <Shell>
           <Note>على هذا الجهاز بيانات من إصدار سابق لم تُربط بأي حساب.</Note>
-          <BtnPrimary title={'اربطها بحساب ' + email} loading={busy} onPress={() => run(() => bindUnboundToAccount(db), 'تعذّر الربط', 'الدخول')} />
+          {/* لحسابه منشأةٌ قائمة: لا ربط (تتكرر أرقام الجهاز فيها) · الزر غير المسموح لا يظهر، وسببه ظاهر (ثالثاً أ ١١) */}
+          {cloud.ownOrg ? <Note>{t('bind.orgHasData')}</Note> : (
+            <BtnPrimary title={'اربطها بحساب ' + email} loading={busy} onPress={() => run(() => bindUnboundToAccount(db), 'تعذّر الربط', 'الدخول')} />
+          )}
           <View style={{ marginTop: 10 }}>
             <BtnGhost title="ليست لي · أبقِها على الجهاز وافتح بيانات حسابي" onPress={() => run(() => keepUnboundAside(db), 'تعذّر فتح الحساب', 'الدخول')} />
           </View>

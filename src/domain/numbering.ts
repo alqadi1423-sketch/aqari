@@ -1,3 +1,4 @@
+import { t } from '../i18n';
 /**
  * ترقيم المستندات بين الأجهزة (قرار المالك ٢٠٢٦-١٠-٠٥):
  *  - القيود والعقود والمشتريات: كتل أرقام يحجزها كل جهاز من عدّاد السحابة (meta/counters)، بلا لاحقة،
@@ -113,6 +114,14 @@ export function planBlocks(cur: Record<string, number>, req: BlockRequest[]): { 
     out.push({ series: r.series, lo: base + 1, hi: base + r.size });
   }
   return { next, out };
+}
+
+/**
+ * أول فاتورة ضريبية بعد التفعيل يصدرها المالك (قرار المالك 2026-10-09 على #55): العضو لا يُنشئ أول رقمٍ في العدّاد ·
+ * ويُعرض له السبب صريحاً، وفاتورته تبقى مسودة
+ */
+export class FirstIssueByOwnerError extends Error {
+  constructor() { super(t('invoice.firstIssueOwner')); this.name = 'FirstIssueByOwnerError'; }
 }
 
 /** رقم الفاتورة التالي على العدّاد · بعد أعلى ما فيه وما يعرفه الجهاز، بلا فجوة */

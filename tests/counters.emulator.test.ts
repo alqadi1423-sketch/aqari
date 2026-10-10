@@ -24,6 +24,18 @@ const put = async (path: string, data: Record<string, unknown>, uid: string) => 
 const member = (perm: Record<string, number>) => ({ email: 'm@example.test', perm, all: true, props: [], tokens: [], orgName: 'منشأة مصطنعة' });
 const C = `orgs/${ORG}/meta/counters`;
 
+d('أول فاتورة ضريبية بعد التفعيل من المالك (قرار المالك 2026-10-09 على #55)', () => {
+    const ORG2 = 'CNTOWNER2';
+    const C2 = `orgs/${ORG2}/meta/counters`;
+    test('العضو لا يُنشئ أول رقم فاتورة · والمالك يُنشئه ثم يتابع العضو بواحد', async () => {
+      expect(await put(`orgs/${ORG2}/members/U-INV`, member({ invoices: 3 }), ORG2)).toBe(200);
+      expect(await put(C2, { JE: 10 }, ORG2)).toBe(200);
+      expect(await put(C2, { JE: 10, INV: 1 }, 'U-INV')).toBe(403);
+      expect(await put(C2, { JE: 10, INV: 1 }, ORG2)).toBe(200);
+      expect(await put(C2, { JE: 10, INV: 2 }, 'U-INV')).toBe(200);
+    });
+  });
+
 d('عدّاد الترقيم (مراجعة التثبيت #55)', () => {
   beforeAll(async () => {
     await fetch(`http://${HOST}/emulator/v1/projects/${PROJECT}/databases/(default)/documents`, { method: 'DELETE' });
@@ -44,6 +56,10 @@ d('عدّاد الترقيم (مراجعة التثبيت #55)', () => {
 
   test('قفزة العضو في غير INV محدودة · والمالك كما كان', async () => {
     expect(await put(C, { JE: 510 + 200000, EJ: 0, PUR: 0, INV: 6 }, 'U-VIEW')).toBe(403);
-    expect(await put(C, { JE: 510, EJ: 0, PUR: 0, INV: 20 }, ORG)).toBe(200);
+    // سقف القفزة حجم كتلة السلسلة (المراجعات الخارجية «ثالثاً أ ٧»): القيود ٥٠٠، والحرفي ٥٠، والمشتريات ١٠٠
+    expect(await put(C, { JE: 510 + 501, EJ: 0, PUR: 0, INV: 6 }, 'U-VIEW')).toBe(403);
+    expect(await put(C, { JE: 510, EJ: 51, PUR: 0, INV: 6 }, 'U-VIEW')).toBe(403);
+    expect(await put(C, { JE: 510, EJ: 50, PUR: 100, INV: 6 }, 'U-VIEW')).toBe(200);
+    expect(await put(C, { JE: 510, EJ: 50, PUR: 100, INV: 20 }, ORG)).toBe(200);
   });
 });

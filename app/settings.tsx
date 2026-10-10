@@ -66,7 +66,7 @@ import { reviewData } from '../src/domain/backup/checks';
 import { useAccess } from '../src/ui/access';
 import { canView, isAdmin } from '../src/domain/access/access';
 import { LEAFLET_VERSION, LEAFLET_LICENSE } from '../src/ui/leafletBundle';
-import { getBackupPassword, setBackupPassword, clearBackupPassword, MIN_PASSWORD } from '../src/services/backupPassword';
+import { getBackupPassword, backupPasswordState, setBackupPassword, clearBackupPassword, MIN_PASSWORD } from '../src/services/backupPassword';
 import { PasswordRequiredError } from '../src/domain/backup/encryption';
 import { pinWidget } from '../src/services/intents';
 import type { DriveBackup } from '../src/cloud/drive';
@@ -194,7 +194,9 @@ export default function Settings() {
   const [keptCancel, setKeptCancel] = useState<{ id: string; no: string } | null>(null);
   // كلمة مرور النسخ · مفعّلة أم لا (القيمة نفسها لا تُقرأ إلى الواجهة)
   const [pwOn, setPwOn] = useState(false);
-  useEffect(() => { getBackupPassword().then((p) => setPwOn(!!p)).catch(() => {}); }, []);
+  // وُضعت وتعذّرت قراءتها: تظهر كذلك، ولا تصدير ولا رفع حتى تُوضع من جديد أو تُزال (ثالثاً أ ٩)
+  const [pwLost, setPwLost] = useState(false);
+  useEffect(() => { backupPasswordState().then((st) => { setPwOn(st !== 'off'); setPwLost(st === 'lost'); }).catch(() => {}); }, []);
   const [pwEdit, setPwEdit] = useState(false);
   const [pw1, setPw1] = useState('');
   const [pw2, setPw2] = useState('');
@@ -702,7 +704,7 @@ export default function Settings() {
           <View style={{ flex: 1 }}><BtnPrimary title="النسخ الاحتياطي" onPress={doBackup} loading={busy} /></View>
           <View style={{ flex: 1 }}><BtnGhost title="استعادة من نسخة" onPress={doRestore} disabled={busy} /></View>
         </Row>
-        <ValueRow icon="lock" title="كلمة مرور النسخ" value={pwOn ? 'مفعّلة' : 'غير مفعّلة'}
+        <ValueRow icon="lock" title="كلمة مرور النسخ" value={pwLost ? t('backup.passwordLostShort') : pwOn ? 'مفعّلة' : 'غير مفعّلة'}
           onPress={() => { setPw1(''); setPw2(''); setPwEdit(true); }} />
         <ValueRow icon="bell" title="التذكير الأسبوعي" value={settings.backupWeekly ? 'مفعّل' : 'مطفأ'}
           onPress={() => openChoice('التذكير الأسبوعي بالتصدير', [[1, 'مفعّل'], [0, 'مطفأ']], settings.backupWeekly ? 1 : 0,
@@ -978,6 +980,7 @@ export default function Settings() {
       />
 
       <Sheet visible={pwEdit} onClose={() => setPwEdit(false)} title={pwOn ? 'تغيير كلمة مرور النسخ' : 'كلمة مرور النسخ'}>
+        {pwLost ? <Note tone="danger">{t('backup.passwordLost')}</Note> : null}
         <Note tone="danger">
           إن نسيت كلمة المرور فلا تُفتح النسخ المشفّرة بها أبداً · لا منّا ولا من غيرنا، فلا مفتاح خلفي. اكتبها في مكان آمن خارج الهاتف.
         </Note>
@@ -988,7 +991,7 @@ export default function Settings() {
         <Field label="أعد كتابتها" value={pw2} onChange={setPw2} secure ltr error={!!pw2 && pw2 !== pw1} />
         {pw1.length >= MIN_PASSWORD && pw1 === pw2 ? (
           <BtnPrimary title="احفظ كلمة المرور" onPress={async () => {
-            try { await setBackupPassword(pw1); setPwOn(true); setPwEdit(false); toast('حُفظت · النسخ القادمة مشفّرة'); }
+            try { await setBackupPassword(pw1); setPwOn(true); setPwLost(false); setPwEdit(false); toast('حُفظت · النسخ القادمة مشفّرة'); }
             catch (e) { reportFailure({ title: 'تعذّر حفظ كلمة المرور', e }); }
           }} />
         ) : null}
@@ -1000,7 +1003,7 @@ export default function Settings() {
               tone: 'danger',
               actions: [
                 { label: 'تراجع', variant: 'ghost' },
-                { label: 'أزل', variant: 'primary', onPress: async () => { await clearBackupPassword(); setPwOn(false); setPwEdit(false); toast('أُزيلت كلمة مرور النسخ'); } },
+                { label: 'أزل', variant: 'primary', onPress: async () => { await clearBackupPassword(); setPwOn(false); setPwLost(false); setPwEdit(false); toast('أُزيلت كلمة مرور النسخ'); } },
               ],
             })} />
           </View>

@@ -122,15 +122,21 @@ export async function uploadObject(
 }
 
 /** يضمّ رموز رؤيةٍ جديدة إلى ملفٍ قائم (بصمةٌ رُبطت بجهةٍ أخرى) · القواعد لا تجيز إلا الزيادة */
+/** أقصى ما يُضاف من رموز في تعديلٍ واحد · القواعد تفحص كل رمزٍ مضاف بموضعه (storage.rules: addedOk) */
+export const MAX_TOKENS_PER_PATCH = 6;
+
 export async function addTokens(io: StorageIO, t: StorageTarget, name: string, current: RemoteFile, g: string[]): Promise<void> {
-  const merged = [...new Set([...current.g, ...g])].sort();
-  if (merged.length === current.g.length) return;
-  const res = await io.fetch(objUrl(t, name), {
-    method: 'PATCH',
-    headers: await auth(t, { 'Content-Type': 'application/json; charset=utf-8' }),
-    body: JSON.stringify({ metadata: { g: merged.join(',') } }),
-  });
-  if (!res.ok) throw failure(res.status, 'تحديث رؤية الملف');
+  const missing = [...new Set(g)].filter((x) => !current.g.includes(x)).sort();
+  let have = [...current.g];
+  for (let i = 0; i < missing.length; i += MAX_TOKENS_PER_PATCH) {
+    have = [...new Set([...have, ...missing.slice(i, i + MAX_TOKENS_PER_PATCH)])].sort();
+    const res = await io.fetch(objUrl(t, name), {
+      method: 'PATCH',
+      headers: await auth(t, { 'Content-Type': 'application/json; charset=utf-8' }),
+      body: JSON.stringify({ metadata: { g: have.join(',') } }),
+    });
+    if (!res.ok) throw failure(res.status, 'تحديث رؤية الملف');
+  }
 }
 
 /** تنزيل ملف إلى مسار · المطابقة بالبصمة على من ينادي */
