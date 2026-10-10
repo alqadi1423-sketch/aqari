@@ -43,8 +43,9 @@ jobs:
       - name: فحص الأنواع
         run: npx tsc --noEmit
 
+      # firebase-tools من package-lock بإصداره المثبَّت لا من الشبكة وقت التشغيل (المراجعة الخارجية ٧ · النتيجة ١٤)
       - name: الاختبارات كاملة مع محاكي Firestore
-        run: npx --yes firebase-tools@15.32.1 emulators:exec --only firestore,storage --project demo-aqari "npx jest -i --json --outputFile=jest-results.json"
+        run: npx firebase emulators:exec --only firestore,storage --project demo-aqari "npx jest -i --json --outputFile=jest-results.json"
 
       - name: الخلاصة
         if: always()
@@ -54,16 +55,20 @@ jobs:
             let r = {};
             try { r = JSON.parse(fs.readFileSync("jest-results.json", "utf8")); } catch {}
             const failed = (r.testResults || []).filter((t) => t.status !== "passed").map((t) => t.name.replace(process.cwd() + "/", ""));
+            // المعلّق فشل: اختبار المحاكي يُعلَّق بصمت حين يغيب متغيره (المراجعة الخارجية ٧ · النتيجة ٣٢)
+            const pending = r.numPendingTests ?? 0;
+            const ok = r.success === true && pending === 0 && (r.numTotalTests ?? 0) > 0;
             const lines = [
               "commit " + process.env.GITHUB_SHA,
               "run " + process.env.GITHUB_SERVER_URL + "/" + process.env.GITHUB_REPOSITORY + "/actions/runs/" + process.env.GITHUB_RUN_ID,
               "os " + process.env.RUNNER_OS + " · node " + process.version + " · TZ " + process.env.TZ,
-              "success " + (r.success === true),
+              "success " + ok,
               "suites " + (r.numPassedTestSuites ?? "?") + " passed / " + (r.numTotalTestSuites ?? "?") + " total",
               "tests " + (r.numPassedTests ?? "?") + " passed · " + (r.numFailedTests ?? "?") + " failed · " + (r.numPendingTests ?? "?") + " skipped / " + (r.numTotalTests ?? "?") + " total",
               ...failed.map((f) => "failed-suite " + f),
             ];
             fs.writeFileSync("result.txt", lines.join("\n") + "\n");
+            if (!ok) process.exit(1);
           '
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
