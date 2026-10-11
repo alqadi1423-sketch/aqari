@@ -43,7 +43,7 @@ jobs:
       - name: فحص الأنواع
         run: npx tsc --noEmit
 
-      # firebase-tools من package-lock بإصداره المثبَّت لا من الشبكة وقت التشغيل (المراجعة الخارجية ٧ · النتيجة ١٤)
+      # firebase-tools من package-lock بإصداره المثبَّت لا من الشبكة وقت التشغيل (المراجعة الخارجية ٧ · القرار ١٤ من «رابعاً»)
       - name: الاختبارات كاملة مع محاكي Firestore
         run: npx firebase emulators:exec --only firestore,storage --project demo-aqari "npx jest -i --json --outputFile=jest-results.json"
 
