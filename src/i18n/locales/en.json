@@ -691,5 +691,35 @@
   },
   "numbering": {
     "counterBehind": "This device's numbers are far ahead of the organization counter. Open the app on the owner's device to sync, then try again."
+  },
+  "lock": {
+    "title": "Aqari is locked",
+    "prompt": "Unlock Aqari",
+    "cancel": "Cancel",
+    "open": "Unlock",
+    "pinLabel": "App code",
+    "wrongPin": "Wrong code",
+    "wait": "Too many wrong attempts · try again in {{n}} seconds",
+    "noDeviceLock": "The device lock was removed or the lock setting cannot be read · confirm your Google account to open the app.",
+    "confirmAccount": "Confirm my Google account",
+    "accountMismatch": "The account signed in on this device was not confirmed",
+    "forgotPin": "Forgot the code · confirm my Google account",
+    "settingTitle": "App lock",
+    "about": "Asked when opening the app and when returning to it after the delay. It hides the screens only; your data on the device stays as it is.",
+    "off": "Off",
+    "byDevice": "Device lock",
+    "byPin": "App code",
+    "delayNow": "immediately",
+    "delayMinute": "after a minute",
+    "delayFive": "after five minutes",
+    "enableDevice": "Turn on with fingerprint or device code",
+    "noDeviceLockSet": "This device has no lock · choose an app code of 4 to 8 digits.",
+    "newPin": "App code (4 to 8 digits)",
+    "repeatPin": "Repeat it",
+    "enablePin": "Turn on with this code",
+    "currentPin": "Current code",
+    "setDelay": "Lock {{delay}}",
+    "disable": "Turn off app lock",
+    "saveFailed": "Could not save the app lock"
   }
 }

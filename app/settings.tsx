@@ -66,6 +66,7 @@ import { reviewData } from '../src/domain/backup/checks';
 import { useAccess } from '../src/ui/access';
 import { canView, isAdmin } from '../src/domain/access/access';
 import { LEAFLET_VERSION, LEAFLET_LICENSE } from '../src/ui/leafletBundle';
+import { useAppLockSetting } from '../src/ui/AppLockSettings';
 import { getBackupPassword, backupPasswordState, setBackupPassword, clearBackupPassword, MIN_PASSWORD } from '../src/services/backupPassword';
 import { PasswordRequiredError } from '../src/domain/backup/encryption';
 import { pinWidget } from '../src/services/intents';
@@ -196,6 +197,8 @@ export default function Settings() {
   const [pwOn, setPwOn] = useState(false);
   // وُضعت وتعذّرت قراءتها: تظهر كذلك، ولا تصدير ولا رفع حتى تُوضع من جديد أو تُزال (ثالثاً أ ٩)
   const [pwLost, setPwLost] = useState(false);
+  // قفل التطبيق (#51)
+  const lock = useAppLockSetting();
   useEffect(() => { backupPasswordState().then((st) => { setPwOn(st !== 'off'); setPwLost(st === 'lost'); }).catch(() => {}); }, []);
   const [pwEdit, setPwEdit] = useState(false);
   const [pw1, setPw1] = useState('');
@@ -691,6 +694,12 @@ export default function Settings() {
           </>
         )}
       </Card>
+
+      {/* قفل التطبيق لكل مستخدم على جهازه (#51) */}
+      <Card>
+        <ValueRow icon="lock" title={t('lock.settingTitle')} value={lock.value} onPress={lock.open} />
+      </Card>
+      {lock.sheet}
 
       {/* ٢ · النسخ الاحتياطي */}
       {admin ? <Card>

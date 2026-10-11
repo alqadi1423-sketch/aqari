@@ -14,6 +14,7 @@ import {
 import { AppStateProvider } from '../src/ui/store';
 import { UpgradeGate } from '../src/ui/UpgradeGate';
 import { AuthGate } from '../src/ui/AuthGate';
+import { LockGate } from '../src/ui/LockGate';
 import { RouteGuard } from '../src/ui/access';
 import { UiScaleView } from '../src/ui/UiScale';
 import { ToastProvider } from '../src/ui/Toast';
@@ -102,6 +103,8 @@ export default function RootLayout() {
         <DialogProvider>
           <StatusBar style="dark" />
           <UiScaleView>
+            {/* قفل التطبيق (#51): غطاءٌ فوق كل شيء عند التشغيل والعودة بعد مهلته · والتطبيق تحته حيٌّ كما هو */}
+            <LockGate>
             {/* الدخول إلزامي · لا شاشة من التطبيق قبل حساب (AuthGate) */}
             <AuthGate>
             {/* لحظة بدء كل لمسة تُلتقط هنا لقياس زمن الانتقال · لا تحجز اللمسة */}
@@ -118,6 +121,7 @@ export default function RootLayout() {
               </RouteGuard>
             </View>
             </AuthGate>
+            </LockGate>
           </UiScaleView>
         </DialogProvider>
         </ToastProvider>

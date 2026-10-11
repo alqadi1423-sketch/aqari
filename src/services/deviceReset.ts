@@ -12,6 +12,7 @@ import { appDataRoot, expoFs } from '../files/expoFs';
 import { migrate } from '../db/migrations';
 import { seed, ensureDeviceId } from '../db/seed';
 import { clearBackupPassword } from './backupPassword';
+import { disableLock } from './appLockService';
 
 export async function resetDeviceData(db: AppDB): Promise<void> {
   const root = appDataRoot();
@@ -28,4 +29,5 @@ export async function resetDeviceData(db: AppDB): Promise<void> {
   seed(db);
   ensureDeviceId(db);
   try { await clearBackupPassword(); } catch { /* لا كلمة */ }
+  try { await disableLock(); } catch { /* لا قفل */ }
 }

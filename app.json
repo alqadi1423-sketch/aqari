@@ -69,7 +69,13 @@
       "expo-video",
       "expo-secure-store",
       "@react-native-google-signin/google-signin",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "يستعمل عقاري بصمة الوجه لفتح التطبيق إن فعّلت قفله"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
