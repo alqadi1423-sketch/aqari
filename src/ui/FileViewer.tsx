@@ -40,6 +40,8 @@ import { cancelSource, isCancelled, progressView, progressLabel, progressLine, t
 import Pdf from 'react-native-pdf';
 import { logAudit } from '../domain/audit';
 import { reportFailure, recordFailure, copyFailureDetails, shareFailureDetails } from './failureDialog';
+// منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
+import { whilePrompting } from '../services/appLockService';
 
 export interface ViewerFile {
   attId: string;
@@ -183,7 +185,7 @@ function PdfPage({ file, width, active }: { file: ViewerFile; width: number; act
   const [report, setReport] = useState<{ full: string; saved: string | null } | null>(null);
   const openExternal = () => {
     Sharing.isAvailableAsync().then((ok) => {
-      if (ok) Sharing.shareAsync(fileUriOf(file), { mimeType: 'application/pdf', dialogTitle: file.name });
+      if (ok) whilePrompting(() => Sharing.shareAsync(fileUriOf(file), { mimeType: 'application/pdf', dialogTitle: file.name }));
     });
   };
   if (err) {
@@ -266,7 +268,7 @@ function OtherPage({ file, width }: { file: ViewerFile; width: number }) {
       <View style={{ marginTop: 16, minWidth: 200 }}>
         <BtnPrimary title="فتح بتطبيق آخر" onPress={() => {
           Sharing.isAvailableAsync().then((ok) => {
-            if (ok) Sharing.shareAsync(fileUriOf(file), { mimeType: file.mime || undefined, dialogTitle: file.name });
+            if (ok) whilePrompting(() => Sharing.shareAsync(fileUriOf(file), { mimeType: file.mime || undefined, dialogTitle: file.name }));
           });
         }} />
       </View>
@@ -336,16 +338,16 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
 
   const doShare = () => {
     Sharing.isAvailableAsync().then((ok) => {
-      if (ok) Sharing.shareAsync(uri, { mimeType: cur.mime || undefined, dialogTitle: cur.name });
+      if (ok) whilePrompting(() => Sharing.shareAsync(uri, { mimeType: cur.mime || undefined, dialogTitle: cur.name }));
     }).catch(() => toast('تعذّرت المشاركة'));
   };
 
   const doPrint = async () => {
     try {
       setBusy(true);
-      if (kind === 'pdf') await Print.printAsync({ uri });
+      if (kind === 'pdf') await whilePrompting(() => Print.printAsync({ uri }));
       else if (kind === 'image') {
-        await Print.printAsync({ html: `<body style="margin:0"><img src="${uri}" style="width:100%"></body>` });
+        await whilePrompting(() => Print.printAsync({ html: `<body style="margin:0"><img src="${uri}" style="width:100%"></body>` }));
       } else { toast('الطباعة متاحة للصور وملفات PDF'); }
     } catch { /* أغلق المستخدم حوار الطباعة */ } finally { setBusy(false); }
   };
@@ -357,7 +359,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
       // فعلى ما دون ١٣ يمرّ الحفظ بنافذة المشاركة ويختار المستخدم منها «الصور» أو مجلداً
       if (Platform.OS === 'android' && Number(Platform.Version) < 33) {
         if (!(await Sharing.isAvailableAsync())) { toast('المشاركة غير متاحة على هذا الجهاز'); return; }
-        await Sharing.shareAsync(uri, { mimeType: cur.mime || undefined, dialogTitle: 'حفظ في معرض الجهاز' });
+        await whilePrompting(() => Sharing.shareAsync(uri, { mimeType: cur.mime || undefined, dialogTitle: 'حفظ في معرض الجهاز' }));
         return;
       }
       // من أندرويد ١٣ يحفظ في المعرض بلا إذن قراءة · الطلب للكتابة وحدها

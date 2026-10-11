@@ -22,6 +22,8 @@ import { uid } from '../src/domain/ids';
 import { logAudit } from '../src/domain/audit';
 import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm } from '../src/ui/access';
+// منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
+import { whilePrompting } from '../src/services/appLockService';
 
 const OFFICIAL_DOCS: Array<{ kind: string; label: string; numberField: 'vatno' | 'cr' | null; numberLabel: string | null; expField: boolean }> = [
   { kind: 'vat_cert', label: 'شهادة الرقم الضريبي', numberField: 'vatno', numberLabel: 'الرقم الضريبي (15 رقماً)', expField: false },
@@ -77,7 +79,7 @@ function CompanyBody() {
   };
 
   const pickLogo = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'] });
+    const res = await whilePrompting(() => ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'] }));
     if (res.canceled || !res.assets?.length) return;
     const a = res.assets[0];
     try {
@@ -93,7 +95,7 @@ function CompanyBody() {
   };
 
   const uploadOfficial = async (kind: string) => {
-    const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'] });
+    const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'] }));
     if (res.canceled || !res.assets?.length) return;
     const a = res.assets[0];
     try {
@@ -233,7 +235,7 @@ function CompanyBody() {
         <DateField label="تاريخ الانتهاء" value={docExp} onChange={setDocExp} />
         <BtnGhost small icon="attach" title={docFile ? docFile.name : 'اختيار الملف'}
           onPress={async () => {
-            const res = await DocumentPicker.getDocumentAsync({});
+            const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({}));
             if (!res.canceled && res.assets?.length) {
               const a = res.assets[0];
               setDocFile({ uri: a.uri, name: a.name ?? 'ملف', mime: a.mimeType ?? '' });

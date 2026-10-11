@@ -4,6 +4,10 @@
  */
 const kv = new Map<string, string>();
 const fileState = { exists: false, throws: false };
+// ساعة الجهاز الأصلية (AqariClock.kt): منذ الإقلاع وتعدّ النوم
+const nativeClock = { ms: 1_000_000 };
+
+jest.mock('react-native', () => ({ NativeModules: { AqariClock: { elapsedRealtime: () => nativeClock.ms } } }));
 
 jest.mock('expo-secure-store', () => ({
   getItemAsync: async (k: string) => kv.get(k) ?? null,
@@ -22,9 +26,10 @@ jest.mock('expo-file-system', () => ({
 jest.mock('@/services/cipher', () => ({ deviceCipher: jest.requireActual('@/files/nodeCipher').nodeCipher }));
 jest.mock('@/i18n', () => ({ t: (k: string) => k }));
 
-import { enablePinLock, tryPin, lockMaybeOn, loadLock, disableLock, onLockChange } from '@/services/appLockService';
+import { enablePinLock, tryPin, lockMaybeOn, loadLock, disableLock, onLockChange, monoNow } from '@/services/appLockService';
+import { decideReturn } from '@/domain/appLock';
 
-beforeEach(() => { kv.clear(); fileState.exists = false; fileState.throws = false; });
+beforeEach(() => { kv.clear(); fileState.exists = false; fileState.throws = false; nativeClock.ms += 10_000_000; });
 afterEach(() => { jest.restoreAllMocks(); });
 
 test('المتحقق المستقل: تقديم ساعة الجهاز لا يُنهي انتظار المحاولات الخاطئة', async () => {
@@ -54,4 +59,24 @@ test('البوابة تُبلَّغ بكل تغيير في الإعداد (لت�
   off();
   expect(seen).toEqual([true, false]);
   expect(lockMaybeOn()).toBe(false);
+});
+
+test('المتحقق المستقل (السادسة): الساعة تعدّ نوم الجهاز · غيبة ساعتين بجهازٍ نائم وساعةٍ مُرجَعة تُقفل', () => {
+  // الساعة من AqariClock.elapsedRealtime لا من performance.now (تقف أثناء النوم)
+  expect(monoNow()).toBe(nativeClock.ms);
+  const away = { wall: 5_000_000, mono: monoNow(), prompting: false };
+  nativeClock.ms += 7_200_000; // ساعتان والجهاز نائم
+  // ساعة الجهاز أُرجعت فتبدو الغيبة ١٠٠ ثانية
+  expect(decideReturn({ on: true, delay: 300 }, true, away, away.wall + 100_000, monoNow())).toBe(true);
+  // وخروجٌ أثناء نافذةٍ مع النوم نفسه: لا إعفاء
+  expect(decideReturn({ on: true, delay: 0 }, true, { ...away, prompting: true }, away.wall + 30_000, away.mono + 7_200_000)).toBe(true);
+});
+
+test('انتظار المحاولات بالساعة الأصلية: يمضي بمضيّها ولا يمضي بساعة الجهاز', async () => {
+  await enablePinLock('4826', 0);
+  for (let i = 0; i < 5; i++) expect(await tryPin('1111')).toBe('wrong');
+  nativeClock.ms += 10_000;
+  expect(await tryPin('4826')).toBe(20_000);
+  nativeClock.ms += 20_000;
+  expect(await tryPin('4826')).toBe('ok');
 });

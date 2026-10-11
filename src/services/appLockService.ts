@@ -2,6 +2,7 @@
  * قفل التطبيق على الجهاز (#51 · المنطق في domain/appLock.ts): إعداده في المخزن الآمن، وعلامةٌ في ملفات التطبيق تقول إنه
  * مفعّل فلا يسقط بصمت إن تعذّرت قراءة المخزن (كعلامة كلمة مرور النسخ، «ثالثاً أ ٩») · وقفل الجهاز بـexpo-local-authentication
  */
+import { NativeModules } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { File, Paths } from 'expo-file-system';
@@ -86,8 +87,16 @@ export async function disableLock(): Promise<void> {
   listeners.forEach((f) => f(parseLockConfig(null, false)));
 }
 
-/** الساعة الرتيبة منذ بدء التشغيل (لا يغيّرها المستخدم) */
-export const monoNow = (): number => (globalThis.performance?.now?.() ?? 0);
+/**
+ * الساعة الرتيبة (لا يغيّرها المستخدم) · على أندرويد منذ إقلاع الجهاز وتعدّ نومه (AqariClock.kt · المتحقق المستقل، الجولة
+ * السادسة: performance.now تقف أثناء النوم) · وحيث لا تكون فـperformance.now، وإلا ساعة الجهاز فلا يدوم الانتظار أبداً
+ */
+const clock = (NativeModules.AqariClock as { elapsedRealtime(): number } | undefined) ?? null;
+export function monoNow(): number {
+  try { const v = clock?.elapsedRealtime(); if (typeof v === 'number' && Number.isFinite(v)) return v; } catch { /* التالية */ }
+  const p = globalThis.performance?.now?.();
+  return typeof p === 'number' && Number.isFinite(p) ? p : Date.now();
+}
 // وقت آخر خطأ بالساعة الرتيبة في هذا التشغيل · وبعد إعادة التشغيل يُحسب الانتظار من بدئه (domain/appLock.ts: waitLeft)
 let lastFailMono: number | null = null;
 const startMono = monoNow();

@@ -32,6 +32,8 @@ import { useLang } from '../src/i18n';
 
 import { CostCenterField } from '../src/ui/CostCenters';
 import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
+// منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
+import { whilePrompting } from '../src/services/appLockService';
 interface ClaimRow {
   id: string; contract_id: string; amount_halalas: number; reason: string; date: string;
   status: string; source: string; contract_no: string | null; tenant_name: string;
@@ -229,12 +231,12 @@ export default function Claims() {
   ), [onCollect, openEdit, onPrint, onDelete, perm.manage]);
 
   const pickInvoices = async () => {
-    const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], multiple: true });
+    const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], multiple: true }));
     if (res.canceled) return;
     setPendingFiles((p) => [...p, ...res.assets.map((a) => ({ uri: a.uri, name: a.name ?? 'ملف', mime: a.mimeType ?? '', kind: 'purchase' }))]);
   };
   const pickPhotos = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true });
+    const res = await whilePrompting(() => ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsMultipleSelection: true }));
     if (res.canceled) return;
     setPendingFiles((p) => [...p, ...res.assets.map((a) => ({ uri: a.uri, name: a.fileName ?? 'صورة.jpg', mime: a.mimeType ?? 'image/jpeg', kind: 'claim' }))]);
   };

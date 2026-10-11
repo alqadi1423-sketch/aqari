@@ -26,6 +26,8 @@ import { contractStatusLabel } from '../domain/contracts/rules';
 import { tenantStatementRows } from '../domain/statement';
 import { isTempInvoiceNo } from '../domain/invoices';
 import { receiptBlocked } from '../domain/contracts/cancelPayment';
+// منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
+import { whilePrompting } from './appLockService';
 
 export function companyInfo(db: DB): CompanyInfo {
   const co = db.get<{ name: string; vatno: string; cr: string; phone: string; address: string; vat_enabled: number }>(
@@ -67,9 +69,9 @@ export interface AttachTarget { entityType: string; entityId: string; kind: stri
 
 async function sharePdf(uri: string, title: string): Promise<void> {
   if (await Sharing.isAvailableAsync()) {
-    await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: title, UTI: 'com.adobe.pdf' });
+    await whilePrompting(() => Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: title, UTI: 'com.adobe.pdf' }));
   } else {
-    await Print.printAsync({ uri });
+    await whilePrompting(() => Print.printAsync({ uri }));
   }
 }
 

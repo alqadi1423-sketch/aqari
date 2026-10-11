@@ -20,6 +20,8 @@ import { scanContractFile } from '../services/contractScan';
 import { anchorDiagnostics } from '../domain/pdf/parseEjar';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../domain/contracts/vocab';
 import { parseEjarExtras, unitByNumber, revenueSplitOf, type EjarExtras } from '../domain/pdf/ejarExtras';
+// منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
+import { whilePrompting } from '../services/appLockService';
 export { revenueSplitOf };
 import type { ContractDraftInput } from '../domain/contracts/service';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
@@ -196,10 +198,10 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
 
   const scan = async () => {
     try {
-      const res = await DocumentPicker.getDocumentAsync({
+      const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({
         type: ['application/pdf', 'image/*'],
         copyToCacheDirectory: true,
-      });
+      }));
       if (res.canceled || !res.assets?.length) return;
       const asset = res.assets[0];
       setScanning(true);
@@ -427,7 +429,7 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
       <BtnGhost small icon="attach"
         title={state.pendingFile ? state.pendingFile.name : 'إرفاق ملف العقد الأصلي'}
         onPress={async () => {
-          const res = await DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], copyToCacheDirectory: true });
+          const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({ type: ['application/pdf', 'image/*'], copyToCacheDirectory: true }));
           if (!res.canceled && res.assets?.length) {
             const a = res.assets[0];
             set('pendingFile', { uri: a.uri, name: a.name ?? 'ملف', mime: a.mimeType ?? '' });

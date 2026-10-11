@@ -1,6 +1,8 @@
 /** مشاركة ملفات أوفيس المبنية في src/domain/officeBuild عبر حوار النظام */
 import { File, Directory, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+// منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
+import { whilePrompting } from './appLockService';
 
 /* ═══════════ المشاركة ═══════════ */
 
@@ -16,6 +18,6 @@ export async function shareOfficeFile(filename: string, bytes: Uint8Array, kind:
   if (f.exists) f.delete();
   f.write(bytes);
   if (await Sharing.isAvailableAsync()) {
-    await Sharing.shareAsync(f.uri, { mimeType: OFFICE_MIME[kind], dialogTitle: filename });
+    await whilePrompting(() => Sharing.shareAsync(f.uri, { mimeType: OFFICE_MIME[kind], dialogTitle: filename }));
   }
 }

@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { Animated, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { C, FONT_MED } from './theme';
+import { useAppLocked } from './lockState';
 
 const ToastCtx = createContext<(msg: string) => void>(() => {});
 
@@ -12,6 +13,7 @@ export function showToast(msg: string): void { imperativeToast?.(msg); }
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   // خارج شجرة التكبير · فوق شريط التبويبات وخط الإيماءة بقيم فيزيائية
   const insets = useSafeAreaInsets();
+  const appLocked = useAppLocked();
   const [msg, setMsg] = useState('');
   const opacity = useRef(new Animated.Value(0)).current;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -30,7 +32,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   return (
     <ToastCtx.Provider value={show}>
       {children}
-      <Animated.View pointerEvents="none" style={[st.toast, { opacity, bottom: insets.bottom + 90 }]}>
+      {/* لا يظهر فوق شاشة القفل (#51 · المتحقق، الجولة السادسة) */}
+      <Animated.View pointerEvents="none" style={[st.toast, { opacity, bottom: insets.bottom + 90 }, appLocked ? { display: 'none' } : null]}>
         <View style={st.dot} />
         <Text style={st.msg}>{msg}</Text>
       </Animated.View>

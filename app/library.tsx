@@ -33,6 +33,8 @@ import { useDeferredReady } from '../src/ui/useDeferredReady';
 import { Skeleton } from '../src/ui/Skeleton';
 import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm } from '../src/ui/access';
+// منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
+import { whilePrompting } from '../src/services/appLockService';
 
 const EMPTY_FILES: LibraryFile[] = [];
 
@@ -263,7 +265,7 @@ export default function Library() {
   }, [q, kind, sort, path]);
 
   const upload = async () => {
-    const res = await DocumentPicker.getDocumentAsync({ multiple: true });
+    const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({ multiple: true }));
     if (res.canceled || !res.assets?.length) return;
     let n = 0;
     for (const a of res.assets) {

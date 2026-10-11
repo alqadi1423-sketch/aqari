@@ -14,6 +14,8 @@ import { putAttachment } from '../files/store';
 import { getSetting } from '../repos/settings';
 import { stripJpegExif } from '../domain/jpegExif';
 import { fmt } from '../domain/money';
+// منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
+import { whilePrompting } from '../services/appLockService';
 
 export interface PickedFile {
   uri: string;
@@ -26,7 +28,7 @@ const VIDEO_WARN = 25 * 1024 * 1024;
 
 /** كل أنواع الملفات · لا ترشيح */
 export async function pickFile(types: string[] = ['*/*']): Promise<PickedFile | null> {
-  const res = await DocumentPicker.getDocumentAsync({ type: types, copyToCacheDirectory: true });
+  const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({ type: types, copyToCacheDirectory: true }));
   if (res.canceled || !res.assets?.length) return null;
   const a = res.assets[0];
   return { uri: a.uri, name: a.name ?? 'ملف', mime: a.mimeType ?? '' };
@@ -34,9 +36,9 @@ export async function pickFile(types: string[] = ['*/*']): Promise<PickedFile | 
 
 /** صور ومقاطع من المعرض · بلا خيار جودة = بلا إعادة ترميز، الملف يمرّ كما هو */
 export async function pickFromGallery(): Promise<PickedFile | null> {
-  const res = await ImagePicker.launchImageLibraryAsync({
+  const res = await whilePrompting(() => ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images', 'videos'],
-  });
+  }));
   if (res.canceled || !res.assets?.length) return null;
   const a = res.assets[0];
   const ext = a.uri.split('.').pop() || (a.type === 'video' ? 'mp4' : 'jpg');
@@ -51,7 +53,7 @@ export async function pickFromGallery(): Promise<PickedFile | null> {
 export async function captureWithCamera(): Promise<PickedFile | null> {
   const perm = await ImagePicker.requestCameraPermissionsAsync();
   if (!perm.granted) return null;
-  const res = await ImagePicker.launchCameraAsync({ mediaTypes: ['images', 'videos'] });
+  const res = await whilePrompting(() => ImagePicker.launchCameraAsync({ mediaTypes: ['images', 'videos'] }));
   if (res.canceled || !res.assets?.length) return null;
   const a = res.assets[0];
   return {

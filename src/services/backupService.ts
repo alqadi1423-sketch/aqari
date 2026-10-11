@@ -18,6 +18,8 @@ import { deviceCipher } from './cipher';
 import { backupPasswordForSealing } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
 import type { CancelSignal, ProgressFn } from '../domain/progress';
+// منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
+import { whilePrompting } from './appLockService';
 
 export function appBackupEnv(db: AppDB): BackupEnv {
   const root = appDataRoot();
@@ -59,7 +61,7 @@ export async function createAndShareBackup(
   // فشل المشاركة بعد نجاح النسخة لا يُحسب فشلاً للنسخة نفسها
   try {
     if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(new File(outPath).uri, { dialogTitle: 'تصدير النسخة الاحتياطية' });
+      await whilePrompting(() => Sharing.shareAsync(new File(outPath).uri, { dialogTitle: 'تصدير النسخة الاحتياطية' }));
       setSetting(db, 'lastExportAt', new Date().toISOString());
     }
   } catch { /* أُنشئت النسخة وسلِمت · المشاركة وحدها أُلغيت */ }
@@ -104,7 +106,7 @@ export async function pickAndPrepareRestore(
   // نسخةٌ بحجم الأرشيف كاملاً · فإن ضاق القرص فشل هو قبل أن يصل الدور إلى فحصنا،
   // وخرج العطل بلغةٍ أعجمية من طبقة النظام لا برسالتنا.
   await ensureFreeSpace(env);
-  const res = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
+  const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true }));
   if (res.canceled || !res.assets?.length) return null;
   onProgress?.('جاري قراءة الملف المختار');
   env.fs.mkdirp(env.tmpDir);

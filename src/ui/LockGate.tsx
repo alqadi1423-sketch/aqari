@@ -5,7 +5,8 @@
  * للجهاز قفل فتأكيد الحساب بقوقل.
  * المتحقق المستقل (الجولة الخامسة): الغطاء يظهر فور الخروج إلى الخلفية فلا يُرى المحتوى عند العودة ولا في صورة التطبيقات
  * الأخيرة ما أمكن · والقرار عند العودة فوري بآخر إعداد (لا بعد قراءةٍ غير متزامنة) وبساعتين · والنوافذ المنبثقة تختفي
- * ما دام مقفلاً أو مغطّى (ui/lockState.ts) · والخروج أثناء نافذة البصمة أو قوقل لا يُلغي القفل
+ * ما دام مقفلاً (ui/lockState.ts) · والخروج أثناء نافذة البصمة أو قوقل لا يُلغي القفل · ومنتقي الملفات والكاميرا
+ * والمشاركة والطباعة نوافذ يفتحها التطبيق وينتظرها فتُعامل معاملتها (whilePrompting)
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, View } from 'react-native';
@@ -57,7 +58,8 @@ export function LockGate({ children }: { children: React.ReactNode }) {
 
   const locked = gate !== 'open';
   const hidden = locked || cover;
-  useEffect(() => { setAppLocked(hidden); }, [hidden]);
+  // النوافذ المنبثقة تُطوى حين يُقفل فعلاً وحده: طيّها يمحو ما فيها، فلا تُطوى بكل خروجٍ قبل المهلة (المتحقق، الجولة السادسة)
+  useEffect(() => { setAppLocked(locked); }, [locked]);
   return (
     <View style={{ flex: 1 }}>
       <View style={{ flex: 1 }} importantForAccessibility={hidden ? 'no-hide-descendants' : 'auto'} accessibilityElementsHidden={hidden}>
