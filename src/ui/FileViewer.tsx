@@ -12,6 +12,7 @@ import {
   ActivityIndicator, Image, PanResponder, Text, Platform, I18nManager,
 } from 'react-native';
 import { DirView } from './DirView';
+import { useAppLocked } from './lockState';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -286,6 +287,8 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
   /** قسم الملف · الإدارة تُحسب منه (كامل) */
   section?: SectionKey;
 }) {
+  // النافذة المنبثقة فوق غطاء القفل · تختفي ما دام مقفلاً (#51 · ui/lockState.ts)
+  const appLocked = useAppLocked();
   const { db } = useApp();
   const secPerm = usePerm(section ?? 'library');
   const canManage = canManageProp && (!section || secPerm.manage);
@@ -440,7 +443,7 @@ export function FileViewer({ files, startIndex, onClose, onMutated, onEditMeta, 
   );
 
   return (
-    <Modal visible animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+    <Modal visible={!appLocked} animationType="fade" onRequestClose={onClose} statusBarTranslucent>
       <DirView>
       <View style={{ flex: 1, backgroundColor: '#14171D' }}>
         {/* الشريط العلوي */}

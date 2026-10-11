@@ -5,6 +5,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { Modal, Pressable, View, ScrollView } from 'react-native';
 import { DirView } from './DirView';
+import { useAppLocked } from './lockState';
 import { T } from './components';
 import { C, FONT_BOLD } from './theme';
 import { Text } from 'react-native';
@@ -130,6 +131,8 @@ function DialogActions({ actions, onDone, fs }: {
 
 export function DialogProvider({ children }: { children: React.ReactNode }) {
   const [spec, setSpec] = useState<DialogSpec | null>(null);
+  // النافذة المنبثقة فوق غطاء القفل · تختفي ما دام مقفلاً (#51 · ui/lockState.ts)
+  const appLocked = useAppLocked();
   const fs = useFs();
   const show = useCallback((s: DialogSpec) => setSpec(s), []);
   const close = useCallback(() => setSpec(null), []);
@@ -141,7 +144,7 @@ export function DialogProvider({ children }: { children: React.ReactNode }) {
     <Ctx.Provider value={{ show }}>
       {children}
       {spec ? (
-        <Modal visible transparent animationType="fade" onRequestClose={() => { if (!spec.locked) close(); }}>
+        <Modal visible={!appLocked} transparent animationType="fade" onRequestClose={() => { if (!spec.locked) close(); }}>
           <DirView>
           <Pressable
             style={{

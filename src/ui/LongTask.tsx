@@ -7,6 +7,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, View } from 'react-native';
 import { DirView } from './DirView';
+import { useAppLocked } from './lockState';
 import { T, BtnGhost, BtnPrimary } from './components';
 import { C, TYPE } from './theme';
 import {
@@ -39,6 +40,8 @@ export interface LongTask {
 
 export function useLongTask(): LongTask {
   const [st, setSt] = useState<TaskState | null>(null);
+  // النافذة المنبثقة فوق غطاء القفل · تختفي ما دام مقفلاً (#51 · ui/lockState.ts)
+  const appLocked = useAppLocked();
   const watch = useRef(new StallWatch());
   const ctl = useRef<{ cancel: () => void; onRetry?: () => void } | null>(null);
   const retryFlag = useRef(false);
@@ -104,7 +107,7 @@ export function useLongTask(): LongTask {
     const v = progressView(st.msg, st.info);
     const fill: `${number}%` = v.pct !== null ? `${v.pct}%` : '100%';
     element = (
-      <Modal visible transparent animationType="fade">
+      <Modal visible={!appLocked} transparent animationType="fade">
         <DirView>
         <View style={{ flex: 1, backgroundColor: 'rgba(20,23,29,0.55)', alignItems: 'center', justifyContent: 'center', padding: 28 }}>
           <View style={{ backgroundColor: '#fff', borderRadius: 14, padding: 22, minWidth: 280, alignSelf: 'stretch', alignItems: 'center', gap: 10 }}>

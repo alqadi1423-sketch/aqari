@@ -3,50 +3,67 @@
  * التطبيق تحته حيٌّ كما هو (لا يُعاد تركيبه فلا يبطؤ الرجوع) ومخفيٌّ عن قارئ الشاشة ما دام مقفلاً.
  * بقفل الجهاز (البصمة أو الوجه أو رمز الجهاز) أو برمز التطبيق · وإعدادٌ تعذّرت قراءته والقفل مُعلَّم: قفل الجهاز، فإن لم يكن
  * للجهاز قفل فتأكيد الحساب بقوقل.
+ * المتحقق المستقل (الجولة الخامسة): الغطاء يظهر فور الخروج إلى الخلفية فلا يُرى المحتوى عند العودة ولا في صورة التطبيقات
+ * الأخيرة ما أمكن · والقرار عند العودة فوري بآخر إعداد (لا بعد قراءةٍ غير متزامنة) وبساعتين · والنوافذ المنبثقة تختفي
+ * ما دام مقفلاً أو مغطّى (ui/lockState.ts) · والخروج أثناء نافذة البصمة أو قوقل لا يُلغي القفل
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, View } from 'react-native';
 import { useLang } from '../i18n';
 import { T, BtnPrimary, BtnGhost, Field, Note } from './components';
 import { C, TYPE } from './theme';
-import { lockOnReturn, pinShapeOk, type LockConfig } from '../domain/appLock';
-import { lockMaybeOn, loadLock, askDevice, deviceLockAvailable, tryPin, promptActive, whilePrompting } from '../services/appLockService';
+import { decideReturn, pinShapeOk, type Away, type LockConfig } from '../domain/appLock';
+import {
+  lockMaybeOn, loadLock, askDevice, deviceLockAvailable, tryPin, promptActive, whilePrompting, onLockChange, monoNow,
+} from '../services/appLockService';
 import { confirmSameAccount } from '../services/cloud';
+import { setAppLocked } from './lockState';
 
 type Gate = 'open' | 'checking' | 'locked';
 
 export function LockGate({ children }: { children: React.ReactNode }) {
   const [gate, setGate] = useState<Gate>(() => (lockMaybeOn() ? 'checking' : 'open'));
+  const [cover, setCover] = useState(false);
   const [cfg, setCfg] = useState<LockConfig | null>(null);
-  const bgAt = useRef<number | null>(null);
+  // آخر إعداد معروف · يُقرأ عند العودة بلا انتظار
+  const cfgRef = useRef<LockConfig | null>(null);
+  const away = useRef<Away | null>(null);
 
   useEffect(() => {
-    if (gate !== 'checking') return;
-    loadLock().then((c) => { setCfg(c); setGate(c.on ? 'locked' : 'open'); }).catch(() => setGate('locked'));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
+    const apply = (c: LockConfig) => { cfgRef.current = c; setCfg(c); };
+    const off = onLockChange(apply);
+    if (lockMaybeOn()) {
+      loadLock()
+        .then((c) => { apply(c); setGate((g) => (g === 'checking' ? (c.on ? 'locked' : 'open') : g)); })
+        .catch(() => setGate('locked'));
+    }
     const sub = AppState.addEventListener('change', (s) => {
-      if (promptActive()) { bgAt.current = null; return; }
-      if (s === 'background') {
-        if (bgAt.current === null) bgAt.current = Date.now();
-      } else if (s === 'active') {
-        const at = bgAt.current;
-        bgAt.current = null;
-        if (!lockMaybeOn()) return;
-        loadLock().then((c) => { setCfg(c); if (lockOnReturn(c, at, Date.now())) setGate('locked'); }).catch(() => setGate('locked'));
+      if (s === 'active') {
+        const a = away.current;
+        away.current = null;
+        const flagged = lockMaybeOn();
+        if (decideReturn(cfgRef.current, flagged, a, Date.now(), monoNow())) setGate('locked');
+        setCover(false);
+        if (a && flagged) loadLock().then((c) => { apply(c); if (!c.on) setGate('open'); }).catch(() => undefined);
+        return;
       }
+      // خارجٌ (inactive في iOS قبل صورة التطبيقات الأخيرة، أو background): الغطاء الآن
+      if (!lockMaybeOn()) return;
+      setCover(true);
+      if (s === 'background' && !away.current) away.current = { wall: Date.now(), mono: monoNow(), prompting: promptActive() };
     });
-    return () => sub.remove();
+    return () => { off(); sub.remove(); };
   }, []);
 
   const locked = gate !== 'open';
+  const hidden = locked || cover;
+  useEffect(() => { setAppLocked(hidden); }, [hidden]);
   return (
     <View style={{ flex: 1 }}>
-      <View style={{ flex: 1 }} importantForAccessibility={locked ? 'no-hide-descendants' : 'auto'} accessibilityElementsHidden={locked}>
+      <View style={{ flex: 1 }} importantForAccessibility={hidden ? 'no-hide-descendants' : 'auto'} accessibilityElementsHidden={hidden}>
         {children}
       </View>
-      {locked ? (
+      {hidden ? (
         <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: C.paper, zIndex: 1000, elevation: 1000 }}>
           {gate === 'locked' && cfg ? <LockScreen cfg={cfg} onOpen={() => setGate('open')} /> : null}
         </View>

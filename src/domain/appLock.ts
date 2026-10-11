@@ -40,16 +40,41 @@ export function lockoutMs(fails: number): number {
   if (fails < 5) return 0;
   return Math.min(30_000 * 2 ** (fails - 5), 3_600_000);
 }
-/** كم بقي من الانتظار الآن (٠ إن جازت المحاولة) */
-export function waitLeft(cfg: Pick<LockConfig, 'fails' | 'failAt'>, now: number): number {
-  const ms = lockoutMs(cfg.fails ?? 0);
-  return ms && cfg.failAt ? Math.max(0, cfg.failAt + ms - now) : 0;
+/**
+ * كم بقي من الانتظار الآن (٠ إن جازت المحاولة) · بساعةٍ رتيبة منذ آخر خطأ في هذا التشغيل، أو منذ بدء التشغيل إن لم يكن
+ * (المتحقق المستقل: ساعة الجهاز المقدَّمة كانت تُنهي الانتظار) · فإغلاق التطبيق يعيد الانتظار كاملاً ولا يقصّره
+ */
+export function waitLeft(fails: number, sinceMono: number, nowMono: number): number {
+  const ms = lockoutMs(fails);
+  return ms ? Math.max(0, ms - Math.max(0, nowMono - sinceMono)) : 0;
 }
 
-/** هل يُقفل عند العودة من الخلفية · backgroundAt وقت الخروج إليها */
-export function lockOnReturn(cfg: Pick<LockConfig, 'on' | 'delay'>, backgroundAt: number | null, now: number): boolean {
-  if (!cfg.on || backgroundAt === null) return false;
-  return now - backgroundAt >= cfg.delay * 1000;
+/** العودة من نافذة البصمة أو قوقل خلال هذه المدة لا تُعدّ خروجاً (بالساعتين معاً) */
+export const PROMPT_GRACE_MS = 60_000;
+
+/** خروجٌ إلى الخلفية · بساعة الجهاز وبالساعة الرتيبة · prompting: خرج والنافذة مفتوحة */
+export interface Away { wall: number; mono: number; prompting: boolean }
+
+/**
+ * قرار العودة من الخلفية بلا انتظار (المتحقق المستقل: القرار كان بعد قراءةٍ غير متزامنة فيظهر المحتوى لحظة) ·
+ * cfg null والقفل مُعلَّم: يُقفل · والخروج أثناء نافذة البصمة أو قوقل يُعفى إن قصُر وحده (كان يُلغي القفل كله)
+ */
+export function decideReturn(cfg: Pick<LockConfig, 'on' | 'delay'> | null, flagged: boolean, away: Away | null, wallNow: number, monoNow: number): boolean {
+  if (!away) return false;
+  if (!cfg) return flagged;
+  const w = wallNow - away.wall, m = monoNow - away.mono;
+  if (away.prompting && w >= 0 && w < PROMPT_GRACE_MS && m < PROMPT_GRACE_MS) return false;
+  return lockOnReturn(cfg, w, m);
+}
+
+/**
+ * هل يُقفل عند العودة من الخلفية · المدة بساعة الجهاز وبالساعة الرتيبة معاً: أيهما بلغ المهلة أقفل، وساعةٌ أُرجعت إلى الوراء
+ * تُقفل (المتحقق المستقل: الفرق السالب كان يمنع القفل) · والرتيبة قد لا تعدّ نوم الجهاز فلا يُعتمد عليها وحدها
+ */
+export function lockOnReturn(cfg: Pick<LockConfig, 'on' | 'delay'>, awayWallMs: number | null, awayMonoMs: number | null): boolean {
+  if (!cfg.on || awayWallMs === null) return false;
+  const d = cfg.delay * 1000;
+  return awayWallMs < 0 || awayWallMs >= d || (awayMonoMs ?? 0) >= d;
 }
 
 /** إعداد القفل كما حُفظ · وما لا يُفهم يعامَل «مفعّلاً بقفل الجهاز» إن كان مُعلَّماً بأنه مفعّل (لا يسقط القفل بصمت) */

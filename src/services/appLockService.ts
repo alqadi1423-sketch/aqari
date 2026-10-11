@@ -11,7 +11,8 @@ import { t } from '../i18n';
 
 const KEY = 'aqari_app_lock';
 const flagFile = () => new File(Paths.document, 'app-lock.flag');
-const flagged = (): boolean => { try { return flagFile().exists; } catch { return false; } };
+// تعذّر فحص العلامة يُعدّ «مفعّل»: لا يسقط القفل بالشك (المتحقق المستقل · كعلامة كلمة مرور النسخ)
+const flagged = (): boolean => { try { return flagFile().exists; } catch { return true; } };
 function setFlag(on: boolean): void {
   const f = flagFile();
   if (on) { if (!f.exists) f.write('1'); } else if (f.exists) f.delete();
@@ -26,9 +27,17 @@ export async function loadLock(): Promise<LockConfig> {
   return parseLockConfig(raw, flagged());
 }
 
+// بوابة القفل تحفظ آخر إعداد لتقرر عند العودة من الخلفية فوراً (ui/LockGate.tsx) · فيُبلَّغ كل حفظ
+const listeners = new Set<(c: LockConfig) => void>();
+export function onLockChange(f: (c: LockConfig) => void): () => void {
+  listeners.add(f);
+  return () => { listeners.delete(f); };
+}
+
 async function save(c: LockConfig): Promise<void> {
   await SecureStore.setItemAsync(KEY, JSON.stringify(c));
   setFlag(c.on);
+  listeners.forEach((f) => f(c));
 }
 
 /** للجهاز قفلٌ (بصمة أو وجه أو رمز الجهاز) يُفتح به التطبيق */
@@ -74,18 +83,27 @@ export async function setLockDelay(delay: LockDelay): Promise<void> {
 
 export async function disableLock(): Promise<void> {
   try { await SecureStore.deleteItemAsync(KEY); } finally { setFlag(false); }
+  listeners.forEach((f) => f(parseLockConfig(null, false)));
 }
 
+/** الساعة الرتيبة منذ بدء التشغيل (لا يغيّرها المستخدم) */
+export const monoNow = (): number => (globalThis.performance?.now?.() ?? 0);
+// وقت آخر خطأ بالساعة الرتيبة في هذا التشغيل · وبعد إعادة التشغيل يُحسب الانتظار من بدئه (domain/appLock.ts: waitLeft)
+let lastFailMono: number | null = null;
+const startMono = monoNow();
+
 /** محاولة رمز · 'ok' أو 'wrong' أو انتظارٌ بالمللي ثانية */
-export async function tryPin(pin: string, now = Date.now()): Promise<'ok' | 'wrong' | number> {
+export async function tryPin(pin: string): Promise<'ok' | 'wrong' | number> {
   const c = await loadLock();
   if (c.method !== 'pin' || !c.pin) return 'wrong';
-  const wait = waitLeft(c, now);
+  const wait = waitLeft(c.fails ?? 0, lastFailMono ?? startMono, monoNow());
   if (wait > 0) return wait;
   if (await pinMatches(deviceCipher, pin, c.pin)) {
+    lastFailMono = null;
     await save({ ...c, fails: 0, failAt: 0 });
     return 'ok';
   }
-  await save({ ...c, fails: (c.fails ?? 0) + 1, failAt: now });
+  lastFailMono = monoNow();
+  await save({ ...c, fails: (c.fails ?? 0) + 1, failAt: Date.now() });
   return 'wrong';
 }

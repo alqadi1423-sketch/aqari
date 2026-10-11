@@ -14,6 +14,7 @@ import { Icon, type IconName } from './icons';
 import { perfMarkNavRender, perfNow, perfScreenShown, perfTouch, perfTouchUp } from '../perf/perf';
 import { useDialog, confirmDiscard } from './AppDialog';
 import { SheetDirtyCtx } from './sheetDirty';
+import { useAppLocked } from './lockState';
 
 /**
  * قفل تمرير النافذة السفلية أثناء لمس عنصر يملك إيماءاته (كالخريطة) ·
@@ -72,6 +73,8 @@ export function Sheet({
   footer?: React.ReactNode;
   tall?: boolean;
 }) {
+  // النافذة المنبثقة فوق غطاء القفل · تختفي ما دام مقفلاً (#51 · ui/lockState.ts)
+  const appLocked = useAppLocked();
   const insets = useScaledInsets();
   const fs = useFs();
   const { uiScale } = useApp();
@@ -190,7 +193,7 @@ export function Sheet({
   }, [visible, title]);
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={requestClose}>
+    <Modal visible={visible && !appLocked} transparent animationType="slide" onRequestClose={requestClose}>
       {/* النوافذ تُرسم خارج شجرة التكبير الرئيسية فتحتاج مكبّرها الخاص */}
       <UiScaleView>
       {/* لمسات النافذة لا تمر بجذر التطبيق · تُلتقط هنا لقياس ما تفتحه */}

@@ -60,6 +60,22 @@ export function createSession(deps: SessionDeps) {
     return user;
   }
 
+  /**
+   * قفل التطبيق (#51): تأكيد أن من يفتح هو صاحب الحساب المسجّل · يُختار حساب قوقل ويُتحقق منه عند Firebase ثم يُقارن رقمه
+   * برقم الحساب المحفوظ · ولا يُكتب شيء في الجلسة (المتحقق المستقل: الدخول الكامل كان يستبدل الجلسة بحسابٍ آخر قبل المقارنة)
+   * · وحسابٌ مختلف يُخرج من قوقل فلا يبقى هو الحساب الحالي لرموز Drive
+   */
+  async function confirmSameAccount(): Promise<boolean> {
+    const uid = user?.uid ?? (await deps.store.get(KEYS.uid));
+    if (!uid) return false;
+    const g = await deps.google.signIn();
+    if (!g) return false;
+    const fb = await deps.signInWithIdp(g.idToken);
+    if (fb.uid === uid) return true;
+    try { await deps.google.signOut(); } catch { /* يبقى مقفلاً على كل حال */ }
+    return false;
+  }
+
   /** الخروج: الرموز وحدها تُمسح · لا قاعدة ولا ملف يُمسّ */
   async function signOut(): Promise<void> {
     try { await deps.google.signOut(); } catch { /* الخروج من قوقل ترف · الرموز تُمسح على كل حال */ }
@@ -86,7 +102,7 @@ export function createSession(deps: SessionDeps) {
     }
   }
 
-  return { restore, signIn, signOut, idToken, driveToken, current: () => user };
+  return { restore, signIn, signOut, idToken, driveToken, confirmSameAccount, current: () => user };
 }
 
 export type Session = ReturnType<typeof createSession>;

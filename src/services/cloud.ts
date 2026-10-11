@@ -508,12 +508,11 @@ export async function activateAccount(u: SessionUser): Promise<void> {
 }
 
 /** بيانات بلا حساب على الجهاز: يربطها الداخل بحسابه بقراره */
-/** قفل التطبيق (#51): يؤكَّد الحساب المسجّل على الجهاز نفسه بقوقل · true إن طابق */
+/** قفل التطبيق (#51): يؤكَّد الحساب المسجّل على الجهاز نفسه بقوقل دون مسّ الجلسة (cloud/session.ts) · true إن طابق */
 export async function confirmSameAccount(): Promise<boolean> {
   const s = getSession();
   if (!s || !state.user) return false;
-  const u = await s.signIn();
-  return !!u && u.uid === state.user.uid;
+  return s.confirmSameAccount();
 }
 
 export async function bindUnboundToAccount(db: AppDB): Promise<void> {
