@@ -51,7 +51,7 @@ test('المتحقق المستقل: ساعة الجهاز المُرجَعة ل
 
 test('المتحقق المستقل: الخروج أثناء نافذة البصمة أو قوقل لا يُلغي القفل إلا لعودةٍ قصيرة', () => {
   const cfg = { on: true, delay: 0 as const };
-  const away = { wall: 1_000_000, mono: 5_000, prompting: true };
+  const away = { wall: 1_000_000, mono: 5_000, prompting: true, trusted: true };
   // عودةٌ قصيرة من النافذة: لا يُقفل
   expect(decideReturn(cfg, true, away, 1_000_000 + 3_000, 5_000 + 3_000)).toBe(false);
   // خرج والنافذة مفتوحة ثم غاب ساعة: يُقفل (كان الخروج يُمحى فلا يُقفل)
@@ -65,6 +65,24 @@ test('المتحقق المستقل: الخروج أثناء نافذة البص
   // الإعداد لم يُعرف بعد والقفل مُعلَّم: يُقفل · وبلا علامة لا
   expect(decideReturn(null, true, away, 1_000_000 + 1, 5_001)).toBe(true);
   expect(decideReturn(null, false, away, 1_000_000 + 1, 5_001)).toBe(false);
+});
+
+test('المتحقق المستقل (السابعة): ساعةٌ غير موثوقة (لا تعدّ نوم الجهاز) تُقفل عند كل عودة أياً كانت المهلة والنافذة', () => {
+  const away = { wall: 1_000_000, mono: 5_000, prompting: true, trusted: false };
+  expect(decideReturn({ on: true, delay: 300 }, true, away, 1_000_000 + 1_000, 5_000 + 1_000)).toBe(true);
+  expect(decideReturn({ on: false, delay: 300 }, false, away, 1_000_000 + 1_000, 5_000 + 1_000)).toBe(false);
+});
+
+test('المتحقق المستقل (السابعة): إذنا البصمة لا يُزالان من البيان ما دام قفل التطبيق بها', () => {
+  const fs = require('node:fs') as typeof import('node:fs');
+  const path = require('node:path') as typeof import('node:path');
+  const root = path.join(__dirname, '..');
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
+  expect(pkg.dependencies['expo-local-authentication']).toBeTruthy();
+  const manifest = fs.readFileSync(path.join(root, 'android/app/src/main/AndroidManifest.xml'), 'utf8');
+  for (const perm of ['USE_BIOMETRIC', 'USE_FINGERPRINT']) {
+    expect(manifest).not.toMatch(new RegExp('android\\.permission\\.' + perm + '"[^>]*tools:node="remove"'));
+  }
 });
 
 test('إعدادٌ تعذّرت قراءته والقفل مُعلَّم مفعّلاً: يبقى القفل بقفل الجهاز ولا يسقط بصمت', () => {

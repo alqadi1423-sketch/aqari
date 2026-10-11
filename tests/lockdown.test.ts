@@ -95,10 +95,13 @@ describe('أ و و · الأذونات وallowBackup', () => {
       expect(app.blockedPermissions).toContain('android.permission.' + perm);
     });
 
+  // كانا مُزالين حين لم يكن في التطبيق قفل بصمة (قرار المالك: «احذف ما لا تستعمله») · وقفل التطبيق بالبصمة (#51 · قرار المالك
+  // 2026-10-07 «أ») يستعملهما، فإزالتهما تُسقط قفل الجهاز (المتحقق المستقل، الجولة السابعة)
   test.each(['USE_BIOMETRIC', 'USE_FINGERPRINT'])(
-    '%s الذي يجلبه المخزن الآمن مُزال · لا إذن جديد يدخل مع القسم ٤', (perm) => {
-      expect(manifest).toMatch(new RegExp(`android\\.permission\\.${perm}" tools:node="remove"`));
-      expect(app.blockedPermissions).toContain('android.permission.' + perm);
+    '%s لقفل التطبيق بالبصمة (#51) · لا يُزال ولا يُحجب', (perm) => {
+      expect(manifest).toMatch(new RegExp(`android\\.permission\\.${perm}"/>`));
+      expect(manifest).not.toMatch(new RegExp(`android\\.permission\\.${perm}" tools:node="remove"`));
+      expect(app.blockedPermissions).not.toContain('android.permission.' + perm);
     });
 
   test('DUMP لا يطلبه التطبيق', () => {

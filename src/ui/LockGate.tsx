@@ -15,7 +15,7 @@ import { T, BtnPrimary, BtnGhost, Field, Note } from './components';
 import { C, TYPE } from './theme';
 import { decideReturn, pinShapeOk, type Away, type LockConfig } from '../domain/appLock';
 import {
-  lockMaybeOn, loadLock, askDevice, deviceLockAvailable, tryPin, promptActive, whilePrompting, onLockChange, monoNow,
+  lockMaybeOn, loadLock, askDevice, deviceLockAvailable, tryPin, promptActive, whilePrompting, onLockChange, monoNow, clockTrusted,
 } from '../services/appLockService';
 import { confirmSameAccount } from '../services/cloud';
 import { setAppLocked } from './lockState';
@@ -43,7 +43,9 @@ export function LockGate({ children }: { children: React.ReactNode }) {
         const a = away.current;
         away.current = null;
         const flagged = lockMaybeOn();
-        if (decideReturn(cfgRef.current, flagged, a, Date.now(), monoNow())) setGate('locked');
+        const back = a ? { ...a, trusted: a.trusted && clockTrusted() } : null;
+        // النوافذ المنبثقة تُطوى الآن لا بعد الرسم (المتحقق، الجولة السابعة: كانت تظهر فوق القفل لحظة)
+        if (decideReturn(cfgRef.current, flagged, back, Date.now(), monoNow())) { setAppLocked(true); setGate('locked'); }
         setCover(false);
         if (a && flagged) loadLock().then((c) => { apply(c); if (!c.on) setGate('open'); }).catch(() => undefined);
         return;
@@ -51,7 +53,7 @@ export function LockGate({ children }: { children: React.ReactNode }) {
       // خارجٌ (inactive في iOS قبل صورة التطبيقات الأخيرة، أو background): الغطاء الآن
       if (!lockMaybeOn()) return;
       setCover(true);
-      if (s === 'background' && !away.current) away.current = { wall: Date.now(), mono: monoNow(), prompting: promptActive() };
+      if (s === 'background' && !away.current) away.current = { wall: Date.now(), mono: monoNow(), prompting: promptActive(), trusted: clockTrusted() };
     });
     return () => { off(); sub.remove(); };
   }, []);

@@ -5,9 +5,9 @@
 const kv = new Map<string, string>();
 const fileState = { exists: false, throws: false };
 // ساعة الجهاز الأصلية (AqariClock.kt): منذ الإقلاع وتعدّ النوم
-const nativeClock = { ms: 1_000_000 };
+const nativeClock = { ms: 1_000_000, broken: false };
 
-jest.mock('react-native', () => ({ NativeModules: { AqariClock: { elapsedRealtime: () => nativeClock.ms } } }));
+jest.mock('react-native', () => ({ NativeModules: { AqariClock: { elapsedRealtime: () => { if (nativeClock.broken) throw new Error('x'); return nativeClock.ms; } } } }));
 
 jest.mock('expo-secure-store', () => ({
   getItemAsync: async (k: string) => kv.get(k) ?? null,
@@ -26,10 +26,10 @@ jest.mock('expo-file-system', () => ({
 jest.mock('@/services/cipher', () => ({ deviceCipher: jest.requireActual('@/files/nodeCipher').nodeCipher }));
 jest.mock('@/i18n', () => ({ t: (k: string) => k }));
 
-import { enablePinLock, tryPin, lockMaybeOn, loadLock, disableLock, onLockChange, monoNow } from '@/services/appLockService';
+import { enablePinLock, tryPin, lockMaybeOn, loadLock, disableLock, onLockChange, monoNow, clockTrusted, promptActive, whilePrompting, PROMPT_MAX_MS } from '@/services/appLockService';
 import { decideReturn } from '@/domain/appLock';
 
-beforeEach(() => { kv.clear(); fileState.exists = false; fileState.throws = false; nativeClock.ms += 10_000_000; });
+beforeEach(() => { kv.clear(); fileState.exists = false; fileState.throws = false; nativeClock.broken = false; nativeClock.ms += 10_000_000; });
 afterEach(() => { jest.restoreAllMocks(); });
 
 test('المتحقق المستقل: تقديم ساعة الجهاز لا يُنهي انتظار المحاولات الخاطئة', async () => {
@@ -64,7 +64,7 @@ test('البوابة تُبلَّغ بكل تغيير في الإعداد (لت�
 test('المتحقق المستقل (السادسة): الساعة تعدّ نوم الجهاز · غيبة ساعتين بجهازٍ نائم وساعةٍ مُرجَعة تُقفل', () => {
   // الساعة من AqariClock.elapsedRealtime لا من performance.now (تقف أثناء النوم)
   expect(monoNow()).toBe(nativeClock.ms);
-  const away = { wall: 5_000_000, mono: monoNow(), prompting: false };
+  const away = { wall: 5_000_000, mono: monoNow(), prompting: false, trusted: true };
   nativeClock.ms += 7_200_000; // ساعتان والجهاز نائم
   // ساعة الجهاز أُرجعت فتبدو الغيبة ١٠٠ ثانية
   expect(decideReturn({ on: true, delay: 300 }, true, away, away.wall + 100_000, monoNow())).toBe(true);
@@ -79,4 +79,28 @@ test('انتظار المحاولات بالساعة الأصلية: يمضي ب
   expect(await tryPin('4826')).toBe(20_000);
   nativeClock.ms += 20_000;
   expect(await tryPin('4826')).toBe('ok');
+});
+
+test('المتحقق المستقل (السابعة): الساعة الأصلية المعطّلة تُعرف فلا يُوثق بها', () => {
+  expect(clockTrusted()).toBe(true);
+  nativeClock.broken = true;
+  expect(clockTrusted()).toBe(false);
+  expect(Number.isFinite(monoNow())).toBe(true);
+});
+
+test('المتحقق المستقل (السابعة): نافذةٌ لا يعود وعدها لا تبقى «مفتوحة» بعد حدّها', async () => {
+  // eslint-disable-next-line @typescript-eslint/no-empty-function
+  void whilePrompting(() => new Promise<void>(() => {}));
+  expect(promptActive()).toBe(true);
+  nativeClock.ms += PROMPT_MAX_MS + 1;
+  expect(promptActive()).toBe(false);
+  // ونافذةٌ عادية تعود: مفتوحةٌ أثناءها وبعدها لحظة
+  let done!: () => void;
+  const p = whilePrompting(() => new Promise<void>((r) => { done = r; }));
+  expect(promptActive()).toBe(true);
+  done();
+  await p;
+  expect(promptActive()).toBe(true);
+  nativeClock.ms += 2_000;
+  expect(promptActive()).toBe(false);
 });

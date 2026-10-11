@@ -52,8 +52,12 @@ export function waitLeft(fails: number, sinceMono: number, nowMono: number): num
 /** العودة من نافذة البصمة أو قوقل خلال هذه المدة لا تُعدّ خروجاً (بالساعتين معاً) */
 export const PROMPT_GRACE_MS = 60_000;
 
-/** خروجٌ إلى الخلفية · بساعة الجهاز وبالساعة الرتيبة · prompting: خرج والنافذة مفتوحة */
-export interface Away { wall: number; mono: number; prompting: boolean }
+/**
+ * خروجٌ إلى الخلفية · بساعة الجهاز وبالساعة الرتيبة · prompting: خرج والنافذة مفتوحة · trusted: الساعة الرتيبة تعدّ نوم الجهاز
+ * (AqariClock) عند الخروج والعودة، وإلا لم يُعرف طول الغيبة فيُقفل (المتحقق المستقل، الجولة السابعة: كان يرجع صامتاً إلى ساعةٍ تقف
+ * أثناء النوم)
+ */
+export interface Away { wall: number; mono: number; prompting: boolean; trusted: boolean }
 
 /**
  * قرار العودة من الخلفية بلا انتظار (المتحقق المستقل: القرار كان بعد قراءةٍ غير متزامنة فيظهر المحتوى لحظة) ·
@@ -62,6 +66,7 @@ export interface Away { wall: number; mono: number; prompting: boolean }
 export function decideReturn(cfg: Pick<LockConfig, 'on' | 'delay'> | null, flagged: boolean, away: Away | null, wallNow: number, monoNow: number): boolean {
   if (!away) return false;
   if (!cfg) return flagged;
+  if (!away.trusted) return cfg.on;
   const w = wallNow - away.wall, m = monoNow - away.mono;
   if (away.prompting && w >= 0 && w < PROMPT_GRACE_MS && m < PROMPT_GRACE_MS) return false;
   return lockOnReturn(cfg, w, m);

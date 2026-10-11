@@ -48,14 +48,23 @@ export async function deviceLockAvailable(): Promise<boolean> {
 }
 
 /**
- * نافذة البصمة ونافذة قوقل تُخرجان التطبيق إلى الخلفية · لا يُحسب ذلك خروجاً فيُقفل عند العودة (من شاشة القفل أو من الإعدادات)
+ * نافذة البصمة ونافذة قوقل ومنتقي الملفات والكاميرا والمشاركة تُخرج التطبيق إلى الخلفية · لا يُحسب ذلك خروجاً فيُقفل عند العودة
+ * القصيرة (domain/appLock.ts: decideReturn) · والنافذة التي لا يعود وعدها أبداً (منتقٍ أُعيد إنشاء شاشته تحت ضغط الذاكرة) لا تُعدّ
+ * مفتوحةً بعد PROMPT_MAX_MS (المتحقق المستقل، الجولة السابعة: كانت تبقى مفتوحةً بقية التشغيل فتصير «فوراً» مهلةً دقيقة)
  */
-let prompts = 0;
-let promptEndedAt = 0;
-export const promptActive = (): boolean => prompts > 0 || Date.now() - promptEndedAt < 1500;
+export const PROMPT_MAX_MS = 10 * 60_000;
+const prompts = new Map<number, number>();
+let promptSeq = 0;
+let promptEndedAt = -Infinity;
+export function promptActive(): boolean {
+  const now = monoNow();
+  for (const at of prompts.values()) if (now - at < PROMPT_MAX_MS) return true;
+  return now - promptEndedAt < 1500;
+}
 export async function whilePrompting<R>(fn: () => Promise<R>): Promise<R> {
-  prompts++;
-  try { return await fn(); } finally { prompts--; promptEndedAt = Date.now(); }
+  const id = ++promptSeq;
+  prompts.set(id, monoNow());
+  try { return await fn(); } finally { prompts.delete(id); promptEndedAt = monoNow(); }
 }
 
 /** طلب قفل الجهاز · true إن فُتح */
@@ -92,11 +101,17 @@ export async function disableLock(): Promise<void> {
  * السادسة: performance.now تقف أثناء النوم) · وحيث لا تكون فـperformance.now، وإلا ساعة الجهاز فلا يدوم الانتظار أبداً
  */
 const clock = (NativeModules.AqariClock as { elapsedRealtime(): number } | undefined) ?? null;
+function nativeMs(): number | null {
+  try { const v = clock?.elapsedRealtime(); return typeof v === 'number' && Number.isFinite(v) ? v : null; } catch { return null; }
+}
 export function monoNow(): number {
-  try { const v = clock?.elapsedRealtime(); if (typeof v === 'number' && Number.isFinite(v)) return v; } catch { /* التالية */ }
+  const v = nativeMs();
+  if (v !== null) return v;
   const p = globalThis.performance?.now?.();
   return typeof p === 'number' && Number.isFinite(p) ? p : Date.now();
 }
+/** الساعة الأصلية حاضرةٌ تعمل · وإلا فالعودة من الخلفية تُقفل أياً كانت المهلة (يُرى العطل ولا يُفتح به القفل) */
+export const clockTrusted = (): boolean => nativeMs() !== null;
 // وقت آخر خطأ بالساعة الرتيبة في هذا التشغيل · وبعد إعادة التشغيل يُحسب الانتظار من بدئه (domain/appLock.ts: waitLeft)
 let lastFailMono: number | null = null;
 const startMono = monoNow();
