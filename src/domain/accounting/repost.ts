@@ -6,7 +6,7 @@
 import type { DB } from '../../db/adapter';
 import { cashShortfall, entryCashEffect } from '../cashGuard';
 import { fmt } from '../money';
-import { uid } from '../ids';
+import { rowId, withDeterministicIds } from '../ids';
 import { postEntry, type PostedEntry } from './post';
 import { hasDimColumns } from './dimensions';
 import { correctionDate } from '../vatFilings';
@@ -50,6 +50,10 @@ export function repostDate(db: DB, entryId: string): string {
 
 /** يعيد ترحيل نسخة القيد وحركات بنكه · ويعيد القيد الجديد */
 export function repostCopy(db: DB, entryId: string, note: string): PostedEntry | null {
+  // النسخة بمعرّفاتٍ حتمية من القيد المعكوس الذي تعيده (المراجعة الخارجية ٧ · النتيجة ٤: الاستعادة على جهازين)
+  return withDeterministicIds('repost:' + entryId, () => repostCopyNow(db, entryId, note));
+}
+function repostCopyNow(db: DB, entryId: string, note: string): PostedEntry | null {
   const e = orig(db, entryId);
   if (!e) return null;
   // أبعاد كل سطر تُنسخ معه (مركز التكلفة والأصل لا يُشتقان من المصدر) · وقاعدةٌ قبل الهجرة ٢٨ بلا أبعاد
@@ -76,7 +80,7 @@ export function repostCopy(db: DB, entryId: string, note: string): PostedEntry |
     db.run(
       `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
        VALUES (?,?,?,?,?,1,?,?,?)`,
-      [uid(), t.bank_id, date === e.date ? t.date : date, t.descr, Number(t.amount_halalas), posted.no, t.source, new Date().toISOString()]);
+      [rowId(), t.bank_id, date === e.date ? t.date : date, t.descr, Number(t.amount_halalas), posted.no, t.source, new Date().toISOString()]);
   }
   return posted;
 }

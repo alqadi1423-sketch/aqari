@@ -746,5 +746,8 @@
   },
   "sync": {
     "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded"
+  },
+  "restore": {
+    "notInTrash": "Not in the trash · already restored"
   }
 }

@@ -7,6 +7,7 @@ import { getSetting } from '../repos/settings';
 import { restoreInvoice } from './invoices';
 import { restorePurchase } from './purchases';
 import { logAudit } from './audit';
+import { t } from '../i18n';
 import { lastReversedOf, repostBlockers, repostCopy } from './accounting/repost';
 
 export const TRASH_ENTITY_LABELS: Record<string, string> = {
@@ -98,6 +99,8 @@ function restoreOne(db: DB, table: string, id: string): void {
     if (blockers.length) throw new Error('لا يُستعاد العنصر: ' + blockers.join('، '));
   }
   const pk = table === 'accounts' ? 'code' : 'id';
+  // الحي لا «يُستعاد» فيُعاد ترحيل قيده (المراجعة الخارجية ٧ · النتيجة ٤)
+  if (!db.get(`SELECT 1 FROM "${table}" WHERE ${pk} = ? AND deleted_at IS NOT NULL`, [id])) throw new Error(t('restore.notInTrash'));
   db.run(`UPDATE "${table}" SET deleted_at = NULL WHERE ${pk} = ?`, [id]);
   if (entry) repostCopy(db, entry, 'استعادة من السلة');
 }

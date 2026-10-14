@@ -157,10 +157,18 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
        FROM journal_entries r WHERE r.status = 'مرحّل' AND r.deleted_at IS NULL AND r.src_type LIKE '%\\_rev' ESCAPE '\\'
        GROUP BY r.src_type, r.src_id) WHERE revs > origs`
   )!;
+  // وواحدٌ لواحد بالربط (المتحقق المستقل على 07dbbde): العدّ لكل مصدر لا يرى مرآةً ثانية لأصلٍ معكوس ومعها أصلٌ حي (فاتورةٌ
+  // عُدّلت) · فكل عاكسٍ مرحّل عكسُ أصلٍ واحد بالضبط (reversed_by)
+  const unlinkedRevs = db.get<{ n: number }>(
+    // i18n-exempt: حالة القيد المخزّنة
+    `SELECT COUNT(*) AS n FROM journal_entries r
+       LEFT JOIN (SELECT reversed_by AS rb, COUNT(*) AS c FROM journal_entries WHERE reversed_by IS NOT NULL GROUP BY reversed_by) l ON l.rb = r.id
+     WHERE r.status = 'مرحّل' AND r.deleted_at IS NULL AND r.src_type LIKE '%\\_rev' ESCAPE '\\' AND COALESCE(l.c, 0) != 1`
+  )!;
   out.push({
     name: 'مرآة واحدة لكل أصل', // i18n-exempt: اسم فحصٍ مخزَّن في بيان النسخة كأخواته
-    ok: Number(extraRevs.n) === 0,
-    value: Number(extraRevs.n) + ' مصدر', // i18n-exempt: قيمة فحصٍ تُعرض كأخواتها
+    ok: Number(extraRevs.n) === 0 && Number(unlinkedRevs.n) === 0,
+    value: Number(extraRevs.n) + ' مصدر · ' + Number(unlinkedRevs.n) + ' بلا ربط', // i18n-exempt: قيمة فحصٍ تُعرض كأخواتها
   });
 
   // ١٠) ذمم الفواتير (المراجعة ٤.٢): لا فاتورة «مدفوعة» بلا قيد تحصيل، وحركة 1200 = المصدرة غير المحصّلة

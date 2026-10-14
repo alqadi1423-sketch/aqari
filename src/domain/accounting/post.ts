@@ -1,7 +1,7 @@
 import type { DB } from '../../db/adapter';
 import { requireCash } from '../cashGuard';
 import { t } from '../../i18n';
-import { uid } from '../ids';
+import { uid, rowId } from '../ids';
 import { today } from '../dates';
 import { correctionDate } from '../vatFilings';
 import { fmt } from '../money';
@@ -90,7 +90,7 @@ export function postEntry(
   if (missing.length) throw new MissingAccountsError([...new Set(missing)]);
 
   return db.transaction(() => {
-    const id = uid();
+    const id = rowId();
     const no = nextJournalNo(db);
     const now = new Date().toISOString();
     db.run(
@@ -104,7 +104,7 @@ export function postEntry(
       for (const l of rows) {
         db.run(
           `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas) VALUES (?,?,?,?,?,?)`,
-          [uid(), id, l.account, l.descr ?? '', l.debit || 0, l.credit || 0]);
+          [rowId(), id, l.account, l.descr ?? '', l.debit || 0, l.credit || 0]);
       }
       if (!args.draft) db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [id]);
       return { id, no };
@@ -119,7 +119,7 @@ export function postEntry(
         `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas,
            property_id, unit_id, contract_id, cost_center_id, asset_id)
          VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-        [uid(), id, l.account, l.descr ?? '', l.debit || 0, l.credit || 0,
+        [rowId(), id, l.account, l.descr ?? '', l.debit || 0, l.credit || 0,
          d.propertyId, d.unitId, d.contractId, d.costCenterId, d.assetId]
       );
     }

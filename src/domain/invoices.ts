@@ -4,7 +4,7 @@
  */
 import type { DB } from '../db/adapter';
 import { requireCash, reversalCashOut } from './cashGuard';
-import { uid } from './ids';
+import { uid, rowId, withDeterministicIds } from './ids';
 import { ambientCostCenter } from './accounting/dimensions';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment, postCreditNoteToLedger } from './accounting/post';
 import { t } from '../i18n';
@@ -195,7 +195,7 @@ function postCollection(db: DB, id: string, v: PayRow, pay: { method: InvoicePay
     db.run(
       `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
        VALUES (?,?,?,?,?,1,?,?,?)`,
-      [uid(), pay.bankId, pay.date, 'تحصيل فاتورة ' + v.no + ' · ' + v.customer_name, total, entry ? entry.no : '',
+      [rowId(), pay.bankId, pay.date, 'تحصيل فاتورة ' + v.no + ' · ' + v.customer_name, total, entry ? entry.no : '',
        'تحصيل فاتورة · ' + INV_PAY_LABEL[pay.method], new Date().toISOString()]);
   }
   return entry ? entry.id : null;
@@ -323,10 +323,12 @@ export function restoreInvoice(db: DB, id: string): void {
   db.transaction(() => {
     const v = db.get<PayRow & {
       issue: string; status: string; subtotal_halalas: number; tax_halalas: number;
-      paid_date: string | null; payment_method: string | null; payment_bank_id: string | null;
-    }>(`SELECT no, customer_name, issue, status, subtotal_halalas, tax_halalas, total_halalas, paid_date, payment_method, payment_bank_id
+      paid_date: string | null; payment_method: string | null; payment_bank_id: string | null; deleted_at: string | null;
+    }>(`SELECT no, customer_name, issue, status, subtotal_halalas, tax_halalas, total_halalas, paid_date, payment_method, payment_bank_id, deleted_at
         FROM invoices WHERE id = ?`, [id]);
     if (!v) return;
+    // الحية لا «تُستعاد» فيُرحَّل قيدها ثانيةً (المراجعة الخارجية ٧ · النتيجة ٤)
+    if (!v.deleted_at) throw new Error(t('restore.notInTrash'));
     const paid = v.status === 'مدفوعة' && !!v.paid_date;
     const method = (v.payment_method && v.payment_method in INV_PAY_LABEL ? v.payment_method : 'cash') as InvoicePayMethod;
     if (paid && method !== 'cash') {
@@ -338,17 +340,21 @@ export function restoreInvoice(db: DB, id: string): void {
     const revIssue = lastReversedOf(db, 'invoice', id);
     const revPay = lastReversedOf(db, 'invoice_pay', id);
     db.run(`UPDATE invoices SET deleted_at = NULL WHERE id = ?`, [id]);
-    if (v.status !== 'مسودة') {
-      const entry = postInvoiceToLedger(db, {
-        id, no: v.no, customer: v.customer_name, issue: revIssue ? repostDate(db, revIssue) : v.issue,
-        subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas), total: Number(v.total_halalas),
-      });
-      db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = ?`, [entry ? entry.id : null, id]);
-    }
-    if (paid) {
-      const entryId = postCollection(db, id, v, { method, bankId: v.payment_bank_id, date: revPay ? repostDate(db, revPay) : v.paid_date! });
-      db.run(`UPDATE invoices SET payment_journal_entry_id = ? WHERE id = ?`, [entryId, id]);
-    } else if (v.status === 'مدفوعة') {
+    // قيداها بمعرّفاتٍ حتمية من القيدين المعكوسين (المراجعة الخارجية ٧ · النتيجة ٤): استعادةٌ على جهازين تلتقي قيداً واحداً
+    withDeterministicIds('restore:invoice:' + id + ':' + (revIssue ?? '') + ':' + (revPay ?? ''), () => {
+      if (v.status !== 'مسودة') {
+        const entry = postInvoiceToLedger(db, {
+          id, no: v.no, customer: v.customer_name, issue: revIssue ? repostDate(db, revIssue) : v.issue,
+          subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas), total: Number(v.total_halalas),
+        });
+        db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = ?`, [entry ? entry.id : null, id]);
+      }
+      if (paid) {
+        const entryId = postCollection(db, id, v, { method, bankId: v.payment_bank_id, date: revPay ? repostDate(db, revPay) : v.paid_date! });
+        db.run(`UPDATE invoices SET payment_journal_entry_id = ? WHERE id = ?`, [entryId, id]);
+      }
+    });
+    if (!paid && v.status === 'مدفوعة') {
       // «مدفوعة» من نسخة سابقة بلا تحصيل مسجّل: تعود مستحقة فلا تُخفى ذمتها
       db.run(`UPDATE invoices SET status = 'مستحقة' WHERE id = ?`, [id]);
     }

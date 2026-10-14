@@ -398,6 +398,8 @@ export function restorePurchase(db: DB, id: string): void {
     const p = db.get<{ no: string; journal_entry_id: string | null; payment_journal_entry_id: string | null; paid: number; deleted_at: string | null }>(
       `SELECT no, journal_entry_id, payment_journal_entry_id, paid, deleted_at FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
+    // الحية لا «تُستعاد» (المراجعة الخارجية ٧ · النتيجة ٤)
+    if (!p.deleted_at) throw new Error(t('restore.notInTrash'));
     // لا تعود إلى فترةٍ قُدِّم إقرارها (التحقق المستقل · قرار المالك 2026-10-09)
     if (isPurchaseFiled(db, id)) throw new Error(t('purchase.filedPeriod'));
     const reg = reversedEntry(db, p.journal_entry_id);
