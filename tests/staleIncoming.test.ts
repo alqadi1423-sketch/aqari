@@ -65,3 +65,22 @@ test('٩ جهاز العضو لا يُبقي بياناته بعد مسح الم
     db.close();
   }
 });
+
+test('٨ (المتحقق على 299bdd5) جهازٌ ساعته مقدَّمة لا يُرجع تعديل غيره الأحدث: الوقت المحفوظ وقت الالتزام في الخادم', async () => {
+  const r = new MemoryRemote();
+  const a = memDb(); const b = memDb();
+  enableSync(a, UID); enableSync(b, UID);
+  confirmContract(a, contractInput(addUnit(a, addProperty(a, { name: 'عقار مصطنع' })), { tenant: 'مستأجر مصطنع', idNumber: '1000000802', phone: '0500000802' }));
+  await sync(a, r); await sync(b, r);
+  const tid = a.get<{ id: string }>(`SELECT id FROM tenants LIMIT 1`)!.id;
+  a.run(`UPDATE tenants SET phone = '0533333333' WHERE id = ?`, [tid]);
+  // ساعة أ مقدَّمة عشر دقائق ولم تُقَس بعد
+  a.run(`UPDATE sync_outbox SET changed_at = ? WHERE tbl = 'tenants' AND pk = ?`, [new Date(Date.now() + 600_000).toISOString(), tid]);
+  await sync(a, r);
+  await new Promise((res) => setTimeout(res, 20));
+  b.run(`UPDATE tenants SET phone = '0544444444' WHERE id = ?`, [tid]);
+  await sync(b, r); await sync(a, r); await sync(b, r);
+  expect(phone(a, tid)).toBe('0544444444');
+  expect(phone(b, tid)).toBe('0544444444');
+  a.close(); b.close();
+});

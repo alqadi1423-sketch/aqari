@@ -181,8 +181,7 @@ export function toServerClock(db: DB, iso: string): string {
 
 /** فرقٌ دون ثانية ضجيجُ شبكة لا ساعة منحرفة · فلا يُحفظ */
 const SKEW_NOISE_MS = 1000;
-function recordClockSample(db: DB, remote: RemoteStore): void {
-  const s = remote.clockSample?.();
+function recordClockSample(db: DB, s: { serverMs: number; localMs: number } | null | undefined): void {
   if (!s || !Number.isFinite(s.serverMs) || !Number.isFinite(s.localMs)) return;
   const skew = Math.round(s.serverMs - s.localMs);
   setSyncState(db, 'clock_skew_ms', Math.abs(skew) < SKEW_NOISE_MS ? null : String(skew));
@@ -1208,10 +1207,15 @@ export async function syncOnce(
     // العضو: ما لا قسم يجيزه له لا يُرسل أصلاً · يُعامل كالمرفوض
     const results0: Array<WriteResult | null> = docs.map((d) => (remote.memberMode && !d.op ? { ok: false, code: 'PERMISSION_DENIED', message: 'لا قسم يجيزه' } : null));
     let results: WriteResult[];
+    let commitIso: string | null = null;
     try {
       const sendIdx = results0.map((x, i) => (x ? -1 : i)).filter((i) => i >= 0);
       const sent = sendIdx.length ? await remote.write(sendIdx.map((i) => docs[i])) : [];
-      recordClockSample(db, remote);
+      const sample = remote.clockSample?.();
+      recordClockSample(db, sample);
+      // وقت الالتزام في الخادم لما رُفع (المتحقق المستقل على 299bdd5): وقت الجهاز وحده قد يسبق الخادم (ساعةٌ مقدَّمة قبل أول
+      // عيّنة) فيُعدّ تعديل غيره الأحدث «أقدم» ويُرجعه الجهاز إلى نسخته
+      commitIso = sample && Number.isFinite(sample.serverMs) ? new Date(sample.serverMs).toISOString() : null;
       results = results0.map((x) => x ?? { ok: false });
       sendIdx.forEach((i, j) => { results[i] = sent[j]; });
       failures = 0;
@@ -1240,7 +1244,11 @@ export async function syncOnce(
         if (res.ok || memberDenied || immutableDenied(docs[i], res.code)) {
           // لا يُحذف إن تغيّر الصف أثناء الرفع · يبقى للدفعة التالية بوقته الجديد
           db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND changed_at = ?`, [r.tbl, r.pk, r.changed_at]);
-          if (res.ok) { pushed++; noteRowTime(db, r.tbl, r.pk, docs[i].u); }
+          if (res.ok) {
+            pushed++;
+            // بوقت الالتزام في الخادم إن عُرف، ولا يتجاوز وقت المستند · وبلا وقت الخادم لا يُحفظ (الوارد يغلب كما كان)
+            if (commitIso) noteRowTime(db, r.tbl, r.pk, docs[i].u < commitIso ? docs[i].u : commitIso);
+          }
           progressed++;
         } else {
           db.run(`UPDATE sync_outbox SET last_error = ? WHERE tbl = ? AND pk = ?`,
