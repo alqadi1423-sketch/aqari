@@ -71,3 +71,12 @@ test('الجولة ٣٢: الرقم الملاصق للمحجوز حدُّ كل�
   }
   for (const name of ['Bill 1', 'عبد المالك الشهري', 'محمد المالكي', 'Owners Club', 'Room 101']) expect(validateProfile({ name, phone: '0500000032' }, true).ok).toBe(true);
 });
+
+test('الجولة ٣٣: الرقم الشبيه داخل الكلمة ومعه رقمٌ ملاصق', () => {
+  for (const name of ['Ali 0wner1', 'Ali 0wner0', 'Ali 1 0wner3', 'Ali 0vvner1', 'Ali own3r', 'Ali Sup3rv1sor', 'Ali Superv1sor', 'Ali 0wner', 'Ali owner1', 'Ali 3owner']) {
+    expect(validateProfile({ name, phone: '0500000033' }, true).ok).toBe(false);
+  }
+  for (const name of ['Bill 1', 'Room 101', 'Ali 3li', 'Owners Club', 'Ali Ownerson', 'Downer Smith', 'عبد المالك الشهري']) {
+    expect(validateProfile({ name, phone: '0500000033' }, true).ok).toBe(true);
+  }
+});

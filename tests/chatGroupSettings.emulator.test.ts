@@ -341,3 +341,12 @@ d('الجولة ٣٢: الرقم الملاصق للمحجوز حدُّ كلمة
     for (const name of ['Bill 1', 'محمد المالكي']) expect(await self(name)).toBe(200);
   });
 });
+
+d('الجولة ٣٣: الرقم الشبيه داخل الكلمة ومعه رقمٌ ملاصق في القواعد', () => {
+  test('١٧ سلبي: «0wner1» و«0vvner1» مرفوضان · وإيجابي: «Ali 3li» و«Owners Club» مقبولان', async () => {
+    await seed();
+    const self = (name: string) => put(`orgs/${ORG}/members/${A}?updateMask.fieldPaths=name&updateMask.fieldPaths=phone`, { name, phone: '0500000033' }, A);
+    for (const name of ['Ali 0wner1', 'Ali 0vvner1', 'Ali 1 0wner3', 'Ali Sup3rv1sor']) expect(await self(name)).toBe(403);
+    for (const name of ['Ali 3li', 'Owners Club']) expect(await self(name)).toBe(200);
+  });
+});

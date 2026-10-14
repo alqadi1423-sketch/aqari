@@ -658,8 +658,7 @@ service cloud.firestore {
       // قرار المالك «رابعاً ١٠») · يطابق reservedName على الجهاز
       function profileComplete(d) {
         return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$')
-          && !d.name.lower().replace('عبد +المالك', 'عبدالمالك').replace('[کڪ]', 'ك').replace('[ٱ]', 'ا').replace('[l|]', 'i').replace('vv', 'w').replace('[0]', 'o').replace('[5]', 's').replace('[1]', 'i').replace('[3]', 'e').matches('(?s)(.*[·:].*|(.*[^ء-يa-z])?(المالك|مالك المنشأة|owner|supervis[a-z]*)([^ء-يa-z].*)?)')
-          && !d.name.lower().replace('عبد +المالك', 'عبدالمالك').replace('[کڪ]', 'ك').replace('[ٱ]', 'ا').replace('[l|]', 'i').replace('vv', 'w').matches('(?s)(.*[·:].*|(.*[^ء-يa-z])?(المالك|مالك المنشأة|owner|supervis[a-z]*)([^ء-يa-z].*)?)')
+          && !d.name.lower().replace('عبد +المالك', 'عبدالمالك').replace('[کڪ]', 'ك').replace('[ٱ]', 'ا').replace('[l|]', 'i').replace('vv', 'w').matches('(?s)(.*[·:].*|(.*[^ء-يa-z])?(المالك|مالك المنشأة|[o0]wn[e3]r|[s5]up[e3]rv[i1][s5][a-z0-9]*)([^ء-يa-z].*)?)')
           // حروفٌ عربية بلا تطويل ولا تشكيل، ولاتينية، وأرقام، ومسافة وشرطة ونقطة وفاصلة عليا · فلا يُحاكى المحجوز بتطويلٍ أو تشكيلٍ أو
           // حرفٍ شبيه (المتحقق المستقل، الجولة ٢٨) · والجهاز ينزع التطويل والتشكيل قبل الحفظ
           && d.name.matches("[ء-غف-ي٠-٩ٱ-ۓa-zA-Z0-9 .'-]+");
