@@ -381,6 +381,25 @@ test('المراجعة ٧ (المتحقق، الجولة الثالثة عشرة
   await sync(b, r); await sync(b, r);
   for (const k of ['DU1', 'DU2']) expect(b.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [k])).toBeFalsy();
   expect(bal(b, '5600')).toBe(exp);
+  // الجولة الرابعة عشرة: قيد إهلاكٍ عُكس بمرآته، ومرآة التحويل، ثم عكس إهلاكٍ بالإجمالي: لا يُعكس المعكوس مرتين
+  const { reverseEntryById } = await import('@/domain/accounting/post');
+  const dep = db.get<{ id: string }>(`SELECT e.id FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+    WHERE e.src_type IN ('depreciation', 'asset_dep') AND l.asset_id = ? AND e.reversed_by IS NULL LIMIT 1`, [a1.id])!.id;
+  reverseEntryById(db, dep, 'عكس إهلاك مصطنع');
+  const conv = db.get<{ id: string }>(`SELECT id FROM journal_entries WHERE src_type = 'asset_convert' AND src_id = ?`, [pid])!.id;
+  reverseEntryById(db, conv, 'عكس تحويل مصطنع');
+  await sync(db, r); await sync(b, r);
+  const exp2 = bal(b, '5600');
+  // بإجمالي ما رُحِّل على الجهاز ب (قبل العكس) · والصافي دونه بما عُكس
+  const gross = Number(b.get<{ n: number }>(`SELECT COALESCE(SUM(l.credit_halalas), 0) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+    WHERE l.account_code = '1490' AND l.asset_id = ? AND e.src_type IN ('depreciation', 'asset_dep') AND e.status = 'مرحّل'`, [a1.id])!.n);
+  const du3 = undo('DU3', pid);
+  du3.lines = du3.lines!.map((l) => ({ ...l, debit_halalas: Number(l.debit_halalas) ? gross : 0, credit_halalas: Number(l.credit_halalas) ? gross : 0 }));
+  r.inject(du3);
+  await sync(b, r); await sync(b, r);
+  // والمنتظر من قبل (DU2 بالإجمالي) لا يدخل حين يُعكس التحويل: الصافي دون الإجمالي بما عُكس من إهلاك
+  expect(b.all(`SELECT id FROM journal_entries WHERE id IN ('DU1', 'DU2', 'DU3')`)).toEqual([]);
+  expect(bal(b, '5600')).toBe(exp2);
   db.close(); b.close();
 });
 

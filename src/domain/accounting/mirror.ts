@@ -35,7 +35,8 @@ const POSTED_SQL = "e.status = 'مرحّل' AND e.deleted_at IS NULL"; // i18n-e
 /**
  * شروط قبول عكس الإهلاك (المتحقق المستقل، الجولة الثالثة عشرة: كان شكله وحده يكفي فيمحو إهلاك أي أصلٍ والتحويل قائم):
  * تحويلٌ «asset_convert» قائمٌ لمصدره قد عُكس أو وصلت مرآته (وإلا انتظر: المرايا وقيد الإهلاك في معاملةٍ واحدة وتصل بأي ترتيب)،
- * وكل أصلٍ فيه من قيود تحويله، ولا يتجاوز لأصلٍ ما رُحِّل عليه من إهلاك (قيود «depreciation» و«asset_dep» كما يحسبه التراجع)،
+ * وكل أصلٍ فيه من قيود تحويله، ولا يتجاوز لأصلٍ صافي ما رُحِّل عليه من إهلاك («depreciation» و«asset_dep» بعد عكوسها، كما يحسبه
+ * التراجع غير المعكوس · الجولة الرابعة عشرة: كان الإجمالي فيُعكس الإهلاك المعكوس مرتين)،
  * ولا قيود عكس إهلاكٍ أكثر من تحويلاته · 'await' إن لم يصل ما ينتظره، وإلا سبب الرفض، وفارغ إن قُبل
  */
 export function depUndoIssue(db: DB, revId: string, srcId: string): string {
@@ -53,7 +54,8 @@ export function depUndoIssue(db: DB, revId: string, srcId: string): string {
       WHERE l.asset_id = ? AND e.src_type IN ('asset_convert', 'asset_catchup') AND e.src_id = ? AND ${POSTED_SQL} LIMIT 1`, [id, srcId]);
     if (!own) return t('mirror.depForeign', { lng: 'ar' });
     const booked = Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS n FROM journal_lines l
-      JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_code = '1490' AND l.asset_id = ? AND e.src_type IN ('depreciation', 'asset_dep') AND ${POSTED_SQL}`, [id])!.n);
+      JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_code = '1490' AND l.asset_id = ?
+        AND e.src_type IN ('depreciation', 'asset_dep', 'depreciation_rev', 'asset_dep_rev') AND ${POSTED_SQL}`, [id])!.n);
     const undone = Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(l.debit_halalas), 0) AS n FROM journal_lines l
       JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_code = '1490' AND l.asset_id = ? AND e.src_type = 'asset_convert_rev' AND ${POSTED_SQL}
         AND e.id IN (SELECT id FROM journal_entries WHERE src_type = 'asset_convert_rev' AND src_id = ?)`, [id, srcId])!.n);
