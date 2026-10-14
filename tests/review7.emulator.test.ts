@@ -165,6 +165,36 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     accepted(await write(null, { ...draft, u: 'm3', d: { ...draft.d!, status: 'مرحّل' } }));
   });
 
+  /*
+   * المتحقق المستقل (الجولة العاشرة): «by» الإلزامي لا يكسر تعديل العضو صفّه بعد أن عدّله المالك، ولا تعديلاً أرسله قبل الهجرة ٤٢
+   * لصفٍّ رُفع بلا كاتب · ولا يدّعي العضو مسودةَ غيره
+   */
+  test('١ تعديل المالك يُبقي كاتب صفّ العضو · والعضو يضيف كاتبه لصفٍّ بلا كاتب · ولا يدّعي مسودة غيره', async () => {
+    const unit: RemoteDoc = ann(CONALL, { id: 'units__R7U', t: 'units', k: 'R7U', u: 'u1', dev: 'dev-c', del: false,
+      d: { id: 'R7U', property_id: 'P2', name: 'وحدة مصطنعة', type: 'شقة', created_at: '2026-02-01' } });
+    // وحدةٌ أنشأها العضو (بكاتبه) ثم عدّلها المالك، فكاتبها عنده من الوارد
+    const PRO1 = member('R7-PRO1', { props: 3, contracts: 1 }, 'all');
+    expect(await putDoc(`orgs/${ORG}/members/${PRO1.uid}`, { email: 'r7-pro1@example.test', perm: PRO1.perms, all: true, props: [], tokens: memberTokens(PRO1) }, ORG)).toBe(200);
+    const mine = ann(PRO1, { ...unit, u: 'u1' });
+    expect(mine.by).toBe(PRO1.uid);
+    accepted(await write(PRO1, mine));
+    db.run(`INSERT OR IGNORE INTO row_by (tbl, pk, uid) VALUES ('units', 'R7U', ?)`, [PRO1.uid!]);
+    db.run(`INSERT INTO units (id, property_id, unit_no, created_at) VALUES ('R7U', 'P2', 'R7U', '2026-02-01')`);
+    const ownerEdit = ann(null, await built('units', 'R7U'));
+    expect(ownerEdit.by).toBe(PRO1.uid);
+    accepted(await write(null, { ...ownerEdit, u: 'u2' }));
+    accepted(await write(PRO1, ann(PRO1, { ...(await built('units', 'R7U')), u: 'u3' })));
+    // صفٌّ رُفع بلا كاتب (من المالك): العضو يضيف كاتبه، ولا يضيف كاتب غيره
+    const ownerUnit = ann(PRO1, await built('units', 'UN2'));
+    expect(ownerUnit.by).toBeUndefined();
+    accepted(await write(PRO1, { ...ownerUnit, u: 'u4', by: PRO1.uid! }));
+    deniedByLogic(await write(PRO1, { ...ownerUnit, u: 'u5', by: LED.uid! }), 'update');
+    // ومسودة غيره (بلا كاتب) لا يدّعيها: مسودة عقدٍ أنشأها المالك
+    db.run(`UPDATE contracts SET status = status WHERE id = ?`, [C1]);
+    const draft = ann(CONALL, await built('contracts', C1));
+    deniedByLogic(await write(CONALL, { ...draft, u: 'u6', by: CONALL.uid! }), 'update');
+  });
+
   test('٢٠ نقل العقد إلى عقارٍ آخر برموز العقار القديم يُرفض · وبرموز عقاره الجديد يُقبل', async () => {
     const doc = ann(CONALL, await built('contracts', C1));
     const honest = doc.g!.map((x) => x.replace('|P1', '|P2'));

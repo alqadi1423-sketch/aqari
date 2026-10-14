@@ -180,7 +180,8 @@ export function annotate(db: DB, doc: RemoteDoc, a: Access): AclDocs {
     const rb = db.get<{ uid: string }>(`SELECT uid FROM row_by WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
     if (!rb) extra.by = a.uid ?? undefined;
     else if (rb.uid) extra.by = rb.uid;
-  } else if (DRAFT_TABLES.has(doc.t)) {
+  } else {
+    // والمالك يحفظ كاتب الصف المعروف لكل جدول، فتعديله لا يمحوه (المتحقق المستقل، الجولة العاشرة)
     const by = one(db, `SELECT uid AS v FROM row_by WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
     if (by) extra.by = by;
   }

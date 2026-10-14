@@ -417,7 +417,10 @@ ${guardFns(schema)}
                 : (after.g == before.g || after.pids != before.pids || (after.t == 'attachments' && gBound(after)))))
         && keyOk(after) && blobShapeOk(after) && moneyKept(m, before, after)
         && isMember(org) && op is string
-        && after.get('by', null) == before.get('by', null)
+        // الكاتب كما هو، أو يضيفه العضو نفسه لصفٍّ بلا كاتب في غير جداول المسودات (ما رُفع قبل الهجرة ٤٢ أو محاه إصدارٌ
+        // أقدم للمالك · المتحقق المستقل، الجولة العاشرة) · ولا يدّعي مسودةَ غيره
+        && (after.get('by', null) == before.get('by', null) ? true
+            : (!('by' in before) && after.get('by', '') == request.auth.uid && !(baseT(after.t) in ['contracts', 'invoices', 'journal_entries'])))
         && (baseT(after.t) != 'vat_filings' || m.all == true)
         // مصدر القيد عند التعديل كالإنشاء (المراجعات الخارجية «ثالثاً أ ٤» · المتحقق المستقل: كان يُفحص عند الإنشاء وحده)
         && (after.del == true || baseT(after.t) != 'journal_entries' || srcOk(op, after.d.get('src_type', null), after.d.get('status', '')))

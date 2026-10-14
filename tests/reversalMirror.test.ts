@@ -107,3 +107,49 @@ describe('mirrorIssue', () => {
     db.close();
   });
 });
+
+/* ═══ المتحقق المستقل، الجولة العاشرة ═══ */
+
+/** عاكسٌ مرحّل من عضو (بكاتبه) */
+const memberRev = (k: string, srcId: string, lines: [string, number, number][]): RemoteDoc => ({ ...fake(k, srcId, lines), by: 'member-1' });
+
+test('١ عاكسٌ مرحّل من عضو بلا أصلٍ يعكسه (مصدرٌ مخترع وأي مبلغ) لا يدخل دفتر المالك', async () => {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, UID);
+  await sync(a, r);
+  r.inject(memberRev('MR1', 'ANY', [['1100', 50000000, 0], ['4200', 0, 50000000]]));
+  await sync(a, r);
+  expect(a.get(`SELECT 1 FROM journal_entries WHERE id = 'MR1'`)).toBeFalsy();
+  expect(reasonOf(a, 'MR1')).toMatch(/أصل/);
+  a.close();
+});
+
+test('١ وعاكسٌ من عضو لأصلٍ قائم بسطورٍ غير مرآته لا يدخل · ومرآته الحقيقية تدخل', async () => {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, UID);
+  const e = original(a);
+  await sync(a, r);
+  r.inject(memberRev('MR2', e.id, [['1100', 0, 1], ['4200', 1, 0]]));
+  await sync(a, r);
+  expect(a.get(`SELECT 1 FROM journal_entries WHERE id = 'MR2'`)).toBeFalsy();
+  r.inject(memberRev('MR3', e.id, [['1100', 0, 100000], ['4200', 100000, 0]]));
+  await sync(a, r);
+  expect(a.get<{ s: string }>(`SELECT status AS s FROM journal_entries WHERE id = 'MR3'`)?.s).toBe('مرحّل');
+  a.close();
+});
+
+test('والربط المعلّق المرفوض يُسجَّل مرةً لا في كل دورة', async () => {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, UID);
+  const e = original(a);
+  await sync(a, r);
+  r.inject(linkDoc(r, e.id, 'FK3'));
+  await sync(a, r);
+  r.inject(fake('FK3', e.id, [['1100', 0, 1], ['4200', 1, 0]]));
+  for (let i = 0; i < 3; i++) await sync(a, r);
+  expect(Number(a.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects WHERE pk = ?`, [e.id])!.n)).toBe(1);
+  a.close();
+});

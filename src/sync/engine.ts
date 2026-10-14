@@ -342,17 +342,43 @@ function linkReversal(db: DB, entryId: string, revId: string, doc?: RemoteDoc): 
 }
 export function resolvePendingReversals(db: DB): number {
   const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
-  let done = 0;
+  let done = 0, removed = 0;
   for (const [entryId, revId] of Object.entries(pending)) {
     if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [revId])) continue;
     const why = mirrorIssue(db, entryId, revId);
     if (why) linkRejected(db, entryId, why);
     else { db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [revId, entryId]); done++; }
     delete pending[entryId];
+    removed++;
   }
-  if (done) setSyncState(db, PENDING_REV, Object.keys(pending).length ? JSON.stringify(pending) : null);
+  // يُحفظ بكل ما خرج منه، رُبط أو رُفض (المتحقق المستقل: المرفوض كان يُسجَّل رفضه في كل دورة)
+  if (removed) setSyncState(db, PENDING_REV, Object.keys(pending).length ? JSON.stringify(pending) : null);
   return done;
 }
+
+/**
+ * العاكس المرحّل من عضو (المراجعة الخارجية ٧ · النتيجة ١ · المتحقق المستقل، الجولة العاشرة): القواعد تقبل «_rev» من الأعضاء
+ * بأي سطور وأي مصدر، فجهاز المالك لا يرحّله إلا مرآةً لأصلٍ قائم عنده (mirror.ts) · وإلا رُفض المستند كله فلا يدخل الدفتر ·
+ * وعاكس المالك نفسه موثوق، وجهاز العضو قد لا يرى الأصل فلا يُفحص فيه
+ */
+function memberReversalCheck(db: DB, doc: RemoteDoc): void {
+  const src = (doc.d!.src_type as string | null) ?? null;
+  if (!src || !src.endsWith('_rev') || getSyncState(db, 'membership')) return;
+  const owner = ownerUid(db);
+  if (!doc.by || doc.by === owner) return;
+  const base = src.slice(0, -4);
+  const srcId = (doc.d!.src_id as string | null) ?? '';
+  const originals = db.all<{ id: string }>(base === 'manual'
+    ? `SELECT id FROM journal_entries WHERE id = ? AND src_type IS NULL AND status = 'مرحّل'` // i18n-exempt: حالة القيد المخزّنة
+    : `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, // i18n-exempt: حالة القيد المخزّنة
+    base === 'manual' ? [srcId] : [base, srcId]);
+  if (!originals.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.noOriginal', { lng: 'ar' }), lng: 'ar' }));
+  const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
+  if (!issues.includes('')) throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' }));
+}
+
+/** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
+const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? getSyncState(db, 'org') : getSyncState(db, 'uid'));
 
 const DIM_COLS = ['property_id', 'unit_id', 'contract_id', 'cost_center_id', 'asset_id'] as const;
 
@@ -397,6 +423,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
       keys.map((c) => l[c] as SqlValue));
   }
   if (posted) db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [doc.k]);
+  if (posted) memberReversalCheck(db, doc);
   if (remoteRev) linkReversal(db, doc.k, remoteRev, doc);
   return 'applied';
 }

@@ -728,7 +728,9 @@
     "source": "The reversal source does not match its original",
     "count": "The reversal does not mirror its original: line count differs",
     "line": "The reversal does not mirror its original: a line has no counterpart",
-    "linkRejected": "Reversal link rejected · {{why}}"
+    "linkRejected": "Reversal link rejected · {{why}}",
+    "noOriginal": "A member reversal with no original to reverse",
+    "revRejected": "Reversal rejected · {{why}}"
   },
   "journal": {
     "saveDraft": "Save draft",
