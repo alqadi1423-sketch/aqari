@@ -68,3 +68,19 @@ test('وشاهد الحذف المرفوع بحاذفه', () => {
   expect(buildDoc(db, 'meters', 'NOPE', 'delete', AT, 'dev')).toMatchObject({ del: true, dby: OWN });
   db.close();
 });
+
+test('٢ (الجولة العشرون) الكنس الدوري للسلة على جهاز المالك وحده: جهاز العضو لا يحذف نهائياً فلا يُرسل حذف أبناء ما في سلة المالك', async () => {
+  const { purgeExpiredTrash, trashItems } = await import('@/domain/trash');
+  for (const member of [true, false]) {
+    const db = memDb();
+    const p = addProperty(db, { name: 'عقار مصطنع' });
+    const u = addUnit(db, p, { unit_no: 'T-1' });
+    db.run(`UPDATE units SET deleted_at = '2020-01-01T00:00:00.000Z' WHERE id = ?`, [u]);
+    if (member) db.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('membership', '{"org":"OWN"}')`);
+    expect(trashItems(db).length).toBeGreaterThan(0);
+    const n = await purgeExpiredTrash(db);
+    expect(n === 0).toBe(member);
+    expect(!!db.get(`SELECT 1 FROM units WHERE id = ?`, [u])).toBe(member);
+    db.close();
+  }
+});

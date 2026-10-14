@@ -136,13 +136,31 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     `SELECT COUNT(*) AS n FROM contract_payments p
      WHERE p.net_halalas > 0 ${hasCol(db, 'contract_payments', 'cancelled_at') ? 'AND p.cancelled_at IS NULL' : ''} AND NOT EXISTS (
        SELECT 1 FROM journal_entries e
-       WHERE e.id = p.journal_entry_id AND e.status = 'مرحّل' AND e.deleted_at IS NULL
+       WHERE e.id = p.journal_entry_id AND e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.reversed_by IS NULL
      )`
   )!;
   out.push({
     name: 'كل دفعة محصَّلة لها قيد مرحّل',
     ok: Number(unposted.n) === 0,
     value: Number(unposted.n) + ' بلا قيد',
+  });
+
+  // مرآة واحدة لكل أصل (المراجعة الخارجية ٧ · النتيجة ٣ · قرار المالك «رابعاً ٣»): عواكس مرحّلة لمصدرٍ أكثر من أصوله المرحّلة ·
+  // كعاكسين من جهازين لدفعةٍ واحدة (والفحص في المزامنة يمنعه على جهاز المالك · sync/engine.ts: memberReversalCheck) · وكانت
+  // الدفعة الحية التي عُكس قيدها تُعدّ «لها قيد» (المراجعة ٧ · النتيجة ١)
+  const extraRevs = db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM (
+       SELECT r.src_type, r.src_id, COUNT(*) AS revs,
+         (SELECT COUNT(*) FROM journal_entries o WHERE o.status = 'مرحّل' AND o.deleted_at IS NULL
+            AND ((r.src_type = 'manual_rev' AND o.id = r.src_id AND (o.src_type IS NULL OR o.src_type = 'manual'))
+              OR (o.src_type || '_rev' = r.src_type AND o.src_id = r.src_id))) AS origs
+       FROM journal_entries r WHERE r.status = 'مرحّل' AND r.deleted_at IS NULL AND r.src_type LIKE '%\\_rev' ESCAPE '\\'
+       GROUP BY r.src_type, r.src_id) WHERE revs > origs`
+  )!;
+  out.push({
+    name: 'مرآة واحدة لكل أصل', // i18n-exempt: اسم فحصٍ مخزَّن في بيان النسخة كأخواته
+    ok: Number(extraRevs.n) === 0,
+    value: Number(extraRevs.n) + ' مصدر', // i18n-exempt: قيمة فحصٍ تُعرض كأخواتها
   });
 
   // ١٠) ذمم الفواتير (المراجعة ٤.٢): لا فاتورة «مدفوعة» بلا قيد تحصيل، وحركة 1200 = المصدرة غير المحصّلة

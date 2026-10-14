@@ -242,8 +242,15 @@ export function purgeFromTrash(db: DB, table: string, id: string): void {
   purgeManyFromTrash(db, [{ table, id }]);
 }
 
-/** كنس دوري: حذف ما انقضت مدته نهائياً · دفعة واحدة */
+/**
+ * كنس دوري: حذف ما انقضت مدته نهائياً · دفعة واحدة · على جهاز المالك وحده (المراجعة الخارجية ٧ · النتيجة ٢ · المتحقق المستقل،
+ * الجولة العشرون): جهاز العضو كان يكنس بمدته هو فيُرسل حذف أبناء عقدٍ في سلة المالك (دفعاته ومطالباته) قبل أن تنقضي مدة المالك،
+ * فتُستعاد ناقصة · وحذف المالك يصل الأعضاء بمزامنته
+ */
 export async function purgeExpiredTrash(db: DB, now: Date = new Date()): Promise<number> {
+  let member = false;
+  try { member = !!db.get(`SELECT 1 FROM sync_state WHERE k = 'membership' AND v IS NOT NULL`); } catch { member = false; }
+  if (member) return 0;
   const items = trashItems(db, now).filter((i) => i.daysLeft <= 0);
   return purgeManyFromTrash(db, items);
 }

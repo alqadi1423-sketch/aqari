@@ -25,6 +25,7 @@ const CHECKS = [
   'ذمم الفواتير = الفواتير المصدرة غير المحصّلة',
   'عربون الحجوزات = العربون المحتجز غير المسوّى',
   'الرصيد الدائن للمستأجرين يطابق حسابه 2410',
+  'مرآة واحدة لكل أصل',
 ];
 
 const check = (db: ReturnType<typeof memDb>, name: string) => {
@@ -56,7 +57,7 @@ describe('فحوص المطابقة الثمانية · خلل مزروع لكل
   test('القاعدة السليمة: الفحوص الثمانية كلها تمر', () => {
     const { db } = seededDb();
     const results = integrityChecks(db);
-    expect(results.length).toBe(12);
+    expect(results.length).toBe(13);
     for (const r of results) expect({ name: r.name, ok: r.ok }).toEqual({ name: r.name, ok: true });
     for (const n of CHECKS) expect(results.some((r) => r.name === n)).toBe(true);
     db.close();

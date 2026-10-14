@@ -322,11 +322,11 @@ test('#35 بقرار المالك: التراجع في سنةٍ بعد التح�
 });
 
 /*
- * التراجع عن التحويل (undoConversion) لا يستدعيه التطبيق بعد · وقيد عكس الإهلاك المحسوب فيه ليس مرآةً لقيدٍ بعينه، وكل استثناءٍ
- * له على الجهاز الآخر كان ثغرةً وجدها المتحقق المستقل (الجولات ١٢ إلى ١٥) فلا استثناء: مرايا قيود التحويل تصله، وقيد الإهلاك
- * المحسوب يُرفض فيه حتى يُعطى مصدراً خاصاً به حين تُبنى شاشة التراجع (الخطة: «التراجع عن التحويل»)
+ * التراجع عن التحويل (undoConversion) لا يستدعيه التطبيق بعد · وقيد عكس الإهلاك المحسوب فيه ليس مرآةً لقيدٍ بعينه، فكان بمصدر
+ * «asset_convert_rev» يُرفض على الجهاز الآخر، وكل استثناءٍ له كان ثغرةً (المتحقق المستقل، الجولات ١٢ إلى ١٥) · فصار بمصدره الخاص
+ * «asset_dep_undo» (لا يكتبه عضو) فيصل كاملاً، ومرايا قيود التحويل تُفحص كأي عاكس
  */
-test('المراجعة ٧ (المتحقق، الجولات ١٢ إلى ١٥): مرايا التراجع عن التحويل تصل جهاز المالك الآخر · وقيد الإهلاك المحسوب يُرفض فيه حتى يُعطى مصدراً', async () => {
+test('المراجعة ٧ (المتحقق، الجولات ١٢ إلى ١٥): التراجع عن التحويل يصل جهاز المالك الآخر كاملاً · وقيد الإهلاك بمصدره الخاص', async () => {
   const { MemoryRemote } = await import('./helpers/memoryRemote');
   const { enableSync, syncOnce, docId } = await import('@/sync/engine');
   const { getMeta } = await import('@/repos/settings');
@@ -344,10 +344,8 @@ test('المراجعة ٧ (المتحقق، الجولات ١٢ إلى ١٥): م
   const b = memDb();
   enableSync(b, 'U');
   await sync(b, r); await sync(b, r);
-  const undoId = db.get<{ id: string }>(`SELECT e.id FROM journal_entries e WHERE e.src_type = 'asset_convert_rev'
-    AND NOT EXISTS (SELECT 1 FROM journal_entries o WHERE o.reversed_by = e.id)`)!.id;
-  expect(b.all<{ pk: string }>(`SELECT pk FROM sync_rejects`).map((x) => x.pk)).toEqual([undoId]);
-  expect(bal(b, '1410')).toBe(bal(db, '1410'));
+  expect(b.all(`SELECT reason FROM sync_rejects`)).toEqual([]);
+  for (const c of ['1410', '1490', '5600']) expect(bal(b, c)).toBe(bal(db, c));
   // وعكس إهلاكٍ مزوّر فوق ما رُحِّل لأصله: يُرفض
   const asset = db.get<{ id: string }>(`SELECT asset_id AS id FROM journal_lines WHERE account_code = '1490' AND asset_id IS NOT NULL LIMIT 1`)!.id;
   r.inject({ id: docId('journal_entries', 'DUX'), t: 'journal_entries', k: 'DUX', u: '2099-01-01T00:00:00.000Z', dev: 'other', del: false,

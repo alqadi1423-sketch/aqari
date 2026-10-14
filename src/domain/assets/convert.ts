@@ -189,7 +189,9 @@ export function undoConversion(db: DB, purchaseId: string, today: string): void 
         if (prior) lines.push({ account: ACC_RETAINED, descr: a.name, debit: 0, credit: prior, dims });
       }
     }
-    if (lines.length) postEntry(db, { date: today, memo: t('assets.memo.undo', { no: p.no, lng: 'ar' }), lines, srcType: 'asset_convert_rev', srcId: purchaseId });
+    // بمصدره الخاص لا «asset_convert_rev»: ليس مرآةً لقيدٍ بعينه، ففحص العاكس الوارد يرفضه وفحص «مرآة واحدة لكل أصل» يعدّه
+    // (المراجعة الخارجية ٧ · الخطة: «التراجع عن التحويل») · ولا يكتبه عضو (ليس في مصادر قسم الأصول بالقواعد)
+    if (lines.length) postEntry(db, { date: today, memo: t('assets.memo.undo', { no: p.no, lng: 'ar' }), lines, srcType: 'asset_dep_undo', srcId: purchaseId });
     const stamp = new Date().toISOString();
     db.run(`UPDATE assets SET deleted_at = ? WHERE purchase_id = ? AND source = 'convert' AND deleted_at IS NULL`, [stamp, purchaseId]);
     db.run(`UPDATE assets SET cost_halalas = NULL, purchase_id = NULL, purchase_line_id = NULL WHERE purchase_id = ? AND source != 'convert' AND deleted_at IS NULL`, [purchaseId]);
