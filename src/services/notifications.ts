@@ -47,6 +47,15 @@ export async function ensurePermission(): Promise<boolean> {
 const WEEKLY_ID = 'weekly-export-reminder';
 
 /**
+ * إلغاء التذكيرات المجدولة عند النظام وسجلّها (المراجعة الخارجية ٧ · النتيجة ٣٠): بعد التفريغ والإزالة والخروج كانت تبقى فتُظهر
+ * أسماء وحدات حسابٍ لم يعد على الجهاز حتى يُفتح التطبيق · وتُعاد جدولتها من بيانات الجهاز عند الإقلاع وبعد كل تغيير
+ */
+export async function cancelAllNotifications(db?: DB | null): Promise<void> {
+  try { await Notifications.cancelAllScheduledNotificationsAsync(); } catch { /* لا إذن */ }
+  try { db?.run(`DELETE FROM scheduled_notifications`); } catch { /* مغلقة */ }
+}
+
+/**
  * إعادة الجدولة الكاملة · تُستدعى بعد كل تغيير في العقود أو الدفعات
  * أو المستندات أو الإعدادات، وعند إقلاع التطبيق.
  */

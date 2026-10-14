@@ -20,6 +20,14 @@ const LATIN_RUN = /[A-Za-z][\w\-.]*(?:\s+[A-Za-z][\w\-.]*)*/g;
  * التقنية ونوع الخطأ. وسطور الأثر (مواضع في الكود بأرقام سطورها) تبقى كما هي، فهي أنفع ما في
  * التقرير ولا بيانات فيها.
  */
+/**
+ * تفاصيل العطل في سجل العمليات المزامَن (المراجعة الخارجية ٧ · النتيجة ٣١): يقرؤه كل من له قسم السجل، ورسالة الدومين تسمّي
+ * المستأجر والمبلغ (ولو من عقارٍ محجوب عن القارئ) · فتُحجب كتقرير الملف
+ */
+export function failureAuditDetail(e: unknown): string {
+  return redactForReport(e instanceof Error ? (e.name && e.name !== 'Error' ? e.name + ': ' : '') + e.message : String(e)).slice(0, 300);
+}
+
 export function redactForReport(text: string): string {
   return text.split('\n').map((line) => {
     if (FRAME.test(line)) return line;

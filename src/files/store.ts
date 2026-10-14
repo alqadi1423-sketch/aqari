@@ -4,6 +4,8 @@
  * نفس الملف مرفوعاً مرتين = صف واحد في blobs · منع التكرار خاصية بنيوية.
  * كل رفع يمر عبر putAttachment فيُسجَّل تلقائياً بتصنيفه (وهذا ما تعتمد عليه المكتبة).
  */
+import { getSetting } from '../repos/settings';
+import { stripImageMetadata } from '../domain/jpegExif';
 import type { DB } from '../db/adapter';
 import type { FS, Hasher } from './fsAdapter';
 import { joinPath } from './fsAdapter';
@@ -84,6 +86,9 @@ export async function putAttachment(
   bytes: Uint8Array,
   meta: AttachmentMeta
 ): Promise<AttachmentRow> {
+  // نزع البيانات الوصفية من الصور (خيارٌ في الإعدادات، مطفأ افتراضياً بقرار المالك 2026-08-20) في كل مسار إرفاق لا في واحد
+  // (المراجعة الخارجية ٧ · النتيجة ٢٧: المكتبة والمطالبات والمنشأة والطباعة كانت تُرفق الأصل)
+  if (getSetting(env.db, 'stripExif')) bytes = stripImageMetadata(bytes);
   const sha = await env.hasher(bytes);
   const ext = extOf(meta.originalName, meta.mime);
   const now = new Date().toISOString();

@@ -35,7 +35,13 @@ export const NID_RE = /^[12][0-9]{9}$/;
  * القواعد · والفيصل شارة الدور من المعرّف (src/chat/roles.ts)
  */
 export const RESERVED_NAME_RE = /المالك|مالك المنشأة|·|:|owner|supervis/i; // i18n-exempt: نصٌّ محجوز تطابقه القواعد
-export const reservedName = (name: string): boolean => RESERVED_NAME_RE.test(name) || !NAME_CHARS_RE.test(name);
+/**
+ * طيّ الحروف الشبيهة قبل فحص المحجوز (المتحقق المستقل، الجولة ٢٩): الكافان الفارسية والمزخرفة كافٌ، وألف الوصل ألف، والأرقام
+ * الشبيهة باللاتينية حروفها · ويطابقها طيّ القواعد (rulesGen.ts profileComplete)
+ */
+export const FOLD_PAIRS: Array<[string, string]> = [['[\u06A9\u06AA]', '\u0643'], ['[\u0671]', '\u0627'], ['[0]', 'o'], ['[5]', 's'], ['[1]', 'l'], ['[3]', 'e']]; // i18n-exempt: حروفٌ تُطوى لا نصٌّ يظهر
+export const foldName = (name: string): string => FOLD_PAIRS.reduce((s, [re, to]) => s.replace(new RegExp(re, 'g'), to), name.toLowerCase());
+export const reservedName = (name: string): boolean => RESERVED_NAME_RE.test(foldName(name)) || !NAME_CHARS_RE.test(name);
 /** حروف الاسم المقبولة · تطابق profileComplete في القواعد (المتحقق المستقل، الجولة ٢٨: التطويل والتشكيل والحرف الشبيه) */
 const NAME_RANGES: Array<[number, number]> = [[0x0621, 0x063a], [0x0641, 0x064a], [0x0660, 0x0669], [0x0671, 0x06d3]];
 /** صنف حروف الاسم · منه صنف الجهاز وصنف القواعد (rulesGen.ts profileComplete) */
@@ -70,6 +76,20 @@ export function validateProfile(input: Partial<MemberProfile>, required: boolean
   if (nid && !NID_RE.test(nid)) return { ok: false, field: 'nid', error: 'الهوية أو الإقامة عشرة أرقام أولها ١ أو ٢' };
   if (title.length > 60) return { ok: false, field: 'title', error: 'المسمى الوظيفي أطول من ٦٠ حرفاً' };
   return { ok: true, profile: { name, phone, nid, title } };
+}
+
+/**
+ * بيانات العضو كما تُكتب في سجل العمليات المزامَن (يقرؤه كل من له قسم السجل): الاسم والمسمى، والهوية والجوال بحالهما لا بقيمتهما
+ * (المراجعة الخارجية ٧ · النتيجة ٢٩ (ج): الجوال كان يُكتب صريحاً) · newer: للنسخة السابقة ما بعدها، فما تغيّر فيها «قديم»
+ */
+export function profileForAudit(p: MemberProfile | null, newer: MemberProfile | null): Record<string, string> | null {
+  if (!p) return null;
+  const state = (v: string, o: string | undefined, fresh: string, old: string) => (!v ? '' : o && o !== v ? old : fresh);
+  return {
+    الاسم: p.name, 'المسمى الوظيفي': p.title, // i18n-exempt: مفتاحٌ مخزَّن في سجل العمليات
+    الجوال: state(p.phone, newer?.phone, 'مُدخل', 'قديم'), // i18n-exempt: قيمة مخزّنة في سجل العمليات
+    الهوية: state(p.nid, newer?.nid, 'مُدخلة', 'قديمة'), // i18n-exempt: قيمة مخزّنة في سجل العمليات
+  };
 }
 
 /** ينقص الملفَ ما يلزم · فتظهر للعضو شاشة الإكمال بعد قبوله الدعوة */

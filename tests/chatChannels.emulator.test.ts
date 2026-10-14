@@ -88,8 +88,13 @@ d('المحادثة · الدفعة ٤: القنوات ومحادثات العق
     expect(await status(chat(A).addMember(SEC, A))).toBe(200);
     expect(await status(chat(ORG).sendMessage(SEC, { id: 'S1', name: NAMES[ORG], body: 'للعقود', link: null }))).toBe(200);
     expect((await chat(A).messagesSince(SEC, null)).length).toBe(1);
+    // حال المحادثة وأرقام رسائلها تُقرأ قبل السحب (إيجابي) · ولا بعده (المراجعة الخارجية ٧ · النتيجة ٣٤)
+    const raw = (path: string) => fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/chats/${SEC}/${path}`, { headers: { Authorization: 'Bearer ' + token(A) } }).then((r) => r.status);
+    expect(await raw('ids/S1')).toBe(200);
     await member(A, { props: 1 }, true, []);
     await expect(chat(A).messagesSince(SEC, null)).rejects.toThrow(/403/);
+    expect(await raw('ids/S1')).toBe(403);
+    expect(await raw('st/r_' + A)).toBe(403);
     expect(await status(chat(A).sendMessage(SEC, { id: 'S2', name: NAMES[A], body: 'بعد السحب', link: null }))).toBe(403);
     // المالك يزيله
     expect(await status(chat(ORG).removeMembers(SEC, [A]))).toBe(200);

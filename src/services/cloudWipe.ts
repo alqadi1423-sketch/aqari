@@ -5,7 +5,7 @@
  */
 import type { FirestoreRemote } from '../cloud/firestore';
 import { listObjects, deleteObject, filesPrefix, type StorageIO, type StorageTarget } from '../cloud/storage';
-import { chatPurgeOrg, chatForgetMe, type ChatSession } from '../chat';
+import { chatPurgeOrg, chatForgetMe, chatLeaveOrg, type ChatSession } from '../chat';
 import { wipeOrgCloud, leaveOrg } from './org';
 import { t } from '../i18n';
 
@@ -59,6 +59,8 @@ export async function deleteAccountCloud(
   onProgress?: (m: string) => void,
 ): Promise<void> {
   if (d.member) {
+    // يخرج من مجموعاتها أولاً كالمغادرة (المراجعة الخارجية ٧ · النتيجة ٢٩ (ب): كان معرّفه يبقى في أطرافها ومسؤوليها)
+    await chatLeaveOrg(d.chat, d.member.org).catch(() => {});
     await chatForgetMe(d.chat, d.member.org).catch(() => {});
     await leaveOrg(d.member.remote, d.member.org, d.member.uid).catch(() => {});
   }

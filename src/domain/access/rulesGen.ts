@@ -3,7 +3,7 @@
  * الذي يتحقق منه tests/opMatrix.test.ts هو نفسه ما يفرضه الخادم. tests/rulesGen.test.ts يُسقط الحزمة
  * إن اختلف الملف عن المولَّد، و UPDATE_RULES=1 يكتبه.
  */
-import { NAME_CLASS } from './profile';
+import { NAME_CLASS, FOLD_PAIRS } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
 import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR } from './opWrites';
@@ -536,7 +536,7 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
       // قرار المالك «رابعاً ١٠») · يطابق reservedName على الجهاز
       function profileComplete(d) {
         return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$')
-          && !d.name.lower().matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*')
+          && !d.name.lower()${FOLD_PAIRS.map(([re, to]) => `.replace('${re}', '${to}')`).join('')}.matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*')
           // حروفٌ عربية بلا تطويل ولا تشكيل، ولاتينية، وأرقام، ومسافة وشرطة ونقطة وفاصلة عليا · فلا يُحاكى المحجوز بتطويلٍ أو تشكيلٍ أو
           // حرفٍ شبيه (المتحقق المستقل، الجولة ٢٨) · والجهاز ينزع التطويل والتشكيل قبل الحفظ
           && d.name.matches("${NAME_CLASS}+");
@@ -570,13 +570,11 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
       }
 
       // حروف الأجهزة في ترقيم المنشأة · العضو يضيف حرف جهازه ولا يغيّر حرفاً قائماً
+      // للمالك وحده (المراجعة الخارجية ٧ · النتيجة ٣٦): لا يخصص الجهاز حروفاً الآن (الترقيم محلي بكتل numbering.ts)، وإضافة العضو
+      // كانت بلا حدٍّ ولا شكل فيحجز الحروف أو يضخّم المستند
       match /meta/devices {
         allow read: if orgOwner(org) || isMember(org);
-        allow create: if orgOwner(org);
-        allow update: if orgOwner(org) || (isMember(org)
-          && request.resource.data.keys().hasOnly(['letters'])
-          && request.resource.data.letters.diff(resource.data.letters).changedKeys().size() == 0
-          && request.resource.data.letters.diff(resource.data.letters).removedKeys().size() == 0);
+        allow create, update: if orgOwner(org);
       }
 
       // عهد المسح: يرفعه المالك عند «مسح كل البيانات» فيفرّغ كل جهاز نسخته عند أول مزامنة
@@ -625,8 +623,9 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
       }
       match /meta/counters {
         allow read: if orgOwner(org) || isMember(org);
-        allow create: if countersOk(request.resource.data, null)
-          && (orgOwner(org) || (isMember(org) && memberCountersOk(org, request.resource.data, null)));
+        // ينشئه المالك وحده (المراجعة الخارجية ٧ · النتيجة ٣٥: كان أول عضوٍ يزامن ينشئه قبل المالك ويسبق اختياره أرقام البداية) ·
+        // وجهازه ينشئه قبل أول دعوة (org.ts sendInvite)
+        allow create: if countersOk(request.resource.data, null) && orgOwner(org);
         allow update: if countersOk(request.resource.data, resource.data)
           && (orgOwner(org) || (isMember(org) && memberCountersOk(org, request.resource.data, resource.data)));
       }

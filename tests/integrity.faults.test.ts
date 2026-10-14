@@ -57,7 +57,7 @@ describe('فحوص المطابقة الثمانية · خلل مزروع لكل
   test('القاعدة السليمة: الفحوص الثمانية كلها تمر', () => {
     const { db } = seededDb();
     const results = integrityChecks(db);
-    expect(results.length).toBe(13);
+    expect(results.length).toBe(14);
     for (const r of results) expect({ name: r.name, ok: r.ok }).toEqual({ name: r.name, ok: true });
     for (const n of CHECKS) expect(results.some((r) => r.name === n)).toBe(true);
     db.close();

@@ -354,5 +354,9 @@
  {
   "seed": 196,
   "failure": "A: 2 وارد مرفوض · Error: UNIQUE constraint failed: journal_entries.no | Error: UNIQUE constraint failed: journal_entries.no"
+ },
+ {
+  "seed": 125,
+  "failure": "B: 1 وارد مرفوض · نهائي في السحابة · نسخة هذا الجهاز تختلف عنها ولم تُرفع"
  }
 ]

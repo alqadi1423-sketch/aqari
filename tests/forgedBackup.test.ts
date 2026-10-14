@@ -86,6 +86,26 @@ test('قاعدة نسخة مزوّرة امتداد مرفقها يحقن وسم
   env.closeLive();
 });
 
+test('قاعدة نسخة مزوّرة بصمة مرفقها تخرج بمسار المصغّرة · تُرفض النسخة كاملة (المراجعة الخارجية ٧ · النتيجة ٢٨)', async () => {
+  const { env, archive } = await seeded();
+  const entries = unzipSync(env.fs.read(archive));
+  const manifest = JSON.parse(new TextDecoder().decode(entries['manifest.json']));
+  const tmp = path.posix.join(env.root, 'forged-att.db');
+  fsNode.writeFileSync(tmp, entries['data.db']);
+  const db = openNodeDb(tmp);
+  db.run(`PRAGMA foreign_keys = OFF`);
+  db.run(`UPDATE attachments SET sha256 = ?`, ['../../widget']);
+  db.close();
+  entries['data.db'] = new Uint8Array(fsNode.readFileSync(tmp));
+  manifest.db_sha256 = await nodeHasher(entries['data.db']);
+  entries['manifest.json'] = new TextEncoder().encode(JSON.stringify(manifest));
+  const forged = path.posix.join(env.root, 'مزوّرة-مرفق.aqbk');
+  env.fs.write(forged, zipSync(entries));
+  await expect(prepareRestore(env, forged)).rejects.toThrow(/مرفق باسم غير صالح في قاعدتها/);
+  intact(env);
+  env.closeLive();
+});
+
 test('النسخة السليمة نفسها تمرّ · فالرفض للمزوّر وحده', async () => {
   const { env, archive } = await seeded();
   const plan = await prepareRestore(env, archive);

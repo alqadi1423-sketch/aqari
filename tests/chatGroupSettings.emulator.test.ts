@@ -289,3 +289,37 @@ d('الجولة ٢٨: المالك لا يدخل المجموعة بلا سطر�
     for (const name of ['عبدالله بن مصطنع', "O'Neil Test-Name", 'عضو ٢ مصطنع', 'گل مصطنع']) expect(await self(name)).toBe(200);
   });
 });
+
+/* ═══ المراجعة الخارجية ٧ · النتائج ٣٧ و٣٨ و٣٩ ═══ */
+d('المراجعة الخارجية ٧ · المحادثة المباشرة بين أطرافٍ حقيقيين برقمٍ واحد · والمنشئ المُزال لا يدير', () => {
+  test('٣٨ و٣٧ سلبي: المباشرة بترتيبٍ معكوس أو مع غير عضو تُرفض · وإيجابي: مع عضو ومع المالك تُقبل', async () => {
+    await seed();
+    expect(await status(chat(A).createThread({ id: 'd_' + B + '_' + A, k: 'direct', p: [B, A], name: '' }))).toBe(403);
+    const ghost = 'U-NOT-A-MEMBER';
+    const pg = [A, ghost].sort();
+    expect(await status(chat(A).createThread({ id: 'd_' + pg[0] + '_' + pg[1], k: 'direct', p: pg, name: '' }))).toBe(403);
+    expect(await chat(A).createThread({ id: 'd_' + A + '_' + B, k: 'direct', p: [A, B], name: '' })).toBe('created');
+    const po = [A, ORG].sort();
+    expect(await chat(A).createThread({ id: 'd_' + po[0] + '_' + po[1], k: 'direct', p: po, name: '' })).toBe('created');
+  });
+
+  test('٣٩ سلبي: المنشئ بعد إزالته لا يعيد نفسه ولا يُزيل ولا يعيّن · وإيجابي: قبل إزالته يدير', async () => {
+    await seed();
+    expect(await status(chat(B).addMember(G, D))).toBe(200);
+    expect(await status(chat(B).removeMembers(G, [D]))).toBe(200);
+    expect(await status(chat(ORG).removeMembers(G, [B]))).toBe(200);
+    expect(await status(chat(B).addMember(G, B))).toBe(403);
+    expect(await status(chat(B).removeMembers(G, [A]))).toBe(403);
+    expect(await status(chat(B).setGroupMeta(G, { a: [A] }))).toBe(403);
+    expect((await chat(A).getThread(G)).p).toEqual(expect.arrayContaining([A, C]));
+  });
+});
+
+d('الجولة ٢٩: الحروف الشبيهة لا تمرّ في القواعد', () => {
+  test('١٧ سلبي: الكاف الفارسية والمزخرفة وألف الوصل والأرقام الشبيهة · وإيجابي: اسمٌ فيه رقم أو حرفٌ فارسي عادي', async () => {
+    await seed();
+    const self = (name: string) => put(`orgs/${ORG}/members/${A}?updateMask.fieldPaths=name&updateMask.fieldPaths=phone`, { name, phone: '0500000029' }, A);
+    for (const name of ['عضو أ المال\u06A9', 'عضو أ \u0671لمالك', 'عضو أ المال\u06AA', 'Ali 0wner', 'Ali 5upervisor']) expect(await self(name)).toBe(403);
+    for (const name of ['گل مصطنع', 'Ali 5', 'عضو ١٠١']) expect(await self(name)).toBe(200);
+  });
+});

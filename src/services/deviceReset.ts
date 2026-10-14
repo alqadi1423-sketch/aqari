@@ -13,8 +13,10 @@ import { migrate } from '../db/migrations';
 import { seed, ensureDeviceId } from '../db/seed';
 import { clearBackupPassword } from './backupPassword';
 import { disableLock } from './appLockService';
+import { cancelAllNotifications } from './notifications';
 
 export async function resetDeviceData(db: AppDB): Promise<void> {
+  await cancelAllNotifications();
   const root = appDataRoot();
   const dbPath = db.databasePath;
   try { db.close(); } catch { /* مغلقة */ }

@@ -230,8 +230,11 @@ export async function prepareRestore(
           throw new RestoreError('تعذّر فتح قاعدة النسخة للفحص · لم يُقرأ منها جدول واحد');
         // بصمات المرفقات وامتداداتها في قاعدة النسخة تصير أسماء ملفات وتدخل صفحات العرض ·
         // فما ليس بصمةً وامتداداً صريحين يرفض النسخة كاملة
-        const badBlobs = probe.all<{ sha256: unknown; ext: unknown }>(`SELECT sha256, ext FROM blobs`)
-          .filter((b) => !isSafeBlobName(b.sha256, b.ext));
+        // وبصمات المرفقات نفسها (المراجعة الخارجية ٧ · النتيجة ٢٨: منها تُبنى مسارات المصغّرات)
+        const badBlobs = [
+          ...probe.all<{ sha256: unknown; ext: unknown }>(`SELECT sha256, ext FROM blobs`).filter((b) => !isSafeBlobName(b.sha256, b.ext)),
+          ...probe.all<{ sha256: unknown }>(`SELECT DISTINCT sha256 FROM attachments`).filter((a) => !isSafeBlobName(a.sha256, 'bin')),
+        ];
         if (badBlobs.length) throw new RestoreError(`النسخة مرفوضة · ${badBlobs.length} مرفق باسم غير صالح في قاعدتها`);
         for (const [t, expected] of Object.entries(manifest.table_counts)) {
           if (counted[t] !== undefined && !migrated && counted[t] !== expected)

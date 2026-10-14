@@ -755,5 +755,8 @@
   },
   "restore": {
     "notInTrash": "ليس في السلة · استُعيد من قبل"
+  },
+  "bank": {
+    "insufficient": "رصيد {{bank}} هو {{balance}} ولا يكفي لتحويل {{amount}}"
   }
 }

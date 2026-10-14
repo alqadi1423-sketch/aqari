@@ -243,6 +243,11 @@ d('المراجعة الخارجية ٧ · النتيجة ١٥: حذف حساب 
     const m = await fetch(`${DOCS()}/orgs/${ORG}/chats/${directId(A, B)}/msgs/WM1`, { headers: ADMIN });
     expect(m.status).toBe(200);
     expect(((await m.json()) as { fields: { name: { stringValue: string } } }).fields.name.stringValue).toBe('عضو سابق');
+    // ويخرج من مجموعاتها (النتيجة ٢٩ (ب))
+    const g = await fetch(`${DOCS()}/orgs/${ORG}/chats/g_wipegroup1`, { headers: ADMIN });
+    const p = ((await g.json()) as { fields: { p: { arrayValue: { values?: Array<{ stringValue: string }> } } } }).fields.p.arrayValue.values ?? [];
+    expect(p.map((x) => x.stringValue)).not.toContain(A);
+    expect(p.map((x) => x.stringValue)).toContain(B);
     expect((await walk(`orgs/${ORG}`)).some((p) => p.includes('/rows/'))).toBe(true);
     expect((await listObjects(nodeStorageIO, files().t, filesPrefix(ORG))).length).toBe(2);
   });

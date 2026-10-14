@@ -11,8 +11,6 @@ import { File, Paths } from 'expo-file-system';
 import type { DB } from '../db/adapter';
 import { appFilesEnv } from '../services/filesEnv';
 import { putAttachment } from '../files/store';
-import { getSetting } from '../repos/settings';
-import { stripJpegExif } from '../domain/jpegExif';
 import { fmt } from '../domain/money';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from '../services/appLockService';
@@ -92,10 +90,7 @@ export async function attachPicked(
     const ok = await confirmSize('ملف كبير', `حجم الملف ${mb(bytes.byteLength)} ميغابايت وسيدخل في النسخ الاحتياطية · هل تحفظه؟`);
     if (!ok) return;
   }
-  // نزع EXIF (خيار في الإعدادات، مطفأ افتراضياً) · حذف مقاطع تعريف فقط، البكسل لا يُمسّ
-  if (getSetting(db, 'stripExif') && (file.mime === 'image/jpeg' || /\.jpe?g$/i.test(file.name))) {
-    bytes = stripJpegExif(bytes);
-  }
+  // نزع البيانات الوصفية في putAttachment نفسها لكل مسار (المراجعة الخارجية ٧ · النتيجة ٢٧)
   await putAttachment(appFilesEnv(db), bytes, {
     entityType,
     entityId,

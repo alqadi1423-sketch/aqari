@@ -25,6 +25,8 @@ import { createSession, type Session, type SessionUser } from '../cloud/session'
 import { FirestoreRemote } from '../cloud/firestore';
 import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, deleteAllAppDataFiles, type DriveBackup, type DriveIO } from '../cloud/drive';
 import { resetDeviceData } from './deviceReset';
+import { profileForAudit } from '../domain/access/profile';
+import { cancelAllNotifications } from './notifications';
 import { hasUserData } from '../domain/backup/upgrade';
 import {
   enableSync, syncOnce, syncStatus, setSyncState, getSyncState, planCloudReplace, adoptAsCloudTruth, readCloud, planFromSnapshot, syncBackoffUntil,
@@ -694,6 +696,8 @@ export async function cloudSignOut(): Promise<void> {
   try {
     const uid = db ? activeAccount(db) : null;
     if (db && uid) { parkActive(appSlotEnv(db), uid); onData(); }
+    // تذكيرات الحساب الخارج لا تبقى للحساب التالي (المراجعة الخارجية ٧ · النتيجة ٣٠)
+    await cancelAllNotifications();
     await s.signOut();
     patch({ user: null, invites: null, gate: null, sync: db ? syncStatus(db) : null });
   } finally {
@@ -743,6 +747,8 @@ async function wipeLocal(db: AppDB, onProgress?: (m: string) => void, safety?: s
   return holdChat(async () => {
     const env = appBackupEnv(db);
     const path = await wipeAllData(env, onProgress, safety, reason);
+    // ومعه التذكيرات المجدولة عند النظام (المراجعة الخارجية ٧ · النتيجة ٣٠) · وهو مسار الإزالة أيضاً
+    await cancelAllNotifications();
     for (const d of ['thumbs', 'widget.json']) {
       try { env.fs.remove(joinPath(appDataRoot(), d)); } catch { /* غير موجود */ }
     }
@@ -883,11 +889,7 @@ export async function inviteMemberNow(db: DB, spec: MemberSpec) {
  * أنها أُدخلت أو تغيّرت أو حُذفت.
  */
 function logProfileEdit(db: DB, label: string, before: MemberProfile | null, after: MemberProfile): void {
-  const mask = (p: MemberProfile | null, other: MemberProfile | null) => p ? {
-    الاسم: p.name, الجوال: p.phone, 'المسمى الوظيفي': p.title,
-    الهوية: !p.nid ? '' : other && other.nid && other.nid !== p.nid ? 'قديمة' : 'مُدخلة',
-  } : null;
-  logAudit(db, 'الأعضاء', before ? 'update' : 'create', 'بيانات عضو', label, mask(before, after), mask(after, before));
+  logAudit(db, 'الأعضاء', before ? 'update' : 'create', 'بيانات عضو', label, profileForAudit(before, after), profileForAudit(after, null));
 }
 
 /** المالك يعدّل بيانات عضو */

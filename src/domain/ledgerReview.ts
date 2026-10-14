@@ -16,8 +16,9 @@ import { requireCash } from './cashGuard';
 import { uid } from './ids';
 import { logAudit } from './audit';
 import { fmt } from './money';
+import { t } from '../i18n';
 import { postBookedDiscount, postEntry, type PostedEntry } from './accounting/post';
-import { walletCashBalance } from './accounting/ledger';
+import { walletCashBalance, bankBalance } from './accounting/ledger';
 import { DERIVED_PAID_SQL, recomputeInstallments } from './contracts/paid';
 import { rentRevenueLines, RENT_REVENUE_SQL } from './accounting/rentSplit';
 import {
@@ -434,6 +435,11 @@ export function settleSurplus(db: DB, contractId: string, input: SettleSurplusIn
     ? db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ? AND deleted_at IS NULL`, [input.bankId!])
     : null;
   if (refund && input.method === 'bank' && !bank) throw new Error('الحساب البنكي غير موجود');
+  // رصيد البنك يكفي كسائر مخارجه (المراجعة الخارجية ٧ · النتيجة ٢٥)
+  if (refund && input.method === 'bank') {
+    const b = bankBalance(db, input.bankId!);
+    if (amount > b) throw new Error(t('bank.insufficient', { bank: bank!.name, balance: fmt(b), amount: fmt(amount) }));
+  }
   const who = s.tenant + ' (عقد ' + s.contractNo + ')';
   return db.transaction(() => {
     const entry = postEntry(db, {

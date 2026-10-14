@@ -79,3 +79,25 @@ d('العضو وأرضيته فوق العدّاد (المتحقق المستق�
     expect(b.hi - b.lo + 1).toBe(500);
   });
 });
+
+d('المراجعة الخارجية ٧ · النتيجتان ٣٥ و٣٦', () => {
+  const ORG4 = 'CNTOWNER4';
+  test('٣٥ سلبي: العضو لا ينشئ العدّاد · وإيجابي: دعوة المالك تنشئه فارغاً ولا تكتب فوق قائم · والعضو يحجز منه', async () => {
+    const { FirestoreRemote } = await import('@/cloud/firestore');
+    const { sendInvite } = await import('@/services/org');
+    expect(await put(`orgs/${ORG4}/members/U-NEW`, member({ collect: 2 }), ORG4)).toBe(200);
+    expect(await put(`orgs/${ORG4}/meta/counters`, { JE: 0 }, 'U-NEW')).toBe(403);
+    const owner = new FirestoreRemote({ projectId: PROJECT, uid: ORG4, org: ORG4, idToken: async () => token(ORG4), baseUrl: 'http://' + HOST });
+    await sendInvite(owner, ORG4, { email: 'next@example.test', perms: { collect: 1 }, allProps: true, props: [] }, 'منشأة مصطنعة', 'cntowner4@example.test');
+    expect(await owner.getDoc(`orgs/${ORG4}/meta/counters`)).toEqual({});
+    expect(await put(`orgs/${ORG4}/meta/counters`, { JE: 500 }, 'U-NEW')).toBe(200);
+    await sendInvite(owner, ORG4, { email: 'next2@example.test', perms: { collect: 1 }, allProps: true, props: [] }, 'منشأة مصطنعة', 'cntowner4@example.test');
+    expect(await owner.getDoc(`orgs/${ORG4}/meta/counters`)).toEqual({ JE: 500 });
+  });
+
+  test('٣٦ سلبي: العضو لا يضيف حرف جهاز · وإيجابي: المالك يضيفه', async () => {
+    expect(await put(`orgs/${ORG4}/meta/devices`, { letters: { A: 'dev-1' } }, ORG4)).toBe(200);
+    expect(await put(`orgs/${ORG4}/meta/devices`, { letters: { A: 'dev-1', ZZ: 'x' } }, 'U-NEW')).toBe(403);
+    expect(await put(`orgs/${ORG4}/meta/devices`, { letters: { A: 'dev-1', B: 'dev-2' } }, ORG4)).toBe(200);
+  });
+});

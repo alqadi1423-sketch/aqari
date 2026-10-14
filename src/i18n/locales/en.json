@@ -755,5 +755,8 @@
   },
   "restore": {
     "notInTrash": "Not in the trash · already restored"
+  },
+  "bank": {
+    "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"
   }
 }

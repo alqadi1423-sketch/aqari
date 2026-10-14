@@ -2,6 +2,7 @@
  * المصغّرات · 200 بكسل بجانب كل صورة، تُعرض في القوائم وحدها والأصل لا يُمسّ:
  * thumbs/<sha>.jpg تُولَّد عند أول طلب، والأصل في attachments/<sha>.<ext> كما رُفع.
  */
+import { isSafeBlobName } from '../files/store';
 import { File, Directory } from 'expo-file-system';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { joinPath } from '../files/fsAdapter';
@@ -17,6 +18,8 @@ const norm = (p: string): string => (p.startsWith('file://') ? p : 'file://' + p
 
 /** مسار مصغّرة موجودة أو null · لا توليد */
 export function existingThumbUri(sha256: string): string | null {
+  // بصمةٌ لا تصلح اسماً لا تُبنى منها مسارات (المراجعة الخارجية ٧ · النتيجة ٢٨)
+  if (!isSafeBlobName(sha256, 'jpg')) return null;
   const p = norm(joinPath(thumbsDir(), sha256 + '.jpg'));
   return new File(p).exists ? p : null;
 }
@@ -26,6 +29,7 @@ export function existingThumbUri(sha256: string): string | null {
  * والفشل لا يمس الأصل بشيء.
  */
 export async function thumbUri(sha256: string, ext: string, mime?: string): Promise<string | null> {
+  if (!isSafeBlobName(sha256, ext)) return null;
   if (!isImageFile(ext, mime)) return null;
   const cached = existingThumbUri(sha256);
   if (cached) return cached;

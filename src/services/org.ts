@@ -78,6 +78,8 @@ export async function sendInvite(
   if (doc.email === normEmail(ownerEmail)) throw new Error('هذا إيميلك أنت · المالك لا يُدعى إلى منشأته');
   const team = await listTeam(remote, org);
   if (team.members.some((m) => normEmail(m.doc.email) === doc.email)) throw new Error('هذا الإيميل عضو في المنشأة بالفعل · عدّل صلاحيته بدل دعوته');
+  // عدّاد الترقيم قائمٌ قبل أول عضو: لا ينشئه العضو (المراجعة الخارجية ٧ · النتيجة ٣٥) · إنشاءٌ مرةً لا يكتب فوق عدّادٍ قائم
+  await remote.createDoc(`orgs/${org}/meta/counters`, {}).catch(() => {});
   // والدعوة تحمل إصدار المالك حدّاً أدنى، فيطلب الأقدمُ التحديث قبل الانضمام (#36) · وبريد صاحبها ظاهراً للمدعوّ (#52)
   await remote.setDoc(`orgs/${org}/invites/${doc.email}`, { ...doc, minApp: SCHEMA_VERSION, invitedBy: normEmail(ownerEmail) } as unknown as Record<string, unknown>);
   return doc;

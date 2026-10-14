@@ -9,6 +9,7 @@
  *  ٣) أثر الاستثناء كاملاً يُكتب في ملف في التنزيلات باسم يحمل التاريخ، ويُنسخ بزر.
  * ويعمل من داخل React وخارجها (الخدمات والمعالج العام) لأنه يمرّ بالجسر الأمري للحوار.
  */
+import { failureAuditDetail } from '../domain/redact';
 import { Share } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { showDialog, type DialogAction } from './AppDialog';
@@ -55,7 +56,7 @@ export async function recordFailure(args: Pick<FailureArgs, 'title' | 'where' | 
   if (args.db) {
     try {
       logAudit(args.db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', 'فشل ' + where,
-        (args.e instanceof Error ? args.e.message : String(args.e)).slice(0, 300));
+        failureAuditDetail(args.e));
     } catch { /* السجل لا يعطّل */ }
   }
   return { full: errorReportText(where, args.e), saved: (await saveErrorReport(where, args.e)) || null };
@@ -80,7 +81,7 @@ export async function reportFailure(args: FailureArgs): Promise<void> {
   if (db) {
     try {
       logAudit(db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', 'فشل ' + where,
-        (e instanceof Error ? e.message : String(e)).slice(0, 300));
+        failureAuditDetail(e));
     } catch { /* السجل لا يعطّل */ }
   }
 

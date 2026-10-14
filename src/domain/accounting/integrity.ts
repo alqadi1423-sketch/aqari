@@ -45,10 +45,11 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
   out.push({ name: 'كل قيد متوازن على حدة', ok: Number(bad.n) === 0, value: Number(bad.n) + ' مختلّ' });
 
   // ٣) رصيد 2400 = التأمينات المحتجزة فعلاً:
-  //    عقود سارية أو منتهية لم تُسوَّ بعد (العقد المنتهي يبقى تأمينه محتجزاً حتى التسوية)
+  //    عقود سارية أو منتهية أو ملغاة لم تُسوَّ بعد (المنتهي والملغى بلا تسوية يبقى تأمينه محتجزاً حتى التسوية · المراجعة الخارجية ٧ ·
+  //    النتيجة ٢٤: الإلغاء بلا تسوية كان يُحمِّر الفحص لدفترٍ صحيح)
   const dep = db.get<{ s: number }>(
     `SELECT COALESCE(SUM(c.deposit_halalas),0) AS s FROM contracts c
-     WHERE c.status IN ('سارٍ','منتهٍ') AND c.deleted_at IS NULL
+     WHERE c.status IN ('سارٍ','منتهٍ','ملغى') AND c.deleted_at IS NULL
        AND COALESCE(c.deposit_holder,'المكتب') != 'طرف آخر'
        AND c.renewed_to IS NULL -- المجدَّد رُحِّل تأمينه إلى عقده الجديد
        AND NOT EXISTS (SELECT 1 FROM deposit_settlements ds WHERE ds.contract_id = c.id)`
@@ -169,6 +170,19 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     name: 'مرآة واحدة لكل أصل', // i18n-exempt: اسم فحصٍ مخزَّن في بيان النسخة كأخواته
     ok: Number(extraRevs.n) === 0 && Number(unlinkedRevs.n) === 0,
     value: Number(extraRevs.n) + ' مصدر · ' + Number(unlinkedRevs.n) + ' بلا ربط', // i18n-exempt: قيمة فحصٍ تُعرض كأخواتها
+  });
+
+  // إهلاك كل شهر مرةً (المراجعة الخارجية ٧ · النتيجة ٢٦): جهازان رحّلا الشهر نفسه · كان يُسرد في مراجعة الدفتر وحدها
+  const dupDep = db.get<{ n: number }>(
+    // i18n-exempt: حالة القيد المخزّنة
+    `SELECT COUNT(*) AS n FROM (SELECT src_id FROM journal_entries
+       WHERE src_type = 'depreciation' AND status = 'مرحّل' AND deleted_at IS NULL AND reversed_by IS NULL
+       GROUP BY src_id HAVING COUNT(*) > 1)`
+  )!;
+  out.push({
+    name: 'إهلاك كل شهر مرةً واحدة', // i18n-exempt: اسم فحصٍ مخزَّن في بيان النسخة كأخواته
+    ok: Number(dupDep.n) === 0,
+    value: Number(dupDep.n) + ' شهر مكرر', // i18n-exempt: قيمة فحصٍ تُعرض كأخواتها
   });
 
   // ١٠) ذمم الفواتير (المراجعة ٤.٢): لا فاتورة «مدفوعة» بلا قيد تحصيل، وحركة 1200 = المصدرة غير المحصّلة

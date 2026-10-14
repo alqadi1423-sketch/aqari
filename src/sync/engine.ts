@@ -261,13 +261,16 @@ export function replayRejectsAfterUpgrade(db: DB, sv: number): { requeued: numbe
 export function stageInbox(db: DB, docs: RemoteDoc[]): void {
   db.transaction(() => {
     for (const d of docs) {
+      // وقته لا يتجاوز وقت كتابته في الخادم كما في التطبيق (#56) · المراجعة الخارجية ٧ · النتيجة ١٩: نسخةٌ بـ u = 2099 تنتظر أباها
+      // كانت تغلب النسخة الأحدث الصحيحة فيُطبَّق القديم ويتجاوزه المؤشر
+      const at = d.ts && d.ts < d.u ? d.ts : d.u;
       db.run(
         `INSERT INTO sync_inbox (doc, tbl, pk, rank, payload, updated_at, device_id, attempts, last_error, del)
          VALUES (?,?,?,?,?,?,?,0,NULL,?)
          ON CONFLICT(doc) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at,
            device_id = excluded.device_id, attempts = 0, last_error = NULL, del = excluded.del
          WHERE excluded.updated_at >= sync_inbox.updated_at`,
-        [d.id, d.t, d.k, SYNC_RANK[d.t] ?? 999, JSON.stringify(d), d.u, d.dev, d.del ? 1 : 0]);
+        [d.id, d.t, d.k, SYNC_RANK[d.t] ?? 999, JSON.stringify(d), at, d.dev, d.del ? 1 : 0]);
       // كاتب الصف يصل مع مستنده (المنشأة) · فيعرف الجهاز مسودة من هي، ويرسل العضو الكاتب نفسه عند التعديل · والوارد بلا كاتب
       // يُعلَّم «بلا كاتب» فلا يُرسَل له كاتب (القواعد: الكاتب لا يتغير · الهجرة ٤٢)
       db.run(`INSERT OR IGNORE INTO row_by (tbl, pk, uid) VALUES (?, ?, ?)`, [d.t.split('~')[0], d.k, d.by ?? '']);

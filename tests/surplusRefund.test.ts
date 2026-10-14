@@ -67,7 +67,8 @@ test('الردّ نقداً: مدين الإيراد · دائن النقدية 
 
 test('الردّ تحويلاً: حركة بنكية سالبة مربوطة بالقيد · والردّ الجزئي يُبقي الباقي ظاهراً', () => {
   const db = memDb();
-  const bank = addBank(db);
+  // رصيده يكفي الردّ (المراجعة الخارجية ٧ · النتيجة ٢٥: ردّ الفائض من بنكٍ بحارس رصيده كسائر مخارجه)
+  const bank = addBank(db, 'بنك الاختبار', 100000);
   const k = withSurplus(db, 30000);
   const e = settleSurplus(db, k.cid, { action: 'refund', amountHalalas: 10000, date: '2026-03-10', method: 'bank', bankId: bank });
   expect(db.get(`SELECT amount_halalas AS a, journal_no AS j FROM bank_tx WHERE journal_no = ?`, [e.no])).toEqual({ a: -10000, j: e.no });

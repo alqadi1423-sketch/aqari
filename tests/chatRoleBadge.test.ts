@@ -43,3 +43,10 @@ test('الجولة ٢٨: الجهاز ينزع التطويل والتشكيل �
   const ok = validateProfile({ name: 'عبدُالله مصطـفى', phone: '0500000028' }, true);
   expect(ok.ok && ok.profile.name).toBe('عبدالله مصطفى');
 });
+
+test('الجولة ٢٩: الحروف الشبيهة داخل الصنف تُطوى قبل فحص المحجوز', () => {
+  for (const name of ['محمد المال\u06A9', 'محمد مال\u06A9 المنشأة', 'محمد \u0671لمالك', 'محمد المال\u06AA', 'Ali 0wner', 'Ali 5upervisor']) {
+    expect(validateProfile({ name, phone: '0500000029' }, true).ok).toBe(false);
+  }
+  for (const name of ['مالك مصطنع', 'گل مصطنع', 'Ali 5', 'Room 101']) expect(validateProfile({ name, phone: '0500000029' }, true).ok).toBe(true);
+});

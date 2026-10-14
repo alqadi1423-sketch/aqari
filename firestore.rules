@@ -658,7 +658,7 @@ service cloud.firestore {
       // قرار المالك «رابعاً ١٠») · يطابق reservedName على الجهاز
       function profileComplete(d) {
         return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$')
-          && !d.name.lower().matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*')
+          && !d.name.lower().replace('[کڪ]', 'ك').replace('[ٱ]', 'ا').replace('[0]', 'o').replace('[5]', 's').replace('[1]', 'l').replace('[3]', 'e').matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*')
           // حروفٌ عربية بلا تطويل ولا تشكيل، ولاتينية، وأرقام، ومسافة وشرطة ونقطة وفاصلة عليا · فلا يُحاكى المحجوز بتطويلٍ أو تشكيلٍ أو
           // حرفٍ شبيه (المتحقق المستقل، الجولة ٢٨) · والجهاز ينزع التطويل والتشكيل قبل الحفظ
           && d.name.matches("[ء-غف-ي٠-٩ٱ-ۓa-zA-Z0-9 .'-]+");
@@ -692,13 +692,11 @@ service cloud.firestore {
       }
 
       // حروف الأجهزة في ترقيم المنشأة · العضو يضيف حرف جهازه ولا يغيّر حرفاً قائماً
+      // للمالك وحده (المراجعة الخارجية ٧ · النتيجة ٣٦): لا يخصص الجهاز حروفاً الآن (الترقيم محلي بكتل numbering.ts)، وإضافة العضو
+      // كانت بلا حدٍّ ولا شكل فيحجز الحروف أو يضخّم المستند
       match /meta/devices {
         allow read: if orgOwner(org) || isMember(org);
-        allow create: if orgOwner(org);
-        allow update: if orgOwner(org) || (isMember(org)
-          && request.resource.data.keys().hasOnly(['letters'])
-          && request.resource.data.letters.diff(resource.data.letters).changedKeys().size() == 0
-          && request.resource.data.letters.diff(resource.data.letters).removedKeys().size() == 0);
+        allow create, update: if orgOwner(org);
       }
 
       // عهد المسح: يرفعه المالك عند «مسح كل البيانات» فيفرّغ كل جهاز نسخته عند أول مزامنة
@@ -747,8 +745,9 @@ service cloud.firestore {
       }
       match /meta/counters {
         allow read: if orgOwner(org) || isMember(org);
-        allow create: if countersOk(request.resource.data, null)
-          && (orgOwner(org) || (isMember(org) && memberCountersOk(org, request.resource.data, null)));
+        // ينشئه المالك وحده (المراجعة الخارجية ٧ · النتيجة ٣٥: كان أول عضوٍ يزامن ينشئه قبل المالك ويسبق اختياره أرقام البداية) ·
+        // وجهازه ينشئه قبل أول دعوة (org.ts sendInvite)
+        allow create: if countersOk(request.resource.data, null) && orgOwner(org);
         allow update: if countersOk(request.resource.data, resource.data)
           && (orgOwner(org) || (isMember(org) && memberCountersOk(org, request.resource.data, resource.data)));
       }
@@ -787,6 +786,10 @@ service cloud.firestore {
     // اسم المرسل من الدليل لا نصٌّ حرّ (مراجعة المحادثة #5) · واسم العضو في الدليل اسمه في عضويته
     function chatDirName(org) {
       return get(/databases/$(database)/documents/orgs/$(org)/chatDir/$(request.auth.uid)).data.name;
+    }
+    // طرف المحادثة المباشرة: عضوٌ في المنشأة أو مالكها (المراجعة الخارجية ٧ · النتيجة ٣٧: كان أي نصٍّ يُقبل)
+    function chatPeerOk(org, u) {
+      return u == org || exists(/databases/$(database)/documents/orgs/$(org)/members/$(u));
     }
     function chatPath(org, chatId) {
       return /databases/$(database)/documents/orgs/$(org)/chats/$(chatId);
@@ -863,8 +866,9 @@ service cloud.firestore {
         && d.get('a', []).toSet().difference(d.p.toSet()).size() == 0;
     }
     // المسؤول: المالك دائماً، والمنشئ، ومن عُيِّن
+    // والمنشئ والمعيَّن طرفان فيها وقتها: من أُزيل لا يعيد نفسه ولا يُزيل غيره (المراجعة الخارجية ٧ · النتيجة ٣٩)
     function chatAdmin(org, d) {
-      return orgOwner(org) || d.by == request.auth.uid || request.auth.uid in d.get('a', []);
+      return orgOwner(org) || ((d.by == request.auth.uid || request.auth.uid in d.get('a', [])) && request.auth.uid in d.p);
     }
     function chatChanged(keys) {
       return request.resource.data.diff(resource.data).affectedKeys().hasAny(keys);
@@ -917,8 +921,8 @@ service cloud.firestore {
     function chatManage(org, chatId) {
       return (!chatChanged(['name', 's']) || chatAdmin(org, resource.data))
         && (!chatChanged(['s']) || request.auth.uid in resource.data.p)
-        && (!chatChanged(['a']) || orgOwner(org) || resource.data.by == request.auth.uid)
-        && (chatRemovedSet().size() == 0 || orgOwner(org) || resource.data.by == request.auth.uid)
+        && (!chatChanged(['a']) || orgOwner(org) || (resource.data.by == request.auth.uid && request.auth.uid in resource.data.p))
+        && (chatRemovedSet().size() == 0 || orgOwner(org) || (resource.data.by == request.auth.uid && request.auth.uid in resource.data.p))
         && (chatAdded().size() == 0
               ? (!chatChanged(['jt', 'la', 'jm']) && (chatRemovedSet().size() > 0 || !chatChanged(['p'])))
               : chatAddOk(org, chatId));
@@ -1028,7 +1032,10 @@ service cloud.firestore {
         && request.resource.data.name is string && request.resource.data.name.size() <= 80
         && ((request.resource.data.k == 'direct' && request.resource.data.p.size() == 2
               && !request.resource.data.keys().hasAny(['s', 'a', 'ch'])
-              && chatId == 'd_' + request.resource.data.p[0] + '_' + request.resource.data.p[1])
+              && chatId == 'd_' + request.resource.data.p[0] + '_' + request.resource.data.p[1]
+              // بترتيبٍ واحد فلا محادثتان مباشرتان للثنائي نفسه (النتيجة ٣٨) · والطرف الآخر عضوٌ أو المالك (النتيجة ٣٧)
+              && request.resource.data.p[0] < request.resource.data.p[1]
+              && chatPeerOk(org, request.resource.data.p[0] == request.auth.uid ? request.resource.data.p[1] : request.resource.data.p[0]))
             || (request.resource.data.k == 'group' && chatId.matches('^g_[A-Za-z0-9_-]{6,64}$')
               && chatSettingsOk(request.resource.data)
               && ((!('ch' in request.resource.data) && !chatId.matches('^g_(sec_|announce|prop_).*')
@@ -1051,7 +1058,8 @@ service cloud.firestore {
       // الحذف ليحذف الرسائل بأسمائها دون أن يقرأها
       // ts وقت الخادم وحده (لا محتوى) · به يجد المنضم «من لحظة انضمامه» أرقام ما بعد انضمامه ثم يطلبها رسالةً رسالة
       match /ids/{msgId} {
-        allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && orgDeletionOpen(org));
+        // ومن سُحبت صلاحيته في القناة لا يقرؤها ولو بقي في أطرافها (المراجعة الخارجية ٧ · النتيجة ٣٤)
+        allow read: if (chatIn(org) && chatParty(org, chatId) && chatQualifies(org, get(chatPath(org, chatId)).data)) || (orgOwner(org) && orgDeletionOpen(org));
         allow create: if chatIn(org) && chatPartyAfter(org, chatId)
           && request.resource.data.keys().hasOnly(['ts']) && request.resource.data.ts == request.time
           && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(msgId)).data.from == request.auth.uid;
@@ -1068,7 +1076,8 @@ service cloud.firestore {
       //  p_رقم-رسالة تثبيتها: في المجموعة لمسؤوليها، وفي الفردية لطرفيها، ولرسالة موجودة
       match /st/{sid} {
         // والمالك في نافذة الحذف يسردها ليحذفها (لا محتوى رسائل فيها)
-        allow read: if (chatIn(org) && chatParty(org, chatId)) || (orgOwner(org) && (chatReviewing(org, chatId) || orgDeletionOpen(org)));
+        allow read: if (chatIn(org) && chatParty(org, chatId) && chatQualifies(org, get(chatPath(org, chatId)).data))
+          || (orgOwner(org) && (chatReviewing(org, chatId) || orgDeletionOpen(org)));
         //  a_رسالة_رقمي تأكيدي الاطلاع على إعلانٍ يطلبه: مرة وحدها (إنشاء لا تحديث) (الدفعة ٣)
         //  x_رسالة إشارة تعديلها برقمه: يكتبها مرسلها مع تعديله (الدفعة ٣)
         allow create: if chatIn(org) && chatParty(org, chatId) && chatQualifies(org, get(chatPath(org, chatId)).data)

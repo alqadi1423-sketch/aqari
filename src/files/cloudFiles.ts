@@ -8,6 +8,7 @@
  *  - التنزيل يُطابَق بـ SHA-256 على اسمه، فما خالفه يُحذف ولا يُعرض.
  * حال كل ملف على هذا الجهاز في file_cache (الهجرة ٢٧): صفٌّ لكل ملفٍ موجودٍ هنا، وuploaded=1 لما في الخادم.
  */
+import { yieldUi } from '../domain/backup/zipStream';
 import type { DB } from '../db/adapter';
 import type { FS, Hasher } from './fsAdapter';
 import { blobPath } from './store';
@@ -192,8 +193,11 @@ export async function reconcileOwnerFiles(
   const dueTok = opts.force || now - lastTok >= TOKENS_EVERY_MS || (stateOf(db, 'files_tokens_dirty') === '1' && now - lastTok >= TOKENS_MIN_MS);
   if (dueTok) {
     const known = new Map(db.all<{ sha256: string; g: string }>(`SELECT sha256, g FROM file_tokens`).map((r) => [r.sha256, r.g]));
+    let n = 0;
     for (const b of db.all<{ sha256: string; ext: string }>(
       `SELECT b.sha256, b.ext FROM blobs b WHERE EXISTS (SELECT 1 FROM attachments a WHERE a.sha256 = b.sha256) ORDER BY b.sha256`)) {
+      // تنفّسٌ للواجهة على آلاف الملفات (المتحقق المستقل، الجولة ٢٩: ثانيةٌ متصلة على الخيط)
+      if (++n % 50 === 0) await yieldUi();
       const want = fileVisibility(db, b.sha256, remote.access).g;
       if (!want.length) continue;
       if (known.get(b.sha256) === sorted(want)) continue;
@@ -208,11 +212,17 @@ export async function reconcileOwnerFiles(
   }
   // الحذف
   const lastGc = Number(stateOf(db, 'files_gc_at') ?? 0);
-  if (opts.force || now - lastGc >= ORPHAN_EVERY_MS) {
+  // ولا حذف وفي صندوق الوارد ما لم يُطبَّق بعد: مرفقٌ حيّ في السحابة ينتظر أباه (المتحقق المستقل، الجولة ٢٩) · يُعاد في الدورة التالية
+  const inboxWaiting = !!db.get(`SELECT 1 FROM sync_inbox LIMIT 1`);
+  if ((opts.force || now - lastGc >= ORPHAN_EVERY_MS) && !inboxWaiting) {
     const prefix = filesPrefix(t.org);
+    let n = 0;
     for (const name of await listObjects(remote.io, t, prefix)) {
+      if (++n % 50 === 0) await yieldUi();
       const sha = name.slice(prefix.length).split('.')[0];
       if (db.get(`SELECT 1 FROM attachments WHERE sha256 = ?`, [sha])) continue;
+      // ولا لبصمةٍ في مرفقٍ أو صفّ بصمةٍ مرفوضٍ على هذا الجهاز (قد يُعاد بعد الترقية)
+      if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl IN ('attachments', 'blobs') AND instr(payload, ?) > 0`, [sha])) continue;
       const there = await statObject(remote.io, t, name);
       if (!there) continue;
       const born = there.created ? Date.parse(there.created) : NaN;
