@@ -440,10 +440,14 @@ export async function unzipYielding(
         if (produced > usize) throw sizeMismatch(name);
         parts.push(chunk);
       });
-      for (let at = 0; at < csize; at += CHUNK) {
-        const end = Math.min(csize, at + CHUNK);
+      // ما يُدفع في المرة لا يُنتج فوق المتبقي من حجمه المعلن إلا بنحو ميغابايت: المكتبة تفكّ القطعة كلها قبل أن تُسلّمها، وقطعةٌ من
+      // ميغابايت تُفكّ إلى غيغابايت قبل أي فحص (اختبار الجولة ٢٧ تحت حمل الحزمة: عشر ثوانٍ لحجمٍ معلن ١)
+      for (let at = 0; at < csize;) {
+        const room = Math.max(0, usize - produced);
+        const end = Math.min(csize, at + Math.min(CHUNK, Math.floor(room / MAX_DEFLATE_RATIO) + 1024));
         z.push(raw.subarray(at, end), end === csize);
         readBytes += end - at;
+        at = end;
         onBytes?.(readBytes, data.length);
         await breathe();
       }

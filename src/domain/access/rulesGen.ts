@@ -3,6 +3,7 @@
  * الذي يتحقق منه tests/opMatrix.test.ts هو نفسه ما يفرضه الخادم. tests/rulesGen.test.ts يُسقط الحزمة
  * إن اختلف الملف عن المولَّد، و UPDATE_RULES=1 يكتبه.
  */
+import { NAME_CLASS } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
 import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR } from './opWrites';
@@ -538,7 +539,7 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
           && !d.name.lower().matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*')
           // حروفٌ عربية بلا تطويل ولا تشكيل، ولاتينية، وأرقام، ومسافة وشرطة ونقطة وفاصلة عليا · فلا يُحاكى المحجوز بتطويلٍ أو تشكيلٍ أو
           // حرفٍ شبيه (المتحقق المستقل، الجولة ٢٨) · والجهاز ينزع التطويل والتشكيل قبل الحفظ
-          && d.name.matches("[ء-غف-ي٠-٩ٱ-ۓa-zA-Z0-9 .'-]+");
+          && d.name.matches("${NAME_CLASS}+");
       }
 
       // العضوية: يكتبها المالك · والعضو ينشئ عضويته مرة من دعوةٍ بإيميله وبنصّها حرفياً، ويعدّل بياناته وحدها،

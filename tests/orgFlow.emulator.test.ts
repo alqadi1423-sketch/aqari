@@ -169,11 +169,11 @@ d('رحلة المنشأة', () => {
   test('تعديل الصلاحية لا يمسح بيانات العضو · ويعيد الصلاحية قبله وبعده', async () => {
     const orgR = new FirestoreRemote({ ...base(OWNER, 'owner@example.test'), org: OWNER });
     const mr = deviceRemote(mem, MEMBER, MEMBER_EMAIL);
-    await updateMemberProfile(mr, OWNER, MEMBER, { name: 'عضو معدّل مصطنع', phone: '0500000901', nid: '', title: '' });
+    await updateMemberProfile(mr, OWNER, MEMBER, { name: 'عضو معدل مصطنع', phone: '0500000901', nid: '', title: '' } /* بلا تشكيل كما يرسله الجهاز (الجولة ٢٨) */);
     const r = await updateMember(orgR, OWNER, MEMBER, { email: MEMBER_EMAIL, perms: { collect: 2 }, allProps: true, props: [],
       profile: { name: 'اسم قديم مصطنع', phone: '', nid: '', title: '' } }, 'منشأة الرحلة');
     const d = await orgR.getDoc(`orgs/${OWNER}/members/${MEMBER}`);
-    expect([d!.name, d!.phone]).toEqual(['عضو معدّل مصطنع', '0500000901']);
+    expect([d!.name, d!.phone]).toEqual(['عضو معدل مصطنع', '0500000901']);
     expect(r.after.perm).toEqual({ collect: 2 });
     expect(r.before.perm).not.toEqual(r.after.perm);
     await refreshMembership(mem, mr);

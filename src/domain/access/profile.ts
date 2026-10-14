@@ -37,7 +37,10 @@ export const NID_RE = /^[12][0-9]{9}$/;
 export const RESERVED_NAME_RE = /المالك|مالك المنشأة|·|:|owner|supervis/i; // i18n-exempt: نصٌّ محجوز تطابقه القواعد
 export const reservedName = (name: string): boolean => RESERVED_NAME_RE.test(name) || !NAME_CHARS_RE.test(name);
 /** حروف الاسم المقبولة · تطابق profileComplete في القواعد (المتحقق المستقل، الجولة ٢٨: التطويل والتشكيل والحرف الشبيه) */
-export const NAME_CHARS_RE = /^[\u0621-\u063A\u0641-\u064A\u0660-\u0669\u0671-\u06D3a-zA-Z0-9 .'-]+$/;
+const NAME_RANGES: Array<[number, number]> = [[0x0621, 0x063a], [0x0641, 0x064a], [0x0660, 0x0669], [0x0671, 0x06d3]];
+/** صنف حروف الاسم · منه صنف الجهاز وصنف القواعد (rulesGen.ts profileComplete) */
+export const NAME_CLASS = '[' + NAME_RANGES.map(([a, b]) => String.fromCharCode(a) + '-' + String.fromCharCode(b)).join('') + "a-zA-Z0-9 .'-]";
+export const NAME_CHARS_RE = new RegExp('^' + NAME_CLASS + '+$');
 /** التطويل والتشكيل يُنزعان من الاسم قبل الحفظ · فلا يُرفض اسمٌ كُتب بهما */
 export const stripArabicMarks = (s: string): string => s.replace(/[\u0640\u064B-\u065F\u0670]/g, '');
 export const PHONE_RE = /^05[0-9]{8}$/;

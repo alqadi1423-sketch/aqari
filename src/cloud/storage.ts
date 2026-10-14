@@ -131,6 +131,9 @@ export async function uploadObject(
 /** أقصى ما يُضاف من رموز في تعديلٍ واحد · القواعد تفحص كل رمزٍ مضاف بموضعه (storage.rules: addedOk) */
 export const MAX_TOKENS_PER_PATCH = 6;
 
+/** سبب فشل تحديث رؤية الملف · لزيادة الرموز وكتابتها */
+const RETOKEN_FAILED = 'تحديث رؤية الملف';
+
 export async function addTokens(io: StorageIO, t: StorageTarget, name: string, current: RemoteFile, g: string[], att?: string): Promise<void> {
   const missing = [...new Set(g)].filter((x) => !current.g.includes(x)).sort();
   let have = [...current.g];
@@ -141,7 +144,7 @@ export async function addTokens(io: StorageIO, t: StorageTarget, name: string, c
       headers: await auth(t, { 'Content-Type': 'application/json; charset=utf-8' }),
       body: JSON.stringify({ metadata: { g: have.join(','), ...(att ? { att } : {}) } }),
     });
-    if (!res.ok) throw failure(res.status, 'تحديث رؤية الملف');
+    if (!res.ok) throw failure(res.status, RETOKEN_FAILED);
   }
 }
 
@@ -155,7 +158,7 @@ export async function setTokens(io: StorageIO, t: StorageTarget, name: string, g
     headers: await auth(t, { 'Content-Type': 'application/json; charset=utf-8' }),
     body: JSON.stringify({ metadata: { g: [...new Set(g)].sort().join(',') } }),
   });
-  if (!res.ok) throw failure(res.status, 'تحديث رؤية الملف');
+  if (!res.ok) throw failure(res.status, RETOKEN_FAILED);
 }
 
 /** تنزيل ملف إلى مسار · المطابقة بالبصمة على من ينادي */

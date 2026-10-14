@@ -108,6 +108,12 @@ d('توسيع رؤية الملف (ثالثاً أ ١)', () => {
       const bytes = Buffer.from('ملف مصطنع جديد ' + label + ' ' + Date.now());
       fs.writeFileSync(file, bytes);
       const sha = createHash('sha256').update(bytes).digest('hex');
+      // صفّ بصمته بكاتبه كما يرفعه الجهاز قبل الملف (المراجعة الخارجية ٧ · النتيجة ١٠: لا يرفع العضو ملف بصمةٍ لم يسجّلها)
+      const blob = await fetch(`http://${FS_HOST}/v1/projects/${PROJECT}/databases/(default)/documents/orgs/${OWNER}/rows/blobs__${sha}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+        body: JSON.stringify({ fields: encodeFields({ t: 'blobs', k: sha, u: '1', dev: 'd', del: false, d: { sha256: sha, ext: 'bin' }, g: ['collect|@'], pids: ['*'], by: MEMBER }) }),
+      });
+      expect(blob.status).toBe(200);
       if (att) await adminRow(att, { sha256: sha, entity_type: att.startsWith('ATT-LIB') ? '' : 'payment' }, g, att.startsWith('ATT-LIB') ? ['*'] : ['P1']);
       try {
         await uploadObject(nodeStorageIO, target(MEMBER), objectName(OWNER, sha, 'bin'), file,
