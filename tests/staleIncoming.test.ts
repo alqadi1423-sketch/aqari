@@ -77,7 +77,10 @@ test('٨ (المتحقق على 299bdd5) جهازٌ ساعته مقدَّمة ل
   // ساعة أ مقدَّمة عشر دقائق ولم تُقَس بعد
   a.run(`UPDATE sync_outbox SET changed_at = ? WHERE tbl = 'tenants' AND pk = ?`, [new Date(Date.now() + 600_000).toISOString(), tid]);
   await sync(a, r);
-  await new Promise((res) => setTimeout(res, 20));
+  // ب يعدّل بعد التزام أ في الخادم: MemoryRemote يختم كل مستندٍ بعد سابقه بميلي ثانية فتسبق ساعته الوقت الحقيقي على جهازٍ سريع
+  // (خط GitHub على eecf36f: عدّ تعديل ب أقدم من ختم أ) · فينتظر حتى يتجاوزه الوقت الحقيقي
+  const stamped = Date.parse(r.docs.get(docId('tenants', tid))!.ts);
+  while (Date.now() <= stamped + 20) await new Promise((res) => setTimeout(res, 5));
   b.run(`UPDATE tenants SET phone = '0544444444' WHERE id = ?`, [tid]);
   await sync(b, r); await sync(a, r); await sync(b, r);
   expect(phone(a, tid)).toBe('0544444444');
