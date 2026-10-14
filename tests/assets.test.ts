@@ -320,6 +320,37 @@ test('#35 بقرار المالك: التراجع في سنةٍ بعد التح�
   expect(listAssets(db)).toHaveLength(0);
 });
 
+test('المراجعة ٧ (المتحقق، الجولة الثانية عشرة): التراجع عن التحويل يصل جهاز المالك الآخر كاملاً · وعكس الإهلاك فوق المرحَّل يُرفض', async () => {
+  const { MemoryRemote } = await import('./helpers/memoryRemote');
+  const { enableSync, syncOnce, docId } = await import('@/sync/engine');
+  const { getMeta } = await import('@/repos/settings');
+  const { memDb } = await import('./helpers/testDb');
+  const sync = (d: typeof db, r: InstanceType<typeof MemoryRemote>) => syncOnce(d, r, getMeta(d, 'device_id')!);
+  const { db, u1 } = world();
+  enableSync(db, 'U');
+  const pid = savePurchase(db, purchase({ date: '2025-01-10', category: 'صيانة', subtotalHalalas: 240000, taxHalalas: 0, totalHalalas: 240000 }));
+  convertPurchase(db, pid, [{ descr: 'مكيف شباك تجريبي', qty: 2, amountHalalas: 168000, isAsset: true, category: '1410', unitId: u1 },
+    { descr: 'أجور تركيب', qty: 1, amountHalalas: 72000, isAsset: false }], '2026-03-10');
+  runDepreciation(db, '2027-01-01');
+  undoConversion(db, pid, '2027-02-15');
+  const r = new MemoryRemote();
+  await sync(db, r);
+  const b = memDb();
+  enableSync(b, 'U');
+  await sync(b, r); await sync(b, r);
+  expect(b.all(`SELECT reason FROM sync_rejects`)).toEqual([]);
+  for (const c of ['1410', '1490']) expect(bal(b, c)).toBe(bal(db, c));
+  // وعكس إهلاكٍ مزوّر فوق ما رُحِّل لأصله: يُرفض
+  const asset = db.get<{ id: string }>(`SELECT asset_id AS id FROM journal_lines WHERE account_code = '1490' AND asset_id IS NOT NULL LIMIT 1`)!.id;
+  r.inject({ id: docId('journal_entries', 'DUX'), t: 'journal_entries', k: 'DUX', u: '2099-01-01T00:00:00.000Z', dev: 'other', del: false,
+    d: { id: 'DUX', no: 'JE-DUX', date: '2027-02-16', memo: 'م', status: 'مرحّل', auto: 1, src_type: 'asset_convert_rev', src_id: pid, created_at: 'x', deleted_at: null, reversed_by: null },
+    lines: [{ id: 'DUX1', entry_id: 'DUX', account_code: '1490', descr: '', debit_halalas: 99999999, credit_halalas: 0, asset_id: asset },
+      { id: 'DUX2', entry_id: 'DUX', account_code: '5600', descr: '', debit_halalas: 0, credit_halalas: 99999999, asset_id: asset }] });
+  await sync(b, r);
+  expect(b.get(`SELECT 1 FROM journal_entries WHERE id = 'DUX'`)).toBeFalsy();
+  db.close(); b.close();
+});
+
 test('#35 (التحقق المستقل) قيد إهلاكٍ مكرَّر عُكس في المراجعة لا يُحسب مرةً ثانية عند التراجع', () => {
   const { db, u1 } = world();
   const pid = savePurchase(db, purchase({ date: '2025-06-10', category: 'صيانة', subtotalHalalas: 240000, taxHalalas: 0, totalHalalas: 240000 }));

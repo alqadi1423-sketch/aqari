@@ -16,7 +16,7 @@
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
 import { isSafeBlobName } from '../files/store';
-import { mirrorIssue } from '../domain/accounting/mirror';
+import { mirrorIssue, isDepreciationUndo } from '../domain/accounting/mirror';
 import { t as tr } from '../i18n';
 import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
@@ -368,6 +368,8 @@ class AwaitOriginal extends Error {}
 function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   const src = (doc.d!.src_type as string | null) ?? null;
   if (!src || !src.endsWith('_rev') || getSyncState(db, 'membership')) return;
+  // عكس الإهلاك عند التراجع عن التحويل ليس مرآةً لقيدٍ بعينه، وله حدّه (mirror.ts: isDepreciationUndo)
+  if (src === 'asset_convert_rev' && isDepreciationUndo(db, doc.k)) return;
   const base = src.slice(0, -4);
   const srcId = (doc.d!.src_id as string | null) ?? '';
   const originals = db.all<{ id: string }>(base === 'manual'
@@ -378,8 +380,9 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   if (!originals.length) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
   const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
   if (!issues.includes('')) throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' }));
-  const revs = Number(db.get<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId])!.n); // i18n-exempt: حالة القيد المخزّنة
+  const revs = db.all<{ id: string }>(
+    `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]) // i18n-exempt: حالة القيد المخزّنة
+    .filter((r) => !(src === 'asset_convert_rev' && isDepreciationUndo(db, r.id))).length;
   if (revs > originals.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
 }
 

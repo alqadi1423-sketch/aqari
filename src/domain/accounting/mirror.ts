@@ -16,6 +16,28 @@ const linesOf = (db: DB, id: string) => db.all<Line>(
 
 const isIncome = (type: string | null) => type === 'إيراد' || type === 'مصروف'; // i18n-exempt: نوع حساب مخزَّن
 
+/**
+ * قيد عكس الإهلاك عند التراجع عن تحويل المشتريات إلى أصول (assets/convert.ts: undoConversion) · مصدره «asset_convert_rev» وليس
+ * مرآةً لقيدٍ بعينه: مدين مجمع الإهلاك 1490 ودائن مصروف الإهلاك 5600 أو الأرباح المحتجزة 3200، لكل سطرٍ أصله · ولا يعكس لأصلٍ
+ * أكثر مما رُحِّل عليه من إهلاك (المتحقق المستقل، الجولة الثانية عشرة: كان يُرفض على جهاز المالك الآخر فيبقى الإهلاك)
+ */
+const ACCUM_OF_ASSET = `SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_code = '1490' AND l.asset_id = ? AND e.status = 'مرحّل' AND e.deleted_at IS NULL`; // i18n-exempt: حالة القيد المخزّنة
+export function isDepreciationUndo(db: DB, revId: string): boolean {
+  const lines = db.all<{ account_code: string; debit_halalas: number; credit_halalas: number; asset_id: string | null }>(
+    `SELECT account_code, debit_halalas, credit_halalas, asset_id FROM journal_lines WHERE entry_id = ?`, [revId]);
+  if (!lines.length) return false;
+  for (const l of lines) {
+    if (!l.asset_id) return false;
+    if (l.account_code === '1490' ? Number(l.credit_halalas) !== 0 : !['5600', ACC_RETAINED].includes(l.account_code) || Number(l.debit_halalas) !== 0) return false;
+  }
+  // مجمع إهلاك كل أصلٍ فيه لا يصير مديناً بعده
+  for (const id of [...new Set(lines.map((l) => l.asset_id!))]) {
+    const bal = Number(db.get<{ n: number }>(ACCUM_OF_ASSET, [id])!.n);
+    if (bal < 0) return false;
+  }
+  return true;
+}
+
 /** سبب أن revId ليس مرآةً حقيقية لـ entryId (بالعربية كأسباب الرفض المخزّنة) · فارغ إن كان */
 export function mirrorIssue(db: DB, entryId: string, revId: string): string {
   const o = db.get<{ src_type: string | null; src_id: string | null }>(`SELECT src_type, src_id FROM journal_entries WHERE id = ?`, [entryId]);
