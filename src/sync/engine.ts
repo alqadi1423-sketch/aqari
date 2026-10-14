@@ -17,6 +17,8 @@
  */
 import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
+import { nextJournalNo } from '../domain/accounting/post';
+import { nextPurchaseNo } from '../domain/purchases';
 import { t as tr } from '../i18n';
 import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
@@ -490,6 +492,30 @@ function cloudJournalNo(db: DB, localNo: string): string {
   return localNo;
 }
 
+/**
+ * المراجعة الخارجية ٧ · النتيجة ٥ (قرار المالك «رابعاً ٣»: «إعادة الترقيم عند تعارض الرقم»): جهازٌ رقّم قيوده وفواتير شرائه
+ * قبل الدخول (بلا كتلة ولا حرف) ثم انضم، فوصله رقمٌ من الحساب هو رقم قيدٍ له · كان الوارد يُرفض أبداً ويتباين الدفتران ·
+ * وفي أول دورةٍ للجهاز (joining) ما عنده لم يُرفع بعد (السحب قبل الدفع) فيُعاد ترقيم ما عنده من كتلته الآن ويُطبَّق الوارد برقمه،
+ * فيتفق الجهازان على الأرقام · والمرحّل لا يتغير رقمه إلا هنا (المحفّز يُرفع ويُعاد في المعاملة نفسها) · وحركات بنكه معه ·
+ * ورقم العقد خارجه (قد يكون رقم إيجار الذي أدخله المستخدم فلا يُغيَّر)
+ */
+function renumberJoiningCollision(db: DB, table: 'journal_entries' | 'purchases', incomingId: string, no: unknown): void {
+  if (typeof no !== 'string' || getSyncState(db, 'joining') !== '1') return;
+  const mine = db.get<{ id: string }>(`SELECT id FROM "${table}" WHERE no = ? AND id != ?`, [no, incomingId]);
+  if (!mine) return;
+  if (table === 'purchases') {
+    db.run(`UPDATE purchases SET no = ? WHERE id = ?`, [nextPurchaseNo(db), mine.id]);
+  } else {
+    const fresh = nextJournalNo(db);
+    const trg = db.get<{ sql: string }>(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_je_frozen_hdr'`)?.sql;
+    if (trg) db.exec('DROP TRIGGER trg_je_frozen_hdr');
+    try { db.run(`UPDATE journal_entries SET no = ? WHERE id = ?`, [fresh, mine.id]); } finally { if (trg) db.exec(trg); }
+    db.run(`UPDATE bank_tx SET journal_no = ? WHERE journal_no = ?`, [fresh, no]);
+    for (const t of db.all<{ id: string }>(`SELECT id FROM bank_tx WHERE journal_no = ?`, [fresh])) enqueue(db, 'bank_tx', t.id, 'upsert');
+  }
+  enqueue(db, table, mine.id, 'upsert');
+}
+
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
 const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? getSyncState(db, 'org') : getSyncState(db, 'uid'));
 
@@ -527,6 +553,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
     return dimsChanged ? 'applied' : 'kept';
   }
   if (local) db.run(`DELETE FROM journal_lines WHERE entry_id = ?`, [doc.k]); // مسودة · سطورها تُستبدل
+  renumberJoiningCollision(db, 'journal_entries', doc.k, d.no);
   const posted = d.status === 'مرحّل';
   const entry: RowData = { ...d, status: posted ? 'قيد الإنشاء' : d.status, reversed_by: null };
   upsertRow(db, 'journal_entries', entry, cols.e);
@@ -704,6 +731,7 @@ function applyOne(
       } else {
         // ما أرسله جهازٌ بإصدار أقدم من مسدَّدٍ وحالة يُترك · فهما يُحسبان هنا بعد التطبيق
         const row = stripDerived(doc.t, doc.d!);
+        if (doc.t === 'purchases') renumberJoiningCollision(db, 'purchases', doc.k, row.no);
         // حركة البنك برقم قيدها على هذا الجهاز (noteJournalNoAlias)
         if (doc.t === 'bank_tx' && typeof row.journal_no === 'string') {
           const alias = noAliases(db)[row.journal_no];
