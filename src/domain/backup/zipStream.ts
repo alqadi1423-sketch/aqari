@@ -126,10 +126,11 @@ const CHUNK = 1 << 20;
 const MAX_DEFLATE_RATIO = 1100;
 const MAX_ENTRY_BYTES = 1 << 30;
 /**
- * أقصى مجموع الأحجام المعلنة في الفهرس المركزي (المراجعة الخارجية ٧ · النتيجة ١٢): الحارس كان لكل مدخل وحده فثلاثة مدخلات من
- * ٣ م.ب تُفكّ إلى ٣ غ.ب · والأرشيف كله يُفكّ في الذاكرة فما فوق هذا لا يتسع لجهازٍ أصلاً
+ * أقصى مجموع ما يُفكّ من المدخلات المضغوطة بأحجامها المعلنة في الفهرس المركزي (المراجعة الخارجية ٧ · النتيجة ١٢): الحارس كان لكل
+ * مدخل وحده فثلاثة مدخلات من ٣ م.ب تُفكّ إلى ٣ غ.ب · والأرشيف كله يُفكّ في ذاكرة الجوال (المتحقق المستقل، الجولة ٢٧: ٢ غ.ب
+ * تقتل التطبيق) · والمضغوط في النسخة قاعدة البيانات وبياناتها، والمرفقات مخزّنة بلا ضغط فلا تُفكّ
  */
-const MAX_TOTAL_BYTES = 2 * (1 << 30);
+const MAX_INFLATE_TOTAL = 512 << 20;
 /** حجمٌ بعد الفك لا يطابق الفهرس، أو معلنٌ غير معقول (مراجعة التثبيت #49) */
 const sizeMismatch = (name: string) => new ZipFormatError('حجم «' + name + '» بعد الفك لا يطابق الفهرس');
 async function prepareEntry(
@@ -378,8 +379,9 @@ export async function unzipYielding(
       let us = r32(data, q + 24);
       const nl = r16(data, q + 28), el = r16(data, q + 30), cl = r16(data, q + 32);
       if (us === 0xFFFFFFFF) us = zip64Extra(data, q + 46 + nl, el, { size: true, csize: false, offset: false }).size ?? us;
-      sum += us;
-      if (sum > MAX_TOTAL_BYTES) throw new ZipFormatError(t('backup.archiveTooLarge'));
+      // المخزّن بلا ضغط لا يُفكّ (يُنسخ بحجمه في الأرشيف)
+      if (r16(data, q + 10) !== 0) sum += us;
+      if (sum > MAX_INFLATE_TOTAL) throw new ZipFormatError(t('backup.archiveTooLarge'));
       q += 46 + nl + el + cl;
     }
   }
@@ -427,12 +429,9 @@ export async function unzipYielding(
       out[name] = raw.slice();
       readBytes += csize;
       onBytes?.(readBytes, data.length);
-    } else if (method === 8 && csize <= CHUNK) {
-      out[name] = inflateSync(raw, usize ? { out: new Uint8Array(usize) } : undefined);
-      readBytes += csize;
-      onBytes?.(readBytes, data.length);
     } else if (method === 8) {
-      // المضغوط الكبير (القاعدة) على قطع يفسح بينها ويبلّغ · فلا تتجمد الشاشة في «فكّ الأرشيف»
+      // المضغوط على قطع يفسح بينها ويبلّغ · فلا تتجمد الشاشة في «فكّ الأرشيف» · والصغير مثله (المتحقق المستقل، الجولة ٢٧: كان
+      // يُفكّ دفعةً في مخزنٍ بحجمه المعلن فيفكّ المجرى كله ويبتر ما فاض بصمت: ٢٠٠ ك.ب بحجمٍ معلن ١ تحبس ثواني وتُقبل)
       const parts: Uint8Array[] = [];
       let produced = 0;
       // يتوقف عند تجاوز الحجم المعلن · فلا تمتلئ الذاكرة بمدخلٍ أعلن حجماً أصغر (مراجعة التثبيت #49)
@@ -452,7 +451,7 @@ export async function unzipYielding(
       const inflated = new Uint8Array(total);
       let o = 0;
       for (const x of parts) { inflated.set(x, o); o += x.length; }
-      if (usize && total !== usize) throw sizeMismatch(name);
+      if (total !== usize) throw sizeMismatch(name);
       out[name] = inflated;
     } else {
       throw new ZipFormatError('طريقة ضغط غير مدعومة (' + method + ') في «' + name + '»');

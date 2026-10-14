@@ -126,11 +126,18 @@ function extractStreams(bytes: Uint8Array, raw: string): RawStream[] {
     while (data.length && (data[data.length - 1] === 0x0a || data[data.length - 1] === 0x0d)) {
       data = data.subarray(0, data.length - 1);
     }
+    // الصورة لا نصّ فيها: لا تُفكّ فلا تصرف الميزانية (المتحقق المستقل، الجولة ٢٧: عقدٌ ممسوح بالصور كان يُرفض)
+    if (/\/Subtype\s*\/Image\b/.test(dict)) continue;
     if (/\/FlateDecode/.test(dict)) {
       const cap = Math.min(MAX_PDF_STREAM, budget);
       const inflated = inflateOrCap(data, cap);
-      // تجاوز الميزانية الإجمالية يرفض الملف · وتجاوز سقف المجرى وحده يتركه كما كان
-      if (inflated === 'cap') { if (cap < MAX_PDF_STREAM) throw new Error('pdf'); continue; }
+      // ما فُكّ حتى السقف يُحسب من الميزانية ولو تُرك المجرى (المتحقق المستقل، الجولة ٢٧: مجاري فوق السقف بقليل كانت تُفكّ
+      // ستة عشر ميغا كلٌّ منها بلا حساب حتى حدّ العدد) · ونفادها يرفض الملف · وتجاوز سقف المجرى وحده يتركه كما كان
+      if (inflated === 'cap') {
+        budget -= cap;
+        if (cap < MAX_PDF_STREAM || budget <= 0) throw new Error('pdf');
+        continue;
+      }
       if (!inflated) continue;
       budget -= inflated.length;
       data = inflated;
