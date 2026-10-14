@@ -23,6 +23,8 @@ const MAX_PDF_STREAM = 16 << 20;
  */
 const MAX_PDF_TOTAL = 48 << 20;
 const MAX_PDF_STREAMS = 4000;
+/** أقصى نسبة فكٍّ لـ deflate (نحو ١٠٣٢ إلى ١) · لحساب ما قد يُنتجه مجرى تالف */
+const MAX_DEFLATE_RATIO = 1032;
 
 /** فكّ zlib أو الخام بسقف · null إن تعذّر أو تجاوز السقف */
 export function inflateCapped(data: Uint8Array, max: number = MAX_PDF_STREAM): Uint8Array | null {
@@ -47,14 +49,19 @@ export function inflateCapped(data: Uint8Array, max: number = MAX_PDF_STREAM): U
   return null;
 }
 
-/** كـ inflateCapped ويفرّق تجاوز السقف ('cap') عن التلف (null) */
-function inflateOrCap(data: Uint8Array, max: number): Uint8Array | 'cap' | null {
+/**
+ * كـ inflateCapped ويفرّق تجاوز السقف ('cap') عن التلف (null) · وspent ما فُكّ في المحاولتين كلتيهما ولو انتهتا بتلف (المتحقق
+ * المستقل، الجولة ٢٨: مجرى مبتور يُفكّ حتى نهايته ثم يُرمى، وكان لا يُحسب من الميزانية)
+ */
+function inflateOrCap(data: Uint8Array, max: number): { out: Uint8Array | 'cap' | null; spent: number } {
+  let spent = 0;
   for (const Kind of [Unzlib, Inflate]) {
     const parts: Uint8Array[] = [];
     let total = 0;
     try {
       const z = new Kind((chunk: Uint8Array) => {
         total += chunk.length;
+        spent += chunk.length;
         if (total > max) throw new Error('cap');
         parts.push(chunk);
       });
@@ -62,12 +69,12 @@ function inflateOrCap(data: Uint8Array, max: number): Uint8Array | 'cap' | null 
       const out = new Uint8Array(total);
       let o = 0;
       for (const p of parts) { out.set(p, o); o += p.length; }
-      return out;
+      return { out, spent };
     } catch (e) {
-      if ((e as Error).message === 'cap') return 'cap';
+      if ((e as Error).message === 'cap') return { out: 'cap', spent };
     }
   }
-  return null;
+  return { out: null, spent };
 }
 
 /** فك مرشِّح PNG Predictor (يشيع في مجاري ObjStm/xref بـ /Predictor 12) */
@@ -130,16 +137,18 @@ function extractStreams(bytes: Uint8Array, raw: string): RawStream[] {
     if (/\/Subtype\s*\/Image\b/.test(dict)) continue;
     if (/\/FlateDecode/.test(dict)) {
       const cap = Math.min(MAX_PDF_STREAM, budget);
-      const inflated = inflateOrCap(data, cap);
+      const { out: inflated, spent } = inflateOrCap(data, cap);
       // ما فُكّ حتى السقف يُحسب من الميزانية ولو تُرك المجرى (المتحقق المستقل، الجولة ٢٧: مجاري فوق السقف بقليل كانت تُفكّ
       // ستة عشر ميغا كلٌّ منها بلا حساب حتى حدّ العدد) · ونفادها يرفض الملف · وتجاوز سقف المجرى وحده يتركه كما كان
+      // كل ما فُكّ يُحسب: ما تجاوز سقفه، وما سلم، والتالف بأقصى ما يُنتجه مضغوطه في حدّ السقف (المتحقق المستقل، الجولة ٢٨: مجرى
+      // مبتور يُفكّ حتى نهايته ثم يُرمى، والمكتبة لا تُخرج ما فكّته قبل الخطأ فلا يُعرف قدره)
+      budget -= inflated === null ? Math.max(spent, Math.min(cap, data.length * MAX_DEFLATE_RATIO)) : spent;
       if (inflated === 'cap') {
-        budget -= cap;
         if (cap < MAX_PDF_STREAM || budget <= 0) throw new Error('pdf');
         continue;
       }
+      if (budget <= 0) throw new Error('pdf');
       if (!inflated) continue;
-      budget -= inflated.length;
       data = inflated;
       const pred = /\/Predictor\s+(\d+)/.exec(dict);
       const cols = /\/Columns\s+(\d+)/.exec(dict);

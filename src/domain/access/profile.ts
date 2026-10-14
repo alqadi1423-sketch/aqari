@@ -35,7 +35,11 @@ export const NID_RE = /^[12][0-9]{9}$/;
  * القواعد · والفيصل شارة الدور من المعرّف (src/chat/roles.ts)
  */
 export const RESERVED_NAME_RE = /المالك|مالك المنشأة|·|:|owner|supervis/i; // i18n-exempt: نصٌّ محجوز تطابقه القواعد
-export const reservedName = (name: string): boolean => RESERVED_NAME_RE.test(name);
+export const reservedName = (name: string): boolean => RESERVED_NAME_RE.test(name) || !NAME_CHARS_RE.test(name);
+/** حروف الاسم المقبولة · تطابق profileComplete في القواعد (المتحقق المستقل، الجولة ٢٨: التطويل والتشكيل والحرف الشبيه) */
+export const NAME_CHARS_RE = /^[\u0621-\u063A\u0641-\u064A\u0660-\u0669\u0671-\u06D3a-zA-Z0-9 .'-]+$/;
+/** التطويل والتشكيل يُنزعان من الاسم قبل الحفظ · فلا يُرفض اسمٌ كُتب بهما */
+export const stripArabicMarks = (s: string): string => s.replace(/[\u0640\u064B-\u065F\u0670]/g, '');
 export const PHONE_RE = /^05[0-9]{8}$/;
 
 /**
@@ -43,7 +47,7 @@ export const PHONE_RE = /^05[0-9]{8}$/;
  * required: الاسم والجوال إلزاميان (عند الإكمال)، وعند الدعوة قد يُترك الملف كله فارغاً ليكمله العضو.
  */
 export function validateProfile(input: Partial<MemberProfile>, required: boolean): { ok: true; profile: MemberProfile } | { ok: false; error: string; field: keyof MemberProfile } {
-  const name = String(input.name ?? '').trim().replace(/\s+/g, ' ');
+  const name = stripArabicMarks(String(input.name ?? '')).trim().replace(/\s+/g, ' ');
   const rawPhone = String(input.phone ?? '').trim();
   const nid = normalizeNid(String(input.nid ?? ''));
   const title = String(input.title ?? '').trim().replace(/\s+/g, ' ');

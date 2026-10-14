@@ -535,14 +535,18 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
       // قرار المالك «رابعاً ١٠») · يطابق reservedName على الجهاز
       function profileComplete(d) {
         return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$')
-          && !d.name.lower().matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*');
+          && !d.name.lower().matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*')
+          // حروفٌ عربية بلا تطويل ولا تشكيل، ولاتينية، وأرقام، ومسافة وشرطة ونقطة وفاصلة عليا · فلا يُحاكى المحجوز بتطويلٍ أو تشكيلٍ أو
+          // حرفٍ شبيه (المتحقق المستقل، الجولة ٢٨) · والجهاز ينزع التطويل والتشكيل قبل الحفظ
+          && d.name.matches("[ء-غف-ي٠-٩ٱ-ۓa-zA-Z0-9 .'-]+");
       }
 
       // العضوية: يكتبها المالك · والعضو ينشئ عضويته مرة من دعوةٍ بإيميله وبنصّها حرفياً، ويعدّل بياناته وحدها،
       // ويغادر بحذفها
       match /members/{uid} {
         allow read: if orgOwner(org) || (request.auth != null && request.auth.uid == uid);
-        allow create: if (orgOwner(org) && profileShape(request.resource.data)) || (
+        // ولا عضوية للمالك في منشأته (المتحقق المستقل، الجولة ٢٨ على النتيجة ١٦: مستندها كان يُدخله المجموعة بلا سطر انضمامه)
+        allow create: if (orgOwner(org) && uid != org && profileShape(request.resource.data)) || (
           request.auth != null && request.auth.uid == uid && request.auth.token.email_verified == true
           && exists(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email))
           && request.resource.data == get(/databases/$(database)/documents/orgs/$(org)/invites/$(request.auth.token.email)).data

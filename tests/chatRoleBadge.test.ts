@@ -33,3 +33,13 @@ test('قيد الاسم على الجهاز: ما يحاكي شارة دور أ�
     expect(validateProfile({ name, phone: '0500000017' }, true).ok).toBe(true);
   }
 });
+
+test('الجولة ٢٨: الجهاز ينزع التطويل والتشكيل قبل الفحص · ويرفض الحروف الشبيهة والعريضة', () => {
+  expect(validateProfile({ name: 'عضو المـالك', phone: '0500000028' }, true).ok).toBe(false);
+  expect(validateProfile({ name: 'عضو المالِك', phone: '0500000028' }, true).ok).toBe(false);
+  for (const name of ['Member \u043Ewner', 'Member \uFF2F\uFF37\uFF2E\uFF25\uFF32', 'عضو \u30FB ب', 'عضو\u200Fب']) {
+    expect(validateProfile({ name, phone: '0500000028' }, true).ok).toBe(false);
+  }
+  const ok = validateProfile({ name: 'عبدُالله مصطـفى', phone: '0500000028' }, true);
+  expect(ok.ok && ok.profile.name).toBe('عبدالله مصطفى');
+});

@@ -260,8 +260,32 @@ d('المراجعة الخارجية ٧ · النتيجة ١٧: العضو لا 
 
   test('إيجابي: اسمٌ عادي (ولو فيه «مالك» أو «مشرف» اسماً) يُقبل ويبلغ الدليل · والمالك يكتب أسماء أعضائه كما كان', async () => {
     await seed();
-    for (const name of ['عضو أ معدَّل', 'مالك مصطنع', 'مشرف مصطنع']) expect(await self(name)).toBe(200);
+    for (const name of ['عضو أ معدل' /* الجهاز ينزع التشكيل قبل الحفظ (الجولة ٢٨) */, 'مالك مصطنع', 'مشرف مصطنع']) expect(await self(name)).toBe(200);
     expect(await status(chat(A).putMyDirectory('مشرف مصطنع', []))).toBe(200);
     expect(await put(`orgs/${ORG}/members/${C}?updateMask.fieldPaths=name`, { name: 'عضو ج من المالك' }, ORG)).toBe(200);
+  });
+});
+
+/* ═══ المتحقق المستقل، الجولة ٢٨ على efeb306 ═══ */
+d('الجولة ٢٨: المالك لا يدخل المجموعة بلا سطره ولو بمستند عضوية · والاسم لا يحاكي المحجوز بحرفٍ شبيه', () => {
+  test('١٦ سلبي: المالك لا ينشئ مستند عضويةٍ لنفسه · ومع وجوده لا يضيفه المنشئ بلا سطر انضمامه', async () => {
+    await seed({ h: 'join' });
+    expect(await put(`orgs/${ORG}/members/${ORG}`, { email: 'gsowner@example.test', perm: { contracts: 2 }, all: true, props: [], tokens: [], name: 'منشأة' }, ORG)).toBe(403);
+    // مستندٌ قائم (بذره المدير): الإضافة من غير المالك مرفوضة كما كانت بلا مستند
+    const res = await fetch(url(`orgs/${ORG}/members/${ORG}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+      body: JSON.stringify({ fields: encodeFields({ email: 'gsowner@example.test', perm: { contracts: 2 }, all: true, props: [], tokens: [], name: 'منشأة' }) }) });
+    await res.text();
+    expect(res.status).toBe(200);
+    expect(await status(chat(B).addMember(G, ORG))).toBe(403);
+    expect((await chat(B).getThread(G)).p).not.toContain(ORG);
+  });
+
+  test('١٧ سلبي: التطويل والتشكيل والحروف الشبيهة والعريضة لا تمرّ · والاسم العربي واللاتيني العادي يمرّ', async () => {
+    await seed();
+    const self = (name: string) => put(`orgs/${ORG}/members/${A}?updateMask.fieldPaths=name&updateMask.fieldPaths=phone`, { name, phone: '0500000028' }, A);
+    for (const name of ['عضو أ المـالك', 'عضو أ المالِك', 'عضو أ \u30FB المالك', 'عضو أ \u2027 مالك', 'Member \u043Ewner', 'Member \uFF2F\uFF37\uFF2E\uFF25\uFF32', 'عضو \u2022 ب', 'عضو\u200Fالمالك']) {
+      expect(await self(name)).toBe(403);
+    }
+    for (const name of ['عبدالله بن مصطنع', "O'Neil Test-Name", 'عضو ٢ مصطنع', 'گل مصطنع']) expect(await self(name)).toBe(200);
   });
 });

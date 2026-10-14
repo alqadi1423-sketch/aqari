@@ -2,7 +2,7 @@
  * مراجعة التثبيت #49: قنابل فكّ الضغط وكثرة الدورات · لا حجز بالحجم المعلن، ولا فكّ PDF بلا سقف، ولا دورات مفتاح
  * يحددها الملف بلا حدّ معقول · بيانات مصطنعة.
  */
-import { zipSync, deflateSync } from 'fflate';
+import { zipSync, deflateSync, zlibSync } from 'fflate';
 import { unzipYielding, ZipFormatError } from '@/domain/backup/zipStream';
 import { encryptArchive, decryptArchive, WrongPasswordError, type CipherProvider } from '@/domain/backup/encryption';
 import { nodeCipher } from '@/files/nodeCipher';
@@ -133,4 +133,11 @@ test('١٢ (الجولة ٢٧) مجموع ما يُفكّ فوق ٥١٢ م.ب ي
   // مخزّنٌ بلا ضغط بحجمٍ معلن كبير لا يُحسب (يُنسخ بحجمه في الأرشيف)
   const stored = zipSync({ x: new Uint8Array(4 << 20) }, { level: 0 });
   await expect(unzipYielding(forgeAllUsize(stored, 600 << 20))).resolves.toBeDefined();
+});
+
+test('١١ (الجولة ٢٨) مجارٍ مبتورة تُفكّ حتى نهايتها تُحسب من الميزانية فيُرفض الملف', () => {
+  const z = zlibSync(new Uint8Array((15 << 20) + (900 << 10)));
+  const cut = z.subarray(0, z.length - 8);
+  const pdf = pdfOf(Array.from({ length: 20 }, () => cut));
+  expect(() => extractPdfText(pdf)).toThrow('pdf');
 });
