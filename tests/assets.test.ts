@@ -3,6 +3,7 @@
  * الحسابات والبنود والإهلاك والنقل والاستبعاد والبيع والتحويل والمحتويات والتدفقات.
  */
 import { memDb } from './helpers/testDb';
+import type { RemoteDoc } from '@/sync/types';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import type { DB } from '@/db/adapter';
 import { confirmContract } from '@/domain/contracts/service';
@@ -348,6 +349,38 @@ test('المراجعة ٧ (المتحقق، الجولة الثانية عشرة
       { id: 'DUX2', entry_id: 'DUX', account_code: '5600', descr: '', debit_halalas: 0, credit_halalas: 99999999, asset_id: asset }] });
   await sync(b, r);
   expect(b.get(`SELECT 1 FROM journal_entries WHERE id = 'DUX'`)).toBeFalsy();
+  db.close(); b.close();
+});
+
+test('المراجعة ٧ (المتحقق، الجولة الثالثة عشرة): عكس إهلاكٍ بمقدار المرحَّل والتحويل قائم، أو بمصدرٍ مخترع، لا يمحو الإهلاك', async () => {
+  const { MemoryRemote } = await import('./helpers/memoryRemote');
+  const { enableSync, syncOnce, docId } = await import('@/sync/engine');
+  const { getMeta } = await import('@/repos/settings');
+  const { memDb } = await import('./helpers/testDb');
+  const sync = (d: typeof db, r: InstanceType<typeof MemoryRemote>) => syncOnce(d, r, getMeta(d, 'device_id')!);
+  const { db, u1 } = world();
+  enableSync(db, 'U');
+  const pid = savePurchase(db, purchase({ date: '2025-01-10', category: 'صيانة', subtotalHalalas: 240000, taxHalalas: 0, totalHalalas: 240000 }));
+  convertPurchase(db, pid, [{ descr: 'مكيف شباك تجريبي', qty: 2, amountHalalas: 168000, isAsset: true, category: '1410', unitId: u1 },
+    { descr: 'أجور تركيب', qty: 1, amountHalalas: 72000, isAsset: false }], '2026-03-10');
+  runDepreciation(db, '2026-12-01');
+  const r = new MemoryRemote();
+  await sync(db, r);
+  const b = memDb();
+  enableSync(b, 'U');
+  await sync(b, r);
+  const exp = bal(b, '5600');
+  const a1 = db.get<{ id: string; n: number }>(`SELECT l.asset_id AS id, SUM(l.credit_halalas) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+    WHERE l.account_code = '1490' AND e.src_type IN ('depreciation', 'asset_dep') GROUP BY l.asset_id LIMIT 1`)!;
+  const undo = (k: string, src: string): RemoteDoc => ({ id: docId('journal_entries', k), t: 'journal_entries', k, u: '2099-01-01T00:00:00.000Z', dev: 'other', del: false,
+    d: { id: k, no: 'JE-' + k, date: '2026-12-15', memo: 'م', status: 'مرحّل', auto: 1, src_type: 'asset_convert_rev', src_id: src, created_at: 'x', deleted_at: null, reversed_by: null },
+    lines: [{ id: k + '1', entry_id: k, account_code: '1490', descr: '', debit_halalas: Number(a1.n), credit_halalas: 0, asset_id: a1.id },
+      { id: k + '2', entry_id: k, account_code: '5600', descr: '', debit_halalas: 0, credit_halalas: Number(a1.n), asset_id: a1.id }] });
+  r.inject(undo('DU1', 'ANY-PURCHASE'));
+  r.inject(undo('DU2', pid));
+  await sync(b, r); await sync(b, r);
+  for (const k of ['DU1', 'DU2']) expect(b.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [k])).toBeFalsy();
+  expect(bal(b, '5600')).toBe(exp);
   db.close(); b.close();
 });
 
