@@ -730,7 +730,8 @@
     "line": "The reversal does not mirror its original: a line has no counterpart",
     "linkRejected": "Reversal link rejected · {{why}}",
     "noOriginal": "A member reversal with no original to reverse",
-    "revRejected": "Reversal rejected · {{why}}"
+    "revRejected": "Reversal rejected · {{why}}",
+    "extra": "More reversals than originals"
   },
   "journal": {
     "saveDraft": "Save draft",

@@ -356,25 +356,31 @@ export function resolvePendingReversals(db: DB): number {
   return done;
 }
 
+/** الأصل لم يصل بعد: يُعاد المستند في المرور التالي كالأب الناقص، ولا يُرفض (المتحقق المستقل، الجولة الحادية عشرة) */
+class AwaitOriginal extends Error {}
+
 /**
- * العاكس المرحّل من عضو (المراجعة الخارجية ٧ · النتيجة ١ · المتحقق المستقل، الجولة العاشرة): القواعد تقبل «_rev» من الأعضاء
- * بأي سطور وأي مصدر، فجهاز المالك لا يرحّله إلا مرآةً لأصلٍ قائم عنده (mirror.ts) · وإلا رُفض المستند كله فلا يدخل الدفتر ·
- * وعاكس المالك نفسه موثوق، وجهاز العضو قد لا يرى الأصل فلا يُفحص فيه
+ * العاكس المرحّل الوارد (المراجعة الخارجية ٧ · النتيجة ١ · المتحقق المستقل، الجولتان العاشرة والحادية عشرة): القواعد تقبل «_rev»
+ * من الأعضاء بأي سطور وأي مصدر، والعضو بـ«كامل» يعدّل مسودة غيره فيبقى كاتبها · فجهاز المالك يفحص كل عاكسٍ مرحّل يصله أياً كان
+ * كاتبه: مرآةً لأصلٍ قائم عنده (mirror.ts)، ولا عواكس أكثر من أصولها (كانت المرآة المكررة تضاعف أثر العكس) · وإلا رُفض المستند
+ * كله فلا يدخل الدفتر · والأصل الذي لم يصل بعد يُنتظر · وجهاز العضو قد لا يرى الأصل فلا يُفحص فيه
  */
 function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   const src = (doc.d!.src_type as string | null) ?? null;
   if (!src || !src.endsWith('_rev') || getSyncState(db, 'membership')) return;
-  const owner = ownerUid(db);
-  if (!doc.by || doc.by === owner) return;
   const base = src.slice(0, -4);
   const srcId = (doc.d!.src_id as string | null) ?? '';
   const originals = db.all<{ id: string }>(base === 'manual'
-    ? `SELECT id FROM journal_entries WHERE id = ? AND src_type IS NULL AND status = 'مرحّل'` // i18n-exempt: حالة القيد المخزّنة
+    // اليدوي بلا مصدر، أو بمصدر «manual» كما يقبله mirrorIssue
+    ? `SELECT id FROM journal_entries WHERE id = ? AND (src_type IS NULL OR src_type = 'manual') AND status = 'مرحّل'` // i18n-exempt: حالة القيد المخزّنة
     : `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, // i18n-exempt: حالة القيد المخزّنة
     base === 'manual' ? [srcId] : [base, srcId]);
-  if (!originals.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.noOriginal', { lng: 'ar' }), lng: 'ar' }));
+  if (!originals.length) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
   const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
   if (!issues.includes('')) throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' }));
+  const revs = Number(db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId])!.n); // i18n-exempt: حالة القيد المخزّنة
+  if (revs > originals.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
 }
 
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
@@ -611,7 +617,7 @@ function applyOne(
     return conflict ?? 'applied';
   } catch (e) {
     const msg = errText(e);
-    if (isMissingParent(msg)) return 'retry';
+    if (isMissingParent(msg) || e instanceof AwaitOriginal) return 'retry';
     reject(db, doc, msg);
     return 'rejected';
   }

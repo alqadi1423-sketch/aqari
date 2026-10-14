@@ -44,7 +44,9 @@ test('١ (ب) عاكسٌ مزوّر بهللة (مصدره صحيح) لا يُر
   r.inject(linkDoc(r, e.id, 'FK1'));
   await sync(a, r);
   expect(reversedBy(a, e.id)).toBeNull();
-  expect(reasonOf(a, e.id)).toMatch(/مرآة/);
+  // والعاكس المزوّر نفسه مرفوضٌ لا يدخل الدفتر (الجولة الحادية عشرة: كل عاكسٍ وارد يُفحص أياً كان كاتبه)
+  expect(reasonOf(a, 'FK1')).toMatch(/مرآة/);
+  expect(a.get(`SELECT 1 FROM journal_entries WHERE id = 'FK1'`)).toBeFalsy();
   a.close();
 });
 
@@ -59,7 +61,7 @@ test('١ (ب) والربط المعلّق (وصل الأصل قبل عاكسه �
   r.inject(fake('FK2', e.id, [['1100', 0, 1], ['4200', 1, 0]]));
   await sync(a, r);
   expect(reversedBy(a, e.id)).toBeNull();
-  expect(reasonOf(a, e.id)).toMatch(/مرآة/);
+  expect(reasonOf(a, 'FK2')).toMatch(/مرآة/);
   a.close();
 });
 
@@ -113,16 +115,48 @@ describe('mirrorIssue', () => {
 /** عاكسٌ مرحّل من عضو (بكاتبه) */
 const memberRev = (k: string, srcId: string, lines: [string, number, number][]): RemoteDoc => ({ ...fake(k, srcId, lines), by: 'member-1' });
 
-test('١ عاكسٌ مرحّل من عضو بلا أصلٍ يعكسه (مصدرٌ مخترع وأي مبلغ) لا يدخل دفتر المالك', async () => {
+test('١ عاكسٌ مرحّل بلا أصلٍ يعكسه (مصدرٌ مخترع وأي مبلغ) لا يدخل دفتر المالك · ينتظر أصله في الوارد ولا يُرحَّل', async () => {
   const r = new MemoryRemote();
   const a = memDb();
   enableSync(a, UID);
   await sync(a, r);
   r.inject(memberRev('MR1', 'ANY', [['1100', 50000000, 0], ['4200', 0, 50000000]]));
+  // وبكاتب المالك نفسه أو بلا كاتب (عضوٌ بـ«كامل» عدّل مسودة غيره فبقي كاتبها · الجولة الحادية عشرة)
+  r.inject({ ...memberRev('MR1B', 'ANY', [['1100', 70000000, 0], ['4200', 0, 70000000]]), by: UID });
+  r.inject({ ...fake('MR1C', 'ANY', [['1100', 70000000, 0], ['4200', 0, 70000000]]), d: { ...fake('MR1C', 'ANY', []).d!, src_type: 'foo_rev' } });
   await sync(a, r);
-  expect(a.get(`SELECT 1 FROM journal_entries WHERE id = 'MR1'`)).toBeFalsy();
-  expect(reasonOf(a, 'MR1')).toMatch(/أصل/);
+  for (const k of ['MR1', 'MR1B', 'MR1C']) expect(a.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [k])).toBeFalsy();
+  expect(Number(a.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox WHERE pk IN ('MR1','MR1B','MR1C')`)!.n)).toBe(3);
   a.close();
+});
+
+test('١ مرآةٌ حقيقية مكررة لا تضاعف أثر العكس: الأولى تدخل والباقي يُرفض', async () => {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, UID);
+  const e = original(a);
+  await sync(a, r);
+  for (const k of ['MD1', 'MD2', 'MD3']) r.inject(memberRev(k, e.id, [['1100', 0, 100000], ['4200', 100000, 0]]));
+  await sync(a, r);
+  expect(Number(a.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries WHERE src_type = 'manual_rev' AND status = 'مرحّل'`)!.n)).toBe(1);
+  expect(reasonOf(a, 'MD2') + reasonOf(a, 'MD3')).toMatch(/أكثر من أصولها/);
+  a.close();
+});
+
+test('والعاكس الذي وصل قبل أصله (إلغاء عضوٍ قبل مزامنة المالك) ينتظره ثم يُرحَّل ويُربط', async () => {
+  const r = new MemoryRemote();
+  const a = memDb(); const m = memDb();
+  enableSync(a, UID); enableSync(m, UID);
+  await sync(a, r);
+  const e = original(m);
+  const rev = reverseEntryById(m, e.id)!;
+  const remDoc = (await import('@/sync/engine')).buildDoc;
+  r.inject({ ...remDoc(m, 'journal_entries', rev.id, 'upsert', '2099-01-01T00:00:03.000Z', 'dev-m'), by: 'member-1' });
+  r.inject({ ...remDoc(m, 'journal_entries', e.id, 'upsert', '2099-01-01T00:00:05.000Z', 'dev-m'), by: 'member-1' });
+  await sync(a, r);
+  expect(a.get<{ s: string }>(`SELECT status AS s FROM journal_entries WHERE id = ?`, [rev.id])?.s).toBe('مرحّل');
+  expect(reversedBy(a, e.id)).toBe(rev.id);
+  a.close(); m.close();
 });
 
 test('١ وعاكسٌ من عضو لأصلٍ قائم بسطورٍ غير مرآته لا يدخل · ومرآته الحقيقية تدخل', async () => {
@@ -150,6 +184,6 @@ test('والربط المعلّق المرفوض يُسجَّل مرةً لا ف
   await sync(a, r);
   r.inject(fake('FK3', e.id, [['1100', 0, 1], ['4200', 1, 0]]));
   for (let i = 0; i < 3; i++) await sync(a, r);
-  expect(Number(a.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects WHERE pk = ?`, [e.id])!.n)).toBe(1);
+  expect(Number(a.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects WHERE pk IN (?, 'FK3')`, [e.id])!.n)).toBe(1);
   a.close();
 });
