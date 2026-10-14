@@ -721,5 +721,13 @@
     "setDelay": "Lock {{delay}}",
     "disable": "Turn off app lock",
     "saveFailed": "Could not save the app lock"
+  },
+  "mirror": {
+    "missing": "The entry or its reversal does not exist",
+    "notPosted": "The reversal is not posted",
+    "source": "The reversal source does not match its original",
+    "count": "The reversal does not mirror its original: line count differs",
+    "line": "The reversal does not mirror its original: a line has no counterpart",
+    "linkRejected": "Reversal link rejected · {{why}}"
   }
 }

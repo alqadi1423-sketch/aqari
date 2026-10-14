@@ -16,6 +16,8 @@
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
 import { isSafeBlobName } from '../files/store';
+import { mirrorIssue } from '../domain/accounting/mirror';
+import { t as tr } from '../i18n';
 import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
@@ -322,10 +324,16 @@ function upsertRow(db: DB, table: string, data: RowData, cols: Set<string>): voi
 /**
  * ربط القيد بعاكسه · والعاكس لم يصل بعد (رفعٌ انقطع على جهاز آخر) لا يحبس القيد ولا دفعته في الوارد:
  * يُطبَّق القيد ويُحفظ الربط معلّقاً حتى يصل عاكسه (resolvePendingReversals)
+ * والربط بمرآةٍ حقيقية وحدها (المراجعة الخارجية ٧ · النتيجة ١ · قرار المالك «رابعاً ١ (أ)»): عاكسٌ مزوّر بهللة كان يُلغي القيد
+ * الحقيقي · فيُترك الربط ويُسجَّل رفضه، والقيد نفسه يُطبَّق
  */
 const PENDING_REV = 'pending_reversal_links';
-function linkReversal(db: DB, entryId: string, revId: string): void {
+const linkRejected = (db: DB, entryId: string, why: string, doc?: RemoteDoc) =>
+  reject(db, doc ?? ({ id: docId('journal_entries', entryId), t: 'journal_entries', k: entryId } as RemoteDoc), tr('mirror.linkRejected', { why, lng: 'ar' }));
+function linkReversal(db: DB, entryId: string, revId: string, doc?: RemoteDoc): void {
   if (db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [revId])) {
+    const why = mirrorIssue(db, entryId, revId);
+    if (why) { linkRejected(db, entryId, why, doc); return; }
     db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [revId, entryId]);
     return;
   }
@@ -338,9 +346,10 @@ export function resolvePendingReversals(db: DB): number {
   let done = 0;
   for (const [entryId, revId] of Object.entries(pending)) {
     if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [revId])) continue;
-    db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [revId, entryId]);
+    const why = mirrorIssue(db, entryId, revId);
+    if (why) linkRejected(db, entryId, why);
+    else { db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [revId, entryId]); done++; }
     delete pending[entryId];
-    done++;
   }
   if (done) setSyncState(db, PENDING_REV, Object.keys(pending).length ? JSON.stringify(pending) : null);
   return done;
@@ -374,7 +383,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
     // أبعاد سطور القيد المرحّل وحدها تصل (ملء القيود القديمة · الهجرة ٢٨) · ولا يتغير فيه غيرها
     const dimsChanged = cols.l.has('cost_center_id') ? applyLineDims(db, doc.k, doc.lines ?? []) : 0;
     if (remoteRev && !local.reversed_by) {
-      linkReversal(db, doc.k, remoteRev);
+      linkReversal(db, doc.k, remoteRev, doc);
       return 'applied';
     }
     return dimsChanged ? 'applied' : 'kept';
@@ -389,7 +398,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
       keys.map((c) => l[c] as SqlValue));
   }
   if (posted) db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [doc.k]);
-  if (remoteRev) linkReversal(db, doc.k, remoteRev);
+  if (remoteRev) linkReversal(db, doc.k, remoteRev, doc);
   return 'applied';
 }
 

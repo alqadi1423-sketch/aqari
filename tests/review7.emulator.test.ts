@@ -44,7 +44,12 @@ async function putDoc(path: string, data: Record<string, unknown>, uid: string):
 }
 type W = { ok: boolean; code?: string; message?: string };
 /** رفضٌ بالمنطق لا بنفاد حدّ الألف تعبير (securityA2.emulator) */
-const deniedByLogic = (r: W) => { expect(r).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' }); expect(String(r.message)).toMatch(/false for '(create|update)'/); };
+// بعمليته نفسها: المحاكي يذكر قاعدتي الإنشاء والتعديل لكل كتابة، وقاعدة الإنشاء «false» على كل مستندٍ قائم، فـ«false» لأيهما لا
+// يثبت رفض التعديل بالمنطق (المتحقق المستقل على «ثالثاً» المراجعة ٧)
+const deniedByLogic = (r: W, op: 'create' | 'update') => {
+  expect(r).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  expect(String(r.message)).toMatch(new RegExp("false for '" + op + "'"));
+};
 const accepted = (r: W) => { if (!r.ok) throw new Error('rejected: ' + String(r.message).slice(0, 700)); };
 
 d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجوم المراجعة نفسه', () => {
@@ -110,7 +115,7 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     const orig = await built('journal_entries', pays[0]);
     const n = (orig.lines ?? []).length;
     accepted(await write(LED, fakeReversal('R7FR1', orig, n + 1 + (n % 2), 1)));
-    deniedByLogic(await linkTo(0, 'R7FR1', 'l1', null));
+    deniedByLogic(await linkTo(0, 'R7FR1', 'l1', null), 'update');
     accepted(await linkTo(0, await realReversal(0), 'l1b', null));
   });
 
@@ -119,7 +124,7 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     const orig = await built('journal_entries', pays[2]);
     const n = (orig.lines ?? []).length;
     accepted(await write(LED, fakeReversal('R7FR2', orig, n, 1), SCHEMA_VERSION));
-    deniedByLogic(await linkTo(2, 'R7FR2', 'l2', SCHEMA_VERSION));
+    deniedByLogic(await linkTo(2, 'R7FR2', 'l2', SCHEMA_VERSION), 'update');
     accepted(await linkTo(2, await realReversal(2), 'l2b', SCHEMA_VERSION));
   });
 
@@ -132,7 +137,7 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     const doc = ann(CONALL, await built('contracts', C1));
     const honest = doc.g!.map((x) => x.replace('|P1', '|P2'));
     const moved = { ...doc, d: { ...doc.d!, unit_id: 'UN2' }, pids: ['P2'] };
-    deniedByLogic(await write(CONALL, { ...moved, u: 'mv1', g: [...honest, 'contracts|P1', 'maintenance|P1'] }));
+    deniedByLogic(await write(CONALL, { ...moved, u: 'mv1', g: [...honest, 'contracts|P1', 'maintenance|P1'] }), 'update');
     accepted(await write(CONALL, { ...moved, u: 'mv2', g: honest }));
     accepted(await write(CONALL, { ...doc, u: 'mv3' }));
   });
@@ -142,7 +147,7 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     const rev = reverseEntryById(db, pays[1], 'عكس مصطنع')!;
     accepted(await write(null, ann(null, await built('journal_entries', rev.id))));
     const link = ann(COLALL, await built('journal_entries', pays[1]));
-    deniedByLogic(await write(COLALL, { ...link, u: 'lk1', pids: ['P2'], g: link.g!.map((x) => x.replace('|P1', '|P2')) }));
+    deniedByLogic(await write(COLALL, { ...link, u: 'lk1', pids: ['P2'], g: link.g!.map((x) => x.replace('|P1', '|P2')) }), 'update');
     accepted(await write(COLALL, link));
   });
 });

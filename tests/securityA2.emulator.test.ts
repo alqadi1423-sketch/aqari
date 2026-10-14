@@ -46,7 +46,12 @@ type W = { ok: boolean; code?: string; message?: string };
  * رفضٌ بالمنطق: المحاكي يقيّم القاعدة أكثر من مرة في الطلب، فيُشترط أن يكون في الرفض تقييمٌ اكتمل إلى «false»، لا نفادُ حدّ
  * الألف تعبير وحده (فلا ينقلب قبولاً إن خفّت القواعد)
  */
-const deniedByLogic = (r: W) => { expect(r).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' }); expect(String(r.message)).toMatch(/false for '(create|update)'/); };
+// بعمليته نفسها: المحاكي يذكر قاعدتي الإنشاء والتعديل لكل كتابة، وقاعدة الإنشاء «false» على كل مستندٍ قائم، فـ«false» لأيهما لا
+// يثبت رفض التعديل بالمنطق (المتحقق المستقل على «ثالثاً» المراجعة ٧)
+const deniedByLogic = (r: W, op: 'create' | 'update') => {
+  expect(r).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  expect(String(r.message)).toMatch(new RegExp("false for '" + op + "'"));
+};
 const accepted = (r: W) => { if (!r.ok) throw new Error('rejected: ' + String(r.message).slice(0, 700)); };
 
 d('نتائج المتحقق على «ثالثاً أ»', () => {
@@ -99,8 +104,8 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     const base = ann(COL, { ...src, k: 'S2E1', id: 'journal_entries__S2E1', u: 'a', d: { ...src.d!, id: 'S2E1' },
       lines: (src.lines ?? []).map((l, i) => ({ ...l, id: 'S2E1' + i, entry_id: 'S2E1' })) });
     const forged = [...base.g!, 'ledger|P2', 'collect|P2'];
-    deniedByLogic(await write(COL, { ...base, pids: ['P1', '*'], g: forged }));
-    deniedByLogic(await write(COL, { ...base, pids: ['P1', 'P1'], g: forged }));
+    deniedByLogic(await write(COL, { ...base, pids: ['P1', '*'], g: forged }), 'create');
+    deniedByLogic(await write(COL, { ...base, pids: ['P1', 'P1'], g: forged }), 'create');
     accepted(await write(COL, base));
   });
 
@@ -109,7 +114,7 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
       d: { id: 'UZ', property_id: 'P1', name: 'وحدة مصطنعة', type: 'شقة', created_at: '2026-01-01' } });
     accepted(await write(PRO, unit));
     accepted(await write(PRO, { ...unit, u: '2', del: true, d: null }));
-    deniedByLogic(await write(PRO, { ...unit, u: '3', g: [...unit.g!, 'ledger|P2', 'collect|P2'] }));
+    deniedByLogic(await write(PRO, { ...unit, u: '3', g: [...unit.g!, 'ledger|P2', 'collect|P2'] }), 'update');
     accepted(await write(PRO, { ...unit, u: '4' }));
   });
 
@@ -119,7 +124,7 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
       d: { id: 'S2FAKE', no: 'JE-S2F', date: '2026-02-01', memo: 'عكس مصطنع', status: 'قيد الإنشاء', auto: 0, created_at: '2026-02-01',
         src_type: 'rent_rev', src_id: orig.d!.src_id }, lines: [] });
     accepted(await write(LED, fake));
-    deniedByLogic(await write(LED, ann(LED, { ...orig, u: 'l1', d: { ...orig.d!, reversed_by: 'S2FAKE' } })));
+    deniedByLogic(await write(LED, ann(LED, { ...orig, u: 'l1', d: { ...orig.d!, reversed_by: 'S2FAKE' } })), 'update');
   });
 
   test('٣ القيد اليدوي (مصدره فارغ) يُربط بعكسه · من المالك', async () => {
@@ -149,8 +154,8 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
       lines: [{ id: 'S2Da', entry_id: 'S2D', account_code: '1100', descr: '', debit_halalas: 100, credit_halalas: 0 },
         { id: 'S2Db', entry_id: 'S2D', account_code: '3100', descr: '', debit_halalas: 0, credit_halalas: 100 }] });
     accepted(await write(LED, draft));
-    deniedByLogic(await write(LED, { ...draft, u: 'd2', d: { ...draft.d!, src_type: 'rent', src_id: 'X' } }));
-    deniedByLogic(await write(LED, { ...draft, u: 'd3', d: { ...draft.d!, src_type: 'rent', src_id: 'X', status: 'مرحّل' } }));
+    deniedByLogic(await write(LED, { ...draft, u: 'd2', d: { ...draft.d!, src_type: 'rent', src_id: 'X' } }), 'update');
+    deniedByLogic(await write(LED, { ...draft, u: 'd3', d: { ...draft.d!, src_type: 'rent', src_id: 'X', status: 'مرحّل' } }), 'update');
     accepted(await write(LED, { ...draft, u: 'd4', d: { ...draft.d!, memo: 'مسودة معدلة' } }));
   });
 
@@ -158,7 +163,7 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     const inv = (status: string, k: string): RemoteDoc => ({ id: 'invoices~pub__' + k, t: 'invoices~pub', k, u: 'i', dev: 'dev-i', del: false,
       pids: ['P1'], g: ['invoices|P1', 'invoices|@'], op: 'invoices', by: INV.uid!,
       d: { id: k, no: 'INV-' + k, issue: '2026-02-04', status, property_id: 'P1', created_at: '2026-02-04' } });
-    deniedByLogic(await write(INV, inv('مستحقة', 'S2I1')));
+    deniedByLogic(await write(INV, inv('مستحقة', 'S2I1')), 'create');
     accepted(await write(INV, inv('مسودة', 'S2I2')));
   });
 
@@ -176,8 +181,8 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     accepted(await write(TEN, ta));
     const tdoc = annotate(db, await built('tenants', tenantId), TEN1);
     const pubDoc = tdoc.pub!;
-    deniedByLogic(await write(TEN1, { ...tdoc.doc, k: 'S2TN', id: 'tenants__S2TN', u: 't1', pids: ['P1'], g: [...tdoc.doc.g!, 'contracts|P2', 'collect|P2'], d: { ...tdoc.doc.d!, id: 'S2TN' } }));
-    deniedByLogic(await write(TEN1, { ...pubDoc, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't2', pids: ['P1'], g: ['tenants|P1', 'contracts|P2', 'collect|P2'], d: { ...pubDoc.d!, id: 'S2TN' } }));
+    deniedByLogic(await write(TEN1, { ...tdoc.doc, k: 'S2TN', id: 'tenants__S2TN', u: 't1', pids: ['P1'], g: [...tdoc.doc.g!, 'contracts|P2', 'collect|P2'], d: { ...tdoc.doc.d!, id: 'S2TN' } }), 'create');
+    deniedByLogic(await write(TEN1, { ...pubDoc, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't2', pids: ['P1'], g: ['tenants|P1', 'contracts|P2', 'collect|P2'], d: { ...pubDoc.d!, id: 'S2TN' } }), 'create');
     accepted(await write(TEN1, { ...pubDoc, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't3', pids: ['P1'], g: ['tenants|@', 'tenants|P1'], d: { ...pubDoc.d!, id: 'S2TN' } }));
   });
 
