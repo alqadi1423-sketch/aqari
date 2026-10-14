@@ -24,11 +24,13 @@ const ALLOWED: Record<string, string[]> = {
   openDeletionWindow: ['chatPurgeOrg'],
   // وخطوات السحابة في services/cloudWipe.ts يختبرها المحاكي كما تجري (المراجعات الخارجية «ثالثاً أ ٨»)
   chatPurgeOrg: ['wipeCloud', 'deleteOwnerCloud'],
-  deleteAllData: ['deleteMyAccount', 'deleteOwnerCloud'],
+  deleteAllData: ['deleteOwnerCloud'],
   deleteRowsOnly: ['wipeOrgCloud'],
   wipeOrgCloud: ['wipeCloud'],
   wipeCloud: ['wipeEverything'],
-  deleteOwnerCloud: ['deleteMyAccount'],
+  // «حذف حسابي» لكل مستخدم: عضويته ثم منشأته كاملة (المراجعة الخارجية ٧ · النتيجة ١٥)
+  deleteOwnerCloud: ['deleteAccountCloud'],
+  deleteAccountCloud: ['deleteMyAccount'],
 };
 
 test('نافذة الحذف لا تُفتح إلا من حذف الحساب أو المسح الشامل', () => {

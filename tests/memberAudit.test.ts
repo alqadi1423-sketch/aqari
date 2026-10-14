@@ -50,5 +50,9 @@ test('الخدمة تسجّل كل عملية عضوية · و«حذف حساب�
   expect(fn('updateMemberNow')).toContain("logMemberAccess(db, 'grant'");
   expect(fn('removeMemberNow')).toContain("logMemberAccess(db, 'remove'");
   expect(fn('revokeInviteNow')).toContain("logMemberAccess(db, 'revoke'");
-  expect(fn('deleteMyAccount')).toMatch(/leaveOrg\(/);
+  // العضوية تُحذف في خطوات السحابة المختبَرة على المحاكي (المراجعة الخارجية ٧ · النتيجة ١٥)
+  expect(fn('deleteMyAccount')).toMatch(/deleteAccountCloud\(\{[^}]*member/);
+  const wipe = require('fs').readFileSync(require('path').join(__dirname, '..', 'src', 'services', 'cloudWipe.ts'), 'utf8') as string;
+  const acc = wipe.slice(wipe.indexOf('export async function deleteAccountCloud'));
+  expect(acc).toMatch(/leaveOrg\(d\.member\.remote/);
 });

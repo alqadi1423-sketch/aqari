@@ -48,7 +48,7 @@ import { autoDepreciate } from '../domain/assets/auto';
 import { syncLanguageWithAccount } from '../i18n/device';
 import { gateFailure } from '../cloud/signInFailure';
 import { t } from '../i18n';
-import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatUnsentCount, clearChatData, hasChatData, chatForgetMe, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatCancelTask, chatVote,
+import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatUnsentCount, clearChatData, hasChatData, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatCancelTask, chatVote,
   type GroupChange, type ChatTag, type ChatTask,
   chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
 import type { RemoteMessage, RemoteThread } from '../chat/remote';
@@ -57,7 +57,7 @@ import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
 import { makeSafetyBackup } from '../domain/backup/create';
 import { leaveSafely } from '../domain/leaveOrg';
-import { wipeCloud, deleteOwnerCloud, type CloudFiles } from './cloudWipe';
+import { wipeCloud, deleteAccountCloud, type CloudFiles } from './cloudWipe';
 import { logMemberAccess } from '../domain/memberAudit';
 import { appDataRoot } from '../files/expoFs';
 import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
@@ -653,22 +653,16 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
     // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
     const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.idToken() };
     const mem = readMembership(db);
-    // محاولة: عضوٌ أُزيل ولم يُحسم قراره لا يُمنع من حذف حسابه (التحقق)
-    if (mem) {
-      await chatForgetMe(chatS, mem.org).catch(() => {});
-      // ومستند عضويته في منشأة المالك (اسمه وجواله وهويته) يُحذف معه · محاولة: عضوٌ أُزيل لا مستند له (دراسة القائم)
-      await leaveOrg(new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: mem.org }), mem.org, mem.uid).catch(() => {});
-    }
-    // المالك: الملفات والمحادثات كلها والمنشأة والمسار القديم بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨)
+    // عضويته في منشأة غيره إن كانت (اسمه وجواله وهويته · محاولة: عضوٌ أُزيل لا مستند له) ثم منشأته هو كاملة: الملفات والمحادثات
+    // والمنشأة والمسار القديم بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨ · والمراجعة الخارجية ٧ · النتيجة ١٥)
     const remotes = [
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() }),
     ];
-    if (mem) {
-      for (const remote of remotes) await remote.deleteAllData((n) => onProgress?.('جاري حذف بياناتك من السحابة · ' + n));
-    } else {
-      await deleteOwnerCloud({ remotes, chat: chatS, org: uid, files: orgFilesTarget(uid) }, onProgress);
-    }
+    const member = mem
+      ? { org: mem.org, uid: mem.uid, remote: new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: mem.org }) }
+      : null;
+    await deleteAccountCloud({ remotes, chat: chatS, org: uid, files: orgFilesTarget(uid), member }, onProgress);
     onProgress?.('جاري حذف نسخك على Google Drive');
     await deleteAllAppDataFiles(driveIO, await s.driveToken());
     onProgress?.('جاري حذف الحساب');

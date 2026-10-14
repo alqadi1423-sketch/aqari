@@ -12,7 +12,7 @@ import { encodeFields, FirestoreRemote } from '@/cloud/firestore';
 import { ChatRemote } from '@/chat/remote';
 import { directId } from '@/chat';
 import { objectName, uploadObject, listObjects, filesPrefix, type StorageTarget } from '@/cloud/storage';
-import { wipeCloud, deleteOwnerCloud } from '@/services/cloudWipe';
+import { wipeCloud, deleteOwnerCloud, deleteAccountCloud } from '@/services/cloudWipe';
 import { nodeStorageIO } from './helpers/nodeStorageIO';
 
 const FS_HOST = process.env.FIRESTORE_EMULATOR_HOST;
@@ -176,5 +176,91 @@ d('المسح الكامل (ثالثاً أ ٨)', () => {
     expect((await as(ORG, `orgs/${ORG}/meta`)).status).toBe(200);
     expect((await as(ORG, `orgs/${ORG}/meta/moves`, 'DELETE')).status).toBe(200);
     await chat(ORG).closeDeletionWindow();
+  });
+});
+
+/* ═══ المراجعة الخارجية ٧ · النتيجة ١٥ (قرار المالك «رابعاً ٨»): عضوٌ يملك منشأة يحذف حسابه فتُحذف منشأته كاملة ═══ */
+
+const C = 'WIPE-MC';
+const chatOf = (org: string, uid: string) => new ChatRemote({ projectId: PROJECT, org, uid, idToken: async () => token(uid), baseUrl: 'http://' + FS_HOST });
+const filesOf = (org: string) => ({ io: nodeStorageIO, t: { base: 'http://' + ST_HOST, bucket: BUCKET, org, idToken: async () => token(org) } as StorageTarget });
+const sessionOf = (uid: string) => ({ projectId: PROJECT, uid, email: uid.toLowerCase() + '@example.test', idToken: async () => token(uid), baseUrl: 'http://' + FS_HOST });
+const remoteOf = (uid: string, org?: string) => new FirestoreRemote({ projectId: PROJECT, uid, ...(org ? { org } : {}), idToken: async () => token(uid), baseUrl: 'http://' + FS_HOST });
+/** «حذف حسابي» للمستخدم A كما يجريه التطبيق: عضويته في منشأة المالك إن كانت، ومنشأته هو (orgs/A) */
+const deleteA = (member: boolean) => deleteAccountCloud({
+  remotes: [remoteOf(A, A), remoteOf(A)], chat: sessionOf(A), org: A, files: filesOf(A),
+  member: member ? { org: ORG, uid: A, remote: remoteOf(A, ORG) } : null,
+});
+
+/** منشأة A نفسها: مستندها وعضوٌ فيها وصفوف ومحادثة فردية ومجموعة وملفان · بيانات مصطنعة */
+async function seedOwnOrg(): Promise<void> {
+  await adminPut(`orgs/${A}`, { name: 'منشأة عضو مصطنعة' });
+  await adminPut(`orgs/${A}/members/${C}`, { email: C.toLowerCase() + '@example.test', perm: { contracts: 2 }, all: true, props: [], tokens: [], name: 'عضو ' + C });
+  for (let i = 0; i < 3; i++) await adminPut(`orgs/${A}/rows/contracts~A${i}`, { t: 'contracts', k: 'A' + i, u: '2026-01-01', d: '{}' });
+  await adminPut(`orgs/${A}/meta/counters`, { INV: 2 });
+  await chatOf(A, A).putMyDirectory('مالك مصطنع ثان', []);
+  await chatOf(A, C).putMyDirectory('عضو ' + C, []);
+  const dAC = directId(A, C);
+  await chatOf(A, A).createThread({ id: dAC, k: 'direct', p: [A, C].sort(), name: '' });
+  await chatOf(A, A).sendMessage(dAC, { id: 'AM1', name: 'مالك مصطنع ثان', body: 'رسالة مصطنعة', link: null });
+  await chatOf(A, C).sendMessage(dAC, { id: 'AM2', name: 'عضو ' + C, body: 'رد مصطنع', link: null });
+  await chatOf(A, A).createThread({ id: 'g_ownorg1', k: 'group', p: [A, C].sort(), name: 'مجموعة مصطنعة' });
+  await chatOf(A, C).sendMessage('g_ownorg1', { id: 'AM3', name: 'عضو ' + C, body: 'في المجموعة', link: null });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aq-wipe15-'));
+  for (const i of [1, 2]) {
+    const file = path.join(dir, `a${i}.bin`);
+    const bytes = Buffer.from('ملف مصطنع لمنشأة العضو ' + i);
+    fs.writeFileSync(file, bytes);
+    const sha = createHash('sha256').update(bytes).digest('hex');
+    await uploadObject(nodeStorageIO, filesOf(A).t, objectName(A, sha, 'bin'), file,
+      { g: ['contracts|@'], op: null, sha256: sha, md5: createHash('md5').update(bytes).digest('base64'), contentType: 'application/octet-stream' });
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
+d('المراجعة الخارجية ٧ · النتيجة ١٥: حذف حساب عضوٍ يملك منشأة', () => {
+  beforeEach(async () => { await seed(); await seedOwnOrg(); });
+
+  test('البذر: منشأة العضو فيها صفوف ومحادثات ورسائل وملفات', async () => {
+    const all = await walk(`orgs/${A}`);
+    for (const p of ['rows/', 'members/', 'meta/', 'chats/', '/msgs/', 'chatDir/']) expect(all.some((x) => x.includes(p))).toBe(true);
+    expect((await listObjects(nodeStorageIO, filesOf(A).t, filesPrefix(A))).length).toBe(2);
+  });
+
+  test('سلبي: بعد حذف حسابه لا يبقى شيء تحت منشأته ولا في التخزين (كانت ملفاتها ومحادثاتها تبقى يتيمة)', async () => {
+    await deleteA(true);
+    expect(await walk(`orgs/${A}`)).toEqual([]);
+    expect(await exists(`orgs/${A}`)).toBe(false);
+    expect(await listObjects(nodeStorageIO, filesOf(A).t, filesPrefix(A))).toEqual([]);
+    expect(await walk(`users/${A}`)).toEqual([]);
+  });
+
+  test('إيجابي: عضويته في منشأة المالك تُحذف واسمه في رسائلها «عضو سابق» · ومنشأة المالك وأعضاؤها الآخرون وملفاتها باقون', async () => {
+    await deleteA(true);
+    expect(await exists(`orgs/${ORG}/members/${A}`)).toBe(false);
+    expect(await exists(`orgs/${ORG}/members/${B}`)).toBe(true);
+    expect(await exists(`orgs/${ORG}`)).toBe(true);
+    const m = await fetch(`${DOCS()}/orgs/${ORG}/chats/${directId(A, B)}/msgs/WM1`, { headers: ADMIN });
+    expect(m.status).toBe(200);
+    expect(((await m.json()) as { fields: { name: { stringValue: string } } }).fields.name.stringValue).toBe('عضو سابق');
+    expect((await walk(`orgs/${ORG}`)).some((p) => p.includes('/rows/'))).toBe(true);
+    expect((await listObjects(nodeStorageIO, files().t, filesPrefix(ORG))).length).toBe(2);
+  });
+
+  test('إيجابي: عضوٌ صرف بلا منشأة يحذف حسابه بلا رفض', async () => {
+    // منشأته غير موجودة أصلاً
+    await deleteOwnerCloud({ remotes: [remoteOf(A, A)], chat: sessionOf(A), org: A, files: filesOf(A) });
+    expect(await exists(`orgs/${A}`)).toBe(false);
+    await expect(deleteA(true)).resolves.toBeUndefined();
+    expect(await exists(`orgs/${ORG}/members/${A}`)).toBe(false);
+    expect(await walk(`orgs/${A}`)).toEqual([]);
+  });
+
+  test('إيجابي: مالكٌ ليس عضواً في منشأة غيره يحذف حسابه كما كان', async () => {
+    await deleteA(false);
+    expect(await walk(`orgs/${A}`)).toEqual([]);
+    expect(await listObjects(nodeStorageIO, filesOf(A).t, filesPrefix(A))).toEqual([]);
+    // لم يمسّ عضويته في منشأة المالك (لا عضوية معلنة)
+    expect(await exists(`orgs/${ORG}/members/${A}`)).toBe(true);
   });
 });

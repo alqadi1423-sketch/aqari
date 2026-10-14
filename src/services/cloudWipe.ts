@@ -5,8 +5,8 @@
  */
 import type { FirestoreRemote } from '../cloud/firestore';
 import { listObjects, deleteObject, filesPrefix, type StorageIO, type StorageTarget } from '../cloud/storage';
-import { chatPurgeOrg, type ChatSession } from '../chat';
-import { wipeOrgCloud } from './org';
+import { chatPurgeOrg, chatForgetMe, type ChatSession } from '../chat';
+import { wipeOrgCloud, leaveOrg } from './org';
 import { t } from '../i18n';
 
 export interface CloudFiles { io: StorageIO; t: StorageTarget }
@@ -43,4 +43,24 @@ export async function deleteOwnerCloud(
   for (const remote of d.remotes) {
     await remote.deleteAllData((n) => onProgress?.(t('wipe.deletingCloud', { n })));
   }
+}
+
+/**
+ * «حذف حسابي» في السحابة لكل مستخدم (المراجعة الخارجية ٧ · النتيجة ١٥ · قرار المالك «رابعاً ٨» 2026-10-10: «من هو مالك منشأة
+ * وعضو في أخرى معاً، يحذف حسابه كمالك فتُحذف منشأته كاملة»): عضويته في منشأة غيره إن كانت (اسمه في رسائلها «عضو سابق» ومستند
+ * عضويته · محاولةٌ لا تمنع الحذف)، ثم منشأته هو كاملة بملفاتها ومحادثاتها والمسار القديم · كان فرع العضو يحذف الصفوف وحدها فتبقى
+ * ملفات منشأته ومحادثاتها بعد حذف الحساب ولا يصلها أحد · وخطوات المنشأة لا أثر لها على منشأة فارغة
+ */
+export async function deleteAccountCloud(
+  d: {
+    remotes: FirestoreRemote[]; chat: ChatSession; org: string; files: CloudFiles | null;
+    member: { org: string; uid: string; remote: FirestoreRemote } | null;
+  },
+  onProgress?: (m: string) => void,
+): Promise<void> {
+  if (d.member) {
+    await chatForgetMe(d.chat, d.member.org).catch(() => {});
+    await leaveOrg(d.member.remote, d.member.org, d.member.uid).catch(() => {});
+  }
+  await deleteOwnerCloud(d, onProgress);
 }
