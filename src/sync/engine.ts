@@ -16,7 +16,7 @@
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
 import { isSafeBlobName } from '../files/store';
-import { mirrorIssue, isDepreciationUndoShape, depUndoIssue } from '../domain/accounting/mirror';
+import { mirrorIssue } from '../domain/accounting/mirror';
 import { t as tr } from '../i18n';
 import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
@@ -370,13 +370,8 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   if (!src || !src.endsWith('_rev') || getSyncState(db, 'membership')) return;
   const base = src.slice(0, -4);
   const srcId = (doc.d!.src_id as string | null) ?? '';
-  // عكس الإهلاك عند التراجع عن التحويل ليس مرآةً لقيدٍ بعينه، وله شروطه (mirror.ts: depUndoIssue)
-  if (src === 'asset_convert_rev' && isDepreciationUndoShape(db, doc.k)) {
-    const why = depUndoIssue(db, doc.k, srcId);
-    if (why === 'await') throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
-    if (why) throw new Error(tr('mirror.revRejected', { why, lng: 'ar' }));
-    return;
-  }
+  // ولا استثناء لقيد عكس الإهلاك المحسوب في التراجع عن التحويل (assets/convert.ts: undoConversion): لا يستدعيه التطبيق بعد،
+  // وكل استثناءٍ له كان ثغرةً وجدها المتحقق المستقل (الجولات ١٢ إلى ١٥) · يُعطى مصدراً خاصاً به حين تُبنى شاشته
   const originals = db.all<{ id: string }>(base === 'manual'
     // اليدوي بلا مصدر، أو بمصدر «manual» كما يقبله mirrorIssue
     ? `SELECT id FROM journal_entries WHERE id = ? AND (src_type IS NULL OR src_type = 'manual') AND status = 'مرحّل'` // i18n-exempt: حالة القيد المخزّنة
@@ -386,8 +381,7 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
   if (!issues.includes('')) throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' }));
   const revs = db.all<{ id: string }>(
-    `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]) // i18n-exempt: حالة القيد المخزّنة
-    .filter((r) => !(src === 'asset_convert_rev' && isDepreciationUndoShape(db, r.id))).length;
+    `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]).length; // i18n-exempt: حالة القيد المخزّنة
   if (revs > originals.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
 }
 

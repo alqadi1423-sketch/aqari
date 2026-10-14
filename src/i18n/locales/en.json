@@ -731,10 +731,7 @@
     "linkRejected": "Reversal link rejected · {{why}}",
     "noOriginal": "A member reversal with no original to reverse",
     "revRejected": "Reversal rejected · {{why}}",
-    "extra": "More reversals than originals",
-    "depForeign": "Depreciation undo for an asset outside the conversion",
-    "depOver": "Depreciation undo above what was booked",
-    "depExtra": "More depreciation undos than conversions"
+    "extra": "More reversals than originals"
   },
   "journal": {
     "saveDraft": "Save draft",
