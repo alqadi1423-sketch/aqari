@@ -329,11 +329,41 @@ function upsertRow(db: DB, table: string, data: RowData, cols: Set<string>): voi
 const PENDING_REV = 'pending_reversal_links';
 const linkRejected = (db: DB, entryId: string, why: string, doc?: RemoteDoc) =>
   reject(db, doc ?? ({ id: docId('journal_entries', entryId), t: 'journal_entries', k: entryId } as RemoteDoc), tr('mirror.linkRejected', { why, lng: 'ar' }));
+/**
+ * ربطٌ خمّنه جهاز المالك (memberReversalCheck: عاكسٌ قُبل ولم يصل ربطه) · والربط الذي يرسله جهاز العاكس هو المعتمد فيغلبه
+ * (المتحقق المستقل، الجولة الثامنة عشرة: أصلان متطابقان، فخُمِّن أحدهما ثم وصل ربط الآخر فصار عاكسٌ واحد لأصلين)
+ */
+const GUESSED_REV = 'guessed_reversal_links';
+const guessesOf = (db: DB) => JSON.parse(getSyncState(db, GUESSED_REV) ?? '{}') as Record<string, string>;
+const saveGuesses = (db: DB, g: Record<string, string>) => setSyncState(db, GUESSED_REV, Object.keys(g).length ? JSON.stringify(g) : null);
+
+/**
+ * الربط المعلَن: يُفكّ ما خُمِّن لهذا العاكس على أصلٍ آخر، ويغلب تخميناً على هذا الأصل (ويُعاد تخمين العاكس المُزاح) ·
+ * والربط الحقيقي القائم لا يُمسّ · يعيد true إن رُبط
+ */
+function statedLink(db: DB, entryId: string, revId: string): boolean {
+  const g = guessesOf(db);
+  const cur = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [entryId])?.r ?? null;
+  if (cur === revId) { if (g[entryId]) { delete g[entryId]; saveGuesses(db, g); } return true; }
+  if (cur && g[entryId] !== cur) return false;
+  for (const [e, r] of Object.entries(g)) {
+    if (r === revId && e !== entryId) {
+      db.run(`UPDATE journal_entries SET reversed_by = NULL WHERE id = ? AND reversed_by = ?`, [e, r]);
+      delete g[e];
+    }
+  }
+  delete g[entryId];
+  db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [revId, entryId]);
+  saveGuesses(db, g);
+  if (cur) guessLink(db, cur);
+  return true;
+}
+
 function linkReversal(db: DB, entryId: string, revId: string, doc?: RemoteDoc): void {
   if (db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [revId])) {
     const why = mirrorIssue(db, entryId, revId);
     if (why) { linkRejected(db, entryId, why, doc); return; }
-    db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [revId, entryId]);
+    statedLink(db, entryId, revId);
     return;
   }
   const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
@@ -347,7 +377,7 @@ export function resolvePendingReversals(db: DB): number {
     if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [revId])) continue;
     const why = mirrorIssue(db, entryId, revId);
     if (why) linkRejected(db, entryId, why);
-    else { db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [revId, entryId]); done++; }
+    else if (statedLink(db, entryId, revId)) done++;
     delete pending[entryId];
     removed++;
   }
@@ -380,24 +410,57 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   if (!originals.length) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
   const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
   if (!issues.includes('')) throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' }));
-  // واحدٌ لواحد (المتحقق المستقل، الجولة السادسة عشرة): للمصدر أصولٌ عدة (فاتورةٌ عُدّلت فعُكس قيدها ورُحِّل غيره)، فمرآة الأصل
-  // المعكوس كانت تُقبل ثانيةً في حدود العدد · فالأصل الذي يعكسه لم يُعكس بغيره ولا تقابله مرآةٌ أخرى غير مربوطة بأصلٍ آخر
-  const revsOfSrc = db.all<{ id: string }>(
-    `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل' AND id != ?`, [src, srcId, doc.k]); // i18n-exempt: حالة القيد المخزّنة
-  const free = originals.filter((o, i) => {
-    if (issues[i] !== '') return false;
-    const by = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [o.id])!.r;
-    if (by && by !== doc.k) return false;
-    return !revsOfSrc.some((r2) => mirrorIssue(db, o.id, r2.id) === ''
-      && !db.get(`SELECT 1 FROM journal_entries WHERE reversed_by = ? AND id != ?`, [r2.id, o.id]));
-  });
-  if (!free.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
-  // ويُربط الأصل بعاكسه هنا (المتحقق المستقل، الجولة السابعة عشرة): عاكسٌ قُبل بلا ربطٍ يصل كان يترك الأصل «حياً» فيُعكس ثانيةً ·
-  // والربط الذي يصل بعدُ يشير إلى العاكس نفسه، وlinkReversal لا يملأ إلا الفارغ
-  db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [doc.k, free[0].id]);
+  if (!freeOriginals(db, doc.k, src, srcId, originals.map((o) => o.id)).length) {
+    throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
+  }
+  guessLink(db, doc.k);
   const revs = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]).length; // i18n-exempt: حالة القيد المخزّنة
   if (revs > originals.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
+}
+
+/**
+ * أصول المصدر التي يعكسها revId واحداً لواحد (المتحقق المستقل، الجولة السادسة عشرة): للمصدر أصولٌ عدة (فاتورةٌ عُدّلت فعُكس قيدها
+ * ورُحِّل غيره)، فمرآة الأصل المعكوس كانت تُقبل ثانيةً في حدود العدد · فالأصل الحر: مرآته revId، ولم يُعكس بغيره (أو خُمِّن له
+ * عاكسٌ يغلبه الربط المعلن)، ولا تقابله مرآةٌ أخرى غير مربوطة بأصلٍ آخر
+ */
+function freeOriginals(db: DB, revId: string, src: string, srcId: string, originals: string[]): string[] {
+  const others = db.all<{ id: string }>(
+    `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل' AND id != ?`, [src, srcId, revId]); // i18n-exempt: حالة القيد المخزّنة
+  return originals.filter((o) => {
+    if (mirrorIssue(db, o, revId) !== '') return false;
+    const by = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [o])!.r;
+    if (by && by !== revId) return false;
+    return !others.some((r2) => mirrorIssue(db, o, r2.id) === ''
+      && !db.get(`SELECT 1 FROM journal_entries WHERE reversed_by = ? AND id != ?`, [r2.id, o]));
+  });
+}
+
+/**
+ * يربط العاكس المقبول بأصله على جهاز المالك (المتحقق المستقل، الجولة السابعة عشرة: عاكسٌ قُبل بلا ربطٍ يصل كان يترك الأصل «حياً»
+ * فيُعكس ثانيةً) · المعلَن أولاً: ربطٌ معلّق أو وارد ينتظر يسمّي هذا العاكس، وإلا خُمِّن أول أصلٍ حر وسُجِّل تخميناً يغلبه الربط
+ * المعلن متى وصل (statedLink)
+ */
+function guessLink(db: DB, revId: string): void {
+  const r = db.get<{ src_type: string | null; src_id: string | null }>(`SELECT src_type, src_id FROM journal_entries WHERE id = ?`, [revId]);
+  if (!r?.src_type?.endsWith('_rev')) return;
+  if (db.get(`SELECT 1 FROM journal_entries WHERE reversed_by = ?`, [revId])) return;
+  const base = r.src_type.slice(0, -4);
+  const srcId = r.src_id ?? '';
+  const originals = db.all<{ id: string }>(base === 'manual'
+    ? `SELECT id FROM journal_entries WHERE id = ? AND (src_type IS NULL OR src_type = 'manual') AND status = 'مرحّل'` // i18n-exempt: حالة القيد المخزّنة
+    : `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, // i18n-exempt: حالة القيد المخزّنة
+    base === 'manual' ? [srcId] : [base, srcId]).map((o) => o.id);
+  const free = freeOriginals(db, revId, r.src_type, srcId, originals);
+  if (!free.length) return;
+  const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
+  const stated = free.find((o) => pending[o] === revId || db.get(
+    `SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND json_extract(payload, '$.d.reversed_by') = ?`, [o, revId]));
+  if (stated) { statedLink(db, stated, revId); return; }
+  db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [revId, free[0]]);
+  const g = guessesOf(db);
+  g[free[0]] = revId;
+  saveGuesses(db, g);
 }
 
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */

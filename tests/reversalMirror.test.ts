@@ -243,3 +243,37 @@ test('١ (الجولة السابعة عشرة) عاكسٌ مقبول بلا ر�
   expect(reverseEntryById(a, o.id)).toBeNull();
   a.close();
 });
+
+/* ═══ المتحقق المستقل، الجولة الثامنة عشرة: أصلان متطابقان · الربط المعلن يغلب التخمين ═══ */
+
+async function twins(sameSync: boolean) {
+  const r = new MemoryRemote();
+  const a = memDb(); const b = memDb();
+  enableSync(a, UID); enableSync(b, UID);
+  const o1 = srcEntry(a, 50000);
+  const o2 = srcEntry(a, 50000);
+  await sync(a, r); await sync(b, r);
+  const r2 = reverseEntryById(a, o2.id)!;
+  await sync(a, r);
+  if (!sameSync) {
+    // العاكس وحده أولاً (ربط أصله لم يصل بعد): يُخمَّن له أصل، ثم يصل الربط المعلن فيغلبه
+    const relink = r.docs.get(docId('journal_entries', o2.id))!;
+    r.docs.delete(docId('journal_entries', o2.id));
+    await sync(b, r);
+    r.inject({ ...relink, u: '2099-06-01T00:00:00.000Z' });
+  }
+  await sync(b, r);
+  expect(reversedBy(b, o2.id)).toBe(r2.id);
+  expect(reversedBy(b, o1.id)).toBeNull();
+  const r1 = reverseEntryById(a, o1.id)!;
+  await sync(a, r); await sync(b, r);
+  expect(reversedBy(b, o1.id)).toBe(r1.id);
+  const rev = (db: DB) => Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(credit_halalas - debit_halalas), 0) AS n FROM journal_lines l
+    JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_code = '4200' AND e.status = 'مرحّل'`)!.n);
+  expect(rev(b)).toBe(rev(a));
+  expect(b.all(`SELECT reason FROM sync_rejects`)).toEqual([]);
+  a.close(); b.close();
+}
+
+test('١ أصلان متطابقان: عكس الثاني يصل مع ربطه فيُربط به لا بالأول · ثم عكس الأول يُقبل والدفتران سواء', () => twins(true));
+test('١ وعكس الثاني قبل ربطه: يُخمَّن ثم يغلبه الربط المعلن · ثم عكس الأول يُقبل والدفتران سواء', () => twins(false));
