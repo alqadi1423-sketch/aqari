@@ -1,7 +1,6 @@
-commit 787330c692d65e6fd3344e0e2eb833e9a2759a26
-run https://github.com/alqadi1423-sketch/aqari/actions/runs/38574828772
+commit fe874259d6fcdb352fdf7cd746a08d4c50aaa88b
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/38585531080
 os Linux · node v24.21.0 · TZ Asia/Riyadh
-success false
-suites 181 passed / 182 total
-tests 1278 passed · 1 failed · 0 skipped / 1279 total
-failed-suite tests/staleIncoming.test.ts
+success true
+suites 183 passed / 183 total
+tests 1296 passed · 0 failed · 0 skipped / 1296 total
