@@ -654,9 +654,11 @@ service cloud.firestore {
           && (!('nid' in d) || (d.nid is string && (d.nid == '' || d.nid.matches('^[12][0-9]{9}$'))))
           && (!('title' in d) || (d.title is string && d.title.size() <= 60));
       }
-      // ما يكمله العضو بنفسه: الاسم والجوال إلزاميان
+      // ما يكمله العضو بنفسه: الاسم والجوال إلزاميان · واسمه لا يحاكي شارة دور ولا فاصلها (المراجعة الخارجية ٧ · النتيجة ١٧ ·
+      // قرار المالك «رابعاً ١٠») · يطابق reservedName على الجهاز
       function profileComplete(d) {
-        return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$');
+        return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$')
+          && !d.name.lower().matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*');
       }
 
       // العضوية: يكتبها المالك · والعضو ينشئ عضويته مرة من دعوةٍ بإيميله وبنصّها حرفياً، ويعدّل بياناته وحدها،
@@ -885,10 +887,12 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm)).data.get('sys', '') == 'join'
         && getAfter(/databases/$(database)/documents/orgs/$(org)/chats/$(chatId)/msgs/$(request.resource.data.jm)).data.from == request.auth.uid;
     }
-    // إضافة عضو واحد في الالتزام بوقت انضمامه من الخادم · للمسؤولين، ولكل الأعضاء إن أُذن · والمالك لنفسه بسطره
+    // إضافة عضو واحد في الالتزام بوقت انضمامه من الخادم · للمسؤولين، ولكل الأعضاء إن أُذن · والمالك لنفسه بسطره وحده:
+    // لا يضيفه غيره فيدخل بلا سطر (المراجعة الخارجية ٧ · النتيجة ١٦ · قرار المالك «رابعاً ٩»)
     function chatAddOk(org, chatId) {
       return chatAdded() == [request.resource.data.get('la', '')].toSet()
-        && (request.resource.data.la == org || exists(/databases/$(database)/documents/orgs/$(org)/members/$(request.resource.data.la)))
+        && ((request.resource.data.la == org && orgOwner(org))
+            || exists(/databases/$(database)/documents/orgs/$(org)/members/$(request.resource.data.la)))
         && request.resource.data.jt is map
         && request.resource.data.jt.diff(resource.data.get('jt', {})).affectedKeys() == [request.resource.data.la].toSet()
         && request.resource.data.jt[request.resource.data.la] == request.time
@@ -903,8 +907,11 @@ service cloud.firestore {
                         && (orgOwner(org) || (request.resource.data.la == request.auth.uid && chatQualifies(org, resource.data)))))));
     }
     // تعديل من غير المغادرة: الاسم والإعدادات للمسؤولين · وتعيين المسؤولين للمالك والمنشئ · والإزالة لهما (#19)
+    // والإعدادات لا يغيّرها إلا طرفٌ فيها: المالك من خارجها كان يقلب سجل المنضم إلى «كل السابق» ثم ينضم فيقرأ ما قبل
+    // انضمامه بلا سجل مراجعة (المراجعة الخارجية ٧ · النتيجة ١٦ · قرار المالك «رابعاً ٩»)
     function chatManage(org, chatId) {
       return (!chatChanged(['name', 's']) || chatAdmin(org, resource.data))
+        && (!chatChanged(['s']) || request.auth.uid in resource.data.p)
         && (!chatChanged(['a']) || orgOwner(org) || resource.data.by == request.auth.uid)
         && (chatRemovedSet().size() == 0 || orgOwner(org) || resource.data.by == request.auth.uid)
         && (chatAdded().size() == 0

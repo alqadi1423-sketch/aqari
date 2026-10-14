@@ -25,6 +25,7 @@ export {
   tasksIn, myTasks, pollResults, chatUnsentCount, clearChatData, hasChatData, type TaskRow,
 } from './store';
 export { linkTarget, linkCandidates } from './links';
+export { roleOf, senderDisplay, type ChatRole } from './roles';
 
 export interface ChatSession { projectId: string; uid: string; email: string; idToken: () => Promise<string>; baseUrl?: string }
 

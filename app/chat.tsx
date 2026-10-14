@@ -33,7 +33,7 @@ import {
   mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft, mentionsMe, mentionUser, mentionSection, MENTIONS_MAX,
   tsDate, acksOf, ackersFrom, searchMessages, latinDigits, CHAT_TAGS, CHAT_BODY_MAX as BODY_MAX, type ChatMessage, type ChatTag,
   tasksIn, myTasks, pollResults, POLL_MIN, POLL_MAX, type TaskRow, type ChatPoll,
-  type ChatLink, type ChatMe, type ChatPerson, type ChatThread,
+  type ChatLink, type ChatMe, type ChatPerson, type ChatThread, roleOf, senderDisplay, type ChatRole,
 } from '../src/chat';
 
 /** دورة المحادثة كل بضع ثوانٍ ما دامت الشاشة مفتوحة · ومعها تجديد العرض بعد كل دورة */
@@ -113,7 +113,13 @@ function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; 
         <Pressable key={th.id} onPress={() => onOpen(th.id)}
           style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.line }}>
           <Row style={{ justifyContent: 'space-between' }}>
-            <T size={TYPE.cardTitle} bold>{titleOf(th)}</T>
+            <Row gap={6} style={{ flex: 1 }}>
+              <T size={TYPE.cardTitle} bold>{titleOf(th)}</T>
+              {th.kind === 'group' ? null : (() => {
+                const other = th.members.find((u) => u !== me.uid) ?? me.uid;
+                return <RoleBadge role={roleOf(other, me.org, people.find((p) => p.uid === other)?.sup)} />;
+              })()}
+            </Row>
             {th.unread ? <Badge kind="due" label={String(th.unread)} /> : null}
           </Row>
           <Row style={{ justifyContent: 'space-between', marginTop: 2 }}>
@@ -146,6 +152,15 @@ function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; 
       ) : null}
     </Screen>
   );
+}
+
+/** شارة الدور من المعرّف لا من الاسم (المراجعة الخارجية ٧ · النتيجة ١٧) */
+function RoleBadge({ role }: { role: ChatRole }) {
+  const { t } = useLang();
+  if (!role) return null;
+  return role.kind === 'owner'
+    ? <Badge kind="due" label={t('chat.owner')} />
+    : <Badge kind="paid" label={t('chat.supervisorOf', { sections: supLabel(role.sections) })} />;
 }
 
 function PersonRow({ p, me, onPress, active }: { p: ChatPerson; me: ChatMe; onPress: () => void; active?: boolean }) {
@@ -288,11 +303,20 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
   const [editOpen, setEditOpen] = useState(false);
   const sub = thread?.kind === 'group' ? undefined
     : other?.uid === me.org ? t('chat.owner') : other?.sup.length ? t('chat.supervisorOf', { sections: supLabel(other.sup) }) : undefined;
+  // اسم المرسل نصاً وحده · ودوره شارةٌ من معرّفه (المراجعة الخارجية ٧ · النتيجة ١٧: كان الدور نصاً ملحقاً بالاسم فيحاكيه اسم)
   const senderOf = (uid: string, fallback: string) => {
     const p = people.find((x) => x.uid === uid);
     if (!p && people.length) return FORMER_MEMBER;
-    const sup = uid === me.org ? t('chat.owner') : p?.sup.length ? t('chat.supervisorOf', { sections: supLabel(p.sup) }) : '';
-    return (p?.name || fallback || t('chat.member')) + (sup ? ' · ' + sup : '');
+    return senderDisplay(uid, me.org, p, fallback || t('chat.member')).name;
+  };
+  const sender = (uid: string, fallback: string) => {
+    const p = people.find((x) => x.uid === uid);
+    return (
+      <Row gap={6}>
+        <T size={TYPE.caption} bold color={C.emerald}>{senderOf(uid, fallback)}</T>
+        {!p && people.length ? null : <RoleBadge role={roleOf(uid, me.org, p?.sup)} />}
+      </Row>
+    );
   };
 
   const send = useCallback(() => {
@@ -369,7 +393,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
             <Pressable onLongPress={() => setActFor(m)} delayLongPress={350}
               style={{ alignSelf: mine ? 'flex-start' : 'flex-end', maxWidth: '85%', marginVertical: 4,
               backgroundColor: mine ? C.emeraldSoft : C.paper, borderRadius: 12, padding: 9, borderWidth: toMe ? 2 : 1, borderColor: toMe ? C.emerald : C.line }}>
-              {!mine && thread?.kind === 'group' ? <T size={TYPE.caption} bold color={C.emerald}>{senderOf(m.sender, m.senderName)}</T> : null}
+              {!mine && thread?.kind === 'group' ? sender(m.sender, m.senderName) : null}
               {m.body ? <T size={TYPE.body}>{m.body}</T> : null}
               {m.link ? (
                 <Pressable disabled={!target?.canOpen} onPress={() => openLink(m.link!)}
@@ -491,7 +515,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
         <Sheet visible onClose={() => setPinsOpen(false)} title={t('chat.pinnedTitle')} tall>
           {msgs.filter((m) => pins.includes(m.id)).map((m) => (
             <View key={m.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
-              <T size={TYPE.caption} bold color={C.emerald}>{senderOf(m.sender, m.senderName)}</T>
+              {sender(m.sender, m.senderName)}
               <T size={TYPE.body}>{m.body || m.link?.label}</T>
             </View>
           ))}
@@ -525,7 +549,9 @@ function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: C
   const [admins, setAdmins] = useState<string[]>(thread.admins);
   const others = people.filter((p) => p.uid !== me.uid);
   const same = (a: string[], b: string[]) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
-  const toggle = (uid: string) => setMembers((x) => (x.includes(uid) ? (remover ? x.filter((u) => u !== uid) : x) : (adder ? [...x, uid] : x)));
+  // المالك لا يضيفه غيره: ينضم بنفسه بسطر «انضم المالك» (المراجعة الخارجية ٧ · النتيجة ١٦)
+  const mayAdd = (uid: string) => adder && (me.owner || uid !== me.org);
+  const toggle = (uid: string) => setMembers((x) => (x.includes(uid) ? (remover ? x.filter((u) => u !== uid) : x) : (mayAdd(uid) ? [...x, uid] : x)));
   const save = async () => {
     const change: GroupChange = {};
     if (admin && name.trim() !== thread.name) change.name = name;

@@ -531,9 +531,11 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
           && (!('nid' in d) || (d.nid is string && (d.nid == '' || d.nid.matches('^[12][0-9]{9}$'))))
           && (!('title' in d) || (d.title is string && d.title.size() <= 60));
       }
-      // ما يكمله العضو بنفسه: الاسم والجوال إلزاميان
+      // ما يكمله العضو بنفسه: الاسم والجوال إلزاميان · واسمه لا يحاكي شارة دور ولا فاصلها (المراجعة الخارجية ٧ · النتيجة ١٧ ·
+      // قرار المالك «رابعاً ١٠») · يطابق reservedName على الجهاز
       function profileComplete(d) {
-        return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$');
+        return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$')
+          && !d.name.lower().matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*');
       }
 
       // العضوية: يكتبها المالك · والعضو ينشئ عضويته مرة من دعوةٍ بإيميله وبنصّها حرفياً، ويعدّل بياناته وحدها،

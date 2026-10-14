@@ -69,8 +69,10 @@ d('إعدادات المجموعة ومسؤولوها (2026-10-08T05:31Z)', () =
     expect(await status(chat(A).setGroupMeta(G, { name: 'من عضو' }))).toBe(403);
     expect(await status(chat(A).setGroupMeta(G, { s: { h: 'join', w: 'all', ad: 'admins' } }))).toBe(403);
     expect(await status(chat(B).setGroupMeta(G, { name: 'من المنشئ' }))).toBe(200);
-    // المالك مسؤول دائماً ولو لم يكن فيها
-    expect(await status(chat(ORG).setGroupMeta(G, { s: { h: 'all', w: 'all', ad: 'all' } }))).toBe(200);
+    // المالك مسؤول دائماً ولو لم يكن فيها: الاسم · والإعدادات لطرفٍ فيها وحده (المراجعة الخارجية ٧ · النتيجة ١٦)
+    expect(await status(chat(ORG).setGroupMeta(G, { name: 'من المالك' }))).toBe(200);
+    expect(await status(chat(ORG).setGroupMeta(G, { s: { h: 'all', w: 'all', ad: 'all' } }))).toBe(403);
+    expect(await status(chat(B).setGroupMeta(G, { s: { h: 'all', w: 'all', ad: 'all' } }))).toBe(200);
     // المنشئ يعيّن أ مسؤولاً · فيعدّل أ الاسم · ولا يعيّن أ غيره
     expect(await status(chat(B).setGroupMeta(G, { a: [A] }))).toBe(200);
     expect(await status(chat(A).setGroupMeta(G, { name: 'من مسؤول معيَّن' }))).toBe(200);
@@ -203,5 +205,63 @@ d('إعدادات المجموعة ومسؤولوها (2026-10-08T05:31Z)', () =
     expect(typeof t.jt![ORG]).toBe('string');
     const msgs = await chat(A).messagesSinceJoined(G, t.at!);
     expect(msgs[msgs.length - 1].sys).toBe('join');
+  });
+});
+
+/* ═══ المراجعة الخارجية ٧ · النتيجة ١٦ (قرار المالك «رابعاً ٩»: «تُغلق الثغرتان، فالقرار وعد للأعضاء») ═══ */
+d('المراجعة الخارجية ٧ · النتيجة ١٦: المالك لا يقرأ ما قبل انضمامه بلا مراجعة ولا يدخل بلا سطر', () => {
+  test('(أ) سلبي: المالك من خارج مجموعة «من لحظة انضمامه» لا يقلبها إلى «كل السابق» · ولا مع انضمامه', async () => {
+    await seed({ h: 'join' });
+    expect(await status(chat(ORG).setGroupMeta(G, { s: { h: 'all', w: 'all', ad: 'admins' } }))).toBe(403);
+    // ولا قبل انضمامه في الالتزام نفسه: المسار كله كما وصفته المراجعة ينتهي بلا قراءة لما قبل انضمامه
+    await chat(ORG).joinGroup(G, NAMES[ORG]);
+    expect(await readDoc(`orgs/${ORG}/chats/${G}/msgs/GA1`, ORG)).toBe(403);
+    expect((await chat(B).getThread(G)).s).toEqual({ h: 'join', w: 'all', ad: 'admins' });
+  });
+
+  test('(أ) إيجابي: المنشئ (طرفٌ مسؤول) يغيّر الإعدادات · والمالك بعد انضمامه بسطره مسؤولٌ يغيّرها', async () => {
+    await seed({ h: 'join' });
+    expect(await status(chat(B).setGroupMeta(G, { s: { h: 'join', w: 'admins', ad: 'admins' } }))).toBe(200);
+    await chat(ORG).joinGroup(G, NAMES[ORG]);
+    expect(await status(chat(ORG).setGroupMeta(G, { s: { h: 'join', w: 'all', ad: 'all' } }))).toBe(200);
+  });
+
+  test('(ب) سلبي: المنشئ أو المسؤول أو أي طرفٍ بإذن الإضافة لا يضيف المالك بلا سطر «انضم المالك»', async () => {
+    await seed({ ad: 'all' });
+    expect(await status(chat(B).addMember(G, ORG))).toBe(403);
+    expect(await status(chat(B).setGroupMeta(G, { a: [A] }))).toBe(200);
+    expect(await status(chat(A).addMember(G, ORG))).toBe(403);
+    expect(await status(chat(C).addMember(G, ORG))).toBe(403);
+    expect((await chat(B).getThread(G)).p).not.toContain(ORG);
+  });
+
+  test('(ب) إيجابي: المالك ينضم بنفسه بسطره · والمنشئ يضيف عضواً كما كان', async () => {
+    await seed();
+    expect(await status(chat(B).addMember(G, D))).toBe(200);
+    await chat(ORG).joinGroup(G, NAMES[ORG]);
+    const t = await chat(B).getThread(G);
+    expect(t.p).toContain(ORG);
+    expect((await chat(B).messagesSince(G, null)).some((m) => m.sys === 'join' && m.from === ORG)).toBe(true);
+  });
+});
+
+/* ═══ المراجعة الخارجية ٧ · النتيجة ١٧ (قرار المالك «رابعاً ١٠»: «شارة دور مشتقة من المعرّف لا من النص، وقيد على الاسم») ═══ */
+d('المراجعة الخارجية ٧ · النتيجة ١٧: العضو لا يسمّي نفسه بما يحاكي المالك أو المشرف', () => {
+  const self = (name: string) => put(`orgs/${ORG}/members/${A}?updateMask.fieldPaths=name&updateMask.fieldPaths=phone`, { name, phone: '0500000017' }, A);
+
+  test('سلبي: اسمٌ فيه «المالك» أو «مالك المنشأة» أو الفاصلان أو عنوانٌ إنجليزي يُرفض · ولو بعد سطرٍ جديد', async () => {
+    await seed();
+    for (const name of ['عضو أ مصطنع · المالك', 'المالك', 'مالك المنشأة', 'مشرف: العقود', 'عضو · مشرف', 'The OWNER', 'Supervisor', 'عضو مصطنع\nالمالك']) {
+      expect(await self(name)).toBe(403);
+    }
+    // ولا يبلغ الدليلَ اسمٌ غير اسم عضويته
+    expect(await status(chat(A).putMyDirectory('عضو أ مصطنع · مالك المنشأة', []))).toBe(403);
+  });
+
+  test('إيجابي: اسمٌ عادي (ولو فيه «مالك» أو «مشرف» اسماً) يُقبل ويبلغ الدليل · والمالك يكتب أسماء أعضائه كما كان', async () => {
+    await seed();
+    for (const name of ['عضو أ معدَّل', 'مالك مصطنع', 'مشرف مصطنع']) expect(await self(name)).toBe(200);
+    expect(await status(chat(A).putMyDirectory('مشرف مصطنع', []))).toBe(200);
+    expect(await put(`orgs/${ORG}/members/${C}?updateMask.fieldPaths=name`, { name: 'عضو ج من المالك' }, ORG)).toBe(200);
   });
 });

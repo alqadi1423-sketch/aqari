@@ -678,7 +678,8 @@
     "failed": "Could not use the balance"
   },
   "members": {
-    "ownerNameReserved": "«المالك» (owner) is reserved · enter your name"
+    "ownerNameReserved": "«المالك» (owner) is reserved · enter your name",
+    "roleNameReserved": "The name cannot contain «owner», «supervisor» or the separators «·» and «:» · write your own name"
   },
   "bind": {
     "orgHasData": "Your account already has an organization with data, so this device's data is not merged into it (its invoice and entry numbers would repeat). It stays saved on this device while you open your account's data.",

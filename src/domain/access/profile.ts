@@ -30,6 +30,12 @@ export function normalizeNid(raw: string): string {
 }
 
 export const NID_RE = /^[12][0-9]{9}$/;
+/**
+ * ما يحاكي شارة دور أو فاصلها لا يكون اسماً (المراجعة الخارجية ٧ · النتيجة ١٧ · قرار المالك «رابعاً ١٠») · يطابق memberNameOk في
+ * القواعد · والفيصل شارة الدور من المعرّف (src/chat/roles.ts)
+ */
+export const RESERVED_NAME_RE = /المالك|مالك المنشأة|·|:|owner|supervis/i; // i18n-exempt: نصٌّ محجوز تطابقه القواعد
+export const reservedName = (name: string): boolean => RESERVED_NAME_RE.test(name);
 export const PHONE_RE = /^05[0-9]{8}$/;
 
 /**
@@ -46,6 +52,7 @@ export function validateProfile(input: Partial<MemberProfile>, required: boolean
     if (name.length > 80) return { ok: false, field: 'name', error: 'الاسم أطول من ٨٠ حرفاً' };
     // يُنتحل به المالك في سجل العمليات، وترفض القواعد سطور من يحمله (مراجعة التثبيت #54)
     if (name === OWNER_ACTOR) return { ok: false, field: 'name', error: t('members.ownerNameReserved') };
+    if (reservedName(name)) return { ok: false, field: 'name', error: t('members.roleNameReserved') };
   }
   let phone = '';
   if (required || rawPhone) {
