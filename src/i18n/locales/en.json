@@ -686,7 +686,8 @@
   },
   "backup": {
     "passwordLost": "A backup password was set on this device but cannot be read, so no backup is exported or uploaded unencrypted. Set the password again, or remove it if you want unencrypted backups.",
-    "passwordLostShort": "Unreadable"
+    "passwordLostShort": "Unreadable",
+    "archiveTooLarge": "The archive's total size exceeds what the device can hold"
   },
   "wipe": {
     "deletingFiles": "Deleting files from the server · {{n}} of {{total}}",

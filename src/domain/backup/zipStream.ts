@@ -20,6 +20,7 @@
  * دورة رسم بين المداخل · فلا يقتل أندرويد التطبيق مهما كبر الأرشيف.
  */
 import { Deflate, Inflate, deflateSync, inflateSync, strToU8, strFromU8 } from 'fflate';
+import { t } from '../../i18n';
 
 /**
  * يفسح للواجهة دورة رسم بين الأشواط الثقيلة.
@@ -124,6 +125,11 @@ const CHUNK = 1 << 20;
 /** أقصى نسبة فكٍّ لـ deflate (نحو ١٠٣٢ إلى ١) · وأقصى مدخلٍ واحد · قنابل فكّ الضغط (مراجعة التثبيت #49) */
 const MAX_DEFLATE_RATIO = 1100;
 const MAX_ENTRY_BYTES = 1 << 30;
+/**
+ * أقصى مجموع الأحجام المعلنة في الفهرس المركزي (المراجعة الخارجية ٧ · النتيجة ١٢): الحارس كان لكل مدخل وحده فثلاثة مدخلات من
+ * ٣ م.ب تُفكّ إلى ٣ غ.ب · والأرشيف كله يُفكّ في الذاكرة فما فوق هذا لا يتسع لجهازٍ أصلاً
+ */
+const MAX_TOTAL_BYTES = 2 * (1 << 30);
 /** حجمٌ بعد الفك لا يطابق الفهرس، أو معلنٌ غير معقول (مراجعة التثبيت #49) */
 const sizeMismatch = (name: string) => new ZipFormatError('حجم «' + name + '» بعد الفك لا يطابق الفهرس');
 async function prepareEntry(
@@ -363,6 +369,21 @@ export async function unzipYielding(
     cdOff = r48(data, rec + 48);
   }
 
+  // مجموع الأحجام المعلنة قبل أي فكّ (النتيجة ١٢)
+  {
+    let q = cdOff;
+    let sum = 0;
+    for (let n = 0; n < count; n++) {
+      if (q + 46 > data.length || r32(data, q) !== SIG_CD) break;
+      let us = r32(data, q + 24);
+      const nl = r16(data, q + 28), el = r16(data, q + 30), cl = r16(data, q + 32);
+      if (us === 0xFFFFFFFF) us = zip64Extra(data, q + 46 + nl, el, { size: true, csize: false, offset: false }).size ?? us;
+      sum += us;
+      if (sum > MAX_TOTAL_BYTES) throw new ZipFormatError(t('backup.archiveTooLarge'));
+      q += 46 + nl + el + cl;
+    }
+  }
+
   const out: Record<string, Uint8Array> = {};
   const breathe = breather();
   let p = cdOff;
@@ -400,6 +421,8 @@ export async function unzipYielding(
     if (usize > MAX_ENTRY_BYTES || (method === 8 && usize > csize * MAX_DEFLATE_RATIO + 1024)) {
       throw sizeMismatch(name);
     }
+    // مضغوطٌ بحجمٍ معلن صفر وفيه بيانات: كان يُفكّ بلا مخزن ولا فحص (المراجعة الخارجية ٧ · النتيجة ١٢) · والمدخل الفارغ مضغوطه بايتان
+    if (method === 8 && usize === 0 && csize > 16) throw sizeMismatch(name);
     if (method === 0) {
       out[name] = raw.slice();
       readBytes += csize;

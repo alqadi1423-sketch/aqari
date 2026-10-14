@@ -17,6 +17,12 @@ const latin1 = (b: Uint8Array) => {
 
 /** أقصى ما يُفكّ من مجرى PDF واحد (مراجعة التثبيت #49: فكّ PDF بلا سقف) · عقد إيجار نصّي أصغر منه بكثير */
 const MAX_PDF_STREAM = 16 << 20;
+/**
+ * أقصى ما يُفكّ من الملف كله وأقصى عدد مجاريه (المراجعة الخارجية ٧ · النتيجة ١١): سقف المجرى وحده كان يسمح بمئات المجاري تحت
+ * سقفه فيحجز الملف الصغير غيغابايتات ويحبس الواجهة · وما فوقهما يُرفض بـ Error('pdf')
+ */
+const MAX_PDF_TOTAL = 48 << 20;
+const MAX_PDF_STREAMS = 4000;
 
 /** فكّ zlib أو الخام بسقف · null إن تعذّر أو تجاوز السقف */
 export function inflateCapped(data: Uint8Array, max: number = MAX_PDF_STREAM): Uint8Array | null {
@@ -41,8 +47,27 @@ export function inflateCapped(data: Uint8Array, max: number = MAX_PDF_STREAM): U
   return null;
 }
 
-function tryInflate(data: Uint8Array): Uint8Array | null {
-  return inflateCapped(data);
+/** كـ inflateCapped ويفرّق تجاوز السقف ('cap') عن التلف (null) */
+function inflateOrCap(data: Uint8Array, max: number): Uint8Array | 'cap' | null {
+  for (const Kind of [Unzlib, Inflate]) {
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    try {
+      const z = new Kind((chunk: Uint8Array) => {
+        total += chunk.length;
+        if (total > max) throw new Error('cap');
+        parts.push(chunk);
+      });
+      z.push(data, true);
+      const out = new Uint8Array(total);
+      let o = 0;
+      for (const p of parts) { out.set(p, o); o += p.length; }
+      return out;
+    } catch (e) {
+      if ((e as Error).message === 'cap') return 'cap';
+    }
+  }
+  return null;
 }
 
 /** فك مرشِّح PNG Predictor (يشيع في مجاري ObjStm/xref بـ /Predictor 12) */
@@ -86,6 +111,8 @@ interface RawStream {
 /** استخراج كل المجاري (dict + بيانات مفكوكة إن كانت Flate) */
 function extractStreams(bytes: Uint8Array, raw: string): RawStream[] {
   const out: RawStream[] = [];
+  let budget = MAX_PDF_TOTAL;
+  let count = 0;
   const re = /(?:(\d+)\s+\d+\s+obj\s*)?<<((?:[^<>]|<<(?:[^<>]|<<[^<>]*>>)*>>)*)>>\s*stream(\r\n|\n|\r)/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(raw))) {
@@ -93,14 +120,19 @@ function extractStreams(bytes: Uint8Array, raw: string): RawStream[] {
     const start = m.index + m[0].length;
     const end = raw.indexOf('endstream', start);
     if (end < 0) continue;
+    if (++count > MAX_PDF_STREAMS) throw new Error('pdf');
     let data = bytes.subarray(start, end);
     // نزع نهايات الأسطر الزائدة قبل endstream
     while (data.length && (data[data.length - 1] === 0x0a || data[data.length - 1] === 0x0d)) {
       data = data.subarray(0, data.length - 1);
     }
     if (/\/FlateDecode/.test(dict)) {
-      const inflated = tryInflate(data);
+      const cap = Math.min(MAX_PDF_STREAM, budget);
+      const inflated = inflateOrCap(data, cap);
+      // تجاوز الميزانية الإجمالية يرفض الملف · وتجاوز سقف المجرى وحده يتركه كما كان
+      if (inflated === 'cap') { if (cap < MAX_PDF_STREAM) throw new Error('pdf'); continue; }
       if (!inflated) continue;
+      budget -= inflated.length;
       data = inflated;
       const pred = /\/Predictor\s+(\d+)/.exec(dict);
       const cols = /\/Columns\s+(\d+)/.exec(dict);
