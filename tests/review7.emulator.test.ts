@@ -78,6 +78,8 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     pays.push(...db.all<{ id: string }>(`SELECT id FROM journal_entries WHERE status = 'مرحّل' AND src_type = 'rent' ORDER BY date`).map((x) => x.id));
     enableSync(db, ORG);
     expect((await syncOnce(db, remoteFor(null), 'dev-owner')).pending).toBe(0);
+    // جهاز العضو يعلّم ما وصله من السحابة «بلا كاتب» (sync/engine.ts: stageInbox · الهجرة ٤٢)، والوثائق هنا تُبنى من قاعدة المالك
+    db.exec((await import('@/db/schema')).MIGRATION_42);
     for (const a of [LED, COLALL, CONALL]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
@@ -133,6 +135,36 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
    * ولا رموزه · والباقي مفتوح: ربط الرموز بأقسام قراءة الجدول عند الإنشاء (g ['maintenance|P1'] على عقدٍ يُقبل) وg فارغة،
    * وعقارات صفّ المرفق لعضوٍ بكل العقارات
    */
+  /*
+   * النتيجة ١ (أ) و(ج) · قرار المالك «رابعاً ١ (أ)»: «by إلزامي على كل كتابة عضو» و«القيد اليدوي من العضو مسودة حتى يرحّله
+   * المالك» · وفي قائمة القبول (ج): «عضو contracts: إدخال ينشئ journal_entries مرحّلاً بلا by فيُرفض، وبـby ومسودة فيُقبل»
+   */
+  test('١ (ج) قيدٌ من عضو بلا كاتب أو بكاتبٍ غيره يُرفض · وبكاتبه يُقبل', async () => {
+    const src = await built('journal_entries', pays[2]);
+    const copy = (k: string): RemoteDoc => ann(COLALL, { ...src, k, id: 'journal_entries__' + k, u: 'b', d: { ...src.d!, id: k, no: 'JE-' + k },
+      lines: (src.lines ?? []).map((l, i) => ({ ...l, id: k + i, entry_id: k })) });
+    const own = copy('R7BY1');
+    expect(own.by).toBe(COLALL.uid);
+    const { by: _drop, ...noBy } = own;
+    deniedByLogic(await write(COLALL, noBy as RemoteDoc), 'create');
+    deniedByLogic(await write(COLALL, { ...own, by: LED.uid! }), 'create');
+    accepted(await write(COLALL, own));
+  });
+
+  test('١ (أ) القيد اليدوي من عضو الدفتر مرحّلاً يُرفض · ومسودةً بكاتبه تُقبل · ولا يرحّلها هو بعدها', async () => {
+    const manual = (k: string, status: string): RemoteDoc => ann(LED, { id: 'journal_entries__' + k, t: 'journal_entries', k, u: 'm', dev: 'dev-l', del: false,
+      d: { id: k, no: 'JE-' + k, date: '2026-02-05', memo: 'قيد يدوي مصطنع', status, auto: 0, created_at: '2026-02-05', src_type: null, src_id: null },
+      lines: [{ id: k + 'a', entry_id: k, account_code: '1100', descr: '', debit_halalas: 500, credit_halalas: 0 },
+        { id: k + 'b', entry_id: k, account_code: '3100', descr: '', debit_halalas: 0, credit_halalas: 500 }] });
+    deniedByLogic(await write(LED, manual('R7MN1', 'مرحّل')), 'create');
+    const draft = manual('R7MN2', 'قيد الإنشاء');
+    expect(draft.by).toBe(LED.uid);
+    accepted(await write(LED, draft));
+    deniedByLogic(await write(LED, { ...draft, u: 'm2', d: { ...draft.d!, status: 'مرحّل' } }), 'update');
+    // والمالك يرحّلها
+    accepted(await write(null, { ...draft, u: 'm3', d: { ...draft.d!, status: 'مرحّل' } }));
+  });
+
   test('٢٠ نقل العقد إلى عقارٍ آخر برموز العقار القديم يُرفض · وبرموز عقاره الجديد يُقبل', async () => {
     const doc = ann(CONALL, await built('contracts', C1));
     const honest = doc.g!.map((x) => x.replace('|P1', '|P2'));

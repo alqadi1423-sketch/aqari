@@ -21,6 +21,8 @@ export const PRE_UPGRADE_KEEP = 3;
 const SYSTEM_TABLES = new Set([
   'meta', 'settings', 'accounts', 'company', 'message_scripts', 'form_templates',
   'audit_log', 'scheduled_notifications',
+  // كاتب كل صف (الهجرة ٤٢): بيانات الجهاز عن صفوفه لا صفوفٌ للمستخدم · ويُملأ بكل وارد فلا يجعل الجهاز الجديد «ذا بيانات»
+  'row_by',
 ]);
 
 /** في القاعدة بيانات أدخلها المستخدم؟ · أي صف في جدول غير جداول النظام والمزامنة */

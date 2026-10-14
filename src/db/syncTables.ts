@@ -87,6 +87,9 @@ export const VAT_SYNC_TABLES: SyncTable[] = [
   { name: 'vat_filings', pk: id, pkCols: ['id'] },
 ];
 
+/** جداول المزامنة كما كانت عند الهجرة ٤٢ · مخرَجها ثابت فلا تتغير الترحيلة بإضافة جدولٍ بعدها */
+export const ROW_BY_TABLES_42: SyncTable[] = [...BASE_SYNC_TABLES, ...LATER_SYNC_TABLES, ...DIMENSION_SYNC_TABLES, ...ASSET_SYNC_TABLES, ...VAT_SYNC_TABLES];
+
 /** كل جداول المزامنة بترتيب التطبيق · البصمة قبل مرفقها، وسجل العمليات آخراً */
 export const SYNC_TABLES: SyncTable[] = [
   ...BASE_SYNC_TABLES.slice(0, 1),

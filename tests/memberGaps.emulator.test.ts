@@ -70,6 +70,8 @@ d('ثغرات الأعضاء (المراجعة #17 و#18 و#20 و#21 و#39)', ()
     I1 = db.get<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1`, [C1])!.id;
     enableSync(db, ORG);
     expect((await syncOnce(db, remoteFor(ORG, null), 'dev-owner')).pending).toBe(0);
+    // جهاز العضو يعلّم ما وصله من السحابة «بلا كاتب» (sync/engine.ts: stageInbox · الهجرة ٤٢)، والوثائق هنا تُبنى من قاعدة المالك
+    db.exec((await import('@/db/schema')).MIGRATION_42);
     for (const a of [COLLECTOR, CONTR, TECH]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
@@ -195,6 +197,8 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     db.run(`INSERT INTO journal_entries (id, no, date, memo, status, created_at) VALUES ('VJE', 'JE-V1', '2026-03-01', 'مسودة قيد مصطنعة', 'قيد الإنشاء', '2026-03-01T00:00:00.000Z')`);
     enableSync(db, ORG);
     expect((await syncOnce(db, remoteFor(ORG, null), 'dev-owner')).pending).toBe(0);
+    // جهاز العضو يعلّم ما وصله من السحابة «بلا كاتب» (sync/engine.ts: stageInbox · الهجرة ٤٢)، والوثائق هنا تُبنى من قاعدة المالك
+    db.exec((await import('@/db/schema')).MIGRATION_42);
     for (const a of [TECH, CONTR, COL3, COMPANY, ALLCON, COLLECTOR, TWO]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
@@ -359,8 +363,9 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     const g2 = (g: string[]) => [...g.filter((x) => x.endsWith('|@')), ...g.filter((x) => x.endsWith('|@')).flatMap((x) => [x.replace('|@', '|P1'), x.replace('|@', '|P2')])].sort();
     expect((await owner.write([{ ...base, pids: ['P1', 'P2'], companions: [{ ...base.companions![0], pids: ['P1', 'P2'], g: g2(base.companions![0].g!) }] }]))[0])
       .toMatchObject({ ok: true });
-    // جهاز المحصور حفظ عقاراته في السحابة عند السحب · فيرفع تعديله بها
+    // جهاز المحصور حفظ عقاراته في السحابة عند السحب · فيرفع تعديله بها · وعلّمه «بلا كاتب» كما وصله (الهجرة ٤٢)
     db.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('tenant_pids:VT5', '["P1","P2"]')`);
+    db.run(`INSERT OR IGNORE INTO row_by (tbl, pk, uid) VALUES ('tenants', 'VT5', '')`);
     const r = remoteFor(CONTR.uid!, CONTR);
     const sent = r.annotate!(db, doc('tenants', 'VT5', { ...row('tenants', 'VT5'), phone: '0500000174' }, 't5'));
     expect(sent.pids).toEqual(['P1', 'P2']);

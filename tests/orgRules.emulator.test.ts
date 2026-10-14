@@ -76,6 +76,8 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     // المالك يرفع كل شيء إلى المنشأة
     enableSync(db, ORG);
     const r = await syncOnce(db, remoteFor(ORG, null), 'dev-owner');
+    // جهاز العضو يعلّم ما وصله من السحابة «بلا كاتب» (sync/engine.ts: stageInbox · الهجرة ٤٢)، والوثائق هنا تُبنى من قاعدة المالك
+    db.exec((await import('@/db/schema')).MIGRATION_42);
     expect(r.pending).toBe(0);
     for (const a of [COLLECTOR, AGENT, DRAFTER, ASSETS]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
@@ -253,6 +255,8 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     const tid = db.get<{ tenant_id: string }>(`SELECT tenant_id FROM contracts WHERE id = ?`, [C1])!.tenant_id;
     db.run(`UPDATE tenants SET credit_halalas = 7000, notes = 'ملاحظة تخص العقار الآخر' WHERE id = ?`, [tid]);
     await syncOnce(db, remoteFor(ORG, null), 'dev-owner');
+    // جهاز العضو يعلّم ما وصله من السحابة «بلا كاتب» (sync/engine.ts: stageInbox · الهجرة ٤٢)، والوثائق هنا تُبنى من قاعدة المالك
+    db.exec((await import('@/db/schema')).MIGRATION_42);
     const docs = await pullAll(COLLECTOR);
     const t = docs.find((x) => x.id === 'tenants__' + tid)!;
     expect(t).toBeTruthy();

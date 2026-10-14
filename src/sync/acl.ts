@@ -175,7 +175,12 @@ export function annotate(db: DB, doc: RemoteDoc, a: Access): AclDocs {
     const op = chooseOp(a, doc.t, row as Record<string, unknown> | null) ?? (self ? SELF_OP : null);
     if (op) extra.op = op;
   }
-  if (DRAFT_TABLES.has(doc.t)) {
+  if (!a.owner) {
+    // «by» إلزامي على كل كتابة عضو (المراجعة الخارجية ٧ · «رابعاً ١ (أ)» · الهجرة ٤٢): كاتبه المعروف، أو هو إن لم يُعرف
+    const rb = db.get<{ uid: string }>(`SELECT uid FROM row_by WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
+    if (!rb) extra.by = a.uid ?? undefined;
+    else if (rb.uid) extra.by = rb.uid;
+  } else if (DRAFT_TABLES.has(doc.t)) {
     const by = one(db, `SELECT uid AS v FROM row_by WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
     if (by) extra.by = by;
   }

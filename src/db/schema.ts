@@ -3,10 +3,10 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-import { ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
+import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 41;
+export const SCHEMA_VERSION = 42;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1684,5 +1684,15 @@ WHEN typeof(NEW.debit_halalas) != 'integer' OR typeof(NEW.credit_halalas) != 'in
 BEGIN SELECT RAISE(ABORT, 'مبلغ السطر بالهللات عددٌ صحيح'); END;
 `;
 
+/**
+ * الهجرة ٤٢ · «by» إلزامي على كل كتابة عضو (المراجعة الخارجية ٧ · النتيجة ١ · قرار المالك «رابعاً ١ (أ)» 2026-10-10):
+ * القواعد تشترط كاتب الصف الجديد من العضو ولا تقبل تغييره بعدُ، فيعرف جهاز العضو كاتب كل صف · وما قبل هذه الهجرة رُفع بلا كاتب
+ * (إلا مسودات العقد والفاتورة والقيد) فيُعلَّم «بلا كاتب» (uid فارغ) فلا يُرسَل له كاتبٌ عند تعديله · وما في الطابور لم يُرفع
+ * بعد فيبقى بلا علامة فيُرسَل بكاتبه (sync/acl.ts: annotate)
+ */
+export const MIGRATION_42 = ROW_BY_TABLES_42.map((t) =>
+  `INSERT OR IGNORE INTO row_by (tbl, pk, uid) SELECT '${t.name}', ${t.pk('x')}, '' FROM "${t.name}" x
+  WHERE NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o.tbl = '${t.name}' AND o.pk = ${t.pk('x')} AND o.op = 'upsert');`).join('\n');
+
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41];
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42];

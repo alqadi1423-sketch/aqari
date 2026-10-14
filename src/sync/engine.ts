@@ -262,10 +262,9 @@ export function stageInbox(db: DB, docs: RemoteDoc[]): void {
            device_id = excluded.device_id, attempts = 0, last_error = NULL, del = excluded.del
          WHERE excluded.updated_at >= sync_inbox.updated_at`,
         [d.id, d.t, d.k, SYNC_RANK[d.t] ?? 999, JSON.stringify(d), d.u, d.dev, d.del ? 1 : 0]);
-      // كاتب المسودة يصل مع مستندها (المنشأة) · فيعرف الجهاز مسودة من هي
-      if (d.by && (d.t === 'contracts' || d.t === 'invoices' || d.t === 'journal_entries')) {
-        db.run(`INSERT OR IGNORE INTO row_by (tbl, pk, uid) VALUES (?, ?, ?)`, [d.t, d.k, d.by]);
-      }
+      // كاتب الصف يصل مع مستنده (المنشأة) · فيعرف الجهاز مسودة من هي، ويرسل العضو الكاتب نفسه عند التعديل · والوارد بلا كاتب
+      // يُعلَّم «بلا كاتب» فلا يُرسَل له كاتب (القواعد: الكاتب لا يتغير · الهجرة ٤٢)
+      db.run(`INSERT OR IGNORE INTO row_by (tbl, pk, uid) VALUES (?, ?, ?)`, [d.t.split('~')[0], d.k, d.by ?? '']);
     }
   });
 }

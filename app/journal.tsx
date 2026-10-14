@@ -16,14 +16,15 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { useDialog } from '../src/ui/AppDialog';
 import { C } from '../src/ui/theme';
-import { postManualEntry, manualCashOut, peekJournalNo, voidEntryById } from '../src/domain/accounting/post';
+import { postManualEntry, saveManualDraft, postDraftEntry, manualCashOut, peekJournalNo, voidEntryById } from '../src/domain/accounting/post';
+import { t } from '../src/i18n';
 import { reverseFromJournal, journalReversalBlock } from '../src/domain/accounting/journalReversal';
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { allAccounts } from '../src/domain/accounting/ledger';
 import { today, dfmt } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
 import { reportFailure } from '../src/ui/failureDialog';
-import { usePerm } from '../src/ui/access';
+import { usePerm, useAccess } from '../src/ui/access';
 import { rowBy } from '../src/services/access';
 
 import { CostCenterField } from '../src/ui/CostCenters';
@@ -38,7 +39,7 @@ interface EntryRow {
 const EMPTY_ENTRIES: EntryRow[] = [];
 
 const EntryCard = React.memo(function EntryCard({
-  id, no, date, memo, status, srcType, auto, d, c, canReverse, canDeleteDraft, onOpen, onReverse, onDeleteDraft,
+  id, no, date, memo, status, srcType, auto, d, c, canReverse, canDeleteDraft, canPostDraft, onOpen, onReverse, onDeleteDraft, onPostDraft,
 }: {
   id: string; no: string; date: string; memo: string; status: string; auto: boolean;
   srcType: string | null; d: number; c: number;
@@ -46,6 +47,9 @@ const EntryCard = React.memo(function EntryCard({
   canReverse: boolean;
   /** حذف المسودة · كامل، أو كاتبها بإدخال */
   canDeleteDraft: boolean;
+  /** ترحيل مسودة القيد اليدوي · المالك وحده (قيد العضو اليدوي مسودةٌ حتى يرحّله · المراجعة ٧ «رابعاً ١ (أ)») */
+  canPostDraft: boolean;
+  onPostDraft: (id: string, no: string) => void;
   /** الضغط على القيد يفتح ورقة تفاصيله */
   onOpen: (id: string) => void;
   onReverse: (id: string, no: string) => void;
@@ -68,20 +72,21 @@ const EntryCard = React.memo(function EntryCard({
         <T size={10.5} color={C.muted} numberOfLines={1} style={{ marginTop: 3 }}>{srcTypeLabel(srcType)}</T>
       </Pressable>
       {/* القيد الآلي يُلغى من عمليته الأصلية (sourceCancel.ts) · ومرآة القيد لا تُلغى فلا زرّ لها */}
-      {(status === 'مرحّل' && srcType?.endsWith('_rev')) || !(status === 'مرحّل' ? canReverse : canDeleteDraft) ? null : (
+      {(status === 'مرحّل' && srcType?.endsWith('_rev')) || !(status === 'مرحّل' ? canReverse : (canDeleteDraft || canPostDraft)) ? null : (
         <Row style={{ justifyContent: 'flex-end', marginTop: 4 }}>
-          <ActionMenuButton title={no} actions={[
-            status === 'مرحّل'
-              ? {
-                  // قيد مرحّل لا يُحذف أبداً · يُعكَس بقيد مرآة والاثنان يبقيان في الدفتر
-                  icon: 'undo', label: auto && srcType ? 'إلغاء من مصدره' : 'عكس القيد',
-                  onPress: () => onReverse(id, no),
-                }
-              : {
-                  icon: 'trash', label: 'حذف', danger: true,
+          <ActionMenuButton title={no} actions={status === 'مرحّل'
+            ? [{
+                // قيد مرحّل لا يُحذف أبداً · يُعكَس بقيد مرآة والاثنان يبقيان في الدفتر
+                icon: 'undo', label: auto && srcType ? 'إلغاء من مصدره' : 'عكس القيد',
+                onPress: () => onReverse(id, no),
+              }]
+            : [
+                ...(canPostDraft ? [{ icon: 'check' as const, label: t('journal.postDraft'), onPress: () => onPostDraft(id, no) }] : []),
+                ...(canDeleteDraft ? [{
+                  icon: 'trash' as const, label: 'حذف', danger: true,
                   onPress: () => onDeleteDraft(id),
-                },
-          ]} />
+                }] : []),
+              ]} />
         </Row>
       )}
     </Card>
@@ -93,6 +98,8 @@ export default function Journal() {
   const toast = useToast();
   const dialog = useDialog();
   const perm = usePerm('ledger');
+  // قيد العضو اليدوي مسودةٌ حتى يرحّله المالك (المراجعة ٧ «رابعاً ١ (أ)») · والقواعد ترفض ترحيله منه
+  const owner = useAccess().owner;
   const [q, setQ] = useState('');
   const [detailId, setDetailId] = useState<string | null>(null);
   const [sourceFor, setSourceFor] = useState<{ id: string; no: string } | null>(null);
@@ -167,7 +174,14 @@ export default function Journal() {
       .map((l) => ({ account: l.account, debit: toHalalas(l.debit), credit: toHalalas(l.credit) }));
     if (!validLines.length) { toast('أضف سطراً واحداً على الأقل بحساب صحيح'); return; }
     try {
-      postManualEntry(db, { date, memo: memo.trim() || 'بدون بيان', lines: validLines });
+      const args = { date, memo: memo.trim() || 'بدون بيان', lines: validLines };
+      if (!owner) {
+        saveManualDraft(db, args);
+        setBuilderOpen(false); bump();
+        toast(t('journal.savedDraft'));
+        return;
+      }
+      postManualEntry(db, args);
       setBuilderOpen(false); bump();
       toast('تم ترحيل القيد بنجاح · تحدَّثت أرصدة الحسابات فعلياً');
     } catch (e) { reportFailure({ title: 'تعذّر الترحيل', e }); }
@@ -221,6 +235,22 @@ export default function Journal() {
     });
   }, [db, bump, toast, dialog]);
 
+  const postDraft = useCallback((id: string, no: string) => {
+    dialog({
+      title: t('journal.confirmPostTitle'),
+      body: t('journal.confirmPostBody', { no }),
+      actions: [
+        { label: t('journal.cancel'), variant: 'ghost' },
+        {
+          label: t('journal.postDraft'),
+          onPress: () => {
+            try { postDraftEntry(db, id); bump(); toast(t('journal.posted')); } catch (e) { reportFailure({ title: t('journal.postFailed'), e }); }
+          },
+        },
+      ],
+    });
+  }, [db, bump, toast, dialog]);
+
   const renderEntry = useCallback(({ item }: { item: EntryRow }) => (
     <EntryCard
       id={item.id} no={item.no} date={item.date} memo={item.memo} status={item.status}
@@ -229,9 +259,10 @@ export default function Journal() {
       // كاتب المسودة يُقرأ لها وحدها · المرحّل لا مسودة فيه
       canDeleteDraft={item.status === 'قيد الإنشاء'
         && perm.edit({ by: perm.manage ? null : rowBy(db, 'journal_entries', item.id), draft: true })}
-      onOpen={openDetail} onReverse={reverseEntry} onDeleteDraft={deleteDraft}
+      canPostDraft={owner && item.status === 'قيد الإنشاء' && !item.src_type} // i18n-exempt: حالة القيد المخزّنة
+      onOpen={openDetail} onReverse={reverseEntry} onDeleteDraft={deleteDraft} onPostDraft={postDraft}
     />
-  ), [openDetail, reverseEntry, deleteDraft, perm, db]);
+  ), [openDetail, reverseEntry, deleteDraft, postDraft, perm, db, owner]);
 
   return (
     <Screen title="القيود اليومية" scroll={false}
@@ -266,7 +297,8 @@ export default function Journal() {
       <Sheet visible={builderOpen} onClose={() => setBuilderOpen(false)} title="قيد يومية جديد" tall
         footer={
           <>
-            {manualOk ? <View style={{ flex: 1 }}><BtnPrimary title="ترحيل القيد" onPress={post} disabled={!balanced} /></View> : null}
+            {/* مسودة العضو لا تمسّ النقد فلا يُشترط لها كفايته */}
+            {manualOk || !owner ? <View style={{ flex: 1 }}><BtnPrimary title={owner ? 'ترحيل القيد' : t('journal.saveDraft')} onPress={post} disabled={!balanced} /></View> : null}
           </>
         }>
         <CashShortNote needed={manualOut} what="صرف النقد في القيد" />

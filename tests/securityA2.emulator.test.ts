@@ -87,6 +87,8 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     pays.push(...db.all<{ id: string }>(`SELECT id FROM journal_entries WHERE status = 'مرحّل' AND src_type = 'rent' ORDER BY date`).map((x) => x.id));
     enableSync(db, ORG);
     expect((await syncOnce(db, remoteFor(null), 'dev-owner')).pending).toBe(0);
+    // جهاز العضو يعلّم ما وصله من السحابة «بلا كاتب» (sync/engine.ts: stageInbox · الهجرة ٤٢)، والوثائق هنا تُبنى من قاعدة المالك
+    db.exec((await import('@/db/schema')).MIGRATION_42);
     for (const a of [COL, COLALL, LED, PRO, INV, TEN, TEN1, HAND, LIBM, TEN3]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
@@ -181,9 +183,10 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     accepted(await write(TEN, ta));
     const tdoc = annotate(db, await built('tenants', tenantId), TEN1);
     const pubDoc = tdoc.pub!;
-    deniedByLogic(await write(TEN1, { ...tdoc.doc, k: 'S2TN', id: 'tenants__S2TN', u: 't1', pids: ['P1'], g: [...tdoc.doc.g!, 'contracts|P2', 'collect|P2'], d: { ...tdoc.doc.d!, id: 'S2TN' } }), 'create');
-    deniedByLogic(await write(TEN1, { ...pubDoc, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't2', pids: ['P1'], g: ['tenants|P1', 'contracts|P2', 'collect|P2'], d: { ...pubDoc.d!, id: 'S2TN' } }), 'create');
-    accepted(await write(TEN1, { ...pubDoc, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't3', pids: ['P1'], g: ['tenants|@', 'tenants|P1'], d: { ...pubDoc.d!, id: 'S2TN' } }));
+    // صفٌّ جديد بكاتبه (by إلزامي على كل كتابة عضو · المراجعة ٧ «رابعاً ١ (أ)») فيُرفض لرموزه وحدها
+    deniedByLogic(await write(TEN1, { ...tdoc.doc, by: TEN1.uid!, k: 'S2TN', id: 'tenants__S2TN', u: 't1', pids: ['P1'], g: [...tdoc.doc.g!, 'contracts|P2', 'collect|P2'], d: { ...tdoc.doc.d!, id: 'S2TN' } }), 'create');
+    deniedByLogic(await write(TEN1, { ...pubDoc, by: TEN1.uid!, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't2', pids: ['P1'], g: ['tenants|P1', 'contracts|P2', 'collect|P2'], d: { ...pubDoc.d!, id: 'S2TN' } }), 'create');
+    accepted(await write(TEN1, { ...pubDoc, by: TEN1.uid!, k: 'S2TN', id: 'tenants~pub__S2TN', u: 't3', pids: ['P1'], g: ['tenants|@', 'tenants|P1'], d: { ...pubDoc.d!, id: 'S2TN' } }));
   });
 
   test('الجولة ٣ للمتحقق: صفّ blobs من أعضاء الأقسام غير المالية يُقبل (كان يبلغ حدّ الألف تعبير)', async () => {

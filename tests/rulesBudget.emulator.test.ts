@@ -226,10 +226,11 @@ d('ميزانية القواعد: كتابات الأعضاء الشائعة ت�
     });
   });
 
-  test('الدفتر: قيدٌ يدوي مرحّل', async () => {
+  // قيد العضو اليدوي مسودةٌ حتى يرحّله المالك (المراجعة الخارجية ٧ · «رابعاً ١ (أ)») · وترحيله منه مرفوض بالقواعد
+  test('الدفتر: قيدٌ يدوي مسودة', async () => {
     await asMember('ledger', { ledger: 3, props: 1 }, 'all', async (env) => {
-      const { postEntry } = await import('@/domain/accounting/post');
-      postEntry(env.db, { date: '2026-02-01', memo: 'قيد يدوي مصطنع', lines: [{ account: '1100', debit: 500, credit: 0 }, { account: '3100', debit: 0, credit: 500 }] });
+      const { saveManualDraft } = await import('@/domain/accounting/post');
+      saveManualDraft(env.db, { date: '2026-02-01', memo: 'قيد يدوي مصطنع', lines: [{ account: '1100', debit: 500, credit: 0 }, { account: '3100', debit: 0, credit: 500 }] });
     });
   });
 });

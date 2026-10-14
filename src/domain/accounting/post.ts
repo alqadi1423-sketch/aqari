@@ -1,5 +1,6 @@
 import type { DB } from '../../db/adapter';
 import { requireCash } from '../cashGuard';
+import { t } from '../../i18n';
 import { uid } from '../ids';
 import { today } from '../dates';
 import { correctionDate } from '../vatFilings';
@@ -72,6 +73,8 @@ export function postEntry(
     srcId?: string;
     /** أبعاد القيد الصريحة · تغلب المشتقة من مصدره (dimensions.ts) */
     dims?: Dims;
+    /** يبقى «قيد الإنشاء» ولا يُرقّى (قيد العضو اليدوي · المراجعة الخارجية ٧ «رابعاً ١ (أ)») */
+    draft?: boolean;
   }
 ): PostedEntry | null {
   const rows = args.lines.filter((l) => Math.abs(l.debit || 0) > 0 || Math.abs(l.credit || 0) > 0);
@@ -103,7 +106,7 @@ export function postEntry(
           `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas) VALUES (?,?,?,?,?,?)`,
           [uid(), id, l.account, l.descr ?? '', l.debit || 0, l.credit || 0]);
       }
-      db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [id]);
+      if (!args.draft) db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [id]);
       return { id, no };
     }
     const derived = dimsFromSource(db, args.srcType, args.srcId);
@@ -121,7 +124,7 @@ export function postEntry(
       );
     }
     // الترقية · المحفّز trg_je_post_balanced يتحقق هنا داخل القاعدة
-    db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [id]);
+    if (!args.draft) db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [id]);
     return { id, no };
   });
 }
@@ -134,9 +137,29 @@ export function manualCashOut(lines: EntryLine[]): number {
   const net = lines.filter((l) => l.account === CASH).reduce((s, l) => s + (l.credit || 0) - (l.debit || 0), 0);
   return Math.max(0, net);
 }
+const MANUAL = 'القيد اليدوي';
 export function postManualEntry(db: DB, args: { date: string; memo: string; lines: EntryLine[] }): PostedEntry | null {
-  requireCash(db, manualCashOut(args.lines), 'القيد اليدوي');
+  requireCash(db, manualCashOut(args.lines), MANUAL);
   return postEntry(db, { ...args, auto: false });
+}
+
+/**
+ * قيد العضو اليدوي مسودةٌ حتى يرحّله المالك (المراجعة الخارجية ٧ · النتيجة ١ · قرار المالك «رابعاً ١ (أ)» 2026-10-10:
+ * «والقيد اليدوي من العضو مسودة حتى يرحّله المالك») · متوازنٌ بحسابات قائمة كالمرحّل، ولا يمسّ الأرصدة ولا النقد
+ */
+export function saveManualDraft(db: DB, args: { date: string; memo: string; lines: EntryLine[] }): PostedEntry | null {
+  return postEntry(db, { ...args, auto: false, draft: true });
+}
+
+/** المالك يرحّل مسودة قيدٍ يدوي (من عضوٍ أو منه) · بكفاية النقد كالترحيل المباشر، والمحفّز يرفض غير المتوازن */
+export function postDraftEntry(db: DB, entryId: string): void {
+  const e = db.get<{ status: string; src_type: string | null; deleted_at: string | null }>(
+    `SELECT status, src_type, deleted_at FROM journal_entries WHERE id = ?`, [entryId]);
+  if (!e || e.status !== 'قيد الإنشاء' || e.deleted_at || e.src_type) throw new Error(t('journal.notDraft')); // i18n-exempt: حالة القيد المخزّنة
+  const lines = db.all<{ account: string; debit: number; credit: number }>(
+    `SELECT account_code AS account, debit_halalas AS debit, credit_halalas AS credit FROM journal_lines WHERE entry_id = ?`, [entryId]);
+  requireCash(db, manualCashOut(lines), MANUAL);
+  db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [entryId]);
 }
 
 /** عكس قيد مصدره معروف (للحذف من السلة ونحوه) */

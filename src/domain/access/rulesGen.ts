@@ -159,8 +159,10 @@ function guardFns(schema: RulesSchema): string {
     }
     // مصدر القيد الجديد من قسم العملية (#40): لا ينشئ العضو قيداً لعملية قسمٍ ليس له · والدفتر يدويّه وكل عكس
     // تعبيرٌ نمطي واحد بكلفةٍ ثابتة: طلب commit يُقيَّم مرةً تُستدعى فيها حتى دوال الفروع المتروكة (حدّ الألف تعبير · المتحقق المستقل على 356a528)
-    function srcOk(op, s) {
-      return op == 'ledger' ? (s == null || (s is string && s.matches('.*_rev$')))
+    // وقيد العضو اليدوي مسودةٌ حتى يرحّله المالك (المراجعة الخارجية ٧ · «رابعاً ١ (أ)»)
+    // i18n-exempt: حالة القيد المخزّنة في نص القواعد
+    function srcOk(op, s, st) {
+      return op == 'ledger' ? (s == null ? st != 'مرحّل' : (s is string && s.matches('.*_rev$')))
         : op is string && s is string && (op + ':' + s).matches('${Object.entries(OP_JOURNAL_SRC).filter(([, list]) => (list ?? []).length).map(([op, list]) => `${op}:(${(list ?? []).join('|')})`).join('|')}');
     }
     // بصمة الملف وامتداده بشكلهما (#21): منهما يُبنى مسار الملف على كل جهاز · والمرفق بصمته وحدها (امتداده في blobs)
@@ -367,10 +369,10 @@ ${guardFns(schema)}
         // ورموز رؤية الصف الجديد في حدود عقاره أولها (المراجعات الخارجية «ثالثاً أ ٢» · والمتحقق المستقل: عقاراتٌ مكررة أو معها
         // «*» كانت تتخطى الفحص، والرفض كان بنفاد الحد لا بالمنطق) · فالصف غير المستأجر بعقارٍ واحد ورموزه له
         (pidsGOk(r) && keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(m, null, r)
-          && lvlOf(m, r.op) >= 2 && opCreates(r.op, bt) && propsOk(m, r) && (!('by' in r) || r.by == request.auth.uid)
+          && lvlOf(m, r.op) >= 2 && opCreates(r.op, bt) && propsOk(m, r) && r.get('by', '') == request.auth.uid
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
           && (bt != 'vat_filings' || m.all == true)
-          && (r.del != true && bt == 'journal_entries' ? srcOk(r.op, r.d.get('src_type', null)) : true)
+          && (r.del != true && bt == 'journal_entries' ? srcOk(r.op, r.d.get('src_type', null), r.d.get('status', '')) : true)
           // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53)
           // i18n-exempt: حالة الفاتورة المخزّنة في نص القواعد
           && (bt == 'invoices' && r.d != null ? (r.d.get('status', '') == 'مسودة' ? true : lvlOf(m, 'invoices') >= 3) : true)
@@ -381,7 +383,8 @@ ${guardFns(schema)}
     // بهذه العملية (مستواها صفر)
     function memberSelfAudit(r) {
       return r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)
-        && r.d.get('module', '') == '${SELF_AUDIT_MODULE}' && r.d.get('user_name', '') != '${OWNER_ACTOR}';
+        && r.d.get('module', '') == '${SELF_AUDIT_MODULE}' && r.d.get('user_name', '') != '${OWNER_ACTOR}'
+        && r.get('by', '') == request.auth.uid;
     }
 
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
@@ -417,7 +420,7 @@ ${guardFns(schema)}
         && after.get('by', null) == before.get('by', null)
         && (baseT(after.t) != 'vat_filings' || m.all == true)
         // مصدر القيد عند التعديل كالإنشاء (المراجعات الخارجية «ثالثاً أ ٤» · المتحقق المستقل: كان يُفحص عند الإنشاء وحده)
-        && (after.del == true || baseT(after.t) != 'journal_entries' || srcOk(op, after.d.get('src_type', null)))
+        && (after.del == true || baseT(after.t) != 'journal_entries' || srcOk(op, after.d.get('src_type', null), after.d.get('status', '')))
         && (
           (owns && level >= 3 && (propsOk(m, after)
               // والمستأجر المشترك بين عقاراته وعقار غيره: عقاراته كما هي وفيها عقارٌ له (التحقق المستقل: تعديله كان يُرفض صامتاً)

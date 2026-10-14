@@ -62,6 +62,8 @@ d('ثالثاً أ · الصفوف والقيود وسجل العمليات', ()
     recordRentPayment(db, C1, { installmentId: I1, period: 'الأول', date: '2026-01-05', lines: [{ method: 'cash', amountHalalas: 1000 }], discountHalalas: 0, notes: '' });
     enableSync(db, ORG);
     expect((await syncOnce(db, remoteFor(ORG, null), 'dev-owner')).pending).toBe(0);
+    // جهاز العضو يعلّم ما وصله من السحابة «بلا كاتب» (sync/engine.ts: stageInbox · الهجرة ٤٢)، والوثائق هنا تُبنى من قاعدة المالك
+    db.exec((await import('@/db/schema')).MIGRATION_42);
     for (const a of [COLLECTOR, LEDGER]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
@@ -106,7 +108,8 @@ d('ثالثاً أ · الصفوف والقيود وسجل العمليات', ()
     expect(await writeRaw(LEDGER, ann(LEDGER, entry('j1', {})))).toMatchObject({ ok: true });
     expect(await writeRaw(LEDGER, ann(LEDGER, entry('j2', { src_type: 'rent', src_id: 'X' })))).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
     expect(await writeRaw(LEDGER, ann(LEDGER, entry('j3', { src_type: 'rent', src_id: 'X', status: 'مرحّل' })))).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
-    expect(await writeRaw(LEDGER, ann(LEDGER, entry('j4', { status: 'مرحّل' })))).toMatchObject({ ok: true });
+    // وترحيل العضو قيده اليدوي مرفوض: مسودةٌ حتى يرحّلها المالك (المراجعة الخارجية ٧ · «رابعاً ١ (أ)» 2026-10-10)
+    expect(await writeRaw(LEDGER, ann(LEDGER, entry('j4', { status: 'مرحّل' })))).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
 
   test('٥ مجموعا القيد مع sv: غير المتوازن والمفقود والكسر تُرفض · والمتوازن والمسودة وما بلا sv تُقبل', async () => {
