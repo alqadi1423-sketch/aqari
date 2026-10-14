@@ -380,6 +380,18 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   if (!originals.length) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
   const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
   if (!issues.includes('')) throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' }));
+  // واحدٌ لواحد (المتحقق المستقل، الجولة السادسة عشرة): للمصدر أصولٌ عدة (فاتورةٌ عُدّلت فعُكس قيدها ورُحِّل غيره)، فمرآة الأصل
+  // المعكوس كانت تُقبل ثانيةً في حدود العدد · فالأصل الذي يعكسه لم يُعكس بغيره ولا تقابله مرآةٌ أخرى غير مربوطة بأصلٍ آخر
+  const revsOfSrc = db.all<{ id: string }>(
+    `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل' AND id != ?`, [src, srcId, doc.k]); // i18n-exempt: حالة القيد المخزّنة
+  const free = originals.filter((o, i) => {
+    if (issues[i] !== '') return false;
+    const by = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [o.id])!.r;
+    if (by && by !== doc.k) return false;
+    return !revsOfSrc.some((r2) => mirrorIssue(db, o.id, r2.id) === ''
+      && !db.get(`SELECT 1 FROM journal_entries WHERE reversed_by = ? AND id != ?`, [r2.id, o.id]));
+  });
+  if (!free.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
   const revs = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]).length; // i18n-exempt: حالة القيد المخزّنة
   if (revs > originals.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));

@@ -187,3 +187,46 @@ test('والربط المعلّق المرفوض يُسجَّل مرةً لا ف
   expect(Number(a.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects WHERE pk IN (?, 'FK3')`, [e.id])!.n)).toBe(1);
   a.close();
 });
+
+/* ═══ المتحقق المستقل، الجولة السادسة عشرة: واحدٌ لواحد ═══ */
+
+const srcEntry = (db: DB, amount: number) => postEntry(db, { date: '2026-01-01', memo: 'فاتورة مصطنعة', srcType: 'invoice', srcId: 'INV-X',
+  lines: [{ account: '1200', debit: amount, credit: 0 }, { account: '4200', debit: 0, credit: amount }] })!;
+
+test('١ مرآةٌ ثانية لأصلٍ معكوس لا تُقبل ولو بقي للمصدر أصلٌ حي (فاتورةٌ عُدّلت)', async () => {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, UID);
+  const o1 = srcEntry(a, 100000);
+  reverseEntryById(a, o1.id);
+  srcEntry(a, 120000);
+  await sync(a, r);
+  const b = memDb();
+  enableSync(b, UID);
+  await sync(b, r);
+  const before = Number(b.get<{ n: number }>(`SELECT SUM(credit_halalas - debit_halalas) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+    WHERE l.account_code = '4200' AND e.status = 'مرحّل'`)!.n);
+  r.inject({ ...memberRev('R2', 'INV-X', [['1200', 0, 100000], ['4200', 100000, 0]]), d: { ...memberRev('R2', 'INV-X', []).d!, src_type: 'invoice_rev' } });
+  await sync(b, r);
+  expect(b.get(`SELECT 1 FROM journal_entries WHERE id = 'R2'`)).toBeFalsy();
+  expect(Number(b.get<{ n: number }>(`SELECT SUM(credit_halalas - debit_halalas) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+    WHERE l.account_code = '4200' AND e.status = 'مرحّل'`)!.n)).toBe(before);
+  a.close(); b.close();
+});
+
+test('وأصلان بالمبلغ نفسه أحدهما معكوس: عكس الحي يُقبل', async () => {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, UID);
+  const o1 = srcEntry(a, 100000);
+  reverseEntryById(a, o1.id);
+  srcEntry(a, 100000);
+  await sync(a, r);
+  const b = memDb();
+  enableSync(b, UID);
+  await sync(b, r);
+  r.inject({ ...memberRev('R3', 'INV-X', [['1200', 0, 100000], ['4200', 100000, 0]]), d: { ...memberRev('R3', 'INV-X', []).d!, src_type: 'invoice_rev' } });
+  await sync(b, r);
+  expect(b.get<{ s: string }>(`SELECT status AS s FROM journal_entries WHERE id = 'R3'`)?.s).toBe('مرحّل');
+  a.close(); b.close();
+});
