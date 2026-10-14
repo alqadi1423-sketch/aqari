@@ -230,3 +230,16 @@ test('وأصلان بالمبلغ نفسه أحدهما معكوس: عكس ال�
   expect(b.get<{ s: string }>(`SELECT status AS s FROM journal_entries WHERE id = 'R3'`)?.s).toBe('مرحّل');
   a.close(); b.close();
 });
+
+test('١ (الجولة السابعة عشرة) عاكسٌ مقبول بلا ربطٍ يربط أصله · فلا يُعكس الأصل ثانيةً على جهاز المالك', async () => {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, UID);
+  const o = srcEntry(a, 100000);
+  await sync(a, r);
+  r.inject({ ...memberRev('UM1', 'INV-X', [['1200', 0, 100000], ['4200', 100000, 0]]), d: { ...memberRev('UM1', 'INV-X', []).d!, src_type: 'invoice_rev' } });
+  await sync(a, r);
+  expect(reversedBy(a, o.id)).toBe('UM1');
+  expect(reverseEntryById(a, o.id)).toBeNull();
+  a.close();
+});

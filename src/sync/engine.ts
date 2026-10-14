@@ -392,6 +392,9 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
       && !db.get(`SELECT 1 FROM journal_entries WHERE reversed_by = ? AND id != ?`, [r2.id, o.id]));
   });
   if (!free.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
+  // ويُربط الأصل بعاكسه هنا (المتحقق المستقل، الجولة السابعة عشرة): عاكسٌ قُبل بلا ربطٍ يصل كان يترك الأصل «حياً» فيُعكس ثانيةً ·
+  // والربط الذي يصل بعدُ يشير إلى العاكس نفسه، وlinkReversal لا يملأ إلا الفارغ
+  db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL`, [doc.k, free[0].id]);
   const revs = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]).length; // i18n-exempt: حالة القيد المخزّنة
   if (revs > originals.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
