@@ -610,7 +610,8 @@
     "saveCopyBeforeDelete": "Save a copy outside the app first"
   },
   "org": {
-    "leftReason": "You left the organization"
+    "leftReason": "You left the organization",
+    "memberKeepRefused": "A member device cannot keep its data after the owner wiped · clear this device"
   },
   "accounts": {
     "required": "Enter the account name and code",
@@ -747,7 +748,8 @@
     "postFailed": "Posting failed"
   },
   "sync": {
-    "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded"
+    "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded",
+    "olderIncoming": "{{t}} · {{k}} · this device's newer copy ({{seen}}) won over an older incoming one ({{theirs}})"
   },
   "restore": {
     "notInTrash": "Not in the trash · already restored"

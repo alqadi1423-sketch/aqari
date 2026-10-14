@@ -609,6 +609,12 @@ function fkChildren(db: DB, parent: string): Array<{ child: string; from: string
   return out;
 }
 
+/** وقت آخر نسخةٍ عرفها الجهاز للصف · لا يرجع إلى الوراء (الهجرة ٤٣) */
+function noteRowTime(db: DB, table: string, key: string, u: string): void {
+  db.run(`INSERT INTO sync_rowtime (tbl, pk, u) VALUES (?, ?, ?) ON CONFLICT(tbl, pk) DO UPDATE SET u = excluded.u WHERE excluded.u > sync_rowtime.u`,
+    [table, key, u]);
+}
+
 function enqueue(db: DB, table: string, key: string, op: 'upsert' | 'delete'): void {
   db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?,?,?,?)
           ON CONFLICT(tbl, pk) DO UPDATE SET op = excluded.op, changed_at = excluded.changed_at`, [table, key, op, nowIso()]);
@@ -709,6 +715,19 @@ function applyOne(
     }
     conflict = 'conflict-remote';
   }
+  // الوقت الوارد لا يتجاوز وقت كتابته في الخادم (#56)
+  const theirs0 = doc.ts && doc.ts < doc.u ? doc.ts : doc.u;
+  // ولا طابور: الوارد أقدم مما عرفه الجهاز للصف (رفعه أو طبّقه) لا يكتب فوقه، ويُرفع ما عنده فيتفق الأجهزة (المراجعة الخارجية ٧ ·
+  // النتيجة ٨: دورة جهازٍ سحبت قبل تعديل غيره ودفعت بعده فكان الأقدم يغلب بلا أثر) · وأول دورةٍ للجهاز ما في الحساب يغلب
+  if (!pending && !joining && !t.appendOnly) {
+    const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u;
+    if (seen && theirs0 < seen) {
+      enqueue(db, doc.t, doc.k, readRow(db, doc.t, doc.k) ? 'upsert' : 'delete');
+      logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', // i18n-exempt: وحدة السجل ونوعه المخزّنان
+        tr('sync.olderIncoming', { t: doc.t, k: doc.k, seen, theirs: theirs0, lng: 'ar' }));
+      return 'conflict-local';
+    }
+  }
 
   try {
     db.transaction(() => {
@@ -766,6 +785,7 @@ function applyOne(
           : `${doc.t} · ${doc.k} · غلب الوارد (${doc.u}) على تعديل هذا الجهاز (${pending!.changed_at})`);
       }
     });
+    noteRowTime(db, doc.t, doc.k, theirs0);
     return conflict ?? 'applied';
   } catch (e) {
     const msg = errText(e);
@@ -1220,7 +1240,7 @@ export async function syncOnce(
         if (res.ok || memberDenied || immutableDenied(docs[i], res.code)) {
           // لا يُحذف إن تغيّر الصف أثناء الرفع · يبقى للدفعة التالية بوقته الجديد
           db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND changed_at = ?`, [r.tbl, r.pk, r.changed_at]);
-          if (res.ok) pushed++;
+          if (res.ok) { pushed++; noteRowTime(db, r.tbl, r.pk, docs[i].u); }
           progressed++;
         } else {
           db.run(`UPDATE sync_outbox SET last_error = ? WHERE tbl = ? AND pk = ?`,

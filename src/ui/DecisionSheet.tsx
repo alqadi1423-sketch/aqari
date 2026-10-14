@@ -12,6 +12,7 @@ import { C, TYPE } from './theme';
 import { reportFailure } from './failureDialog';
 import { useApp } from './store';
 import { resolveDecision, type CloudState } from '../services/cloud';
+import { useAccess } from './access';
 
 export function DecisionSheet({ decision }: { decision: NonNullable<CloudState['decision']> }) {
   const { db, bump } = useApp();
@@ -25,6 +26,8 @@ export function DecisionSheet({ decision }: { decision: NonNullable<CloudState['
     setBusy(false);
   };
   const epoch = decision.kind === 'epoch';
+  // «أبقِ بياناتي» للمالك وحده (المراجعة الخارجية ٧ · النتيجة ٩ · قرار المالك «رابعاً ٦»)
+  const owner = useAccess().owner;
   return (
     <Sheet visible onClose={() => setLater(true)} title={epoch ? 'مُسحت بيانات المنشأة من جهاز آخر' : 'أُزيلت عضويتك من المنشأة'}>
       <T size={TYPE.body} style={{ marginBottom: 8 }}>
@@ -36,7 +39,7 @@ export function DecisionSheet({ decision }: { decision: NonNullable<CloudState['
       <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 10 }}>
         المزامنة متوقفة حتى تقرر · والتطبيق يعمل بما على الجهاز.
       </T>
-      {epoch ? (
+      {epoch && owner ? (
         <View style={{ marginBottom: 8 }}>
           <BtnPrimary title="أبقِ بياناتي وارفعها إلى المنشأة" loading={busy} onPress={() => run('keep')} />
         </View>

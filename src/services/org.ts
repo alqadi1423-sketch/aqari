@@ -405,6 +405,9 @@ export async function resolveEpoch(db: DB, choice: 'keep' | 'wipe', wipe: () => 
   const n = pendingEpoch(db);
   if (n === null) return db;
   if (choice === 'keep') {
+    // العضو لا يُبقي بياناته فيرفعها بعد مسح المالك الشامل (المراجعة الخارجية ٧ · النتيجة ٩ · قرار المالك «رابعاً ٦» 2026-10-10:
+    // «تُزال «أبقِ بياناتي» للأعضاء») · كان يُعيد إلى السحابة كل ما مسحه المالك من أقسامه
+    if (getSyncState(db, 'membership')) throw new Error(t('org.memberKeepRefused'));
     db.transaction(() => {
       setSyncState(db, 'wipe_epoch', String(n));
       setSyncState(db, 'epoch_pending', null);
