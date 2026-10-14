@@ -547,7 +547,9 @@
     "unfile": "Undo filing record",
     "unfileBody": "If recorded by mistake: the return is computed from its documents again, and correction entries in its period return to their original dates. Continue?",
     "unfiledDone": "Filing record undone",
-    "commercialRentControl": "Commercial rent collected outside item 5 (its VAT comes with commercial leasing)"
+    "commercialRentControl": "Commercial rent collected outside item 5 (its VAT comes with commercial leasing)",
+    "filedDate": "This date is in a filed VAT period, so no reversal or settlement can be dated in it · choose a date in an open period",
+    "commercialRentBlock": "Commercial rent was collected in this period ({{amount}}) and its VAT is not built into the return yet, so the return cannot be filed until it is"
   },
   "invoice": {
     "locked": "An issued invoice can't be edited, returned to draft or deleted · correct it with a credit note",

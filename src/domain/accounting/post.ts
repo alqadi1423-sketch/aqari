@@ -3,7 +3,7 @@ import { requireCash } from '../cashGuard';
 import { t } from '../../i18n';
 import { uid, rowId } from '../ids';
 import { today } from '../dates';
-import { correctionDate } from '../vatFilings';
+import { correctionDate, isFiledDate } from '../vatFilings';
 import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
@@ -186,6 +186,9 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string, date?: 
     [entryId]
   );
   if (!e) return null;
+  // تاريخٌ يختاره المستخدم في فترةٍ قُدِّم إقرارها مرفوض (المراجعة الخارجية ٧ · النتيجة ٦ · قرار المالك «رابعاً ٥» 2026-10-10:
+  // «التاريخ الحر داخل فترة مقدَّمة يُرفض برسالة واضحة») · كان يتجاوز قاعدة الفترة المقدَّمة فيُعاد كتابة دفترها بعد تقديمها
+  if (date && isFiledDate(db, date)) throw new Error(t('vat.filedDate'));
   const lines = db.all<{
     account_code: string; descr: string; debit_halalas: number; credit_halalas: number;
     property_id: string | null; unit_id: string | null; contract_id: string | null; cost_center_id: string | null; asset_id: string | null;

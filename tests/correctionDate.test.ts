@@ -41,9 +41,10 @@ test('#29 العكس بتاريخ أصله · وفي فترةٍ قُدِّم إ�
   const c = manual(db, '2026-03-05');
   expect(entryDate(db, reverseEntryById(db, c.id)!.id)).toBe(today());
   expect(entryDate(db, repostCopy(db, c.id, 'استعادة مصطنعة')!.id)).toBe(today());
-  // التاريخ الذي يختاره المستخدم (إلغاء دفعة بتاريخه) كما هو
+  // والتاريخ الذي يختاره المستخدم في الفترة المقدَّمة مرفوض (المراجعة الخارجية ٧ · النتيجة ٦ · قرار المالك «رابعاً ٥»)
   const d = manual(db, '2026-03-06');
-  expect(entryDate(db, reverseEntryById(db, d.id, undefined, '2026-03-07')!.id)).toBe('2026-03-07');
+  expect(() => reverseEntryById(db, d.id, undefined, '2026-03-07')).toThrow();
+  expect(entryDate(db, reverseEntryById(db, d.id, undefined, '2026-04-02')!.id)).toBe('2026-04-02');
   // التراجع عن التسجيل يعيد التاريخ الأصلي
   unfileVatReturn(db, 2026, 1);
   expect(correctionDate(db, '2026-03-31')).toBe('2026-03-31');

@@ -5,6 +5,7 @@
  *  - #29: «تاريخ قيد التصحيح: التاريخ الأصلي، إلا إن قُدِّم إقرار فترته فتاريخ اليوم.»
  */
 import type { DB } from '../db/adapter';
+import { fmt } from './money';
 import { today } from './dates';
 import { logAudit } from './audit';
 import { t } from '../i18n';
@@ -64,6 +65,9 @@ export function fileVatReturn(db: DB, year: number, quarter: Quarter, filedAt: s
   const id = `${year}-Q${quarter}`;
   if (filedReturn(db, year, quarter)) throw new Error(t('vat.alreadyFiled'));
   const data = vatReturnData(db, year, quarter);
+  // ضريبة الإيجار التجاري لم تُبنَ في الإقرار بعد: فلا يُقدَّم إقرارٌ ناقص (المراجعة الخارجية ٧ · النتيجة ٧ · قرار المالك
+  // «رابعاً ٤» 2026-10-10: «منع تقديم الإقرار مع إيجار تجاري محصَّل»)
+  if (data.commercialRentHalalas > 0) throw new Error(t('vat.commercialRentBlock', { amount: fmt(data.commercialRentHalalas) }));
   const { from, to } = quarterRange(year, quarter);
   const items = JSON.stringify({ items: data.items, excluded: data.excluded });
   db.transaction(() => {

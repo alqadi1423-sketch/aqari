@@ -2,7 +2,7 @@
  * دورة حياة العقد: مسودة ← مراجعة ← توثيق (قفل) ← تجديد/إلغاء + الدفعات.
  * كل دالة تتم بمعاملة واحدة، والترحيل المحاسبي عبر مسار postEvent الواحد.
  */
-import { correctionDate } from '../vatFilings';
+import { correctionDate, isFiledDate } from '../vatFilings';
 import type { DB } from '../../db/adapter';
 import { requireCash } from '../cashGuard';
 import type { ScheduleRow } from '../pdf/parseEjar';
@@ -779,7 +779,9 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   for (const [src, memo] of [['deposit_deduct', 'عكس الخصم السابق'], ['deposit_refund', 'عكس الرد السابق'], ['deposit_deduct_move', 'عكس استقرار المخصوم']]) {
     for (let i = 0; i < 20 && reverseEntryBySource(db, src, contractId, 'تعديل تسوية التأمين · ' + memo); i++) { /* حتى لا يبقى حيّ */ }
   }
-  // تعديل تسويةٍ قائمة: قيودها الجديدة قيود تصحيح بتاريخها، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسها (#29)
+  // تعديل تسويةٍ قائمة: قيودها الجديدة قيود تصحيح بتاريخها، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسها (#29) · والتسوية الأولى
+  // بتاريخٍ في فترةٍ مقدَّمة مرفوضة (المراجعة الخارجية ٧ · النتيجة ٦ · قرار المالك «رابعاً ٥»)
+  if (!prev && isFiledDate(db, input.date)) throw new RuleViolation(t('vat.filedDate'));
   const postDate = prev ? correctionDate(db, input.date) : input.date;
   let excessClaimCreated = false;
   if (excess > 0 && !prevClaim) {
