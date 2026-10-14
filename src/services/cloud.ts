@@ -16,7 +16,7 @@ import { GoogleSignin, isSuccessResponse } from '@react-native-google-signin/goo
 import type { AppDB } from '../db/expoAdapter';
 import { cloudConfig, filesCloudConfig, DRIVE_SCOPE } from '../cloud/config';
 import { type StorageIO } from '../cloud/storage';
-import { pumpUploads, ensureLocal, fileState, cacheUsage, clearCache, type FilesRemote } from '../files/cloudFiles';
+import { pumpUploads, ensureLocal, fileState, cacheUsage, clearCache, reconcileOwnerFiles, type FilesRemote } from '../files/cloudFiles';
 import { liveBlobs } from '../files/store';
 import { appFilesEnv } from './filesEnv';
 import { getSetting } from '../repos/settings';
@@ -308,7 +308,7 @@ export async function syncNow(): Promise<void> {
     // الإهلاك الشهري الآلي على جهاز المالك بعد دورةٍ لم يبقَ بعدها ما ينتظر الرفع (موجز الأصول §٣ب)
     if (!member && autoDepreciate(db, today(), { owner: true, afterSync: true })) onData();
     // الملفات الجديدة تُرفع في الخلفية بعد البيانات · ولا تُنتظر
-    pumpFilesInBackground(db).catch(() => {});
+    pumpFilesInBackground(db, rep.applied + rep.pushed > 0).catch(() => {});
     // المالك ينشر نقل الوحدات بعد رفع صفوفها بوسمها الجديد (ملاحظة المالك على ٤.١٢)
     if (!member && org === uid) await publishUnitMoves(db, remoteOf(db, uid, idToken), org);
     if (member) {
@@ -1186,7 +1186,7 @@ const cacheLimitOf = (db: DB) => Number(getSetting(db, 'fileCacheMb') || 500) * 
 
 /** رفع الملفات المنتظرة في الخلفية بعد كل مزامنة · طابورها مستقل فلا يحبس البيانات، والفشل يُعاد لاحقاً */
 let pumping = false;
-async function pumpFilesInBackground(db: DB): Promise<void> {
+async function pumpFilesInBackground(db: DB, dataChanged = false): Promise<void> {
   const remote = filesRemote(db);
   if (!remote || pumping || !state.online) return;
   pumping = true;
@@ -1200,6 +1200,8 @@ async function pumpFilesInBackground(db: DB): Promise<void> {
       if (t) db.run(`UPDATE attachments SET thumb = ? WHERE sha256 = ? AND thumb IS NULL`, [t, r.sha256]);
     }
     await pumpUploads(env, remote);
+    // جهاز المالك بعد دورةٍ سحبت كل ما في الحساب: حذف ما لا صفّ له وإعادة كتابة الرموز (المراجعة الخارجية ٧ · النتيجة ١٣)
+    if (remote.access.owner) await reconcileOwnerFiles(db, remote, { dataChanged });
   } catch { /* يُعاد في الدورة التالية */ } finally { pumping = false; }
 }
 

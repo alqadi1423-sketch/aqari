@@ -79,11 +79,19 @@ service firebase.storage {
           || (isNew && !et.matches(attKnownRx()) && added.hasOnly(['library|*', 'library|@'])));
     }
 
+    // البصمة لمن سجّلها (المراجعة الخارجية ٧ · النتيجة ١٠ · قرار المالك «رابعاً ٧» 2026-10-10: «تسجيل البصمة المنتظرة قبل
+    // الرفع»): صفّ blobs للبصمة يكتبه صاحب المرفق مع صفّه وقبل ملفه، وكاتبه لا يتغير ولا يُدّعى (by في firestore.rules، والعضو لا يعدّل صفّ blobs أصلاً) ·
+    // فعضوٌ عرف البصمة من صفّ غيره لا يرفع باسمها محتوىً آخر قبل صاحبه (كان يحجز الاسم فلا تُرفع الصورة الحقيقية أبداً)
+    function claimedBy(org, name) {
+      return firestore.get(/databases/(default)/documents/orgs/$(org)/rows/$('blobs__' + name.split('[.]')[0])).data.get('by', '') == request.auth.uid;
+    }
+
     match /orgs/{org}/files/{name} {
       // السؤال عن ملفٍ غير موجود يعيد «غير موجود» للعضو (لا يكشف شيئاً) · فيعرف الطابور أن عليه رفعه
       allow get: if isOwner(org)
         || (isMember(org) && (resource == null || tokens(resource.metadata).hasAny(firestore.get(memberDoc(org)).data.tokens)));
       allow create: if (isOwner(org) || (resource == null && isMember(org) && 'op' in request.resource.metadata && lvl(org, request.resource.metadata.op) >= 2
+          && name.matches('^[0-9a-f]{64}[.][a-z0-9]{1,5}$') && claimedBy(org, name)
           && ((!tokens(request.resource.metadata).hasAny(orgWideTokens()) && addedOk(org, tokens(request.resource.metadata)))
             || linkedOk(org, request.resource.metadata, name, tokens(request.resource.metadata), true))))
         && request.resource.size < 50 * 1024 * 1024

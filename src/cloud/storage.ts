@@ -43,6 +43,8 @@ export interface RemoteFile {
   md5: string;
   /** رموز الرؤية المكتوبة على الملف */
   g: string[];
+  /** وقت إنشائه في الخادم */
+  created?: string | null;
 }
 
 export const filesPrefix = (org: string) => `orgs/${org}/files/`;
@@ -65,8 +67,8 @@ export async function statObject(io: StorageIO, t: StorageTarget, name: string):
   if (res.status === 404) return null;
   const text = await res.text();
   if (!res.ok) throw failure(res.status, 'قراءة بيانات الملف');
-  const j = JSON.parse(text || '{}') as { name: string; size?: string | number; md5Hash?: string; metadata?: Record<string, string> };
-  return { name: j.name, size: Number(j.size ?? 0), md5: j.md5Hash ?? '', g: splitG(j.metadata?.g) };
+  const j = JSON.parse(text || '{}') as { name: string; size?: string | number; md5Hash?: string; metadata?: Record<string, string>; timeCreated?: string };
+  return { name: j.name, size: Number(j.size ?? 0), md5: j.md5Hash ?? '', g: splitG(j.metadata?.g), created: j.timeCreated ?? null };
 }
 
 export interface UploadMeta {
@@ -141,6 +143,19 @@ export async function addTokens(io: StorageIO, t: StorageTarget, name: string, c
     });
     if (!res.ok) throw failure(res.status, 'تحديث رؤية الملف');
   }
+}
+
+/**
+ * رموز رؤية الملف كما هي لا زيادةً (للمالك وحده في القواعد) · المراجعة الخارجية ٧ · النتيجة ١٣: كانت الرموز تزيد ولا تنقص فيبقى
+ * ملفٌ نُقلت جهته يقرؤه من كان يقرؤه
+ */
+export async function setTokens(io: StorageIO, t: StorageTarget, name: string, g: string[]): Promise<void> {
+  const res = await io.fetch(objUrl(t, name), {
+    method: 'PATCH',
+    headers: await auth(t, { 'Content-Type': 'application/json; charset=utf-8' }),
+    body: JSON.stringify({ metadata: { g: [...new Set(g)].sort().join(',') } }),
+  });
+  if (!res.ok) throw failure(res.status, 'تحديث رؤية الملف');
 }
 
 /** تنزيل ملف إلى مسار · المطابقة بالبصمة على من ينادي */

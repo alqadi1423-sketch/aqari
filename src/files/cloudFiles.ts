@@ -18,7 +18,8 @@ import { rowPids, tokensFor } from '../sync/acl';
 import type { RowData } from '../sync/types';
 import { CancelledError, isCancelled, throwIfCancelled, type CancelSignal, type ProgressFn } from '../domain/progress';
 import {
-  addTokens, downloadObject, objectName, statObject, uploadObject, type StorageIO, type StorageTarget,
+  addTokens, deleteObject, downloadObject, filesPrefix, listObjects, objectName, setTokens, statObject, uploadObject,
+  type StorageIO, type StorageTarget,
 } from '../cloud/storage';
 
 export interface CloudFilesEnv {
@@ -136,6 +137,8 @@ export async function pumpUploads(
       } else if (vis.g.some((x) => !cur!.g.includes(x))) {
         await addTokens(remote.io, remote.target, name, cur, vis.g);
       }
+      // ما على الملف من رموز بعد رفع المالك (النتيجة ١٣): منه يُعرف ما تغيّرت رؤيته لاحقاً
+      if (!member) noteTokens(env.db, f.sha256, [...new Set([...cur.g, ...vis.g])]);
       env.db.run(`UPDATE file_cache SET uploaded = 1, attempts = 0, last_error = NULL WHERE sha256 = ?`, [f.sha256]);
       out.uploaded++;
     } catch (e) {
@@ -146,6 +149,79 @@ export async function pumpUploads(
     }
     done += Number(f.bytes);
     opts.onProgress?.('جاري رفع الملفات', { done, total, unit: 'bytes' });
+  }
+  return out;
+}
+
+/* ═══════════ دورة حياة ملفات التخزين على جهاز المالك ═══════════ */
+
+/** ملفٌ في الخادم لا مرفق له عند المالك لا يُحذف قبل هذا العمر: صفّ عضوٍ رُفع ملفه ولم يبلغ المالك بعد */
+export const ORPHAN_GRACE_MS = 7 * 86400000;
+/** مرور الحذف (سرد الملفات) مرةً في اليوم · ومرور الرموز بعد تغيّر البيانات وبحدٍّ أدنى بينهما، أو كل ست ساعات */
+const ORPHAN_EVERY_MS = 86400000;
+const TOKENS_MIN_MS = 10 * 60000;
+const TOKENS_EVERY_MS = 6 * 3600000;
+
+const sorted = (g: string[]) => [...new Set(g)].sort().join(',');
+function noteTokens(db: DB, sha: string, g: string[]): void {
+  db.run(`INSERT INTO file_tokens (sha256, g) VALUES (?, ?) ON CONFLICT(sha256) DO UPDATE SET g = excluded.g`, [sha, sorted(g)]);
+}
+const stateOf = (db: DB, k: string) => db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = ?`, [k])?.v ?? null;
+const setState = (db: DB, k: string, v: string | null) =>
+  db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [k, v]);
+
+/**
+ * المراجعة الخارجية ٧ · النتيجة ١٣ (قرار المالك «رابعاً ٧» 2026-10-10: «حذف على جهاز المالك لما لا مرجع له وإعادة كتابة الرموز
+ * عند النقل»): على جهاز المالك بعد دورة مزامنةٍ تامة (سحبت كل ما في الحساب):
+ *  - ملفٌ في الخادم لا مرفق يشير إليه على الجهاز بأي حال (فُرّغ من السلة، أو لم يُكتب مرفقه أصلاً) وعمره فوق المهلة يُحذف ·
+ *    وما في السلة يبقى ملفه حتى تُفرَّغ · كانت الملفات لا تُحذف إلا بالمسح الشامل فيبقى ما فُرّغ يقرؤه من حمل رمزه يوماً
+ *  - رموز رؤية كل ملفٍ تُكتب كما تحسبها صفوف مرفقاته الآن (fileVisibility) لا زيادةً · كان ملفٌ نُقلت جهته أو وحدته إلى عقارٍ
+ *    آخر يبقى يقرؤه المحصور في العقار الأول
+ * dataChanged: الدورة طبّقت وارداً أو رفعت محلياً · فالرؤية ربما تغيّرت
+ */
+export async function reconcileOwnerFiles(
+  db: DB, remote: FilesRemote, opts: { now?: Date; dataChanged?: boolean; force?: boolean } = {},
+): Promise<{ deleted: number; retokened: number }> {
+  const out = { deleted: 0, retokened: 0 };
+  if (!remote.access.owner) return out;
+  const now = (opts.now ?? new Date()).getTime();
+  const t = remote.target;
+  // الرموز
+  if (opts.dataChanged) setState(db, 'files_tokens_dirty', '1');
+  const lastTok = Number(stateOf(db, 'files_tokens_at') ?? 0);
+  const dueTok = opts.force || now - lastTok >= TOKENS_EVERY_MS || (stateOf(db, 'files_tokens_dirty') === '1' && now - lastTok >= TOKENS_MIN_MS);
+  if (dueTok) {
+    const known = new Map(db.all<{ sha256: string; g: string }>(`SELECT sha256, g FROM file_tokens`).map((r) => [r.sha256, r.g]));
+    for (const b of db.all<{ sha256: string; ext: string }>(
+      `SELECT b.sha256, b.ext FROM blobs b WHERE EXISTS (SELECT 1 FROM attachments a WHERE a.sha256 = b.sha256) ORDER BY b.sha256`)) {
+      const want = fileVisibility(db, b.sha256, remote.access).g;
+      if (!want.length) continue;
+      if (known.get(b.sha256) === sorted(want)) continue;
+      const name = objectName(t.org, b.sha256, b.ext);
+      const there = await statObject(remote.io, t, name);
+      if (!there) continue; // لم يُرفع بعد · يرفعه صاحبه برموزه
+      if (sorted(there.g) !== sorted(want)) { await setTokens(remote.io, t, name, want); out.retokened++; }
+      noteTokens(db, b.sha256, want);
+    }
+    setState(db, 'files_tokens_at', String(now));
+    setState(db, 'files_tokens_dirty', null);
+  }
+  // الحذف
+  const lastGc = Number(stateOf(db, 'files_gc_at') ?? 0);
+  if (opts.force || now - lastGc >= ORPHAN_EVERY_MS) {
+    const prefix = filesPrefix(t.org);
+    for (const name of await listObjects(remote.io, t, prefix)) {
+      const sha = name.slice(prefix.length).split('.')[0];
+      if (db.get(`SELECT 1 FROM attachments WHERE sha256 = ?`, [sha])) continue;
+      const there = await statObject(remote.io, t, name);
+      if (!there) continue;
+      const born = there.created ? Date.parse(there.created) : NaN;
+      if (!Number.isFinite(born) || now - born < ORPHAN_GRACE_MS) continue;
+      await deleteObject(remote.io, t, name);
+      db.run(`DELETE FROM file_tokens WHERE sha256 = ?`, [sha]);
+      out.deleted++;
+    }
+    setState(db, 'files_gc_at', String(now));
   }
   return out;
 }

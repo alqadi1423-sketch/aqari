@@ -8,7 +8,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
-import { FirestoreRemote } from '@/cloud/firestore';
+import { FirestoreRemote, encodeFields } from '@/cloud/firestore';
 import type { DB } from '@/db/adapter';
 import { memberTokens, fullReadTables } from '@/sync/acl';
 import { SYNC_TABLES } from '@/db/syncTables';
@@ -71,6 +71,8 @@ d('مزامنة الملفات على المحاكي', () => {
   let C1 = ''; let C2 = '';
   const M = { uid: 'MEM-FILES', email: 'mem-files@example.test' };
   const W = { uid: 'MEM-WRITER', email: 'mem-writer@example.test' };
+  const W2 = { uid: 'MEM-WRITER2', email: 'mem-writer2@example.test' };
+  let writer2: TestBackupEnv;
   let member: TestBackupEnv;
   let writer: TestBackupEnv;
   const f1 = bytesOf(1); const f2 = bytesOf(2);
@@ -96,8 +98,9 @@ d('مزامنة الملفات على المحاكي', () => {
     const orgR = new FirestoreRemote({ ...base(OWNER, OWNER_EMAIL), org: OWNER });
     await sendInvite(orgR, OWNER, { email: M.email, perms: { contracts: 1, props: 1 }, allProps: false, props: ['FP1'] }, 'منشأة الملفات', OWNER_EMAIL);
     await sendInvite(orgR, OWNER, { email: W.email, perms: { contracts: 2, props: 1 }, allProps: false, props: ['FP1'] }, 'منشأة الملفات', OWNER_EMAIL);
-    member = newEnv(); writer = newEnv();
-    for (const [env, x] of [[member, M], [writer, W]] as const) {
+    await sendInvite(orgR, OWNER, { email: W2.email, perms: { contracts: 2, props: 1 }, allProps: true, props: [] } /* كل العقارات: صفّ blobs لكل العقارات فلا يعدّله المحصور (الاختبار ١٠) */, 'منشأة الملفات', OWNER_EMAIL);
+    member = newEnv(); writer = newEnv(); writer2 = newEnv();
+    for (const [env, x] of [[member, M], [writer, W], [writer2, W2]] as const) {
       const plain = new FirestoreRemote(base(x.uid, x.email));
       const inv = await findInvites(plain, x.email);
       await bind(env.db, await acceptInvite(env.db, plain, OWNER, x.uid, inv[0].doc), x.uid);
@@ -215,15 +218,143 @@ d('مزامنة الملفات على المحاكي', () => {
     const name1 = objectName(OWNER, sha(f1), 'pdf');
     const f1there = (await statObject(nodeStorageIO, target(W.uid, W.email), name1))!;
     await expect(addTokens(nodeStorageIO, target(W.uid, W.email), name1, f1there, ['contracts|*'])).rejects.toThrow('رُفض');
-    // عضوٌ سبق المالك إلى بصمةٍ بمحتوىً آخر: يرفع المالك الملف الصحيح فوقه
+    // عضوٌ يسبق إلى بصمةٍ لم يسجّلها مرفوض (المراجعة الخارجية ٧ · النتيجة ١٠) · والمالك يرفع فوق ملفٍ قائم كما كان
     const f8 = bytesOf(8);
     const name8 = objectName(OWNER, sha(f8), 'bin');
-    await uploadObject(nodeStorageIO, target(W.uid, W.email), name8, pj,
-      { g: ['contracts|FP1'], op: 'contracts', sha256: sha(f8), md5: md5(junk), contentType: 'application/octet-stream' });
+    await expect(uploadObject(nodeStorageIO, target(W.uid, W.email), name8, pj,
+      { g: ['contracts|FP1'], op: 'contracts', sha256: sha(f8), md5: md5(junk), contentType: 'application/octet-stream' })).rejects.toThrow('رُفض');
+    await uploadObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name8, pj,
+      { g: ['contracts|FP1'], op: null, sha256: sha(f8), md5: md5(junk), contentType: 'application/octet-stream' });
     const p8 = path.join(owner.root, 'f8.bin');
     fs.writeFileSync(p8, f8);
     await uploadObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name8, p8,
       { g: ['contracts|@', 'contracts|FP1'], op: null, sha256: sha(f8), md5: md5(f8), contentType: 'application/octet-stream' });
     expect((await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name8))!.md5).toBe(md5(f8));
+  });
+
+  /* ═══ المراجعة الخارجية ٧ · النتيجة ١٠ (قرار المالك «رابعاً ٧»: «تسجيل البصمة المنتظرة قبل الرفع») ═══ */
+  test('١٠ سلبي: عضوٌ عرف بصمة مرفق عضوٍ آخر من صفّه لا يرفع باسمها محتوىً آخر قبله · ولا يدّعي صفّ بصمةٍ بلا كاتب', async () => {
+    const { syncOnce } = await import('@/sync/engine');
+    const md5 = (b: Uint8Array) => createHash('md5').update(b).digest('base64');
+    // W يرفق صورة تسليم ويرفع صفوفها (blobs بكاتبه) ولم يرفع ملفها بعد
+    const f9 = bytesOf(9);
+    await putAttachment(fe(writer), f9, { entityType: 'contract', entityId: C1, kind: 'صورة', originalName: 'تسليم.jpg', mime: 'image/jpeg' });
+    await syncOnce(writer.db, deviceRemote(writer.db, W.uid, W.email), 'dev-' + W.uid);
+    // W2 يسحب فيرى البصمة في صفّ المرفق
+    await syncOnce(writer2.db, deviceRemote(writer2.db, W2.uid, W2.email), 'dev-' + W2.uid);
+    const att = writer2.db.get<{ id: string; sha256: string }>(`SELECT id, sha256 FROM attachments WHERE sha256 = ?`, [sha(f9)]);
+    expect(att!.sha256).toBe(sha(f9));
+    const junk = bytesOf(98);
+    const pj = path.join(writer2.root, 'junk9.bin');
+    fs.writeFileSync(pj, junk);
+    const name9 = objectName(OWNER, sha(f9), 'jpg');
+    // بالرموز الحرة وبربط المرفق كليهما
+    await expect(uploadObject(nodeStorageIO, target(W2.uid, W2.email), name9, pj,
+      { g: ['contracts|FP1'], op: 'contracts', sha256: sha(f9), md5: md5(junk), contentType: 'image/jpeg' })).rejects.toThrow('رُفض');
+    await expect(uploadObject(nodeStorageIO, target(W2.uid, W2.email), name9, pj,
+      { g: ['contracts|FP1'], op: 'contracts', sha256: sha(f9), md5: md5(junk), contentType: 'image/jpeg', att: att!.id })).rejects.toThrow('رُفض');
+    // ولا يدّعي صفّ بصمةٍ بلا كاتب (رفعه إصدارٌ قبل الهجرة ٤٢) بتعديله من جهازه بكاتبٍ هو نفسه ثم يرفع ملفها: صفٌّ كصفّ W بلا by ·
+    // حارسٌ لما قائم: العضو لا يعدّل صفّ blobs أصلاً (إنشاءٌ وحده في opWrites.ts) فلا يضيف نفسه كاتباً
+    const f10 = bytesOf(10);
+    const DOCS = `http://${FS_HOST}/v1/projects/${PROJECT}/databases/(default)/documents`;
+    const ADMIN = { 'Content-Type': 'application/json', Authorization: 'Bearer owner' };
+    const src = (await (await fetch(`${DOCS}/orgs/${OWNER}/rows/blobs__${sha(f9)}`, { headers: ADMIN })).json()) as { fields: Record<string, unknown> };
+    const fields = JSON.parse(JSON.stringify(src.fields).split(sha(f9)).join(sha(f10))) as Record<string, unknown>;
+    delete fields.by; delete fields.ts;
+    const legacyName = `projects/${PROJECT}/databases/(default)/documents/orgs/${OWNER}/rows/blobs__${sha(f10)}`;
+    const put = await fetch(`${DOCS}:commit`, { method: 'POST', headers: ADMIN, body: JSON.stringify({ writes: [{
+      update: { name: legacyName, fields }, updateTransforms: [{ fieldPath: 'ts', setToServerValue: 'REQUEST_TIME' }] }] }) });
+    await put.text();
+    expect(put.status).toBe(200);
+    await syncOnce(writer2.db, deviceRemote(writer2.db, W2.uid, W2.email), 'dev-' + W2.uid);
+    expect(writer2.db.get(`SELECT 1 FROM blobs WHERE sha256 = ?`, [sha(f10)])).toBeDefined();
+    // عميلٌ معدَّل: لا يعرف أن الصف بلا كاتب فيرسل نفسه كاتباً مع تعديله
+    writer2.db.run(`DELETE FROM row_by WHERE tbl = 'blobs' AND pk = ?`, [sha(f10)]);
+    writer2.db.run(`UPDATE blobs SET created_at = '2026-01-02T00:00:00.000Z' WHERE sha256 = ?`, [sha(f10)]);
+    await syncOnce(writer2.db, deviceRemote(writer2.db, W2.uid, W2.email), 'dev-' + W2.uid);
+    const after = (await (await fetch(`${DOCS}/orgs/${OWNER}/rows/blobs__${sha(f10)}`, { headers: ADMIN })).json()) as { fields: Record<string, unknown> };
+    expect(after.fields.by).toBeUndefined();
+    const p10 = path.join(writer2.root, 'junk10.bin');
+    fs.writeFileSync(p10, junk);
+    await expect(uploadObject(nodeStorageIO, target(W2.uid, W2.email), objectName(OWNER, sha(f10), 'jpg'), p10,
+      { g: ['contracts|FP1'], op: 'contracts', sha256: sha(f10), md5: md5(junk), contentType: 'image/jpeg' })).rejects.toThrow('رُفض');
+    // والملف الصحيح يرفعه صاحبه بعد ذلك
+    expect(await pumpUploads(fe(writer), filesRemote(writer.db, W.uid, W.email))).toEqual({ uploaded: 1, failed: 0, lost: 0 });
+    expect((await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name9))!.md5).toBe(md5(f9));
+  });
+
+  test('١٠ إيجابي: صاحب البصمة يرفع ملفها · وعضوٌ آخر أرفق الملف نفسه بعده لا يحتاج رفعه ويضمّ رموز مرفقه', async () => {
+    const { syncOnce } = await import('@/sync/engine');
+    const f11 = bytesOf(11);
+    await putAttachment(fe(writer), f11, { entityType: 'contract', entityId: C1, kind: 'صورة', originalName: 'أ.jpg', mime: 'image/jpeg' });
+    await syncOnce(writer.db, deviceRemote(writer.db, W.uid, W.email), 'dev-' + W.uid);
+    expect((await pumpUploads(fe(writer), filesRemote(writer.db, W.uid, W.email))).uploaded).toBe(1);
+    await syncOnce(writer2.db, deviceRemote(writer2.db, W2.uid, W2.email), 'dev-' + W2.uid);
+    await putAttachment(fe(writer2), f11, { entityType: 'contract', entityId: C1, kind: 'تسليم', originalName: 'ب.jpg', mime: 'image/jpeg' });
+    await syncOnce(writer2.db, deviceRemote(writer2.db, W2.uid, W2.email), 'dev-' + W2.uid);
+    expect(await pumpUploads(fe(writer2), filesRemote(writer2.db, W2.uid, W2.email))).toEqual({ uploaded: 1, failed: 0, lost: 0 });
+  });
+
+  /* ═══ المراجعة الخارجية ٧ · النتيجة ١٣ (قرار المالك «رابعاً ٧»: «حذف على جهاز المالك لما لا مرجع له وإعادة كتابة الرموز عند النقل») ═══ */
+  test('١٣ سلبي: ملفٌ نُقل مرفقه إلى عقار آخر لا يقرؤه عضو الأول بعد مزامنة المالك · وملفٌ فُرّغ مرفقه من السلة يُحذف من الخادم', async () => {
+    const { syncOnce } = await import('@/sync/engine');
+    const { softDeleteAttachment } = await import('@/files/store');
+    const { purgeFromTrash } = await import('@/domain/trash');
+    const { reconcileOwnerFiles } = await import('@/files/cloudFiles');
+    const own = () => filesRemote(owner.db, OWNER, OWNER_EMAIL);
+    const ownSync = () => syncOnce(owner.db, deviceRemote(owner.db, OWNER, OWNER_EMAIL), 'dev-owner-f');
+    const f12 = bytesOf(12);
+    await putAttachment(fe(owner), f12, { entityType: 'contract', entityId: C1, kind: 'هوية', originalName: 'هوية-١٣.pdf', mime: 'application/pdf' });
+    await ownSync();
+    await pumpUploads(fe(owner), own());
+    await reconcileOwnerFiles(owner.db, own(), { force: true });
+    const name12 = objectName(OWNER, sha(f12), 'pdf');
+    // عضو العقار الأول يقرؤه
+    expect((await statObject(nodeStorageIO, target(M.uid, M.email), name12))!.g).toContain('contracts|FP1');
+    // نقل المرفق إلى عقد العقار الثاني
+    owner.db.run(`UPDATE attachments SET entity_id = ? WHERE sha256 = ?`, [C2, sha(f12)]);
+    const rep = await ownSync();
+    const r1 = await reconcileOwnerFiles(owner.db, own(), { dataChanged: rep.applied + rep.pushed > 0, force: true });
+    expect(r1.retokened).toBeGreaterThan(0);
+    const g12 = (await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name12))!.g;
+    expect(g12).toContain('contracts|FP2');
+    expect(g12).not.toContain('contracts|FP1');
+    await expect(statObject(nodeStorageIO, target(M.uid, M.email), name12)).rejects.toThrow('رُفض');
+    // حذفٌ ناعم: الملف باقٍ ما دام في السلة
+    const id12 = owner.db.get<{ id: string }>(`SELECT id FROM attachments WHERE sha256 = ?`, [sha(f12)])!.id;
+    softDeleteAttachment(owner.db, id12);
+    await ownSync();
+    const later = new Date(Date.now() + 40 * 86400000);
+    await reconcileOwnerFiles(owner.db, own(), { now: later, force: true });
+    expect(await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name12)).not.toBeNull();
+    // تفريغه من السلة: يُحذف من الخادم بمسار المالك
+    purgeFromTrash(owner.db, 'attachments', id12);
+    await ownSync();
+    const r2 = await reconcileOwnerFiles(owner.db, own(), { now: later, force: true });
+    expect(r2.deleted).toBeGreaterThan(0);
+    expect(await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name12)).toBeNull();
+  });
+
+  test('١٣ إيجابي: ملف عضوٍ لم يبلغ مرفقُه المالكَ لا يُحذف قبل المهلة · وما له مرفق حيّ يبقى ويقرؤه عضو عقاره · والعضو لا يحذف ولا يُنقص الرموز', async () => {
+    const { syncOnce } = await import('@/sync/engine');
+    const { reconcileOwnerFiles } = await import('@/files/cloudFiles');
+    const own = () => filesRemote(owner.db, OWNER, OWNER_EMAIL);
+    const f13 = bytesOf(13);
+    await putAttachment(fe(writer2), f13, { entityType: 'contract', entityId: C1, kind: 'صورة', originalName: 'ج.jpg', mime: 'image/jpeg' });
+    await syncOnce(writer2.db, deviceRemote(writer2.db, W2.uid, W2.email), 'dev-' + W2.uid);
+    expect((await pumpUploads(fe(writer2), filesRemote(writer2.db, W2.uid, W2.email))).uploaded).toBe(1);
+    const name13 = objectName(OWNER, sha(f13), 'jpg');
+    // المالك لم يسحب بعد: لا يُحذف داخل المهلة
+    await reconcileOwnerFiles(owner.db, own(), { force: true });
+    expect(await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name13)).not.toBeNull();
+    // بعد سحبه: له مرفقٌ حيّ فيبقى ولو بعد المهلة · وملف العقار الأول باقٍ يقرؤه عضوه
+    await syncOnce(owner.db, deviceRemote(owner.db, OWNER, OWNER_EMAIL), 'dev-owner-f');
+    await reconcileOwnerFiles(owner.db, own(), { now: new Date(Date.now() + 40 * 86400000), force: true });
+    expect(await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name13)).not.toBeNull();
+    expect((await statObject(nodeStorageIO, target(M.uid, M.email), objectName(OWNER, sha(f1), 'pdf')))!.g).toContain('contracts|FP1');
+    // العضو لا يحذف ولا يُنقص رموز ملفٍ يقرؤه (قواعد التخزين كما هي)
+    const { setTokens } = await import('@/cloud/storage');
+    await expect(deleteObject(nodeStorageIO, target(W2.uid, W2.email), name13)).rejects.toThrow('رُفض');
+    await expect(setTokens(nodeStorageIO, target(W2.uid, W2.email), name13, [])).rejects.toThrow('رُفض');
   });
 });
