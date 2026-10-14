@@ -55,3 +55,12 @@ test('الجولة ٣٠: 1 وl تُطوى i وvv تُطوى w قبل فحص ال
   for (const name of ['Ali Superv1sor', 'Ali SUPERVlSOR', 'Ali Ovvner']) expect(validateProfile({ name, phone: '0500000030' }, true).ok).toBe(false);
   for (const name of ['Ali Hill', 'Room 101', 'Vivian']) expect(validateProfile({ name, phone: '0500000030' }, true).ok).toBe(true);
 });
+
+test('الجولة ٣١: المحجوز كلمةٌ كاملة · «عبد المالك» و«Downer» مقبولان · و«المالك» و«Owner» كلمتين محجوزتان', () => {
+  for (const name of ['عبد المالك الشهري', 'عبدالمالك سعيد', 'Downer Smith', 'Ali Hill', 'William', 'عبد الملك سعيد', 'مالك سعيد']) {
+    expect(validateProfile({ name, phone: '0500000031' }, true).ok).toBe(true);
+  }
+  for (const name of ['عضو المالك', 'المالك', 'Ali Owner', 'owner', 'Supervisor Ali', 'مالك المنشأة', 'عضو · ب', 'مشرف: العقود']) {
+    expect(validateProfile({ name, phone: '0500000031' }, true).ok).toBe(false);
+  }
+});

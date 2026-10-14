@@ -323,3 +323,12 @@ d('الجولة ٢٩: الحروف الشبيهة لا تمرّ في القوا�
     for (const name of ['گل مصطنع', 'Ali 5', 'عضو ١٠١']) expect(await self(name)).toBe(200);
   });
 });
+
+d('الجولة ٣١: المحجوز كلمةٌ كاملة في القواعد', () => {
+  test('١٧ إيجابي: «عبد المالك» و«Downer» مقبولان · وسلبي: «المالك» و«Owner» كلمتين مرفوضتان', async () => {
+    await seed();
+    const self = (name: string) => put(`orgs/${ORG}/members/${A}?updateMask.fieldPaths=name&updateMask.fieldPaths=phone`, { name, phone: '0500000031' }, A);
+    for (const name of ['عبد المالك الشهري', 'عبدالمالك سعيد', 'Downer Smith']) expect(await self(name)).toBe(200);
+    for (const name of ['عضو المالك', 'Ali Owner', 'Supervisor Ali']) expect(await self(name)).toBe(403);
+  });
+});

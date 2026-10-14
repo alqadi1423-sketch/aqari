@@ -34,12 +34,20 @@ export const NID_RE = /^[12][0-9]{9}$/;
  * ما يحاكي شارة دور أو فاصلها لا يكون اسماً (المراجعة الخارجية ٧ · النتيجة ١٧ · قرار المالك «رابعاً ١٠») · يطابق memberNameOk في
  * القواعد · والفيصل شارة الدور من المعرّف (src/chat/roles.ts)
  */
-export const RESERVED_NAME_RE = /المالك|مالك المنشأة|·|:|owner|supervis/i; // i18n-exempt: نصٌّ محجوز تطابقه القواعد
+/**
+ * المحجوز كلمةً كاملة لا جزءاً من كلمة (المتحقق المستقل، الجولة ٣١: «عبد المالك» و«Downer» كانا يُرفضان) · والفاصلان «·» و«:» في
+ * أي موضع · وحدّ الكلمة حرفٌ ليس عربياً ولا لاتينياً · ومنه نمط القواعد (rulesGen.ts profileComplete) ونمط الجهاز
+ */
+const LETTERS = String.fromCharCode(0x0621) + '-' + String.fromCharCode(0x064a) + 'a-z';
+const WORDS = 'المالك|مالك المنشأة|owner|supervis[a-z]*'; // i18n-exempt: نصٌّ محجوز تطابقه القواعد
+export const RESERVED_CORE = '.*[·:].*|(.*[^' + LETTERS + '])?(' + WORDS + ')([^' + LETTERS + '].*)?';
+export const RESERVED_NAME_RE = new RegExp('^(?:' + RESERVED_CORE + ')$', 's');
 /**
  * طيّ الحروف الشبيهة قبل فحص المحجوز (المتحقق المستقل، الجولة ٢٩): الكافان الفارسية والمزخرفة كافٌ، وألف الوصل ألف، والأرقام
- * الشبيهة باللاتينية حروفها (والمتحقق المستقل، الجولة ٣٠: 1 وl تشبهان i، وvv تشبه w) · ويطابقها طيّ القواعد (rulesGen.ts profileComplete)
+ * الشبيهة باللاتينية حروفها (والمتحقق المستقل، الجولة ٣٠: 1 وl تشبهان i، وvv تشبه w) · و«عبد المالك» كلمةٌ واحدة فلا يُعدّ «المالك» فيه
+ * محجوزاً (الجولة ٣١) · ويطابقها طيّ القواعد (rulesGen.ts profileComplete)
  */
-export const FOLD_PAIRS: Array<[string, string]> = [['[\u06A9\u06AA]', '\u0643'], ['[\u0671]', '\u0627'], ['[0]', 'o'], ['[5]', 's'], ['[1l|]', 'i'], ['[3]', 'e'], ['vv', 'w']]; // i18n-exempt: حروفٌ تُطوى لا نصٌّ يظهر
+export const FOLD_PAIRS: Array<[string, string]> = [['\u0639\u0628\u062f +\u0627\u0644\u0645\u0627\u0644\u0643', '\u0639\u0628\u062f\u0627\u0644\u0645\u0627\u0644\u0643'], ['[\u06A9\u06AA]', '\u0643'], ['[\u0671]', '\u0627'], ['[0]', 'o'], ['[5]', 's'], ['[1l|]', 'i'], ['[3]', 'e'], ['vv', 'w']]; // i18n-exempt: حروفٌ تُطوى لا نصٌّ يظهر
 export const foldName = (name: string): string => FOLD_PAIRS.reduce((s, [re, to]) => s.replace(new RegExp(re, 'g'), to), name.toLowerCase());
 export const reservedName = (name: string): boolean => RESERVED_NAME_RE.test(foldName(name)) || !NAME_CHARS_RE.test(name);
 /** حروف الاسم المقبولة · تطابق profileComplete في القواعد (المتحقق المستقل، الجولة ٢٨: التطويل والتشكيل والحرف الشبيه) */

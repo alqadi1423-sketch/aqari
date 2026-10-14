@@ -3,7 +3,7 @@
  * الذي يتحقق منه tests/opMatrix.test.ts هو نفسه ما يفرضه الخادم. tests/rulesGen.test.ts يُسقط الحزمة
  * إن اختلف الملف عن المولَّد، و UPDATE_RULES=1 يكتبه.
  */
-import { NAME_CLASS, FOLD_PAIRS } from './profile';
+import { NAME_CLASS, FOLD_PAIRS, RESERVED_CORE } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
 import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR } from './opWrites';
@@ -536,7 +536,7 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
       // قرار المالك «رابعاً ١٠») · يطابق reservedName على الجهاز
       function profileComplete(d) {
         return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$')
-          && !d.name.lower()${FOLD_PAIRS.map(([re, to]) => `.replace('${re}', '${to}')`).join('')}.matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*')
+          && !d.name.lower()${FOLD_PAIRS.map(([re, to]) => `.replace('${re}', '${to}')`).join('')}.matches('(?s)(${RESERVED_CORE})')
           // حروفٌ عربية بلا تطويل ولا تشكيل، ولاتينية، وأرقام، ومسافة وشرطة ونقطة وفاصلة عليا · فلا يُحاكى المحجوز بتطويلٍ أو تشكيلٍ أو
           // حرفٍ شبيه (المتحقق المستقل، الجولة ٢٨) · والجهاز ينزع التطويل والتشكيل قبل الحفظ
           && d.name.matches("${NAME_CLASS}+");
