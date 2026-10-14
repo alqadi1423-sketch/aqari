@@ -197,6 +197,7 @@ export function buildDoc(db: DB, table: string, key: string, op: 'upsert' | 'del
   }
   const doc: RemoteDoc = { ...base, d: stripDerived(table, row), del: false };
   if (table === 'journal_entries') doc.lines = readLines(db, key);
+  if (table === 'bank_tx' && typeof doc.d!.journal_no === 'string' && doc.d!.journal_no) doc.d!.journal_no = cloudJournalNo(db, doc.d!.journal_no);
   return doc;
 }
 
@@ -467,6 +468,28 @@ function guessLink(db: DB, revId: string): void {
   saveGuesses(db, g);
 }
 
+/**
+ * أسماء أرقام القيود: قيدٌ واحد (بمعرّفه) رقمه على جهازٍ آخر غير رقمه هنا · فحركة البنك (تُربط برقم القيد journal_no) الواصلة
+ * برقمه هناك تُترجَم إلى رقمه هنا، والقائمة هنا برقمه هناك تُعاد إليه (المراجعة الخارجية ٧ · النتيجة ٤ · المتحقق المستقل على
+ * bea2251: حركة بنك الاستعادة كانت تشير على أحد الجهازين إلى رقمٍ لا قيد له، فيخطئها إلغاء التحصيل وموانع الاستعادة)
+ */
+const JE_NO_ALIAS = 'journal_no_aliases';
+const noAliases = (db: DB) => JSON.parse(getSyncState(db, JE_NO_ALIAS) ?? '{}') as Record<string, string>;
+function noteJournalNoAlias(db: DB, remoteNo: string, localNo: string): void {
+  const a = noAliases(db);
+  if (a[remoteNo] === localNo) return;
+  a[remoteNo] = localNo;
+  setSyncState(db, JE_NO_ALIAS, JSON.stringify(a));
+  db.run(`UPDATE bank_tx SET journal_no = ? WHERE journal_no = ?`, [localNo, remoteNo]);
+  // وما رُفع منها برقمه هنا يُرفع ثانيةً برقمه في السحابة (buildDoc)
+  for (const t of db.all<{ id: string }>(`SELECT id FROM bank_tx WHERE journal_no = ?`, [localNo])) enqueue(db, 'bank_tx', t.id, 'upsert');
+}
+/** رقم القيد في السحابة لرقمه هنا (صادراً) */
+function cloudJournalNo(db: DB, localNo: string): string {
+  for (const [remote, local] of Object.entries(noAliases(db))) if (local === localNo) return remote;
+  return localNo;
+}
+
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
 const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? getSyncState(db, 'org') : getSyncState(db, 'uid'));
 
@@ -621,6 +644,13 @@ function applyOne(
     }
   }
 
+  // القيد نفسه برقمٍ آخر في السحابة (استعادةٌ على جهازين بمعرّفٍ حتمي · المتحقق المستقل على bea2251): رقم المرحّل لا يتغير، فرقمه
+  // في السحابة اسمٌ لرقمه هنا تُترجَم به حركات البنك المربوطة برقم القيد · ويُعرف قبل التعارض فمسار التعارض لا يفوته
+  if (doc.t === 'journal_entries' && doc.d && typeof doc.d.no === 'string') {
+    const here = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ? AND status = 'مرحّل'`, [doc.k]); // i18n-exempt: حالة القيد المخزّنة
+    if (here && here.no !== doc.d.no) noteJournalNoAlias(db, doc.d.no, here.no);
+  }
+
   const cols = (name: string) => {
     let s = cache.get(name);
     if (!s) { s = columnsOf(db, name); cache.set(name, s); }
@@ -673,7 +703,13 @@ function applyOne(
           keys.map((c) => doc.d![c] as SqlValue));
       } else {
         // ما أرسله جهازٌ بإصدار أقدم من مسدَّدٍ وحالة يُترك · فهما يُحسبان هنا بعد التطبيق
-        upsertRow(db, doc.t, stripDerived(doc.t, doc.d!), cols(doc.t));
+        const row = stripDerived(doc.t, doc.d!);
+        // حركة البنك برقم قيدها على هذا الجهاز (noteJournalNoAlias)
+        if (doc.t === 'bank_tx' && typeof row.journal_no === 'string') {
+          const alias = noAliases(db)[row.journal_no];
+          if (alias) row.journal_no = alias;
+        }
+        upsertRow(db, doc.t, row, cols(doc.t));
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·

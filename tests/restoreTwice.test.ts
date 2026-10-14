@@ -4,7 +4,8 @@
  */
 import { memDb } from './helpers/testDb';
 import { MemoryRemote } from './helpers/memoryRemote';
-import { savePurchase, deletePurchase, type PurchaseInput } from '@/domain/purchases';
+import { savePurchase, deletePurchase, payPurchase, type PurchaseInput } from '@/domain/purchases';
+import { addBank } from './helpers/fixtures';
 import { saveInvoice, restoreInvoice } from '@/domain/invoices';
 import { restoreFromTrash } from '@/domain/trash';
 import { postEntry, reverseEntryById } from '@/domain/accounting/post';
@@ -78,4 +79,28 @@ test('مرآة واحدة لكل أصل بالربط: مرآةٌ ثانية لأ
     lines: [{ account: '1200', debit: 0, credit: 50000 }, { account: '4200', debit: 50000, credit: 0 }] });
   expect(check().ok).toBe(false);
   db.close();
+});
+
+test('٤ (المتحقق على bea2251) شراءٌ مسدَّد ببنك يُستعاد على جهازين: حركة البنك على كلٍّ منهما برقم قيدٍ قائم عنده', async () => {
+  const r = new MemoryRemote();
+  const a = memDb(); const b = memDb();
+  enableSync(a, UID); enableSync(b, UID);
+  const bank = addBank(a, 'بنك مصطنع', 500000);
+  const id = savePurchase(a, purchase());
+  payPurchase(a, id, 'bank', bank, '2026-03-16');
+  await sync(a, r); await sync(b, r);
+  deletePurchase(a, id);
+  await sync(a, r); await sync(b, r);
+  restoreFromTrash(a, 'purchases', id);
+  restoreFromTrash(b, 'purchases', id);
+  await sync(a, r); await sync(b, r); await sync(a, r); await sync(b, r);
+  const orphans = (db: DB) => Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_tx t WHERE t.deleted_at IS NULL AND t.journal_no != ''
+    AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.no = t.journal_no)`)!.n);
+  const bankBal = (db: DB) => Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(amount_halalas), 0) AS n FROM bank_tx WHERE deleted_at IS NULL`)!.n);
+  for (const db of [a, b]) {
+    expect(orphans(db)).toBe(0);
+    expect(live(db, 'purchase_pay', id)).toBe(1);
+  }
+  expect(bankBal(a)).toBe(bankBal(b));
+  a.close(); b.close();
 });
