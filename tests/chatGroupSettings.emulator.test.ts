@@ -332,3 +332,12 @@ d('الجولة ٣١: المحجوز كلمةٌ كاملة في القواعد',
     for (const name of ['عضو المالك', 'Ali Owner', 'Supervisor Ali']) expect(await self(name)).toBe(403);
   });
 });
+
+d('الجولة ٣٢: الرقم الملاصق للمحجوز حدُّ كلمة في القواعد', () => {
+  test('١٧ سلبي: «المالك1» و«owner1» مرفوضان · وإيجابي: «Bill 1» و«محمد المالكي» مقبولان', async () => {
+    await seed();
+    const self = (name: string) => put(`orgs/${ORG}/members/${A}?updateMask.fieldPaths=name&updateMask.fieldPaths=phone`, { name, phone: '0500000032' }, A);
+    for (const name of ['محمد المالك1', 'محمد 1المالك', 'Ali owner1', 'Ali 3owner']) expect(await self(name)).toBe(403);
+    for (const name of ['Bill 1', 'محمد المالكي']) expect(await self(name)).toBe(200);
+  });
+});

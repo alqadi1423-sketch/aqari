@@ -64,3 +64,10 @@ test('الجولة ٣١: المحجوز كلمةٌ كاملة · «عبد الم
     expect(validateProfile({ name, phone: '0500000031' }, true).ok).toBe(false);
   }
 });
+
+test('الجولة ٣٢: الرقم الملاصق للمحجوز حدُّ كلمة لا حرف', () => {
+  for (const name of ['محمد المالك1', 'محمد 1المالك', 'محمد المالك3', 'محمد مالك المنشأة1', 'Ali owner1', 'Ali owner0', 'Ali 3owner']) {
+    expect(validateProfile({ name, phone: '0500000032' }, true).ok).toBe(false);
+  }
+  for (const name of ['Bill 1', 'عبد المالك الشهري', 'محمد المالكي', 'Owners Club', 'Room 101']) expect(validateProfile({ name, phone: '0500000032' }, true).ok).toBe(true);
+});

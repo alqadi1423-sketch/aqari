@@ -47,9 +47,19 @@ export const RESERVED_NAME_RE = new RegExp('^(?:' + RESERVED_CORE + ')$', 's');
  * الشبيهة باللاتينية حروفها (والمتحقق المستقل، الجولة ٣٠: 1 وl تشبهان i، وvv تشبه w) · و«عبد المالك» كلمةٌ واحدة فلا يُعدّ «المالك» فيه
  * محجوزاً (الجولة ٣١) · ويطابقها طيّ القواعد (rulesGen.ts profileComplete)
  */
-export const FOLD_PAIRS: Array<[string, string]> = [['\u0639\u0628\u062f +\u0627\u0644\u0645\u0627\u0644\u0643', '\u0639\u0628\u062f\u0627\u0644\u0645\u0627\u0644\u0643'], ['[\u06A9\u06AA]', '\u0643'], ['[\u0671]', '\u0627'], ['[0]', 'o'], ['[5]', 's'], ['[1l|]', 'i'], ['[3]', 'e'], ['vv', 'w']]; // i18n-exempt: حروفٌ تُطوى لا نصٌّ يظهر
-export const foldName = (name: string): string => FOLD_PAIRS.reduce((s, [re, to]) => s.replace(new RegExp(re, 'g'), to), name.toLowerCase());
-export const reservedName = (name: string): boolean => RESERVED_NAME_RE.test(foldName(name)) || !NAME_CHARS_RE.test(name);
+// طيّ الحروف: «عبد المالك» كلمةٌ واحدة، والكافان الفارسية والمزخرفة كاف، وألف الوصل ألف، وl و| حرف i، وvv حرف w
+export const LETTER_FOLDS: Array<[string, string]> = [['\u0639\u0628\u062f +\u0627\u0644\u0645\u0627\u0644\u0643', '\u0639\u0628\u062f\u0627\u0644\u0645\u0627\u0644\u0643'], ['[\u06A9\u06AA]', '\u0643'], ['[\u0671]', '\u0627'], ['[l|]', 'i'], ['vv', 'w']]; // i18n-exempt: حروفٌ تُطوى لا نصٌّ يظهر
+// وطيّ الأرقام الشبيهة باللاتينية حروفها
+export const DIGIT_FOLDS: Array<[string, string]> = [['[0]', 'o'], ['[5]', 's'], ['[1]', 'i'], ['[3]', 'e']];
+export const FOLD_PAIRS: Array<[string, string]> = [...LETTER_FOLDS, ...DIGIT_FOLDS];
+const fold = (name: string, pairs: Array<[string, string]>) => pairs.reduce((s, [re, to]) => s.replace(new RegExp(re, 'g'), to), name.toLowerCase());
+export const foldName = (name: string): string => fold(name, FOLD_PAIRS);
+/**
+ * فحصان: بطيّ الحروف والأرقام (Superv1sor و0wner)، وبطيّ الحروف وحده والرقم فيه حدّ كلمة (المالك1 وowner1 · المتحقق المستقل،
+ * الجولة ٣٢: طيّ الرقم الملاصق حرفاً كان يمحو حدّ الكلمة) · والقواعد بالفحصين نفسيهما
+ */
+export const reservedName = (name: string): boolean =>
+  RESERVED_NAME_RE.test(fold(name, FOLD_PAIRS)) || RESERVED_NAME_RE.test(fold(name, LETTER_FOLDS)) || !NAME_CHARS_RE.test(name);
 /** حروف الاسم المقبولة · تطابق profileComplete في القواعد (المتحقق المستقل، الجولة ٢٨: التطويل والتشكيل والحرف الشبيه) */
 const NAME_RANGES: Array<[number, number]> = [[0x0621, 0x063a], [0x0641, 0x064a], [0x0660, 0x0669], [0x0671, 0x06d3]];
 /** صنف حروف الاسم · منه صنف الجهاز وصنف القواعد (rulesGen.ts profileComplete) */
