@@ -92,6 +92,8 @@ d('المحادثة · الدفعة ٣ (2026-10-08T05:31Z)', () => {
     const m = (await chat(C).messagesSince(G, null)).find((x) => x.id === 'E1')!;
     expect([m.body, m.tag, m.ev]).toEqual(['نص ثالث', 'decision', 2]);
     expect((await chat(C).editsOf(G, 'E1')).map((e) => [e.n, e.body, e.tag])).toEqual([[1, 'أول نص', 'followup'], [2, 'نص ثانٍ', 'decision']]);
+    // بصفحاته كلها ولو صغرت الصفحة (المراجعة الخارجية ٧ · النتيجة ٣٧)
+    expect((await chat(C).editsOf(G, 'E1', 1)).map((e) => e.n)).toEqual([1, 2]);
     expect((await chat(C).stateSince(G, null)).filter((x) => x.k === 'edit').map((x) => [x.m, x.n])).toEqual([['E1', 2]]);
     // لا تعديل يُسقط السجل · ولا سجل مزوّر · ولا تعديل الرابط أو المرسل
     const msg = `${docs}/orgs/${ORG}/chats/${G}/msgs/E1`;
@@ -107,6 +109,14 @@ d('المحادثة · الدفعة ٣ (2026-10-08T05:31Z)', () => {
     // والحذف ممنوع كما قُرّر
     expect((await fetch(url(`orgs/${ORG}/chats/${G}/msgs/E1`), { method: 'DELETE', headers: { Authorization: 'Bearer ' + token(A) } })).status).toBe(403);
     expect((await fetch(url(`orgs/${ORG}/chats/${G}/msgs/E1/edits/1`), { method: 'DELETE', headers: { Authorization: 'Bearer ' + token(A) } })).status).toBe(403);
+  });
+
+  test('٣٧ سجل التعديل فوق ثلاثمئة يُقرأ كاملاً (كان يُبتر صامتاً بعد صفحةٍ واحدة)', async () => {
+    expect(await status(chat(A).sendMessage(G, { id: 'E301', name: NAMES[A], body: 'نص ٠', link: null }))).toBe(200);
+    for (let i = 1; i <= 302; i++) await chat(A).editMessage(G, 'E301', 'نص ' + i, null);
+    const all = await chat(C).editsOf(G, 'E301');
+    expect(all.length).toBe(302);
+    expect(all[301].n).toBe(302);
   });
 
   test('سجل التعديل لا يقرؤه غير الطرف · ولا المنضم «من لحظة انضمامه» لرسالةٍ قبله', async () => {

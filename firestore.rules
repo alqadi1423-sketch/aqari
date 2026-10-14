@@ -658,7 +658,7 @@ service cloud.firestore {
       // قرار المالك «رابعاً ١٠») · يطابق reservedName على الجهاز
       function profileComplete(d) {
         return profileShape(d) && d.name is string && d.name.size() >= 2 && d.phone is string && d.phone.matches('^05[0-9]{8}$')
-          && !d.name.lower().replace('[کڪ]', 'ك').replace('[ٱ]', 'ا').replace('[0]', 'o').replace('[5]', 's').replace('[1]', 'l').replace('[3]', 'e').matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*')
+          && !d.name.lower().replace('[کڪ]', 'ك').replace('[ٱ]', 'ا').replace('[0]', 'o').replace('[5]', 's').replace('[1l|]', 'i').replace('[3]', 'e').replace('vv', 'w').matches('(?s).*(المالك|مالك المنشأة|·|:|owner|supervis).*')
           // حروفٌ عربية بلا تطويل ولا تشكيل، ولاتينية، وأرقام، ومسافة وشرطة ونقطة وفاصلة عليا · فلا يُحاكى المحجوز بتطويلٍ أو تشكيلٍ أو
           // حرفٍ شبيه (المتحقق المستقل، الجولة ٢٨) · والجهاز ينزع التطويل والتشكيل قبل الحفظ
           && d.name.matches("[ء-غف-ي٠-٩ٱ-ۓa-zA-Z0-9 .'-]+");

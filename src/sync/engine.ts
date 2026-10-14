@@ -261,9 +261,10 @@ export function replayRejectsAfterUpgrade(db: DB, sv: number): { requeued: numbe
 export function stageInbox(db: DB, docs: RemoteDoc[]): void {
   db.transaction(() => {
     for (const d of docs) {
-      // وقته لا يتجاوز وقت كتابته في الخادم كما في التطبيق (#56) · المراجعة الخارجية ٧ · النتيجة ١٩: نسخةٌ بـ u = 2099 تنتظر أباها
-      // كانت تغلب النسخة الأحدث الصحيحة فيُطبَّق القديم ويتجاوزه المؤشر
-      const at = d.ts && d.ts < d.u ? d.ts : d.u;
+      // الأحدث بوقت الخادم وحده، ومن يغلب الصفَّ المحلي يقرّره التطبيق (المراجعة الخارجية ٧ · النتيجة ١٩: نسخةٌ بـ u = 2099 تنتظر أباها
+      // كانت تغلب النسخة الأحدث الصحيحة فيُطبَّق القديم ويتجاوزه المؤشر · والمتحقق المستقل، الجولة ٣٠: وكاتبٌ ساعته متأخرة كذلك) ·
+      // والوارد بلا وقت خادم بوقته المعلن كما كان
+      const at = d.ts || d.u;
       db.run(
         `INSERT INTO sync_inbox (doc, tbl, pk, rank, payload, updated_at, device_id, attempts, last_error, del)
          VALUES (?,?,?,?,?,?,?,0,NULL,?)
@@ -1244,7 +1245,15 @@ export async function syncOnce(
           db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
             [docs[i].id, r.tbl, r.pk, 'خارج صلاحيتك · بقي على هذا الجهاز ولم يُرفع', JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
         }
-        if (res.ok || memberDenied || immutableDenied(docs[i], res.code)) {
+        // رفض القيد المرحّل لأن نسخته في السحابة نهائية يُسجَّل للمالك فلا يتباين جهازه صامتاً (المراجعة الخارجية ٧ · النتيجة ٢١) ·
+        // وسطر السجل المرفوض لا يُسجَّل (يقع في مسارات سليمة · المتحقق المستقل، الجولة ٣٠ على ٤٠٠ بذرة)
+        const finalDenied = !memberDenied && immutableDenied(docs[i], res.code);
+        if (finalDenied && r.tbl === 'journal_entries') {
+          db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
+            // i18n-exempt: سبب الرفض المخزَّن
+            [docs[i].id, r.tbl, r.pk, 'نهائي في السحابة · نسخة هذا الجهاز تختلف عنها ولم تُرفع', JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
+        }
+        if (res.ok || memberDenied || finalDenied) {
           // لا يُحذف إن تغيّر الصف أثناء الرفع · يبقى للدفعة التالية بوقته الجديد
           db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND changed_at = ?`, [r.tbl, r.pk, r.changed_at]);
           if (res.ok) {

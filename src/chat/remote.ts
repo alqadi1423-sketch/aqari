@@ -408,15 +408,25 @@ export class ChatRemote {
   }
 
   /** سجل تعديلات رسالة · ما قبل كل تعديل */
-  async editsOf(threadId: string, msgId: string): Promise<RemoteEdit[]> {
-    const token = await this.o.idToken();
-    const res = await this.f(`${this.root}/${this.orgPath(`chats/${threadId}/msgs/${msgId}/edits`)}?pageSize=300`, { headers: { Authorization: 'Bearer ' + token } });
-    const text = await res.text();
-    if (!res.ok) throw new FirestoreHttpError(res.status, text);
-    return (((text ? JSON.parse(text) : {}).documents ?? []) as Array<{ name: string; fields: Record<string, FsValue> }>).map((x) => {
-      const d = decodeFields(x.fields);
-      return { n: Number(tail(x.name)), body: String(d.body ?? ''), tag: CHAT_TAGS.includes(d.tag as ChatTag) ? (d.tag as ChatTag) : null, at: normTs(d.at) };
-    }).sort((a, b) => a.n - b.n);
+  /** سجل تعديل الرسالة كاملاً بصفحاته (المراجعة الخارجية ٧ · النتيجة ٣٧: كان يُبتر صامتاً بعد ثلاثمئة) */
+  async editsOf(threadId: string, msgId: string, pageSize = 300): Promise<RemoteEdit[]> {
+    const out: RemoteEdit[] = [];
+    let page = '';
+    for (let guard = 0; guard < 100; guard++) {
+      const token = await this.o.idToken();
+      const res = await this.f(`${this.root}/${this.orgPath(`chats/${threadId}/msgs/${msgId}/edits`)}?pageSize=${pageSize}${page ? '&pageToken=' + encodeURIComponent(page) : ''}`,
+        { headers: { Authorization: 'Bearer ' + token } });
+      const text = await res.text();
+      if (!res.ok) throw new FirestoreHttpError(res.status, text);
+      const j = (text ? JSON.parse(text) : {}) as { documents?: Array<{ name: string; fields: Record<string, FsValue> }>; nextPageToken?: string };
+      for (const x of j.documents ?? []) {
+        const d = decodeFields(x.fields);
+        out.push({ n: Number(tail(x.name)), body: String(d.body ?? ''), tag: CHAT_TAGS.includes(d.tag as ChatTag) ? (d.tag as ChatTag) : null, at: normTs(d.at) });
+      }
+      if (!j.nextPageToken) break;
+      page = j.nextPageToken;
+    }
+    return out.sort((a, b) => a.n - b.n);
   }
 
   /* ─── الدفعة ٥ (2026-10-08T05:31Z): المهمة من رسالة، والتصويت ─── */

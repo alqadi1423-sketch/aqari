@@ -319,7 +319,7 @@ d('الجولة ٢٩: الحروف الشبيهة لا تمرّ في القوا�
   test('١٧ سلبي: الكاف الفارسية والمزخرفة وألف الوصل والأرقام الشبيهة · وإيجابي: اسمٌ فيه رقم أو حرفٌ فارسي عادي', async () => {
     await seed();
     const self = (name: string) => put(`orgs/${ORG}/members/${A}?updateMask.fieldPaths=name&updateMask.fieldPaths=phone`, { name, phone: '0500000029' }, A);
-    for (const name of ['عضو أ المال\u06A9', 'عضو أ \u0671لمالك', 'عضو أ المال\u06AA', 'Ali 0wner', 'Ali 5upervisor']) expect(await self(name)).toBe(403);
+    for (const name of ['عضو أ المال\u06A9', 'عضو أ \u0671لمالك', 'عضو أ المال\u06AA', 'Ali 0wner', 'Ali 5upervisor', 'Ali Superv1sor', 'Ali SUPERVlSOR', 'Ali Ovvner']) expect(await self(name)).toBe(403);
     for (const name of ['گل مصطنع', 'Ali 5', 'عضو ١٠١']) expect(await self(name)).toBe(200);
   });
 });

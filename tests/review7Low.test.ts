@@ -103,3 +103,32 @@ test('١٩ الوارد المنتظر لا يغلب الأحدثَ بـ u يع�
   expect(p.d.unit_no).toBe('NEW');
   db.close();
 });
+
+test('١٩ (الجولة ٣٠) كاتبٌ ساعته متأخرة: الصندوق يحفظ الأحدث بوقت الخادم', () => {
+  const db = memDb();
+  enableSync(db, 'OWNER-19B');
+  const base = { id: docId('units', 'UN19B'), t: 'units', k: 'UN19B', dev: 'dev-x', d: { id: 'UN19B', property_id: 'P-MISSING', unit_no: 'OLD' } };
+  stageInbox(db, [{ ...base, u: '2026-02-01T00:00:00.000Z', ts: '2026-02-01T00:00:00.000Z' } as never]);
+  stageInbox(db, [{ ...base, u: '2026-01-31T23:00:05.000Z', ts: '2026-02-01T00:00:05.000Z', d: { ...base.d, unit_no: 'NEW' } } as never]);
+  expect(JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE doc = ?`, [base.id])!.p).d.unit_no).toBe('NEW');
+  db.close();
+});
+
+test('٢١ رفض قيدٍ مرحّل لأن نسخته في السحابة نهائية يُسجَّل على جهاز المالك ويظهر عدده · ورفض سطر السجل لا يُسجَّل', async () => {
+  const db = memDb();
+  enableSync(db, 'OWNER-21');
+  const r = new MemoryRemote();
+  const e = postEntry(db, { date: '2026-02-01', memo: 'قيد مصطنع', lines: [{ account: '1100', debit: 500, credit: 0 }, { account: '3100', debit: 0, credit: 500 }] })!;
+  await syncOnce(db, r, getMeta(db, 'device_id')!);
+  const cloudDoc = r.docs.get(docId('journal_entries', e.id))!;
+  cloudDoc.d = { ...cloudDoc.d!, memo: 'نسخة السحابة' };
+  db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES ('journal_entries', ?, 'upsert', ?) ON CONFLICT(tbl, pk) DO NOTHING`, [e.id, new Date().toISOString()]);
+  // وسطر سجلٍ قائم في السحابة يُعاد رفعه فيُرفض (يقع في مسارات سليمة)
+  const aud = db.get<{ id: string }>(`SELECT id FROM audit_log LIMIT 1`);
+  if (aud) db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES ('audit_log', ?, 'upsert', ?) ON CONFLICT(tbl, pk) DO NOTHING`, [aud.id, new Date().toISOString()]);
+  await syncOnce(db, r, getMeta(db, 'device_id')!);
+  const rej = db.all<{ tbl: string; reason: string }>(`SELECT tbl, reason FROM sync_rejects`);
+  expect(rej.map((x) => [x.tbl, x.reason.split(' · ')[0]])).toEqual([['journal_entries', 'نهائي في السحابة']]);
+  expect(syncStatus(db).rejected).toBe(1);
+  db.close();
+});

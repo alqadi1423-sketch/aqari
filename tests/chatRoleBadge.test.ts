@@ -50,3 +50,8 @@ test('الجولة ٢٩: الحروف الشبيهة داخل الصنف تُط�
   }
   for (const name of ['مالك مصطنع', 'گل مصطنع', 'Ali 5', 'Room 101']) expect(validateProfile({ name, phone: '0500000029' }, true).ok).toBe(true);
 });
+
+test('الجولة ٣٠: 1 وl تُطوى i وvv تُطوى w قبل فحص المحجوز', () => {
+  for (const name of ['Ali Superv1sor', 'Ali SUPERVlSOR', 'Ali Ovvner']) expect(validateProfile({ name, phone: '0500000030' }, true).ok).toBe(false);
+  for (const name of ['Ali Hill', 'Room 101', 'Vivian']) expect(validateProfile({ name, phone: '0500000030' }, true).ok).toBe(true);
+});

@@ -37,9 +37,9 @@ export const NID_RE = /^[12][0-9]{9}$/;
 export const RESERVED_NAME_RE = /المالك|مالك المنشأة|·|:|owner|supervis/i; // i18n-exempt: نصٌّ محجوز تطابقه القواعد
 /**
  * طيّ الحروف الشبيهة قبل فحص المحجوز (المتحقق المستقل، الجولة ٢٩): الكافان الفارسية والمزخرفة كافٌ، وألف الوصل ألف، والأرقام
- * الشبيهة باللاتينية حروفها · ويطابقها طيّ القواعد (rulesGen.ts profileComplete)
+ * الشبيهة باللاتينية حروفها (والمتحقق المستقل، الجولة ٣٠: 1 وl تشبهان i، وvv تشبه w) · ويطابقها طيّ القواعد (rulesGen.ts profileComplete)
  */
-export const FOLD_PAIRS: Array<[string, string]> = [['[\u06A9\u06AA]', '\u0643'], ['[\u0671]', '\u0627'], ['[0]', 'o'], ['[5]', 's'], ['[1]', 'l'], ['[3]', 'e']]; // i18n-exempt: حروفٌ تُطوى لا نصٌّ يظهر
+export const FOLD_PAIRS: Array<[string, string]> = [['[\u06A9\u06AA]', '\u0643'], ['[\u0671]', '\u0627'], ['[0]', 'o'], ['[5]', 's'], ['[1l|]', 'i'], ['[3]', 'e'], ['vv', 'w']]; // i18n-exempt: حروفٌ تُطوى لا نصٌّ يظهر
 export const foldName = (name: string): string => FOLD_PAIRS.reduce((s, [re, to]) => s.replace(new RegExp(re, 'g'), to), name.toLowerCase());
 export const reservedName = (name: string): boolean => RESERVED_NAME_RE.test(foldName(name)) || !NAME_CHARS_RE.test(name);
 /** حروف الاسم المقبولة · تطابق profileComplete في القواعد (المتحقق المستقل، الجولة ٢٨: التطويل والتشكيل والحرف الشبيه) */
