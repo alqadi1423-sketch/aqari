@@ -81,7 +81,7 @@ d('ثغرات الأعضاء (المراجعة #17 و#18 و#20 و#21 و#39)', ()
 
   /** يكتب كما يكتب جهاز العضو (حقول الرؤية من صلاحيته) ثم يعدّل ما يعدّله العميل المعدَّل */
   const write = async (a: Access, doc: RemoteDoc, forge: Partial<RemoteDoc> = {}) =>
-    (await remoteFor(a.uid!, a).write([{ ...annotate(db, doc, a).doc, ...forge }]))[0];
+    (await remoteFor(a.uid!, a).write([{ ...annotate(db, doc, a).doc, ...(doc.del ? { dby: a.uid! } : {}), ...forge }]))[0]; // شاهد الحذف بحاذفه كما يرفعه العميل (buildDoc)
   const payment = (k: string, contract: string, inst = I1): RemoteDoc => ({
     id: 'contract_payments__' + k, t: 'contract_payments', k, u: 'x', dev: 'dev-gap', del: false,
     d: { id: k, contract_id: contract, installment_id: inst, date: '2026-05-01', gross_halalas: 1000, discount_halalas: 0, net_halalas: 1000 },
@@ -206,7 +206,7 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     }
   });
   const write = async (a: Access, doc: RemoteDoc, forge: Partial<RemoteDoc> = {}) =>
-    (await remoteFor(a.uid!, a).write([{ ...annotate(db, doc, a).doc, ...forge }]))[0];
+    (await remoteFor(a.uid!, a).write([{ ...annotate(db, doc, a).doc, ...(doc.del ? { dby: a.uid! } : {}), ...forge }]))[0]; // شاهد الحذف بحاذفه كما يرفعه العميل (buildDoc)
   const row = (t: string, id: string) => db.get<Record<string, unknown>>(`SELECT * FROM "${t}" WHERE id = ?`, [id])!;
   const doc = (t: string, k: string, d: Record<string, unknown> | null, u = 'v1'): RemoteDoc =>
     ({ id: t + '__' + k, t, k, u, dev: 'dev-v', del: d === null, d: d as never });

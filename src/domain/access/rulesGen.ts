@@ -329,7 +329,7 @@ ${guardFns(schema)}
 
     function validOrgRow(rowId) {
       let r = request.resource.data;
-      return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts', 'op', 'g', 'pids', 'by', 'sv', 'dr', 'cr'])
+      return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts', 'op', 'g', 'pids', 'by', 'dby', 'sv', 'dr', 'cr'])
         && r.t is string && syncedOrPub(r.t) && (!('lines' in r) || (r.t == 'journal_entries' && r.lines is list))
         && r.k is string && rowId == r.t + '__' + r.k
         && r.u is string && r.dev is string && r.del is bool
@@ -401,7 +401,10 @@ ${guardFns(schema)}
       return (before.del == true || after.del == true
           // إحياء شاهد الحذف كالإنشاء: عقاراته بحقيقته · وشاهد الحذف فارغٌ (بلا d، فلا يكشف شيئاً برموز رؤيته) لصفٍّ كان
           // في عقاراته (التحقق المستقل: شاهدٌ يُبقي d برؤية أوسع كان يكشف المبالغ)
-          ? (before.del != true || (pidsGOk(after) && pidsBound(org, after))) && (after.del != true || (after.d == null && propsOk(m, before)))
+          ? (before.del != true || (pidsGOk(after) && pidsBound(org, after)))
+            // والعضو لا يحذف عقاراً ولا وحدةً ولا عقداً، وحذفه بحاذفه (المراجعة الخارجية ٧ · النتيجة ٢ · قرار المالك «رابعاً ٢»)
+            && (after.del != true || (after.d == null && propsOk(m, before) && after.get('dby', '') == request.auth.uid
+                && !(baseT(after.t) in ['properties', 'units', 'contracts'])))
           : (after.pids == before.pids
               // عقاراته كما هي: روابطه كما هي، أو تغيّرت بحقيقته (وحدةٌ أخرى في عقاره)
               ? (!linksChanged(before, after) || pidsBound(org, after))

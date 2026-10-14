@@ -190,7 +190,11 @@ export function buildDoc(db: DB, table: string, key: string, op: 'upsert' | 'del
   // u بساعة الخادم · فيقارنه كل جهاز بتعديله المصحَّح مثله (المراجعة ٤.١٦)
   const base = { id: docId(table, key), t: table, k: key, u: toServerClock(db, changedAt), dev: deviceId };
   const row = op === 'upsert' ? readRow(db, table, key) : undefined;
-  if (!row) return { ...base, d: null, del: true };
+  if (!row) {
+    // حاذفه (المراجعة الخارجية ٧ · النتيجة ٢): القواعد تشترطه لحذف العضو، والأجهزة لا تُسلسل إلا حذف المالك
+    const dby = getSyncState(db, 'uid');
+    return { ...base, d: null, del: true, ...(dby ? { dby } : {}) };
+  }
   const doc: RemoteDoc = { ...base, d: stripDerived(table, row), del: false };
   if (table === 'journal_entries') doc.lines = readLines(db, key);
   return doc;
@@ -655,6 +659,10 @@ function applyOne(
         if (t.appendOnly) throw new Error('سجل لا يُحذف');
         try { deleteRow(db, doc.t, doc.k); } catch (e) {
           if (!isMissingParent(errText(e))) throw e;
+          // حذفٌ له هنا أبناء يُسلسل من المالك وحده، بحاذفه (المراجعة الخارجية ٧ · النتيجة ٢ · قرار المالك «رابعاً ٢»): حذف العضو
+          // كان يفكّ العقد عن وحدته ويحذف الحجز ويعيد نشرهما للمنشأة كلها · وشاهدٌ بلا حاذف لا يُسلسل (إنشاء شاهد حذفٍ لصفٍّ ليس
+          // في السحابة لا تفحص القواعد حاذفه، فكلفته على إنشاء العضو فوق ميزانية القواعد)
+          if (doc.dby !== ownerUid(db)) throw new Error(tr('sync.cascadeNotOwner', { lng: 'ar' }));
           deleteOverChildren(db, doc.t, doc.k);
         }
       } else if (doc.t === 'journal_entries') {

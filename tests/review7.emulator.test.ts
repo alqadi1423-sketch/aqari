@@ -56,6 +56,7 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
   const LED = member('R7-LED', { ledger: 3, props: 1 }, 'all');
   const COLALL = member('R7-COLALL', { collect: 2, contracts: 1, props: 1 }, 'all');
   const CONALL = member('R7-CONALL', { contracts: 3, props: 1 }, 'all');
+  const PROALL = member('R7-PROALL', { props: 3, contracts: 3 }, 'all');
   let db: import('@/db/adapter').DB;
   let C1 = '';
   const pays: string[] = [];
@@ -80,7 +81,7 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     expect((await syncOnce(db, remoteFor(null), 'dev-owner')).pending).toBe(0);
     // جهاز العضو يعلّم ما وصله من السحابة «بلا كاتب» (sync/engine.ts: stageInbox · الهجرة ٤٢)، والوثائق هنا تُبنى من قاعدة المالك
     db.exec((await import('@/db/schema')).MIGRATION_42);
-    for (const a of [LED, COLALL, CONALL]) {
+    for (const a of [LED, COLALL, CONALL, PROALL]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
       }, ORG)).toBe(200);
@@ -193,6 +194,24 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     db.run(`UPDATE contracts SET status = status WHERE id = ?`, [C1]);
     const draft = ann(CONALL, await built('contracts', C1));
     deniedByLogic(await write(CONALL, { ...draft, u: 'u6', by: CONALL.uid! }), 'update');
+  });
+
+  /*
+   * النتيجة ٢ · قرار المالك «رابعاً ٢» 2026-10-10: «منع حذف العضو للعقار والوحدة والعقد في القواعد» · وحذف العضو غيرها بحاذفه
+   * (dby) فلا يُسلسله جهاز المالك (tests/tombstoneCascade.test.ts) · وقائمة القبول: «عضو props: كامل يكتب del=true على
+   * properties فيُرفض»
+   */
+  test('٢ العضو لا يحذف عقاراً ولا وحدةً ولا عقداً · وحذفه ما سواها بحاذفه يُقبل وبلا حاذفه يُرفض', async () => {
+    for (const [t, k] of [['properties', 'P2'], ['units', 'UN2'], ['contracts', C1]] as const) {
+      const doc = ann(PROALL, await built(t, k));
+      deniedByLogic(await write(PROALL, { ...doc, u: 'x' + t, del: true, d: null, dby: PROALL.uid! }), 'update');
+    }
+    db.run(`INSERT INTO meters (id, owner_type, owner_id, kind, number) VALUES ('R7MT', 'property', 'P2', 'ماء', '12345')`);
+    const meter = ann(PROALL, await built('meters', 'R7MT'));
+    expect(meter.by).toBe(PROALL.uid);
+    accepted(await write(PROALL, meter));
+    deniedByLogic(await write(PROALL, { ...meter, u: 'm1', del: true, d: null }), 'update');
+    accepted(await write(PROALL, { ...meter, u: 'm2', del: true, d: null, dby: PROALL.uid! }));
   });
 
   test('٢٠ نقل العقد إلى عقارٍ آخر برموز العقار القديم يُرفض · وبرموز عقاره الجديد يُقبل', async () => {

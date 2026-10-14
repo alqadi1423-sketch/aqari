@@ -68,6 +68,7 @@ export function docToFields(d: RemoteDoc, sv: number | null = null): Record<stri
   if (d.pids) f.pids = d.pids;
   if (d.op) f.op = d.op;
   if (d.by) f.by = d.by;
+  if (d.dby) f.dby = d.dby;
   return encodeFields(f);
 }
 export function fieldsToDoc(id: string, fields: Record<string, FsValue>): RemoteDoc {
@@ -83,6 +84,7 @@ export function fieldsToDoc(id: string, fields: Record<string, FsValue>): Remote
     ...(Array.isArray(o.pids) ? { pids: o.pids as string[] } : {}),
     ...(typeof o.op === 'string' ? { op: o.op } : {}),
     ...(typeof o.by === 'string' ? { by: o.by } : {}),
+    ...(typeof o.dby === 'string' ? { dby: o.dby } : {}),
   };
 }
 

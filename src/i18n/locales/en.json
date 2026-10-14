@@ -743,5 +743,8 @@
     "confirmPostBody": "Post entry {{no}}? It enters the balances and cannot be edited, only reversed.",
     "cancel": "Cancel",
     "postFailed": "Posting failed"
+  },
+  "sync": {
+    "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded"
   }
 }

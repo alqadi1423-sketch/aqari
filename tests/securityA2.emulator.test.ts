@@ -115,7 +115,8 @@ d('نتائج المتحقق على «ثالثاً أ»', () => {
     const unit: RemoteDoc = ann(PRO, { id: 'units__UZ', t: 'units', k: 'UZ', u: '1', dev: 'dev-p', del: false,
       d: { id: 'UZ', property_id: 'P1', name: 'وحدة مصطنعة', type: 'شقة', created_at: '2026-01-01' } });
     accepted(await write(PRO, unit));
-    accepted(await write(PRO, { ...unit, u: '2', del: true, d: null }));
+    // والعضو لا يحذف وحدة (المراجعة الخارجية ٧ · النتيجة ٢ · قرار المالك «رابعاً ٢») · فيبقى الصف حياً ويُعدَّل
+    deniedByLogic(await write(PRO, { ...unit, u: '2', del: true, d: null, dby: PRO.uid! }), 'update');
     deniedByLogic(await write(PRO, { ...unit, u: '3', g: [...unit.g!, 'ledger|P2', 'collect|P2'] }), 'update');
     accepted(await write(PRO, { ...unit, u: '4' }));
   });
