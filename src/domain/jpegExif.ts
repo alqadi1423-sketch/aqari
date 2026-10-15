@@ -3,7 +3,51 @@
  * حذفُ مقاطع APP1 التعريفية على مستوى البايتات، وبيانات البكسل تبقى مطابقة تماماً.
  * أي بنية غير متوقعة تُعيد الأصل كما هو · لا نجازف بمستند.
  */
-export function stripJpegExif(bytes: Uint8Array): Uint8Array {
+const u32 = (b: Uint8Array, i: number) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
+const tag = (b: Uint8Array, i: number) => String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
+
+/** وسم الاتجاه (0x0112) في Exif صورة JPEG · ١ (طبيعي) إن غاب أو تعذّرت قراءته */
+export function jpegOrientation(bytes: Uint8Array): number {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return 1;
+  let i = 2;
+  while (i + 4 <= bytes.length && bytes[i] === 0xff) {
+    const marker = bytes[i + 1];
+    if (marker === 0xda) break;
+    const len = (bytes[i + 2] << 8) | bytes[i + 3];
+    if (len < 2 || i + 2 + len > bytes.length) return 1;
+    const s = i + 4;
+    const end = i + 2 + len;
+    if (marker === 0xe1 && end - s >= 14 && tag(bytes, s) === 'Exif' && bytes[s + 4] === 0 && bytes[s + 5] === 0) {
+      const t = s + 6;
+      const le = bytes[t] === 0x49 && bytes[t + 1] === 0x49;
+      if (!le && !(bytes[t] === 0x4d && bytes[t + 1] === 0x4d)) return 1;
+      const r16 = (o: number) => (o < t || o + 2 > end ? -1 : le ? bytes[o] | (bytes[o + 1] << 8) : (bytes[o] << 8) | bytes[o + 1]);
+      const r32 = (o: number) => (o + 4 > end ? -1 : le
+        ? (bytes[o] | (bytes[o + 1] << 8) | (bytes[o + 2] << 16) | (bytes[o + 3] << 24)) >>> 0
+        : u32(bytes, o));
+      const off = r32(t + 4);
+      if (off < 0) return 1;
+      const ifd = t + off;
+      const n = r16(ifd);
+      for (let k = 0; k < n; k++) {
+        const e = ifd + 2 + k * 12;
+        if (r16(e) === 0x0112) { const v = r16(e + 8); return v >= 1 && v <= 8 ? v : 1; }
+      }
+      return 1;
+    }
+    i = end;
+  }
+  return 1;
+}
+
+/** APP1 Exif لا يحمل إلا وسم الاتجاه · حين يتعذّر تدوير البكسل: لا موقع ولا جهاز ولا وقت، والصورة تُعرض باتجاهها */
+function orientationOnlyApp1(o: number): Uint8Array {
+  return Uint8Array.from([0xff, 0xe1, 0x00, 0x22, 0x45, 0x78, 0x69, 0x66, 0, 0, 0x4d, 0x4d, 0x00, 0x2a, 0, 0, 0, 8,
+    0, 1, 0x01, 0x12, 0x00, 0x03, 0, 0, 0, 1, 0, o, 0, 0, 0, 0, 0, 0]);
+}
+
+/** keepOrientation: وسم اتجاهٍ غير طبيعي يُعاد وحده بعد النزع (قرار المالك 2026-10-15 «١٢») */
+export function stripJpegExif(bytes: Uint8Array, keepOrientation = 1): Uint8Array {
   // SOI ثم مقاطع FF xx
   if (bytes.length < 6 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return bytes;
   const chunks: Uint8Array[] = [bytes.subarray(0, 2)];
@@ -27,6 +71,7 @@ export function stripJpegExif(bytes: Uint8Array): Uint8Array {
     i = segEnd;
   }
   if (!stripped) return bytes;
+  if (keepOrientation >= 2 && keepOrientation <= 8) chunks.splice(1, 0, orientationOnlyApp1(keepOrientation));
   const total = chunks.reduce((s, c) => s + c.byteLength, 0);
   const out = new Uint8Array(total);
   let off = 0;
@@ -34,8 +79,6 @@ export function stripJpegExif(bytes: Uint8Array): Uint8Array {
   return out;
 }
 
-const u32 = (b: Uint8Array, i: number) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
-const tag = (b: Uint8Array, i: number) => String.fromCharCode(b[i], b[i + 1], b[i + 2], b[i + 3]);
 function joinChunks(chunks: Uint8Array[]): Uint8Array {
   const out = new Uint8Array(chunks.reduce((s, c) => s + c.byteLength, 0));
   let o = 0;
@@ -96,8 +139,8 @@ export function stripWebpMetadata(bytes: Uint8Array): Uint8Array {
  * نزع البيانات الوصفية من صورةٍ بصيغتها (المراجعة الخارجية ٧ · النتيجة ٢٧): JPEG وPNG وWebP بالبايتات لا بإعادة ترميز ·
  * والبكسل لا يُمسّ · وما ليس صورةً معروفة يعود كما هو
  */
-export function stripImageMetadata(bytes: Uint8Array): Uint8Array {
-  if (bytes[0] === 0xff && bytes[1] === 0xd8) return stripJpegExif(bytes);
+export function stripImageMetadata(bytes: Uint8Array, keepJpegOrientation = 1): Uint8Array {
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) return stripJpegExif(bytes, keepJpegOrientation);
   if (bytes[0] === 0x89 && bytes[1] === 0x50) return stripPngMetadata(bytes);
   if (bytes[0] === 0x52 && bytes[1] === 0x49) return stripWebpMetadata(bytes);
   return bytes;

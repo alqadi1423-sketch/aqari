@@ -86,7 +86,7 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
   lastBackupAt: null,
   displayScale: 100,
   fontScale: 100,
-  stripExif: false,
+  stripExif: true,
   blockScreenshots: false,
   fileCacheMb: 500,
 };

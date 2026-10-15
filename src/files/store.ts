@@ -5,7 +5,7 @@
  * كل رفع يمر عبر putAttachment فيُسجَّل تلقائياً بتصنيفه (وهذا ما تعتمد عليه المكتبة).
  */
 import { getSetting } from '../repos/settings';
-import { stripImageMetadata } from '../domain/jpegExif';
+import { stripImageMetadata, jpegOrientation } from '../domain/jpegExif';
 import type { DB } from '../db/adapter';
 import type { FS, Hasher } from './fsAdapter';
 import { joinPath } from './fsAdapter';
@@ -22,6 +22,11 @@ export interface FilesEnv {
    * null لغير الصور أو حين يتعذّر التوليد · وبيئة بلا مولِّد (الاختبارات والأدوات) لا مصغّرة لها
    */
   thumbnailer?: (path: string, ext: string, mime: string) => Promise<string | null>;
+  /**
+   * صورة JPEG بوسم اتجاهٍ غير طبيعي تُكتب بكسلاتها مدوّرةً كما تُعرض (قرار المالك 2026-10-15 «١٢»: تدوير الصورة قبل النزع) ·
+   * null حين يتعذّر · وبيئة بلا مدوِّر يبقى فيها وسم الاتجاه وحده
+   */
+  orient?: (bytes: Uint8Array) => Promise<Uint8Array | null>;
 }
 
 export interface AttachmentMeta {
@@ -86,9 +91,19 @@ export async function putAttachment(
   bytes: Uint8Array,
   meta: AttachmentMeta
 ): Promise<AttachmentRow> {
-  // نزع البيانات الوصفية من الصور (خيارٌ في الإعدادات، مطفأ افتراضياً بقرار المالك 2026-08-20) في كل مسار إرفاق لا في واحد
-  // (المراجعة الخارجية ٧ · النتيجة ٢٧: المكتبة والمطالبات والمنشأة والطباعة كانت تُرفق الأصل)
-  if (getSetting(env.db, 'stripExif')) bytes = stripImageMetadata(bytes);
+  // نزع البيانات الوصفية من الصور في كل مسار إرفاق لا في واحد (المراجعة الخارجية ٧ · النتيجة ٢٧) · خيارٌ في الإعدادات مفعّلٌ
+  // افتراضاً، والصورة تُدوَّر قبله بوسم اتجاهها (قرار المالك 2026-10-15 «١٢»، يحلّ محل قراره 2026-08-20) · وما تعذّر تدويره
+  // يبقى فيه وسم الاتجاه وحده، فلا تنقلب الصورة ولا يبقى موقعٌ ولا جهاز
+  if (getSetting(env.db, 'stripExif')) {
+    let o = jpegOrientation(bytes);
+    if (o !== 1 && env.orient) {
+      try {
+        const turned = await env.orient(bytes);
+        if (turned && turned.length) { bytes = turned; o = jpegOrientation(bytes); }
+      } catch { /* يبقى وسم الاتجاه */ }
+    }
+    bytes = stripImageMetadata(bytes, o);
+  }
   const sha = await env.hasher(bytes);
   const ext = extOf(meta.originalName, meta.mime);
   const now = new Date().toISOString();

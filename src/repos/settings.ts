@@ -14,7 +14,7 @@ export interface AppSettings {
   lastBackupAt: string | null;
   displayScale: number;
   fontScale: number;
-  /** نزع بيانات EXIF من صور JPEG عند الرفع · حذف تعريفي بلا إعادة ترميز · مطفأ افتراضياً */
+  /** نزع البيانات الوصفية من الصور عند الرفع بعد تدويرها باتجاهها · مفعّل افتراضاً (قرار المالك 2026-10-15 «١٢») */
   stripExif: boolean;
   /** منع لقطة الشاشة (قرار المالك 2026-10-15 «٣») · مطفأ افتراضاً */
   blockScreenshots: boolean;

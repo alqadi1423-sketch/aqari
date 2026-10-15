@@ -28,32 +28,38 @@ function hasSplitColumns(db: DB): boolean {
   return v;
 }
 
-/** إيراد العقد المرحَّل حتى الآن على كل حساب (من بُعد العقد في سطور القيود) · null إن لم يكن البُعد في القاعدة */
-function postedRevenue(db: DB, contractId: string): { rent: number; services: number; parking: number } | null {
+/**
+ * إيراد العقد المحصَّل من دفعاته غير الملغاة: التحصيل الجماعي بتخصيصه على الأقساط، وغيره بصافيه والخصم بعد الاستحقاق ·
+ * null إن لم تكن أعمدته في القاعدة
+ *  القاعدة ٩٩ وقرار المالك 2026-10-15: التوزيع من بيانات يراها الجهازان معاً (العقد والدفعة) · كان من سطور الدفتر بعُد
+ *  العقد، وجهاز العضو يرى بعضها، فيختلف توزيعه عن جهاز المالك بأكثر من التقريب
+ */
+function paidRevenue(db: DB, contractId: string): number | null {
   const k = db as unknown as object;
-  let has = lineDimCache.get(k);
+  let has = payColsCache.get(k);
   if (has === undefined) {
-    has = db.all<{ name: string }>(`PRAGMA table_info(journal_lines)`).some((c) => c.name === 'contract_id');
+    const cols = db.all<{ name: string }>(`PRAGMA table_info(contract_payments)`).map((c) => c.name);
+    has = cols.includes('cancelled_at') && cols.includes('discount_kind')
+      && !!db.get(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'payment_allocations'`);
     // النتيجة الإيجابية وحدها تُحفظ · فقاعدة تُرقّى وهي مفتوحة تُفحص من جديد
-    if (has) lineDimCache.set(k, has);
+    if (has) payColsCache.set(k, has);
   }
   if (!has) return null;
-  const rows = db.all<{ a: string; n: number }>(
-    `SELECT l.account_code AS a, COALESCE(SUM(l.credit_halalas - l.debit_halalas),0) AS n
-     FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-     WHERE l.contract_id = ? AND e.status = '${POSTED_STATUS}' AND l.account_code IN (${RENT_REVENUE_SQL})
-     GROUP BY l.account_code`, [contractId]);
-  const of = (code: string) => Number(rows.find((r) => r.a === code)?.n ?? 0);
-  return { rent: of(RENT_REVENUE), services: of(SERVICES_REVENUE), parking: of(PARKING_REVENUE) };
+  return Number(db.get<{ n: number }>(
+    `SELECT COALESCE(SUM(COALESCE(
+       (SELECT SUM(a.amount_halalas) FROM payment_allocations a WHERE a.payment_id = p.id),
+       p.net_halalas + CASE WHEN p.discount_kind = '${AFTER_DUE}' THEN p.discount_halalas ELSE 0 END)), 0) AS n
+     FROM contract_payments p WHERE p.contract_id = ? AND p.cancelled_at IS NULL`, [contractId])?.n ?? 0);
 }
-const lineDimCache = new WeakMap<object, boolean>();
-const POSTED_STATUS = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
+const payColsCache = new WeakMap<object, boolean>();
+const AFTER_DUE = 'بعد الاستحقاق'; // i18n-exempt: نوع الخصم المخزَّن
 
 /**
  * نصيب الخدمات والمواقف من مبلغٍ بنسبتهما من إجمالي العقد · والهللات الباقية على الإيجار.
- * التقريب تراكمي على مستوى العقد (المراجعة #10): نصيب كل حساب بعد الدفعة = نسبته من مجموع إيراد العقد
- * المرحَّل معها، ناقص ما رُحِّل عليه قبلها · فلا تتآكل هللات الخدمات والمواقف مع كثرة الدفعات،
- * والعكس (side = 'debit') يُعيد الحسابات إلى نسبتها كذلك.
+ * التقريب تراكمي على مستوى العقد (المراجعة #10): نصيب كل حساب = نسبته من إيراد العقد المحصَّل بعد المبلغ، ناقص نسبته منه
+ * قبله · فلا تتآكل هللات الخدمات والمواقف مع كثرة الدفعات · والعكس (side = 'debit') كذلك.
+ * والمحصَّل من العقد ودفعاته (paidRevenue) لا من الدفتر: فيتفق جهازان على التوزيع إلا بهللةٍ لكل حساب مهما اختلف ما يريانه
+ * من الدفتر أو من الدفعات (نصيب(ق + م) − نصيب(ق) لا يبعد عن نسبة م إلا بأقل من هللة)، فيُعاد اشتقاقه على جهاز المالك (derive.ts)
  */
 export function rentSplit(db: DB, contractId: string | null | undefined, amount: number, side: 'credit' | 'debit' = 'credit'): { rent: number; services: number; parking: number } {
   if (!contractId || !amount || !hasSplitColumns(db)) return { rent: amount, services: 0, parking: 0 };
@@ -64,19 +70,13 @@ export function rentSplit(db: DB, contractId: string | null | undefined, amount:
   const p = Number(c?.p ?? 0);
   if (!v || (!s && !p) || s < 0 || p < 0) return { rent: amount, services: 0, parking: 0 };
   const total = v + s + p;
-  const prior = postedRevenue(db, contractId);
-  if (!prior) {
-    const services = Math.floor((amount * s) / total);
-    const parking = Math.floor((amount * p) / total);
-    return { rent: amount - services - parking, services, parking };
-  }
   const share = (cum: number, x: number) => (cum >= 0 ? Math.floor((cum * x) / total) : -Math.floor((-cum * x) / total));
-  const before = prior.rent + prior.services + prior.parking;
+  const before = paidRevenue(db, contractId) ?? 0;
   const after = before + (side === 'credit' ? amount : -amount);
   const dir = side === 'credit' ? 1 : -1;
   const clamp = (x: number) => Math.min(Math.max(0, x), amount);
-  let services = clamp(dir * (share(after, s) - prior.services));
-  let parking = clamp(dir * (share(after, p) - prior.parking));
+  let services = clamp(dir * (share(after, s) - share(before, s)));
+  let parking = clamp(dir * (share(after, p) - share(before, p)));
   if (services + parking > amount) parking = amount - services;
   return { rent: amount - services - parking, services, parking };
 }

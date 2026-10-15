@@ -740,6 +740,14 @@
     "saveNewPin": "Save the PIN and open",
     "newPinFailed": "Could not save the new PIN"
   },
+  "derive": {
+    "noPayment": "A member's collection entry whose payment has not arrived yet",
+    "rejected": "Collection entry rejected · {{why}}",
+    "source": "Its source does not match its payment",
+    "date": "Its date differs from its payment's date",
+    "account": "Account {{account}} does not match what its payment derives",
+    "revenue": "Total revenue does not match its payment"
+  },
   "mirror": {
     "missing": "The entry or its reversal does not exist",
     "notPosted": "The reversal is not posted",

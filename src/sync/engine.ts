@@ -28,6 +28,7 @@ import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
 import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
+import { rentEntryIssue, type RentPaymentSrc } from '../domain/accounting/derive';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 
 const nowIso = () => new Date().toISOString();
@@ -521,6 +522,37 @@ function renumberJoiningCollision(db: DB, table: 'journal_entries' | 'purchases'
   enqueue(db, table, mine.id, 'upsert');
 }
 
+/** صفوف الجدول بعمودٍ وقيمته: القائمة هنا، وإلا ما ينتظر في الوارد (الابن يتبع أباه في ترتيب التطبيق) */
+function rowsHereOrInbox<T>(db: DB, table: string, col: string, value: string): T[] {
+  const here = db.all<T>(`SELECT * FROM "${table}" WHERE "${col}" = ?`, [value]);
+  if (here.length) return here;
+  return db.all<{ payload: string }>(
+    `SELECT payload FROM sync_inbox WHERE tbl = ? AND del = 0 AND json_extract(payload, '$.d.${col}') = ?`, [table, value])
+    .map((r) => (JSON.parse(r.payload) as RemoteDoc).d as T);
+}
+
+/**
+ * إعادة اشتقاق قيد العضو من مصدره · المرحلة الأولى (قرار المالك 2026-10-15 «١»: الدفعات والتحصيل أولاً): قيد التحصيل المرحّل
+ * الذي كتبه عضو تُحسب سطوره على جهاز المالك من دفعته، ويُرفض كله إن خالفتها فلا يدخل الدفتر · والدفعة تتبع قيدها في ترتيب
+ * التطبيق (مفتاحها الأجنبي إليه) فتُقرأ من الوارد المنتظر · وما لم يصل بعد يُنتظر كالأصل الناقص · وما كتبه المالك لا يُعاد
+ */
+function memberRentCheck(db: DB, doc: RemoteDoc): void {
+  if (doc.d!.src_type !== 'rent' || getSyncState(db, 'membership')) return;
+  if (!doc.by || doc.by === ownerUid(db)) return;
+  const pay = rowsHereOrInbox<RentPaymentSrc>(db, 'contract_payments', 'journal_entry_id', doc.k)[0];
+  if (!pay || !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [pay.contract_id])) {
+    throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
+  }
+  const alloc = pay.installment_id ? [] : rowsHereOrInbox<{ amount_halalas: number }>(db, 'payment_allocations', 'payment_id', pay.id);
+  const why = rentEntryIssue(db, {
+    srcId: String(doc.d!.src_id ?? ''),
+    date: String(doc.d!.date ?? ''),
+    lines: (doc.lines ?? []).map((l) => ({ account: String(l.account_code), debit: Number(l.debit_halalas) || 0, credit: Number(l.credit_halalas) || 0 })),
+  }, pay, alloc.length ? alloc.reduce((s, a) => s + (Number(a.amount_halalas) || 0), 0) : null);
+  if (why === 'await') throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
+  if (why) throw new Error(tr('derive.rejected', { why, lng: 'ar' }));
+}
+
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
 const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? getSyncState(db, 'org') : getSyncState(db, 'uid'));
 
@@ -557,9 +589,11 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
     }
     return dimsChanged ? 'applied' : 'kept';
   }
+  const posted = d.status === 'مرحّل';
+  // قبل إدخاله: توزيع الإيراد يُحسب من المرحَّل قبله
+  if (posted) memberRentCheck(db, doc);
   if (local) db.run(`DELETE FROM journal_lines WHERE entry_id = ?`, [doc.k]); // مسودة · سطورها تُستبدل
   renumberJoiningCollision(db, 'journal_entries', doc.k, d.no);
-  const posted = d.status === 'مرحّل';
   const entry: RowData = { ...d, status: posted ? 'قيد الإنشاء' : d.status, reversed_by: null };
   upsertRow(db, 'journal_entries', entry, cols.e);
   for (const l of doc.lines ?? []) {

@@ -499,6 +499,23 @@ export const postClaimCollection = (db: DB, cl: { id: string; amount: number; re
  * مدين النقد بالمقبوض · مدين 4900 بالخصم · دائن الإيراد بالمقبوض مع الخصم (قيمة ما غطّته الدفعة من القسط).
  * و«تنزيل من القسط» لا سطر له: القسط نفسه خُفِّض والإيراد بالمقبوض وحده.
  */
+/**
+ * سطور قيد تحصيل الإيجار من دفعته · بها يرحّل الجهاز القيد وبها يعيد جهاز المالك اشتقاق سطور قيد العضو من مصدره (قرار المالك
+ * «رابعاً ١ (أ)» 2026-10-10 · و2026-10-15 «١»: على مراحل، الدفعات والتحصيل أولاً)
+ */
+export function rentCollectionLines(
+  db: DB,
+  args: { contractId: string; net: number; discount?: number; discountKind?: DiscountKind | null },
+): EntryLine[] {
+  const booked = args.discountKind === DISCOUNT_AFTER_DUE ? (args.discount || 0) : 0;
+  const revenue = args.net + booked;
+  return [
+    { account: CASH, descr: 'إيجار محصَّل', debit: args.net, credit: 0 },
+    { account: DISCOUNT_ACCOUNT, descr: 'خصم ممنوح بعد الاستحقاق', debit: booked, credit: 0 },
+    ...rentRevenueLines(db, args.contractId, revenue, 'إيراد إيجار', 'credit'),
+  ];
+}
+
 export const postRentCollection = (
   db: DB,
   args: {
@@ -522,11 +539,7 @@ export const postRentCollection = (
           'تحصيل إيجار · ' + args.tenant + ' (عقد ' + args.contractNo + ')' +
           (args.period ? ' · ' + args.period : '') +
           (args.discount && args.discountKind ? ' · ' + args.discountKind + ' ' + fmt(args.discount) : ''),
-        lines: [
-          { account: CASH, descr: 'إيجار محصَّل', debit: args.net, credit: 0 },
-          { account: DISCOUNT_ACCOUNT, descr: 'خصم ممنوح بعد الاستحقاق', debit: booked, credit: 0 },
-          ...rentRevenueLines(db, args.contractId, revenue, 'إيراد إيجار', 'credit'),
-        ],
+        lines: rentCollectionLines(db, args),
         srcType: 'rent',
         srcId: args.srcId,
       })
