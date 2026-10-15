@@ -622,17 +622,24 @@ function tenantCreditAvailable(db: DB, contractId: string, except: string): numb
     if (id && !credit.has(id)) credit.set(id, { n: Number(d.net_halalas) || 0, off: !!d.cancelled_at });
   }
   const ids = JSON.stringify([...credit.keys(), except]);
-  // دائن 2410 يُعدّ بقدر ما يسنده مدين قيده على النقد أو تأمينات المستأجرين أو إيراد العقد (ما قُبض فعلاً) · فقيدٌ يُنشئ رصيداً
-  // من رأس المال أو مصروفٍ لا يُصرف بالسداد من الرصيد (المتحقق المستقل، الجولة ٣٨) · ومدينه يُنقص الرصيد كاملاً
-  const rows = db.all<{ c: number; b: number }>(
+  // دائن 2410 الذي يُصرف: ما كتبه المالك، وفائض التحصيل الجماعي (قيد تحصيلٍ بمصدر العقد يُشتق من دفعته) بقدر نقده · وما سواهما
+  // من قيود العضو لا يُعدّ حتى يُشتق مصدره في المرحلة الثانية (المتحقق المستقل، الجولتان ٣٨ و٣٩: مدين رأس المال أو الإيراد أو
+  // التأمينات في قيدٍ يكتبه العضو لا يسند رصيداً) · ومدينه يُنقص الرصيد كاملاً أياً كان كاتبه
+  const owner = ownerUid(db) ?? '';
+  const rows = db.all<{ c: number; cash: number; w: string; t: string | null; s: string | null }>(
     `SELECT SUM(CASE WHEN l.account_code = '2410' AND l.contract_id IN (SELECT value FROM json_each(?)) THEN l.credit_halalas - l.debit_halalas ELSE 0 END) AS c,
-            SUM(CASE WHEN l.account_code IN ('1100', '2400', ${RENT_REVENUE_SQL}) THEN l.debit_halalas ELSE 0 END) AS b
+            SUM(CASE WHEN l.account_code = '1100' THEN l.debit_halalas ELSE 0 END) AS cash,
+            COALESCE((SELECT uid FROM row_by WHERE tbl = 'journal_entries' AND pk = e.id), '') AS w, e.src_type AS t, e.src_id AS s
      FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
      WHERE e.status = ? AND e.id IN (SELECT entry_id FROM journal_lines WHERE account_code = '2410' AND contract_id IN (SELECT value FROM json_each(?)))
        AND NOT (e.src_type IN ('rent', 'rent_rev') AND e.src_id IN (SELECT value FROM json_each(?)))
      GROUP BY e.id`,
     [inC, 'مرحّل', inC, ids]); // i18n-exempt: حالة القيد المخزّنة
-  const ledger = rows.reduce((sum, r) => sum + (Number(r.c) > 0 ? Math.min(Number(r.c), Number(r.b)) : Number(r.c)), 0);
+  const ledger = rows.reduce((sum, r) => {
+    const c = Number(r.c);
+    if (c <= 0 || r.w === '' || r.w === owner) return sum + c;
+    return sum + (r.t === 'rent' && contracts.includes(r.s ?? '') ? Math.min(c, Number(r.cash)) : 0);
+  }, 0);
   let spent = 0;
   for (const [id, c] of credit) if (id !== except && !c.off) spent += c.n;
   return ledger - spent;

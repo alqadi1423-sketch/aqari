@@ -542,3 +542,44 @@ test('الجولة ٣٨ (ملاحظة): إلغاء دفعة تحويل عربو�
   expect(check()).toMatchObject({ ok: true });
   db.close();
 });
+
+/** قيدٌ مرحّل من العضو يُنشئ رصيداً دائناً ببعد العقد · ثم سدادٌ من ذلك الرصيد بستة آلاف من جهازه · يعيد معرّف قيد السداد */
+async function creditFrom(setupR: Awaited<ReturnType<typeof setup>>, debitAccount: string, src: string, byOwner = false): Promise<string> {
+  const { r, owner, dev, cid, insts } = setupR;
+  recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  await sync(dev, r);
+  const base = rentDoc(r);
+  r.inject({ ...base, id: docId('journal_entries', 'JE-SRC'), k: 'JE-SRC', u: later(), by: byOwner ? undefined : MEMBER,
+    d: { ...base.d!, id: 'JE-SRC', no: 'JE-SRC', src_type: src, src_id: cid },
+    lines: [{ ...base.lines![0], id: 'JL-S1', entry_id: 'JE-SRC', account_code: debitAccount, debit_halalas: 9000, credit_halalas: 0, contract_id: cid },
+      { ...base.lines![0], id: 'JL-S2', entry_id: 'JE-SRC', account_code: '2410', debit_halalas: 0, credit_halalas: 9000, contract_id: cid }] });
+  await sync(owner, r);
+  dev.run(`UPDATE tenants SET credit_halalas = 9000 WHERE id = (SELECT tenant_id FROM contracts WHERE id = ?)`, [cid]);
+  const pid = applyTenantCredit(dev, cid, { installmentId: insts[1].id, amountHalalas: 6000, date: '2026-02-03' });
+  await sync(dev, r);
+  const k = asMember(r);
+  r.inject({ ...r.docs.get(docId('contract_payments', pid))!, by: MEMBER });
+  await sync(owner, r);
+  await sync(owner, r);
+  return k;
+}
+
+test('الجولة ٣٩: رصيدٌ دائن من قيد عضوٍ مدينه الإيراد (claim) أو التأمينات (deposit_deduct) لا يُصرف', async () => {
+  for (const [acc, src] of [['4200', 'claim'], ['2400', 'deposit_deduct']] as const) {
+    const s = await setup();
+    const k = await creditFrom(s, acc, src);
+    expect(has(s.owner, k)).toBe(false);
+    expect(reasonOf(s.owner, k)).toMatch(/الدائن لا يكفي/);
+    expect(paidOf(s.owner, s.insts[1].id)).toBe(0);
+    s.owner.close(); s.dev.close();
+  }
+});
+
+test('الجولة ٣٩ إيجابي: رصيدٌ دائن كتبه المالك يُصرف بسداد العضو منه', async () => {
+  const s = await setup();
+  const k = await creditFrom(s, '4200', 'surplus_credit', true);
+  expect(reasonOf(s.owner, k)).toBe('');
+  expect(has(s.owner, k)).toBe(true);
+  s.owner.close(); s.dev.close();
+});
