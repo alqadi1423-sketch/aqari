@@ -756,7 +756,9 @@
     "allocOver": "The allocation exceeds the installment's remaining amount or the amount received",
     "noCredit": "The tenant's credit balance is not enough",
     "frozen": "A payment's amounts and links do not change after it is created",
-    "noEntry": "A payment with an amount and no entry"
+    "noEntry": "A payment with an amount and no entry",
+    "entryType": "The payment's entry is not its collection entry",
+    "installmentDelete": "A member cannot delete an installment of a confirmed contract · it was uploaded again"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",

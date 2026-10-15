@@ -7,7 +7,8 @@ import { MemoryRemote } from './helpers/memoryRemote';
 import { enableSync, syncOnce, docId } from '@/sync/engine';
 import { fileVatReturn } from '@/domain/vatFilings';
 import { getMeta } from '@/repos/settings';
-import { confirmContract, recordRentPayment, recordBulkRentPayment } from '@/domain/contracts/service';
+import { confirmContract, recordRentPayment, recordBulkRentPayment, applyTenantCredit } from '@/domain/contracts/service';
+import { cancelPayment } from '@/domain/contracts/cancelPayment';
 import { DISCOUNT_AFTER_DUE } from '@/domain/contracts/installments';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { postEntry } from '@/domain/accounting/post';
@@ -266,5 +267,111 @@ test('الجولة ٣٥ (أ٤): قيد عضوٍ بتاريخٍ في ربعٍ ق�
   expect(has(owner, k)).toBe(false);
   expect(reasonOf(owner, k)).toMatch(/قُدِّم إقرارها/);
   expect(statusOf(owner, insts[0].id)).not.toBe('مدفوعة');
+  owner.close(); dev.close();
+});
+
+/** دفعةٌ مزوّرة من العضو على قسطٍ بكامله · بقيدٍ يختاره المهاجم */
+function forgedPayment(r: MemoryRemote, k: string, installmentId: string, amount: number, entryId: string) {
+  const pay = docsOf(r, 'contract_payments').pop()!;
+  r.inject({ ...pay, id: docId('contract_payments', k), k, by: MEMBER, u: later(),
+    d: { ...pay.d!, id: k, installment_id: installmentId, net_halalas: amount, gross_halalas: amount, journal_entry_id: entryId,
+      cancelled_at: null, cancel_reason: '', cancel_entry_id: null, method_label: 'نقداً' } });
+}
+
+test('الجولة ٣٦ (ع١): دفعة عضوٍ بقيدٍ مرحّل ليس قيد تحصيل (يدوي للمالك) تُرفض · ولا يُسدَّد القسط', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  const manual = postEntry(owner, { date: '2026-02-01', memo: 'قيد يدوي مصطنع', lines: [
+    { account: '1100', debit: 300, credit: 0 }, { account: '3100', debit: 0, credit: 300 }] })!;
+  recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  await sync(owner, r);
+  await sync(dev, r);
+  forgedPayment(r, 'FORGED-MAN', insts[1].id, Number(insts[1].amount_halalas), manual.id);
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(owner.get(`SELECT 1 FROM contract_payments WHERE id = 'FORGED-MAN'`)).toBeFalsy();
+  expect(paidOf(owner, insts[1].id)).toBe(0);
+  expect(reasonOf(owner, 'FORGED-MAN')).toMatch(/ليس قيد تحصيلها/);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٦ (ع٢): دفعة عضوٍ بقيد عكس دفعةٍ ملغاة تُرفض · ولا يُسدَّد القسط', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  const pid = recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  cancelPayment(dev, pid, { date: '2026-02-02', reason: 'إلغاء مصطنع' });
+  const rev = dev.get<{ c: string }>(`SELECT cancel_entry_id AS c FROM contract_payments WHERE id = ?`, [pid])!.c;
+  await sync(dev, r);
+  await sync(owner, r);
+  forgedPayment(r, 'FORGED-REV', insts[1].id, Number(insts[1].amount_halalas), rev);
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(owner.get(`SELECT 1 FROM contract_payments WHERE id = 'FORGED-REV'`)).toBeFalsy();
+  expect(paidOf(owner, insts[1].id)).toBe(0);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٦ (ع٣): الرصيد الدائن لا يُصرف مرتين · والصرف الأول المشروع يُقبل وسطر 2410 فيه بُعد العقد', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  const first = Number(insts[0].amount_halalas);
+  recordBulkRentPayment(dev, cid, { installmentIds: [insts[0].id], date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: first + 7000 }], notes: '' });
+  await sync(dev, r);
+  asMember(r);
+  await sync(owner, r);
+  applyTenantCredit(dev, cid, { installmentId: insts[1].id, amountHalalas: 5000, date: '2026-02-02' });
+  await sync(dev, r);
+  const k1 = asMember(r);
+  const p1 = docsOf(r, 'contract_payments').pop()!;
+  r.inject({ ...p1, by: MEMBER });
+  await sync(owner, r);
+  expect(has(owner, k1)).toBe(true);
+  expect(owner.get<{ c: string | null }>(`SELECT contract_id AS c FROM journal_lines WHERE entry_id = ? AND account_code = '2410'`, [k1])!.c).toBe(cid);
+  // صرفٌ ثانٍ بخمسة آلاف من عميلٍ معدَّل: قيدٌ ودفعة مستنسخان على قسطٍ آخر
+  const e1 = r.docs.get(docId('journal_entries', k1))!;
+  r.inject({ ...e1, id: docId('journal_entries', 'JE-DBL'), k: 'JE-DBL', u: later(), by: MEMBER,
+    d: { ...e1.d!, id: 'JE-DBL', no: 'JE-DBL', src_id: 'PAY-DBL' },
+    lines: e1.lines!.map((l, i) => ({ ...l, id: 'JL-DBL-' + i, entry_id: 'JE-DBL' })) });
+  r.inject({ ...p1, id: docId('contract_payments', 'PAY-DBL'), k: 'PAY-DBL', by: MEMBER, u: later(),
+    d: { ...p1.d!, id: 'PAY-DBL', installment_id: insts[2].id, journal_entry_id: 'JE-DBL' } });
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(has(owner, 'JE-DBL')).toBe(false);
+  expect(reasonOf(owner, 'JE-DBL')).toMatch(/الدائن لا يكفي/);
+  expect(paidOf(owner, insts[2].id)).toBe(0);
+  owner.close(); dev.close();
+});
+
+test('القرار ٨ (الجولة ٣٦): شاهد حذف العضو لقسط عقدٍ مؤكَّد يُرفض على جهاز المالك ويُعاد رفع القسط', async () => {
+  const { r, owner, dev, insts } = await setup();
+  const id = docId('contract_installments', insts[0].id);
+  const live = r.docs.get(id)!;
+  r.inject({ ...live, dev: 'dev-member', u: later(), del: true, d: null, dby: MEMBER });
+  await sync(owner, r);
+  expect(owner.get(`SELECT 1 FROM contract_installments WHERE id = ?`, [insts[0].id])).toBeTruthy();
+  expect(reasonOf(owner, insts[0].id)).toMatch(/مؤكَّد/);
+  await sync(owner, r);
+  expect(r.docs.get(id)!.del).toBe(false);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٦ (ع٣) إيجابي: سدادٌ من الرصيد أُلغي يعيد الرصيد كاملاً · فيُقبل سدادٌ بكامله بعده ولا يُعدّ الملغى مرتين', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  const first = Number(insts[0].amount_halalas);
+  recordBulkRentPayment(dev, cid, { installmentIds: [insts[0].id], date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: first + 7000 }], notes: '' });
+  await sync(dev, r);
+  asMember(r);
+  await sync(owner, r);
+  const p1 = applyTenantCredit(dev, cid, { installmentId: insts[1].id, amountHalalas: 5000, date: '2026-02-02' });
+  cancelPayment(dev, p1, { date: '2026-02-03', reason: 'إلغاء مصطنع' });
+  const p2 = applyTenantCredit(dev, cid, { installmentId: insts[1].id, amountHalalas: 7000, date: '2026-02-04' });
+  await sync(dev, r);
+  for (const d of [...r.docs.values()]) if (d.t === 'journal_entries' || d.t === 'contract_payments') r.inject({ ...d, by: MEMBER });
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(owner.get(`SELECT 1 FROM contract_payments WHERE id = ?`, [p2])).toBeTruthy();
+  const je = owner.get<{ j: string }>(`SELECT journal_entry_id AS j FROM contract_payments WHERE id = ?`, [p2])!.j;
+  expect(has(owner, je)).toBe(true);
   owner.close(); dev.close();
 });

@@ -5,7 +5,7 @@
  * كل رفع يمر عبر putAttachment فيُسجَّل تلقائياً بتصنيفه (وهذا ما تعتمد عليه المكتبة).
  */
 import { getSetting } from '../repos/settings';
-import { stripImageMetadataStrict, jpegOrientation, needsJpegConversion } from '../domain/jpegExif';
+import { stripImageMetadataStrict, jpegOrientation, needsJpegConversion, strippableSignature, imageSignature, hasMetadataMarker } from '../domain/jpegExif';
 import { t } from '../i18n';
 import type { DB } from '../db/adapter';
 import type { FS, Hasher } from './fsAdapter';
@@ -98,13 +98,18 @@ export async function putAttachment(
   // يبقى فيه وسم الاتجاه وحده، فلا تنقلب الصورة ولا يبقى موقعٌ ولا جهاز
   // وما لا يُضمن نزعه لا يُرفق بصمت ومعه موقعه: HEIC وTIFF تُحوَّل JPEG أولاً، والبنية غير المتوقعة تُرفض برسالة تدلّ على الخيار
   // (المتحقق المستقل، الجولة ٣٥ (د))
+  // وكل صورةٍ لا يُنزع ما فيها بالبايتات وفيها بياناتٌ وصفية (صيغةٌ غير JPEG وPNG وWebP، أو بايتاتٌ قبل توقيعها، أو بنيةٌ لا يُضمن
+  // نزعها) تُحوَّل JPEG أولاً (المتحقق المستقل، الجولة ٣٦: كانت الصيغ المجهولة تمرّ بموقعها) · وما لا علامة فيه يُرفع كما هو
   if (getSetting(env.db, 'stripExif')) {
-    if (needsJpegConversion(bytes)) {
+    const convert = async (): Promise<void> => {
       const jpg = env.orient ? await env.orient(bytes).catch(() => null) : null;
       if (!jpg || !jpg.length) throw new Error(t('imgMeta.unstripped'));
       bytes = jpg;
-      meta = { ...meta, originalName: (meta.originalName ?? 'image').replace(/\.[^.]*$/, '') + '.jpg', mime: 'image/jpeg' };
-    }
+      const base = (meta.originalName ?? '').replace(/\.[^.]*$/, '') || 'image';
+      meta = { ...meta, originalName: base + '.jpg', mime: 'image/jpeg' };
+    };
+    const isImage = (meta.mime ?? '').toLowerCase().startsWith('image/') || imageSignature(bytes);
+    if (needsJpegConversion(bytes) || (isImage && !strippableSignature(bytes) && hasMetadataMarker(bytes))) await convert();
     let o = jpegOrientation(bytes);
     if (o !== 1 && env.orient) {
       try {
@@ -112,7 +117,11 @@ export async function putAttachment(
         if (turned && turned.length) { bytes = turned; o = jpegOrientation(bytes); }
       } catch { /* يبقى وسم الاتجاه */ }
     }
-    const clean = stripImageMetadataStrict(bytes, o);
+    let clean = stripImageMetadataStrict(bytes, o);
+    if (!clean && strippableSignature(bytes)) {
+      await convert();
+      clean = stripImageMetadataStrict(bytes, jpegOrientation(bytes));
+    }
     if (!clean) throw new Error(t('imgMeta.unstripped'));
     bytes = clean;
   }

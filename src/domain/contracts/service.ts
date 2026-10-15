@@ -2,6 +2,7 @@
  * دورة حياة العقد: مسودة ← مراجعة ← توثيق (قفل) ← تجديد/إلغاء + الدفعات.
  * كل دالة تتم بمعاملة واحدة، والترحيل المحاسبي عبر مسار postEvent الواحد.
  */
+import { contractDims } from '../accounting/dimensions';
 import { correctionDate, isFiledDate } from '../vatFilings';
 import type { DB } from '../../db/adapter';
 import { requireCash } from '../cashGuard';
@@ -365,6 +366,8 @@ export function applyTenantCredit(db: DB, contractId: string, input: { installme
         ...rentRevenueLines(db, contractId, amount, 'إيراد إيجار', 'credit'), // i18n-exempt: بيان السطر
       ],
       srcType: 'rent', srcId: paymentId,
+      // بُعد العقد صريحاً: الدفعة تُكتب بعد قيدها فلا يُشتق منها، فكان سطر 2410 بلا عقد (المتحقق المستقل، الجولة ٣٦ (ع٣))
+      dims: contractDims(db, contractId),
     });
     db.run(
       `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,

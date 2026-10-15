@@ -94,6 +94,9 @@ function fromUnit(db: DB, unitId: string | null | undefined): Dims {
   return { unitId, propertyId: u?.property_id ?? null };
 }
 
+/** أبعاد العقد ووحدته وعقاره · لقيدٍ يُرحَّل قبل مصدره (السداد من الرصيد الدائن: الدفعة تُكتب بعد قيدها) */
+export const contractDims = (db: DB, contractId: string | null | undefined): Dims => fromContract(db, contractId);
+
 function fromContract(db: DB, contractId: string | null | undefined): Dims {
   if (!contractId) return {};
   const c = one<{ unit_id: string | null }>(db, `SELECT unit_id FROM contracts WHERE id = ?`, [contractId]);

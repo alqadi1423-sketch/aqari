@@ -30,6 +30,7 @@ import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
+import { RENT_REVENUE_GROUP } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 
 const nowIso = () => new Date().toISOString();
@@ -567,7 +568,15 @@ function rentCheckAgainst(db: DB, e: { srcId: string; date: string; lines: Array
   if (allocWhy === 'await') throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
   if (allocWhy) throw no(allocWhy);
   // السداد من الرصيد الدائن بقدر رصيد مستأجر العقد في الدفتر (2410 بعُقوده)
-  if (pay.method_label === CREDIT_METHOD && tenantLedgerCredit(db, pay.contract_id) < (Number(pay.net_halalas) || 0)) {
+  const cancelled = !!(pay as RentPaymentSrc & { cancelled_at?: string | null }).cancelled_at;
+  if (cancelled) {
+    const rev = (pay as RentPaymentSrc & { cancel_entry_id?: string | null }).cancel_entry_id;
+    if (!rev) throw no(tr('derive.entryType', { lng: 'ar' }));
+    if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [rev]) && !rowsHereOrInbox(db, 'journal_entries', 'id', rev).length) {
+      throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
+    }
+  }
+  if (!cancelled && pay.method_label === CREDIT_METHOD && tenantCreditAvailable(db, pay.contract_id, pay.id) < (Number(pay.net_halalas) || 0)) {
     throw no(tr('derive.noCredit', { lng: 'ar' }));
   }
   const why = rentEntryIssue(db, e, pay,
@@ -577,14 +586,52 @@ function rentCheckAgainst(db: DB, e: { srcId: string; date: string; lines: Array
   if (why) throw no(why);
 }
 
-/** رصيد مستأجر العقد الدائن في الدفتر: 2410 على عقوده كلها */
-function tenantLedgerCredit(db: DB, contractId: string): number {
-  return Number(db.get<{ n: number }>(
-    `SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-     WHERE l.account_code = '2410' AND e.status = ? AND l.contract_id IN (
-       SELECT c2.id FROM contracts c1 JOIN contracts c2 ON c2.tenant_id = c1.tenant_id WHERE c1.id = ? AND c1.tenant_id IS NOT NULL
-       UNION SELECT ?)`,
-    ['مرحّل', contractId, contractId])?.n ?? 0); // i18n-exempt: حالة القيد المخزّنة
+/**
+ * الرصيد الدائن المتاح لمستأجر العقد (المتحقق المستقل، الجولة ٣٦ (ع٣): كان سطر 2410 في قيد السداد منه بلا بُعد عقد، فلا ينقص به
+ * الرصيد ويُصرف مرتين): 2410 على عقوده في الدفتر بلا قيود دفعات السداد منه ولا عواكسها، ناقصاً تلك الدفعات غير الملغاة هنا وفي
+ * الوارد مرةً واحدة · فلا يتوقف على ترتيب وصول القيد وعكسه ودفعته، ودفعتان في دفعةٍ واحدة لا تصرفان الرصيد نفسه · except: المفحوصة
+ */
+function tenantCreditAvailable(db: DB, contractId: string, except: string): number {
+  const contracts = db.all<{ id: string }>(
+    `SELECT c2.id FROM contracts c1 JOIN contracts c2 ON c2.tenant_id = c1.tenant_id WHERE c1.id = ? AND c1.tenant_id IS NOT NULL`,
+    [contractId]).map((r) => r.id);
+  if (!contracts.includes(contractId)) contracts.push(contractId);
+  const inC = JSON.stringify(contracts);
+  const credit = new Map<string, { n: number; off: boolean }>();
+  for (const r of db.all<{ id: string; n: number; c: string | null }>(
+    `SELECT id, net_halalas AS n, cancelled_at AS c FROM contract_payments
+     WHERE method_label = ? AND contract_id IN (SELECT value FROM json_each(?))`, [CREDIT_METHOD, inC])) {
+    credit.set(r.id, { n: Number(r.n) || 0, off: !!r.c });
+  }
+  for (const r of db.all<{ payload: string }>(
+    `SELECT payload FROM sync_inbox WHERE tbl = 'contract_payments' AND del = 0
+       AND json_extract(payload, '$.d.method_label') = ? AND json_extract(payload, '$.d.contract_id') IN (SELECT value FROM json_each(?))`,
+    [CREDIT_METHOD, inC])) {
+    const d = (JSON.parse(r.payload) as RemoteDoc).d ?? {};
+    const id = String(d.id ?? '');
+    if (id && !credit.has(id)) credit.set(id, { n: Number(d.net_halalas) || 0, off: !!d.cancelled_at });
+  }
+  const ids = JSON.stringify([...credit.keys(), except]);
+  const ledger = Number(db.get<{ n: number }>(
+    `SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS n
+     FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+     WHERE l.account_code = '2410' AND e.status = ? AND l.contract_id IN (SELECT value FROM json_each(?))
+       AND NOT (e.src_type IN ('rent', 'rent_rev') AND e.src_id IN (SELECT value FROM json_each(?)))`,
+    ['مرحّل', inC, ids])?.n ?? 0); // i18n-exempt: حالة القيد المخزّنة
+  let spent = 0;
+  for (const [id, c] of credit) if (id !== except && !c.off) spent += c.n;
+  return ledger - spent;
+}
+
+/** دفعة تحويل العربون (allocateDeposit) وقيدها: مدين 2450 بمبلغها ودائن الإيراد به، ولا سطر غيرهما */
+function reservationConvertCheck(db: DB, je: string, row: RowData): void {
+  const net = Number(row.net_halalas) || 0;
+  const lines = db.all<{ a: string; n: number }>(
+    `SELECT account_code AS a, SUM(debit_halalas - credit_halalas) AS n FROM journal_lines WHERE entry_id = ? GROUP BY account_code`, [je]);
+  const of = (a: string) => Number(lines.find((l) => l.a === a)?.n ?? 0);
+  const revenue = lines.filter((l) => RENT_REVENUE_GROUP.includes(l.a)).reduce((s, l) => s - Number(l.n), 0);
+  const others = lines.filter((l) => l.a !== '2450' && !RENT_REVENUE_GROUP.includes(l.a) && Number(l.n) !== 0);
+  if (of('2450') !== net || revenue !== net || others.length) throw new Error(tr('derive.rejected', { why: tr('derive.entryType', { lng: 'ar' }), lng: 'ar' }));
 }
 
 /**
@@ -614,10 +661,14 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
   if (doc.t === 'contract_payments') {
     const je = (row.journal_entry_id as string | null) ?? null;
     if (!je) { if ((Number(row.net_halalas) || 0) > 0) throw no(tr('derive.noEntry', { lng: 'ar' })); return; }
-    if (db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: قيدها لا يُربط بدفعةٍ أخرى */ WHERE journal_entry_id = ? AND id != ?`, [je, doc.k])) throw no(tr('derive.manyPayments', { lng: 'ar' })); // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
+    if (db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: قيدها وقيد عكسها لا يُربطان بدفعةٍ أخرى */ WHERE (journal_entry_id = ? OR cancel_entry_id = ?) AND id != ?`, [je, je, doc.k])) throw no(tr('derive.manyPayments', { lng: 'ar' })); // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
+    if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [je])) return; // قيدٌ لم يصل: المفتاح الأجنبي يُنتظر به
     const e = db.get<{ src_type: string | null; src_id: string | null; date: string }>(
       `SELECT src_type, src_id, date FROM journal_entries WHERE id = ? AND status = 'مرحّل'`, [je]); // i18n-exempt: حالة القيد المخزّنة
-    if (e?.src_type !== 'rent') return;
+    // المتحقق المستقل، الجولة ٣٦ (ع١ وع٢): كانت دفعة العضو تُقبل بقيدٍ مرحّل من غير التحصيل (يدوي، أو عكس دفعةٍ ملغاة) فيُسدَّد
+    // القسط بلا نقد
+    if (e?.src_type === 'reservation_convert') { reservationConvertCheck(db, je, row); return; }
+    if (e?.src_type !== 'rent') throw no(tr('derive.entryType', { lng: 'ar' }));
     const lines = db.all<{ account_code: string; debit_halalas: number; credit_halalas: number }>(
       `SELECT account_code, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`, [je]);
     rentCheckAgainst(db, { srcId: e.src_id ?? '', date: e.date,
@@ -646,6 +697,7 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
 const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? getSyncState(db, 'org') : getSyncState(db, 'uid'));
 
 const DIM_COLS = ['property_id', 'unit_id', 'contract_id', 'cost_center_id', 'asset_id'] as const;
+const DRAFT_CONTRACT = 'مسودة'; // i18n-exempt: حالة العقد المخزّنة
 
 /** أبعاد سطورٍ قائمة من مستند وارد · بمعرّف السطر وحده، ولا مبلغ ولا حساب يُمسّ · يعيد عدد ما تغيّر */
 function applyLineDims(db: DB, entryId: string, lines: RowData[]): number {
@@ -854,6 +906,16 @@ function applyOne(
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', // i18n-exempt: وحدة السجل ونوعه المخزّنان
         tr('sync.olderIncoming', { t: doc.t, k: doc.k, seen, theirs: theirs0, lng: 'ar' }));
       return 'conflict-local';
+    }
+  }
+
+  if (doc.del && doc.t === 'contract_installments' && !getSyncState(db, 'membership') && doc.dby !== ownerUid(db)) {
+    const c = db.get<{ s: string }>(`SELECT c.status AS s FROM contract_installments i JOIN contracts c ON c.id = i.contract_id WHERE i.id = ?`, [doc.k]);
+    // مسودة العقد تُستبدل أقساطها فتُحذف · وأقساط المؤكَّد تبقى (قرار المالك 2026-10-15 «٨» · المتحقق المستقل، الجولة ٣٦)
+    if (c && c.s !== DRAFT_CONTRACT) {
+      enqueue(db, doc.t, doc.k, 'upsert');
+      reject(db, doc, tr('derive.installmentDelete', { lng: 'ar' }));
+      return 'rejected';
     }
   }
 

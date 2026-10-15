@@ -123,3 +123,39 @@ test('الجولة ٣٥ (د): HEIC يُحوَّل JPEG قبل النزع · وب
     .rejects.toThrow(/أطفئ/);
   none.done();
 });
+
+test('الجولة ٣٦: JFXX وAPP14 بغير Adobe يُنزعان · وPNG بقائمة سماح (caBX وprVW تُنزع) · وSOI ثانٍ بنيةٌ غير متوقعة', () => {
+  const jfxx = seg2(0xe0, [...ascii('JFXX'), 0, 0x10, ...GPS]);
+  const fakeAdobe = seg2(0xee, [...ascii('Xdobe'), ...GPS]);
+  const out = stripImageMetadata(jpegWith([seg2(0xe0, [...ascii('JFIF'), 0]), jfxx, fakeAdobe]));
+  expect(has(out, GPS)).toBe(false);
+  expect(has(out, ascii('JFIF'))).toBe(true);
+  const chunk = (type: string, data: number[]) => [0, 0, 0, data.length, ...ascii(type), ...data, 0, 0, 0, 0];
+  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, ...chunk('IHDR', Array(13).fill(0)), ...chunk('caBX', GPS),
+    ...chunk('prVW', GPS), ...chunk('IDAT', [9, 9]), ...chunk('IEND', [])]);
+  const p = stripImageMetadata(png);
+  expect(has(p, GPS)).toBe(false);
+  expect(has(p, ascii('IDAT'))).toBe(true);
+  const twoSoi = Uint8Array.from([0xff, 0xd8, 0xff, 0xd8, ...GPS]);
+  expect(stripImageMetadata(twoSoi)).toBe(twoSoi);
+});
+
+test('الجولة ٣٦: الصيغ التي لا تُنزع بالبايتات تُحوَّل JPEG أو لا تُرفق · GIF وبايتاتٌ قبل SOI وHEIF بعلامةٍ متوافقة · واسمٌ فارغ', async () => {
+  const gif = Uint8Array.from([...ascii('GIF89a'), ...ascii('XMP DataXMP'), ...GPS]);
+  const junkJpeg = Uint8Array.from([0, 0, ...jpeg(6)]);
+  const miHe = Uint8Array.from([0, 0, 0, 0x18, ...ascii('ftypMiHE'), 0, 0, 0, 0, ...ascii('MiHEmif1'), ...GPS]);
+  const none = filesEnv(async () => null);
+  for (const [bytes, name, mime] of [[gif, 'g.gif', 'image/gif'], [junkJpeg, 'j.jpg', 'image/jpeg'], [miHe, 'm.heic', 'application/octet-stream']] as const) {
+    await expect(putAttachment(none.env, bytes, { entityType: 'library', kind: 'other', originalName: name, mime })).rejects.toThrow(/أطفئ/);
+  }
+  // ومستندٌ غير صورة يُرفق كما هو
+  const pdf = Uint8Array.from([...ascii('%PDF-1.7'), ...GPS]);
+  const doc = await putAttachment(none.env, pdf, { entityType: 'library', kind: 'other', originalName: 'd.pdf', mime: 'application/pdf' });
+  expect(has(none.env.fs.read(none.env.attachmentsDir + '/' + doc.sha256 + '.' + doc.ext), GPS)).toBe(true);
+  none.done();
+  const conv = filesEnv(async () => jpeg(1));
+  const row = await putAttachment(conv.env, gif, { entityType: 'library', kind: 'other', originalName: '.gif', mime: 'image/gif' });
+  expect(row.ext).toBe('jpg');
+  expect(row.original_name).toBe('image.jpg');
+  conv.done();
+});
