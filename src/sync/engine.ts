@@ -614,7 +614,7 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
   if (doc.t === 'contract_payments') {
     const je = (row.journal_entry_id as string | null) ?? null;
     if (!je) { if ((Number(row.net_halalas) || 0) > 0) throw no(tr('derive.noEntry', { lng: 'ar' })); return; }
-    if (db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: قيدها لا يُربط بدفعةٍ أخرى */ WHERE journal_entry_id = ? AND id != ?`, [je, doc.k])) throw no(tr('derive.manyPayments', { lng: 'ar' }));
+    if (db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: قيدها لا يُربط بدفعةٍ أخرى */ WHERE journal_entry_id = ? AND id != ?`, [je, doc.k])) throw no(tr('derive.manyPayments', { lng: 'ar' })); // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
     const e = db.get<{ src_type: string | null; src_id: string | null; date: string }>(
       `SELECT src_type, src_id, date FROM journal_entries WHERE id = ? AND status = 'مرحّل'`, [je]); // i18n-exempt: حالة القيد المخزّنة
     if (e?.src_type !== 'rent') return;
