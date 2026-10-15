@@ -3,7 +3,7 @@
  * الذي يتحقق منه tests/opMatrix.test.ts هو نفسه ما يفرضه الخادم. tests/rulesGen.test.ts يُسقط الحزمة
  * إن اختلف الملف عن المولَّد، و UPDATE_RULES=1 يكتبه.
  */
-import { SOFT_DELETE_TABLES } from '../../db/softDelete';
+import { MEMBER_NO_HARD_DELETE } from '../../db/softDelete';
 import { NAME_CLASS, LETTER_FOLDS, RESERVED_CORE } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
@@ -404,10 +404,10 @@ ${guardFns(schema)}
           // إحياء شاهد الحذف كالإنشاء: عقاراته بحقيقته · وشاهد الحذف فارغٌ (بلا d، فلا يكشف شيئاً برموز رؤيته) لصفٍّ كان
           // في عقاراته (التحقق المستقل: شاهدٌ يُبقي d برؤية أوسع كان يكشف المبالغ)
           ? (before.del != true || (pidsGOk(after) && pidsBound(org, after)))
-            // والعضو لا يحذف حذفاً نهائياً ما فيه حذفٌ ناعم (قرار المالك 2026-10-15 «٨»: الحذف الناعم وحده للعضو · وكان العقار والوحدة
-            // والعقد وحدها: المراجعة الخارجية ٧ · النتيجة ٢)، وحذفه بحاذفه · تعبيرٌ نمطي واحد بكلفةٍ ثابتة لا قائمة
+            // والعضو لا يحذف حذفاً نهائياً ما فيه حذفٌ ناعم ولا ما يُلغى ولا يُحذف كالدفعة (قرار المالك 2026-10-15 «٨»: الحذف الناعم
+            // وحده للعضو · وكان العقار والوحدة والعقد وحدها: المراجعة الخارجية ٧ · النتيجة ٢)، وحذفه بحاذفه · تعبيرٌ نمطي واحد بكلفةٍ ثابتة
             && (after.del != true || (after.d == null && propsOk(m, before) && after.get('dby', '') == request.auth.uid
-                && !baseT(after.t).matches('(${SOFT_DELETE_TABLES.join('|')})')))
+                && !baseT(after.t).matches('(${MEMBER_NO_HARD_DELETE.join('|')})')))
           : (after.pids == before.pids
               // عقاراته كما هي: روابطه كما هي، أو تغيّرت بحقيقته (وحدةٌ أخرى في عقاره)
               ? (!linksChanged(before, after) || pidsBound(org, after))

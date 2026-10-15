@@ -57,6 +57,7 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
   const COLALL = member('R7-COLALL', { collect: 2, contracts: 1, props: 1 }, 'all');
   const CONALL = member('R7-CONALL', { contracts: 3, props: 1 }, 'all');
   const PROALL = member('R7-PROALL', { props: 3, contracts: 3 }, 'all');
+  const COL3 = member('R7-COL3', { collect: 3, contracts: 1, props: 1 }, 'all');
   let db: import('@/db/adapter').DB;
   let C1 = '';
   const pays: string[] = [];
@@ -81,7 +82,7 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     expect((await syncOnce(db, remoteFor(null), 'dev-owner')).pending).toBe(0);
     // جهاز العضو يعلّم ما وصله من السحابة «بلا كاتب» (sync/engine.ts: stageInbox · الهجرة ٤٢)، والوثائق هنا تُبنى من قاعدة المالك
     db.exec((await import('@/db/schema')).MIGRATION_42);
-    for (const a of [LED, COLALL, CONALL, PROALL]) {
+    for (const a of [LED, COLALL, CONALL, PROALL, COL3]) {
       expect(await putDoc(`orgs/${ORG}/members/${a.uid}`, {
         email: a.uid!.toLowerCase() + '@example.test', perm: a.perms, all: a.allProps, props: a.props, tokens: memberTokens(a),
       }, ORG)).toBe(200);
@@ -219,6 +220,16 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     const room = ann(PROALL, await built('unit_rooms', 'R7RM'));
     accepted(await write(PROALL, room));
     accepted(await write(PROALL, { ...room, u: 'r2', del: true, d: null, dby: PROALL.uid! }));
+  });
+
+  test('٨ (الجولة ٣٥ ج٢): العضو لا يحذف الدفعة ولا سطورها حذفاً نهائياً ولو بحاذفه · وتعديله غير المالي فيها يُقبل', async () => {
+    const pid = db.get<{ id: string }>(`SELECT id FROM contract_payments ORDER BY date LIMIT 1`)!.id;
+    const pay = ann(COL3, await built('contract_payments', pid));
+    deniedByLogic(await write(COL3, { ...pay, u: 'pd1', del: true, d: null, dby: COL3.uid! }), 'update');
+    const line = db.get<{ id: string }>(`SELECT id FROM payment_lines WHERE payment_id = ?`, [pid])!.id;
+    const pl = ann(COL3, await built('payment_lines', line));
+    deniedByLogic(await write(COL3, { ...pl, u: 'pl1', del: true, d: null, dby: COL3.uid! }), 'update');
+    accepted(await write(COL3, { ...pay, u: 'pd2', d: { ...pay.d!, notes: 'ملاحظة مصطنعة' } }));
   });
 
   test('٢٠ نقل العقد إلى عقارٍ آخر برموز العقار القديم يُرفض · وبرموز عقاره الجديد يُقبل', async () => {

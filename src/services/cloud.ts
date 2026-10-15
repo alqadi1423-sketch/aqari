@@ -585,7 +585,7 @@ function remoteFor(): FirestoreRemote {
 
 /** لقطة ما في السحابة · تُقرأ مرة والمزامنة متوقفة، فتخدم ضمّ القيود المرحّلة وخطة الاستبدال معاً */
 export async function readCloudSnapshot(onProgress?: (m: string) => void): Promise<CloudSnapshot> {
-  return readCloud(remoteFor(), onProgress);
+  return readCloud(remoteFor(), onProgress, await readEpoch(remoteFor(), orgOfAccount(appDb!)));
 }
 
 export function planReplaceFromSnapshot(db: DB, snap: CloudSnapshot): CloudReplacePlan {
@@ -600,7 +600,7 @@ export function planReplaceFromSnapshot(db: DB, snap: CloudSnapshot): CloudRepla
 export async function adoptForCloud(
   db: AppDB, ready?: CloudReplacePlan, onProgress?: (m: string) => void
 ): Promise<{ queued: number; plan: CloudReplacePlan }> {
-  const plan = ready ?? await planCloudReplace(db, remoteFor(), onProgress);
+  const plan = ready ?? await planCloudReplace(db, remoteFor(), onProgress, await readEpoch(remoteFor(), orgOfAccount(db)));
   // عهد المسح الحالي يُقرأ قبل الاعتماد ويُسجَّل معه في معاملة واحدة (قاعدة المالك ٢٠٢٦-١٠-٠٥)
   const epoch = await readEpoch(remoteFor(), orgOfAccount(db));
   const res = adoptAsCloudTruth(db, state.user!.uid, plan, epoch);
@@ -615,7 +615,7 @@ export async function adoptForCloud(
 export async function planAdoptPending(
   db: AppDB, onProgress?: (m: string) => void
 ): Promise<{ snap: CloudSnapshot; keep: KeepPlan; plan: CloudReplacePlan }> {
-  const snap = await readCloud(remoteFor(), onProgress);
+  const snap = await readCloud(remoteFor(), onProgress, await readEpoch(remoteFor(), orgOfAccount(db)));
   return { snap, keep: planKeepPosted(db, { cloud: snap.docs }), plan: planFromSnapshot(db, snap) };
 }
 

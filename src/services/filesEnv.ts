@@ -6,6 +6,7 @@ import { Paths } from 'expo-file-system';
 import { expoFs, expoHasher, appDataRoot } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { isImageFile } from './thumbs';
+import { uid } from '../domain/ids';
 
 const norm = (p: string): string => (p.startsWith('file://') ? p : 'file://' + p);
 
@@ -24,14 +25,15 @@ async function lightThumb(path: string, ext: string, mime: string): Promise<stri
 }
 
 /**
- * صورة JPEG بوسم اتجاهٍ غير طبيعي تُكتب بكسلاتها مدوّرةً كما تُعرض (قرار المالك 2026-10-15 «١٢») · المعالج يقرأ الصورة باتجاهها
- * ويكتبها بلا Exif · ملفٌّ مؤقت في الذاكرة المؤقتة يُحذف بعدها
+ * الصورة تُكتب JPEG ببكسلاتها كما تُعرض (قرار المالك 2026-10-15 «١٢»: تدوير الصورة قبل النزع · ولـHEIC وTIFF تحويلها) · المعالج يقرأ
+ * الصورة باتجاهها ويكتبها بلا Exif، بأعلى جودة (لا ضغط تلقائي: attach.ts) · ملفٌّ مؤقت باسمٍ فريد يُحذف بعدها (المتحقق المستقل،
+ * الجولة ٣٥ (د): الاسم من الوقت قد يلتقي بين صورتين في حلقةٍ لا تنتظر)
  */
 async function orientJpeg(bytes: Uint8Array): Promise<Uint8Array | null> {
-  const src = Paths.cache.uri.replace(/\/$/, '') + '/orient-' + Date.now() + '.jpg';
+  const src = Paths.cache.uri.replace(/\/$/, '') + '/orient-' + uid() + '.img';
   expoFs.write(src, bytes);
   try {
-    const out = await manipulateAsync(norm(src), [], { compress: 0.92, format: SaveFormat.JPEG });
+    const out = await manipulateAsync(norm(src), [], { compress: 1, format: SaveFormat.JPEG });
     try { return expoFs.read(out.uri); } finally { try { expoFs.remove(out.uri); } catch { /* مؤقت */ } }
   } catch {
     return null;

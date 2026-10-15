@@ -235,7 +235,10 @@ d('ثغرات الأعضاء · ملاحظات التحقق المستقل (2026
     const pay = (contract: string | null) => doc('contract_payments', 'VPZ2', contract === null ? null : { id: 'VPZ2', contract_id: contract, installment_id: null,
       date: '2026-05-01', gross_halalas: 1000, discount_halalas: 0, net_halalas: 1000 });
     expect(await write(COL3, pay(C1))).toMatchObject({ ok: true });
-    expect(await write(COL3, pay(null))).toMatchObject({ ok: true });
+    // الدفعة تُلغى ولا تُحذف: العضو لا يحذفها نهائياً (قرار المالك 2026-10-15 «٨» · المتحقق المستقل، الجولة ٣٥ (ج٢)) · فشاهد الحذف من المالك
+    expect(await write(COL3, pay(null))).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    const owner = remoteFor(ORG, null);
+    expect((await owner.write([{ ...owner.annotate!(db, pay(null)), dby: ORG }]))[0]).toMatchObject({ ok: true });
     expect(await write(COL3, pay(C2), { pids: ['*'], g: ['collect|*', 'collect|@'] })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
     expect(await write(COL3, pay(C1))).toMatchObject({ ok: true });
   });

@@ -4,7 +4,8 @@
  */
 import { memDb } from './helpers/testDb';
 import { MemoryRemote } from './helpers/memoryRemote';
-import { enableSync, syncOnce } from '@/sync/engine';
+import { enableSync, syncOnce, docId } from '@/sync/engine';
+import { fileVatReturn } from '@/domain/vatFilings';
 import { getMeta } from '@/repos/settings';
 import { confirmContract, recordRentPayment, recordBulkRentPayment } from '@/domain/contracts/service';
 import { DISCOUNT_AFTER_DUE } from '@/domain/contracts/installments';
@@ -172,5 +173,98 @@ test('القاعدة ٩٩: التوزيع من العقد ودفعاته · قي
     { account: '1100', debit: 7777, credit: 0 }, { account: '4210', debit: 0, credit: 7777 }], dims: { contractId: cid } });
   expect(rentSplit(owner, cid, 33333)).toEqual(before);
   expect(rentSplit(dev, cid, 33333)).toEqual(before);
+  owner.close(); dev.close();
+});
+
+/** المتحقق المستقل، الجولة ٣٥: صفوف التحصيل نفسها (الدفعة وسطورها وتخصيصها) لا القيد وحده */
+const docsOf = (r: MemoryRemote, t: string) => [...r.docs.values()].filter((d) => d.t === t);
+const later = () => new Date(Date.now() + 60_000).toISOString();
+const statusOf = (db: DB, id: string) => db.get<{ s: string }>(`SELECT status AS s FROM contract_installments WHERE id = ?`, [id])!.s;
+const paidOf = (db: DB, id: string) => Number(db.get<{ p: number }>(`SELECT paid_halalas AS p FROM contract_installments WHERE id = ?`, [id])!.p);
+
+test('الجولة ٣٥ (أ٢): دفعةٌ ثانية مزوّرة تشير إلى قيدٍ مقبول تُرفض · ولا يُسدَّد بها قسطٌ آخر', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  await sync(dev, r);
+  const k = asMember(r);
+  const pay = docsOf(r, 'contract_payments').pop()!;
+  r.inject({ ...pay, by: MEMBER });
+  await sync(owner, r);
+  expect(has(owner, k)).toBe(true);
+  const full = Number(insts[1].amount_halalas);
+  r.inject({ ...pay, id: docId('contract_payments', 'FORGED2'), k: 'FORGED2', by: MEMBER, u: later(),
+    d: { ...pay.d!, id: 'FORGED2', installment_id: insts[1].id, net_halalas: full, gross_halalas: full } });
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(owner.get(`SELECT 1 FROM contract_payments WHERE id = 'FORGED2'`)).toBeFalsy();
+  expect(paidOf(owner, insts[1].id)).toBe(0);
+  expect(reasonOf(owner, 'FORGED2')).toMatch(/أكثر من دفعة/);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٥ (أ٣): رفع مبلغ الدفعة بعد قبول قيدها يُرفض أياً كان كاتبه · ويبقى المسدَّد بمبلغها', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  await sync(dev, r);
+  asMember(r);
+  await sync(owner, r);
+  const pay = docsOf(r, 'contract_payments').pop()!;
+  const full = Number(insts[0].amount_halalas);
+  r.inject({ ...pay, u: later(), d: { ...pay.d!, net_halalas: full, gross_halalas: full } });
+  await sync(owner, r);
+  expect(Number(owner.get<{ n: number }>(`SELECT net_halalas AS n FROM contract_payments WHERE id = ?`, [pay.k])!.n)).toBe(50000);
+  expect(paidOf(owner, insts[0].id)).toBe(50000);
+  expect(reasonOf(owner, pay.k)).toMatch(/لا تتغير/);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٥ (أ١): دفعةٌ نقدية قُيّدت بشكل السداد من الرصيد الدائن تُرفض', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  await sync(dev, r);
+  const pay = docsOf(r, 'contract_payments').pop()!;
+  const o = rentDoc(r);
+  r.inject({ ...o, by: MEMBER, d: { ...o.d!, src_id: pay.k },
+    lines: o.lines!.map((l) => (l.account_code === '1100' ? { ...l, account_code: '2410' } : l)) });
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(has(owner, o.k)).toBe(false);
+  expect(reasonOf(owner, o.k)).toMatch(/قيد التحصيل مرفوض/);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٥ (أ٥): تحصيلٌ جماعي ضُخّم تخصيصه إلى كامل المقبوض وأُسقط رصيده الدائن يُرفض', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  const first = Number(insts[0].amount_halalas);
+  recordBulkRentPayment(dev, cid, { installmentIds: [insts[0].id], date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: first + 7000 }], notes: '' });
+  await sync(dev, r);
+  const k = asMember(r, (ls) => ls.filter((l) => l.account_code !== '2410').map((l) =>
+    (l.account_code === '4200' ? { ...l, credit_halalas: Number(l.credit_halalas) + 7000 } : l)));
+  const a = docsOf(r, 'payment_allocations').pop()!;
+  r.inject({ ...a, by: MEMBER, d: { ...a.d!, amount_halalas: first + 7000 } });
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(has(owner, k)).toBe(false);
+  expect(reasonOf(owner, k)).toMatch(/التخصيص/);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٥ (أ٤): قيد عضوٍ بتاريخٍ في ربعٍ قُدِّم إقراره ووصل بعد تسجيل التقديم يُرفض (القرار ٦)', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  fileVatReturn(owner, 2026, 1, '2026-04-15');
+  await sync(owner, r);
+  await sync(dev, r);
+  const k = asMember(r);
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(has(owner, k)).toBe(false);
+  expect(reasonOf(owner, k)).toMatch(/قُدِّم إقرارها/);
+  expect(statusOf(owner, insts[0].id)).not.toBe('مدفوعة');
   owner.close(); dev.close();
 });

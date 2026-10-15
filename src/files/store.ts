@@ -5,7 +5,8 @@
  * كل رفع يمر عبر putAttachment فيُسجَّل تلقائياً بتصنيفه (وهذا ما تعتمد عليه المكتبة).
  */
 import { getSetting } from '../repos/settings';
-import { stripImageMetadata, jpegOrientation } from '../domain/jpegExif';
+import { stripImageMetadataStrict, jpegOrientation, needsJpegConversion } from '../domain/jpegExif';
+import { t } from '../i18n';
 import type { DB } from '../db/adapter';
 import type { FS, Hasher } from './fsAdapter';
 import { joinPath } from './fsAdapter';
@@ -23,8 +24,9 @@ export interface FilesEnv {
    */
   thumbnailer?: (path: string, ext: string, mime: string) => Promise<string | null>;
   /**
-   * صورة JPEG بوسم اتجاهٍ غير طبيعي تُكتب بكسلاتها مدوّرةً كما تُعرض (قرار المالك 2026-10-15 «١٢»: تدوير الصورة قبل النزع) ·
-   * null حين يتعذّر · وبيئة بلا مدوِّر يبقى فيها وسم الاتجاه وحده
+   * الصورة تُكتب JPEG ببكسلاتها كما تُعرض (وسم الاتجاه مطبَّق) · لصورة JPEG بوسم اتجاهٍ غير طبيعي (قرار المالك 2026-10-15 «١٢»:
+   * تدوير الصورة قبل النزع)، ولصيغةٍ لا يُنزع ما فيها بالبايتات (HEIC وTIFF) · null حين يتعذّر · وبيئة بلا مدوِّر يبقى فيها وسم
+   * الاتجاه وحده، ولا تُرفق فيها تلك الصيغ
    */
   orient?: (bytes: Uint8Array) => Promise<Uint8Array | null>;
 }
@@ -94,7 +96,15 @@ export async function putAttachment(
   // نزع البيانات الوصفية من الصور في كل مسار إرفاق لا في واحد (المراجعة الخارجية ٧ · النتيجة ٢٧) · خيارٌ في الإعدادات مفعّلٌ
   // افتراضاً، والصورة تُدوَّر قبله بوسم اتجاهها (قرار المالك 2026-10-15 «١٢»، يحلّ محل قراره 2026-08-20) · وما تعذّر تدويره
   // يبقى فيه وسم الاتجاه وحده، فلا تنقلب الصورة ولا يبقى موقعٌ ولا جهاز
+  // وما لا يُضمن نزعه لا يُرفق بصمت ومعه موقعه: HEIC وTIFF تُحوَّل JPEG أولاً، والبنية غير المتوقعة تُرفض برسالة تدلّ على الخيار
+  // (المتحقق المستقل، الجولة ٣٥ (د))
   if (getSetting(env.db, 'stripExif')) {
+    if (needsJpegConversion(bytes)) {
+      const jpg = env.orient ? await env.orient(bytes).catch(() => null) : null;
+      if (!jpg || !jpg.length) throw new Error(t('imgMeta.unstripped'));
+      bytes = jpg;
+      meta = { ...meta, originalName: (meta.originalName ?? 'image').replace(/\.[^.]*$/, '') + '.jpg', mime: 'image/jpeg' };
+    }
     let o = jpegOrientation(bytes);
     if (o !== 1 && env.orient) {
       try {
@@ -102,7 +112,9 @@ export async function putAttachment(
         if (turned && turned.length) { bytes = turned; o = jpegOrientation(bytes); }
       } catch { /* يبقى وسم الاتجاه */ }
     }
-    bytes = stripImageMetadata(bytes, o);
+    const clean = stripImageMetadataStrict(bytes, o);
+    if (!clean) throw new Error(t('imgMeta.unstripped'));
+    bytes = clean;
   }
   const sha = await env.hasher(bytes);
   const ext = extOf(meta.originalName, meta.mime);

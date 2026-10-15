@@ -9,7 +9,7 @@ import type { DB } from '../../db/adapter';
 import { t } from '../../i18n';
 import { rentCollectionLines, type EntryLine } from './post';
 import { rentRevenueLines, RENT_REVENUE_GROUP } from './rentSplit';
-import type { DiscountKind } from '../contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, type DiscountKind } from '../contracts/installments';
 
 export interface RentPaymentSrc {
   id: string;
@@ -19,6 +19,31 @@ export interface RentPaymentSrc {
   net_halalas: number;
   discount_halalas: number;
   discount_kind: string | null;
+  method_label?: string | null;
+}
+
+/** طريقة الدفعة المخزّنة للسداد من الرصيد الدائن (applyTenantCredit) · ولا سطور طرق سدادٍ لها */
+export const CREDIT_METHOD = 'من الرصيد الدائن'; // i18n-exempt: طريقة مخزّنة
+
+/**
+ * تخصيص التحصيل الجماعي على الأقساط (المتحقق المستقل، الجولة ٣٥ (أ٥): كان يُجمع كما يرسله العضو فيُقبل الفائض إيراداً) · كل
+ * سطرٍ على قسطٍ من عقد الدفعة نفسه، ولا يتجاوز المتبقي عليه هنا، ومجموعه لا يتجاوز المقبوض · '' أو السبب أو 'await' لقسطٍ لم يصل
+ */
+export function allocationIssue(db: DB, pay: RentPaymentSrc, allocs: Array<{ installment_id: string; amount_halalas: number }>, cap?: number): string {
+  let sum = 0;
+  for (const a of allocs) {
+    const i = db.get<{ contract_id: string; amount_halalas: number; paid_halalas: number; discount: number }>(
+      `SELECT i.contract_id, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount FROM contract_installments i WHERE i.id = ?`,
+      [a.installment_id]);
+    if (!i) return 'await';
+    if (i.contract_id !== pay.contract_id) return t('derive.allocContract', { lng: 'ar' });
+    const amount = Number(a.amount_halalas) || 0;
+    if (amount <= 0 || amount > installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount))) {
+      return t('derive.allocOver', { lng: 'ar' });
+    }
+    sum += amount;
+  }
+  return sum > (cap ?? (Number(pay.net_halalas) || 0)) ? t('derive.allocOver', { lng: 'ar' }) : '';
 }
 
 export interface IncomingLines { srcId: string; date: string; lines: Array<{ account: string; debit: number; credit: number }> }
@@ -57,27 +82,34 @@ function linesIssue(got: Map<string, number>, want: Map<string, number>): string
 }
 
 /**
- * سبب رفض قيد تحصيلٍ وارد من دفعته · '' إن طابقها · 'await' إن احتاج تخصيص التحصيل الجماعي ولم يصل بعد
+ * سبب رفض قيد تحصيلٍ وارد من دفعته · '' إن طابقها · 'await' إن احتاج ما لم يصل بعد (تخصيص التحصيل الجماعي، أو سطور طرق السداد)
  * allocated: مجموع تخصيص الدفعة على الأقساط (payment_allocations) إن وصل، وإلا null
+ * paidLines: مجموع سطور طرق سداد الدفعة (payment_lines) إن وصلت، وإلا null · فالشكل من طريقة الدفعة لا من مصدر القيد (المتحقق
+ *  المستقل، الجولة ٣٥ (أ١): دفعةٌ نقدية قُيّدت بشكل السداد من الرصيد الدائن فلم يدخل النقد الدفتر)
  */
-export function rentEntryIssue(db: DB, e: IncomingLines, pay: RentPaymentSrc, allocated: number | null): string {
+export function rentEntryIssue(db: DB, e: IncomingLines, pay: RentPaymentSrc, allocated: number | null, paidLines: number | null = null): string {
   if (e.date !== pay.date) return t('derive.date', { lng: 'ar' });
   const net = Number(pay.net_halalas) || 0;
   const discount = Number(pay.discount_halalas) || 0;
   const cid = pay.contract_id;
   const got = byAccount(e.lines);
+  const byCredit = pay.method_label === CREDIT_METHOD;
+  // النقد بسطور طرق السداد: تصل مع الدفعة ولا سداد نقدياً بلا سطر · والسداد من الرصيد بلا سطور
+  if (paidLines === null && !byCredit) return 'await';
+  if (paidLines !== null && (byCredit || paidLines !== net)) return t('derive.method', { lng: 'ar' });
+  const cash = !byCredit;
   const shapes: Array<() => EntryLine[] | 'await'> = [];
   // تحصيل قسط (postRentCollection) · وشاشة التحصيل لا تسجّل دفعةً بلا قسط، فالدفعة بلا قسطٍ تحصيلٌ جماعي يُطابق تخصيصه (وإلا
   // قُبل فائضه إيراداً بحجب تخصيصه)
-  if (pay.installment_id && e.srcId === pay.installment_id) {
+  if (cash && pay.installment_id && e.srcId === pay.installment_id) {
     shapes.push(() => rentCollectionLines(db, { contractId: cid, net, discount, discountKind: pay.discount_kind as DiscountKind | null }));
   }
   // سداد من الرصيد الدائن (applyTenantCredit)
-  if (e.srcId === pay.id && !discount) {
+  if (byCredit && e.srcId === pay.id && !discount) {
     shapes.push(() => [{ account: TENANT_CREDIT, debit: net, credit: 0 }, ...rentRevenueLines(db, cid, net, '', 'credit')]);
   }
   // تحصيل جماعي (recordBulkRentPayment): الإيراد بالمخصَّص والفائض رصيدٌ دائن
-  if (e.srcId === cid && !pay.installment_id && !discount) {
+  if (cash && e.srcId === cid && !pay.installment_id && !discount) {
     shapes.push(() => {
       const hasRevenue = RENT_REVENUE_GROUP.some((a) => got.has(a));
       const alloc = allocated ?? (hasRevenue ? null : 0);

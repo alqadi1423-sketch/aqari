@@ -28,7 +28,8 @@ import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
 import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
-import { rentEntryIssue, type RentPaymentSrc } from '../domain/accounting/derive';
+import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc } from '../domain/accounting/derive';
+import { filingRecordedAt } from '../domain/vatFilings';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 
 const nowIso = () => new Date().toISOString();
@@ -539,18 +540,106 @@ function rowsHereOrInbox<T>(db: DB, table: string, col: string, value: string): 
 function memberRentCheck(db: DB, doc: RemoteDoc): void {
   if (doc.d!.src_type !== 'rent' || getSyncState(db, 'membership')) return;
   if (!doc.by || doc.by === ownerUid(db)) return;
-  const pay = rowsHereOrInbox<RentPaymentSrc>(db, 'contract_payments', 'journal_entry_id', doc.k)[0];
+  // دفعةٌ واحدة لقيدٍ واحد (المتحقق المستقل، الجولة ٣٥ (أ٢))
+  const pays = rowsHereOrInbox<RentPaymentSrc>(db, 'contract_payments', 'journal_entry_id', doc.k);
+  if (pays.length > 1) throw new Error(tr('derive.rejected', { why: tr('derive.manyPayments', { lng: 'ar' }), lng: 'ar' }));
+  const pay = pays[0];
   if (!pay || !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [pay.contract_id])) {
     throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
   }
-  const alloc = pay.installment_id ? [] : rowsHereOrInbox<{ amount_halalas: number }>(db, 'payment_allocations', 'payment_id', pay.id);
-  const why = rentEntryIssue(db, {
+  rentCheckAgainst(db, {
     srcId: String(doc.d!.src_id ?? ''),
     date: String(doc.d!.date ?? ''),
     lines: (doc.lines ?? []).map((l) => ({ account: String(l.account_code), debit: Number(l.debit_halalas) || 0, credit: Number(l.credit_halalas) || 0 })),
-  }, pay, alloc.length ? alloc.reduce((s, a) => s + (Number(a.amount_halalas) || 0), 0) : null);
+  }, pay, doc.ts);
+}
+
+/** قيد التحصيل ودفعته: الفترة المقدَّمة، والتخصيص، ورصيد المستأجر الدائن، ثم السطور من الدفعة · يرمي بالسبب أو بالانتظار */
+function rentCheckAgainst(db: DB, e: { srcId: string; date: string; lines: Array<{ account: string; debit: number; credit: number }> },
+  pay: RentPaymentSrc, ts: string | undefined): void {
+  const no = (why: string) => new Error(tr('derive.rejected', { why, lng: 'ar' }));
+  // القرار ٦ عبر المزامنة: ما وصل الخادم بعد تسجيل تقديم ربعه يُرفض (المتحقق المستقل، الجولة ٣٥ (أ٤))
+  const filed = filingRecordedAt(db, e.date);
+  if (filed && (!ts || ts > filed)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
+  const lines = rowsHereOrInbox<{ amount_halalas: number }>(db, 'payment_lines', 'payment_id', pay.id);
+  const alloc = pay.installment_id ? [] : rowsHereOrInbox<{ installment_id: string; amount_halalas: number }>(db, 'payment_allocations', 'payment_id', pay.id);
+  const allocWhy = alloc.length ? allocationIssue(db, pay, alloc) : '';
+  if (allocWhy === 'await') throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
+  if (allocWhy) throw no(allocWhy);
+  // السداد من الرصيد الدائن بقدر رصيد مستأجر العقد في الدفتر (2410 بعُقوده)
+  if (pay.method_label === CREDIT_METHOD && tenantLedgerCredit(db, pay.contract_id) < (Number(pay.net_halalas) || 0)) {
+    throw no(tr('derive.noCredit', { lng: 'ar' }));
+  }
+  const why = rentEntryIssue(db, e, pay,
+    alloc.length ? alloc.reduce((s, a) => s + (Number(a.amount_halalas) || 0), 0) : null,
+    lines.length ? lines.reduce((s, l) => s + (Number(l.amount_halalas) || 0), 0) : null);
   if (why === 'await') throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
-  if (why) throw new Error(tr('derive.rejected', { why, lng: 'ar' }));
+  if (why) throw no(why);
+}
+
+/** رصيد مستأجر العقد الدائن في الدفتر: 2410 على عقوده كلها */
+function tenantLedgerCredit(db: DB, contractId: string): number {
+  return Number(db.get<{ n: number }>(
+    `SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+     WHERE l.account_code = '2410' AND e.status = ? AND l.contract_id IN (
+       SELECT c2.id FROM contracts c1 JOIN contracts c2 ON c2.tenant_id = c1.tenant_id WHERE c1.id = ? AND c1.tenant_id IS NOT NULL
+       UNION SELECT ?)`,
+    ['مرحّل', contractId, contractId])?.n ?? 0); // i18n-exempt: حالة القيد المخزّنة
+}
+
+/**
+ * صفوف التحصيل على جهاز المالك (المتحقق المستقل، الجولة ٣٥ (أ٢ وأ٣ وأ٥)): الدفعة وسطورها وتخصيصها لا تتغير مبالغها ولا روابطها
+ * بعد إنشائها أياً كان كاتبها (الإلغاء بـ cancelled_at، والتطبيق لا يعدّلها) · ودفعة العضو الجديدة: قيدٌ واحد لها، وقيدها
+ * المرحّل يُعاد اشتقاقه منها · وسطورها وتخصيصها لا يتجاوزان المقبوض ولا المتبقي على أقساط عقدها
+ */
+const FROZEN_COLS: Record<string, string[]> = {
+  contract_payments: ['contract_id', 'installment_id', 'date', 'gross_halalas', 'discount_halalas', 'net_halalas'],
+  payment_lines: ['payment_id', 'method', 'bank_id', 'amount_halalas'],
+  payment_allocations: ['payment_id', 'installment_id', 'amount_halalas'],
+};
+function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
+  const frozen = FROZEN_COLS[doc.t];
+  if (!frozen || getSyncState(db, 'membership')) return;
+  const no = (why: string) => new Error(tr('derive.rejected', { why, lng: 'ar' }));
+  const cur = db.get<Record<string, unknown>>(`SELECT * FROM "${doc.t}" WHERE id = ?`, [doc.k]);
+  if (cur) {
+    if (frozen.some((c) => c in row && String(cur[c] ?? '') !== String(row[c] ?? ''))) throw no(tr('derive.frozen', { lng: 'ar' }));
+    // وقيد الدفعة لا يُستبدل بغيره (فكّه عند حذف قيده من السلة يبقى)
+    if (doc.t === 'contract_payments' && row.journal_entry_id && cur.journal_entry_id && row.journal_entry_id !== cur.journal_entry_id) {
+      throw no(tr('derive.frozen', { lng: 'ar' }));
+    }
+    return;
+  }
+  if (!doc.by || doc.by === ownerUid(db)) return;
+  if (doc.t === 'contract_payments') {
+    const je = (row.journal_entry_id as string | null) ?? null;
+    if (!je) { if ((Number(row.net_halalas) || 0) > 0) throw no(tr('derive.noEntry', { lng: 'ar' })); return; }
+    if (db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: قيدها لا يُربط بدفعةٍ أخرى */ WHERE journal_entry_id = ? AND id != ?`, [je, doc.k])) throw no(tr('derive.manyPayments', { lng: 'ar' }));
+    const e = db.get<{ src_type: string | null; src_id: string | null; date: string }>(
+      `SELECT src_type, src_id, date FROM journal_entries WHERE id = ? AND status = 'مرحّل'`, [je]); // i18n-exempt: حالة القيد المخزّنة
+    if (e?.src_type !== 'rent') return;
+    const lines = db.all<{ account_code: string; debit_halalas: number; credit_halalas: number }>(
+      `SELECT account_code, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`, [je]);
+    rentCheckAgainst(db, { srcId: e.src_id ?? '', date: e.date,
+      lines: lines.map((l) => ({ account: l.account_code, debit: Number(l.debit_halalas), credit: Number(l.credit_halalas) })) },
+      row as unknown as RentPaymentSrc, doc.ts);
+    return;
+  }
+  const pay = db.get<RentPaymentSrc & { journal_entry_id: string | null }>(`SELECT * FROM contract_payments WHERE id = ?`, [String(row.payment_id ?? '')]);
+  if (!pay) return; // الأب الناقص يُنتظر بالمفتاح الأجنبي
+  if (doc.t === 'payment_lines') {
+    const sum = Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(amount_halalas), 0) AS n FROM payment_lines WHERE payment_id = ?`, [pay.id])!.n);
+    if (pay.method_label === CREDIT_METHOD || sum + (Number(row.amount_halalas) || 0) > (Number(pay.net_halalas) || 0)) throw no(tr('derive.method', { lng: 'ar' }));
+    return;
+  }
+  // التخصيص: بمتبقي أقساط العقد، ومجموعه بما خصّصه قيدها (المقبوض ناقصاً الرصيد الدائن)
+  const credit = pay.journal_entry_id ? Number(db.get<{ n: number }>(
+    `SELECT COALESCE(SUM(credit_halalas - debit_halalas), 0) AS n FROM journal_lines WHERE entry_id = ? AND account_code = '2410'`, [pay.journal_entry_id])!.n) : 0;
+  const prior = Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(amount_halalas), 0) AS n FROM payment_allocations WHERE payment_id = ?`, [pay.id])!.n);
+  const why = allocationIssue(db, pay, [{ installment_id: String(row.installment_id ?? ''), amount_halalas: Number(row.amount_halalas) || 0 }],
+    (Number(pay.net_halalas) || 0) - credit - prior);
+  if (why === 'await') return; // قسطٌ لم يصل: المفتاح الأجنبي يُنتظر به
+  if (why) throw no(why);
 }
 
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
@@ -790,6 +879,7 @@ function applyOne(
         // ما أرسله جهازٌ بإصدار أقدم من مسدَّدٍ وحالة يُترك · فهما يُحسبان هنا بعد التطبيق
         const row = stripDerived(doc.t, doc.d!);
         if (doc.t === 'purchases') renumberJoiningCollision(db, 'purchases', doc.k, row.no);
+        collectionRowCheck(db, doc, row);
         // حركة البنك برقم قيدها على هذا الجهاز (noteJournalNoAlias)
         if (doc.t === 'bank_tx' && typeof row.journal_no === 'string') {
           const alias = noAliases(db)[row.journal_no];
@@ -979,7 +1069,11 @@ export const SNAPSHOT_FULL = new Set(['journal_entries', 'contract_payments', 'p
 
 const PLAN_PAGE = 500;
 
-export async function readCloud(remote: RemoteStore, onProgress?: (msg: string) => void): Promise<CloudSnapshot> {
+/**
+ * minEpoch: عهد المسح الحالي في السحابة · ما كُتب في عهدٍ أقدم لا يُقرأ كما لا يُسحب (المتحقق المستقل، الجولة ٣٥ (ج١): الاستعادة
+ * كانت تضمّ قيداً من عهدٍ ممسوح)
+ */
+export async function readCloud(remote: RemoteStore, onProgress?: (msg: string) => void, minEpoch = 0): Promise<CloudSnapshot> {
   let cursor: Cursor | null = null;
   // الصفحات مرتبة بوقت الخادم فالأحدث يغلب
   const last = new Map<string, RemoteDoc>();
@@ -987,6 +1081,7 @@ export async function readCloud(remote: RemoteStore, onProgress?: (msg: string) 
     onProgress?.('جاري قراءة ما في السحابة' + (last.size ? ' · ' + last.size : ''));
     const { docs, next, more } = await remote.pull(cursor, PLAN_PAGE);
     for (const d of docs) {
+      if (minEpoch > 0 && (d.ep ?? 0) < minEpoch) continue;
       last.set(d.id, SNAPSHOT_FULL.has(d.t) ? d : { id: d.id, t: d.t, k: d.k, u: d.u, dev: d.dev, del: d.del, d: null });
     }
     if (next) cursor = next;
@@ -1045,9 +1140,9 @@ export function planFromSnapshot(db: DB, snap: CloudSnapshot): CloudReplacePlan 
 }
 
 export async function planCloudReplace(
-  db: DB, remote: RemoteStore, onProgress?: (msg: string) => void
+  db: DB, remote: RemoteStore, onProgress?: (msg: string) => void, minEpoch = 0
 ): Promise<CloudReplacePlan> {
-  return planFromSnapshot(db, await readCloud(remote, onProgress));
+  return planFromSnapshot(db, await readCloud(remote, onProgress, minEpoch));
 }
 
 /**

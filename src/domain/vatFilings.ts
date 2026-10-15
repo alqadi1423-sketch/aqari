@@ -32,6 +32,16 @@ export function requireOpenPeriod(db: DB, date: string): void {
   if (date && isFiledDate(db, date)) throw new Error(t('vat.filedEntry'));
 }
 
+/**
+ * وقت تسجيل تقديم إقرار الربع الذي فيه هذا التاريخ · null إن لم يُقدَّم · ما وصل الخادمَ بعده بتاريخٍ فيه يُرفض في المزامنة
+ * (قرار المالك 2026-10-15 «٦» · المتحقق المستقل، الجولة ٣٥ (أ٤): كان يُفحص على الجهاز الكاتب وحده)
+ */
+export function filingRecordedAt(db: DB, date: string): string | null {
+  const q = quarterId(date);
+  if (!q || !hasTable(db)) return null;
+  return db.get<{ c: string }>(`SELECT created_at AS c FROM vat_filings WHERE id = ? AND deleted_at IS NULL`, [q])?.c ?? null;
+}
+
 export function isFiledDate(db: DB, date: string): boolean {
   const q = quarterId(date);
   if (!q || !hasTable(db)) return false;

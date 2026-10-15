@@ -72,3 +72,54 @@ test('وما تعذّر تدويره يبقى فيه وسم الاتجاه وح�
   expect(hasGps(out)).toBe(false);
   done();
 });
+
+/** JPEG مصطنع بمقاطع يختارها الاختبار بعد SOI · ثم SOS وبيانات وEOI */
+const seg2 = (marker: number, payload: number[]) => [0xff, marker, (payload.length + 2) >> 8, (payload.length + 2) & 0xff, ...payload];
+const ascii = (s: string) => Array.from(s, (c) => c.charCodeAt(0));
+const GPS = ascii('GPS35');
+const has = (b: Uint8Array, s: number[]) => Buffer.from(b).includes(Buffer.from(s));
+function jpegWith(segs: number[][], tail: number[] = []): Uint8Array {
+  return Uint8Array.from([0xff, 0xd8, ...segs.flat(), 0xff, 0xdb, 0x00, 0x04, 0x00, 0x01,
+    0xff, 0xda, 0x00, 0x02, 0x11, 0xff, 0x00, 0x22, 0xff, 0xd3, 0x33, 0xff, 0xd9, ...tail]);
+}
+
+test('الجولة ٣٥ (د): ما بعد EOI لا يُنسخ (صورةٌ ثانوية فيها موقع) · وMPF وCOM وAPP11 تُنزع · وICC وAdobe وJFIF تبقى', () => {
+  const icc = seg2(0xe2, [...ascii('ICC_PROFILE'), 0, 1, 1, 9, 9]);
+  const adobe = seg2(0xee, [...ascii('Adobe'), 0, 1]);
+  const src = jpegWith([seg2(0xe0, [...ascii('JFIF'), 0, 1, 2]), icc, seg2(0xe2, [...ascii('MPF'), 0, ...GPS]), seg2(0xfe, GPS),
+    seg2(0xeb, [...ascii('JP'), ...GPS]), adobe], [0xff, 0xd8, ...seg2(0xe1, [...ascii('Exif'), 0, 0, ...GPS]), 0xff, 0xd9]);
+  const out = stripImageMetadata(src);
+  expect(has(out, GPS)).toBe(false);
+  expect(has(out, icc)).toBe(true);
+  expect(has(out, adobe)).toBe(true);
+  expect(has(out, ascii('JFIF'))).toBe(true);
+  expect(Array.from(out.subarray(out.length - 2))).toEqual([0xff, 0xd9]);
+  // بيانات المسح كما هي ومعها الحشو وإعادة التشغيل
+  expect(has(out, [0x11, 0xff, 0x00, 0x22, 0xff, 0xd3, 0x33])).toBe(true);
+});
+
+test('الجولة ٣٥ (د): بايتات الحشو قبل العلامة لا تعيد الأصل · ووسم الاتجاه بنوع LONG يُقرأ · ويُدرج بعد APP0', () => {
+  const exif = seg2(0xe1, [...ascii('Exif'), 0, 0, 0x4d, 0x4d, 0, 0x2a, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 4, 0, 0, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, ...GPS]);
+  const src = jpegWith([seg2(0xe0, [...ascii('JFIF'), 0]), [0xff], exif]);
+  expect(jpegOrientation(src)).toBe(6);
+  const out = stripImageMetadata(src, 6);
+  expect(has(out, GPS)).toBe(false);
+  expect(jpegOrientation(out)).toBe(6);
+  // APP0 أولاً بعد SOI كما يشترط JFIF، ثم مقطع الاتجاه
+  expect(Array.from(out.subarray(0, 4))).toEqual([0xff, 0xd8, 0xff, 0xe0]);
+});
+
+test('الجولة ٣٥ (د): HEIC يُحوَّل JPEG قبل النزع · وبلا محوِّل أو ببنيةٍ غير متوقعة لا يُرفق ويُذكر الخيار', async () => {
+  const heic = Uint8Array.from([0, 0, 0, 0x18, ...ascii('ftypheic'), 0, 0, 0, 0, ...ascii('mif1heic'), ...GPS]);
+  const conv = filesEnv(async () => jpeg(1));
+  const row = await putAttachment(conv.env, heic, { entityType: 'library', kind: 'other', originalName: 'h.heic', mime: 'image/heic' });
+  expect(row.ext).toBe('jpg');
+  expect(hasGps(conv.env.fs.read(conv.env.attachmentsDir + '/' + row.sha256 + '.' + row.ext))).toBe(false);
+  conv.done();
+  const none = filesEnv(async () => null);
+  await expect(putAttachment(none.env, heic, { entityType: 'library', kind: 'other', originalName: 'h2.heic', mime: 'image/heic' }))
+    .rejects.toThrow(/أطفئ/);
+  await expect(putAttachment(none.env, Uint8Array.from([0xff, 0xd8, 0x12, 0x34, ...GPS]), { entityType: 'library', kind: 'other', originalName: 'bad.jpg', mime: 'image/jpeg' }))
+    .rejects.toThrow(/أطفئ/);
+  none.done();
+});

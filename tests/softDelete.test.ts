@@ -1,3 +1,4 @@
+import { CANCEL_ONLY_TABLES, MEMBER_NO_HARD_DELETE } from '@/db/softDelete';
 /**
  * قرار المالك 2026-10-15 «٨. حذف العضو في أقسامه: الحذف الناعم وحده للعضو» · قائمة جداول الحذف الناعم تطابق المخطط · وكنس
  * الملفات على جهاز العضو لا يحذف صفوفاً · بيانات مصطنعة.
@@ -32,4 +33,14 @@ test('كنس الملفات على جهاز العضو يحذف الملف وح�
       env.closeLive();
     } finally { rmrf(dir); }
   }
+});
+
+test('الجولة ٣٥ (ج٢): سجلات التحصيل والتسوية بلا حذفٍ ناعم في المخطط · وفي قائمة ما لا يحذفه العضو نهائياً', () => {
+  const { memDb } = require('./helpers/testDb') as typeof import('./helpers/testDb');
+  const db = memDb();
+  for (const t of CANCEL_ONLY_TABLES) {
+    expect(db.all<{ name: string }>(`PRAGMA table_info("${t}")`).length).toBeGreaterThan(0);
+    expect(MEMBER_NO_HARD_DELETE).toContain(t);
+  }
+  db.close();
 });

@@ -502,10 +502,10 @@ service cloud.firestore {
           // إحياء شاهد الحذف كالإنشاء: عقاراته بحقيقته · وشاهد الحذف فارغٌ (بلا d، فلا يكشف شيئاً برموز رؤيته) لصفٍّ كان
           // في عقاراته (التحقق المستقل: شاهدٌ يُبقي d برؤية أوسع كان يكشف المبالغ)
           ? (before.del != true || (pidsGOk(after) && pidsBound(org, after)))
-            // والعضو لا يحذف حذفاً نهائياً ما فيه حذفٌ ناعم (قرار المالك 2026-10-15 «٨»: الحذف الناعم وحده للعضو · وكان العقار والوحدة
-            // والعقد وحدها: المراجعة الخارجية ٧ · النتيجة ٢)، وحذفه بحاذفه · تعبيرٌ نمطي واحد بكلفةٍ ثابتة لا قائمة
+            // والعضو لا يحذف حذفاً نهائياً ما فيه حذفٌ ناعم ولا ما يُلغى ولا يُحذف كالدفعة (قرار المالك 2026-10-15 «٨»: الحذف الناعم
+            // وحده للعضو · وكان العقار والوحدة والعقد وحدها: المراجعة الخارجية ٧ · النتيجة ٢)، وحذفه بحاذفه · تعبيرٌ نمطي واحد بكلفةٍ ثابتة
             && (after.del != true || (after.d == null && propsOk(m, before) && after.get('dby', '') == request.auth.uid
-                && !baseT(after.t).matches('(accounts|cost_centers|tenants|suppliers|banks|properties|units|meters|company_docs|message_scripts|form_templates|journal_entries|contracts|occupants|reservations|key_money_deals|claims|invoices|purchases|bank_tx|handovers|purchase_lines|assets|attachments|vat_filings)')))
+                && !baseT(after.t).matches('(accounts|cost_centers|tenants|suppliers|banks|properties|units|meters|company_docs|message_scripts|form_templates|journal_entries|contracts|occupants|reservations|key_money_deals|claims|invoices|purchases|bank_tx|handovers|purchase_lines|assets|attachments|vat_filings|contract_payments|payment_lines|payment_allocations|deposit_settlements|tenant_ratings)')))
           : (after.pids == before.pids
               // عقاراته كما هي: روابطه كما هي، أو تغيّرت بحقيقته (وحدةٌ أخرى في عقاره)
               ? (!linksChanged(before, after) || pidsBound(org, after))

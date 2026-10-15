@@ -740,13 +740,23 @@
     "saveNewPin": "Save the PIN and open",
     "newPinFailed": "Could not save the new PIN"
   },
+  "imgMeta": {
+    "unstripped": "Could not remove this image's metadata, so it was not attached · To attach it as is, turn off image metadata removal in Settings"
+  },
   "derive": {
     "noPayment": "A member's collection entry whose payment has not arrived yet",
     "rejected": "Collection entry rejected · {{why}}",
     "source": "Its source does not match its payment",
     "date": "Its date differs from its payment's date",
     "account": "Account {{account}} does not match what its payment derives",
-    "revenue": "Total revenue does not match its payment"
+    "revenue": "Total revenue does not match its payment",
+    "manyPayments": "More than one payment for one entry",
+    "method": "The payment method does not match its entry",
+    "allocContract": "An allocation to an installment of another contract",
+    "allocOver": "The allocation exceeds the installment's remaining amount or the amount received",
+    "noCredit": "The tenant's credit balance is not enough",
+    "frozen": "A payment's amounts and links do not change after it is created",
+    "noEntry": "A payment with an amount and no entry"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",
