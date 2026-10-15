@@ -9,6 +9,8 @@ import { fileVatReturn } from '@/domain/vatFilings';
 import { getMeta } from '@/repos/settings';
 import { confirmContract, recordRentPayment, recordBulkRentPayment, applyTenantCredit } from '@/domain/contracts/service';
 import { cancelPayment } from '@/domain/contracts/cancelPayment';
+import { createReservation } from '@/domain/reservations';
+import { getMeta as metaOf } from '@/repos/settings';
 import { DISCOUNT_AFTER_DUE } from '@/domain/contracts/installments';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { postEntry } from '@/domain/accounting/post';
@@ -373,5 +375,70 @@ test('الجولة ٣٦ (ع٣) إيجابي: سدادٌ من الرصيد أُل
   expect(owner.get(`SELECT 1 FROM contract_payments WHERE id = ?`, [p2])).toBeTruthy();
   const je = owner.get<{ j: string }>(`SELECT journal_entry_id AS j FROM contract_payments WHERE id = ?`, [p2])!.j;
   expect(has(owner, je)).toBe(true);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٧ (ر١): عربونٌ مزوّر بلا حجزٍ وراءه لا يسدّد قسطاً · وتحويل عربون حجزٍ حقيقي من العضو يُقبل', async () => {
+  const r = new MemoryRemote();
+  const owner = memDb();
+  const dev = memDb();
+  enableSync(owner, UID);
+  enableSync(dev, UID);
+  const u = addUnit(owner, addProperty(owner, { name: 'عقار عربون مصطنع' }));
+  await sync(owner, r);
+  await sync(dev, r);
+  const rid = createReservation(dev, { unitId: u, name: 'حاجز مصطنع', phone: '', depositHalalas: 30000, expiryDate: '2099-01-01' });
+  const cid = confirmContract(dev, { ...contractInput(u, { tenant: 'مستأجر عربون مصطنع', idNumber: '1000000883', phone: '0500000883',
+    start: '2026-01-01', depositHalalas: 0 }), reservationId: rid } as never);
+  await sync(dev, r);
+  for (const d of [...r.docs.values()]) if (d.t === 'journal_entries' || d.t === 'contract_payments') r.inject({ ...d, by: MEMBER });
+  await sync(owner, r);
+  await sync(owner, r);
+  const legit = owner.get<{ id: string }>(`SELECT id FROM contract_payments WHERE contract_id = ? AND method_label = 'من العربون'`, [cid]);
+  expect(legit).toBeTruthy();
+  // المزوّر: قيد تحويلٍ بلا حجز ودفعةٌ «من العربون» على قسطٍ آخر بكامله
+  const insts = owner.all<{ id: string; amount_halalas: number }>(`SELECT id, amount_halalas FROM contract_installments WHERE contract_id = ? ORDER BY due_date`, [cid]);
+  const conv = [...r.docs.values()].find((d) => d.t === 'journal_entries' && d.d?.src_type === 'reservation_convert')!;
+  const full = Number(insts[3].amount_halalas);
+  r.inject({ ...conv, id: docId('journal_entries', 'JE-RSV'), k: 'JE-RSV', u: later(), by: MEMBER,
+    d: { ...conv.d!, id: 'JE-RSV', no: 'JE-RSV', src_id: 'RSV-NONE' },
+    lines: conv.lines!.map((l, i) => ({ ...l, id: 'JL-RSV-' + i, entry_id: 'JE-RSV',
+      debit_halalas: Number(l.debit_halalas) ? full : 0, credit_halalas: Number(l.credit_halalas) ? full : 0 })) });
+  const pay = r.docs.get(docId('contract_payments', legit!.id))!;
+  r.inject({ ...pay, id: docId('contract_payments', 'PAY-RSV'), k: 'PAY-RSV', by: MEMBER, u: later(),
+    d: { ...pay.d!, id: 'PAY-RSV', installment_id: insts[3].id, net_halalas: full, gross_halalas: full, journal_entry_id: 'JE-RSV' } });
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(owner.get(`SELECT 1 FROM contract_payments WHERE id = 'PAY-RSV'`)).toBeFalsy();
+  expect(paidOf(owner, insts[3].id)).toBe(0);
+  expect(reasonOf(owner, 'PAY-RSV')).toMatch(/حجز/);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٧ (ر٥): إلغاء دفعةٍ لها قيد بتعديلٍ وحده بلا قيد عكسٍ يُرفض · ويبقى المسدَّد', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  await sync(dev, r);
+  asMember(r);
+  await sync(owner, r);
+  const pay = docsOf(r, 'contract_payments').pop()!;
+  r.inject({ ...pay, u: later(), d: { ...pay.d!, cancelled_at: '2026-02-05', cancel_reason: 'إلغاء مصطنع', cancel_entry_id: null } });
+  await sync(owner, r);
+  expect(owner.get<{ c: string | null }>(`SELECT cancelled_at AS c FROM contract_payments WHERE id = ?`, [pay.k])!.c).toBeNull();
+  expect(paidOf(owner, insts[0].id)).toBe(50000);
+  expect(reasonOf(owner, pay.k)).toMatch(/بلا قيدٍ يعكس/);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٧: شاهد حذفٍ ينتحل معرّف جهاز المالك ليس صدى · فقسط العقد المؤكَّد يُعاد رفعه', async () => {
+  const { r, owner, dev, insts } = await setup();
+  const id = docId('contract_installments', insts[0].id);
+  const live = r.docs.get(id)!;
+  r.inject({ ...live, dev: metaOf(owner, 'device_id')!, u: later(), del: true, d: null, dby: MEMBER });
+  await sync(owner, r);
+  expect(reasonOf(owner, insts[0].id)).toMatch(/مؤكَّد/);
+  await sync(owner, r);
+  expect(r.docs.get(id)!.del).toBe(false);
   owner.close(); dev.close();
 });

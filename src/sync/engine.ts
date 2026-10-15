@@ -301,6 +301,9 @@ function stable(v: unknown): string {
  */
 function isEcho(db: DB, doc: RemoteDoc, deviceId: string): boolean {
   if (db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])) return true;
+  // شاهد حذفٍ والصف قائمٌ هنا، أو بحاذفٍ غير صاحب هذا الجهاز: ليس صدى ما حذفه هذا الجهاز (المتحقق المستقل، الجولة ٣٧: عضوٌ
+  // ينتحل معرّف جهاز المالك فيُتخطّى شاهده صامتاً)
+  if (doc.del && ((doc.dby && doc.dby !== getSyncState(db, 'uid')) || readRow(db, doc.t, doc.k))) return false;
   try {
     const local = buildDoc(db, doc.t, doc.k, doc.del ? 'delete' : 'upsert', doc.u, deviceId);
     return sameContent(local, doc);
@@ -524,6 +527,13 @@ function renumberJoiningCollision(db: DB, table: 'journal_entries' | 'purchases'
   enqueue(db, table, mine.id, 'upsert');
 }
 
+/** أحدث نسخةٍ لصفٍّ بمعرّفه: الوارد المنتظر إن وُجد (أحدث مما هنا)، وإلا القائم هنا */
+function latestRow<T>(db: DB, table: string, id: string): T | null {
+  const inbox = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 0`, [table, id]);
+  if (inbox) return ((JSON.parse(inbox.payload) as RemoteDoc).d ?? null) as T | null;
+  return db.get<T>(`SELECT * FROM "${table}" WHERE id = ?`, [id]) ?? null;
+}
+
 /** صفوف الجدول بعمودٍ وقيمته: القائمة هنا، وإلا ما ينتظر في الوارد (الابن يتبع أباه في ترتيب التطبيق) */
 function rowsHereOrInbox<T>(db: DB, table: string, col: string, value: string): T[] {
   const here = db.all<T>(`SELECT * FROM "${table}" WHERE "${col}" = ?`, [value]);
@@ -623,8 +633,31 @@ function tenantCreditAvailable(db: DB, contractId: string, except: string): numb
   return ledger - spent;
 }
 
-/** دفعة تحويل العربون (allocateDeposit) وقيدها: مدين 2450 بمبلغها ودائن الإيراد به، ولا سطر غيرهما */
+/**
+ * دفعة تحويل العربون (allocateDeposit) وقيدها: مدين 2450 بمبلغها ودائن الإيراد به، ولا سطر غيرهما · وحجزها قائمٌ محوَّلٌ إلى عقد
+ * الدفعة، ومجموع ما حُوِّل منه لا يتجاوز عربونه ولا ما قُبض منه في الدفتر (المتحقق المستقل، الجولة ٣٧ (ر١): كان قيد التحويل بلا
+ * حجزٍ وراءه يسدّد القسط)
+ */
 function reservationConvertCheck(db: DB, je: string, row: RowData): void {
+  const no = (why: string) => new Error(tr('derive.rejected', { why, lng: 'ar' }));
+  const rv = db.get<{ s: string | null }>(`SELECT src_id AS s FROM journal_entries WHERE id = ?`, [je])?.s ?? '';
+  const rsv = latestRow<{ deposit_halalas: number; converted_contract_id: string | null }>(db, 'reservations', rv);
+  if (!rsv) throw no(tr('derive.noReservation', { lng: 'ar' }));
+  if (rsv.converted_contract_id !== row.contract_id) throw no(tr('derive.noReservation', { lng: 'ar' }));
+  const prior = Number(db.get<{ n: number }>(
+    `SELECT COALESCE(SUM(p.net_halalas), 0) AS n FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+     WHERE e.src_type = 'reservation_convert' AND e.src_id = ? AND p.cancelled_at IS NULL AND p.id != ?`, [rv, String(row.id ?? '')])!.n);
+  const want = prior + (Number(row.net_halalas) || 0);
+  const received = Number(db.get<{ n: number }>(
+    `SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+     WHERE l.account_code = '2450' AND e.status = ? AND e.src_id = ? AND e.src_type IN ('reservation', 'reservation_forfeit', 'reservation_refund')`,
+    ['مرحّل', rv])!.n); // i18n-exempt: حالة القيد المخزّنة
+  if (want > Number(rsv.deposit_halalas) || want > received) {
+    if (rowsHereOrInbox(db, 'journal_entries', 'src_id', rv).length > db.all(`SELECT 1 FROM journal_entries WHERE src_id = ?`, [rv]).length) {
+      throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
+    }
+    throw no(tr('derive.overDeposit', { lng: 'ar' }));
+  }
   const net = Number(row.net_halalas) || 0;
   const lines = db.all<{ a: string; n: number }>(
     `SELECT account_code AS a, SUM(debit_halalas - credit_halalas) AS n FROM journal_lines WHERE entry_id = ? GROUP BY account_code`, [je]);
@@ -654,6 +687,15 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
     // وقيد الدفعة لا يُستبدل بغيره (فكّه عند حذف قيده من السلة يبقى)
     if (doc.t === 'contract_payments' && row.journal_entry_id && cur.journal_entry_id && row.journal_entry_id !== cur.journal_entry_id) {
       throw no(tr('derive.frozen', { lng: 'ar' }));
+    }
+    // وإلغاء دفعةٍ لها قيد بعاكسٍ لقيدها وحده (المتحقق المستقل، الجولة ٣٧ (ر٥): كان الإلغاء بتعديلٍ وحده فيبقى قيدها لدفعةٍ ملغاة)
+    if (doc.t === 'contract_payments' && row.cancelled_at && !cur.cancelled_at && cur.journal_entry_id) {
+      const rev = (row.cancel_entry_id as string | null) ?? null;
+      const orig = db.get<{ t: string | null; s: string | null }>(`SELECT src_type AS t, src_id AS s FROM journal_entries WHERE id = ?`, [cur.journal_entry_id as string]);
+      if (!rev || !orig) throw no(tr('derive.cancelNoReversal', { lng: 'ar' }));
+      const r = latestRow<{ src_type: string | null; src_id: string | null }>(db, 'journal_entries', rev);
+      if (!r) throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
+      if (r.src_type !== (orig.t ?? 'manual') + '_rev' || (r.src_id ?? '') !== (orig.s ?? '')) throw no(tr('derive.cancelNoReversal', { lng: 'ar' }));
     }
     return;
   }

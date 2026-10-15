@@ -1,12 +1,12 @@
 /**
- * قرار المالك 2026-10-15 «١٢» (يحلّ محل قراره 2026-08-20): نزع البيانات الوصفية من الصور مفعّلٌ افتراضاً، والصورة تُدوَّر قبله
- * بوسم اتجاهها · وما تعذّر تدويره يبقى فيه وسم الاتجاه وحده · بيانات مصطنعة.
+ * نزع البيانات الوصفية من الصور خيارٌ مطفأ افتراضاً (قرار المالك 2026-08-20، عاد بتصحيحه للقرار ١٢ في 2026-10-15)، وحين يُفعَّل
+ * تُدوَّر الصورة قبله بوسم اتجاهها · وما تعذّر تدويره يبقى فيه وسم الاتجاه وحده · بيانات مصطنعة.
  */
 import { memDb, tempDir, rmrf } from './helpers/testDb';
 import { makeBackupEnv } from './helpers/backupEnv';
 import { putAttachment } from '@/files/store';
 import { jpegOrientation, stripImageMetadata } from '@/domain/jpegExif';
-import { getSetting } from '@/repos/settings';
+import { getSetting, setSetting } from '@/repos/settings';
 import { migrate } from '@/db/migrations';
 import { SCHEMA_VERSION } from '@/db/schema';
 
@@ -30,20 +30,34 @@ test('وسم الاتجاه يُقرأ بالترتيبين · وغيابه طب
   expect(jpegOrientation(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]))).toBe(1);
 });
 
-test('القاعدة الجديدة: النزع مفعّل افتراضاً · والقائمة تُفعَّل بالترحيلة ٤٦', () => {
+test('تصحيح المالك للقرار ١٢: النزع مطفأ افتراضاً · والجهاز الذي فعّلته الترحيلة ٤٦ تطفئه الترحيلة ٤٧', () => {
   const db = memDb();
-  expect(getSetting(db, 'stripExif')).toBe(true);
-  db.run(`UPDATE settings SET value_json = 'false' WHERE key = 'stripExif'`);
+  expect(getSetting(db, 'stripExif')).toBe(false);
+  db.run(`UPDATE settings SET value_json = 'true' WHERE key = 'stripExif'`);
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
   migrate(db);
-  expect(getSetting(db, 'stripExif')).toBe(true);
+  expect(getSetting(db, 'stripExif')).toBe(false);
   db.close();
+});
+
+test('وهو مطفأ لا يُمسّ شيء: الصورة ترفع كما هي ولا يُستدعى المدوِّر', async () => {
+  const calls: number[] = [];
+  const dir = tempDir('aq-off-');
+  const be = makeBackupEnv(dir);
+  const env = { db: be.db, fs: be.fs, hasher: be.hasher!, attachmentsDir: be.attachmentsDir, orient: async (b: Uint8Array) => { calls.push(1); return b; } };
+  const src = jpeg(6);
+  const row = await putAttachment(env, src, { entityType: 'library', kind: 'other', originalName: 'off.jpg', mime: 'image/jpeg' });
+  expect(Array.from(env.fs.read(env.attachmentsDir + '/' + row.sha256 + '.' + row.ext))).toEqual(Array.from(src));
+  expect(calls).toEqual([]);
+  be.closeLive(); rmrf(dir);
 });
 
 /** بيئة ملفات على مجلدٍ مؤقت بمدوِّرٍ مصطنع */
 function filesEnv(orient: (b: Uint8Array) => Promise<Uint8Array | null>) {
   const dir = tempDir('aq-orient-');
   const be = makeBackupEnv(dir);
+  // الخيار مفعّلٌ هنا: الاختبارات بعده لمسار النزع
+  setSetting(be.db, 'stripExif', true);
   return { env: { db: be.db, fs: be.fs, hasher: be.hasher!, attachmentsDir: be.attachmentsDir, orient }, done: () => { be.closeLive(); rmrf(dir); } };
 }
 
@@ -158,4 +172,22 @@ test('الجولة ٣٦: الصيغ التي لا تُنزع بالبايتات 
   expect(row.ext).toBe('jpg');
   expect(row.original_name).toBe('image.jpg');
   conv.done();
+});
+
+test('الجولة ٣٧: TIFF ممسوحٌ بلا وسومٍ وصفية يُرفق كما هو · وفيه وسم الجهاز يُحوَّل أو لا يُرفق · وWebP يُنزع منه META · وJPEG XL بـ brob لا يمرّ', async () => {
+  const tiff = (tags: number[][]) => Uint8Array.from([0x49, 0x49, 0x2a, 0, 8, 0, 0, 0, tags.length, 0,
+    ...tags.flatMap(([tg, v]) => [tg & 0xff, tg >> 8, 3, 0, 1, 0, 0, 0, v, 0, 0, 0]), 0, 0, 0, 0, 1, 2, 3, 4]);
+  const clean = tiff([[0x0100, 9], [0x0101, 9]]);
+  const withModel = tiff([[0x0100, 9], [0x0110, 1]]);
+  const none = filesEnv(async () => null);
+  const row = await putAttachment(none.env, clean, { entityType: 'library', kind: 'other', originalName: 's.tif', mime: 'image/tiff' });
+  expect(Array.from(none.env.fs.read(none.env.attachmentsDir + '/' + row.sha256 + '.' + row.ext))).toEqual(Array.from(clean));
+  await expect(putAttachment(none.env, withModel, { entityType: 'library', kind: 'other', originalName: 'm.tif', mime: 'image/tiff' })).rejects.toThrow(/أطفئ/);
+  const jxl = Uint8Array.from([0, 0, 0, 12, ...ascii('JXL '), 0x0d, 0x0a, 0x87, 0x0a, 0, 0, 0, 16, ...ascii('brob'), ...ascii('Exif'), 1, 2, 3, 4]);
+  await expect(putAttachment(none.env, jxl, { entityType: 'library', kind: 'other', originalName: 'x.jxl', mime: 'image/jxl' })).rejects.toThrow(/أطفئ/);
+  none.done();
+  const riff = (type: string, data: number[]) => [...ascii(type), data.length & 255, 0, 0, 0, ...data, ...(data.length & 1 ? [0] : [])];
+  const body = [...ascii('WEBP'), ...riff('VP8 ', [7, 7, 7, 7]), ...riff('META', GPS)];
+  const webp = Uint8Array.from([...ascii('RIFF'), body.length & 255, 0, 0, 0, ...body]);
+  expect(has(stripImageMetadata(webp), GPS)).toBe(false);
 });

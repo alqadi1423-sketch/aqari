@@ -758,7 +758,10 @@
     "frozen": "A payment's amounts and links do not change after it is created",
     "noEntry": "A payment with an amount and no entry",
     "entryType": "The payment's entry is not its collection entry",
-    "installmentDelete": "A member cannot delete an installment of a confirmed contract · it was uploaded again"
+    "installmentDelete": "A member cannot delete an installment of a confirmed contract · it was uploaded again",
+    "noReservation": "No existing reservation converted to the payment's contract",
+    "overDeposit": "The converted amount exceeds the reservation's deposit or what was received",
+    "cancelNoReversal": "A payment cancelled without an entry reversing its entry"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",

@@ -135,7 +135,7 @@ export function stripJpegExif(bytes: Uint8Array, keepOrientation = 1): Uint8Arra
  * مقاطع PNG التي تُبقى: الحرجة وما يلزم لعرض الصورة وألوانها وحركتها · وكل ما سواها يُنزع (قائمة سماحٍ لا منع: المتحقق المستقل،
  * الجولة ٣٦: بقي caBX وprVW)
  */
-const PNG_KEEP = ['IHDR', 'PLTE', 'IDAT', 'IEND', 'tRNS', 'cHRM', 'gAMA', 'iCCP', 'sBIT', 'sRGB', 'bKGD', 'pHYs', 'acTL', 'fcTL', 'fdAT', 'cICP'];
+const PNG_KEEP = ['IHDR', 'PLTE', 'IDAT', 'IEND', 'tRNS', 'cHRM', 'gAMA', 'iCCP', 'sBIT', 'sRGB', 'bKGD', 'pHYs', 'acTL', 'fcTL', 'fdAT', 'cICP', 'mDCV', 'cLLI'];
 
 /** PNG بما في PNG_KEEP وحده · وما بعد IEND لا يُنسخ · null لبنيةٍ غير متوقعة */
 function stripPngStrict(bytes: Uint8Array): Uint8Array | null {
@@ -164,7 +164,10 @@ export function stripPngMetadata(bytes: Uint8Array): Uint8Array {
   return stripPngStrict(bytes) ?? bytes;
 }
 
-/** WebP بلا مقطعي EXIF وXMP، وعلامتاهما في VP8X تُمحيان، وحجم RIFF يُصحَّح · null لبنيةٍ غير متوقعة */
+/** مقاطع WebP التي تُبقى: الصورة وشفافيتها وحركتها وألوانها · وما سواها يُنزع (EXIF وXMP وMETA/C2PA · المتحقق المستقل، الجولة ٣٧) */
+const WEBP_KEEP = ['VP8 ', 'VP8L', 'VP8X', 'ALPH', 'ANIM', 'ANMF', 'ICCP'];
+
+/** WebP بما في WEBP_KEEP وحده، وعلامتا EXIF وXMP في VP8X تُمحيان، وحجم RIFF يُصحَّح · null لبنيةٍ غير متوقعة */
 function stripWebpStrict(bytes: Uint8Array): Uint8Array | null {
   if (bytes.length < 12 || tag(bytes, 0) !== 'RIFF' || tag(bytes, 8) !== 'WEBP') return null;
   const chunks: Uint8Array[] = [];
@@ -175,7 +178,7 @@ function stripWebpStrict(bytes: Uint8Array): Uint8Array | null {
     const end = i + 8 + size + (size & 1);
     if (i + 8 + size > bytes.length) return null;
     const type = tag(bytes, i);
-    if (type === 'EXIF' || type === 'XMP ') stripped = true;
+    if (!WEBP_KEEP.includes(type)) stripped = true;
     else if (type === 'VP8X') {
       const c = bytes.slice(i, Math.min(end, bytes.length));
       c[8] &= ~(0x08 | 0x04);
@@ -247,9 +250,47 @@ export function imageSignature(b: Uint8Array): boolean {
  */
 export function needsJpegConversion(bytes: Uint8Array): boolean {
   if (ftypBrands(bytes).some((x) => HEIF_BRANDS.includes(x))) return true;
-  // TIFF وBigTIFF بالترتيبين، ومنها صيغ الكاميرا الخام المبنية عليه
-  return bytes.length >= 4 && ((bytes[0] === 0x49 && bytes[1] === 0x49 && (bytes[2] === 0x2a || bytes[2] === 0x2b) && bytes[3] === 0)
-    || (bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[2] === 0 && (bytes[3] === 0x2a || bytes[3] === 0x2b)));
+  if (jxlHasMetaBox(bytes)) return true;
+  // صيغ الكاميرا الخام: ORF وRW2، وBigTIFF
+  if (bytes.length >= 4 && bytes[0] === 0x49 && bytes[1] === 0x49 && ((bytes[2] === 0x52 && bytes[3] === 0x4f) || (bytes[2] === 0x55 && bytes[3] === 0))) return true;
+  if (bytes.length >= 4 && ((bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2b) || (bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[3] === 0x2b))) return true;
+  // TIFF: بوسومه الوصفية وحدها (الممسوح بلا موقعٍ ولا جهاز يبقى كما هو بصفحاته · المتحقق المستقل، الجولة ٣٧)
+  return tiffHasMeta(bytes);
+}
+
+/** وسوم TIFF الوصفية: Exif وGPS وXMP وIPTC والجهاز والكاتب · في كل صفحاته (حتى ٦٤) */
+const TIFF_META_TAGS = [0x8769, 0x8825, 0x02bc, 0x83bb, 0x010f, 0x0110, 0x013b, 0x8649];
+function tiffHasMeta(b: Uint8Array): boolean {
+  if (b.length < 8) return false;
+  const le = b[0] === 0x49 && b[1] === 0x49 && b[2] === 0x2a && b[3] === 0;
+  const be = b[0] === 0x4d && b[1] === 0x4d && b[2] === 0 && b[3] === 0x2a;
+  if (!le && !be) return false;
+  const r16 = (o: number) => (o + 2 > b.length ? -1 : le ? b[o] | (b[o + 1] << 8) : (b[o] << 8) | b[o + 1]);
+  const r32 = (o: number) => (o + 4 > b.length ? -1 : le ? (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0 : u32(b, o));
+  let ifd = r32(4);
+  for (let page = 0; page < 64 && ifd > 0 && ifd < b.length; page++) {
+    const n = r16(ifd);
+    if (n < 0) return true; // بنيةٌ مبتورة: الأحوط
+    for (let k = 0; k < n; k++) if (TIFF_META_TAGS.includes(r16(ifd + 2 + k * 12))) return true;
+    ifd = r32(ifd + 2 + n * 12);
+  }
+  return false;
+}
+
+/** JPEG XL بحاوية صناديق: Exif أو xml أو brob (المضغوط منهما) · بمرورٍ على الصناديق لا ببحثٍ في البايتات */
+function jxlHasMetaBox(b: Uint8Array): boolean {
+  if (!(b.length >= 12 && u32(b, 0) === 12 && tag(b, 4) === 'JXL ')) return false;
+  let i = 0;
+  while (i + 8 <= b.length) {
+    let size = u32(b, i);
+    const type = tag(b, i + 4);
+    if (type === 'Exif' || type === 'xml ' || type === 'brob') return true;
+    if (size === 1) { if (i + 16 > b.length) return true; size = u32(b, i + 12); }
+    if (size === 0) break;
+    if (size < 8) return true;
+    i += size;
+  }
+  return false;
 }
 
 /**

@@ -1,6 +1,6 @@
 /**
  * المراجعة الخارجية ٧ · النتيجة ٢٧ · صورٌ مصطنعة بالبايتات: البيانات الوصفية تُنزع من JPEG (Exif وXMP وIPTC) وPNG وWebP،
- * والبكسل كما هو · وفي كل مسار إرفاق حين يكون الخيار مفعّلاً، ولا يُمسّ شيء وهو مطفأ · والخيار مفعّلٌ افتراضاً (قرار المالك 2026-10-15 «١٢» يحلّ محل قراره 2026-08-20).
+ * والبكسل كما هو · وفي كل مسار إرفاق حين يكون الخيار مفعّلاً، ولا يُمسّ شيء وهو مطفأ (قرار المالك 2026-08-20، عاد بتصحيحه للقرار ١٢ في 2026-10-15).
  */
 import { stripImageMetadata } from '@/domain/jpegExif';
 import { putAttachment } from '@/files/store';
@@ -59,8 +59,6 @@ test('كل مسار إرفاق ينزعها حين يُفعَّل الخيار �
   try {
     const env = makeBackupEnv(dir);
     const fe = { db: env.db, fs: env.fs, hasher: env.hasher!, attachmentsDir: env.attachmentsDir };
-    // مفعّلٌ افتراضاً (قرار المالك 2026-10-15 «١٢») · يُطفأ هنا ليُرى أنه لا يمسّها مطفأً
-    setSetting(env.db, 'stripExif', false);
     const off = await putAttachment(fe, jpeg(), { entityType: 'library', entityId: 'L1', kind: 'صورة', originalName: 'أ.jpg', mime: 'image/jpeg' });
     expect(has(env.fs.read(env.attachmentsDir + '/' + off.sha256 + '.jpg'), GPS)).toBe(true);
     setSetting(env.db, 'stripExif', true);
