@@ -30,7 +30,7 @@ import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
-import { RENT_REVENUE_GROUP } from '../domain/accounting/rentSplit';
+import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 
 const nowIso = () => new Date().toISOString();
@@ -622,12 +622,17 @@ function tenantCreditAvailable(db: DB, contractId: string, except: string): numb
     if (id && !credit.has(id)) credit.set(id, { n: Number(d.net_halalas) || 0, off: !!d.cancelled_at });
   }
   const ids = JSON.stringify([...credit.keys(), except]);
-  const ledger = Number(db.get<{ n: number }>(
-    `SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS n
-     FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-     WHERE l.account_code = '2410' AND e.status = ? AND l.contract_id IN (SELECT value FROM json_each(?))
-       AND NOT (e.src_type IN ('rent', 'rent_rev') AND e.src_id IN (SELECT value FROM json_each(?)))`,
-    ['مرحّل', inC, ids])?.n ?? 0); // i18n-exempt: حالة القيد المخزّنة
+  // دائن 2410 يُعدّ بقدر ما يسنده مدين قيده على النقد أو تأمينات المستأجرين أو إيراد العقد (ما قُبض فعلاً) · فقيدٌ يُنشئ رصيداً
+  // من رأس المال أو مصروفٍ لا يُصرف بالسداد من الرصيد (المتحقق المستقل، الجولة ٣٨) · ومدينه يُنقص الرصيد كاملاً
+  const rows = db.all<{ c: number; b: number }>(
+    `SELECT SUM(CASE WHEN l.account_code = '2410' AND l.contract_id IN (SELECT value FROM json_each(?)) THEN l.credit_halalas - l.debit_halalas ELSE 0 END) AS c,
+            SUM(CASE WHEN l.account_code IN ('1100', '2400', ${RENT_REVENUE_SQL}) THEN l.debit_halalas ELSE 0 END) AS b
+     FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.status = ? AND e.id IN (SELECT entry_id FROM journal_lines WHERE account_code = '2410' AND contract_id IN (SELECT value FROM json_each(?)))
+       AND NOT (e.src_type IN ('rent', 'rent_rev') AND e.src_id IN (SELECT value FROM json_each(?)))
+     GROUP BY e.id`,
+    [inC, 'مرحّل', inC, ids]); // i18n-exempt: حالة القيد المخزّنة
+  const ledger = rows.reduce((sum, r) => sum + (Number(r.c) > 0 ? Math.min(Number(r.c), Number(r.b)) : Number(r.c)), 0);
   let spent = 0;
   for (const [id, c] of credit) if (id !== except && !c.off) spent += c.n;
   return ledger - spent;
@@ -648,10 +653,18 @@ function reservationConvertCheck(db: DB, je: string, row: RowData): void {
     `SELECT COALESCE(SUM(p.net_halalas), 0) AS n FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
      WHERE e.src_type = 'reservation_convert' AND e.src_id = ? AND p.cancelled_at IS NULL AND p.id != ?`, [rv, String(row.id ?? '')])!.n);
   const want = prior + (Number(row.net_halalas) || 0);
-  const received = Number(db.get<{ n: number }>(
-    `SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-     WHERE l.account_code = '2450' AND e.status = ? AND e.src_id = ? AND e.src_type IN ('reservation', 'reservation_forfeit', 'reservation_refund')`,
-    ['مرحّل', rv])!.n); // i18n-exempt: حالة القيد المخزّنة
+  // المقبوض: قيد الحجز الذي مدينه نقدٌ بقدر دائنه على 2450 ولا سطر غيرهما (المتحقق المستقل، الجولة ٣٨: كان أي دائنٍ على 2450 يُعدّ،
+  // فقيد حجزٍ من رأس المال يُنشئ عربوناً بلا نقد) · ومصادرته وردّه يُنقصانه
+  const received = db.all<{ t: string; n: number; cash: number; other: number }>(
+    `SELECT e.src_type AS t, SUM(CASE WHEN l.account_code = '2450' THEN l.credit_halalas - l.debit_halalas ELSE 0 END) AS n,
+            SUM(CASE WHEN l.account_code = '1100' THEN l.debit_halalas - l.credit_halalas ELSE 0 END) AS cash,
+            SUM(CASE WHEN l.account_code NOT IN ('2450', '1100') THEN 1 ELSE 0 END) AS other
+     FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.status = ? AND e.src_id = ? AND e.src_type IN ('reservation', 'reservation_forfeit', 'reservation_refund') GROUP BY e.id`,
+    ['مرحّل', rv]) // i18n-exempt: حالة القيد المخزّنة
+    .reduce((sum, r) => sum + (r.t === 'reservation'
+      ? (Number(r.other) === 0 && Number(r.cash) === Number(r.n) && Number(r.n) > 0 ? Number(r.n) : 0)
+      : Math.min(Number(r.n), 0)), 0);
   if (want > Number(rsv.deposit_halalas) || want > received) {
     if (rowsHereOrInbox(db, 'journal_entries', 'src_id', rv).length > db.all(`SELECT 1 FROM journal_entries WHERE src_id = ?`, [rv]).length) {
       throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
@@ -696,6 +709,9 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
       const r = latestRow<{ src_type: string | null; src_id: string | null }>(db, 'journal_entries', rev);
       if (!r) throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
       if (r.src_type !== (orig.t ?? 'manual') + '_rev' || (r.src_id ?? '') !== (orig.s ?? '')) throw no(tr('derive.cancelNoReversal', { lng: 'ar' }));
+      // ومرحّلٌ هنا مرآةٌ لقيد الدفعة (المتحقق المستقل، الجولة ٣٨ (ر٥-ب): كان عاكسٌ بحالة «قيد الإنشاء» بهللةٍ يكفي)
+      if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [rev])) throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
+      if (mirrorIssue(db, cur.journal_entry_id as string, rev) !== '') throw no(tr('derive.cancelNoReversal', { lng: 'ar' }));
     }
     return;
   }

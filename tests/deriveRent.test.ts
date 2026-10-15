@@ -11,6 +11,7 @@ import { confirmContract, recordRentPayment, recordBulkRentPayment, applyTenantC
 import { cancelPayment } from '@/domain/contracts/cancelPayment';
 import { createReservation } from '@/domain/reservations';
 import { getMeta as metaOf } from '@/repos/settings';
+import { integrityChecks } from '@/domain/accounting/integrity';
 import { DISCOUNT_AFTER_DUE } from '@/domain/contracts/installments';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { postEntry } from '@/domain/accounting/post';
@@ -441,4 +442,103 @@ test('الجولة ٣٧: شاهد حذفٍ ينتحل معرّف جهاز الم
   await sync(owner, r);
   expect(r.docs.get(id)!.del).toBe(false);
   owner.close(); dev.close();
+});
+
+test('الجولة ٣٨: عربونٌ من قيد حجزٍ بلا نقد (رأس المال) لا يُحوَّل لتسديد قسط', async () => {
+  const r = new MemoryRemote();
+  const owner = memDb();
+  const dev = memDb();
+  enableSync(owner, UID);
+  enableSync(dev, UID);
+  const u = addUnit(owner, addProperty(owner, { name: 'عقار عربون ثانٍ مصطنع' }));
+  await sync(owner, r);
+  await sync(dev, r);
+  const rid = createReservation(dev, { unitId: u, name: 'حاجز مصطنع', phone: '', depositHalalas: 30000, expiryDate: '2099-01-01' });
+  const cid = confirmContract(dev, { ...contractInput(u, { tenant: 'مستأجر عربون ثانٍ مصطنع', idNumber: '1000000884', phone: '0500000884',
+    start: '2026-01-01', depositHalalas: 0 }), reservationId: rid } as never);
+  await sync(dev, r);
+  for (const d of [...r.docs.values()]) if (d.t === 'journal_entries' || d.t === 'contract_payments') r.inject({ ...d, by: MEMBER });
+  await sync(owner, r);
+  const insts = owner.all<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date`, [cid]);
+  // حجزٌ رُفع عربونه، وقيد قبضٍ مزوّر من رأس المال، ثم تحويلٌ ودفعة بخمسين ألفاً على قسطٍ آخر
+  const rsv = r.docs.get(docId('reservations', rid))!;
+  r.inject({ ...rsv, u: later(), d: { ...rsv.d!, deposit_halalas: 80000 } });
+  const rec = [...r.docs.values()].find((d) => d.t === 'journal_entries' && d.d?.src_type === 'reservation')!;
+  r.inject({ ...rec, id: docId('journal_entries', 'JE-RCV'), k: 'JE-RCV', u: later(), by: MEMBER, d: { ...rec.d!, id: 'JE-RCV', no: 'JE-RCV' },
+    lines: rec.lines!.map((l, i) => ({ ...l, id: 'JL-RCV-' + i, entry_id: 'JE-RCV', account_code: l.account_code === '1100' ? '3100' : l.account_code,
+      debit_halalas: Number(l.debit_halalas) ? 50000 : 0, credit_halalas: Number(l.credit_halalas) ? 50000 : 0 })) });
+  const conv = [...r.docs.values()].find((d) => d.t === 'journal_entries' && d.d?.src_type === 'reservation_convert')!;
+  r.inject({ ...conv, id: docId('journal_entries', 'JE-CV2'), k: 'JE-CV2', u: later(), by: MEMBER, d: { ...conv.d!, id: 'JE-CV2', no: 'JE-CV2' },
+    lines: conv.lines!.map((l, i) => ({ ...l, id: 'JL-CV2-' + i, entry_id: 'JE-CV2',
+      debit_halalas: Number(l.debit_halalas) ? 50000 : 0, credit_halalas: Number(l.credit_halalas) ? 50000 : 0 })) });
+  const pay = docsOf(r, 'contract_payments').find((d) => d.d?.method_label === 'من العربون')!;
+  r.inject({ ...pay, id: docId('contract_payments', 'PAY-CV2'), k: 'PAY-CV2', by: MEMBER, u: later(),
+    d: { ...pay.d!, id: 'PAY-CV2', installment_id: insts[4].id, net_halalas: 50000, gross_halalas: 50000, journal_entry_id: 'JE-CV2' } });
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(owner.get(`SELECT 1 FROM contract_payments WHERE id = 'PAY-CV2'`)).toBeFalsy();
+  expect(paidOf(owner, insts[4].id)).toBe(0);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٨: رصيدٌ دائن من قيدٍ بلا سند (رأس المال إلى 2410) لا يُصرف بالسداد من الرصيد', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  await sync(dev, r);
+  const base = rentDoc(r);
+  // قيدٌ مرحّل من العضو: مدين رأس المال ودائن 2410 ببعد العقد
+  r.inject({ ...base, id: docId('journal_entries', 'JE-FAKE'), k: 'JE-FAKE', u: later(), by: MEMBER,
+    d: { ...base.d!, id: 'JE-FAKE', no: 'JE-FAKE', src_type: 'claim', src_id: 'CLM-NONE' },
+    lines: [{ ...base.lines![0], id: 'JL-F1', entry_id: 'JE-FAKE', account_code: '3100', debit_halalas: 9000, credit_halalas: 0 },
+      { ...base.lines![0], id: 'JL-F2', entry_id: 'JE-FAKE', account_code: '2410', debit_halalas: 0, credit_halalas: 9000, contract_id: cid }] });
+  await sync(owner, r);
+  // ثم سدادٌ من ذلك الرصيد بستة آلاف من جهاز العضو (رصيده في صفّ المستأجر كما يكتبه العميل المعدَّل)
+  dev.run(`UPDATE tenants SET credit_halalas = 9000 WHERE id = (SELECT tenant_id FROM contracts WHERE id = ?)`, [cid]);
+  const pid = applyTenantCredit(dev, cid, { installmentId: insts[1].id, amountHalalas: 6000, date: '2026-02-03' });
+  await sync(dev, r);
+  const k = asMember(r);
+  const p = r.docs.get(docId('contract_payments', pid))!;
+  r.inject({ ...p, by: MEMBER });
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(has(owner, k)).toBe(false);
+  expect(reasonOf(owner, k)).toMatch(/الدائن لا يكفي/);
+  expect(paidOf(owner, insts[1].id)).toBe(0);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٨ (ر٥-ب): إلغاء دفعةٍ بعاكسٍ غير مرحّل يُرفض', async () => {
+  const { r, owner, dev, cid, insts } = await setup();
+  recordRentPayment(dev, cid, { installmentId: insts[0].id, period: 'الأول', date: '2026-02-01',
+    lines: [{ method: 'cash', amountHalalas: 50000 }], discountHalalas: 0, notes: '' });
+  await sync(dev, r);
+  asMember(r);
+  await sync(owner, r);
+  const base = rentDoc(r);
+  r.inject({ ...base, id: docId('journal_entries', 'JE-DR'), k: 'JE-DR', u: later(), by: MEMBER,
+    d: { ...base.d!, id: 'JE-DR', no: 'JE-DR', status: 'قيد الإنشاء', src_type: 'rent_rev' },
+    lines: [{ ...base.lines![0], id: 'JL-DR1', entry_id: 'JE-DR', account_code: '1100', debit_halalas: 0, credit_halalas: 1 },
+      { ...base.lines![0], id: 'JL-DR2', entry_id: 'JE-DR', account_code: '3100', debit_halalas: 1, credit_halalas: 0 }] });
+  const pay = docsOf(r, 'contract_payments').pop()!;
+  r.inject({ ...pay, u: later(), d: { ...pay.d!, cancelled_at: '2026-02-05', cancel_reason: 'إلغاء مصطنع', cancel_entry_id: 'JE-DR' } });
+  await sync(owner, r);
+  await sync(owner, r);
+  expect(owner.get<{ c: string | null }>(`SELECT cancelled_at AS c FROM contract_payments WHERE id = ?`, [pay.k])!.c).toBeNull();
+  expect(paidOf(owner, insts[0].id)).toBe(50000);
+  owner.close(); dev.close();
+});
+
+test('الجولة ٣٨ (ملاحظة): إلغاء دفعة تحويل عربون يعيد ما أُلغي محتجزاً · ففحص عربون الحجوزات سليم بعده', () => {
+  const db = memDb();
+  const u = addUnit(db, addProperty(db, { name: 'عقار فحص عربون مصطنع' }));
+  const rid = createReservation(db, { unitId: u, name: 'حاجز مصطنع', phone: '', depositHalalas: 30000, expiryDate: '2099-01-01' });
+  const cid = confirmContract(db, { ...contractInput(u, { tenant: 'مستأجر فحص عربون مصطنع', idNumber: '1000000885', phone: '0500000885',
+    start: '2026-01-01', depositHalalas: 0 }), reservationId: rid } as never);
+  const check = () => integrityChecks(db).find((c) => c.name.includes('عربون الحجوزات'))!;
+  expect(check().ok).toBe(true);
+  const pid = db.get<{ id: string }>(`SELECT id FROM contract_payments WHERE contract_id = ? AND method_label = 'من العربون'`, [cid])!.id;
+  cancelPayment(db, pid, { date: '2026-02-01', reason: 'إلغاء مصطنع' });
+  expect(check()).toMatchObject({ ok: true });
+  db.close();
 });
