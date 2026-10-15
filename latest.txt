@@ -1,7 +1,6 @@
-commit f69e54259a5072320d6d2d836d4283dcc45764d3
-run https://github.com/alqadi1423-sketch/aqari/actions/runs/38707204968
+commit 08189b9194fba0812306ac568eef00be5d28a50b
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/38708584918
 os Linux · node v24.21.0 · TZ Asia/Riyadh
-success false
-suites 191 passed / 192 total
-tests 1379 passed · 1 failed · 0 skipped / 1380 total
-failed-suite tests/i18nLiterals.test.ts
+success true
+suites 192 passed / 192 total
+tests 1380 passed · 0 failed · 0 skipped / 1380 total
