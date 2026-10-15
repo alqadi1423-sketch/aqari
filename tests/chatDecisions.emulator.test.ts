@@ -130,7 +130,7 @@ d('قرارات المالك على مراجعة المحادثة', () => {
     await chat(ORG).createThread({ id: 'g_solo00001', k: 'group', p: [ORG, C].sort(), name: 'مجموعة ج' });
     expect(await chat(ORG).updateGroup('g_solo00001', [C], 'مجموعة ج')).toBeUndefined();
     expect(await chatRemoveMember(session(ORG), ORG, C, 'u-dcc@example.test')).toBe(2);
-    expect((await chat(A).myThreads()).find((t) => t.id === 'g_decgroup1')!.p).toEqual([A, B].sort());
+    expect([...(await chat(A).myThreads()).find((t) => t.id === 'g_decgroup1')!.p].sort()).toEqual([A, B].sort());
     // العضو أ يغادر: يخرج من المجموعة ومن الدليل · ولا يُخرج غيره
     expect(await status(chat(A).updateGroup('g_decgroup1', [A].sort(), 'مجموعة المشرف'))).toBe(403);
     // ولا إعادة ترتيب ولا تكرار بحجة الإخراج (ر٢)

@@ -121,7 +121,7 @@ d('إعدادات المجموعة ومسؤولوها (2026-10-08T05:31Z)', () =
     expect(await put(`orgs/${ORG}/chats/${G}?updateMask.fieldPaths=la`, { la: A }, B)).toBe(403);
     expect(await status(chat(B).setGroupMeta(G, { s: { h: 'all', w: 'all', ad: 'all' } }))).toBe(200);
     expect(await status(chat(C).addMember(G, E))).toBe(200);
-    expect((await chat(B).getThread(G)).p).toEqual([A, B, C, D, E].sort());
+    expect([...(await chat(B).getThread(G)).p].sort()).toEqual([A, B, C, D, E].sort());
   });
 
   test('من يرسل: كل الأعضاء أو المسؤولون وحدهم', async () => {
@@ -348,5 +348,29 @@ d('الجولة ٣٣: الرقم الشبيه داخل الكلمة ومعه ر�
     const self = (name: string) => put(`orgs/${ORG}/members/${A}?updateMask.fieldPaths=name&updateMask.fieldPaths=phone`, { name, phone: '0500000033' }, A);
     for (const name of ['Ali 0wner1', 'Ali 0vvner1', 'Ali 1 0wner3', 'Ali Sup3rv1sor']) expect(await self(name)).toBe(403);
     for (const name of ['Ali 3li', 'Owners Club']) expect(await self(name)).toBe(200);
+  });
+});
+
+/* ═══ قرار المالك 2026-10-15 «١٥»: المجموعة بمنشئها وحده ثم الإضافة واحداً واحداً (المراجعة الخارجية ٧ · النتيجة ٣٧) ═══ */
+d('قرار المالك «١٥»: أطراف المجموعة تُفحص عند إضافتها', () => {
+  test('سلبي: إنشاء مجموعة بأطرافٍ غير المنشئ والمالك في التزام الإنشاء يُرفض · ومعرّفٌ لا عضوية له لا يُضاف', async () => {
+    await seed();
+    const docs = `http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents`;
+    const res = await fetch(`${docs}:commit`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token(B) },
+      body: JSON.stringify({ writes: [{ update: { name: `projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/chats/g_ghosts01`,
+        fields: encodeFields({ k: 'group', p: [B, 'U-GHOST1', 'U-GHOST2'].sort(), name: 'أشباح', by: B, s: {}, a: [] }) },
+        currentDocument: { exists: false }, updateTransforms: [{ fieldPath: 'at', setToServerValue: 'REQUEST_TIME' }] }] }) });
+    await res.text();
+    expect(res.status).toBe(403);
+    expect(await status(chat(B).createThread({ id: 'g_ghosts02', k: 'group', p: [B, 'U-GHOST1'].sort(), name: 'شبح', s: {}, a: [] }))).toBe(403);
+    expect((await chat(B).getThread('g_ghosts02')).p).toEqual([B]);
+  });
+
+  test('إيجابي: المشرف ينشئ مجموعة بأعضائها ومسؤوليها وفيها المالك من البداية (قرار المالك «١٩»)', async () => {
+    await seed();
+    expect(await chat(B).createThread({ id: 'g_newgrp01', k: 'group', p: [A, B, C, ORG].sort(), name: 'جديدة', s: {}, a: [A] })).toBe('created');
+    const t = await chat(B).getThread('g_newgrp01');
+    expect([...t.p].sort()).toEqual([A, B, C, ORG].sort());
+    expect(t.a).toEqual([A]);
   });
 });

@@ -211,7 +211,14 @@ d('المراجعة ٧ «ثالثاً»: ما أُغلق بعد 1fe4557 بهجو
     expect(meter.by).toBe(PROALL.uid);
     accepted(await write(PROALL, meter));
     deniedByLogic(await write(PROALL, { ...meter, u: 'm1', del: true, d: null }), 'update');
-    accepted(await write(PROALL, { ...meter, u: 'm2', del: true, d: null, dby: PROALL.uid! }));
+    // قرار المالك 2026-10-15 «٨»: الحذف الناعم وحده للعضو · فالعدّاد (فيه حذفٌ ناعم) لا يُحذف نهائياً ولو بحاذفه، ويُحذف ناعماً
+    deniedByLogic(await write(PROALL, { ...meter, u: 'm2', del: true, d: null, dby: PROALL.uid! }), 'update');
+    accepted(await write(PROALL, { ...meter, u: 'm3', d: { ...meter.d!, deleted_at: '2026-10-15T00:00:00.000Z' } }));
+    // وسطرٌ بلا حذفٍ ناعم (غرفة الوحدة) يُحذف نهائياً بحاذفه كما كان
+    db.run(`INSERT INTO unit_rooms (id, unit_id, room_name, sort) VALUES ('R7RM', 'UN2', 'غرفة مصطنعة', 0)`);
+    const room = ann(PROALL, await built('unit_rooms', 'R7RM'));
+    accepted(await write(PROALL, room));
+    accepted(await write(PROALL, { ...room, u: 'r2', del: true, d: null, dby: PROALL.uid! }));
   });
 
   test('٢٠ نقل العقد إلى عقارٍ آخر برموز العقار القديم يُرفض · وبرموز عقاره الجديد يُقبل', async () => {

@@ -203,13 +203,18 @@ export function unlinkAttachment(db: DB, id: string): void {
  * وبعد التأكد أن لا صف حيّ يشير لبصمته.
  */
 export function gcBlobs(env: FilesEnv, retentionDays: number, now: Date = new Date()): number {
+  // جهاز العضو يكنس الملفات وحدها: حذف صفوف المرفقات نهائياً للمالك (قرار المالك 2026-10-15 «٨»)
+  let member = false;
+  try { member = !!env.db.get(`SELECT 1 FROM sync_state WHERE k = 'membership' AND v IS NOT NULL`); } catch { member = false; }
   // صفوفٌ بأسماء غير آمنة وصلت قبل فحصها (المراجعة #21): تُزال صفوفها وحدها، ولا ملف لها في المرفقات
   const unsafe = env.db.all<{ sha256: string; ext: string }>(`SELECT sha256, ext FROM blobs`).filter((b) => !isSafeBlobName(b.sha256, b.ext));
   const unsafeAtt = env.db.all<{ sha256: string }>(`SELECT DISTINCT sha256 FROM attachments`).filter((a) => !isSafeBlobName(a.sha256, 'bin'));
   for (const sha of new Set([...unsafe.map((b) => b.sha256), ...unsafeAtt.map((a) => a.sha256)])) {
     env.db.transaction(() => {
-      env.db.run(`DELETE FROM attachments WHERE sha256 = ?`, [sha]);
-      env.db.run(`DELETE FROM blobs WHERE sha256 = ?`, [sha]);
+      if (!member) {
+        env.db.run(`DELETE FROM attachments WHERE sha256 = ?`, [sha]);
+        env.db.run(`DELETE FROM blobs WHERE sha256 = ?`, [sha]);
+      }
       env.db.run(`DELETE FROM file_cache WHERE sha256 = ?`, [sha]);
     });
   }
@@ -225,8 +230,10 @@ export function gcBlobs(env: FilesEnv, retentionDays: number, now: Date = new Da
     // اسمٌ يخرج بالمسار عن مجلد المرفقات لا يُحذف ملفه (المراجعة #21) · والصفّ وحده يُزال
     const p = isSafeBlobName(o.sha256, o.ext) ? blobPath(env, o.sha256, o.ext) : null;
     env.db.transaction(() => {
-      env.db.run(`DELETE FROM attachments WHERE sha256 = ?`, [o.sha256]);
-      env.db.run(`DELETE FROM blobs WHERE sha256 = ?`, [o.sha256]);
+      if (!member) {
+        env.db.run(`DELETE FROM attachments WHERE sha256 = ?`, [o.sha256]);
+        env.db.run(`DELETE FROM blobs WHERE sha256 = ?`, [o.sha256]);
+      }
       env.db.run(`DELETE FROM file_cache WHERE sha256 = ?`, [o.sha256]);
     });
     if (p && env.fs.exists(p)) env.fs.remove(p);

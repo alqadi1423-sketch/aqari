@@ -76,7 +76,8 @@ test('#30 الإقرار المقدَّم يُجمَّد بلقطته · وما 
   const snap = filedReturn(db, 2026, 1)!;
   expect(snap.items.find((x) => x.no === '1')!.taxHalalas).toBe(15000);
   expect(() => fileVatReturn(db, 2026, 1)).toThrow();
-  // الشراء بتاريخٍ في فترته لا يُسجَّل بعد التقديم (دراسة القائم) · والدفعة المحصّلة فيها تُسجَّل: اللقطة كما هي، والفرق ظاهر في البند ٥
+  // الشراء بتاريخٍ في فترته لا يُسجَّل بعد التقديم (دراسة القائم) · ولا الدفعة (قرار المالك 2026-10-15 «٦») · وما وصل من جهازٍ
+  // لم يعلم بالتقديم يُسجَّل: اللقطة كما هي، والفرق ظاهر في البند ٥
   expect(() => savePurchase(db, {
     supplier: 'مورد مصطنع', date: '2026-03-01', due: '2026-03-30', category: 'صيانة', incorpItem: '', amortize: false,
     amortizeMonths: null, exempt: false, excludeFromVat: false, subtotalHalalas: 5000, taxHalalas: 0, totalHalalas: 5000,
@@ -85,8 +86,14 @@ test('#30 الإقرار المقدَّم يُجمَّد بلقطته · وما 
   const cid = confirmContract(db, contractInput(addUnit(db, addProperty(db, { name: 'عقار فرق مصطنع' })),
     { tenant: 'مستأجر فرق مصطنع', idNumber: '1000000727', phone: '0500000727', start: '2026-01-01', depositHalalas: 0 }));
   const i1 = db.get<{ id: string; amount_halalas: number }>(`SELECT id, amount_halalas FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1`, [cid])!;
-  recordRentPayment(db, cid, { installmentId: i1.id, period: 'الأول', date: '2026-03-01',
+  const pay = () => recordRentPayment(db, cid, { installmentId: i1.id, period: 'الأول', date: '2026-03-01',
     lines: [{ method: 'cash', amountHalalas: Number(i1.amount_halalas) }], discountHalalas: 0, notes: '' });
+  expect(pay).toThrow(/قُدِّم إقرارها/);
+  // جهازٌ لم يصله التقديم بعد: الإقرار غائبٌ عنه حين سجّل الدفعة
+  const filing = db.get<Record<string, string>>(`SELECT * FROM vat_filings WHERE id = '2026-Q1'`)!;
+  db.run(`DELETE FROM vat_filings WHERE id = '2026-Q1'`);
+  pay();
+  db.run(`INSERT INTO vat_filings (${Object.keys(filing).join(', ')}) VALUES (${Object.keys(filing).map(() => '?').join(', ')})`, Object.values(filing));
   expect(filedReturn(db, 2026, 1)!.items).toEqual(snap.items);
   expect(filedDiff(db, 2026, 1).map((d) => d.no)).toEqual(expect.arrayContaining(['5', '6']));
   db.close();

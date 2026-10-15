@@ -327,10 +327,15 @@ d('مزامنة الملفات على المحاكي', () => {
     const later = new Date(Date.now() + 40 * 86400000);
     await reconcileOwnerFiles(owner.db, own(), { now: later, force: true });
     expect(await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name12)).not.toBeNull();
-    // تفريغه من السلة: يُحذف من الخادم بمسار المالك
+    // تفريغه من السلة: يُحذف من الخادم بمسار المالك بعد ٩٠ يوماً من تفريغه (قرار المالك 2026-10-15 «١٤») لا قبلها
     purgeFromTrash(owner.db, 'attachments', id12);
     await ownSync();
-    const r2 = await reconcileOwnerFiles(owner.db, own(), { now: later, force: true });
+    const r1b = await reconcileOwnerFiles(owner.db, own(), { now: later, force: true });
+    expect(r1b.deleted).toBe(0);
+    expect(await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name12)).not.toBeNull();
+    await reconcileOwnerFiles(owner.db, own(), { now: new Date(later.getTime() + 89 * 86400000), force: true });
+    expect(await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name12)).not.toBeNull();
+    const r2 = await reconcileOwnerFiles(owner.db, own(), { now: new Date(later.getTime() + 91 * 86400000), force: true });
     expect(r2.deleted).toBeGreaterThan(0);
     expect(await statObject(nodeStorageIO, target(OWNER, OWNER_EMAIL), name12)).toBeNull();
   });

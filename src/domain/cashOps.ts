@@ -4,6 +4,7 @@
  * الحساب 1100 يحمل النقد كله؛ أرصدة البنوك تُتتبَّع عبر bank_tx،
  * لذا الإيداع/السحب/التحويل حركات بنكية فقط بلا قيد، والمصروف والإيداع قيدان.
  */
+import { requireOpenPeriod } from './vatFilings';
 import type { DB } from '../db/adapter';
 import { requireCash } from './cashGuard';
 import { uid } from './ids';
@@ -46,6 +47,7 @@ export function depositCashToBank(
   args: { bankId: string; amountHalalas: number; date: string; notes?: string }
 ): void {
   requirePositive(args.amountHalalas);
+  requireOpenPeriod(db, args.date);
   requireWalletCovers(db, args.amountHalalas, 'الإيداع في البنك');
   const name = bankName(db, args.bankId);
   db.transaction(() => {
@@ -66,6 +68,7 @@ export function withdrawCashFromBank(
   args: { bankId: string; amountHalalas: number; date: string; notes?: string }
 ): void {
   requirePositive(args.amountHalalas);
+  requireOpenPeriod(db, args.date);
   const name = bankName(db, args.bankId);
   const b = bankBalance(db, args.bankId);
   if (args.amountHalalas > b) {
@@ -89,6 +92,7 @@ export function transferBetweenBanks(
   args: { fromBankId: string; toBankId: string; amountHalalas: number; date: string; notes?: string }
 ): void {
   requirePositive(args.amountHalalas);
+  requireOpenPeriod(db, args.date);
   if (args.fromBankId === args.toBankId) {
     throw new Error('اختر بنكين مختلفين · لا يمكن التحويل من الحساب إلى نفسه');
   }
@@ -114,6 +118,7 @@ export function pettyCashExpense(
   args: { amountHalalas: number; descr: string; date: string }
 ): void {
   requirePositive(args.amountHalalas);
+  requireOpenPeriod(db, args.date);
   const descr = args.descr.trim();
   if (!descr) throw new Error('اكتب بيان المصروف · لا يُقبل مصروف بلا بيان');
   requireWalletCovers(db, args.amountHalalas, 'صرف المصروف');
@@ -140,6 +145,7 @@ export function ownerCashIn(
   args: { amountHalalas: number; date: string; notes?: string }
 ): void {
   requirePositive(args.amountHalalas);
+  requireOpenPeriod(db, args.date);
   const memo = args.notes?.trim() || 'إيداع المالك نقداً';
   const opId = uid();
   db.transaction(() => {
@@ -164,6 +170,7 @@ export function ownerCashOut(
   args: { amountHalalas: number; date: string; notes?: string }
 ): void {
   requirePositive(args.amountHalalas);
+  requireOpenPeriod(db, args.date);
   requireWalletCovers(db, args.amountHalalas, 'مسحوبات المالك');
   const memo = args.notes?.trim() || 'مسحوبات المالك نقداً';
   const opId = uid();

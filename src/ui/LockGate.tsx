@@ -15,8 +15,7 @@ import { T, BtnPrimary, BtnGhost, Field, Note } from './components';
 import { C, TYPE } from './theme';
 import { decideReturn, pinShapeOk, type Away, type LockConfig } from '../domain/appLock';
 import {
-  lockMaybeOn, loadLock, askDevice, deviceLockAvailable, tryPin, promptActive, whilePrompting, onLockChange, monoNow, clockTrusted,
-} from '../services/appLockService';
+  lockMaybeOn, loadLock, askDevice, deviceLockAvailable, tryPin, promptActive, whilePrompting, onLockChange, monoNow, clockTrusted, enablePinLock } from '../services/appLockService';
 import { confirmSameAccount } from '../services/cloud';
 import { setAppLocked } from './lockState';
 
@@ -82,6 +81,10 @@ function LockScreen({ cfg, onOpen }: { cfg: LockConfig; onOpen: () => void }) {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [device, setDevice] = useState<boolean | null>(null);
+  // «نسيت الرمز»: بعد تأكيد الحساب بقوقل رمزٌ جديد قبل الفتح (قرار المالك 2026-10-15 «٢»: «التحقق بقوقل ثم رمز جديد»)
+  const [resetting, setResetting] = useState(false);
+  const [pin1, setPin1] = useState('');
+  const [pin2, setPin2] = useState('');
 
   const unlockDevice = async () => {
     setMsg(null);
@@ -90,6 +93,16 @@ function LockScreen({ cfg, onOpen }: { cfg: LockConfig; onOpen: () => void }) {
   const unlockAccount = async () => {
     setMsg(null);
     try { if (await whilePrompting(confirmSameAccount)) onOpen(); else setMsg(t('lock.accountMismatch')); } catch { setMsg(t('lock.accountMismatch')); }
+  };
+  const forgotPin = async () => {
+    setMsg(null);
+    try { if (await whilePrompting(confirmSameAccount)) setResetting(true); else setMsg(t('lock.accountMismatch')); } catch { setMsg(t('lock.accountMismatch')); }
+  };
+  const saveNewPin = async () => {
+    setBusy(true);
+    try { await enablePinLock(pin1, cfg.delay); setPin1(''); setPin2(''); onOpen(); }
+    catch { setMsg(t('lock.newPinFailed')); }
+    finally { setBusy(false); }
   };
 
   useEffect(() => {
@@ -111,7 +124,14 @@ function LockScreen({ cfg, onOpen }: { cfg: LockConfig; onOpen: () => void }) {
   return (
     <View style={{ flex: 1, justifyContent: 'center', padding: 24, gap: 14 }}>
       <T size={TYPE.screenTitle} bold center>{t('lock.title')}</T>
-      {cfg.method === 'pin' ? (
+      {resetting ? (
+        <>
+          <Note>{t('lock.setNewPin')}</Note>
+          <Field label={t('lock.newPin')} value={pin1} onChange={(v) => setPin1(v.replace(/[^0-9]/g, '').slice(0, 8))} keyboard="numeric" secure ltr />
+          <Field label={t('lock.repeatPin')} value={pin2} onChange={(v) => setPin2(v.replace(/[^0-9]/g, '').slice(0, 8))} keyboard="numeric" secure ltr />
+          <BtnPrimary title={t('lock.saveNewPin')} loading={busy} disabled={!pinShapeOk(pin1) || pin1 !== pin2} onPress={saveNewPin} />
+        </>
+      ) : cfg.method === 'pin' ? (
         <>
           <Field label={t('lock.pinLabel')} value={pin} onChange={(v) => setPin(v.replace(/[^0-9]/g, '').slice(0, 8))} keyboard="numeric" secure ltr />
           <BtnPrimary title={t('lock.open')} loading={busy} disabled={!pinShapeOk(pin)} onPress={submitPin} />
@@ -125,8 +145,8 @@ function LockScreen({ cfg, onOpen }: { cfg: LockConfig; onOpen: () => void }) {
         <BtnPrimary title={t('lock.open')} onPress={unlockDevice} />
       )}
       {msg ? <Note tone="danger">{msg}</Note> : null}
-      {cfg.method === 'pin' ? (
-        <BtnGhost title={t('lock.forgotPin')} onPress={unlockAccount} />
+      {cfg.method === 'pin' && !resetting ? (
+        <BtnGhost title={t('lock.forgotPin')} onPress={forgotPin} />
       ) : null}
     </View>
   );

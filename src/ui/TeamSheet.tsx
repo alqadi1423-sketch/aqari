@@ -19,7 +19,7 @@ import { routeAllowed } from '../domain/access/routes';
 import { MONEY_SECTIONS } from '../domain/access/readSections';
 import { MORE_SCREENS, screenText } from './moreScreens';
 import { profileOf, type MemberDoc, type MemberSpec } from '../services/org';
-import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow, updateMemberProfileNow, chatSupervisorNow, setChatSupervisorNow } from '../services/cloud';
+import { inviteMemberNow, listTeamNow, removeMemberNow, revokeInviteNow, updateMemberNow, updateMemberProfileNow, chatSupervisorNow, setChatSupervisorNow, readCompatNow, raiseCompatNow } from '../services/cloud';
 import { useLang } from '../i18n';
 import { permLine } from '../domain/memberAudit';
 import { validateProfile, type MemberProfile } from '../domain/access/profile';
@@ -40,12 +40,19 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
   const [busy, setBusy] = useState(false);
   const [edit, setEdit] = useState<{ uid: string | null; doc: MemberDoc | null } | null>(null);
 
+  // حدّ إصدار الأعضاء وزرّه (قرار المالك 2026-10-15 «٤») · قراءته لا تُسقط الشاشة
+  const [compat, setCompat] = useState<{ live: boolean; min: number; mine: number } | null>(null);
   const load = useCallback(async () => {
     setBusy(true);
     try { setTeam(await listTeamNow()); }
     catch (e) { await reportFailure({ title: 'تعذّر قراءة الأعضاء', where: 'الأعضاء', db, e }); }
+    setCompat(await readCompatNow().catch(() => null));
     setBusy(false);
   }, [db]);
+  const raise = async () => {
+    try { toast(t((await raiseCompatNow(db)) ? 'compat.raised' : 'compat.already', { v: compat?.mine ?? '' })); load(); }
+    catch (e) { await reportFailure({ title: t('compat.raiseFailed'), where: 'الأعضاء', db, e }); }
+  };
   useEffect(() => { if (visible) load(); }, [visible, load]);
 
   const props = (doc: MemberDoc) => (doc.all ? 'كل العقارات' : doc.props.length + ' عقار');
@@ -58,6 +65,12 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
         footer={<BtnPrimary title="+ دعوة عضو" onPress={() => setEdit({ uid: null, doc: null })} />}>
         {!team ? <EmptyState>{busy ? 'جاري القراءة' : 'لا اتصال'}</EmptyState> : (
           <>
+            {compat?.live ? (
+              <View style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
+                <T size={TYPE.caption} color={C.muted}>{compat.min ? t('compat.status', { min: compat.min, mine: compat.mine }) : t('compat.none', { mine: compat.mine })}</T>
+                {compat.min < compat.mine ? <Row style={{ marginTop: 6 }}><BtnGhost small title={t('compat.requireMine')} onPress={raise} /></Row> : null}
+              </View>
+            ) : null}
             {team.members.length || team.invites.length ? null : <EmptyState>لا أعضاء بعد · ادعُ عضواً بإيميل قوقل الخاص به</EmptyState>}
             {team.members.map((m) => (
               <View key={m.uid} style={{ paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -115,7 +128,16 @@ export function TeamSheet({ visible, onClose }: { visible: boolean; onClose: () 
                 await updateMemberNow(db, edit.uid, spec);
                 toast('حُفظت · تسري على جهازه عند أول اتصال');
               }
-              else { const doc = await inviteMemberNow(db, spec); shareInvite(doc); }
+              else {
+                // أول دعوة: تذكيرٌ بالزرّ لا رفعٌ تلقائي (قرار المالك 2026-10-15 «٤»)
+                const first = !!team && !team.members.length && !team.invites.length;
+                const doc = await inviteMemberNow(db, spec);
+                shareInvite(doc);
+                if (first && compat?.live && compat.min < compat.mine) {
+                  dialog({ title: t('compat.remindTitle'), body: t('compat.remindBody'), tone: 'normal',
+                    actions: [{ label: t('compat.later'), variant: 'ghost' }, { label: t('compat.requireMine'), onPress: raise }] });
+                }
+              }
               // إشراف الأقسام في المحادثة (قرار المالك 2026-10-07) · بعد الصلاحية، وفشله لا يُسقط ما حُفظ
               if (sup) await setChatSupervisorNow(spec.email, sup).catch((e) => reportFailure({ title: t('chat.supSaveFailed'), where: 'الأعضاء', db, e }));
               setEdit(null);

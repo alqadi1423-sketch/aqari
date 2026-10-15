@@ -549,7 +549,8 @@
     "unfiledDone": "Filing record undone",
     "commercialRentControl": "Commercial rent collected outside item 5 (its VAT comes with commercial leasing)",
     "filedDate": "This date is in a filed VAT period, so no reversal or settlement can be dated in it · choose a date in an open period",
-    "commercialRentBlock": "Commercial rent was collected in this period ({{amount}}) and its VAT is not built into the return yet, so the return cannot be filed until it is"
+    "commercialRentBlock": "Commercial rent was collected in this period ({{amount}}) and its VAT is not built into the return yet, so the return cannot be filed until it is",
+    "filedEntry": "A VAT return was filed for this date's period, so no payment, cash operation or manual entry can be recorded in it · choose a date in an open period"
   },
   "invoice": {
     "locked": "An issued invoice can't be edited, returned to draft or deleted · correct it with a credit note",
@@ -661,7 +662,16 @@
   },
   "compat": {
     "updateApp": "Update the app to continue syncing · the organization requires a newer version",
-    "updateBeforeJoin": "Update the app before accepting the invitation · the organization requires a newer version"
+    "updateBeforeJoin": "Update the app before accepting the invitation · the organization requires a newer version",
+    "requireMine": "Require my version for members",
+    "status": "Members' minimum version: {{min}} · yours: {{mine}}",
+    "none": "No minimum version for members yet · yours: {{mine}}",
+    "raised": "The minimum is now your version ({{v}}) · older members must update before syncing",
+    "already": "The minimum is already your version",
+    "raiseFailed": "Could not raise the minimum version",
+    "remindTitle": "Reminder: members' minimum version",
+    "remindBody": "This is the first invite · press «Require my version for members» so no member syncs with an older version than yours.",
+    "later": "Later"
   },
   "invites": {
     "openOwn": "Open my organization",
@@ -725,7 +735,10 @@
     "currentPin": "Current code",
     "setDelay": "Lock {{delay}}",
     "disable": "Turn off app lock",
-    "saveFailed": "Could not save the app lock"
+    "saveFailed": "Could not save the app lock",
+    "setNewPin": "Your account is confirmed · choose a new PIN to open the app",
+    "saveNewPin": "Save the PIN and open",
+    "newPinFailed": "Could not save the new PIN"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",
@@ -758,5 +771,13 @@
   },
   "bank": {
     "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"
+  },
+  "audit": {
+    "claimedName": "Written under another name: «{{name}}»"
+  },
+  "secure": {
+    "screenshots": "Block screenshots",
+    "on": "On",
+    "off": "Off"
   }
 }

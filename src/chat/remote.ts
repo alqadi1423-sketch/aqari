@@ -93,6 +93,10 @@ function msgOf(doc: { name: string; fields: Record<string, FsValue> }): RemoteMe
 /** مسار حقلٍ في خريطة بمفتاحٍ قد يحوي أي حرف (رقم عضو) */
 const mapKey = (field: string, key: string) => field + '.`' + key.replace(/\\/g, '\\\\').replace(/`/g, '\\`') + '`';
 
+/** آخر ما أُخذ من صفحة: وقته في الخادم ورقم مستنده (المراجعة الخارجية ٧ · النتيجة ٤٠) */
+export interface PageAfter { ts: string; id: string }
+const TS_THEN_NAME = [{ field: { fieldPath: 'ts' }, direction: 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }];
+
 export class ChatRemote {
   private docsRoot: string;
   private root: string;
@@ -137,11 +141,22 @@ export class ChatRemote {
 
   /* ─── المحادثات ─── */
 
-  /** المجموعة بإعداداتها ومسؤوليها المعيَّنين عند الإنشاء (قرار المالك 2026-10-08T05:31Z) */
+  /**
+   * المجموعة بإعداداتها ومسؤوليها المعيَّنين عند الإنشاء (قرار المالك 2026-10-08T05:31Z) · تُنشأ بمنشئها وحده (ومعه المالك إن كان
+   * فيها) ثم يُضاف كل عضوٍ في التزامه فتفحص القواعد عضويته، ثم يُعيَّن المسؤولون (قرار المالك 2026-10-15 «١٥» · المراجعة الخارجية ٧ ·
+   * النتيجة ٣٧: كانت الأطراف عند الإنشاء بلا فحص) · وإعادة المحاولة تكمل ما لم يُضف
+   */
   async createThread(t: { id: string; k: ChatKind; p: string[]; name: string; s?: GroupSettings; a?: string[] }): Promise<'created' | 'exists'> {
-    const fields: Record<string, unknown> = { k: t.k, p: t.p, name: t.name, by: this.o.uid };
-    if (t.k === 'group') { fields.s = t.s ?? {}; fields.a = t.a ?? []; }
-    return this.createOnce(this.orgPath(`chats/${t.id}`), fields, 'at');
+    const fields: Record<string, unknown> = { k: t.k, name: t.name, by: this.o.uid };
+    if (t.k !== 'group') return this.createOnce(this.orgPath(`chats/${t.id}`), { ...fields, p: t.p }, 'at');
+    const base = t.p.filter((u) => u === this.o.uid || u === this.o.org).sort();
+    const r = await this.createOnce(this.orgPath(`chats/${t.id}`),
+      { ...fields, p: base, s: t.s ?? {}, a: (t.a ?? []).filter((u) => base.includes(u)) }, 'at');
+    const cur = await this.getThread(t.id);
+    for (const u of t.p) if (!cur.p.includes(u)) await this.addMember(t.id, u);
+    const admins = (t.a ?? []).filter((u) => !base.includes(u));
+    if (admins.length) await this.setGroupMeta(t.id, { a: [...new Set([...(cur.a ?? []), ...(t.a ?? [])])] });
+    return r;
   }
 
   /** قناة (الدفعة ٤) · للمالك وحده، وهو فيها، ويضم إليها الأعضاءُ أنفسَهم بصلاحيتهم */
@@ -540,27 +555,33 @@ export class ChatRemote {
   }
 
   /** صفحة «من لحظة انضمامه»: الرسائل وعدد الأرقام التي جاءت بها (فالصفحة تُعدّ بالأرقام) */
-  async joinedPage(threadId: string, cursor: string, limit = 200): Promise<{ msgs: RemoteMessage[]; ids: number; lastTs: string | null }> {
+  async joinedPage(threadId: string, cursor: string, limit = 200, after: PageAfter | null = null): Promise<{ msgs: RemoteMessage[]; ids: number; lastTs: string | null; lastId: string | null }> {
     const rows = (await this.req('POST', `${this.root}/orgs/${this.o.org}/chats/${threadId}:runQuery`, {
       structuredQuery: {
         from: [{ collectionId: 'ids' }],
         where: { fieldFilter: { field: { fieldPath: 'ts' }, op: 'GREATER_THAN_OR_EQUAL', value: { timestampValue: cursor } } },
-        orderBy: [{ field: { fieldPath: 'ts' }, direction: 'ASCENDING' }],
+        orderBy: TS_THEN_NAME,
+        ...this.startAfter(threadId, 'ids', after),
         limit,
       },
     })) as Array<{ document?: { name: string } }>;
     const docs = rows.filter((r) => r.document) as Array<{ document: { name: string; fields?: Record<string, FsValue> } }>;
     const names = docs.map((r) => r.document.name.replace('/ids/', '/msgs/'));
-    if (!names.length) return { msgs: [], ids: 0, lastTs: null };
+    if (!names.length) return { msgs: [], ids: 0, lastTs: null, lastId: null };
     const lastTs = normTs(decodeFields(docs[docs.length - 1].document.fields ?? {}).ts) || null;
+    const lastId = tail(docs[docs.length - 1].document.name);
     const got = (await this.req('POST', `${this.root}:batchGet`, { documents: names })) as Array<{ found?: { name: string; fields: Record<string, FsValue> } }>;
     const msgs = got.filter((g) => g.found).map((g) => msgOf(g.found!))
       .sort((a, b) => (normTs(a.ts) < normTs(b.ts) ? -1 : normTs(a.ts) > normTs(b.ts) ? 1 : 0));
-    return { msgs, ids: names.length, lastTs };
+    return { msgs, ids: names.length, lastTs, lastId };
   }
 
   /** رسائل محادثة بعد مؤشر وقت الخادم · بترتيبه */
-  async messagesSince(threadId: string, cursor: string | null, limit = 200): Promise<RemoteMessage[]> {
+  /**
+   * رسائل محادثة بعد مؤشر وقت الخادم · بترتيبه ثم باسم المستند · after: آخر ما أُخذ من الصفحة السابقة فتبدأ بعده لا عنده (المراجعة
+   * الخارجية ٧ · النتيجة ٤٠: صفحةٌ كاملة بوقت خادمٍ واحد كانت تجمّد السحب)
+   */
+  async messagesSince(threadId: string, cursor: string | null, limit = 200, after: PageAfter | null = null): Promise<RemoteMessage[]> {
     const where = cursor
       ? { fieldFilter: { field: { fieldPath: 'ts' }, op: 'GREATER_THAN_OR_EQUAL', value: { timestampValue: cursor } } }
       : undefined;
@@ -568,11 +589,18 @@ export class ChatRemote {
       structuredQuery: {
         from: [{ collectionId: 'msgs' }],
         ...(where ? { where } : {}),
-        orderBy: [{ field: { fieldPath: 'ts' }, direction: 'ASCENDING' }],
+        orderBy: TS_THEN_NAME,
+        ...this.startAfter(threadId, 'msgs', after),
         limit,
       },
     })) as Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
     return rows.filter((r) => r.document).map((r) => msgOf(r.document!));
+  }
+
+  /** بدء الصفحة بعد (الوقت، اسم المستند) · before: false = بعده */
+  private startAfter(threadId: string, coll: 'msgs' | 'ids', after: PageAfter | null): Record<string, unknown> {
+    if (!after) return {};
+    return { startAt: { values: [{ timestampValue: after.ts }, { referenceValue: `${this.docsRoot}/${this.orgPath(`chats/${threadId}/${coll}/${after.id}`)}` }], before: false } };
   }
 
   /* ─── تعديل المجموعة والحذف (قرارات المالك 2026-10-07 على مراجعة المحادثة) ─── */

@@ -156,8 +156,11 @@ export async function pumpUploads(
 
 /* ═══════════ دورة حياة ملفات التخزين على جهاز المالك ═══════════ */
 
-/** ملفٌ في الخادم لا مرفق له عند المالك لا يُحذف قبل هذا العمر: صفّ عضوٍ رُفع ملفه ولم يبلغ المالك بعد */
-export const ORPHAN_GRACE_MS = 7 * 86400000;
+/**
+ * ملفٌ في الخادم لا مرفق له عند المالك يُحذف بعد هذه المدة من صيرورته بلا مرفق (قرار المالك 2026-10-15 «١٤»: ٩٠ يوماً · وكانت ٧
+ * أيامٍ من رفعه): فاستعادة نسخةٍ أقدم من التفريغ داخل المدة تجد ملفها · وصفّ عضوٍ لم يبلغ المالك بعد يعود مرجعاً قبلها
+ */
+export const ORPHAN_GRACE_MS = 90 * 86400000;
 /** مرور الحذف (سرد الملفات) مرةً في اليوم · ومرور الرموز بعد تغيّر البيانات وبحدٍّ أدنى بينهما، أو كل ست ساعات */
 const ORPHAN_EVERY_MS = 86400000;
 const TOKENS_MIN_MS = 10 * 60000;
@@ -216,6 +219,8 @@ export async function reconcileOwnerFiles(
   const inboxWaiting = !!db.get(`SELECT 1 FROM sync_inbox LIMIT 1`);
   if ((opts.force || now - lastGc >= ORPHAN_EVERY_MS) && !inboxWaiting) {
     const prefix = filesPrefix(t.org);
+    // ما عاد له مرفقٌ لا يُعدّ بلا مرفق
+    db.run(`DELETE FROM file_orphans WHERE sha256 IN (SELECT sha256 FROM attachments)`);
     let n = 0;
     for (const name of await listObjects(remote.io, t, prefix)) {
       if (++n % 50 === 0) await yieldUi();
@@ -223,12 +228,13 @@ export async function reconcileOwnerFiles(
       if (db.get(`SELECT 1 FROM attachments WHERE sha256 = ?`, [sha])) continue;
       // ولا لبصمةٍ في مرفقٍ أو صفّ بصمةٍ مرفوضٍ على هذا الجهاز (قد يُعاد بعد الترقية)
       if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl IN ('attachments', 'blobs') AND instr(payload, ?) > 0`, [sha])) continue;
-      const there = await statObject(remote.io, t, name);
-      if (!there) continue;
-      const born = there.created ? Date.parse(there.created) : NaN;
-      if (!Number.isFinite(born) || now - born < ORPHAN_GRACE_MS) continue;
+      // أول مرةٍ يُرى بلا مرفق يُسجَّل وقته · ويُحذف بعد المهلة منه
+      const since = db.get<{ since: string }>(`SELECT since FROM file_orphans WHERE sha256 = ?`, [sha])?.since;
+      if (!since) { db.run(`INSERT INTO file_orphans (sha256, since) VALUES (?, ?)`, [sha, new Date(now).toISOString()]); continue; }
+      if (now - Date.parse(since) < ORPHAN_GRACE_MS) continue;
       await deleteObject(remote.io, t, name);
       db.run(`DELETE FROM file_tokens WHERE sha256 = ?`, [sha]);
+      db.run(`DELETE FROM file_orphans WHERE sha256 = ?`, [sha]);
       out.deleted++;
     }
     setState(db, 'files_gc_at', String(now));

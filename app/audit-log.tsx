@@ -1,4 +1,6 @@
 /** سجل العمليات · كل حركة، غير قابلة للتعديل، بمرشحات القسم والنوع والفترة وعرض مبسّط */
+import { useLang } from '../src/i18n';
+import { AUDIT_WRITER_SQL, auditWriter } from '../src/domain/audit';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, FlatList } from 'react-native';
 import { Screen } from '../src/ui/Screen';
@@ -30,18 +32,19 @@ const PERIOD_OPTIONS = [{ value: '', label: 'كل الفترات' },
 
 interface AuditRow {
   id: string; ts: string; user_name: string; module: string; action_type: string;
-  entity_type: string; entity_name: string;
+  entity_type: string; entity_name: string; writer_uid: string | null; writer_name: string | null;
 }
 
 const EMPTY_ROWS: AuditRow[] = [];
 const EMPTY_MODULES: string[] = [];
 
 const AuditCard = React.memo(function AuditCard({
-  id, ts, userName, module, actionType, entityType, entityName, simplified, onDetail,
+  id, ts, userName, claimed, module, actionType, entityType, entityName, simplified, onDetail,
 }: {
-  id: string; ts: string; userName: string; module: string; actionType: string;
+  id: string; ts: string; userName: string; claimed: string | null; module: string; actionType: string;
   entityType: string; entityName: string; simplified: boolean; onDetail: (id: string) => void;
 }) {
+  const { t } = useLang();
   return (
     <Card style={{ paddingVertical: 9 }}>
       {/* زر التفاصيل أعلى البطاقة يساراً بمحاذاة العنوان · والعرض المبسّط لا تفاصيل له */}
@@ -60,6 +63,8 @@ const AuditCard = React.memo(function AuditCard({
         <T size={TYPE.caption} color={C.muted}>{module} · {userName}</T>
         <Num size={TYPE.caption} color={C.muted}>{dfmt(localDateOf(ts))} {localTimeOf(ts)}</Num>
       </Row>
+      {/* الاسم المكتوب في السطر غير اسم كاتبه (قرار المالك 2026-10-15 «١٠») */}
+      {claimed ? <T size={TYPE.caption} color={C.rose}>{t('audit.claimedName', { name: claimed })}</T> : null}
     </Card>
   );
 });
@@ -103,8 +108,8 @@ export default function AuditLog() {
   const rows = useMemo(() => {
     if (!ready) return EMPTY_ROWS;
     return db.all<AuditRow>(
-      `SELECT id, ts, user_name, module, action_type, entity_type, entity_name
-       FROM audit_log${whereSql} ORDER BY ts DESC LIMIT ? OFFSET ?`,
+      `SELECT audit_log.id AS id, ts, user_name, module, action_type, entity_type, entity_name, rb.uid AS writer_uid, cp.name AS writer_name
+       FROM audit_log ${AUDIT_WRITER_SQL}${whereSql} ORDER BY ts DESC LIMIT ? OFFSET ?`,
       [...whereParams, pager.limit, pager.offset]
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -131,13 +136,15 @@ export default function AuditLog() {
 
   const openDetail = useCallback((id: string) => setDetailId(id), []);
 
+  const ownerUid = useMemo(() => db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = 'org'`)?.v ?? null, [db]);
   const renderRow = useCallback(({ item }: { item: AuditRow }) => (
     <AuditCard
-      id={item.id} ts={item.ts} userName={item.user_name} module={item.module}
+      id={item.id} ts={item.ts} userName={auditWriter(item, ownerUid).name}
+      claimed={auditWriter(item, ownerUid).mismatch ? item.user_name : null} module={item.module}
       actionType={item.action_type} entityType={item.entity_type} entityName={item.entity_name}
       simplified={simplified} onDetail={openDetail}
     />
-  ), [simplified, openDetail]);
+  ), [simplified, openDetail, ownerUid]);
 
   const clearFilters = useCallback(() => {
     setQ(''); setModuleFilter(''); setActionFilter(''); setPeriodFilter('');

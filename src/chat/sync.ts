@@ -72,21 +72,24 @@ async function pullThreadOnce(db: DB, remote: ChatRemote, threadId: string, me: 
   let cursor = threadCursor(db, threadId);
   if (floor && (!cursor || cursor < floor)) cursor = floor;
   let n = 0;
+  // الصفحة التالية تبدأ بعد آخر (وقتٍ، رقمٍ) أُخذ لا عند وقته: صفحةٌ كاملة بوقتٍ واحد لا توقف السحب (المراجعة الخارجية ٧ · النتيجة ٤٠)
+  let after: { ts: string; id: string } | null = null;
   for (let guard = 0; guard < 50; guard++) {
     let page: Awaited<ReturnType<ChatRemote['messagesSince']>>;
     let full: boolean;
     let last: string | null;
+    let lastId: string | null;
     if (floor) {
-      const j = await remote.joinedPage(threadId, cursor!, PAGE);
-      page = j.msgs; full = j.ids >= PAGE; last = j.lastTs;
+      const j = await remote.joinedPage(threadId, cursor!, PAGE, after);
+      page = j.msgs; full = j.ids >= PAGE; last = j.lastTs; lastId = j.lastId;
     } else {
-      page = await remote.messagesSince(threadId, cursor, PAGE);
-      full = page.length >= PAGE; last = page.length ? page[page.length - 1].ts : null;
+      page = await remote.messagesSince(threadId, cursor, PAGE, after);
+      full = page.length >= PAGE; last = page.length ? page[page.length - 1].ts : null; lastId = page.length ? page[page.length - 1].id : null;
     }
     for (const m of page) applyRemoteMessage(db, threadId, m);
     n += page.length;
-    if (!full || !last) break;
-    if (last === cursor) break; // صفحة كاملة بوقت واحد · لا تقدّم ممكن
+    if (!full || !last || !lastId) break;
+    after = { ts: last, id: lastId };
     cursor = last;
   }
   return n;

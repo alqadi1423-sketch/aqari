@@ -15,13 +15,16 @@ export interface CloudFiles { io: StorageIO; t: StorageTarget }
 export async function deleteAllOrgFiles(files: CloudFiles, org: string, onProgress?: (m: string) => void): Promise<number> {
   const names = await listObjects(files.io, files.t, filesPrefix(org));
   let n = 0;
-  for (const name of names) {
-    await deleteObject(files.io, files.t, name);
-    n++;
+  // ثمانية معاً لا واحداً واحداً (المراجعة الخارجية ٧ · النتيجة ٤٣: عشرون ألف ملفٍ نحو ثمانين دقيقة)
+  for (let i = 0; i < names.length; i += DELETE_PARALLEL) {
+    const chunk = names.slice(i, i + DELETE_PARALLEL);
+    await Promise.all(chunk.map((name) => deleteObject(files.io, files.t, name)));
+    n += chunk.length;
     onProgress?.(t('wipe.deletingFiles', { n, total: names.length }));
   }
   return n;
 }
+const DELETE_PARALLEL = 8;
 
 /** «مسح كل البيانات» في السحابة · يعيد العهد الجديد */
 export async function wipeCloud(

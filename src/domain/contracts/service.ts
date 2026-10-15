@@ -621,6 +621,8 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
   // العقد الملغى تبقى أقساطه السابقة لإلغائه دَيناً يُحصَّل بقسطه المحدد (المراجعة ٤.٩)
   if (c.status === 'ملغى' && !input.installmentId) throw new RuleViolation('العقد ملغى · التحصيل على أقساطه القائمة وحدها، فاختر القسط');
+  // ولا دفعة بتاريخٍ في فترةٍ قُدِّم إقرارها (قرار المالك 2026-10-15 «٦»)
+  if (isFiledDate(db, input.date)) throw new RuleViolation(t('vat.filedEntry'));
   const rawLines = input.lines.filter((l) => (l.amountHalalas || 0) > 0);
   if (!rawLines.length) throw new RuleViolation('أدخل مبلغاً واحداً على الأقل');
   for (const l of rawLines) {
@@ -886,6 +888,7 @@ export function recordBulkRentPayment(
 ): string {
   const c = getContract(db, contractId);
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
+  if (isFiledDate(db, input.date)) throw new RuleViolation(t('vat.filedEntry'));
   // العقد الملغى: التوزيع على أقساطه القائمة غير الملغاة وحدها (المراجعة ٤.٩)
   const rawLines = input.lines.filter((l) => (l.amountHalalas || 0) > 0);
   if (!rawLines.length) throw new RuleViolation('أدخل مبلغاً واحداً على الأقل');

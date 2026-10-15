@@ -21,6 +21,7 @@ import { ToastProvider } from '../src/ui/Toast';
 import { DialogProvider } from '../src/ui/AppDialog';
 import { C } from '../src/ui/theme';
 import { rescheduleAllNotifications } from '../src/services/notifications';
+import { applyScreenSecureFrom } from '../src/services/screenSecure';
 import { appDb } from '../src/db/expoAdapter';
 import { perfMarkNavRender, perfRouteChanged, perfTouch, perfTouchUp } from '../src/perf/perf';
 
@@ -78,6 +79,8 @@ export default function RootLayout() {
   useEffect(() => {
     // إعادة جدولة التنبيهات (50 نداء جسر) مؤجلة بعيداً عن أول التنقلات ·
     // كنس السلة يتولاه مزوّد الحالة ضمن صيانة الإقلاع المؤجلة
+    // منع لقطة الشاشة من إعداد الجهاز فوراً (قرار المالك 2026-10-15 «٣»)
+    try { applyScreenSecureFrom(appDb()); } catch { /* أول فتح قد يفشل على الويب */ }
     const t = setTimeout(() => {
       try {
         rescheduleAllNotifications(appDb()).catch(() => {});

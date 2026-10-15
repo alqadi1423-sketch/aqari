@@ -66,7 +66,7 @@ import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
-  moveOwnerToOrg, refreshMembership, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, ownOrgExists, localBindAllowed, claimLocalBind, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite, readCompat, appTooOld,
+  moveOwnerToOrg, refreshMembership, checkEpoch, pendingEpoch, chatWipeDue, chatEpochBaseline, resolveEpoch, readEpoch, findInvites, ownOrgExists, localBindAllowed, claimLocalBind, acceptInvite, leaveOrg, listTeam, sendInvite, updateMember, removeMember, revokeInvite, readCompat, raiseCompat, appTooOld,
   updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
@@ -876,6 +876,20 @@ function teamRemote(): { remote: FirestoreRemote; org: string } {
 const orgNameOf = (db: DB) => db.get<{ name: string }>('SELECT name FROM company WHERE id = 1')?.name || 'منشأة عقاري';
 
 export async function listTeamNow() { const t = teamRemote(); return listTeam(t.remote, t.org); }
+/**
+ * حدّ إصدار الأعضاء (#36 · قرار المالك 2026-10-15 «٤»: «زر عندي «اشترط إصداري على الأعضاء»، بلا رفع تلقائي») · يقرؤه المالك ويرفعه
+ * بزرّه وحده إلى إصداره، ولا يُخفض
+ */
+export async function readCompatNow(): Promise<{ live: boolean; min: number; mine: number }> {
+  const t = teamRemote();
+  return { ...(await readCompat(t.remote, t.org)), mine: SCHEMA_VERSION };
+}
+export async function raiseCompatNow(db: DB): Promise<boolean> {
+  const t = teamRemote();
+  const raised = await raiseCompat(t.remote, t.org);
+  if (raised) logAudit(db, 'الأعضاء', 'update', 'حدّ إصدار الأعضاء', String(SCHEMA_VERSION)); // i18n-exempt: سطر سجل العمليات المخزَّن
+  return raised;
+}
 export async function inviteMemberNow(db: DB, spec: MemberSpec) {
   const t = teamRemote();
   const doc = await sendInvite(t.remote, t.org, spec, orgNameOf(db), state.user!.email);

@@ -46,5 +46,11 @@ export function migrate(db: DB, afterStep?: (version: number) => void): void {
   } finally {
     db.exec('PRAGMA foreign_keys = ON');
   }
+  // الهجرات تعطّل فحص المفاتيح الأجنبية · فيُفحص ما بعدها ويُسجَّل عدد المخالف للتشخيص ولا يمنع الفتح (المراجعة الخارجية ٧ ·
+  // النتيجة ٤٣: كان لا يُفحص بعدها)
+  try {
+    const bad = db.all<Record<string, unknown>>('PRAGMA foreign_key_check').length;
+    db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('fk_violations_after_migrate', ?)`, [String(bad)]);
+  } catch { /* قاعدة بلا جدول meta · لا يمنع الفتح */ }
   applyPlannerStats(db);
 }

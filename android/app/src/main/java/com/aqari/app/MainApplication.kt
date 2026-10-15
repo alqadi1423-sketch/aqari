@@ -27,6 +27,7 @@ class MainApplication : Application(), ReactApplication {
           add(AqariIntentsPackage())
           add(AqariCryptoPackage())
           add(AqariClockPackage())
+          add(AqariSecurePackage())
         }
     )
   }

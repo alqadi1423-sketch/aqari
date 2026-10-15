@@ -3,6 +3,7 @@
  * الذي يتحقق منه tests/opMatrix.test.ts هو نفسه ما يفرضه الخادم. tests/rulesGen.test.ts يُسقط الحزمة
  * إن اختلف الملف عن المولَّد، و UPDATE_RULES=1 يكتبه.
  */
+import { SOFT_DELETE_TABLES } from '../../db/softDelete';
 import { NAME_CLASS, LETTER_FOLDS, RESERVED_CORE } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
@@ -330,7 +331,7 @@ ${guardFns(schema)}
 
     function validOrgRow(rowId) {
       let r = request.resource.data;
-      return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts', 'op', 'g', 'pids', 'by', 'dby', 'sv', 'dr', 'cr'])
+      return r.keys().hasOnly(['t', 'k', 'd', 'lines', 'u', 'dev', 'del', 'ts', 'op', 'g', 'pids', 'by', 'dby', 'sv', 'dr', 'cr', 'ep'])
         && r.t is string && syncedOrPub(r.t) && (!('lines' in r) || (r.t == 'journal_entries' && r.lines is list))
         && r.k is string && rowId == r.t + '__' + r.k
         && r.u is string && r.dev is string && r.del is bool
@@ -403,9 +404,10 @@ ${guardFns(schema)}
           // إحياء شاهد الحذف كالإنشاء: عقاراته بحقيقته · وشاهد الحذف فارغٌ (بلا d، فلا يكشف شيئاً برموز رؤيته) لصفٍّ كان
           // في عقاراته (التحقق المستقل: شاهدٌ يُبقي d برؤية أوسع كان يكشف المبالغ)
           ? (before.del != true || (pidsGOk(after) && pidsBound(org, after)))
-            // والعضو لا يحذف عقاراً ولا وحدةً ولا عقداً، وحذفه بحاذفه (المراجعة الخارجية ٧ · النتيجة ٢ · قرار المالك «رابعاً ٢»)
+            // والعضو لا يحذف حذفاً نهائياً ما فيه حذفٌ ناعم (قرار المالك 2026-10-15 «٨»: الحذف الناعم وحده للعضو · وكان العقار والوحدة
+            // والعقد وحدها: المراجعة الخارجية ٧ · النتيجة ٢)، وحذفه بحاذفه · تعبيرٌ نمطي واحد بكلفةٍ ثابتة لا قائمة
             && (after.del != true || (after.d == null && propsOk(m, before) && after.get('dby', '') == request.auth.uid
-                && !(baseT(after.t) in ['properties', 'units', 'contracts'])))
+                && !baseT(after.t).matches('(${SOFT_DELETE_TABLES.join('|')})')))
           : (after.pids == before.pids
               // عقاراته كما هي: روابطه كما هي، أو تغيّرت بحقيقته (وحدةٌ أخرى في عقاره)
               ? (!linksChanged(before, after) || pidsBound(org, after))
@@ -502,6 +504,13 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
     }
 
     // «حذف حسابي» للمالك: نافذة ساعة بطلبٍ بوقت الخادم كما في users/{uid}
+    // عهد المسح (المراجعة الخارجية ٧ · النتيجة ٢٣): الصف بعهد كاتبه، ولا يُقبل بعهدٍ غير الحالي · فجهازٌ قرأ العهد قبل المسح ودفع بعده
+    // لا يترك صفوفاً في المنشأة الممسوحة · وقبل أي مسح لا عهد (ولا ep) · على الإنشاء وحده: المسح يحذف الصفوف كلها فدفع الجهاز
+    // المتأخر إنشاء
+    function epochOk(org) {
+      let p = /databases/$(database)/documents/orgs/$(org)/meta/epoch;
+      return exists(p) ? request.resource.data.get('ep', 0) == get(p).data.n : request.resource.data.get('ep', 0) == 0;
+    }
     function orgDeletionOpen(org) {
       let p = /databases/$(database)/documents/orgs/$(org)/meta/deletion;
       return exists(p) && request.time < get(p).data.at + duration.value(1, 'h');
@@ -514,7 +523,9 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
         allow read: if orgOwner(org) || (isMember(org) && resource.data.g.hasAny(mem(org).tokens));
         // الكتابة تُقيَّم بقواعد الإنشاء والتعديل والحذف كلها، وفي طلب commit تُستدعى الدالة بعد «و» ولو حُسمت النتيجة، والشرط الثلاثي
         // لا يستدعي دالة فرعه المتروك (تجربة المحاكي واختبار الميزانية 2026-10-10 · حدّ الألف تعبير): فكلُّ قاعدةٍ تسقط بثلاثيٍّ حين لا تنطبق
-        allow create: if resource != null ? false : (validOrgRow(rowId) && svOk(org) && (orgOwner(org) ? true : memberCreates(org)));
+        // وعهد المسح لجهاز المالك (النتيجة ٢٣) · وصفوف العضو لا يتسعها حدّ الألف تعبير (اختبار الميزانية: إنشاء العقد) فيتركها كل
+        // جهازٍ إن وصلت بعهدٍ أقدم من عهده (sync/engine.ts stageInbox)
+        allow create: if resource != null ? false : (validOrgRow(rowId) && svOk(org) && (orgOwner(org) ? epochOk(org) : memberCreates(org)));
         allow update: if resource == null ? false : (baseT(resource.data.t) == 'audit_log' ? false : (
           validOrgRow(rowId) && svOk(org)
           && (isPostedEntry(resource.data)

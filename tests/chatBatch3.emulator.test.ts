@@ -235,3 +235,21 @@ d('المحادثة · الدفعة ٣ · كل قاعدة وحدها', () => {
     await chat(ORG).closeReview(dAB);
   });
 });
+
+d('المراجعة الخارجية ٧ · النتيجة ٤٠: الصفحة تبدأ بعد آخر ما أُخذ', () => {
+  test('ثلاث رسائل بصفحاتٍ من رسالتين: الثانية تبدأ بعد الأولى لا عندها · بالترتيب نفسه', async () => {
+    const G40 = 'g_page400001';
+    expect(await chat(B).createThread({ id: G40, k: 'group', p: [A, B, C].sort(), name: 'صفحات مصطنعة', s: { h: 'all', w: 'all', ad: 'admins' }, a: [] })).toBe('created');
+    for (const [i, body] of [['P40A', 'أولى'], ['P40B', 'ثانية'], ['P40C', 'ثالثة']] as const) {
+      expect(await status(chat(A).sendMessage(G40, { id: i, name: NAMES[A], body, link: null }))).toBe(200);
+    }
+    const all = (await chat(C).messagesSince(G40, null, 500)).filter((m) => m.id.startsWith('P40'));
+    const first = all.slice(0, 2);
+    const cursor = first[0].ts;
+    const p1 = (await chat(C).messagesSince(G40, cursor, 2)).filter((m) => m.id.startsWith('P40'));
+    expect(p1.map((m) => m.id)).toEqual(first.map((m) => m.id));
+    const last = p1[p1.length - 1];
+    const p2 = (await chat(C).messagesSince(G40, cursor, 2, { ts: last.ts, id: last.id })).filter((m) => m.id.startsWith('P40'));
+    expect(p2.map((m) => m.id)).toEqual([all[2].id]);
+  });
+});

@@ -87,6 +87,7 @@ export const DEFAULT_SETTINGS: Record<string, unknown> = {
   displayScale: 100,
   fontScale: 100,
   stripExif: false,
+  blockScreenshots: false,
   fileCacheMb: 500,
 };
 

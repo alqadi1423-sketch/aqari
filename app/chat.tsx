@@ -506,7 +506,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
       ) : null}
       {editing ? <EditSheet threadId={id} m={editing} onClose={() => setEditing(null)} /> : null}
       {taskFor && thread ? (
-        <TaskSheet threadId={id} m={taskFor} task={tasks[taskFor.id] ?? null}
+        <TaskSheet threadId={id} m={taskFor} task={tasks[taskFor.id] ?? null} prefill={thread.settings.h !== 'join'}
           members={people.filter((p) => thread.members.includes(p.uid))} onClose={() => setTaskFor(null)} />
       ) : null}
       {pollOpen ? <PollSheet threadId={id} me={me} onClose={() => setPollOpen(false)} /> : null}
@@ -721,13 +721,15 @@ function dayOf(v: string): string | null {
 }
 
 /** تحويل رسالة إلى مهمة بمسؤول من أطراف المحادثة وموعد · ومنشئها يعدّلها */
-function TaskSheet({ threadId, m, task, members, onClose }: {
-  threadId: string; m: ChatMessage; task: TaskRow | null; members: ChatPerson[]; onClose: () => void;
+function TaskSheet({ threadId, m, task, members, onClose, prefill = true }: {
+  threadId: string; m: ChatMessage; task: TaskRow | null; members: ChatPerson[]; onClose: () => void; prefill?: boolean;
 }) {
   const { t } = useLang();
   const { bump } = useApp();
   const f = useSaveAttempt();
-  const [title, setTitle] = useState(task?.title ?? (m.body || m.link?.label || '').slice(0, 200));
+  // عنوان المهمة لا يُملأ من نص الرسالة في مجموعة «من لحظة انضمامه»: المهام يقرؤها من انضم بعدها فتكشف ما قبل انضمامه
+  // (المراجعة الخارجية ٧ · النتيجة ٣٤)
+  const [title, setTitle] = useState(task?.title ?? (prefill ? (m.body || m.link?.label || '').slice(0, 200) : ''));
   const [as, setAs] = useState<string>(task?.as ?? '');
   const [due, setDue] = useState(task?.due ? task.due.replace(/-/g, '/') : '');
   const save = async () => {

@@ -4,6 +4,7 @@
  * عن التطبيق · ومسح كل البيانات آخرها بطاقةً حمراء. كل صفٍّ: أيقونة واسم وقيمته الحالية وسهم،
  * وضغطه يفتح الخيارات في لوحة سفلية بدل أزرار الاختيار المتراصّة.
  */
+import { applyScreenSecure } from '../src/services/screenSecure';
 import React, { useEffect, useMemo, useState } from 'react';
 import { CashShortNote } from '../src/ui/CashGate';
 import { cashShortfall } from '../src/domain/cashGuard';
@@ -698,6 +699,10 @@ export default function Settings() {
       {/* قفل التطبيق لكل مستخدم على جهازه (#51) */}
       <Card>
         <ValueRow icon="lock" title={t('lock.settingTitle')} value={lock.value} onPress={lock.open} />
+        {/* منع لقطة الشاشة لكل جهاز (قرار المالك 2026-10-15 «٣»: مطفأ افتراضاً) */}
+        <ValueRow icon="eye" title={t('secure.screenshots')} value={settings.blockScreenshots ? t('secure.on') : t('secure.off')}
+          onPress={() => openChoice(t('secure.screenshots'), [[0, t('secure.off')], [1, t('secure.on')]], settings.blockScreenshots ? 1 : 0,
+            (v) => { updateSetting('blockScreenshots', !!v); applyScreenSecure(!!v); })} />
       </Card>
       {lock.sheet}
 

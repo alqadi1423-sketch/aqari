@@ -17,6 +17,7 @@ import { uid } from './ids';
 import { logAudit } from './audit';
 import { fmt } from './money';
 import { t } from '../i18n';
+import { requireOpenPeriod } from './vatFilings';
 import { postBookedDiscount, postEntry, type PostedEntry } from './accounting/post';
 import { walletCashBalance, bankBalance } from './accounting/ledger';
 import { DERIVED_PAID_SQL, recomputeInstallments } from './contracts/paid';
@@ -427,6 +428,7 @@ export function settleSurplus(db: DB, contractId: string, input: SettleSurplusIn
   if (amount <= 0) throw new Error('أدخل مبلغاً أكبر من صفر');
   if (amount > s.amount) throw new Error(`المبلغ (${fmt(amount)}) أكبر من الفائض (${fmt(s.amount)})`);
   if (!input.date) throw new Error('حدّد تاريخ التنفيذ');
+  requireOpenPeriod(db, input.date);
   const refund = input.action === 'refund';
   if (refund && input.method !== 'cash' && input.method !== 'bank') throw new Error('حدّد طريقة الردّ: نقداً أو تحويلاً بنكياً');
   if (refund && input.method === 'bank' && !input.bankId) throw new Error('اختر الحساب البنكي الذي خرج منه التحويل');

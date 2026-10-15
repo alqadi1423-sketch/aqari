@@ -57,6 +57,8 @@ export function decodeFields(f: Record<string, FsValue>): Record<string, unknown
 export function docToFields(d: RemoteDoc, sv: number | null = null): Record<string, FsValue> {
   const f: Record<string, unknown> = { t: d.t, k: d.k, d: d.d, u: d.u, dev: d.dev, del: d.del };
   if (sv != null && d.g) f.sv = sv;
+  // عهد المسح الذي كتبه به جهازه (المراجعة الخارجية ٧ · النتيجة ٢٣) · مع صفوف المنشأة بعد أول مسحٍ وحده
+  if (d.ep && d.g) f.ep = d.ep;
   if (d.lines) f.lines = d.lines;
   // مجموعا مدين القيد ودائنه بالهللة (المراجعات الخارجية «ثالثاً أ ٥») · القواعد تشترط تساويهما مع sv · يصطادان خطأ الجهاز لا المهاجم
   if (sv != null && d.g && d.t === 'journal_entries' && !d.del && d.lines) {
@@ -85,6 +87,7 @@ export function fieldsToDoc(id: string, fields: Record<string, FsValue>): Remote
     ...(typeof o.op === 'string' ? { op: o.op } : {}),
     ...(typeof o.by === 'string' ? { by: o.by } : {}),
     ...(typeof o.dby === 'string' ? { dby: o.dby } : {}),
+    ...(typeof o.ep === 'number' ? { ep: o.ep } : {}),
   };
 }
 

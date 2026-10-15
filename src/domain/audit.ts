@@ -45,3 +45,19 @@ export function logAudit(
     ]
   );
 }
+
+/**
+ * كاتب سطر السجل من معرّفه لا من الاسم المكتوب فيه (قرار المالك 2026-10-15 «١٠»: «شاشة السجل تعرض الكاتب من معرّفه» · المراجعة
+ * الخارجية ٧ · النتيجة ٢٢: العضو يكتب سطراً باسم عضوٍ آخر) · كاتبه من المزامنة (row_by) واسمه من الدليل، والمالك «المالك» ·
+ * وسطر هذا الجهاز أو كاتبٌ لا يُعرف اسمه بالاسم المكتوب · mismatch: الاسم المكتوب غير اسم كاتبه
+ */
+export const AUDIT_WRITER_SQL = `LEFT JOIN row_by rb ON rb.tbl = 'audit_log' AND rb.pk = audit_log.id
+  LEFT JOIN chat_people cp ON cp.uid = rb.uid`;
+export function auditWriter(r: { user_name: string; writer_uid: string | null; writer_name: string | null }, ownerUid: string | null):
+  { name: string; mismatch: boolean } {
+  if (!r.writer_uid) return { name: r.user_name, mismatch: false };
+  if (ownerUid && r.writer_uid === ownerUid) return { name: OWNER_NAME, mismatch: r.user_name !== OWNER_NAME };
+  if (r.writer_name) return { name: r.writer_name, mismatch: r.user_name !== r.writer_name };
+  return { name: r.user_name, mismatch: false };
+}
+const OWNER_NAME = 'المالك'; // i18n-exempt: فاعلٌ مخزَّن في سجل العمليات

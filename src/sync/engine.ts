@@ -189,7 +189,9 @@ function recordClockSample(db: DB, s: { serverMs: number; localMs: number } | nu
 
 export function buildDoc(db: DB, table: string, key: string, op: 'upsert' | 'delete', changedAt: string, deviceId: string): RemoteDoc {
   // u بساعة الخادم · فيقارنه كل جهاز بتعديله المصحَّح مثله (المراجعة ٤.١٦)
-  const base = { id: docId(table, key), t: table, k: key, u: toServerClock(db, changedAt), dev: deviceId };
+  // وعهد المسح الذي يعرفه الجهاز بعد أول مسح (المراجعة الخارجية ٧ · النتيجة ٢٣)
+  const ep = Number(getSyncState(db, 'wipe_epoch') ?? 0);
+  const base = { id: docId(table, key), t: table, k: key, u: toServerClock(db, changedAt), dev: deviceId, ...(ep > 0 ? { ep } : {}) };
   const row = op === 'upsert' ? readRow(db, table, key) : undefined;
   if (!row) {
     // حاذفه (المراجعة الخارجية ٧ · النتيجة ٢): القواعد تشترطه لحذف العضو، والأجهزة لا تُسلسل إلا حذف المالك
@@ -1161,8 +1163,15 @@ export async function syncOnce(
   if (remote.reserveBlocks) {
     const req = blockRequests(db);
     if (req.length) {
-      const got = await retrying(() => remote.reserveBlocks!(req));
-      db.transaction(() => { for (const b of got) addBlock(db, b.series, b.lo, b.hi); });
+      try {
+        const got = await retrying(() => remote.reserveBlocks!(req));
+        db.transaction(() => { for (const b of got) addBlock(db, b.series, b.lo, b.hi); });
+        setSyncState(db, 'blocks_error', null);
+      } catch (e) {
+        // العضو في منشأةٍ بلا عدّاد يتابع المزامنة بلا أرقام جديدة حتى يوجد العدّاد (قرار المالك 2026-10-15 «١٦») · والعابر يُرمى كما كان
+        if (!remote.memberMode || isTransientRemoteError(e)) throw e;
+        setSyncState(db, 'blocks_error', (e instanceof Error ? e.message : String(e)).slice(0, 200));
+      }
     }
   }
 
@@ -1176,9 +1185,13 @@ export async function syncOnce(
     try { page = await retrying(() => remote.pull(cursor, PULL_PAGE)); }
     catch (e) { if (isTransientRemoteError(e)) giveUp(0, outboxCount(db)); throw e; }
     const { docs, next, more } = page!;
-    if (docs.length) {
-      stageInbox(db, docs);
-      pulled += docs.length;
+    // الوارد بعهد مسحٍ أقدم من عهد هذا الجهاز يُترك (المراجعة الخارجية ٧ · النتيجة ٢٣): جهازٌ قرأ العهد قبل المسح ودفع بعده · فلا
+    // يرجع ما مُسح إلى أي جهاز · والمالك ترفض القواعد صفّه أصلاً
+    const ep = Number(getSyncState(db, 'wipe_epoch') ?? 0);
+    const fresh = ep > 0 ? docs.filter((d) => (d.ep ?? 0) >= ep) : docs;
+    if (fresh.length) {
+      stageInbox(db, fresh);
+      pulled += fresh.length;
     }
     if (next) { cursor = next; setSyncState(db, 'cursor', JSON.stringify(next)); }
     if (!(more ?? docs.length >= PULL_PAGE)) break;

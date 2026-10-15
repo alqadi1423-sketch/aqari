@@ -157,6 +157,17 @@ d('مسح كل البيانات عبر المنشأة', () => {
     await syncOnce(C.db, remote(OWNER, C), 'dev-C');
     expect(await visible(C.db)).toEqual(EMPTY);
     expect(Number(C.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects`)!.n)).toBe(0);
+
+    // المراجعة الخارجية ٧ · النتيجة ٢٣: جهازٌ قرأ العهد قبل المسح ودفع بعده (بلا عهده) يُرفض صفّه · وبعهده الحالي يُقبل
+    addProperty(C.db, { id: 'P-RACE', name: 'عقار سباق مصطنع' });
+    // كجهازٍ لم يعرف المسح بعد: يرفع بلا عهد
+    const ep0 = C.db.get<{ v: string }>(`SELECT v FROM sync_state WHERE k = 'wipe_epoch'`)!.v;
+    C.db.run(`DELETE FROM sync_state WHERE k = 'wipe_epoch'`);
+    await syncOnce(C.db, remote(OWNER, C), 'dev-C');
+    C.db.run(`INSERT INTO sync_state (k, v) VALUES ('wipe_epoch', ?)`, [ep0]);
+    expect(await remote(OWNER, C).getDoc(`orgs/${OWNER}/rows/properties__P-RACE`)).toBeNull();
+    await syncOnce(C.db, remote(OWNER, C), 'dev-C');
+    expect(await remote(OWNER, C).getDoc(`orgs/${OWNER}/rows/properties__P-RACE`)).not.toBeNull();
     void path;
   });
 });

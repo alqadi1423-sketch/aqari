@@ -3,7 +3,7 @@ import { requireCash } from '../cashGuard';
 import { t } from '../../i18n';
 import { uid, rowId } from '../ids';
 import { today } from '../dates';
-import { correctionDate, isFiledDate } from '../vatFilings';
+import { correctionDate, isFiledDate, requireOpenPeriod } from '../vatFilings';
 import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
@@ -139,6 +139,7 @@ export function manualCashOut(lines: EntryLine[]): number {
 }
 const MANUAL = 'القيد اليدوي';
 export function postManualEntry(db: DB, args: { date: string; memo: string; lines: EntryLine[] }): PostedEntry | null {
+  requireOpenPeriod(db, args.date);
   requireCash(db, manualCashOut(args.lines), MANUAL);
   return postEntry(db, { ...args, auto: false });
 }
@@ -148,14 +149,17 @@ export function postManualEntry(db: DB, args: { date: string; memo: string; line
  * «والقيد اليدوي من العضو مسودة حتى يرحّله المالك») · متوازنٌ بحسابات قائمة كالمرحّل، ولا يمسّ الأرصدة ولا النقد
  */
 export function saveManualDraft(db: DB, args: { date: string; memo: string; lines: EntryLine[] }): PostedEntry | null {
+  requireOpenPeriod(db, args.date);
   return postEntry(db, { ...args, auto: false, draft: true });
 }
 
 /** المالك يرحّل مسودة قيدٍ يدوي (من عضوٍ أو منه) · بكفاية النقد كالترحيل المباشر، والمحفّز يرفض غير المتوازن */
 export function postDraftEntry(db: DB, entryId: string): void {
-  const e = db.get<{ status: string; src_type: string | null; deleted_at: string | null }>(
-    `SELECT status, src_type, deleted_at FROM journal_entries WHERE id = ?`, [entryId]);
+  const e = db.get<{ status: string; src_type: string | null; deleted_at: string | null; date: string }>(
+    `SELECT status, src_type, deleted_at, date FROM journal_entries WHERE id = ?`, [entryId]);
   if (!e || e.status !== 'قيد الإنشاء' || e.deleted_at || e.src_type) throw new Error(t('journal.notDraft')); // i18n-exempt: حالة القيد المخزّنة
+  // ومسودةٌ صار تاريخها في فترةٍ قُدِّم إقرارها لا تُرحَّل فيها
+  requireOpenPeriod(db, e.date);
   const lines = db.all<{ account: string; debit: number; credit: number }>(
     `SELECT account_code AS account, debit_halalas AS debit, credit_halalas AS credit FROM journal_lines WHERE entry_id = ?`, [entryId]);
   requireCash(db, manualCashOut(lines), MANUAL);

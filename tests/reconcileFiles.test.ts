@@ -34,7 +34,9 @@ test('١٣ (الجولة ٢٩) لا حذف وفي صندوق الوارد مرف
   expect((await reconcileOwnerFiles(db, a.remote, { force: true })).deleted).toBe(0);
   expect(a.deleted).toEqual([]);
   db.run(`DELETE FROM sync_inbox`);
+  // يُسجَّل وقت صيرورته بلا مرفق أولاً · ويُحذف بعد ٩٠ يوماً منه (قرار المالك 2026-10-15 «١٤»)
   const b = fakeStorage();
-  expect((await reconcileOwnerFiles(db, b.remote, { force: true })).deleted).toBe(1);
+  expect((await reconcileOwnerFiles(db, b.remote, { force: true })).deleted).toBe(0);
+  expect((await reconcileOwnerFiles(db, b.remote, { force: true, now: new Date(Date.now() + 91 * 86400000) })).deleted).toBe(1);
   db.close();
 });

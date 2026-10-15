@@ -24,6 +24,14 @@ const hasTable = (db: DB): boolean =>
   !!db.get(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vat_filings'`);
 
 /** هل قُدِّم إقرار الربع الذي فيه هذا التاريخ */
+/**
+ * لا دفعة ولا عملية نقدية ولا قيد يدوي بتاريخٍ في فترةٍ قُدِّم إقرارها (قرار المالك 2026-10-15 «٦»: «تُرفض برسالة واضحة» · المراجعة
+ * الخارجية ٧ · النتيجة ٦: كان الإلغاء والعكس وحدهما يُرفضان)
+ */
+export function requireOpenPeriod(db: DB, date: string): void {
+  if (date && isFiledDate(db, date)) throw new Error(t('vat.filedEntry'));
+}
+
 export function isFiledDate(db: DB, date: string): boolean {
   const q = quarterId(date);
   if (!q || !hasTable(db)) return false;

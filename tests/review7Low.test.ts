@@ -15,6 +15,7 @@ import { enableSync, syncOnce, syncStatus, docId, stageInbox } from '@/sync/engi
 import { getMeta } from '@/repos/settings';
 import { failureAuditDetail } from '@/domain/redact';
 import { profileForAudit } from '@/domain/access/profile';
+import { auditWriter, AUDIT_WRITER_SQL, logAudit } from '@/domain/audit';
 
 jest.mock('@/services/cloud', () => ({}));
 const src = (f: string) => readFileSync(join(__dirname, '..', f), 'utf8');
@@ -131,4 +132,92 @@ test('٢١ رفض قيدٍ مرحّل لأن نسخته في السحابة نه
   expect(rej.map((x) => [x.tbl, x.reason.split(' · ')[0]])).toEqual([['journal_entries', 'نهائي في السحابة']]);
   expect(syncStatus(db).rejected).toBe(1);
   db.close();
+});
+
+test('٢٣ الوارد بعهد مسحٍ أقدم من عهد الجهاز يُترك · وبعهده يُطبَّق', async () => {
+  const db = memDb();
+  enableSync(db, 'OWNER-23');
+  db.run(`INSERT INTO sync_state (k, v) VALUES ('wipe_epoch', '2') ON CONFLICT(k) DO UPDATE SET v = excluded.v`);
+  const r = new MemoryRemote();
+  const doc = (id: string, ep?: number) => ({ id: docId('properties', id), t: 'properties', k: id, u: '2026-10-15T00:00:00.000Z', dev: 'dev-old', del: false,
+    d: { id, name: 'عقار مصطنع ' + id, ownership: 'ملك', floors: 1, archived: 0, created_at: '2026-10-15T00:00:00.000Z' }, ...(ep ? { ep } : {}) });
+  r.inject(doc('P-STALE') as never);
+  r.inject(doc('P-OLD', 1) as never);
+  r.inject(doc('P-NOW', 2) as never);
+  await syncOnce(db, r, getMeta(db, 'device_id')!);
+  const ids = db.all<{ id: string }>(`SELECT id FROM properties ORDER BY id`).map((x) => x.id);
+  expect(ids).toEqual(['P-NOW']);
+  db.close();
+});
+
+test('قرار المالك 2026-10-15 «١٦»: العضو في منشأةٍ بلا عدّاد يتابع المزامنة بلا أرقام جديدة', async () => {
+  const db = memDb();
+  enableSync(db, 'MEMBER-16');
+  const r = new MemoryRemote();
+  r.inject({ id: docId('properties', 'P16'), t: 'properties', k: 'P16', u: '2026-10-15T00:00:00.000Z', dev: 'dev-o', del: false,
+    d: { id: 'P16', name: 'عقار مصطنع', ownership: 'ملك', floors: 1, archived: 0, created_at: '2026-10-15T00:00:00.000Z' } } as never);
+  Object.assign(r, { memberMode: true, reserveBlocks: async () => { throw new Error('Firestore 403: Missing or insufficient permissions.'); } });
+  await syncOnce(db, r, getMeta(db, 'device_id')!);
+  expect(db.get(`SELECT 1 FROM properties WHERE id = 'P16'`)).toBeTruthy();
+  expect(db.get<{ v: string }>(`SELECT v FROM sync_state WHERE k = 'blocks_error'`)?.v).toContain('403');
+  db.close();
+});
+
+test('قرار المالك 2026-10-15 «٤»: زرّ «اشترط إصداري على الأعضاء» في شاشة الأعضاء وتذكيرٌ عند أول دعوة · بلا رفعٍ تلقائي', () => {
+  const ts = src('src/ui/TeamSheet.tsx');
+  expect(ts).toContain("t('compat.requireMine')");
+  expect(ts).toMatch(/const first = !!team && !team.members.length && !team.invites.length;[^]*?compat.remindBody/);
+  const cloud = src('src/services/cloud.ts');
+  // لا رفع تلقائي: raiseCompat لا يُستدعى إلا من زرّه
+  expect((cloud.match(/raiseCompat\(/g) ?? []).length).toBe(1);
+  expect(cloud).toMatch(/export async function raiseCompatNow[^]*?raiseCompat\(/);
+});
+
+test('قرار المالك 2026-10-15 «١٠»: كاتب سطر السجل من معرّفه · وسطرٌ باسم عضوٍ آخر يُعرض بكاتبه مع الاسم المكتوب', () => {
+  const db = memDb();
+  db.run(`INSERT INTO chat_people (uid, name, sup) VALUES ('U-A', 'عضو أ مصطنع', '[]'), ('U-B', 'عضو ب مصطنع', '[]')`);
+  db.run(`INSERT INTO sync_state (k, v) VALUES ('org', 'OWN-10') ON CONFLICT(k) DO UPDATE SET v = excluded.v`);
+  const add = (id: string, name: string, by: string | null) => {
+    db.run(`INSERT INTO audit_log (id, ts, user_name, module, action_type, entity_type, entity_name) VALUES (?, '2026-10-15T00:00:00', ?, 'العقود', 'update', 'سطر', 'مصطنع')`, [id, name]);
+    if (by !== null) db.run(`INSERT OR REPLACE INTO row_by (tbl, pk, uid) VALUES ('audit_log', ?, ?)`, [id, by]);
+  };
+  add('AU1', 'عضو ب مصطنع', 'U-A'); // منتحل
+  add('AU2', 'عضو أ مصطنع', 'U-A'); // صادق
+  add('AU3', 'المالك', 'OWN-10');
+  add('AU4', 'هذا الجهاز', null);
+  const rows = db.all<{ id: string; user_name: string; writer_uid: string | null; writer_name: string | null }>(
+    `SELECT audit_log.id AS id, user_name, rb.uid AS writer_uid, cp.name AS writer_name FROM audit_log ${AUDIT_WRITER_SQL} WHERE audit_log.id LIKE 'AU%' ORDER BY audit_log.id`);
+  expect(rows.map((r) => auditWriter(r, 'OWN-10'))).toEqual([
+    { name: 'عضو أ مصطنع', mismatch: true },
+    { name: 'عضو أ مصطنع', mismatch: false },
+    { name: 'المالك', mismatch: false },
+    { name: 'هذا الجهاز', mismatch: false },
+  ]);
+  void logAudit;
+  db.close();
+});
+
+test('قرار المالك 2026-10-15 «٣»: منع لقطة الشاشة إعدادٌ مطفأ افتراضاً · يُطبَّق عند الإقلاع وعند تغييره', async () => {
+  const { getSetting } = await import('@/repos/settings');
+  const db = memDb();
+  expect(getSetting(db, 'blockScreenshots')).toBe(false);
+  db.close();
+  expect(src('app/_layout.tsx')).toContain('applyScreenSecureFrom(appDb())');
+  expect(src('app/settings.tsx')).toMatch(/updateSetting\('blockScreenshots', !!v\); applyScreenSecure\(!!v\)/);
+  expect(src('android/app/src/main/java/com/aqari/app/MainApplication.kt')).toContain('add(AqariSecurePackage())');
+  expect(src('android/app/src/main/java/com/aqari/app/AqariSecure.kt')).toContain('FLAG_SECURE');
+});
+
+test('قرار المالك 2026-10-15 «٢»: «نسيت الرمز» يؤكد الحساب بقوقل ثم يطلب رمزاً جديداً قبل الفتح', () => {
+  const lg = src('src/ui/LockGate.tsx');
+  expect(lg).toMatch(/const forgotPin = async[^]*?confirmSameAccount\)\) setResetting\(true\)/);
+  expect(lg).toMatch(/const saveNewPin = async[^]*?enablePinLock\(pin1, cfg.delay\);[^]*?onOpen\(\)/);
+  expect(lg).toContain("onPress={forgotPin}");
+  expect(lg).toMatch(/disabled=\{!pinShapeOk\(pin1\) \|\| pin1 !== pin2\}/);
+});
+
+test('٣٤ عنوان المهمة لا يُملأ من نص الرسالة في مجموعة «من لحظة انضمامه»', () => {
+  const c = src('app/chat.tsx');
+  expect(c).toContain("prefill={thread.settings.h !== 'join'}");
+  expect(c).toMatch(/useState\(task\?\.title \?\? \(prefill \? /);
 });
