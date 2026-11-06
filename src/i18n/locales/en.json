@@ -534,6 +534,7 @@
   },
   "vat": {
     "alreadyFiled": "This period's return is already recorded as filed",
+    "fileBeforeEnd": "A quarter cannot be filed before it ends · its last day is {{date}}",
     "auditSection": "VAT return",
     "auditFiled": "Return recorded as filed",
     "auditUnfiled": "Filed record undone",

@@ -6,7 +6,7 @@
  */
 import type { DB } from '../db/adapter';
 import { fmt } from './money';
-import { today } from './dates';
+import { today, dfmt } from './dates';
 import { logAudit } from './audit';
 import { t } from '../i18n';
 import { quarterRange, vatReturnData, type VatItem, type VatReturnData } from './vatReturn';
@@ -48,13 +48,35 @@ export function isFiledDate(db: DB, date: string): boolean {
   return !!db.get(`SELECT 1 FROM vat_filings WHERE id = ? AND deleted_at IS NULL`, [q]);
 }
 
+/** أول يومٍ في الربع التالي لربع التاريخ */
+function nextQuarterStart(date: string): string {
+  const y = Number(date.slice(0, 4));
+  const q = Math.floor((Number(date.slice(5, 7)) - 1) / 3) + 1;
+  return q === 4 ? `${y + 1}-01-01` : `${y}-${String(q * 3 + 1).padStart(2, '0')}-01`;
+}
+
+/**
+ * اليوم، وإن وقع في ربعٍ مقدَّم (قُدِّم قبل منع التقديم المبكر أو وصل بالمزامنة من جهازٍ ساعته متقدمة) فأول يومٍ في أول ربعٍ مفتوح
+ * بعده (المراجعة الشاملة · البند ٨): فلا يُكتب قيد تصحيحٍ في فترةٍ مجمَّدة
+ */
+function openToday(db: DB): string {
+  let d = today();
+  for (let i = 0; i < 40 && isFiledDate(db, d); i++) d = nextQuarterStart(d);
+  return d;
+}
+
 /**
  * تاريخ قيد التصحيح (العكس وإعادة الترحيل) لقيدٍ أصله بتاريخ `original`: تاريخه الأصلي فيبقى أثره في فترته، ولا
- * يظهر إيرادٌ سالب في فترة وزائد في أخرى · إلا إن قُدِّم إقرار فترته فاليوم (قرار المالك على #29)
+ * يظهر إيرادٌ سالب في فترة وزائد في أخرى · إلا إن قُدِّم إقرار فترته فاليوم (قرار المالك على #29) · واليوم في فترةٍ مفتوحة (البند ٨)
  */
 export function correctionDate(db: DB, original: string | null | undefined): string {
-  if (!original || !/^\d{4}-\d{2}-\d{2}/.test(original)) return today();
-  return isFiledDate(db, original) ? today() : original.slice(0, 10);
+  if (!original || !/^\d{4}-\d{2}-\d{2}/.test(original)) return openToday(db);
+  return isFiledDate(db, original) ? openToday(db) : original.slice(0, 10);
+}
+
+/** هل انتهى الربع فيُقدَّم إقراره (المراجعة الشاملة · البند ٨) · الإقرار عن فترةٍ لم تنته ناقصٌ بما بقي من أيامها */
+export function canFileVatReturn(year: number, quarter: Quarter, on: string = today()): boolean {
+  return on > quarterRange(year, quarter).to;
 }
 
 export interface FiledReturn {
@@ -81,6 +103,9 @@ export function filedReturn(db: DB, year: number, quarter: Quarter): FiledReturn
 /** تسجيل إقرار الربع مقدَّماً بتاريخ تقديمه · لقطة بنوده كما هي الآن */
 export function fileVatReturn(db: DB, year: number, quarter: Quarter, filedAt: string = today()): void {
   const id = `${year}-Q${quarter}`;
+  // لا تقديم قبل انتهاء الربع ولا بتاريخ تقديمٍ فيه (البند ٨)
+  const end = quarterRange(year, quarter).to;
+  if (!canFileVatReturn(year, quarter) || !(filedAt > end)) throw new Error(t('vat.fileBeforeEnd', { date: dfmt(end) }));
   if (filedReturn(db, year, quarter)) throw new Error(t('vat.alreadyFiled'));
   const data = vatReturnData(db, year, quarter);
   // ضريبة الإيجار التجاري لم تُبنَ في الإقرار بعد: فلا يُقدَّم إقرارٌ ناقص (المراجعة الخارجية ٧ · النتيجة ٧ · قرار المالك
