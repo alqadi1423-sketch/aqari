@@ -4,7 +4,9 @@
  */
 import { memDb } from './helpers/testDb';
 import { addProperty, addUnit, contractInput, addBank } from './helpers/fixtures';
-import { confirmContract, applyTenantCredit } from '@/domain/contracts/service';
+import { confirmContract, applyTenantCredit, renewContract } from '@/domain/contracts/service';
+import { filedDiff } from '@/domain/vatFilings';
+import { contractInput as ci } from './helpers/fixtures';
 import { saveInvoice, payInvoice } from '@/domain/invoices';
 import { savePurchase, payPurchase, payPurchaseSplit, markVatRefunded, markVatRejected, TS_DEDUCTIBLE, type PurchaseInput } from '@/domain/purchases';
 import { saveClaim, collectClaim } from '@/domain/claims';
@@ -79,4 +81,30 @@ test.each(PATHS)('٩ %s بتاريخٍ في ربعٍ مقدَّم مرفوض و�
   run(w, OPEN);
   expect(writes(w.db)).toBeGreaterThan(before);
   w.db.close();
+});
+
+test('٩ (التحقق المستقل) عقدٌ يُوثَّق متأخراً ببدايةٍ في ربعٍ مقدَّم: تأمينه وعربونه المحوَّل ودفعاته بتاريخ التصحيح لا في الفترة المجمَّدة', () => {
+  const w = world();
+  const u = addUnit(w.db, addProperty(w.db, { name: 'عقار مصطنع ثانٍ' }), { unit_no: 'G-1' });
+  const rsv = createReservation(w.db, { unitId: u, name: 'حاجز مصطنع ثانٍ', phone: '0500000092', depositHalalas: 30000, expiryDate: '2026-12-01' });
+  const q1 = () => Number(w.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries WHERE date <= '2026-03-31'`)!.n);
+  const before = q1();
+  confirmContract(w.db, { ...ci(u, { start: '2026-02-01', end: '2027-01-31', depositHalalas: 100000, idNumber: '1000000093' }), reservationId: rsv } as never);
+  expect(q1()).toBe(before);
+  expect(filedDiff(w.db, 2026, 1)).toEqual([]);
+  w.db.close();
+});
+
+test('٩ (التحقق المستقل) تجديدٌ ببدايةٍ في ربعٍ مقدَّم: نقل التأمين والتأمين الإضافي بتاريخ التصحيح', () => {
+  const db = memDb();
+  ownerCashIn(db, { amountHalalas: 5_000_000, date: '2025-01-02' });
+  const u = addUnit(db, addProperty(db, { name: 'عقار مصطنع' }), { unit_no: 'H-1' });
+  const cid = confirmContract(db, ci(u, { start: '2025-01-01', end: '2025-12-31', depositHalalas: 100000 }));
+  fileVatReturn(db, 2026, 1, '2026-04-15');
+  const q1 = () => Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries WHERE date >= '2026-01-01' AND date <= '2026-03-31'`)!.n);
+  const before = q1();
+  renewContract(db, cid, { start: '2026-01-01', end: '2026-12-31', valueHalalas: 2400000, cycle: 'شهرية', carryDeposit: true,
+    extraDepositHalalas: 50000, services: '', furnished: 'غير مؤثثة', ejarNo: '', note: '' });
+  expect(q1()).toBe(before);
+  db.close();
 });

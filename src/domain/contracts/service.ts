@@ -314,12 +314,15 @@ export function confirmContract(db: DB, inputRaw: ContractDraftInput, draftId?: 
     // استلام التأمين
     db.run(`UPDATE contracts SET deposit_holder = ?, deposit_holder_name = ? WHERE id = ?`,
       [input.depositHolder || 'المكتب', input.depositHolderName || '', id]);
+    // بتاريخ بداية العقد، إلا إن قُدِّم إقرار ربعه فبتاريخ التصحيح (#29): عقدٌ يُدخل متأخراً لا يكتب في فترةٍ مجمَّدة (التحقق المستقل على
+    // البند ٩: التأمين والعربون المحوَّل ودفعاته كانت تُرحَّل فيها فيتغير الإقرار المقدَّم)
+    const postDate = correctionDate(db, input.start);
     postContractDeposit(db, {
-      id, contract_no: contractNo, tenant: input.tenant, start: input.start,
+      id, contract_no: contractNo, tenant: input.tenant, start: postDate,
       deposit: input.depositHalalas, holder: input.depositHolder,
     });
     // تحويل الحجز لعقد · بمعرّف الحجز الذي اختاره المستخدم، والعربون يسدّد الأقساط بالترتيب بتاريخ العقد (المراجعة ٤.٤)
-    if (input.reservationId) convertReservation(db, input.reservationId, id, contractNo, input.tenant, input.start);
+    if (input.reservationId) convertReservation(db, input.reservationId, id, contractNo, input.tenant, postDate);
     // نموذج الاستلام والتسليم يُنشأ تلقائياً من تفاصيل الوحدة · واحد لكل عقد
     createHandoverForContract(db, id);
     logAudit(db, 'العقود', 'create', 'عقد إيجار', input.tenant, null, { contractNo });
@@ -574,16 +577,18 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
     });
     db.run(`UPDATE contracts SET status='منتهٍ', renewed_to=? WHERE id = ?`, [contractNo, c.id]);
 
+    // بتاريخ بداية التجديد، إلا إن قُدِّم إقرار ربعه فبتاريخ التصحيح (#29 · التحقق المستقل على البند ٩)
+    const postDate = correctionDate(db, input.start);
     if (input.carryDeposit && Number(c.deposit_halalas) > 0) {
       postDepositCarry(db, {
         fromNo: c.contract_no || '', toNo: contractNo, toId: newId, fromId: c.id,
-        deposit: Number(c.deposit_halalas), date: input.start,
+        deposit: Number(c.deposit_halalas), date: postDate,
       });
     }
     if ((input.extraDepositHalalas || 0) > 0) {
       postContractDeposit(db, {
         id: newId, contract_no: contractNo, tenant: c.tenant_name,
-        start: input.start, deposit: input.extraDepositHalalas, holder: (c as unknown as { deposit_holder?: string }).deposit_holder,
+        start: postDate, deposit: input.extraDepositHalalas, holder: (c as unknown as { deposit_holder?: string }).deposit_holder,
       });
     }
     createHandoverForContract(db, newId); // العقد الجديد له نموذجه الواحد
