@@ -6,7 +6,7 @@
 import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 47;
+export const SCHEMA_VERSION = 48;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1746,4 +1746,44 @@ export const MIGRATION_47 = `
 UPDATE settings SET value_json = 'false' WHERE key = 'stripExif';
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47];
+/**
+ * الترحيلة ٤٨ · نهاية العقد المتفق عليها (المراجعة الشاملة · البند ٣): الإلغاء يكتب تاريخه في end فتصير الوحدة متاحة منه، والاستحقاق
+ * كان يقسم قيمة العقد على المدة حتى end فيتضخم إيراد ما قبل الإلغاء · original_end مقام النصيب ولا يمسّه الإلغاء.
+ *  - القائم وما لم تُقصّ نهايته: من end.
+ *  - الملغى قبلها وقد قُصّت نهايته (end = cancel_date): من جدول أقساطه، وهو يغطي المدة كاملة (عدد الأقساط × أشهر الدورة) بقاعدة
+ *    contractEndFromDuration نفسها (الذكرى تُثبَّت على آخر الشهر) · ولا تقلّ عن end.
+ *  - ومحفّزان يبقيانه: الإدراج بلا original_end يأخذ end، وتغيير end لعقدٍ غير ملغى يغيّره معه.
+ * والتعبئة والالتقاط مطفأ: كل جهاز يعبّئ صفوفه بالقاعدة نفسها، فلا يُرفع كل عقدٍ بوقت الترقية فيغلب تعديلاً أحدث في جهاز آخر.
+ */
+// i18n-exempt: حالات العقد ودوراته المخزّنة
+export const MIGRATION_48 = `
+ALTER TABLE contracts ADD COLUMN original_end TEXT;
+CREATE TEMP TABLE _m48_cap AS SELECT k, v FROM sync_ctl WHERE k = 'capture';
+UPDATE sync_ctl SET v = 0 WHERE k = 'capture';
+UPDATE contracts SET original_end = end
+  WHERE NOT (status = 'ملغى' AND cancel_date IS NOT NULL AND end IS NOT NULL AND end = cancel_date);
+CREATE TEMP TABLE _m48_oe AS
+  SELECT c.id AS id, CAST(strftime('%d', c.start) AS INTEGER) AS d,
+         date(c.start, 'start of month', '+' || ((SELECT COUNT(*) FROM contract_installments i WHERE i.contract_id = c.id)
+           * (CASE c.cycle WHEN 'شهرية' THEN 1 WHEN 'ربع سنوية' THEN 3 WHEN 'نصف سنوية' THEN 6 ELSE 12 END)) || ' months') AS am
+  FROM contracts c
+  WHERE c.original_end IS NULL AND c.start IS NOT NULL AND c.start != ''
+    AND EXISTS (SELECT 1 FROM contract_installments i WHERE i.contract_id = c.id);
+UPDATE contracts SET original_end = (
+  SELECT CASE WHEN o.d > CAST(strftime('%d', date(o.am, '+1 month', '-1 day')) AS INTEGER)
+              THEN date(o.am, '+1 month', '-1 day')
+              ELSE date(o.am, '+' || (o.d - 1) || ' days', '-1 day') END
+  FROM _m48_oe o WHERE o.id = contracts.id)
+WHERE id IN (SELECT id FROM _m48_oe);
+UPDATE contracts SET original_end = end WHERE original_end IS NULL OR (end IS NOT NULL AND original_end < end);
+UPDATE sync_ctl SET v = (SELECT v FROM _m48_cap WHERE _m48_cap.k = sync_ctl.k) WHERE k IN (SELECT k FROM _m48_cap);
+DROP TABLE _m48_oe;
+DROP TABLE _m48_cap;
+CREATE TRIGGER IF NOT EXISTS trg_contracts_original_end_ins AFTER INSERT ON contracts WHEN NEW.original_end IS NULL
+BEGIN UPDATE contracts SET original_end = NEW.end WHERE id = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS trg_contracts_original_end_upd AFTER UPDATE OF end ON contracts
+  WHEN NEW.status != 'ملغى' AND NEW.original_end IS NOT NEW.end
+BEGIN UPDATE contracts SET original_end = NEW.end WHERE id = NEW.id; END;
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48];

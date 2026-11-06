@@ -476,9 +476,10 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
       );
     }
     const newEnd = c.end && c.end > date ? date : c.end; // الوحدة تصبح متاحة من تاريخ الإلغاء
+    // والنهاية المتفق عليها تبقى مقام الاستحقاق (المراجعة الشاملة · البند ٣ · الهجرة ٤٨)
     db.run(
       `UPDATE contracts SET status='ملغى', cancel_date=?, cancel_reason=?,
-        cancel_deduction_halalas=?, cancel_refund_halalas=?, cancel_deduction_reason=?, end=?
+        cancel_deduction_halalas=?, cancel_refund_halalas=?, cancel_deduction_reason=?, original_end=COALESCE(original_end, end), end=?
        WHERE id = ?`,
       [date, input.reason.trim(), input.settle ? input.deductionHalalas : null,
        input.settle ? refund : null, input.deductionReason.trim() || null, newEnd, contractId]

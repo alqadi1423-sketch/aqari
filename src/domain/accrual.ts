@@ -151,6 +151,8 @@ export interface ContractAccrualRow {
   end: string | null;
   status?: string;
   cancel_date?: string | null;
+  /** النهاية المتفق عليها (الهجرة ٤٨) · الإلغاء يقصّ end ولا يمسّها · وغيابها: end */
+  original_end?: string | null;
 }
 
 export interface ContractAccrualWindow {
@@ -174,7 +176,9 @@ export function contractAccrualWindow(c: ContractAccrualRow): ContractAccrualWin
   if (c.status === 'ملغى') {
     const cd = c.cancel_date || '';
     if (!cd || cd < start) return null;
-    return { start, end, accrueUntil: cd < end ? cd : end };
+    // المقام المدة المتفق عليها لا المقصوصة بالإلغاء (المراجعة الشاملة · البند ٣): عقد سنةٍ أُلغي بعد ربعها استحق ربعها
+    const full = c.original_end && c.original_end > end ? c.original_end : end;
+    return { start, end: full, accrueUntil: cd < full ? cd : full };
   }
   return { start, end, accrueUntil: end };
 }
@@ -202,12 +206,12 @@ interface AccrualReduction { amount: number; start: string; end: string; accrueU
 function accrualReductions(db: DB): AccrualReduction[] {
   const rows = db.all<{
     amount: number; due: string; next_due: string | null;
-    start: string | null; end: string | null; status: string; cancel_date: string | null; value_halalas: number;
+    start: string | null; end: string | null; status: string; cancel_date: string | null; value_halalas: number; original_end: string | null;
   }>(
     `SELECT p.discount_halalas AS amount, i.due_date AS due,
             (SELECT MIN(i2.due_date) FROM contract_installments i2
              WHERE i2.contract_id = i.contract_id AND i2.due_date > i.due_date) AS next_due,
-            c.start, c.end, c.status, c.cancel_date, c.value_halalas
+            c.start, c.end, c.status, c.cancel_date, c.value_halalas, c.original_end
      FROM contract_payments p
      JOIN contract_installments i ON i.id = p.installment_id
      JOIN contracts c ON c.id = i.contract_id
@@ -216,7 +220,7 @@ function accrualReductions(db: DB): AccrualReduction[] {
   );
   const out: AccrualReduction[] = [];
   for (const r of rows) {
-    const w = contractAccrualWindow({ value_halalas: Number(r.value_halalas), start: r.start, end: r.end, status: r.status, cancel_date: r.cancel_date });
+    const w = contractAccrualWindow({ value_halalas: Number(r.value_halalas), start: r.start, end: r.end, status: r.status, cancel_date: r.cancel_date, original_end: r.original_end });
     if (!w) continue;
     const start = r.due < w.start ? w.start : r.due;
     let end = r.next_due ? addDays(r.next_due, -1) : w.end;
@@ -239,9 +243,9 @@ function reductionShare(r: AccrualReduction, from: string | null, to: string | n
 function accrualContracts(db: DB): ContractAccrualRow[] {
   return db.all<{
     id: string; value_halalas: number; start: string | null; end: string | null;
-    status: string; cancel_date: string | null;
+    status: string; cancel_date: string | null; original_end: string | null;
   }>(
-    `SELECT id, ${contractTotalSql(db)} AS value_halalas, start, end, status, cancel_date
+    `SELECT id, ${contractTotalSql(db)} AS value_halalas, start, end, status, cancel_date, original_end
      FROM contracts
      WHERE deleted_at IS NULL AND status != 'مسودة'
        AND start IS NOT NULL AND end IS NOT NULL AND start != '' AND end != ''`

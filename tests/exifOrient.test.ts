@@ -7,7 +7,9 @@ import { makeBackupEnv } from './helpers/backupEnv';
 import { putAttachment } from '@/files/store';
 import { jpegOrientation, stripImageMetadata } from '@/domain/jpegExif';
 import { getSetting, setSetting } from '@/repos/settings';
-import { migrate } from '@/db/migrations';
+import { migrate, currentSchemaVersion } from '@/db/migrations';
+import { seed } from '@/db/seed';
+import { schemaAt } from './helpers/oldSchema';
 import { SCHEMA_VERSION } from '@/db/schema';
 
 /** JPEG مصطنع: SOI · APP1 Exif بوسم اتجاهٍ ووسم GPS مزيّف · DQT · SOS وبيانات · EOI */
@@ -31,11 +33,15 @@ test('وسم الاتجاه يُقرأ بالترتيبين · وغيابه طب
 });
 
 test('تصحيح المالك للقرار ١٢: النزع مطفأ افتراضاً · والجهاز الذي فعّلته الترحيلة ٤٦ تطفئه الترحيلة ٤٧', () => {
-  const db = memDb();
-  expect(getSetting(db, 'stripExif')).toBe(false);
+  const fresh = memDb();
+  expect(getSetting(fresh, 'stripExif')).toBe(false);
+  fresh.close();
+  // جهازٌ على الإصدار ٤٦ فعّلت فيه الترحيلة ٤٦ النزع · بنية ذلك الإصدار لا إرجاع رقم إصدار القاعدة الأحدث (الترحيلة ٤٨ تضيف عموداً)
+  const db = schemaAt(':memory:', 46);
+  seed(db);
   db.run(`UPDATE settings SET value_json = 'true' WHERE key = 'stripExif'`);
-  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
   migrate(db);
+  expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
   expect(getSetting(db, 'stripExif')).toBe(false);
   db.close();
 });
