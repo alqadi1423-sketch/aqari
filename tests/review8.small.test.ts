@@ -17,3 +17,12 @@ test('٢٤ إلغاء العقد بخصمٍ يزيد على التأمين: ال
   expect(db.get<{ d: number }>(`SELECT cancel_deduction_halalas AS d FROM contracts WHERE id = ?`, [cid])!.d).toBe(200000);
   db.close();
 });
+
+test('٢٥ الميزانية بفرق هللة واحدة غير متوازنة', () => {
+  const db = memDb();
+  db.run(`UPDATE accounts SET opening_halalas = 1 WHERE code = '1100'`);
+  const b = financialStatementBlock(db, 'balance', null, '2026-12-31');
+  const last = b.totals![b.totals!.length - 1];
+  expect(String(last[0])).toMatch(/غير متوازنة/);
+  db.close();
+});

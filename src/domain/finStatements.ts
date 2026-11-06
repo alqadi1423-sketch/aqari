@@ -145,7 +145,8 @@ export function financialStatementBlock(db: DB, tab: FinStatement, from: string 
       totals: [
         ['إجمالي الأصول', M(sumA)],
         ['إجمالي الخصوم وحقوق الملكية', M(sumL + sumE)],
-        [Math.abs(sumA - (sumL + sumE)) > 1 ? 'الميزانية غير متوازنة · تحقق من القيود' : 'الأصول = الخصوم + حقوق الملكية', M(sumA - (sumL + sumE)), true],
+        // بالهللة: المبالغ أعداد صحيحة فلا فرق تقريب يُسمح به (المراجعة الشاملة · البند ٢٥)
+        [sumA - (sumL + sumE) !== 0 ? 'الميزانية غير متوازنة · تحقق من القيود' : 'الأصول = الخصوم + حقوق الملكية', M(sumA - (sumL + sumE)), true],
       ],
     };
   }
