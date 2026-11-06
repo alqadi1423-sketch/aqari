@@ -281,7 +281,7 @@ export function stageInbox(db: DB, docs: RemoteDoc[]): void {
         `INSERT INTO sync_inbox (doc, tbl, pk, rank, payload, updated_at, device_id, attempts, last_error, del)
          VALUES (?,?,?,?,?,?,?,0,NULL,?)
          ON CONFLICT(doc) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at,
-           device_id = excluded.device_id, attempts = 0, last_error = NULL, del = excluded.del
+           device_id = excluded.device_id, attempts = 0, last_error = NULL, del = excluded.del, waiting_since = NULL
          WHERE excluded.updated_at >= sync_inbox.updated_at`,
         [d.id, d.t, d.k, SYNC_RANK[d.t] ?? 999, JSON.stringify(d), at, d.dev, d.del ? 1 : 0]);
       // كاتب الصف يصل مع مستنده (المنشأة) · فيعرف الجهاز مسودة من هي، ويرسل العضو الكاتب نفسه عند التعديل · والوارد بلا كاتب
@@ -295,6 +295,13 @@ export function stageInbox(db: DB, docs: RemoteDoc[]): void {
 const isMissingParent = (msg: string) => /FOREIGN KEY constraint failed/i.test(msg);
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const MAX_ATTEMPTS = 20;
+/**
+ * مهلة انتظار الأب بالزمن لا بالمرور (المراجعة الشاملة · البند ١٤): أبٌ غائب مؤقتاً (جهازٌ لم يرفع بعد، أو رفعٌ انقطع) كان يصير رفضاً
+ * نهائياً بعد نحو عشر دورات · فلا رفض قبل ثلاثين يوماً من بدء الانتظار ولا قبل MAX_ATTEMPTS محاولة معاً
+ */
+const WAIT_LIMIT_MS = 30 * 24 * 3600 * 1000;
+/** سبب رفض الانتظار الطويل · ويُعاد واردُه حين يصل أبوه */
+const WAIT_REJECT = 'سجل أب غير موجود بعد محاولات متكررة';
 
 function stable(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
@@ -1097,6 +1104,32 @@ function applyOne(
   }
 }
 
+/**
+ * الوارد المرفوض لطول انتظار أبيه يعود إلى الصندوق حين يصل الأب (المراجعة الشاملة · البند ١٤): كل مفتاحٍ أجنبي فيه يشير إلى صفٍّ
+ * موجود الآن · وما لا مفتاح أجنبياً فيه (العاكس ينتظر أصله) يبقى مرفوضاً حتى إعادة الترقية، فلا يدور بين الصندوق والمرفوض
+ */
+function restageArrivedParents(db: DB): number {
+  const rows = db.all<{ id: number; tbl: string; payload: string }>(`SELECT id, tbl, payload FROM sync_rejects WHERE reason = ?`, [WAIT_REJECT]);
+  let n = 0;
+  for (const r of rows) {
+    let doc: RemoteDoc | null = null;
+    try { doc = JSON.parse(r.payload) as RemoteDoc; } catch { doc = null; }
+    if (!doc || !doc.id || !doc.d || !syncTable(doc.t)) continue;
+    const fks = db.all<{ table: string; from: string; to: string | null }>(`PRAGMA foreign_key_list("${doc.t}")`);
+    const refs = fks.filter((k) => doc!.d![k.from] != null && doc!.d![k.from] !== '');
+    if (!refs.length) continue;
+    const arrived = refs.every((k) => {
+      const to = k.to ?? syncTable(k.table)?.pkCols[0] ?? 'id';
+      return !!db.get(`SELECT 1 FROM "${k.table}" WHERE "${to}" = ?`, [doc!.d![k.from] as SqlValue]);
+    });
+    if (!arrived) continue;
+    stageInbox(db, [doc]);
+    db.run(`DELETE FROM sync_rejects WHERE id = ?`, [r.id]);
+    n++;
+  }
+  return n;
+}
+
 /** sync_ctl.applying · تقرؤه محفّزات سقف الدفعة (الهجرة ٢١) */
 function setApplying(db: DB, on: boolean): void {
   db.run(`INSERT INTO sync_ctl (k, v) VALUES ('applying', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [on ? 1 : 0]);
@@ -1141,6 +1174,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
   });
   for (let pass = 0; pass < 4; pass++) {
     let progress = 0;
+    // ما رُفض لانتظار أبيه ووصل أبوه قبل هذه الدورة يعود إلى الصندوق فيُطبَّق فيها (البند ١٤)
+    if (pass === 0) quiet(() => { restageArrivedParents(db); });
     // شواهد الحذف أولاً والأبناء قبل الآباء (المفتاح الأجنبي يمنع حذف أبٍ له أبناء) · ثم الصفوف
     // والآباء قبل الأبناء · وإلا وصل صفٌّ جديد يحمل رقماً فريداً قبل حذف من كان يحمله فرُفض بلا رجعة
     // (وجده اختبار الثوابت: عقد حُذف باستعادة ثم أُنشئ غيره بالرقم نفسه)
@@ -1149,8 +1184,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
       let lastKey = -1, lastU = '', lastDoc = '';
       for (;;) {
         // علامة الحذف عمودٌ مفهرس (الهجرة ٢٥) · فلا تُفكّ الحمولات لكل صفحة
-        const page = db.all<{ doc: string; k: number; updated_at: string; payload: string; attempts: number }>(
-          `SELECT doc, ${key} AS k, updated_at, payload, attempts FROM sync_inbox
+        const page = db.all<{ doc: string; k: number; updated_at: string; payload: string; attempts: number; waiting_since: string | null }>(
+          `SELECT doc, ${key} AS k, updated_at, payload, attempts, waiting_since FROM sync_inbox
            WHERE del = ? AND (${key}, updated_at, doc) > (?, ?, ?)
            ORDER BY ${key}, updated_at, doc LIMIT ${pageSize}`, [deletes ? 1 : 0, lastKey, lastU, lastDoc]);
         if (!page.length) break;
@@ -1159,12 +1194,15 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
             const doc = JSON.parse(r.payload) as RemoteDoc;
             const res = applyOne(db, doc, deviceId, cache, money, joining);
             if (res === 'retry') {
-              if (r.attempts + 1 >= MAX_ATTEMPTS) {
-                reject(db, doc, 'سجل أب غير موجود بعد محاولات متكررة');
+              // بالزمن لا بالمرور (البند ١٤): المرور الواحد قد يتكرر أربع مرات في الدورة
+              const since = r.waiting_since ? Date.parse(r.waiting_since) : NaN;
+              if (r.attempts + 1 >= MAX_ATTEMPTS && Number.isFinite(since) && Date.now() - since > WAIT_LIMIT_MS) {
+                reject(db, doc, WAIT_REJECT);
                 db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
                 out.rejected++;
               } else {
-                db.run(`UPDATE sync_inbox SET attempts = attempts + 1, last_error = 'بانتظار سجل أب' WHERE doc = ?`, [r.doc]);
+                db.run(`UPDATE sync_inbox SET attempts = attempts + 1, last_error = 'بانتظار سجل أب',
+                        waiting_since = COALESCE(waiting_since, ?) WHERE doc = ?`, [nowIso(), r.doc]);
               }
               continue;
             }
@@ -1182,6 +1220,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
       }
     }
     if (!progress) break;
+    // ووصل أبوه في هذا المرور: يُطبَّق في المرور التالي من الدورة نفسها
+    quiet(() => { restageArrivedParents(db); });
     const left = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
     if (!left) break;
   }

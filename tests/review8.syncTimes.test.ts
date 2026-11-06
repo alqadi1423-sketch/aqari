@@ -53,3 +53,47 @@ test('١٣ إعادة تأكيد النسخة المحلية أمام واردٍ
   expect((r.docs.get(docId('tenants', 'T1'))!.d as Record<string, unknown>).phone).toBe('0500000002');
   a.close(); b.close();
 });
+const unitDoc = (id: string, prop: string): RemoteDoc => ({ id: docId('units', id), t: 'units', k: id, u: '2026-02-01T00:00:00.000Z',
+  ts: '2026-02-01T00:00:00.000Z', dev: 'other', del: false, d: { id, property_id: prop, unit_no: 'U-' + id, created_at: '2026-02-01T00:00:00.000Z', deleted_at: null } });
+const propDoc = (id: string): RemoteDoc => ({ id: docId('properties', id), t: 'properties', k: id, u: '2026-02-02T00:00:00.000Z',
+  ts: '2026-02-02T00:00:00.000Z', dev: 'other', del: false, d: { id, name: 'عقار مصطنع ' + id, created_at: '2026-02-02T00:00:00.000Z', deleted_at: null } });
+const rejects = (db: DB, pk: string) => Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects WHERE pk = ?`, [pk])!.n);
+
+test('١٤ أبٌ غائب مؤقتاً لا يصير رفضاً نهائياً بعد دورات قليلة: الابن ينتظر ويُطبَّق حين يصل أبوه', () => {
+  const db = memDb();
+  enableSync(db, UID);
+  stageInbox(db, [unitDoc('UW1', 'P-LATE1')]);
+  for (let i = 0; i < 30; i++) applyInbox(db, 'this-device');
+  expect(rejects(db, 'UW1')).toBe(0);
+  expect(db.get(`SELECT 1 FROM sync_inbox WHERE pk = 'UW1'`)).toBeTruthy();
+  stageInbox(db, [propDoc('P-LATE1')]);
+  applyInbox(db, 'this-device');
+  expect(db.get(`SELECT property_id AS p FROM units WHERE id = 'UW1'`)).toEqual({ p: 'P-LATE1' });
+  db.close();
+});
+
+test('١٤ وما رُفض لانتظار أبيه (من إصدارٍ سابق) يعود إلى الوارد حين يصل أبوه ويُطبَّق', () => {
+  const db = memDb();
+  enableSync(db, UID);
+  const doc = unitDoc('UW2', 'P-LATE2');
+  db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
+    [doc.id, 'units', 'UW2', 'سجل أب غير موجود بعد محاولات متكررة', JSON.stringify(doc), '2026-02-03T00:00:00.000Z']);
+  stageInbox(db, [propDoc('P-LATE2')]);
+  applyInbox(db, 'this-device');
+  expect(db.get(`SELECT property_id AS p FROM units WHERE id = 'UW2'`)).toEqual({ p: 'P-LATE2' });
+  expect(rejects(db, 'UW2')).toBe(0);
+  db.close();
+});
+
+test('١٤ وما طال انتظاره (أكثر من مهلة الانتظار) يُرفض كما كان فلا يبقى الوارد معلّقاً أبداً', () => {
+  const db = memDb();
+  enableSync(db, UID);
+  stageInbox(db, [unitDoc('UW3', 'P-NEVER')]);
+  applyInbox(db, 'this-device');
+  db.run(`UPDATE sync_inbox SET waiting_since = '2020-01-01T00:00:00.000Z', attempts = 50 WHERE pk = 'UW3'`);
+  applyInbox(db, 'this-device');
+  expect(rejects(db, 'UW3')).toBe(1);
+  expect(db.get(`SELECT 1 FROM sync_inbox WHERE pk = 'UW3'`)).toBeFalsy();
+  db.close();
+});
+
