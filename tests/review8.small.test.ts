@@ -26,3 +26,19 @@ test('٢٥ الميزانية بفرق هللة واحدة غير متوازنة
   expect(String(last[0])).toMatch(/غير متوازنة/);
   db.close();
 });
+
+test('٢٦ المطالبة بمبلغ كسري أو سالب مرفوضة ولا تُرحَّل', () => {
+  const db = memDb();
+  const u = addUnit(db, addProperty(db, { name: 'عقار مصطنع' }), { unit_no: 'D-2' });
+  const cid = confirmContract(db, contractInput(u, { depositHalalas: 0 }));
+  const entries = () => Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries`)!.n);
+  const before = entries();
+  for (const amount of [-5000, 1500.5, Number.NaN]) {
+    expect(() => saveClaim(db, { contractId: cid, amountHalalas: amount, reason: 'مطالبة مصطنعة', date: '2026-02-01' })).toThrow();
+  }
+  expect(entries()).toBe(before);
+  expect(Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM claims`)!.n)).toBe(0);
+  saveClaim(db, { contractId: cid, amountHalalas: 1500, reason: 'مطالبة مصطنعة', date: '2026-02-01' });
+  expect(entries()).toBe(before + 1);
+  db.close();
+});

@@ -19,7 +19,8 @@ export interface ClaimInput {
 
 /** access: صلاحية من يعدّل · المحصور لا ينقل مطالبةً قائمة إلى عقد عقارٍ آخر (قرار المالك 2026-10-09 · التحقق المستقل) */
 export function saveClaim(db: DB, input: ClaimInput, existingId?: string, opts: { access?: Access } = {}): string {
-  if (!input.contractId || !input.amountHalalas) throw new Error('اختر العقد وأدخل المبلغ');
+  // المبلغ هللاتٌ صحيحة موجبة (المراجعة الشاملة · البند ٢٦): السالب يعكس اتجاه القيد، والكسري يخالف اتفاقية المبالغ
+  if (!input.contractId || !Number.isInteger(input.amountHalalas) || input.amountHalalas <= 0) throw new Error('اختر العقد وأدخل المبلغ');
   // المطالبة الجديدة قيدٌ بتاريخها · وتعديل القائمة قيد تصحيحٍ بتاريخ التصحيح (#29)
   if (!existingId) requireOpenPeriod(db, input.date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   return db.transaction(() => {
