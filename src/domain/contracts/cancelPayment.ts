@@ -7,13 +7,13 @@
  *  ٤) حركات البنك تُعكس بحركة سالبة · وفائض التحصيل الجماعي يُطرح من رصيد المستأجر الدائن.
  *  ٥) الدفعة لا تُحذف: تُوسم ملغاة بتاريخها وسببها وقيدها العاكس · ويُسجَّل الإلغاء في سجل العمليات.
  * ويُرفض بسبب يُذكر: دفعة ملغاة من قبل · رصيد دائن استُعمل بعدها · فائضٌ للعقد رُدّ أو حُوّل (يُلغى الرد أولاً) ·
- * دفعةٌ سُدّدت من عربون الحجز (المراجعة الشاملة · البند ٢٧).
+ * دفعةٌ سُدّدت من عربون الحجز (المراجعة الشاملة · البند ٢٧) · تاريخ إلغاءٍ قبل تاريخ الدفعة نفسها (البند ١٠ · تتمة المراجعة الأخيرة).
  * والمعاينة planCancelPayment تُعرض قبل التنفيذ: القيود ومبالغها، وكل قسط بمسدَّده قبل وبعد، والبنك والرصيد.
  */
 import type { DB } from '../../db/adapter';
 import { cashShortfall, CashShortfallError } from '../cashGuard';
 import { uid } from '../ids';
-import { today } from '../dates';
+import { today, dfmt } from '../dates';
 import { logAudit } from '../audit';
 import { reverseEntryById } from '../accounting/post';
 import { RuleViolation } from './service';
@@ -26,6 +26,10 @@ export interface CancelPaymentPlan {
   contractId: string;
   tenant: string;
   date: string;
+  /** تاريخ الدفعة نفسها · لا يسبقه تاريخ الإلغاء */
+  paymentDate: string;
+  /** سبب رفض تاريخ الإلغاء (قبل تاريخ الدفعة) · null إن جاز · منفصلٌ عن blockers: يُصلحه المستخدم بتغيير التاريخ في اللوحة نفسها */
+  dateError: string | null;
   net: number;
   /** القيود التي ستُعكس · رقمها ومبلغها */
   entries: { id: string; no: string; amount: number }[];
@@ -89,15 +93,41 @@ export function paidFromDeposit(db: DB, paymentId: string): boolean {
      WHERE p.id = ? AND e.src_type = 'reservation_convert'`, [paymentId]);
 }
 
-export function planCancelPayment(db: DB, paymentId: string, date: string = today()): CancelPaymentPlan {
+/** يوم الدفعة · المخزَّن تاريخٌ، والقديم قد يكون لحظة */
+const payDay = (p: PaymentRow): string => String(p.date ?? '').slice(0, 10);
+
+/**
+ * تاريخ الإلغاء لا يسبق تاريخ الدفعة (المراجعة الشاملة · البند ١٠ · تتمة المراجعة الأخيرة): الدفعة تبقى في ربعها ما لم تُلغَ فيه،
+ * والإلغاء يُخصم في ربعه ما لم تكن الدفعة فيه (vatReturn.ts) · فإلغاءٌ بتاريخٍ قبلها في ربعٍ سابق لا يقع في أيٍّ منهما: يخرج من
+ * البند ٥ في الربعين والدفتر يتحرك فيهما، ويتغيّر إقرار ربعها إن قُدِّم · كما لا يسبق عكسُ التقبيل قيده ولا الإشعارُ فاتورته
+ */
+function cancelDateError(p: PaymentRow, date: string): string | null {
+  const day = payDay(p);
+  return day && String(date).slice(0, 10) < day ? t('payment.cancelBeforePayment', { date: dfmt(day) }) : null;
+}
+
+/** تاريخ الإلغاء الافتراضي: اليوم، أو تاريخ الدفعة إن كان بعده (شيكٌ مؤجَّل سُجّل بتاريخه) · فلا يُرفض بقيمته الافتراضية */
+const defaultDateOf = (p: PaymentRow): string => {
+  const day = payDay(p);
+  const now = today();
+  return day > now ? day : now;
+};
+export function defaultCancelDate(db: DB, paymentId: string): string {
+  return defaultDateOf(paymentRow(db, paymentId));
+}
+
+export function planCancelPayment(db: DB, paymentId: string, date?: string): CancelPaymentPlan {
   const p = paymentRow(db, paymentId);
+  if (!date) date = defaultDateOf(p);
   const c = db.get<{ tenant_name: string; tenant_id: string | null }>(`SELECT tenant_name, tenant_id FROM contracts WHERE id = ?`, [p.contract_id]);
   const blockers: string[] = [];
+  const paymentDate = payDay(p);
+  const dateError = cancelDateError(p, date);
   if (p.cancelled_at) blockers.push('الدفعة ملغاة من قبل');
   else if (paidFromDeposit(db, p.id)) {
     // منعٌ دائم: المعاينة سببه وحده، فلا أثرٌ يُعرض لإلغاءٍ لن يقع (المتحقق المستقل على البند ٢٧)
     return {
-      paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, net: Number(p.net_halalas),
+      paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, paymentDate, dateError, net: Number(p.net_halalas),
       entries: [], installments: [], bank: [], creditReversal: 0, restoreAmount: null,
       blockers: [t('payment.cancelFromDeposit')], cashShort: 0,
     };
@@ -142,7 +172,7 @@ export function planCancelPayment(db: DB, paymentId: string, date: string = toda
     .map((x) => ({ bankId: x.bank_id, bankName: x.name, amount: Number(x.amount) }));
 
   return {
-    paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, net: Number(p.net_halalas),
+    paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, paymentDate, dateError, net: Number(p.net_halalas),
     entries: liveEntries(db, p), installments, bank, creditReversal: credit, restoreAmount, blockers, cashShort,
   };
 }
@@ -155,11 +185,12 @@ export function receiptBlocked(db: DB, paymentId: string): string | null {
 
 /** التنفيذ · ذرّي كله أو لا شيء · يعيد معاينة ما جرى */
 export function cancelPayment(db: DB, paymentId: string, input: { date?: string; reason: string }): CancelPaymentPlan {
-  const date = input.date || today();
+  const date = input.date || defaultCancelDate(db, paymentId);
   const reason = input.reason.trim();
   if (!reason) throw new RuleViolation('اكتب سبب إلغاء الدفعة');
   const plan = planCancelPayment(db, paymentId, date);
   if (plan.blockers.length) throw new RuleViolation(plan.blockers.join(' · '));
+  if (plan.dateError) throw new RuleViolation(plan.dateError);
   const p = paymentRow(db, paymentId);
 
   db.transaction(() => {

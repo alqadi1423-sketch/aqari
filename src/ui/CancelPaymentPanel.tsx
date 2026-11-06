@@ -12,8 +12,8 @@ import { DateField } from './DateField';
 import { useApp } from './store';
 import { useToast } from './Toast';
 import { C } from './theme';
-import { planCancelPayment, cancelPayment } from '../domain/contracts/cancelPayment';
-import { dfmt, today } from '../domain/dates';
+import { planCancelPayment, cancelPayment, defaultCancelDate } from '../domain/contracts/cancelPayment';
+import { dfmt } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
 import { usePerm } from './access';
@@ -30,11 +30,12 @@ export function CancelPaymentPanel({ paymentId, onClose, onDone }: {
   const toast = useToast();
   // إلغاء الدفعة تعديلٌ في التحصيل · كامل وحده، ومن دونه تُعرض المعاينة بلا تأكيد
   const canCancel = usePerm('collect').manage;
-  const [date, setDate] = useState(today());
+  // الافتراضي لا يسبق تاريخ الدفعة (الأكبر من اليوم وتاريخها): فلا يُرفض الإلغاء بقيمته الافتراضية (البند ١٠ · تتمة المراجعة الأخيرة)
+  const [date, setDate] = useState(() => { try { return defaultCancelDate(db, paymentId); } catch { return ''; } });
   const [reason, setReason] = useState('');
   const attempt = useSaveAttempt();
   const plan = useMemo(() => {
-    try { return planCancelPayment(db, paymentId, date || today()); } catch { return null; }
+    try { return planCancelPayment(db, paymentId, date || undefined); } catch { return null; }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, paymentId, date]);
   if (!plan) return null;
@@ -75,13 +76,16 @@ export function CancelPaymentPanel({ paymentId, onClose, onDone }: {
       ) : (
         <>
           <View style={{ marginTop: 8 }}>
-            <DateField label="تاريخ الإلغاء" value={date} onChange={setDate} />
+            <DateField label="تاريخ الإلغاء" value={date} onChange={setDate} error={!!plan.dateError} />
+            {/* تاريخٌ قبل تاريخ الدفعة: سببه تحت الحقل، ولا زرّ تأكيد حتى يُصحَّح (القاعدة ٧) */}
+            {plan.dateError ? <T size={12} color={C.rose} style={{ marginTop: -6, marginBottom: 8 }}>{plan.dateError}</T> : null}
             <Field label="السبب" value={reason} onChange={setReason} error={attempt.missing(reason)} />
           </View>
           <Row>
             <View style={{ flex: 1 }}><BtnGhost small title="رجوع" onPress={onClose} /></View>
             {/* الزر ظاهر · وبلا سبب يُظلَّل الحقل بعد المحاولة (قرار المالك 2026-10-07) */}
-            <View style={{ flex: 1 }}><BtnPrimary small danger title="تأكيد الإلغاء" onPress={() => attempt.attempt(!!reason.trim(), confirm)} /></View>
+            {plan.dateError ? null
+              : <View style={{ flex: 1 }}><BtnPrimary small danger title="تأكيد الإلغاء" onPress={() => attempt.attempt(!!reason.trim(), confirm)} /></View>}
           </Row>
         </>
       )}

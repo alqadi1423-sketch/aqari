@@ -327,6 +327,7 @@
   "payment": {
     "cancelTitle": "Cancel payment",
     "cancelFromDeposit": "Paid from the deposit of a reservation converted to this contract · it cannot be cancelled, as cancelling would return the amount to a held deposit that can no longer be refunded or forfeited",
+    "cancelBeforePayment": "The cancellation date is before the payment date ({{date}}) · choose that date or later",
     "stuckDepositTitle": "Deposit returned to its liability by cancelling its conversion payment",
     "stuckDepositExplain": "A payment made from the deposit of a reservation converted to a contract was cancelled before cancelling was blocked, so its amount went back to 2450 while a converted reservation can no longer be refunded or forfeited. Applying settles the contract's remaining installments in order with it, using the deposit conversion entry dated {{date}} (today, or the first open day if today falls in a period whose return was filed), and the cancelled payment stays as it is.",
     "stuckDepositLabel": "{{name}} · {{tenant}}",
