@@ -94,6 +94,15 @@ export function nextInvoiceNo(db: DB, issue?: string): string {
   return withLetter(`INV-${yr}-` + String((row ? Number(row.mx) : 0) + 1).padStart(4, '0'), letter);
 }
 
+/**
+ * ما يُرفض به إصدار الفاتورة من مدخلاتها وحدها: رمز السطر ونسبته (البند ٦)، وتاريخٌ في ربعٍ قُدِّم إقراره · يُفحص قبل أخذ رقمها من
+ * العدّاد فلا يُحجز رقمٌ لكتابةٍ ستُرفض حتماً (المراجعة الشاملة · البند ١٢ · تتمة المراجعة الأخيرة) · والحفظ نفسه يعيد الفحص
+ */
+export function checkInvoiceIssue(db: DB, input: Pick<InvoiceInput, 'issue' | 'lines'>): void {
+  normalizeInvoiceLines(input.lines);
+  if (isFiledDate(db, input.issue)) throw new Error(t('invoice.filedPeriod'));
+}
+
 /** حفظ فاتورة (مسودة أو إصدار). التعديل يعكس القيد القديم ويعيد الترحيل. */
 export function saveInvoice(
   db: DB,
@@ -486,26 +495,42 @@ export function creditTaxFor(inv: { subtotal: number; tax: number }, subtotal: n
  * تسلسل الفواتير نفسه، ومبالغه سالبة فتنقص بها المجاميع والإقرار في فترة تاريخه، وقيده يعكس ما يقابله.
  * المحصّلة يُعكس تحصيلها أولاً، ولا يزيد الإشعار على ما بقي منها.
  */
+interface CreditTarget {
+  id: string; no: string; status: string; kind: string; customer_name: string; customer_vat: string; issue: string;
+  subtotal_halalas: number; tax_halalas: number; total_halalas: number; payment_journal_entry_id: string | null;
+  unit_id: string | null; property_id: string | null; deleted_at: string | null;
+}
+
+/** فحوص الإشعار الدائن على فاتورته ومدخلاته · يعيد الفاتورة والسبب والصافي وما بقي منها */
+function creditNoteChecked(db: DB, invoiceId: string, input: CreditNoteInput) {
+  const v = db.get<CreditTarget>(`SELECT * FROM invoices WHERE id = ?`, [invoiceId]);
+  if (!v || v.deleted_at) throw new Error(t('invoice.notFound'));
+  if (v.kind === KIND_CREDIT || v.status === 'مسودة') throw new Error(t('invoice.creditOnIssued')); // i18n-exempt: حالة مخزّنة
+  if (v.payment_journal_entry_id) throw new Error(t('invoice.creditPaid'));
+  const reason = input.reason.trim();
+  if (!reason) throw new Error(t('invoice.creditReason'));
+  // لا قبل تاريخ فاتورته، ولا في فترةٍ قُدِّم إقرارها فيتغيّر المجمَّد (التحقق المستقل)
+  if (input.date < v.issue) throw new Error(t('invoice.creditBeforeInvoice'));
+  if (isFiledDate(db, input.date)) throw new Error(t('invoice.creditFiledPeriod'));
+  const sub = Math.round(input.subtotalHalalas);
+  if (sub <= 0) throw new Error(t('invoice.creditAmount'));
+  // ما بقي من صافيها وضريبتها بعد إشعاراتها: الصافي لا يتجاوز الباقي منه، وإشعار الباقي كله يأخذ ما بقي من الضريبة
+  const left = creditLeft(db, invoiceId, Number(v.subtotal_halalas), Number(v.tax_halalas));
+  if (sub > left.sub) throw new Error(t('invoice.creditOver'));
+  return { v, reason, sub, left };
+}
+
+/**
+ * ما يُرفض به الإشعار الدائن من فاتورته ومدخلاته · يُفحص قبل أخذ رقمه من العدّاد فلا يُحجز رقمٌ لإشعارٍ سيُرفض حتماً
+ * (المراجعة الشاملة · البند ١٢ · تتمة المراجعة الأخيرة) · والحفظ نفسه يعيد الفحص
+ */
+export function checkCreditNote(db: DB, invoiceId: string, input: CreditNoteInput): void {
+  creditNoteChecked(db, invoiceId, input);
+}
+
 export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput, issuedNo?: string): string {
   return db.transaction(() => {
-    const v = db.get<{
-      id: string; no: string; status: string; kind: string; customer_name: string; customer_vat: string; issue: string;
-      subtotal_halalas: number; tax_halalas: number; total_halalas: number; payment_journal_entry_id: string | null;
-      unit_id: string | null; property_id: string | null; deleted_at: string | null;
-    }>(`SELECT * FROM invoices WHERE id = ?`, [invoiceId]);
-    if (!v || v.deleted_at) throw new Error(t('invoice.notFound'));
-    if (v.kind === KIND_CREDIT || v.status === 'مسودة') throw new Error(t('invoice.creditOnIssued')); // i18n-exempt: حالة مخزّنة
-    if (v.payment_journal_entry_id) throw new Error(t('invoice.creditPaid'));
-    const reason = input.reason.trim();
-    if (!reason) throw new Error(t('invoice.creditReason'));
-    // لا قبل تاريخ فاتورته، ولا في فترةٍ قُدِّم إقرارها فيتغيّر المجمَّد (التحقق المستقل)
-    if (input.date < v.issue) throw new Error(t('invoice.creditBeforeInvoice'));
-    if (isFiledDate(db, input.date)) throw new Error(t('invoice.creditFiledPeriod'));
-    const sub = Math.round(input.subtotalHalalas);
-    if (sub <= 0) throw new Error(t('invoice.creditAmount'));
-    // ما بقي من صافيها وضريبتها بعد إشعاراتها: الصافي لا يتجاوز الباقي منه، وإشعار الباقي كله يأخذ ما بقي من الضريبة
-    const left = creditLeft(db, invoiceId, Number(v.subtotal_halalas), Number(v.tax_halalas));
-    if (sub > left.sub) throw new Error(t('invoice.creditOver'));
+    const { v, reason, sub, left } = creditNoteChecked(db, invoiceId, input);
     // سطرٌ لكل رمزٍ ضريبي في فاتورته بنسبة الباقي من صافيه، وضريبة كل رمزٍ بنسبته (المراجعة الشاملة · البند ٧): كان الإشعار
     // كله يُرمَّز خاضعاً بضريبة الفاتورة المتوسطة فيُنقص الخاضع في الإقرار بما ليس منه
     // فاتورةٌ عليها إشعارٌ قديم رُمِّز كله خاضعاً (قبل البند ٧) فصار باقي رمزٍ سالباً: سطرٌ واحد كما كان، فلا تُحمَّل ضريبةٌ على سطرٍ
