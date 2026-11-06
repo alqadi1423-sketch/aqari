@@ -5,7 +5,7 @@
  */
 import { memDb } from './helpers/testDb';
 import { FirestoreRemote, docToFields } from '@/cloud/firestore';
-import { enableSync, syncOnce } from '@/sync/engine';
+import { enableSync, syncOnce, stageInbox, applyInbox, docId } from '@/sync/engine';
 import { getMeta } from '@/repos/settings';
 import type { RemoteDoc } from '@/sync/types';
 
@@ -82,5 +82,41 @@ test('٢ وما تجاوز النافذة لا يُعاد سحبه: المؤشر
   await syncOnce(db, f.remote, dev);
   const q = f.queries[before];
   expect(q.startAt.values[1].referenceValue).toBe(f.remote.docName('tenants__B'));
+  db.close();
+});
+
+test('٢ (التحقق المستقل) صفحتان في دورة: مستندٌ يلتزم بين قراءتيهما ووقته قبل آخر الأولى لا يتخطاه الموضع الآمن', async () => {
+  const T = Date.parse('2026-06-01T12:00:00.000Z');
+  let reads = 0;
+  let now = T;
+  const f = fakeFirestore(() => now);
+  const db = memDb();
+  enableSync(db, 'U1');
+  const dev = getMeta(db, 'device_id')!;
+  for (let i = 0; i < 499; i++) f.add('A' + String(i).padStart(3, '0'), T - 600_000 + i);
+  f.add('L', T - 59_500); // آخر الصفحة الأولى (٥٠٠) بعد حدّها
+  f.add('M', T - 58_000); // في الصفحة الثانية قبل حدّها
+  // Z طُلب قبل L ويلتزم بعد قراءة الصفحة الأولى · والثانية بعد ثلاث ثوانٍ
+  const realPull = f.remote.pull.bind(f.remote);
+  f.remote.pull = async (c, l) => {
+    const page = await realPull(c, l);
+    if (++reads === 1) { f.add('Z', T - 59_800); now = T + 3_000; }
+    return page;
+  };
+  await syncOnce(db, f.remote, dev);
+  await syncOnce(db, f.remote, dev);
+  expect(db.get(`SELECT 1 FROM tenants WHERE id = 'M'`)).toBeTruthy();
+  expect(db.get(`SELECT 1 FROM tenants WHERE id = 'Z'`)).toBeTruthy();
+  db.close();
+});
+
+test('٢ (التحقق المستقل) المستند المرفوض يُسحب ثانيةً في النافذة فلا يتكرر رفضه في السجل', () => {
+  const db = memDb();
+  enableSync(db, 'U1');
+  const bad = { id: docId('tenants', 'TB'), t: 'tenants', k: 'TB', u: '2026-01-01T00:00:00.000Z', dev: 'other', del: false,
+    d: { id: 'غيره', name: 'مستأجر مصطنع', created_at: '2026-01-01T00:00:00.000Z' } };
+  for (let i = 0; i < 3; i++) { stageInbox(db, [bad]); applyInbox(db, 'this-device'); }
+  expect(Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_rejects WHERE pk = 'TB'`)!.n)).toBe(1);
+  expect(Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log WHERE entity_type = 'رفض وارد'`)!.n)).toBe(1);
   db.close();
 });

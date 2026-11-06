@@ -118,6 +118,8 @@ export interface FirestoreOptions {
   /** رقم إصدار التطبيق مع كل صف (#36) · null ما لم تُنشر قواعد الحد */
   sv?: () => number | null;
   fetchImpl?: typeof fetch;
+  /** فرق ساعة الخادم عن الجهاز المحفوظ (المللي ثانية) · لحدّ السحب حين يغيب وقت القراءة (التحقق المستقل على البند ٢) */
+  serverSkewMs?: () => number;
 }
 
 /**
@@ -128,6 +130,11 @@ export interface FirestoreOptions {
 export const PULL_SAFETY_MS = 60_000;
 
 type Pos = { ts: string; id: string };
+
+/** هل في الصفحة مستندٌ وقته بعد الحد · فتُجمَّد بعدها الموضع الآمن في الدورة */
+function passesCutoff(docs: RemoteDoc[], cutoffMs: number): boolean {
+  return docs.some((d) => { const t = isoMs(d.ts); return !Number.isFinite(t) || t > cutoffMs; });
+}
 
 /** آخر مستندٍ في الصفحة وقته قبل الحد (الصفحة مرتبة بالوقت) */
 function lastBefore(docs: RemoteDoc[], cutoffMs: number): Pos | null {
@@ -512,13 +519,13 @@ export class FirestoreRemote implements RemoteStore {
       const id = r.document.name.slice(r.document.name.lastIndexOf('/') + 1);
       docs.push(fieldsToDoc(id, r.document.fields));
     }
-    const serverNow = Number.isFinite(readMs) ? readMs : Date.now() + this.skewMs;
+    const serverNow = Number.isFinite(readMs) ? readMs : Date.now() + (this.skewMs || (this.o.serverSkewMs?.() ?? 0));
     return { docs, cutoffMs: serverNow - PULL_SAFETY_MS };
   }
 
   /** المؤشر المحفوظ: الموضع الآمن لا آخر ما قُرئ (البند ٢) · ومؤشرٌ محفوظ قبل الإصلاح بلا موضعٍ آمن هو موضعه */
   durableCursor(c: Cursor): Cursor | null {
-    if (c.safe === undefined) return c;
+    if (c.safe === undefined) { const { frozen: _f, ...rest } = c; return rest; }
     return c.safe;
   }
 
@@ -526,12 +533,16 @@ export class FirestoreRemote implements RemoteStore {
     const tokens = this.o.memberTokens?.() ?? null;
     // الموضع الآمن الذي بلغته الصفحات السابقة · ومؤشرٌ بلا موضعٍ آمن (من الدورة السابقة أو قبل الإصلاح) هو موضعه
     const prevSafe = cursor ? (cursor.safe !== undefined ? cursor.safe : cursor) : null;
+    const frozen = new Set(cursor?.frozen ?? []);
     if (!tokens) {
       const { docs, cutoffMs } = await this.page(cursor, limit, null);
       const last = docs[docs.length - 1];
-      const reached = lastBefore(docs, cutoffMs);
+      // ما بعد صفحةٍ تجاوزت حدّها لا يقدّم الموضع الآمن في هذه الدورة (التحقق المستقل على البند ٢)
+      const reached = frozen.has('') ? null : lastBefore(docs, cutoffMs);
+      if (passesCutoff(docs, cutoffMs)) frozen.add('');
       const safe = reached ?? (prevSafe ? { ts: prevSafe.ts, id: prevSafe.id } : null);
-      const next = last && last.ts ? { ts: last.ts, id: last.id, safe } : cursor ? { ts: cursor.ts, id: cursor.id, safe } : null;
+      const fz = frozen.size ? { frozen: [...frozen] } : {};
+      const next = last && last.ts ? { ts: last.ts, id: last.id, safe, ...fz } : cursor ? { ts: cursor.ts, id: cursor.id, safe, ...fz } : null;
       // المالك يقرأ المستندات الكاملة · والإسقاط بلا مبالغ (t~pub) للأعضاء وحدهم فلا يُطبَّق عنده
       // (كان يُرفض «جدولاً خارج المزامنة» فيظهر مرفوضاً على كل تثبيت جديد)
       return { docs: docs.filter((d) => !d.t.endsWith('~pub')), next, more: docs.length >= limit };
@@ -550,8 +561,9 @@ export class FirestoreRemote implements RemoteStore {
       const { docs, cutoffMs } = await this.page(parts[key] ?? null, limit, chunk);
       const last = docs[docs.length - 1];
       if (last && last.ts) parts[key] = { ts: last.ts, id: last.id };
-      const reached = lastBefore(docs, cutoffMs);
+      const reached = frozen.has(key) ? null : lastBefore(docs, cutoffMs);
       if (reached) safeParts[key] = reached;
+      if (passesCutoff(docs, cutoffMs)) frozen.add(key);
       if (docs.length >= limit) more = true;
       for (const d of docs) {
         const pub = d.t.endsWith('~pub');
@@ -562,6 +574,7 @@ export class FirestoreRemote implements RemoteStore {
       }
     }
     const last = out[out.length - 1];
-    return { docs: out, next: { ts: last?.ts ?? cursor?.ts ?? '', id: last?.id ?? cursor?.id ?? '', parts, safe: { ts: '', id: '', parts: safeParts } }, more };
+    return { docs: out, next: { ts: last?.ts ?? cursor?.ts ?? '', id: last?.id ?? cursor?.id ?? '', parts, safe: { ts: '', id: '', parts: safeParts },
+      ...(frozen.size ? { frozen: [...frozen] } : {}) }, more };
   }
 }

@@ -957,8 +957,11 @@ function childTime(db: DB, table: string, key: string, at: string): string {
 type ApplyOutcome = 'applied' | 'skipped' | 'conflict-local' | 'conflict-remote' | 'retry' | 'rejected';
 
 function reject(db: DB, doc: RemoteDoc, reason: string): void {
+  // المستند نفسه يُسحب ثانيةً في نافذة الأمان (البند ٢) · فرفضه بالسبب نفسه لا يتكرر في السجل ولا في سجل العمليات (التحقق المستقل)
+  const payload = JSON.stringify(doc);
+  if (db.get(`SELECT 1 FROM sync_rejects WHERE doc = ? AND reason = ? AND payload = ?`, [doc.id, reason, payload])) return;
   db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
-    [doc.id, doc.t, doc.k, reason, JSON.stringify(doc), nowIso()]);
+    [doc.id, doc.t, doc.k, reason, payload, nowIso()]);
   try { logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${reason}`.slice(0, 300)); } catch { /* السجل لا يعطّل */ }
 }
 

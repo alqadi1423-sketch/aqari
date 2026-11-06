@@ -30,7 +30,7 @@ import { cancelAllNotifications } from './notifications';
 import { hasUserData } from '../domain/backup/upgrade';
 import {
   enableSync, syncOnce, syncStatus, setSyncState, getSyncState, planCloudReplace, adoptAsCloudTruth, readCloud, planFromSnapshot, syncBackoffUntil,
-  type SyncStatus, type CloudReplacePlan, type CloudSnapshot, replayRejectsAfterUpgrade } from '../sync/engine';
+  type SyncStatus, type CloudReplacePlan, type CloudSnapshot, replayRejectsAfterUpgrade, clockSkewMs } from '../sync/engine';
 import type { DB } from '../db/adapter';
 import { ensureDeviceId } from '../db/seed';
 import { expoHasher, expoMd5Base64 } from '../files/expoFs';
@@ -182,13 +182,13 @@ function remoteOf(db: DB, uid: string, idToken: () => Promise<string>, legacy = 
       projectId: cfg.projectId, uid, idToken, org: m.org,
       memberTokens: () => memberTokens(readAccess(db)),
       fullReadTables: () => fullReadTables(readAccess(db), tables),
-      access: () => readAccess(db), sv: svOf,
+      access: () => readAccess(db), sv: svOf, serverSkewMs: () => clockSkewMs(db),
     });
   }
   if (!legacy && getSyncState(db, 'org') === uid) {
-    return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid, access: () => readAccess(db), sv: svOf });
+    return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid, access: () => readAccess(db), sv: svOf, serverSkewMs: () => clockSkewMs(db) });
   }
-  return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken });
+  return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, serverSkewMs: () => clockSkewMs(db) });
 }
 
 /** ربط الجهاز بعضويته بعد تفريغه · بلا رفع ما زُرع عليه (ليس للعضو أن يكتبه في منشأة غيره) */

@@ -38,7 +38,8 @@ const CHANNEL_PULL_EVERY_MS = 10 * 60_000;
 async function syncState(db: DB, remote: ChatRemote, threadId: string, me: string): Promise<void> {
   const up = readToPush(db, threadId, me);
   if (up) { await remote.markReadUpTo(threadId, up); markReadPushed(db, threadId, me, up); }
-  const items = await remote.stateSince(threadId, stateCursor(db, threadId));
+  // حال المحادثة بوقت الطلب كذلك · فبالنافذة نفسها (التحقق المستقل على البند ٢)
+  const items = await remote.stateSince(threadId, rewind(stateCursor(db, threadId)));
   applyState(db, threadId, items as unknown as Array<{ id: string; k: string; ts: string }>);
   // ما عُدِّل في الخادم يُجلب رسالةً رسالة (الدفعة ٣) · وما لا يحق لي قراءته (قبل انضمامي) يُترك
   for (const id of staleEdits(db, threadId)) {

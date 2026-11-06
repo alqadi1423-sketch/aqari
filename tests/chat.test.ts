@@ -111,7 +111,7 @@ function fakeCloud() {
       },
     } as unknown as ChatRemote;
   };
-  return { remote, state, msgs, threads };
+  return { remote, state, msgs, threads, st };
 }
 
 const me = (uid: string, name: string, owner = false): ChatMe => ({ org: 'ORG', uid, email: uid + '@example.test', name, owner });
@@ -938,4 +938,21 @@ test('المراجعة الشاملة · البند ٢: رسالةٌ تأخر ا
   cloud.msgs.get(tid)!.unshift({ ...shown, id: 'late-msg-1', body: 'رسالة مصطنعة متأخرة', ts: late });
   await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { threadId: tid });
   expect(listMessages(b, tid).map((m) => m.body).sort()).toEqual(['رسالة مصطنعة ظاهرة', 'رسالة مصطنعة متأخرة'].sort());
+});
+
+test('المراجعة الشاملة · البند ٢ (التحقق المستقل): حال المحادثة يتأخر التزامه عن وقته يُسحب كذلك بنافذة الأمان', async () => {
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  sendLocal(a, tid, OWNER, 'رسالة مصطنعة');
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER);
+  await cloud.remote(OWNER.uid).setPin(tid, 'm-x', true);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { threadId: tid, now: 10_000_000 });
+  const pin = (cloud.st.get(tid) ?? []).find((x) => x.k === 'pin')!;
+  // حالٌ وقته قبل الذي سُحب بثوانٍ ولم يظهر إلا الآن
+  cloud.st.set(tid, [...(cloud.st.get(tid) ?? []), { id: 'r_late', k: 'read', at: pin.ts, ts: new Date(Date.parse(pin.ts) - 5000).toISOString() } as never]);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { threadId: tid, now: 20_000_000 });
+  expect(b.get(`SELECT 1 FROM chat_state WHERE thread_id = ? AND id = 'r_late'`, [tid])).toBeTruthy();
 });
