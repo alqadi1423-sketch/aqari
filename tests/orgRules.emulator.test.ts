@@ -364,6 +364,29 @@ d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦
     expect((await push('بيانات عضو')).ok).toBe(true);
     expect((await push('عقد')).ok).toBe(false);
   });
+
+  test('المراجعة الشاملة · البند ٢٨: صفّ سجل العضو عن نفسه برموز رؤيةٍ مزوّرة أو بحقولٍ فوق حدّها مرفوض · والسليم مقبول', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { logAudit } = await import('@/domain/audit');
+    const { buildDoc } = await import('@/sync/engine');
+    const mdb = memDb();
+    const make = (name = 'عضو تجريبي') => {
+      logAudit(mdb, 'الأعضاء', 'update', 'بيانات عضو', name);
+      const k = mdb.get<{ id: string }>(`SELECT id FROM audit_log ORDER BY rowid DESC LIMIT 1`)!.id;
+      return annotate(mdb, buildDoc(mdb, 'audit_log', k, 'upsert', new Date().toISOString(), 'dev-view'), VIEWER).doc;
+    };
+    const write = async (doc: ReturnType<typeof make>) => (await remoteFor('U-VIEW', VIEWER).write([doc]))[0];
+    expect((await write(make())).ok).toBe(true);
+    // رموز رؤيةٍ لعقارٍ بعينه أو بصيغةٍ غير صيغة الرؤية العامة
+    expect((await write({ ...make(), g: ['contracts|P-ANY'] })).ok).toBe(false);
+    expect((await write({ ...make(), g: ['contracts|*', 'x y'] })).ok).toBe(false);
+    // حقلٌ فوق حدّه، وحقلٌ ليس من سجل العمليات
+    expect((await write(make('س'.repeat(400)))).ok).toBe(false);
+    const extra = make();
+    expect((await write({ ...extra, d: { ...extra.d!, note: 'حقل مصطنع' } })).ok).toBe(false);
+    const big = make();
+    expect((await write({ ...big, d: { ...big.d!, after_json: 'x'.repeat(5000) } })).ok).toBe(false);
+  });
 });
 
 d('عدّاد الترقيم على الخادم (قرار المالك ٢٠٢٦-١٠-٠٥)', () => {

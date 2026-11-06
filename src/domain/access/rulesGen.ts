@@ -383,10 +383,20 @@ ${guardFns(schema)}
     }
     // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥) · وما سواه لا يُكتب
     // بهذه العملية (مستواها صفر)
+    // ورموز رؤيته رموزٌ عامة («قسم|*» أو «قسم|@») وحقوله حقول سجل العمليات بحدودها (المراجعة الشاملة · البند ٢٨): كان يكتب رموزاً
+    // ونصوصاً بلا حد
     function memberSelfAudit(r) {
       return r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)
+        && gPropOk(r.get('g', []), '*') && selfAuditSized(r.d)
         && r.d.get('module', '') == '${SELF_AUDIT_MODULE}' && r.d.get('user_name', '') != '${OWNER_ACTOR}'
         && r.get('by', '') == request.auth.uid;
+    }
+    function selfAuditSized(d) {
+      return d.keys().hasOnly(['id', 'ts', 'user_name', 'module', 'action_type', 'entity_type', 'entity_name', 'before_json', 'after_json'])
+        && d.get('user_name', '') is string && d.get('user_name', '').size() <= 200
+        && d.get('entity_name', '') is string && d.get('entity_name', '').size() <= 300
+        && (d.get('before_json', null) == null || (d.before_json is string && d.before_json.size() <= 4000))
+        && (d.get('after_json', null) == null || (d.after_json is string && d.after_json.size() <= 4000));
     }
 
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
