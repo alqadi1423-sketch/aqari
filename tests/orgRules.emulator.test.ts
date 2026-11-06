@@ -492,6 +492,11 @@ d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦
       ['نوع حذف', { action_type: 'delete' }], ['نوع ضخم', { action_type: 'حذف كل العقود'.repeat(2000) }], ['نوع رقم', { action_type: 1 }],
       ['وقت ضخم', { ts: now + 'x'.repeat(5000) }], ['وقت نص', { ts: 'أمس' }], ['وقت بلا تاريخ صحيح', { ts: '2026-13-45T99:00:00' }],
       ['وقت رقم', { ts: 1767225600000 }], ['وقت بعيد', { ts: '9999-12-31T00:00:00' }],
+      // (تتمة · المتحقق المستقل) الساعة والدقيقة والثانية في مداها: بتاريخ اليوم كانت T99:99:99 تُقبل، فيظهر وقتها «NaN» على جهاز
+      // المالك ويغيب السطر عن مرشحات الشهر والسنة (date(ts) في SQLite تعيده NULL) ويُرتَّب فوق سطور يومه
+      ['ساعة ودقيقة وثانية فوق مداها', { ts: now.slice(0, 10) + 'T99:99:99' }], ['ساعة ٢٤', { ts: now.slice(0, 10) + 'T24:00:00' }],
+      ['دقيقة ٦٠', { ts: now.slice(0, 10) + 'T23:60:00' }], ['ثانية ٦٠', { ts: now.slice(0, 10) + 'T23:59:60' }],
+      ['ساعة ٢٩ بصيغة toISOString', { ts: now.slice(0, 10) + 'T29:00:00.000Z' }],
     ];
     const accepted: string[] = [];
     for (const [label, d] of bad) if ((await write(forged(d))).ok) accepted.push(label);
@@ -500,6 +505,9 @@ d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦
     expect((await write(forged({ ts: new Date().toISOString() }))).ok).toBe(true);
     expect((await write(forged({ ts: new Date(Date.now() + 86_400_000).toISOString().slice(0, 19) }))).ok).toBe(true);
     expect((await write(forged({ ts: '2026-01-01T00:00:00' }))).ok).toBe(true);
+    // وأطراف المدى بتاريخ اليوم
+    expect((await write(forged({ ts: now.slice(0, 10) + 'T23:59:59' }))).ok).toBe(true);
+    expect((await write(forged({ ts: now.slice(0, 10) + 'T00:00:00.000Z' }))).ok).toBe(true);
   });
 });
 

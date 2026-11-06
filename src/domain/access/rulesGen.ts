@@ -399,12 +399,13 @@ ${guardFns(schema)}
         && r.get('by', '') == request.auth.uid;
     }
     // ونوعه مما يكتبه التطبيق، ووقته نصٌّ بصيغة toISOString لا يسبق وقت الخادم بأكثر من أيامٍ عددها ${SELF_AUDIT_AHEAD_DAYS} (البند ٢٨ تتمة · المراجعة
-    // الأخيرة: كانا بلا قيد، فيُكتب نوعٌ مضلّل أو ضخم ووقتٌ بعيدٌ يبقى أول السجل)
+    // الأخيرة: كانا بلا قيد، فيُكتب نوعٌ مضلّل أو ضخم ووقتٌ بعيدٌ يبقى أول السجل) · والساعة والدقيقة والثانية في مداها (المتحقق المستقل:
+    // T99:99:99 بتاريخ اليوم كانت تُقبل، فيظهر وقتها «NaN» عند المالك ويغيب السطر عن مرشحات السجل)
     function selfAuditSized(d) {
       return d.keys().hasOnly(['id', 'ts', 'user_name', 'module', 'action_type', 'entity_type', 'entity_name', 'before_json', 'after_json'])
         && d.get('action_type', null) in ${q([...SELF_AUDIT_ACTIONS])}
         && d.get('ts', null) is string && d.ts.size() <= 24
-        && d.ts.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,3})?Z?')
+        && d.ts.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]{1,3})?Z?')
         && selfAuditNotAhead(d.ts.split('T')[0].split('-'))
         && d.get('user_name', '') is string && d.get('user_name', '').size() <= 200
         && d.get('entity_name', '') is string && d.get('entity_name', '').size() <= 300
