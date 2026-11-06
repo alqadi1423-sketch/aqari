@@ -487,6 +487,9 @@
     "taskCancel": "Cancel task"
   },
   "auth": {
+    "driveCancelled": "Google account selection was cancelled · choose your signed-in account to reach Google Drive",
+    "driveOtherAccount": "You chose another account · choose the account signed in on this device",
+    "reauthFailed": "Couldn't confirm your identity with Google · try again",
     "fail": {
       "title": "Could not finish verifying {{email}}",
       "network": "No connection to the server · check the internet and retry",
@@ -720,7 +723,7 @@
     "pinLabel": "App code",
     "wrongPin": "Wrong code",
     "wait": "Too many wrong attempts · try again in {{n}} seconds",
-    "noDeviceLock": "The device lock was removed or the lock setting cannot be read · confirm your Google account to open the app.",
+    "noDeviceLock": "The device lock was removed or the lock setting cannot be read · confirm your Google account and choose an app PIN, or add a device lock.",
     "confirmAccount": "Confirm my Google account",
     "accountMismatch": "The account signed in on this device was not confirmed",
     "forgotPin": "Forgot the code · confirm my Google account",
@@ -743,7 +746,12 @@
     "saveFailed": "Could not save the app lock",
     "setNewPin": "Your account is confirmed · choose a new PIN to open the app",
     "saveNewPin": "Save the PIN and open",
-    "newPinFailed": "Could not save the new PIN"
+    "newPinFailed": "Could not save the new PIN",
+    "accountFailed": "Couldn't confirm the account · try again",
+    "resetLimit": "PIN reset limit reached · available again in {{n}} h",
+    "resetNoticeTitle": "App lock PIN was reset",
+    "resetStoreFailed": "Couldn't read or save the PIN reset record",
+    "resetNotice": "The app lock PIN was reset by confirming the Google account on {{when}}"
   },
   "imgMeta": {
     "unstripped": "Could not remove this image's metadata, so it was not attached · To attach it as is, turn off image metadata removal in Settings"

@@ -210,7 +210,8 @@ test('قرار المالك 2026-10-15 «٣»: منع لقطة الشاشة إع
 
 test('قرار المالك 2026-10-15 «٢»: «نسيت الرمز» يؤكد الحساب بقوقل ثم يطلب رمزاً جديداً قبل الفتح', () => {
   const lg = src('src/ui/LockGate.tsx');
-  expect(lg).toMatch(/const forgotPin = async[^]*?confirmSameAccount\)\) setResetting\(true\)/);
+  // والتأكيد خروجٌ من قوقل ثم دخولٌ جديد بحدٍّ وإشعار (المراجعة الشاملة · البند ٥)
+  expect(lg).toMatch(/const forgotPin = async[^]*?recoverByAccount\(\(\) => whilePrompting\(confirmSameAccount\)[^]*?setResetting\(true\)/);
   expect(lg).toMatch(/const saveNewPin = async[^]*?enablePinLock\(pin1, cfg.delay\);[^]*?onOpen\(\)/);
   expect(lg).toContain("onPress={forgotPin}");
   expect(lg).toMatch(/disabled=\{!pinShapeOk\(pin1\) \|\| pin1 !== pin2\}/);

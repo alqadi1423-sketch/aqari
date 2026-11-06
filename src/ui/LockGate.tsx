@@ -7,6 +7,10 @@
  * الأخيرة ما أمكن · والقرار عند العودة فوري بآخر إعداد (لا بعد قراءةٍ غير متزامنة) وبساعتين · والنوافذ المنبثقة تختفي
  * ما دام مقفلاً (ui/lockState.ts) · والخروج أثناء نافذة البصمة أو قوقل لا يُلغي القفل · ومنتقي الملفات والكاميرا
  * والمشاركة والطباعة نوافذ يفتحها التطبيق وينتظرها فتُعامل معاملتها (whilePrompting)
+ * المراجعة الشاملة · البند ٥: «نسيت الرمز» خروجٌ من قوقل ثم دخولٌ جديد يُفحص رمز هويته، بحدٍّ لإعادات الضبط وسطرٍ في سجل
+ * العمليات وتنبيهٍ عند الفتح التالي (services/appLockService.ts: recoverByAccount · domain/lockReset.ts) · و«تأكيد حسابي» حين لا
+ * قفل للجهاز المسارُ نفسه ثم رمزٌ للتطبيق (المتحقق المستقل: كان يفتح بلا حدٍّ ولا سجل، وهو شرط العيب نفسه) · والزر لا يظهر
+ * ما لم يجز: بلغ الحدّ، أو لا حساب على الجهاز، أو تعذّرت قراءة السجل
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, View } from 'react-native';
@@ -15,19 +19,29 @@ import { T, BtnPrimary, BtnGhost, Field, Note } from './components';
 import { C, TYPE } from './theme';
 import { decideReturn, pinShapeOk, type Away, type LockConfig } from '../domain/appLock';
 import {
-  lockMaybeOn, loadLock, askDevice, deviceLockAvailable, tryPin, promptActive, whilePrompting, onLockChange, monoNow, clockTrusted, enablePinLock } from '../services/appLockService';
-import { confirmSameAccount } from '../services/cloud';
+  lockMaybeOn, loadLock, askDevice, deviceLockAvailable, tryPin, promptActive, whilePrompting, onLockChange, monoNow, clockTrusted, enablePinLock,
+  recoverByAccount, resetStatus, resetNotices, type ResetStatus, type Recovery } from '../services/appLockService';
+import { confirmSameAccount, accountConfirmable, subscribeCloud } from '../services/cloud';
+import { logLockReset, resetWhen } from '../domain/lockReset';
+import { appDb } from '../db/expoAdapter';
+import { showDialog } from './AppDialog';
 import { setAppLocked } from './lockState';
 
 type Gate = 'open' | 'checking' | 'locked';
 
+/** سطر إعادة الضبط في سجل العمليات · تعذّر القاعدة يُعاد عند الفتح التالي */
+const auditReset = (at: number) => logLockReset(appDb(), at);
+
 export function LockGate({ children }: { children: React.ReactNode }) {
+  const { t } = useLang();
   const [gate, setGate] = useState<Gate>(() => (lockMaybeOn() ? 'checking' : 'open'));
   const [cover, setCover] = useState(false);
   const [cfg, setCfg] = useState<LockConfig | null>(null);
   // آخر إعداد معروف · يُقرأ عند العودة بلا انتظار
   const cfgRef = useRef<LockConfig | null>(null);
   const away = useRef<Away | null>(null);
+  // الفتح الذي يلي إعادة الضبط نفسها لا يُنبَّه فيه · والتنبيه عند الفتح التالي حتى يُقرّ به · وسطر السجل المتعذّر يُكتب
+  const [notices] = useState(() => resetNotices(auditReset));
 
   useEffect(() => {
     const apply = (c: LockConfig) => { cfgRef.current = c; setCfg(c); };
@@ -57,6 +71,14 @@ export function LockGate({ children }: { children: React.ReactNode }) {
     return () => { off(); sub.remove(); };
   }, []);
 
+  useEffect(() => {
+    if (gate !== 'open') return;
+    notices.opened((at, ack) => showDialog({
+      title: t('lock.resetNoticeTitle'), body: t('lock.resetNotice', { when: resetWhen(at) }), tone: 'danger', locked: true,
+      actions: [{ label: t('common.ok'), variant: 'primary', onPress: ack }],
+    })).catch(() => undefined);
+  }, [gate]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const locked = gate !== 'open';
   const hidden = locked || cover;
   // النوافذ المنبثقة تُطوى حين يُقفل فعلاً وحده: طيّها يمحو ما فيها، فلا تُطوى بكل خروجٍ قبل المهلة (المتحقق، الجولة السادسة)
@@ -68,14 +90,14 @@ export function LockGate({ children }: { children: React.ReactNode }) {
       </View>
       {hidden ? (
         <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: C.paper, zIndex: 1000, elevation: 1000 }}>
-          {gate === 'locked' && cfg ? <LockScreen cfg={cfg} onOpen={() => setGate('open')} /> : null}
+          {gate === 'locked' && cfg ? <LockScreen cfg={cfg} onOpen={() => setGate('open')} onRecovered={notices.recovered} /> : null}
         </View>
       ) : null}
     </View>
   );
 }
 
-function LockScreen({ cfg, onOpen }: { cfg: LockConfig; onOpen: () => void }) {
+function LockScreen({ cfg, onOpen, onRecovered }: { cfg: LockConfig; onOpen: () => void; onRecovered: () => void }) {
   const { t } = useLang();
   const [pin, setPin] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
@@ -85,29 +107,54 @@ function LockScreen({ cfg, onOpen }: { cfg: LockConfig; onOpen: () => void }) {
   const [resetting, setResetting] = useState(false);
   const [pin1, setPin1] = useState('');
   const [pin2, setPin2] = useState('');
+  // حدّ إعادة الضبط وتنبيه ما سبق منها · والحساب الذي تُؤكَّد به · الزر لا يظهر حتى يُعرف أنه جائز ويُعاد حسابه بعد كل محاولة
+  const [status, setStatus] = useState<ResetStatus | null>(null);
+  const [account, setAccount] = useState(accountConfirmable);
+  const refreshStatus = () => { resetStatus().then(setStatus).catch(() => setStatus({ waitMs: null, notice: null })); };
+  useEffect(() => {
+    refreshStatus();
+    return subscribeCloud(() => setAccount(accountConfirmable()));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const failMsg = (why: Exclude<Recovery, { ok: true }>['why']): string | null =>
+    why === 'cancel' || why === 'device' || why === 'limit' ? null : why === 'mismatch' ? t('lock.accountMismatch')
+      : why === 'store' ? t('lock.resetStoreFailed') : t('lock.accountFailed');
 
   const unlockDevice = async () => {
     setMsg(null);
     if (await askDevice()) onOpen();
   };
-  const unlockAccount = async () => {
-    setMsg(null);
-    try { if (await whilePrompting(confirmSameAccount)) onOpen(); else setMsg(t('lock.accountMismatch')); } catch { setMsg(t('lock.accountMismatch')); }
-  };
+  // «نسيت الرمز» و«تأكيد حسابي» (لا قفل للجهاز): تأكيد الحساب بالحدّ والسجل ثم رمزٌ جديد قبل الفتح
+  // (قرار المالك 2026-10-15 «٢»: «التحقق بقوقل ثم رمز جديد»)
   const forgotPin = async () => {
     setMsg(null);
-    try { if (await whilePrompting(confirmSameAccount)) setResetting(true); else setMsg(t('lock.accountMismatch')); } catch { setMsg(t('lock.accountMismatch')); }
+    let r: Recovery;
+    try { r = await recoverByAccount(() => whilePrompting(confirmSameAccount), auditReset); } catch { r = { ok: false, why: 'error' }; }
+    if (r.ok) { onRecovered(); setResetting(true); return; }
+    if (r.why === 'limit' && r.waitMs) { const waitMs = r.waitMs; setStatus((st) => ({ waitMs, notice: st?.notice ?? null })); }
+    else refreshStatus();
+    setMsg(failMsg(r.why));
   };
   const saveNewPin = async () => {
     setBusy(true);
     try { await enablePinLock(pin1, cfg.delay); setPin1(''); setPin2(''); onOpen(); }
-    catch { setMsg(t('lock.newPinFailed')); }
+    // بلا قفل للجهاز وإعدادٌ تعذّر حفظه (المخزن الآمن معطوب): الحساب أُكِّد وحُسب وسُجِّل فيُفتح ولا يُحبس صاحبه
+    catch { if (cfg.method === 'device') onOpen(); else setMsg(t('lock.newPinFailed')); }
     finally { setBusy(false); }
   };
 
+  // قفل الجهاز · ويُعاد فحصه عند العودة إلى التطبيق: من أضاف قفلاً للجهاز يفتح به
+  const deviceRef = useRef<boolean | null>(null);
   useEffect(() => {
     if (cfg.method !== 'device') return;
-    deviceLockAvailable().then((ok) => { setDevice(ok); if (ok) unlockDevice(); });
+    const check = () => deviceLockAvailable().then((ok) => {
+      const was = deviceRef.current;
+      deviceRef.current = ok;
+      setDevice(ok);
+      if (ok && was !== true) unlockDevice();
+    });
+    check();
+    const sub = AppState.addEventListener('change', (s) => { if (s === 'active' && deviceRef.current === false) check(); });
+    return () => sub.remove();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitPin = async () => {
@@ -120,6 +167,11 @@ function LockScreen({ cfg, onOpen }: { cfg: LockConfig; onOpen: () => void }) {
       else setMsg(t('lock.wait', { n: Math.ceil(r / 1000) }));
     } finally { setBusy(false); }
   };
+
+  // ما يُعرض مكان زرّ إعادة الضبط: الزر إن جاز · وكم بقي إن بلغ الحدّ · وسبب تعذّر السجل · ولا شيء بلا حساب
+  const offer = !status || resetting ? null : status.waitMs === null ? 'store' : status.waitMs > 0 ? 'wait' : account ? 'offer' : null;
+  const offerNote = offer === 'store' ? <Note tone="danger">{t('lock.resetStoreFailed')}</Note>
+    : offer === 'wait' ? <Note>{t('lock.resetLimit', { n: Math.ceil((status?.waitMs ?? 0) / 3_600_000) })}</Note> : null;
 
   return (
     <View style={{ flex: 1, justifyContent: 'center', padding: 24, gap: 14 }}>
@@ -139,15 +191,14 @@ function LockScreen({ cfg, onOpen }: { cfg: LockConfig; onOpen: () => void }) {
       ) : device === false ? (
         <>
           <Note>{t('lock.noDeviceLock')}</Note>
-          <BtnPrimary title={t('lock.confirmAccount')} onPress={unlockAccount} />
+          {offer === 'offer' ? <BtnPrimary title={t('lock.confirmAccount')} onPress={forgotPin} /> : offerNote}
         </>
       ) : (
         <BtnPrimary title={t('lock.open')} onPress={unlockDevice} />
       )}
-      {msg ? <Note tone="danger">{msg}</Note> : null}
-      {cfg.method === 'pin' && !resetting ? (
-        <BtnGhost title={t('lock.forgotPin')} onPress={forgotPin} />
-      ) : null}
+      {msg && !(offer === 'store' && msg === t('lock.resetStoreFailed')) ? <Note tone="danger">{msg}</Note> : null}
+      {status?.notice && !resetting ? <Note tone="danger">{t('lock.resetNotice', { when: resetWhen(status.notice.at) })}</Note> : null}
+      {cfg.method === 'pin' && !resetting ? (offer === 'offer' ? <BtnGhost title={t('lock.forgotPin')} onPress={forgotPin} /> : offerNote) : null}
     </View>
   );
 }

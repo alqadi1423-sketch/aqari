@@ -8,6 +8,10 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import { File, Paths } from 'expo-file-system';
 import { deviceCipher } from './cipher';
 import { hashPin, pinMatches, parseLockConfig, waitLeft, type LockConfig, type LockDelay } from '../domain/appLock';
+import {
+  emptyResetLog, parseResetLog, mergeResetLogs, resetWaitMs, serverWaitMs, recordReset, noticePending, ackNotice, auditPending, markAudited,
+  type ResetLog, type ClockNow } from '../domain/lockReset';
+import type { AccountProof } from '../cloud/session';
 import { t } from '../i18n';
 
 const KEY = 'aqari_app_lock';
@@ -130,4 +134,110 @@ export async function tryPin(pin: string): Promise<'ok' | 'wrong' | number> {
   lastFailMono = monoNow();
   await save({ ...c, fails: (c.fails ?? 0) + 1, failAt: Date.now() });
   return 'wrong';
+}
+
+/* ═══ «نسيت الرمز» (المراجعة الشاملة · البند ٥ · المنطق في domain/lockReset.ts) ═══ */
+
+// سجلّ إعادة الضبط بنسختين: المخزن الآمن وملفٌ في ملفات التطبيق (لا في الذاكرة المؤقتة) · لا يمسّه إيقاف القفل ولا تغيير الرمز
+// ولا إعادة التشغيل، ومسح إحدى النسختين لا يُسقطه · وتعذّر قراءتهما معاً يحجب ولا يفتح
+const RESET_KEY = 'aqari_lock_resets';
+const resetFile = () => new File(Paths.document, 'app-lock-resets.json');
+const clockNow = (): ClockNow => ({ wall: Date.now(), mono: monoNow(), trusted: clockTrusted() });
+
+async function readResetLog(): Promise<ResetLog> {
+  // undefined: لا نسخة · null: نسخةٌ تعذّرت قراءتها أو فهمها
+  let a: ResetLog | null | undefined, b: ResetLog | null | undefined;
+  try { const raw = await SecureStore.getItemAsync(RESET_KEY); a = raw === null ? undefined : parseResetLog(raw); } catch { a = null; }
+  try { const f = resetFile(); b = f.exists ? parseResetLog(f.textSync()) : undefined; } catch { b = null; }
+  if (a && b) return mergeResetLogs(a, b);
+  if (a || b) return (a || b)!;
+  if (a === undefined && b === undefined) return emptyResetLog();
+  throw new Error('reset log unreadable');
+}
+async function writeResetLog(log: ResetLog): Promise<void> {
+  const raw = JSON.stringify(log);
+  let ok = false;
+  try { await SecureStore.setItemAsync(RESET_KEY, raw); ok = true; } catch { /* يبقى الملف */ }
+  try { resetFile().write(raw); ok = true; } catch { /* يبقى المخزن الآمن */ }
+  if (!ok) throw new Error('reset log unwritable');
+}
+
+/** للبوابة عند كل فتح بلا قراءةٍ غير متزامنة لمن لم يُعِد ضبطاً قط */
+export const resetLogPresent = (): boolean => { try { return resetFile().exists; } catch { return true; } };
+
+export interface ResetStatus { waitMs: number | null; notice: { at: number } | null }
+/** waitMs: كم بقي حتى تجوز إعادة ضبط (٠ إن جازت · null: تعذّرت قراءة السجل، لا «بعد ٢٤ ساعة») · notice: إعادة ضبطٍ لم يُقرّ بتنبيهها */
+export async function resetStatus(): Promise<ResetStatus> {
+  try {
+    const log = await readResetLog();
+    return { waitMs: resetWaitMs(log, clockNow()), notice: noticePending(log) };
+  } catch { return { waitMs: null, notice: null }; }
+}
+
+export type Recovery = { ok: true } | { ok: false; why: 'limit' | 'device' | 'store' | Extract<AccountProof, { ok: false }>['why']; waitMs?: number };
+
+async function flushAudit(log: ResetLog, audit: (atMs: number) => void): Promise<void> {
+  if (!auditPending(log)) return;
+  const n = log.notice;
+  try { audit(log.noticeAt); } catch { return; }
+  try { await writeResetLog(markAudited(await readResetLog(), n)); } catch { /* يُعاد عند الفتح التالي فيتكرر السطر وحده */ }
+}
+
+/**
+ * إعادة ضبط الرمز بتأكيد الحساب · prove دخولٌ جديد بقوقل (services/cloud.ts: confirmSameAccount) · audit يكتب سطر سجل العمليات
+ * (تعذّره يُعاد عند الفتح التالي) · الحدّ قبل النافذة بساعتي الجهاز وبعد الدخول بساعة الخادم · وللجهاز قفلٌ أُضيف بعد اختيار
+ * الرمز: يُطلب قبل قوقل · ok: يُختار رمزٌ جديد · ولا يُحسب إلا ما بلغ الدخول وصحّ، ويُحفظ قبل أن يُعطى (المتحقق المستقل: المحاولة
+ * كانت تُحفظ قبل النافذة فيُحبس المالك يوماً بثلاث نقرات بلا شبكة أو بعد الخروج، وحفظها قبل النافذة لا يحمي شيئاً: النجاح لا
+ * يُعطى إلا بعد حفظه) · ورفض الخادم يعطي كم بقي بساعته فيختفي الزر
+ */
+export async function recoverByAccount(prove: () => Promise<AccountProof>, audit: (atMs: number) => void): Promise<Recovery> {
+  let log: ResetLog;
+  try { log = await readResetLog(); } catch { return { ok: false, why: 'store' }; }
+  const wait = resetWaitMs(log, clockNow());
+  if (wait > 0) return { ok: false, why: 'limit', waitMs: wait };
+  if ((await deviceLockAvailable()) && !(await askDevice())) return { ok: false, why: 'device' };
+  let proof: AccountProof;
+  try { proof = await prove(); } catch { proof = { ok: false, why: 'error' }; }
+  if (!proof.ok) return { ok: false, why: proof.why };
+  // يُقرأ من جديد بعد النافذة: ما كُتب أثناءها لا يُمحى
+  try { log = await readResetLog(); } catch { return { ok: false, why: 'store' }; }
+  const serverWait = serverWaitMs(log, proof.serverMs);
+  if (serverWait > 0) return { ok: false, why: 'limit', waitMs: serverWait };
+  const next = recordReset(log, clockNow(), proof.serverMs);
+  try { await writeResetLog(next); } catch { return { ok: false, why: 'store' }; }
+  await flushAudit(next, audit);
+  return { ok: true };
+}
+
+/** سطر سجل العمليات الذي تعذّر عند إعادة الضبط يُكتب عند الفتح التالي */
+export async function flushResetAudit(audit: (atMs: number) => void): Promise<void> {
+  let log: ResetLog;
+  try { log = await readResetLog(); } catch { return; }
+  await flushAudit(log, audit);
+}
+
+/** أُقرّ بتنبيه إعادة الضبط */
+export async function ackResetNotice(): Promise<void> {
+  await writeResetLog(ackNotice(await readResetLog()));
+}
+
+/**
+ * ما يجري عند فتح البوابة (ui/LockGate.tsx) · recovered: الفتح التالي يلي إعادة الضبط نفسها فلا يُنبَّه فيه · opened: سطر السجل
+ * المتعذّر يُكتب، وتنبيه إعادة ضبطٍ لم يُقرّ بها يُعرض بـshow (مرةً حتى يُقرّ به: ack)
+ */
+export function resetNotices(audit: (atMs: number) => void) {
+  let skip = false;
+  let shown = false;
+  return {
+    recovered(): void { skip = true; },
+    async opened(show: (atMs: number, ack: () => Promise<void>) => void): Promise<void> {
+      if (skip) { skip = false; return; }
+      if (shown || (!lockMaybeOn() && !resetLogPresent())) return;
+      await flushResetAudit(audit).catch(() => undefined);
+      const st = await resetStatus();
+      if (!st.notice || shown) return;
+      shown = true;
+      show(st.notice.at, async () => { shown = false; await ackResetNotice().catch(() => undefined); });
+    },
+  };
 }
