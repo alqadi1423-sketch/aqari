@@ -508,7 +508,10 @@ export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput
     if (sub > left.sub) throw new Error(t('invoice.creditOver'));
     // سطرٌ لكل رمزٍ ضريبي في فاتورته بنسبة الباقي من صافيه، وضريبة كل رمزٍ بنسبته (المراجعة الشاملة · البند ٧): كان الإشعار
     // كله يُرمَّز خاضعاً بضريبة الفاتورة المتوسطة فيُنقص الخاضع في الإقرار بما ليس منه
-    const split = splitCredit(remainingByCode(db, invoiceId), sub);
+    // فاتورةٌ عليها إشعارٌ قديم رُمِّز كله خاضعاً (قبل البند ٧) فصار باقي رمزٍ سالباً: سطرٌ واحد كما كان، فلا تُحمَّل ضريبةٌ على سطرٍ
+    // معفى فيختلف الدفتر عن الإقرار (التحقق المستقل)
+    const byCode = remainingByCode(db, invoiceId);
+    const split = byCode.some((p) => p.net < 0) ? [] : splitCredit(byCode, sub);
     const lineTax = split.map((p) => (p.take === p.net ? p.tax : Math.min(p.tax, p.pct > 0 ? pctOf(p.take, p.pct) : 0)));
     const splitTax = lineTax.reduce((s, x) => s + x, 0);
     const tax = sub === left.sub ? left.tax
@@ -532,7 +535,7 @@ export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput
           [uid(), id, reason, 1, -p.take, p.code === 'S' ? p.pct : 0, i, p.code]);
       });
     } else {
-      // فاتورةٌ بلا سطور (قديمة): سطرٌ واحد بضريبتها كما كان
+      // فاتورةٌ بلا سطور (قديمة)، أو باقٍ سالبٌ لرمزٍ بإشعارٍ قديم: سطرٌ واحد بضريبتها كما كان
       const pct = Number(v.subtotal_halalas) ? Math.round((Number(v.tax_halalas) * 100) / Number(v.subtotal_halalas)) : 0;
       db.run(`INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort, tax_code) VALUES (?,?,?,?,?,?,0,?)`,
         [uid(), id, reason, 1, -sub, pct, tax > 0 ? 'S' : 'E']);

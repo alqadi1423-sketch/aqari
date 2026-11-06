@@ -2,7 +2,8 @@
  * المراجعة الشاملة (الالتزام ac76adc) · البندان ٦ و٧: رمز ضريبة السطر ونسبته، وإشعار الفاتورة المختلطة · بيانات مصطنعة.
  */
 import { memDb } from './helpers/testDb';
-import { saveInvoice, saveCreditNote, type InvoiceInput } from '@/domain/invoices';
+import { saveInvoice, saveCreditNote, KIND_CREDIT, type InvoiceInput } from '@/domain/invoices';
+import { postCreditNoteToLedger } from '@/domain/accounting/post';
 import { vatReturnData } from '@/domain/vatReturn';
 import { accountBalance } from '@/domain/accounting/ledger';
 
@@ -74,5 +75,26 @@ test('٧ والإشعار الجزئي بهللات لا تنقسم: المجم�
   const lines = db.all<{ c: string; price: number }>(`SELECT tax_code AS c, price_halalas AS price FROM invoice_lines WHERE invoice_id = ?`, [cn]);
   expect(lines.reduce((s, l) => s + Number(l.price), 0)).toBe(-10001);
   expect(ledgerVat(db)).toBe(item(vatReturnData(db, 2026, 1), '1').taxHalalas);
+  db.close();
+});
+
+test('٧ (التحقق المستقل) فاتورة مختلطة عليها إشعارٌ قديم كله خاضع: إشعار الباقي يحرّك الدفتر والإقرار معاً', () => {
+  const db = memDb();
+  register(db);
+  const id = saveInvoice(db, inv([
+    { descr: 'خاضع مصطنع', qty: 1, priceHalalas: 100000, taxPct: 15, taxCode: 'S' },
+    { descr: 'معفى مصطنع', qty: 1, priceHalalas: 100000, taxPct: 0, taxCode: 'E' },
+  ]), 'مستحقة');
+  // إشعارٌ قديم كما كتبه الإصدار السابق: سطرٌ واحد خاضع بضريبة الفاتورة المتوسطة
+  const sub = 150000, tax = Math.round((sub * 15000) / 200000);
+  db.run(`INSERT INTO invoices (id, no, customer_name, customer_vat, issue, due, status, subtotal_halalas, tax_halalas, total_halalas, notes, created_at, kind, ref_invoice_id, credit_reason)
+          VALUES ('old-cn', 'INV-2026-9001', 'عميل مصطنع', '', '2026-02-15', '2026-02-15', 'مستحقة', ?, ?, ?, '', '2026-02-15T00:00:00Z', ?, ?, 'قديم مصطنع')`,
+    [-sub, -tax, -(sub + tax), KIND_CREDIT, id]);
+  db.run(`INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort, tax_code) VALUES ('old-l', 'old-cn', 'قديم', 1, ?, 8, 0, 'S')`, [-sub]);
+  const e = postCreditNoteToLedger(db, { id: 'old-cn', no: 'INV-2026-9001', refNo: 'x', customer: 'عميل مصطنع', date: '2026-02-15', subtotal: sub, tax, total: sub + tax });
+  if (e) db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = 'old-cn'`, [e.id]);
+  const l0 = ledgerVat(db), r0 = item(vatReturnData(db, 2026, 1), '1').taxHalalas;
+  saveCreditNote(db, id, { date: '2026-02-20', subtotalHalalas: 50000, reason: 'الباقي مصطنع' });
+  expect(ledgerVat(db) - l0).toBe(item(vatReturnData(db, 2026, 1), '1').taxHalalas - r0);
   db.close();
 });
