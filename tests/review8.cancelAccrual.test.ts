@@ -12,6 +12,10 @@ import { openNodeDb } from '@/db/nodeAdapter';
 import { migrate } from '@/db/migrations';
 import { MIGRATIONS } from '@/db/schema';
 import { seed } from '@/db/seed';
+import { MemoryRemote } from './helpers/memoryRemote';
+import { enableSync, syncOnce, docId } from '@/sync/engine';
+import { getMeta } from '@/repos/settings';
+import type { DB } from '@/db/adapter';
 
 const cancel = (date: string) => ({ date, reason: 'سبب مصطنع', installmentsFate: 'cancel' as const, settle: false,
   deductionHalalas: 0, refundHalalas: 0, deductionReason: '' });
@@ -79,4 +83,29 @@ test('٣ وما يغيّر نهاية عقدٍ غير ملغى يغيّر origin
   cancelContract(db, cid, cancel('2026-05-01'));
   expect(oe()).toBe('2027-06-30');
   db.close();
+});
+
+test('٣ (التحقق المستقل) ملغى قبل الترقية في السحابة بلا original_end: الجهاز الجديد لا يضخّم، وتعديله لا يعيد التضخم إلى غيره', async () => {
+  const OWN = 'owner-1';
+  const sync = (db: DB, r: MemoryRemote) => syncOnce(db, r, getMeta(db, 'device_id')!);
+  const oe = (db: DB, id: string) => db.get<{ e: string | null }>(`SELECT original_end AS e FROM contracts WHERE id = ?`, [id])!.e;
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, OWN);
+  const u = addUnit(a, addProperty(a, { name: 'عقار مصطنع' }), { unit_no: 'C-9' });
+  const cid = confirmContract(a, contractInput(u, { valueHalalas: 1200000, start: '2026-01-01', end: '2026-12-31', depositHalalas: 0 }));
+  // إلغاءٌ بالإصدار ٤٧ (قبل البند): تاريخه في end · ومستند السحابة كما رفعه ذلك الإصدار بلا original_end
+  a.run(`UPDATE contracts SET status = 'ملغى', cancel_date = '2026-03-31', end = '2026-03-31' WHERE id = ?`, [cid]);
+  await sync(a, r);
+  delete (r.docs.get(docId('contracts', cid))!.d as Record<string, unknown>).original_end;
+  expect(oe(a, cid)).toBe('2026-12-31');
+  const b = memDb();
+  enableSync(b, OWN);
+  await sync(b, r);
+  expect(periodRevenueAccrual(b, '2026-01-01', '2026-03-31')).toBe(295890);
+  b.run(`UPDATE contracts SET ejar_no = '99999' WHERE id = ?`, [cid]);
+  await sync(b, r);
+  await sync(a, r);
+  expect(periodRevenueAccrual(a, '2026-01-01', '2026-03-31')).toBe(295890);
+  a.close(); b.close();
 });
