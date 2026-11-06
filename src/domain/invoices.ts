@@ -37,6 +37,19 @@ export interface InvoiceInput {
   lines: InvoiceLineInput[];
 }
 
+/**
+ * رمز ضريبة السطر ونسبته متطابقان (المراجعة الشاملة · البند ٦): الصفري والمعفى نسبتهما صفر، والخاضع بنسبة صفر مرفوض ·
+ * وإلا رحّل سطرٌ برمز صفري ونسبة ١٥٪ ضريبةً إلى 2200 وخرجت من الإقرار فاختلف الدفتر عنه
+ */
+export function normalizeInvoiceLines(lines: InvoiceLineInput[]): InvoiceLineInput[] {
+  return lines.map((l) => {
+    const code = lineTaxCode(l.taxCode, Number(l.taxPct));
+    if (code === 'Z' || code === 'E') return { ...l, taxCode: code, taxPct: 0 };
+    if (!(Number(l.taxPct) > 0)) throw new Error(t('invoice.standardZeroRate'));
+    return { ...l, taxCode: code };
+  });
+}
+
 export function invoiceTotals(lines: InvoiceLineInput[]): { subtotal: number; tax: number; total: number } {
   let subtotal = 0, tax = 0;
   for (const l of lines) {
@@ -84,12 +97,14 @@ export function nextInvoiceNo(db: DB, issue?: string): string {
 /** حفظ فاتورة (مسودة أو إصدار). التعديل يعكس القيد القديم ويعيد الترحيل. */
 export function saveInvoice(
   db: DB,
-  input: InvoiceInput,
+  input0: InvoiceInput,
   status: 'مسودة' | 'مستحقة',
   existingId?: string,
   /** رقم الإصدار من عدّاد السحابة · وبدونه تسلسل الجهاز */
   issuedNo?: string,
 ): string {
+  // الرمز والنسبة متطابقان قبل أي حساب (البند ٦)
+  const input: InvoiceInput = { ...input0, lines: normalizeInvoiceLines(input0.lines) };
   // لا فاتورة تصدر بتاريخٍ في فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم · بروح قرار المالك 2026-10-09)
   if (status !== 'مسودة' && isFiledDate(db, input.issue)) throw new Error(t('invoice.filedPeriod')); // i18n-exempt: حالة مخزّنة
   return db.transaction(() => {

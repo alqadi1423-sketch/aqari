@@ -554,6 +554,7 @@
   },
   "invoice": {
     "locked": "An issued invoice can't be edited, returned to draft or deleted · correct it with a credit note",
+    "standardZeroRate": "A standard-rated line has a zero rate · set its rate, or mark it zero-rated or exempt",
     "notFound": "Invoice not found",
     "creditNote": "Credit note",
     "creditNotes": "Credit notes",
