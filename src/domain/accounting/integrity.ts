@@ -204,21 +204,14 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
   });
 
   // ١١) عربون الحجوزات (المراجعة ٤.٤ و٤.٥): رصيد 2450 = عربون الحجوزات القائمة غير المسوّاة · المحوَّل والمصادَر
-  // والمردود خرجت منه (والمصادرة قبل عمود المآل تُعرف بقيدها) · والمحوَّل الذي أُلغيت دفعة تحويلٍ منه يعود ما أُلغي محتجزاً: عربونه
-  // ناقصاً دفعات تحويله غير الملغاة (المتحقق المستقل، الجولة ٣٨: كان الفحص يحمرّ بعد إلغاء دفعة عربون) · والمحوَّل قبل دفعات التحويل
-  // كما كان
+  // والمردود خرجت منه (والمصادرة قبل عمود المآل تُعرف بقيدها) · والمحوَّل خرج عربونه كله، فما أعاده إلغاء دفعة تحويلٍ منه إلى 2450
+  // (قبل منعه في البند ٢٧، أو من جهاز المالك الآخر بنسخة قديمة) عالقٌ لا محتجز: يُحمّر الفحص وتسدّده أداة البيانات السابقة
+  // (reviewRepairs.ts: cancelled_deposit) · وكان يُعدّ محتجزاً منذ الجولة ٣٨ يوم كان إلغاؤها مشروعاً، فلم يُرَ (المتحقق المستقل على البند ٢٧)
   const RSV_CONVERTED = 'محوَّل لعقد'; // i18n-exempt: حالة الحجز المخزّنة
   const hasOutcome = hasCol(db, 'reservations', 'deposit_outcome');
-  // وقاعدةٌ قبل عمود الإلغاء (نسخة ما قبل الترقية) بلا دفعاتٍ ملغاة: المحوَّل كله خارج المحتجز كما كان
-  const hasCancel = hasCol(db, 'contract_payments', 'cancelled_at');
   const held = db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(CASE WHEN r.status <> '${RSV_CONVERTED}' THEN r.deposit_halalas
-       ${hasCancel ? `WHEN EXISTS (SELECT 1 FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
-                    WHERE e.src_type = 'reservation_convert' AND e.src_id = r.id)
-       THEN r.deposit_halalas - COALESCE((SELECT SUM(p.net_halalas) FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
-                    WHERE e.src_type = 'reservation_convert' AND e.src_id = r.id AND p.cancelled_at IS NULL), 0)` : ''}
-       ELSE 0 END),0) AS s FROM reservations r
-     WHERE r.deleted_at IS NULL ${hasOutcome ? `AND (r.deposit_outcome IS NULL OR r.status = '${RSV_CONVERTED}')` : ''}
+    `SELECT COALESCE(SUM(r.deposit_halalas),0) AS s FROM reservations r
+     WHERE r.deleted_at IS NULL AND r.status <> '${RSV_CONVERTED}' ${hasOutcome ? 'AND r.deposit_outcome IS NULL' : ''}
        AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'reservation_forfeit' AND e.src_id = r.id
                        AND e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.reversed_by IS NULL)`)!;
   const rsvHeld = -ledgerNet(db, '2450');

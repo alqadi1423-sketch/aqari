@@ -325,7 +325,13 @@
     "saveFailed": "Could not save"
   },
   "payment": {
-    "cancelTitle": "Cancel payment"
+    "cancelTitle": "Cancel payment",
+    "cancelFromDeposit": "Paid from the deposit of a reservation converted to this contract · it cannot be cancelled, as cancelling would return the amount to a held deposit that can no longer be refunded or forfeited",
+    "stuckDepositTitle": "Deposit returned to its liability by cancelling its conversion payment",
+    "stuckDepositExplain": "A payment made from the deposit of a reservation converted to a contract was cancelled before cancelling was blocked, so its amount went back to 2450 while a converted reservation can no longer be refunded or forfeited. Applying settles the contract's remaining installments in order with it, using the deposit conversion entry dated today, and the cancelled payment stays as it is.",
+    "stuckDepositLabel": "{{name}} · {{tenant}}",
+    "stuckDepositDetail": "Stuck {{amount}}",
+    "stuckDepositBlocked": "The contract's remaining installments ({{room}}) are less than the stuck amount · needs your decision"
   },
   "costCenters": {
     "new": "New centre",

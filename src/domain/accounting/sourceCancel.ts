@@ -8,6 +8,7 @@
  *  - استرداد ضريبة أو رفضه ← «إلغاء الاسترداد»: يُعكس وترجع الفاتورة «لم يُطلب».
  *  - ردّ فائض أو تحويله رصيداً ← «إلغاء الرد»: يُعكس، وحركة البنك بمثلها، والرصيد الدائن يُطرح إن لم يُستعمل.
  *  - قيدٌ غاب مستنده (بقي بعد استعادة · orphans.ts) ← «عكس القيد»: لا مستند يُلغى منه.
+ *  - قيد دفعةٍ سُدّدت من عربون الحجز ← لا إلغاء له، فلا زرّ (المراجعة الشاملة · البند ٢٧ · sourceCancelLocked).
  *  - وما له عملية في شاشة مستنده (فاتورة · مشتريات · مطالبة · تأمين · حجز) يُفتح مستنده ليُلغى منه.
  * كلٌّ ذرّي بتاريخ وسبب، وفي سجل العمليات · والقيد اليدوي يُعكس من الدفتر كما هو.
  */
@@ -22,6 +23,7 @@ import { RuleViolation } from '../contracts/service';
 import { DISCOUNT_ENTRY_SRC } from '../contracts/installments';
 import { fmt } from '../money';
 import { isOrphanEntry } from './orphans';
+import { paidFromDeposit } from '../contracts/cancelPayment';
 
 export type SourceAction =
   | { kind: 'payment'; paymentId: string }
@@ -65,10 +67,22 @@ function reverse(db: DB, e: EntryRow, date: string, memo: string): string {
   return rev.no;
 }
 
+/**
+ * قيدٌ لا إلغاء له من مصدره ولا يُعكس من الدفتر، فلا يظهر له زرّ «إلغاء من مصدره» (المتحقق المستقل على البند ٢٧: كان يفتح لوحة
+ * الإلغاء بالمنع وحده): قيد دفعةٍ سُدّدت من عربون الحجز (paidFromDeposit) · ملغاةً كانت قبل المنع أو حيّة · srcType اختصارٌ لصف
+ * الدفتر فلا يُستعلم لغير قيد التحويل
+ */
+export function sourceCancelLocked(db: DB, entryId: string, srcType?: string | null): boolean {
+  if (srcType !== undefined && srcType !== 'reservation_convert') return false;
+  const pay = db.get<{ id: string }>(`SELECT id FROM contract_payments /* تشمل الملغاة: ربط القيد بمستنده */ WHERE journal_entry_id = ? LIMIT 1`, [entryId]); // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
+  return !!pay && paidFromDeposit(db, pay.id);
+}
+
 export function entrySourceAction(db: DB, entryId: string): SourceAction {
   const e = db.get<EntryRow>(`SELECT id, no, date, auto, src_type, src_id, status, reversed_by FROM journal_entries WHERE id = ?`, [entryId]);
   if (!e || e.status !== 'مرحّل' || e.reversed_by || !e.src_type || Number(e.auto) !== 1) return null;
   if (e.src_type.endsWith('_rev')) return null; // مرآة قيد · لا يُلغى المُلغي
+  if (sourceCancelLocked(db, e.id, e.src_type)) return null;
 
   const pay = db.get<{ id: string }>(`SELECT id FROM contract_payments WHERE journal_entry_id = ? AND cancelled_at IS NULL`, [e.id]);
   if (pay) return { kind: 'payment', paymentId: pay.id };

@@ -102,13 +102,14 @@ export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update
 /**
  * مصادر القيود التي ينشئها كل قسم (مراجعة التثبيت #40 · جردٌ مستقل لكل مسار يرحّل وكل بوابة في الشاشة): القواعد تشترط
  * مصدر القيد الجديد من قسم العملية، فلا ينشئ العضو قيداً لعملية قسمٍ ليس له. والعابر للأقسام مقصود: العقد يرحّل تأمينه
- * وتحويل عربونه، والتسوية مطالبة زيادتها، والشراء لحاق إهلاك أصوله، والتحصيل عكس تحويل العربون بإلغاء دفعته.
- * والدفتر يدويّه (بلا مصدر) وكل عكسٍ (…_rev، ومنه عكس مصادر قديمة مستوردة).
+ * وتحويل عربونه، والتسوية مطالبة زيادتها، والشراء لحاق إهلاك أصوله · ولا عكس تحويل العربون للتحصيل: دفعة العربون لا تُلغى
+ * (المراجعة الشاملة · البند ٢٧)، فكان مصدره يجيز لعضوٍ بنسخة قديمة رفع عكسها.
+ * والدفتر يدويّه (بلا مصدر) وكل عكسٍ (…_rev، ومنه عكس مصادر قديمة مستوردة) · وعكس دفعة العربون منه يرفضه جهاز المالك (sync/engine.ts).
  * ومصادر يرحّلها المالك وحده (الخصم المحجوز، والفائض، وعكس الإهلاك المكرر، واسترجاع السلة) ليست هنا.
  */
 export const OP_JOURNAL_SRC: Partial<Record<SectionKey, string[]>> = {
   contracts: ['contract_deposit', 'deposit_carry', 'reservation_convert'],
-  collect: ['rent', 'rent_rev', 'reservation_convert_rev', 'discount_rev', 'rent_payment_rev'],
+  collect: ['rent', 'rent_rev', 'discount_rev', 'rent_payment_rev'],
   deposits: ['deposit_deduct', 'deposit_deduct_move', 'deposit_refund',
     'deposit_deduct_rev', 'deposit_deduct_move_rev', 'deposit_refund_rev', 'claim'],
   reservations: ['reservation', 'reservation_forfeit', 'reservation_refund', 'key_money'],

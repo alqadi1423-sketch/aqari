@@ -26,6 +26,7 @@ import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
 import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
+import { paidFromDeposit } from '../domain/contracts/cancelPayment';
 import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc } from '../domain/accounting/derive';
@@ -452,6 +453,12 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   if (!originals.length) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
   const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
   if (!issues.includes('')) throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' }));
+  // ولا يعكس عضوٌ قيد دفعةٍ سُدّدت من عربون الحجز (المراجعة الشاملة · البند ٢٧ · المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها،
+  // و«الدفتر» يجيز له كل عكس) · وعكس المالك يُقبل كما كتبه، ورصيده العالق يُحمّر فحص عربون الحجوزات
+  if (base === 'reservation_convert' && byMember(db, doc, true)
+    && originals.some((o, i) => issues[i] === '' && db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: ربط القيد بمستنده */ WHERE journal_entry_id = ?`, [o.id]))) { // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
+    throw new Error(tr('mirror.revRejected', { why: tr('payment.cancelFromDeposit', { lng: 'ar' }), lng: 'ar' }));
+  }
   if (!freeOriginals(db, doc.k, src, srcId, originals.map((o) => o.id)).length) {
     throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
   }
@@ -734,6 +741,9 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
     }
     // وإلغاء دفعةٍ لها قيد بعاكسٍ لقيدها وحده (المتحقق المستقل، الجولة ٣٧ (ر٥): كان الإلغاء بتعديلٍ وحده فيبقى قيدها لدفعةٍ ملغاة)
     if (doc.t === 'contract_payments' && row.cancelled_at && !cur.cancelled_at && cur.journal_entry_id) {
+      // ودفعة العربون لا يلغيها عضو (المراجعة الشاملة · البند ٢٧ · المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها فيعود مبلغها
+      // عالقاً في 2450) · وإلغاء المالك من جهازه الآخر يُقبل كما كتبه، فلا تفترق أجهزته، ورصيده العالق يُحمّر فحص عربون الحجوزات
+      if (byMember(db, doc, false) && paidFromDeposit(db, doc.k)) throw no(tr('payment.cancelFromDeposit', { lng: 'ar' }));
       const rev = (row.cancel_entry_id as string | null) ?? null;
       const orig = db.get<{ t: string | null; s: string | null }>(`SELECT src_type AS t, src_id AS s FROM journal_entries WHERE id = ?`, [cur.journal_entry_id as string]);
       if (!rev || !orig) throw no(tr('derive.cancelNoReversal', { lng: 'ar' }));
@@ -784,6 +794,16 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
 
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
 const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? getSyncState(db, 'org') : getSyncState(db, 'uid'));
+
+/**
+ * كتب المستندَ عضو (المتحقق المستقل على البند ٢٧): القواعد تشترط «op» على كل كتابة عضو، إنشاءً وتعديلاً، والمالك لا يكتبه
+ * (acl.ts: annotate) وكتابته كاملة تمحوه · و«by» كاتب الصف الأول: يدل على العضو في إنشاء الصف وحده، ويبقى على تعديله بعده
+ * فلا يدل على من عدّل (من ألغى دفعةً أنشأها غيره) · created: المستند ينشئ الصف
+ */
+function byMember(db: DB, doc: RemoteDoc, created: boolean): boolean {
+  if (typeof doc.op === 'string' && doc.op !== '') return true;
+  return created && !!doc.by && doc.by !== ownerUid(db);
+}
 
 const DIM_COLS = ['property_id', 'unit_id', 'contract_id', 'cost_center_id', 'asset_id'] as const;
 const DRAFT_CONTRACT = 'مسودة'; // i18n-exempt: حالة العقد المخزّنة

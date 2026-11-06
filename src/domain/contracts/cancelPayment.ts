@@ -6,7 +6,8 @@
  *  ٣) خصم «تنزيل من القسط» يُرجع مبلغ القسط كما كان.
  *  ٤) حركات البنك تُعكس بحركة سالبة · وفائض التحصيل الجماعي يُطرح من رصيد المستأجر الدائن.
  *  ٥) الدفعة لا تُحذف: تُوسم ملغاة بتاريخها وسببها وقيدها العاكس · ويُسجَّل الإلغاء في سجل العمليات.
- * ويُرفض بسبب يُذكر: دفعة ملغاة من قبل · رصيد دائن استُعمل بعدها · فائضٌ للعقد رُدّ أو حُوّل (يُلغى الرد أولاً).
+ * ويُرفض بسبب يُذكر: دفعة ملغاة من قبل · رصيد دائن استُعمل بعدها · فائضٌ للعقد رُدّ أو حُوّل (يُلغى الرد أولاً) ·
+ * دفعةٌ سُدّدت من عربون الحجز (المراجعة الشاملة · البند ٢٧).
  * والمعاينة planCancelPayment تُعرض قبل التنفيذ: القيود ومبالغها، وكل قسط بمسدَّده قبل وبعد، والبنك والرصيد.
  */
 import type { DB } from '../../db/adapter';
@@ -75,11 +76,32 @@ function excessCredit(db: DB, p: PaymentRow): number {
     [p.journal_entry_id])!.s);
 }
 
+/**
+ * الدفعة سُدّدت من عربون الحجز عند تحويله عقداً (allocateDeposit): قيدها تحويل العربون، مدين 2450 / دائن الإيراد.
+ * لا تُلغى (المراجعة الشاملة · البند ٢٧ · الخيار (أ)): عكس قيدها يعيد مبلغها التزاماً في 2450 والحجز «محوَّل لعقد» لا يُرد
+ * عربونه ولا يُصادر (cancelReservation)، فيبقى الرصيد عالقاً بلا مخرج · وزرّ الإلغاء لا يظهر لها (InstallmentSheet)، ولا
+ * «إلغاء من مصدره» لقيدها في الدفتر (sourceCancelLocked) · وإلغاؤها من جهاز عضوٍ بنسخة قديمة يرفضه جهاز المالك (sync/engine.ts) ·
+ * وما أُلغي قبل المنع يُحمّر فحص عربون الحجوزات وتسدّده أداة البيانات السابقة (reviewRepairs.ts: cancelled_deposit)
+ */
+export function paidFromDeposit(db: DB, paymentId: string): boolean {
+  return !!db.get(
+    `SELECT 1 FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+     WHERE p.id = ? AND e.src_type = 'reservation_convert'`, [paymentId]);
+}
+
 export function planCancelPayment(db: DB, paymentId: string, date: string = today()): CancelPaymentPlan {
   const p = paymentRow(db, paymentId);
   const c = db.get<{ tenant_name: string; tenant_id: string | null }>(`SELECT tenant_name, tenant_id FROM contracts WHERE id = ?`, [p.contract_id]);
   const blockers: string[] = [];
   if (p.cancelled_at) blockers.push('الدفعة ملغاة من قبل');
+  else if (paidFromDeposit(db, p.id)) {
+    // منعٌ دائم: المعاينة سببه وحده، فلا أثرٌ يُعرض لإلغاءٍ لن يقع (المتحقق المستقل على البند ٢٧)
+    return {
+      paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, net: Number(p.net_halalas),
+      entries: [], installments: [], bank: [], creditReversal: 0, restoreAmount: null,
+      blockers: [t('payment.cancelFromDeposit')], cashShort: 0,
+    };
+  }
 
   const credit = excessCredit(db, p);
   if (credit > 0) {

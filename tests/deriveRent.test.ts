@@ -14,7 +14,9 @@ import { getMeta as metaOf } from '@/repos/settings';
 import { integrityChecks } from '@/domain/accounting/integrity';
 import { DISCOUNT_AFTER_DUE } from '@/domain/contracts/installments';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
-import { postEntry } from '@/domain/accounting/post';
+import { postEntry, reverseEntryById } from '@/domain/accounting/post';
+import { recomputeInstallments } from '@/domain/contracts/paid';
+import { applyRepair } from '@/domain/reviewRepairs';
 import { rentSplit } from '@/domain/accounting/rentSplit';
 import type { DB } from '@/db/adapter';
 import type { RemoteDoc } from '@/sync/types';
@@ -529,7 +531,7 @@ test('الجولة ٣٨ (ر٥-ب): إلغاء دفعةٍ بعاكسٍ غير م�
   owner.close(); dev.close();
 });
 
-test('الجولة ٣٨ (ملاحظة): إلغاء دفعة تحويل عربون يعيد ما أُلغي محتجزاً · ففحص عربون الحجوزات سليم بعده', () => {
+test('الجولة ٣٨ (ملاحظة): دفعة تحويل عربون أُلغيت قبل منع إلغائها (البند ٢٧) يبقى ما أُلغي منها عالقاً في 2450 · فيحمرّ فحص عربون الحجوزات حتى تسدّده أداة البيانات السابقة', () => {
   const db = memDb();
   const u = addUnit(db, addProperty(db, { name: 'عقار فحص عربون مصطنع' }));
   const rid = createReservation(db, { unitId: u, name: 'حاجز مصطنع', phone: '', depositHalalas: 30000, expiryDate: '2099-01-01' });
@@ -538,7 +540,15 @@ test('الجولة ٣٨ (ملاحظة): إلغاء دفعة تحويل عربو�
   const check = () => integrityChecks(db).find((c) => c.name.includes('عربون الحجوزات'))!;
   expect(check().ok).toBe(true);
   const pid = db.get<{ id: string }>(`SELECT id FROM contract_payments WHERE contract_id = ? AND method_label = 'من العربون'`, [cid])!.id;
-  cancelPayment(db, pid, { date: '2026-02-01', reason: 'إلغاء مصطنع' });
+  // الإلغاء اليوم ممنوع · وبياناتٌ قائمة من قبله: ما كان cancelPayment يكتبه حرفياً (عكس القيد، ووسم الدفعة، والمسدَّد من الدفعات)
+  expect(() => cancelPayment(db, pid, { date: '2026-02-01', reason: 'إلغاء مصطنع' })).toThrow();
+  const je = db.get<{ j: string }>(`SELECT journal_entry_id AS j FROM contract_payments WHERE id = ?`, [pid])!.j;
+  const rev = reverseEntryById(db, je, 'إلغاء دفعة · إلغاء مصطنع', '2026-02-01')!;
+  db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`, ['2026-02-01', 'إلغاء مصطنع', rev.id, pid]);
+  recomputeInstallments(db);
+  // المحوَّل لا يُرد عربونه ولا يُصادر: ما عاد إلى 2450 عالقٌ لا محتجز (المتحقق المستقل على البند ٢٧: كان يُعدّ محتجزاً فلا يُرى)
+  expect(check()).toMatchObject({ ok: false });
+  expect(applyRepair(db, 'cancelled_deposit')).toBe(1);
   expect(check()).toMatchObject({ ok: true });
   db.close();
 });

@@ -4,17 +4,18 @@
  * التطبيق قيودٌ عاكسة وتعديلات مسجّلة في سجل العمليات · لا محو.
  */
 import type { DB } from '../db/adapter';
-import { addMonthsClamped, toLocalISODate, dfmt } from './dates';
+import { addMonthsClamped, toLocalISODate, dfmt, today } from './dates';
 import { fmt } from './money';
 import { logAudit } from './audit';
 import { reverseEntryById } from './accounting/post';
 import { CYCLE_MONTHS } from './contracts/installments';
 import { recomputeInstallments } from './contracts/paid';
 import { allocateDeposit, depositRoom } from './contracts/service';
+import { t } from '../i18n';
 
 export interface RepairItem { id: string; label: string; detail: string; blocked?: string }
 export interface RepairPreview { key: RepairKey; title: string; explain: string; items: RepairItem[] }
-export type RepairKey = 'reservation_convert' | 'installment_drift';
+export type RepairKey = 'reservation_convert' | 'installment_drift' | 'cancelled_deposit';
 
 /* ─── ٤.٤ تحويل عربون بالقيد السابق (مدين 2450 / دائن 1200) ─── */
 
@@ -33,6 +34,29 @@ function legacyConverts(db: DB): LegacyConvert[] {
        AND EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = e.id AND l.account_code = '1200')
      ORDER BY c.start`
   ).map((x) => ({ ...x, amount: Number(x.amount) }));
+}
+
+/* ─── البند ٢٧: عربونٌ عاد إلى 2450 بإلغاء دفعة تحويله قبل منعه ─── */
+
+interface StuckDeposit { rid: string; name: string; amount: number; contractId: string; contractNo: string; tenant: string }
+
+/**
+ * الحجز المحوَّل لعقد وفي 2450 من قيوده رصيدٌ أعاده إلغاء دفعات تحويله (عاكس قيد التحويل): لا يُرد ولا يُصادر، فلا مخرج له إلا أن
+ * يسدّد أقساط عقده كما سدّدها عند التحويل · بقدر الأقل من رصيده والملغى من دفعات تحويله (المتحقق المستقل على البند ٢٧)
+ */
+function stuckDeposits(db: DB): StuckDeposit[] {
+  return db.all<StuckDeposit & { held: number; cancelled: number }>(
+    // i18n-exempt: حالتا القيد والحجز المخزّنتان
+    `SELECT r.id AS rid, r.name, c.id AS contractId, COALESCE(c.contract_no, '') AS contractNo, c.tenant_name AS tenant,
+            (SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+             WHERE e.src_id = r.id AND e.src_type LIKE 'reservation%' AND e.status = 'مرحّل' AND e.deleted_at IS NULL
+               AND l.account_code = '2450') AS held,
+            (SELECT COALESCE(SUM(p.net_halalas), 0) FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+             WHERE e.src_type = 'reservation_convert' AND e.src_id = r.id AND p.cancelled_at IS NOT NULL) AS cancelled
+     FROM reservations r JOIN contracts c ON c.id = r.converted_contract_id AND c.deleted_at IS NULL
+     WHERE r.status = 'محوَّل لعقد' AND r.deleted_at IS NULL
+     ORDER BY c.start`
+  ).map((x) => ({ ...x, amount: Math.min(Number(x.held), Number(x.cancelled)) })).filter((x) => x.amount > 0);
 }
 
 /* ─── ٤.١ أقساط ولّدتها الخوارزمية السابقة (كل قسط من سابقه بلا تثبيت آخر الشهر) ─── */
@@ -99,6 +123,20 @@ export function previewRepairs(db: DB): RepairPreview[] {
         detail: d.changes.length + ' قسط · مثل ' + dfmt(d.changes[0].from) + ' ← ' + dfmt(d.changes[0].to),
       })),
     },
+    {
+      key: 'cancelled_deposit',
+      title: t('payment.stuckDepositTitle'),
+      explain: t('payment.stuckDepositExplain'),
+      items: stuckDeposits(db).map((x) => {
+        const room = depositRoom(db, x.contractId);
+        return {
+          id: x.rid,
+          label: t('payment.stuckDepositLabel', { name: x.name, tenant: x.tenant }),
+          detail: t('payment.stuckDepositDetail', { amount: fmt(x.amount) }),
+          blocked: room < x.amount ? t('payment.stuckDepositBlocked', { room: fmt(room) }) : undefined,
+        };
+      }),
+    },
   ];
 }
 
@@ -113,6 +151,15 @@ export function applyRepair(db: DB, key: RepairKey): number {
         allocateDeposit(db, { rsvId: x.rid, amount: x.amount, contractId: x.contractId, contractNo: x.contractNo, tenant: x.tenant, date: x.start });
         db.run(`UPDATE reservations SET deposit_outcome = 'محوَّل', deposit_settled_date = ? WHERE id = ?`, [x.start, x.rid]);
         logAudit(db, 'العقود', 'update', 'تصحيح تحويل عربون', x.name, { entry: x.entryId }, { amount: x.amount, date: x.start });
+        n++;
+      }
+    } else if (key === 'cancelled_deposit') {
+      // يسدّد بالعالق المتبقي على أقساط العقد بالترتيب، بقيد تحويل العربون نفسه (مدين 2450 / دائن الإيراد) بتاريخ اليوم · والملغاة تبقى
+      const date = today();
+      for (const x of stuckDeposits(db)) {
+        if (depositRoom(db, x.contractId) < x.amount) continue;
+        allocateDeposit(db, { rsvId: x.rid, amount: x.amount, contractId: x.contractId, contractNo: x.contractNo, tenant: x.tenant, date });
+        logAudit(db, 'العقود', 'update', 'تسديد عربون عالق', x.name, null, { amount: x.amount, date }); // i18n-exempt: سجل العمليات
         n++;
       }
     } else if (key === 'installment_drift') {
