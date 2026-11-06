@@ -4,6 +4,7 @@
  * وملخص «ما سيحدث») ثم تنفيذ (نسخة أمان في مجلد دائم لا يُكنس، تبديل ذرّي برجوع فوري).
  * الذاكرة لا تحمل الأرشيف والمرفقات معاً أثناء نسخة الأمان · هذا ما كان يقتل التطبيق.
  */
+import { t } from '../../i18n';
 import { throwIfCancelled, isCancelled, type CancelSignal, type ProgressFn } from '../progress';
 import { enforceReferenceSchema } from './schemaTrust';
 import { joinPath } from '../../files/fsAdapter';
@@ -366,7 +367,15 @@ export async function commitRestore(
     pending: pendingIssues(env.db),
   };
   const preSwap = env.dbPath + '.pre-restore';
-  env.closeLive();
+  // ما في WAL الحي يُدمج في ملف القاعدة قبل إغلاقها (المراجعة الشاملة · البند ٢٠): حذفُ -wal بعد إغلاقٍ فشل بصمت كان يُضيع آخر ما كُتب ·
+  // والإغلاق الذي يفشل يوقف الاستعادة قبل أن يُمسّ ملف
+  try {
+    env.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    env.closeLive();
+  } catch (e) {
+    abortRestore(env, plan.stagingDir);
+    throw new RestoreError(t('restore.closeLiveFailed') + ' ' + (e instanceof Error ? e.message : ''));
+  }
   for (const suffix of ['-wal', '-shm']) {
     try { if (env.fs.exists(env.dbPath + suffix)) env.fs.remove(env.dbPath + suffix); } catch { /* تجاهل */ }
   }
@@ -418,6 +427,10 @@ export async function commitRestore(
     }
     try { env.closeLive(); } catch { /* مغلقة */ }
     try { if (env.fs.exists(env.dbPath)) env.fs.remove(env.dbPath); } catch { /* تجاهل */ }
+    // وملفا WAL وذاكرته للقاعدة المستعادة يُحذفان قبل إرجاع السابقة (البند ٢٠): وإلا فُتحت السابقة بسجلّ غيرها فأُعيدت عليها صفحاته
+    for (const suffix of ['-wal', '-shm']) {
+      try { if (env.fs.exists(env.dbPath + suffix)) env.fs.remove(env.dbPath + suffix); } catch { /* تجاهل */ }
+    }
     env.fs.rename(preSwap, env.dbPath);
     env.reopenLive();
     abortRestore(env, plan.stagingDir);

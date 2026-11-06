@@ -792,6 +792,7 @@
     "olderIncoming": "{{t}} · {{k}} · this device's newer copy ({{seen}}) won over an older incoming one ({{theirs}})"
   },
   "restore": {
+    "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",
     "notInTrash": "Not in the trash · already restored"
   },
   "bank": {
