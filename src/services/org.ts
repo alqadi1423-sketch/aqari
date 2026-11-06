@@ -8,6 +8,7 @@ import { FirestoreHttpError } from '../cloud/firestore';
 import { t } from '../i18n';
 import type { FirestoreRemote } from '../cloud/firestore';
 import { getSyncState, setSyncState, seedOutbox } from '../sync/engine';
+import { isoCmp } from '../sync/isoTime';
 import { hasUserData } from '../domain/backup/upgrade';
 import { memberTokens } from '../sync/acl';
 import { SECTION_KEYS, type Level, type Perms } from '../domain/access/sections';
@@ -309,10 +310,11 @@ export async function checkUnitMoves(db: DB, remote: FirestoreRemote): Promise<'
     if (seen == null) setSyncState(db, 'moves_seen', '0');
     return 'none';
   }
-  const last = moves.reduce((mx, x) => (x.at > mx ? x.at : mx), '');
+  // وقت الخادم بصفرٍ أو ثلاثة أو ستة أو تسعة أجزاء من الثانية · فالمقارنة باللحظة لا بالنص (المراجعة الشاملة · البند ١٦)
+  const last = moves.reduce((mx, x) => (!mx || isoCmp(x.at, mx) > 0 ? x.at : mx), '');
   setSyncState(db, 'moves_seen', last);
   if (seen == null || m.allProps) return 'none';
-  const lost = moves.some((x) => x.at > seen && m.props.includes(x.from) && !m.props.includes(x.to));
+  const lost = moves.some((x) => (seen === '0' || isoCmp(x.at, seen) > 0) && m.props.includes(x.from) && !m.props.includes(x.to));
   return lost ? 'lost' : 'none';
 }
 

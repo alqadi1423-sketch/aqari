@@ -97,3 +97,40 @@ test('١٤ وما طال انتظاره (أكثر من مهلة الانتظار
   db.close();
 });
 
+const tdoc = (phone: string, u: string, ts?: string): RemoteDoc => ({ id: docId('tenants', 'T16'), t: 'tenants', k: 'T16', u, ...(ts ? { ts } : {}),
+  dev: 'other', del: false, d: { id: 'T16', name: 'مستأجر مصطنع', vat: '', phone, credit_halalas: 0, archived: 0, created_at: '2026-01-01T00:00:00.000Z', deleted_at: null } });
+
+test('١٦ الوارد الأقدم بدقة كسورٍ أقصر لا يحلّ محل الأحدث في الصندوق ("…00.12Z" أقدم من "…00.123Z")', () => {
+  const db = memDb();
+  enableSync(db, UID);
+  stageInbox(db, [tdoc('0500000162', '2026-03-01T10:00:00.123Z', '2026-03-01T10:00:00.123Z')]);
+  stageInbox(db, [tdoc('0500000161', '2026-03-01T10:00:00.12Z', '2026-03-01T10:00:00.12Z')]);
+  const staged = JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE pk = 'T16'`)!.p) as RemoteDoc;
+  expect((staged.d as Record<string, unknown>).phone).toBe('0500000162');
+  db.close();
+});
+
+test('١٦ التعارض يُحسم باللحظة لا بالنص: تعديل الجهاز في …00.995 أحدث من الوارد في …00.99', () => {
+  const db = memDb();
+  enableSync(db, UID);
+  tenant(db, 'T16', '0500000160');
+  db.run(`DELETE FROM sync_outbox`);
+  // بعد الانضمام (في الانضمام يغلب ما في الحساب)
+  db.run(`DELETE FROM sync_state WHERE k = 'joining'`);
+  db.run(`UPDATE tenants SET phone = '0500000169' WHERE id = 'T16'`);
+  db.run(`UPDATE sync_outbox SET changed_at = '2026-03-01T10:00:00.995Z' WHERE tbl = 'tenants' AND pk = 'T16'`);
+  stageInbox(db, [tdoc('0500000168', '2026-03-01T10:00:00.99Z', '2026-03-01T10:00:00.99Z')]);
+  applyInbox(db, 'this-device');
+  expect(phoneOf(db, 'T16')).toBe('0500000169');
+  db.close();
+});
+
+test('١٦ وقت الخادم بصفرٍ أو ثلاثة أو ستة أو تسعة أجزاء: المقارنة باللحظة', async () => {
+  const { isoCmp, isoNorm, isoMs } = await import('@/sync/isoTime');
+  expect(isoCmp('2026-03-01T10:00:00Z', '2026-03-01T10:00:00.500Z')).toBe(-1);
+  expect(isoCmp('2026-03-01T10:00:00.99Z', '2026-03-01T10:00:00.995Z')).toBe(-1);
+  expect(isoCmp('2026-03-01T10:00:00.123456789Z', '2026-03-01T10:00:00.123Z')).toBe(0);
+  expect(isoNorm('2026-03-01T10:00:00.12Z')).toBe('2026-03-01T10:00:00.120Z');
+  expect(isoNorm('2026-03-01T13:00:00+03:00')).toBe('2026-03-01T10:00:00.000Z');
+  expect(Number.isNaN(isoMs('ليس وقتاً'))).toBe(true);
+});

@@ -32,6 +32,7 @@ import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc } f
 import { filingRecordedAt } from '../domain/vatFilings';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
+import { isoCmp, isoNorm } from './isoTime';
 
 const nowIso = () => new Date().toISOString();
 
@@ -175,18 +176,18 @@ export function clockSkewMs(db: DB): number {
   return Number.isFinite(v) ? v : 0;
 }
 
-/** وقتٌ بساعة الجهاز إلى ساعة الخادم */
+/** وقتٌ بساعة الجهاز إلى ساعة الخادم · بصيغة واحدة (أجزاء الألف) أياً كانت دقة كسوره (المراجعة الشاملة · البند ١٦) */
 export function toServerClock(db: DB, iso: string): string {
   const skew = clockSkewMs(db);
-  const t = Date.parse(iso);
-  return skew && Number.isFinite(t) ? new Date(t + skew).toISOString() : iso;
+  const t = Date.parse(isoNorm(iso));
+  return skew && Number.isFinite(t) ? new Date(t + skew).toISOString() : isoNorm(iso);
 }
 
 /** وقتٌ بساعة الخادم إلى ساعة الجهاز · عكس toServerClock، فما يُدرج في الطابور بوقتٍ وارد يُرفع بالوقت نفسه */
 export function fromServerClock(db: DB, iso: string): string {
   const skew = clockSkewMs(db);
-  const t = Date.parse(iso);
-  return skew && Number.isFinite(t) ? new Date(t - skew).toISOString() : iso;
+  const t = Date.parse(isoNorm(iso));
+  return skew && Number.isFinite(t) ? new Date(t - skew).toISOString() : isoNorm(iso);
 }
 
 /** فرقٌ دون ثانية ضجيجُ شبكة لا ساعة منحرفة · فلا يُحفظ */
@@ -283,7 +284,8 @@ export function stageInbox(db: DB, docs: RemoteDoc[]): void {
       // الأحدث بوقت الخادم وحده، ومن يغلب الصفَّ المحلي يقرّره التطبيق (المراجعة الخارجية ٧ · النتيجة ١٩: نسخةٌ بـ u = 2099 تنتظر أباها
       // كانت تغلب النسخة الأحدث الصحيحة فيُطبَّق القديم ويتجاوزه المؤشر · والمتحقق المستقل، الجولة ٣٠: وكاتبٌ ساعته متأخرة كذلك) ·
       // والوارد بلا وقت خادم بوقته المعلن كما كان
-      const at = d.ts || d.u;
+      // بصيغة واحدة: وقت الخادم بأجزاء المليون أو أقل، ووقت الجهاز بأجزاء الألف، والمقارنة نصاً بينهما تخطئ (البند ١٦)
+      const at = isoNorm(d.ts || d.u);
       db.run(
         `INSERT INTO sync_inbox (doc, tbl, pk, rank, payload, updated_at, device_id, attempts, last_error, del)
          VALUES (?,?,?,?,?,?,?,0,NULL,?)
@@ -592,7 +594,7 @@ function rentCheckAgainst(db: DB, e: { srcId: string; date: string; lines: Array
   const no = (why: string) => new Error(tr('derive.rejected', { why, lng: 'ar' }));
   // القرار ٦ عبر المزامنة: ما وصل الخادم بعد تسجيل تقديم ربعه يُرفض (المتحقق المستقل، الجولة ٣٥ (أ٤))
   const filed = filingRecordedAt(db, e.date);
-  if (filed && (!ts || ts > filed)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
+  if (filed && (!ts || isoCmp(ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
   const lines = rowsHereOrInbox<{ amount_halalas: number }>(db, 'payment_lines', 'payment_id', pay.id);
   const alloc = pay.installment_id ? [] : rowsHereOrInbox<{ installment_id: string; amount_halalas: number }>(db, 'payment_allocations', 'payment_id', pay.id);
   const allocWhy = alloc.length ? allocationIssue(db, pay, alloc) : '';
@@ -878,7 +880,7 @@ function fkChildren(db: DB, parent: string): Array<{ child: string; from: string
 /** وقت آخر نسخةٍ عرفها الجهاز للصف · لا يرجع إلى الوراء (الهجرة ٤٣) */
 function noteRowTime(db: DB, table: string, key: string, u: string): void {
   db.run(`INSERT INTO sync_rowtime (tbl, pk, u) VALUES (?, ?, ?) ON CONFLICT(tbl, pk) DO UPDATE SET u = excluded.u WHERE excluded.u > sync_rowtime.u`,
-    [table, key, u]);
+    [table, key, isoNorm(u)]);
 }
 
 /**
@@ -1008,8 +1010,10 @@ function applyOne(
     // الطرفان بساعة الخادم: تعديل هذا الجهاز مصحَّحاً بفرق ساعته، والوارد مكتوب مصحَّحاً من جهازه
     const mine = toServerClock(db, pending.changed_at);
     // الوقت الوارد لا يتجاوز وقت كتابته في الخادم: «u» يكتبه الجهاز فيقدّمه العضو ليغلب كل تعارض (مراجعة التثبيت #56)
-    const theirs = doc.ts && doc.ts < doc.u ? doc.ts : doc.u;
-    const localWins = !joining && (mine > theirs || (mine === theirs && deviceId > doc.dev));
+    const theirs = doc.ts && isoCmp(doc.ts, doc.u) < 0 ? doc.ts : doc.u;
+    // باللحظة لا بالنص (المراجعة الشاملة · البند ١٦): «…00.995Z» أحدث من «…00.99Z» ونصّه أصغر
+    const order = isoCmp(mine, theirs);
+    const localWins = !joining && (order > 0 || (order === 0 && deviceId > doc.dev));
     if (localWins) {
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', `${doc.t} · ${doc.k} · غلب تعديل هذا الجهاز (${mine}) على الوارد (${doc.u})`);
       return 'conflict-local';
@@ -1017,12 +1021,12 @@ function applyOne(
     conflict = 'conflict-remote';
   }
   // الوقت الوارد لا يتجاوز وقت كتابته في الخادم (#56)
-  const theirs0 = doc.ts && doc.ts < doc.u ? doc.ts : doc.u;
+  const theirs0 = isoNorm(doc.ts && isoCmp(doc.ts, doc.u) < 0 ? doc.ts : doc.u);
   // ولا طابور: الوارد أقدم مما عرفه الجهاز للصف (رفعه أو طبّقه) لا يكتب فوقه، ويُرفع ما عنده فيتفق الأجهزة (المراجعة الخارجية ٧ ·
   // النتيجة ٨: دورة جهازٍ سحبت قبل تعديل غيره ودفعت بعده فكان الأقدم يغلب بلا أثر) · وأول دورةٍ للجهاز ما في الحساب يغلب
   if (!pending && !joining && !t.appendOnly) {
     const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u;
-    if (seen && theirs0 < seen) {
+    if (seen && isoCmp(theirs0, seen) < 0) {
       // بوقت النسخة المعروفة لا بوقت الآن (المراجعة الشاملة · البند ١٣): إعادة التأكيد لا تجعل النسخة أحدث مما هي، فلا تغلب تعديلاً
       // أحدث منها من جهازٍ آخر يصل بعدها في الدفعة نفسها أو بعدها
       enqueue(db, doc.t, doc.k, readRow(db, doc.t, doc.k) ? 'upsert' : 'delete', seen);
@@ -1636,7 +1640,7 @@ export async function syncOnce(
           if (res.ok) {
             pushed++;
             // بوقت الالتزام في الخادم إن عُرف، ولا يتجاوز وقت المستند · وبلا وقت الخادم لا يُحفظ (الوارد يغلب كما كان)
-            if (commitIso) noteRowTime(db, r.tbl, r.pk, docs[i].u < commitIso ? docs[i].u : commitIso);
+            if (commitIso) noteRowTime(db, r.tbl, r.pk, isoCmp(docs[i].u, commitIso) < 0 ? docs[i].u : commitIso);
           }
           progressed++;
         } else {
