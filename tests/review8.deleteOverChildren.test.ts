@@ -6,7 +6,7 @@ import { memDb } from './helpers/testDb';
 import { MemoryRemote } from './helpers/memoryRemote';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { confirmContract } from '@/domain/contracts/service';
-import { mergeTenants } from '@/domain/tenants';
+import { mergeTenants, findOrCreateTenant } from '@/domain/tenants';
 import { purgeFromTrash } from '@/domain/trash';
 import { enableSync, syncOnce, docId } from '@/sync/engine';
 import { getMeta } from '@/repos/settings';
@@ -82,5 +82,121 @@ test('١ (التحقق المستقل) رفعٌ منقسم: الحذف يصل ب
   expect(tenantOf(a, c1)).toBe(keep);
   expect(tenantOf(b, c1)).toBe(keep);
   expect((r.docs.get(docId('contracts', c1))!.d as Record<string, unknown>).tenant_id).toBe(keep);
+  a.close(); b.close();
+});
+
+/* ═══ تتمة المراجعة الأخيرة: تأجيل حذف الأب كله إلى ما بعد الإضافات كان يكسر ترتيب «الحذف أولاً» ═══ */
+
+const natOf = (db: DB, id: string) => db.get<{ n: string; c: number }>(`SELECT national_id AS n, credit_halalas AS c FROM tenants WHERE id = ?`, [id]);
+const rejectsOf = (db: DB) => db.all<{ tbl: string; pk: string; reason: string }>(`SELECT tbl, pk, reason FROM sync_rejects`);
+const waitingOf = (db: DB) => db.all<{ tbl: string; pk: string }>(`SELECT tbl, pk FROM sync_inbox`);
+
+test('١ (المراجعة الأخيرة) دمجٌ ينقل هوية المدموج إلى الوجهة ثم إفراغ السلة: الوجهة لا تُرفض بالفهرس الفريد على الجهاز الآخر', async () => {
+  const { r, a, b, c1, c2 } = await world();
+  const keep = tenantOf(a, c2)!;
+  const drop = tenantOf(a, c1)!;
+  // رصيدٌ دائن مصطنع للمدموج ينتقل بالدمج إلى الوجهة
+  a.run(`UPDATE tenants SET credit_halalas = 50000 WHERE id = ?`, [drop]);
+  await sync(a, r); await sync(b, r);
+  mergeTenants(a, keep, [drop], { allowDifferentIds: true });
+  purgeFromTrash(a, 'tenants', drop);
+  expect(natOf(a, keep)).toEqual({ n: '1000000071', c: 50000 });
+  await sync(a, r);
+  const rep = await sync(b, r);
+  expect(rejectsOf(b)).toEqual([]);
+  expect(rep.rejected).toBe(0);
+  expect(natOf(b, keep)).toEqual({ n: '1000000071', c: 50000 });
+  expect(b.get(`SELECT 1 FROM tenants WHERE id = ?`, [drop])).toBeFalsy();
+  expect(tenantOf(b, c1)).toBe(keep);
+  // ولا يتغير شيء بدوراتٍ أخرى · والسحابة على الوجهة
+  await sync(b, r); await sync(a, r); await sync(b, r);
+  expect(natOf(a, keep)).toEqual({ n: '1000000071', c: 50000 });
+  expect(natOf(b, keep)).toEqual({ n: '1000000071', c: 50000 });
+  expect((r.docs.get(docId('contracts', c1))!.d as Record<string, unknown>).tenant_id).toBe(keep);
+  a.close(); b.close();
+});
+
+test('١ (المراجعة الأخيرة) والوجهة مستأجرٌ جديد: لا يتعطّل الحذف والعقد والوجهة معاً على الجهاز الآخر', async () => {
+  const { r, a, b, c1 } = await world();
+  const drop = tenantOf(a, c1)!;
+  const fresh = findOrCreateTenant(a, { name: 'مستأجر وجهة جديد مصطنع' });
+  mergeTenants(a, fresh, [drop], { allowDifferentIds: true });
+  purgeFromTrash(a, 'tenants', drop);
+  await sync(a, r);
+  await sync(b, r);
+  expect(rejectsOf(b)).toEqual([]);
+  expect(waitingOf(b)).toEqual([]);
+  expect(natOf(b, fresh)?.n).toBe('1000000071');
+  expect(tenantOf(b, c1)).toBe(fresh);
+  expect(b.get(`SELECT 1 FROM tenants WHERE id = ?`, [drop])).toBeFalsy();
+  await sync(b, r); await sync(a, r);
+  expect(tenantOf(a, c1)).toBe(fresh);
+  expect((r.docs.get(docId('contracts', c1))!.d as Record<string, unknown>).tenant_id).toBe(fresh);
+  a.close(); b.close();
+});
+
+test('١ (المراجعة الأخيرة) والابن الذي تفشل نسخته الواردة بعد فكّه هنا يبقى في الصندوق ويُعاد حتى تصل وجهته · ولا يُرفع مفكوكاً', async () => {
+  const { r, a, b, c1 } = await world();
+  const drop = tenantOf(a, c1)!;
+  const fresh = findOrCreateTenant(a, { name: 'مستأجر وجهة جديد مصطنع' });
+  mergeTenants(a, fresh, [drop], { allowDifferentIds: true });
+  purgeFromTrash(a, 'tenants', drop);
+  await sync(a, r);
+  // الوجهة الجديدة لم تصل ب بعد (رفعٌ انقطع قبلها) · فنسخة العقد الواردة تنتظرها
+  const held = r.docs.get(docId('tenants', fresh))!;
+  r.docs.delete(held.id);
+  await sync(b, r);
+  expect(b.get(`SELECT 1 FROM tenants WHERE id = ?`, [drop])).toBeFalsy();
+  expect(waitingOf(b)).toEqual([{ tbl: 'contracts', pk: c1 }]);
+  expect(rejectsOf(b)).toEqual([]);
+  // لم يُرفع من ب عقدٌ مفكوك يغلب نقله
+  const up = r.docs.get(docId('contracts', c1))!;
+  expect(up.dev).toBe(getMeta(a, 'device_id'));
+  expect((up.d as Record<string, unknown>).tenant_id).toBe(fresh);
+  // وصلت الوجهة: يُطبَّق العقد الذي انتظر عليها
+  r.inject(held);
+  await sync(b, r);
+  expect(waitingOf(b)).toEqual([]);
+  expect(rejectsOf(b)).toEqual([]);
+  expect(tenantOf(b, c1)).toBe(fresh);
+  expect(natOf(b, fresh)?.n).toBe('1000000071');
+  await sync(a, r);
+  expect(tenantOf(a, c1)).toBe(fresh);
+  a.close(); b.close();
+});
+
+test('١ (المراجعة الأخيرة) وحذفٌ بأبناء من غير المالك لا يُسلسل ولا يُفكّ ابنه ولو كانت له نسخةٌ واردة تنقله', async () => {
+  const { r, a, b, c1, c2 } = await world();
+  const keep = tenantOf(b, c2)!;
+  const drop = tenantOf(b, c1)!;
+  const cur = r.docs.get(docId('contracts', c1))!;
+  r.inject({ ...cur, d: { ...cur.d!, tenant_id: keep }, u: '2099-01-01T00:00:00.000Z', dev: 'other' });
+  r.inject({ id: docId('tenants', drop), t: 'tenants', k: drop, u: '2099-01-01T00:00:00.000Z', dev: 'other', del: true, d: null, dby: 'member-1' });
+  await sync(b, r);
+  expect(b.get(`SELECT 1 FROM tenants WHERE id = ?`, [drop])).toBeTruthy();
+  expect(rejectsOf(b).find((x) => x.pk === drop)?.reason).toMatch(/المالك/);
+  expect(tenantOf(b, c1)).toBe(keep);
+  // ولا يُرفع من ب شيءٌ للعقد
+  expect(r.docs.get(docId('contracts', c1))!.dev).toBe('other');
+  a.close(); b.close();
+});
+
+test('١ (المراجعة الأخيرة) وحذف حامل القيمة الفريدة مؤجَّلٌ لابنٍ تبقيه نسخته الواردة عليه: الصف الوارد بالقيمة نفسها يُعاد لا يُرفض', async () => {
+  const { r, a, b, c1, c2 } = await world();
+  const drop = tenantOf(b, c1)!;
+  const other = r.docs.get(docId('tenants', tenantOf(b, c2)!))!;
+  // حذف المالك للمدموج · ومستأجرٌ جديد بهويته (بعد حذفه هناك) · وتعديلٌ للعقد من جهازٍ ثالث يبقيه على المدموج
+  r.inject({ id: docId('tenants', drop), t: 'tenants', k: drop, u: '2099-01-01T00:00:00.000Z', dev: 'other', del: true, d: null, dby: OWN });
+  const nid = 'T_SYNTH_NEW_1';
+  r.inject({ ...other, id: docId('tenants', nid), k: nid, u: '2099-01-01T00:00:00.000Z', dev: 'other',
+    d: { ...other.d!, id: nid, name: 'مستأجر جديد بالهوية مصطنع', national_id: '1000000071', credit_halalas: 0 } });
+  const cur = r.docs.get(docId('contracts', c1))!;
+  r.inject({ ...cur, d: { ...cur.d!, tenant_name: 'اسم معدّل مصطنع' }, u: '2099-01-01T00:00:00.000Z', dev: 'third' });
+  const rep = await sync(b, r);
+  expect(rejectsOf(b)).toEqual([]);
+  expect(rep.rejected).toBe(0);
+  expect(waitingOf(b)).toEqual([]);
+  expect(b.get(`SELECT 1 FROM tenants WHERE id = ?`, [drop])).toBeFalsy();
+  expect(natOf(b, nid)?.n).toBe('1000000071');
   a.close(); b.close();
 });

@@ -923,23 +923,23 @@ function enqueue(db: DB, table: string, key: string, op: 'upsert' | 'delete', se
 /** حذفٌ وارد ينتظر نسخ أبنائه الواردة في الصندوق نفسه (المراجعة الشاملة · البند ١) */
 class AwaitChildren extends Error {}
 
+/** وقت المستند الوارد للمقارنة: لا يتجاوز وقت كتابته في الخادم (مراجعة التثبيت #56) · بصيغة واحدة (البند ١٦) */
+const incomingAt = (doc: RemoteDoc): string => isoNorm(doc.ts && isoCmp(doc.ts, doc.u) < 0 ? doc.ts : doc.u);
+
 /**
- * هل لأحد الأبناء الذين يمسّهم حذف هذا الصف (فكّاً أو حذفاً، بالتسلسل نفسه) نسخةٌ واردة غير حذف في الصندوق؟ ·
- * فإن كان، تُطبَّق قبل الحذف: الدمج يعيد العقد إلى الوجهة ثم يُحذف المدموج، فلا يُفكّ العقد ولا يُرفع مفكوكاً
+ * نسخة الابن الواردة غير الحذف التي تنتظر في الصندوق ويُتوقع أن تُطبَّق: لا أقدم مما عرفه الجهاز للصف (وإلا غلبها ما هنا كما في
+ * applyOne فلا تُطبَّق) · null إن لم تكن
  */
-function childAwaitsIncoming(db: DB, table: string, key: string, depth = 0): boolean {
-  if (depth > 8) return false;
-  const row = readRow(db, table, key);
-  if (!row) return false;
-  for (const c of fkChildren(db, table)) {
-    const ct = syncTable(c.child)!;
-    const kids = db.all<{ k: string }>(`SELECT ${ct.pk(`"${c.child}"`)} AS k FROM "${c.child}" WHERE "${c.from}" = ?`, [row[c.to] as SqlValue]);
-    for (const kid of kids) {
-      if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 0`, [c.child, kid.k])) return true;
-      if (c.notNull && childAwaitsIncoming(db, c.child, kid.k, depth + 1)) return true;
-    }
+function incomingVersion(db: DB, table: string, key: string, joining: boolean): RowData | null {
+  const r = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 0`, [table, key]);
+  if (!r) return null;
+  const doc = JSON.parse(r.payload) as RemoteDoc;
+  if (!doc.d) return null;
+  if (!joining) {
+    const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [table, key])?.u;
+    if (seen && isoCmp(incomingAt(doc), seen) < 0) return null;
   }
-  return false;
+  return doc.d;
 }
 
 /**
@@ -950,8 +950,13 @@ function childAwaitsIncoming(db: DB, table: string, key: string, depth = 0): boo
  * ما غاب مستنده يُعلَّم للمراجعة بعد اكتمال الوارد (orphans.ts).
  * ويُرفع ما حُذف وما فُكّ بوقت الحذف الوارد (at بساعة الخادم) لا بوقت الآن (المراجعة الشاملة · البند ١): فنسخة الابن الأحدث
  * في جهاز آخر تغلبه ولا يغلبها.
+ * والابن الذي تنتظر له في الصندوق نسخةٌ واردة تنقله عن هذا الأب (الدمج: العقد إلى الوجهة) ومفتاحه يقبل الفراغ يُفكّ هنا وحده،
+ * بلا طابور ولا مسّ لوقته، فيُحذف الأب في خطوة الحذف نفسها وتعيد نسخته الواردة ربطه في مرحلة الصفوف من المرور نفسه (البند ١ ·
+ * المراجعة الأخيرة: تأجيل الأب كله إلى المرور التالي كان يبقيه حاملاً قيمةً فريدة يحتاجها صفٌّ وارد، كهوية المدموج في الوجهة،
+ * فيُرفض ذلك الصف أبداً، أو يتعطّل الأب والابن ووجهته الجديدة معاً) · وإن فشلت نسخته بعدُ بقيت في الصندوق تُعاد حتى يصل ما
+ * تنتظره، ولم يُرفع منه شيء · وما لا يُفكّ (مفتاحه إلزامي) أو تبقيه نسخته على هذا الأب يُطبَّق أولاً ويعود الحذف في المرور التالي
  */
-function deleteOverChildren(db: DB, table: string, key: string, at: string, depth = 0): void {
+function deleteOverChildren(db: DB, table: string, key: string, at: string, joining: boolean, depth = 0): void {
   if (depth > 8) throw new Error('تسلسل أبناء أعمق من المتوقع');
   const row = readRow(db, table, key);
   if (!row) return;
@@ -959,14 +964,41 @@ function deleteOverChildren(db: DB, table: string, key: string, at: string, dept
     const ct = syncTable(c.child)!;
     const kids = db.all<{ k: string }>(`SELECT ${ct.pk(`"${c.child}"`)} AS k FROM "${c.child}" WHERE "${c.from}" = ?`, [row[c.to] as SqlValue]);
     for (const kid of kids) {
+      const next = incomingVersion(db, c.child, kid.k, joining);
+      if (next) {
+        const moves = c.from in next && String(next[c.from] ?? '') !== String(row[c.to] ?? '');
+        if (!moves || c.notNull) throw new AwaitChildren();
+        db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k));
+        continue;
+      }
       // بوقت آخر نسخةٍ عرفها الجهاز للابن إن سبقت الحذف (التحقق المستقل على البند ١: رفعٌ منقسم يصل فيه الحذف قبل نقل الابن) ·
       // فمآل الابن الذي يرفعه الحاذف (نقله في الدمج ثم إفراغ السلة، أو فكّه) أحدث منه فيغلبه · وتعديلٌ معلّق هنا يبقى بوقته
       const when = childTime(db, c.child, kid.k, at);
-      if (c.notNull) { deleteOverChildren(db, c.child, kid.k, at, depth + 1); enqueue(db, c.child, kid.k, 'delete', when); }
+      if (c.notNull) { deleteOverChildren(db, c.child, kid.k, at, joining, depth + 1); enqueue(db, c.child, kid.k, 'delete', when); }
       else { db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k)); enqueue(db, c.child, kid.k, 'upsert', when); }
     }
   }
   deleteRow(db, table, key);
+}
+
+/**
+ * صفٌّ وارد يخالف فهرساً فريداً وحاملُ القيمة هنا ينتظر حذفُه في الصندوق (المراجعة الشاملة · البند ١ · المراجعة الأخيرة): الحذف
+ * مؤجَّلٌ لابنٍ تُطبَّق نسخته أولاً، فالقيمة تُفرَغ في المرور التالي · فيُعاد الصف ولا يُرفض أبداً
+ */
+function uniqueHolderLeaving(db: DB, doc: RemoteDoc, msg: string): boolean {
+  if (doc.del || !doc.d) return false;
+  const m = /UNIQUE constraint failed: ([^\n]+)/i.exec(msg);
+  if (!m) return false;
+  const named = /^index '([^']+)'/.exec(m[1].trim());
+  const cols = named
+    ? db.all<{ name: string | null }>(`PRAGMA index_info("${named[1].replace(/"/g, '')}")`).map((c) => c.name)
+    : m[1].split(',').map((p) => p.trim()).map((p) => (p.startsWith(doc.t + '.') ? p.slice(doc.t.length + 1) : null));
+  if (!cols.length || cols.some((c) => !c || !(c in doc.d!))) return false;
+  const t = syncTable(doc.t)!;
+  const holders = db.all<{ k: string }>(
+    `SELECT ${t.pk(`"${doc.t}"`)} AS k FROM "${doc.t}" WHERE ${cols.map((c) => `"${c}" = ?`).join(' AND ')}`,
+    cols.map((c) => doc.d![c as string] as SqlValue));
+  return holders.some((h) => h.k !== doc.k && !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 1`, [doc.t, h.k]));
 }
 
 /** وقت رفع ما فُكّ أو حُذف من ابنٍ بحذف أبيه الوارد: آخر ما عرفه الجهاز للابن إن سبق وقت الحذف، وإلا وقت الحذف */
@@ -1055,7 +1087,7 @@ function applyOne(
     conflict = 'conflict-remote';
   }
   // الوقت الوارد لا يتجاوز وقت كتابته في الخادم (#56)
-  const theirs0 = isoNorm(doc.ts && isoCmp(doc.ts, doc.u) < 0 ? doc.ts : doc.u);
+  const theirs0 = incomingAt(doc);
   // ولا طابور: الوارد أقدم مما عرفه الجهاز للصف (رفعه أو طبّقه) لا يكتب فوقه، ويُرفع ما عنده فيتفق الأجهزة (المراجعة الخارجية ٧ ·
   // النتيجة ٨: دورة جهازٍ سحبت قبل تعديل غيره ودفعت بعده فكان الأقدم يغلب بلا أثر) · وأول دورةٍ للجهاز ما في الحساب يغلب
   if (!pending && !joining && !t.appendOnly) {
@@ -1090,9 +1122,8 @@ function applyOne(
           // كان يفكّ العقد عن وحدته ويحذف الحجز ويعيد نشرهما للمنشأة كلها · وشاهدٌ بلا حاذف لا يُسلسل (إنشاء شاهد حذفٍ لصفٍّ ليس
           // في السحابة لا تفحص القواعد حاذفه، فكلفته على إنشاء العضو فوق ميزانية القواعد)
           if (doc.dby !== ownerUid(db)) throw new Error(tr('sync.cascadeNotOwner', { lng: 'ar' }));
-          // ولابنٍ نسخةٌ واردة لم تُطبَّق بعد: تُطبَّق الإضافات أولاً ثم يعود الحذف في المرور التالي (المراجعة الشاملة · البند ١)
-          if (childAwaitsIncoming(db, doc.t, doc.k)) throw new AwaitChildren();
-          deleteOverChildren(db, doc.t, doc.k, theirs0);
+          // ولابنٍ نسخةٌ واردة لم تُطبَّق بعد: يُفكّ هنا وحده لتعيد ربطه، أو يُطبَّق أولاً ويعود الحذف (المراجعة الشاملة · البند ١)
+          deleteOverChildren(db, doc.t, doc.k, theirs0, joining);
         }
       } else if (doc.t === 'journal_entries') {
         applyJournal(db, doc, { e: cols('journal_entries'), l: cols('journal_lines') });
@@ -1143,7 +1174,7 @@ function applyOne(
     return conflict ?? 'applied';
   } catch (e) {
     const msg = errText(e);
-    if (isMissingParent(msg) || e instanceof AwaitOriginal || e instanceof AwaitChildren) return 'retry';
+    if (isMissingParent(msg) || e instanceof AwaitOriginal || e instanceof AwaitChildren || uniqueHolderLeaving(db, doc, msg)) return 'retry';
     reject(db, doc, msg);
     return 'rejected';
   }
