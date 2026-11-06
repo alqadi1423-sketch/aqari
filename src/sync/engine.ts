@@ -938,11 +938,20 @@ function deleteOverChildren(db: DB, table: string, key: string, at: string, dept
     const ct = syncTable(c.child)!;
     const kids = db.all<{ k: string }>(`SELECT ${ct.pk(`"${c.child}"`)} AS k FROM "${c.child}" WHERE "${c.from}" = ?`, [row[c.to] as SqlValue]);
     for (const kid of kids) {
-      if (c.notNull) { deleteOverChildren(db, c.child, kid.k, at, depth + 1); enqueue(db, c.child, kid.k, 'delete', at); }
-      else { db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k)); enqueue(db, c.child, kid.k, 'upsert', at); }
+      // بوقت آخر نسخةٍ عرفها الجهاز للابن إن سبقت الحذف (التحقق المستقل على البند ١: رفعٌ منقسم يصل فيه الحذف قبل نقل الابن) ·
+      // فمآل الابن الذي يرفعه الحاذف (نقله في الدمج ثم إفراغ السلة، أو فكّه) أحدث منه فيغلبه · وتعديلٌ معلّق هنا يبقى بوقته
+      const when = childTime(db, c.child, kid.k, at);
+      if (c.notNull) { deleteOverChildren(db, c.child, kid.k, at, depth + 1); enqueue(db, c.child, kid.k, 'delete', when); }
+      else { db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k)); enqueue(db, c.child, kid.k, 'upsert', when); }
     }
   }
   deleteRow(db, table, key);
+}
+
+/** وقت رفع ما فُكّ أو حُذف من ابنٍ بحذف أبيه الوارد: آخر ما عرفه الجهاز للابن إن سبق وقت الحذف، وإلا وقت الحذف */
+function childTime(db: DB, table: string, key: string, at: string): string {
+  const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [table, key])?.u;
+  return seen && isoCmp(seen, at) < 0 ? seen : at;
 }
 
 type ApplyOutcome = 'applied' | 'skipped' | 'conflict-local' | 'conflict-remote' | 'retry' | 'rejected';

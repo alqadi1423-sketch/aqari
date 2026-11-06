@@ -48,7 +48,7 @@ test('١ دمج مستأجرين ثم إفراغ السلة ثم مزامنة: �
   a.close(); b.close();
 });
 
-test('١ والابن الذي يُفكّ لأن نسخته الواردة لم تصل يُرفع بوقت الحذف الوارد لا بوقت الآن', async () => {
+test('١ والابن الذي يُفكّ لأن نسخته الواردة لم تصل يُرفع بوقت آخر نسخةٍ عرفها الجهاز له لا بوقت الآن', async () => {
   const { r, a, b, c1 } = await world();
   const drop = tenantOf(b, c1)!;
   const tomb: RemoteDoc = { id: docId('tenants', drop), t: 'tenants', k: drop, u: '2099-01-01T00:00:00.000Z', dev: 'other', del: true, d: null, dby: OWN };
@@ -57,9 +57,30 @@ test('١ والابن الذي يُفكّ لأن نسخته الواردة لم 
   const at = r.docs.get(tomb.id)!.ts;
   await sync(b, r);
   expect(tenantOf(b, c1)).toBeNull();
-  // ما رفعه ب للعقد المفكوك يحمل وقت الحذف لا وقت الآن · فنسخةٌ أحدث منه في جهاز آخر تغلبه
+  // ما رفعه ب للعقد المفكوك يحمل وقت آخر نسخةٍ عرفها له (قبل الحذف) لا وقت الآن ولا وقت الحذف (التحقق المستقل: رفعٌ منقسم) ·
+  // فمآل العقد عند الحاذف أحدث منه فيغلبه
   const up = r.docs.get(docId('contracts', c1))!;
   expect((up.d as Record<string, unknown>).tenant_id).toBeNull();
-  expect(up.u).toBe(at);
+  expect(up.u < at).toBe(true);
+  expect(up.u).toBe(b.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = 'contracts' AND pk = ?`, [c1])!.u);
+  a.close(); b.close();
+});
+
+test('١ (التحقق المستقل) رفعٌ منقسم: الحذف يصل ب في دفعةٍ قبل نقل العقد · فلا يغلب فكُّه النقلَ في أي جهاز', async () => {
+  const { r, a, b, c1, c2 } = await world();
+  const keep = tenantOf(a, c2)!;
+  const drop = tenantOf(a, c1)!;
+  mergeTenants(a, keep, [drop], { allowDifferentIds: true });
+  await new Promise((res) => setTimeout(res, 20));
+  purgeFromTrash(a, 'tenants', drop);
+  const out = a.get<{ changed_at: string }>(`SELECT changed_at FROM sync_outbox WHERE tbl = 'tenants' AND pk = ?`, [drop])!;
+  // الدفعة الأولى من أ (المستأجرون قبل العقود بالرتبة) فيها شاهد الحذف وحده · وب يسحب قبل الثانية
+  r.inject({ id: docId('tenants', drop), t: 'tenants', k: drop, u: out.changed_at, dev: getMeta(a, 'device_id')!, del: true, d: null, dby: OWN });
+  await sync(b, r);
+  await sync(a, r);
+  await sync(b, r); await sync(a, r);
+  expect(tenantOf(a, c1)).toBe(keep);
+  expect(tenantOf(b, c1)).toBe(keep);
+  expect((r.docs.get(docId('contracts', c1))!.d as Record<string, unknown>).tenant_id).toBe(keep);
   a.close(); b.close();
 });
