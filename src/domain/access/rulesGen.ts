@@ -7,7 +7,7 @@ import { MEMBER_NO_HARD_DELETE } from '../../db/softDelete';
 import { NAME_CLASS, LETTER_FOLDS, RESERVED_CORE } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
-import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR } from './opWrites';
+import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR, SELF_AUDIT_ACTIONS, SELF_AUDIT_AHEAD_DAYS } from './opWrites';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, READ_TABLE, readSectionsOf } from './readSections';
 import { SYNC_TABLES } from '../../db/syncTables';
 import { BLOCK_SIZE, FIRST_GAP } from '../numbering';
@@ -405,12 +405,22 @@ ${guardFns(schema)}
         && r.d.get('module', '') == '${SELF_AUDIT_MODULE}' && r.d.get('user_name', '') != '${OWNER_ACTOR}'
         && r.get('by', '') == request.auth.uid;
     }
+    // ونوعه مما يكتبه التطبيق، ووقته نصٌّ بصيغة toISOString لا يسبق وقت الخادم بأكثر من أيامٍ عددها ${SELF_AUDIT_AHEAD_DAYS} (البند ٢٨ تتمة · المراجعة
+    // الأخيرة: كانا بلا قيد، فيُكتب نوعٌ مضلّل أو ضخم ووقتٌ بعيدٌ يبقى أول السجل)
     function selfAuditSized(d) {
       return d.keys().hasOnly(['id', 'ts', 'user_name', 'module', 'action_type', 'entity_type', 'entity_name', 'before_json', 'after_json'])
+        && d.get('action_type', null) in ${q([...SELF_AUDIT_ACTIONS])}
+        && d.get('ts', null) is string && d.ts.size() <= 24
+        && d.ts.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,3})?Z?')
+        && selfAuditNotAhead(d.ts.split('T')[0].split('-'))
         && d.get('user_name', '') is string && d.get('user_name', '').size() <= 200
         && d.get('entity_name', '') is string && d.get('entity_name', '').size() <= 300
         && (d.get('before_json', null) == null || (d.before_json is string && d.before_json.size() <= 4000))
         && (d.get('after_json', null) == null || (d.after_json is string && d.after_json.size() <= 4000));
+    }
+
+    function selfAuditNotAhead(p) {
+      return timestamp.date(int(p[0]), int(p[1]), int(p[2])) < request.time + duration.value(${SELF_AUDIT_AHEAD_DAYS}, 'd');
     }
 
     // عمودٌ أضافته هجرةٌ بعد أن كُتبت مستندات السحابة (المراجعة الشاملة · البند ٣ تتمة · الهجرة ٤٨): إضافته أو نزعه في كتابة إصدارٍ

@@ -436,6 +436,37 @@ d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦
     expect((await write({ ...extra, d: { ...extra.d!, note: 'حقل مصطنع' } })).ok).toBe(false);
     const big = make();
     expect((await write({ ...big, d: { ...big.d!, after_json: 'x'.repeat(5000) } })).ok).toBe(false);
+
+    // (تتمة · المراجعة الأخيرة) نوع العملية ووقتها: ما يكتبه التطبيق وحده · إنشاء بياناته، وسطر إعادة ضبط رمز القفل (البند ٥)
+    const { logLockReset } = await import('@/domain/lockReset');
+    const last = () => {
+      const k = mdb.get<{ id: string }>(`SELECT id FROM audit_log ORDER BY rowid DESC LIMIT 1`)!.id;
+      return annotate(mdb, buildDoc(mdb, 'audit_log', k, 'upsert', new Date().toISOString(), 'dev-view'), VIEWER).doc;
+    };
+    logAudit(mdb, 'الأعضاء', 'create', 'بيانات عضو', 'عضو تجريبي', { الاسم: 'أُدخل' }, { الاسم: 'أُدخل' });
+    const created = last();
+    expect([created.d!.action_type, String(created.d!.ts).length]).toEqual(['create', 19]);
+    expect((await write(created)).ok).toBe(true);
+    mdb.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('membership', ?)`, [JSON.stringify({ org: ORG, profile: { name: 'عضو تجريبي' } })]);
+    logLockReset(mdb, Date.now());
+    const reset = last();
+    expect([reset.d!.entity_type, reset.d!.action_type]).toEqual(['بيانات عضو', 'update']);
+    expect((await write(reset)).ok).toBe(true);
+    // نوعٌ ليس مما يكتبه هذا المسار، أو ضخم، أو ليس نصاً · ووقتٌ ضخم، أو ليس بصيغة ISO، أو ليس نصاً، أو بعيدٌ في المستقبل فيبقى أول السجل
+    const forged = (d: Record<string, unknown>) => { const x = make(); return { ...x, d: { ...x.d!, ...d } as typeof x.d }; };
+    const now = String(make().d!.ts);
+    const bad: Array<[string, Record<string, unknown>]> = [
+      ['نوع حذف', { action_type: 'delete' }], ['نوع ضخم', { action_type: 'حذف كل العقود'.repeat(2000) }], ['نوع رقم', { action_type: 1 }],
+      ['وقت ضخم', { ts: now + 'x'.repeat(5000) }], ['وقت نص', { ts: 'أمس' }], ['وقت بلا تاريخ صحيح', { ts: '2026-13-45T99:00:00' }],
+      ['وقت رقم', { ts: 1767225600000 }], ['وقت بعيد', { ts: '9999-12-31T00:00:00' }],
+    ];
+    const accepted: string[] = [];
+    for (const [label, d] of bad) if ((await write(forged(d))).ok) accepted.push(label);
+    expect(accepted).toEqual([]);
+    // وصيغة toISOString كاملةً مقبولة، وساعة جهازٍ متقدمةٌ يوماً، وسطرٌ قديمٌ رُفع بعد انقطاع
+    expect((await write(forged({ ts: new Date().toISOString() }))).ok).toBe(true);
+    expect((await write(forged({ ts: new Date(Date.now() + 86_400_000).toISOString().slice(0, 19) }))).ok).toBe(true);
+    expect((await write(forged({ ts: '2026-01-01T00:00:00' }))).ok).toBe(true);
   });
 });
 

@@ -88,6 +88,12 @@ export const SELF_AUDIT_ENTITY = 'بيانات عضو';
 /** وحدة سطر بيانات العضو · وفاعل المالك في سجل العمليات (auditActor) لا يكتبه عضو (مراجعة التثبيت #54) */
 export const SELF_AUDIT_MODULE = 'الأعضاء'; // i18n-exempt: وحدة مخزّنة في سجل العمليات
 export const OWNER_ACTOR = 'المالك'; // i18n-exempt: فاعلٌ مخزَّن في سجل العمليات
+/**
+ * نوع عملية سطر بيانات العضو كما يكتبه التطبيق وحده (المراجعة الشاملة · البند ٢٨ تتمة): logProfileEdit (إنشاءٌ أو تعديل) وlogLockReset
+ * (تعديل) · وأقصى أيامٍ يسبق بها وقتُه (ts بساعة الجهاز) وقتَ الخادم، فلا يُكتب سطرٌ بوقتٍ بعيد يبقى أول السجل
+ */
+export const SELF_AUDIT_ACTIONS = ['create', 'update'] as const;
+export const SELF_AUDIT_AHEAD_DAYS = 2;
 
 export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update' | 'delete', cols: string[] = []): boolean {
   const w = OP_WRITES[op];
