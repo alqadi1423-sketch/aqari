@@ -592,7 +592,9 @@
   "purchase": {
     "vatSettled": "This invoice's VAT is refunded or its refund was rejected, and its entry closed the account · cancel that entry from the ledger first",
     "filedLocked": "This purchase is in a filed VAT return, so it is not edited or deleted · correct it with an entry in an open period from the ledger",
-    "filedPeriod": "This date's period has a filed return, so no purchase is recorded in it · use a date in an open period"
+    "filedPeriod": "This date's period has a filed return, so no purchase is recorded in it · use a date in an open period",
+    "paidLocked": "This purchase is paid, so it is not edited while its payment stands · undo the payment first so its entry is reversed, then edit it and pay it again",
+    "inTrash": "This purchase is in the trash, so it is not edited · restore it from the trash first, then edit it"
   },
   "bankTx": {
     "descrRequired": "Enter a description",
