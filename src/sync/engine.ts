@@ -1009,7 +1009,9 @@ function applyOne(
   if (!pending && !joining && !t.appendOnly) {
     const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u;
     if (seen && theirs0 < seen) {
-      enqueue(db, doc.t, doc.k, readRow(db, doc.t, doc.k) ? 'upsert' : 'delete');
+      // بوقت النسخة المعروفة لا بوقت الآن (المراجعة الشاملة · البند ١٣): إعادة التأكيد لا تجعل النسخة أحدث مما هي، فلا تغلب تعديلاً
+      // أحدث منها من جهازٍ آخر يصل بعدها في الدفعة نفسها أو بعدها
+      enqueue(db, doc.t, doc.k, readRow(db, doc.t, doc.k) ? 'upsert' : 'delete', seen);
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', // i18n-exempt: وحدة السجل ونوعه المخزّنان
         tr('sync.olderIncoming', { t: doc.t, k: doc.k, seen, theirs: theirs0, lng: 'ar' }));
       return 'conflict-local';
