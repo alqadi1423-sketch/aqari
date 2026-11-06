@@ -11,7 +11,7 @@ import type { Access } from '../domain/access/access';
 import { level } from '../domain/access/access';
 import { SECTION_KEYS, type SectionKey } from '../domain/access/sections';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, isMoneyColumn, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
-import { OP_WRITES, OP_JOURNAL_SRC, SELF_OP, SELF_AUDIT_ENTITY, journalSrcAllowed } from '../domain/access/opWrites';
+import { OP_WRITES, OP_JOURNAL_SRC, SELF_OP, SELF_AUDIT_ENTITY, LEGACY_NEUTRAL, journalSrcAllowed } from '../domain/access/opWrites';
 import { journalSection } from '../domain/access/readSections';
 
 export const ORG_WIDE = '*';
@@ -142,15 +142,17 @@ export function hiddenColumns(a: Access, table: string, row: Record<string, unkn
 }
 
 /**
- * حقول اللمس الجانبي للعملية إن كانت لا تنشئ الجدول ولا تملكه (الفرع الثالث في chooseOp) · null غير ذلك.
- * القواعد لا تجيز لكتابةٍ بهذه العملية أن تمسّ من d غيرها، فتُرفع جزئيةً بها وحدها ويبقى ما سواها في السحابة كما هو
- * (المراجعة الشاملة · البند ٣ تتمة): المستند الكامل كان يحمل عموداً أضافته هجرةٌ بعد أن كُتب في السحابة (الهجرة ٤٨ ·
- * original_end) فيُعدّ لمساً وتُرفض الكتابة كلها، ويُرجع ما غيّره غيره ولم يصل الجهاز بعد
+ * أعمدةٌ لا يرفعها جهاز العضو في اللمس الجانبي (الفرع الثالث في chooseOp: العملية لا تنشئ الجدول ولا تملكه): عمود LEGACY_NEUTRAL
+ * في جدوله وحده (المراجعة الشاملة · البند ٣ تتمة: original_end من الهجرة ٤٨، والمستند القديم في السحابة بلاه فكان يُعدّ لمساً
+ * وتُرفض الكتابة كلها) · فيُرفع المستند جزئياً بلاه، وما سواه من d يُرفع كما هو.
+ * لا بحقول اللمس وحدها (المتحقق المستقل): ذلك يُسقط بصمت كل تغييرٍ في غير الملموس، فتخفيض القسط بخصم «تنزيل من قيمة القسط» أو
+ * إرجاعه بإلغاء الدفعة من عضو التحصيل كان يُقبل بلا amount_halalas ويُحذف من الطابور ولا يصل سجل المرفوض · وغير الملموس ترفضه
+ * القواعد ظاهراً فيراه العضو ويُعاد بعد الترقية
  */
-export function touchOnlyColumns(op: string | null | undefined, table: string): string[] | null {
+export function touchLegacyColumns(op: string | null | undefined, table: string): string[] {
   const w = op ? OP_WRITES[op as SectionKey] : undefined;
-  if (!w || w.own.includes(table) || w.create.includes(table)) return null;
-  return w.touch?.[table] ?? null;
+  if (!w || w.own.includes(table) || w.create.includes(table) || !w.touch?.[table]) return [];
+  return table === LEGACY_NEUTRAL.table ? [LEGACY_NEUTRAL.col] : [];
 }
 
 export interface AclDocs {

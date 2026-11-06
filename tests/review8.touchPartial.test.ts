@@ -2,11 +2,14 @@
  * المراجعة الشاملة · البند ٣ (تتمة · المراجعة الأخيرة): الهجرة ٤٨ أضافت contracts.original_end وتملؤه على كل صفٍّ في الجهاز،
  * ومستندات العقود القديمة في السحابة بلاه · فعضو المستأجرين بلا «كامل» العقود يكتب العقد من مسار اللمس الجانبي (تعديل الاسم
  * ودمج المستأجرين) والقواعد تشترط ألا يمسّ من d غير tenant_id وtenant_name، وaffectedKeys تعدّ المفتاح المضاف لمساً فتُرفض الكتابة.
- * الكتابة الآن جزئية بالحقول الملموسة وحدها، فما سواها يبقى في السحابة كما هو · بيانات مصطنعة.
+ * الكتابة الآن جزئية بلا original_end وحده (sync/acl.ts touchLegacyColumns)، فيبقى في السحابة كما هو · وما سواه يُرفع كما هو، فتغيير
+ * غير الملموس ترفضه القواعد ظاهراً ولا يُسقط بصمت (المتحقق المستقل · الاختبار الأخير) · بيانات مصطنعة.
  */
 import { memDb } from './helpers/testDb';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
-import { confirmContract } from '@/domain/contracts/service';
+import { confirmContract, recordRentPayment } from '@/domain/contracts/service';
+import { cancelPayment } from '@/domain/contracts/cancelPayment';
+import { DISCOUNT_REDUCES_INSTALLMENT } from '@/domain/contracts/installments';
 import { buildDoc } from '@/sync/engine';
 import { FirestoreRemote, decodeFields } from '@/cloud/firestore';
 import { memberTokens, fullReadTables } from '@/sync/acl';
@@ -88,6 +91,30 @@ async function memberTouch(db: DB, ids: string[], cloud: Map<string, Doc>) {
   };
 }
 
+/** نسخة السحابة كما كتبها المالك لصفوف جدول (المستند وإسقاطه) */
+async function ownerCloud(db: DB, table: string, ids: string[]): Promise<Map<string, Doc>> {
+  const sink: Write[] = [];
+  const owner = remote(OWNER, sink);
+  for (const id of ids) await owner.write([owner.annotate!(db, buildDoc(db, table, id, 'upsert', '2026-01-01T00:00:00.000Z', 'dev-owner'))]);
+  return new Map(sink.map((w) => [idOf(w), applyWrite(undefined, w)] as const));
+}
+
+/** كتابة جهاز عضو لصفوف جدول كما يرفع المحرّك · وما تمسّه من d كل مستندٍ في السحابة */
+async function memberWrite(db: DB, a: Access, table: string, ids: string[], cloud: Map<string, Doc>) {
+  const sink: Write[] = [];
+  const r = remote(a, sink);
+  const docs = ids.map((id) => r.annotate!(db, buildDoc(db, table, id, 'upsert', '2026-11-01T00:00:00.000Z', 'dev-' + a.uid)));
+  await r.write(docs);
+  return {
+    ops: docs.map((d) => d.op),
+    writes: sink.map((w) => {
+      const before = cloud.get(idOf(w))!;
+      const after = applyWrite(before, w);
+      return { id: idOf(w), keys: affected(after.d as Record<string, unknown>, before.d as Record<string, unknown>), after };
+    }),
+  };
+}
+
 function setup() {
   const db = memDb();
   addProperty(db, { id: 'P1', name: 'عقار لمس مصطنع' });
@@ -158,5 +185,42 @@ test('٣ وعلى مستندٍ يحمل original_end تبقى قيمته في ا
   const r = remote({ ...TEN, uid: 'U-CON', perms: { contracts: 3, props: 1 } }, full);
   await r.write([r.annotate!(db, buildDoc(db, 'contracts', c1, 'upsert', '2026-11-02T00:00:00.000Z', 'dev-con'))]);
   expect(full.every((w) => !w.updateMask)).toBe(true);
+  db.close();
+});
+
+// المتحقق المستقل على الإصلاح السابق: الكتابة الجزئية بحقول اللمس وحدها كانت عامةً لكل مسارٍ جانبي، فيُسقط غيرُ الملموس بصمت ·
+// تخفيض القسط بخصم «تنزيل من قيمة القسط» يُرفع بلا amount_halalas فتقبله القواعد، ويُحذف من الطابور ولا يصل سجل المرفوض أبداً
+test('٣ عضو «إدخال» التحصيل يخفّض القسط بـ«تنزيل من قيمة القسط»: يُرفع amount_halalas فترفضه القواعد ظاهراً ولا يُسقط بصمت · وكذلك إرجاعه بإلغاء الدفعة من «كامل» التحصيل', async () => {
+  const { db, c1 } = setup();
+  const COL: Access = { owner: false, uid: 'U-COL', perms: { collect: 2, contracts: 1, props: 1 }, allProps: true, props: [] };
+  const inst = db.get<{ id: string; a: number }>(`SELECT id, amount_halalas AS a FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1`, [c1])!;
+  expect(inst.a).toBe(200000);
+  const amountOf = () => Number(db.get<{ a: number }>(`SELECT amount_halalas AS a FROM contract_installments WHERE id = ?`, [inst.id])!.a);
+  const doc = 'contract_installments__' + inst.id;
+
+  const cloud = await ownerCloud(db, 'contract_installments', [inst.id]);
+  recordRentPayment(db, c1, { installmentId: inst.id, period: 'يناير', date: '2026-01-05', notes: '',
+    discountHalalas: 10000, discountKind: DISCOUNT_REDUCES_INSTALLMENT, lines: [{ method: 'cash', amountHalalas: 190000 }] });
+  expect(amountOf()).toBe(190000);
+  const { ops, writes } = await memberWrite(db, COL, 'contract_installments', [inst.id], cloud);
+  expect(ops).toEqual(['collect']);
+  const w = writes.find((x) => x.id === doc)!;
+  // التخفيض في المرسَل: إما أن يصل السحابة، وإما أن ترفضه القواعد فيُسجَّل «خارج صلاحيتك» ويُعاد بعد الترقية
+  expect(w.keys).toContain('amount_halalas');
+  expect(w.after.d!.amount_halalas).toBe(190000);
+  expect(opAllows('collect', 'contract_installments', 'update', w.keys)).toBe(false);
+
+  // وإرجاع التنزيل بإلغاء الدفعة من «كامل» التحصيل على نسخةٍ في السحابة وصلها التخفيض
+  const reduced = await ownerCloud(db, 'contract_installments', [inst.id]);
+  const pay = db.get<{ id: string }>(`SELECT id FROM contract_payments WHERE installment_id = ?`, [inst.id])!.id;
+  cancelPayment(db, pay, { date: '2026-01-06', reason: 'إلغاء دفعة مصطنع' });
+  expect(amountOf()).toBe(200000);
+  const FULL: Access = { ...COL, uid: 'U-COL3', perms: { collect: 3, contracts: 1, props: 1 } };
+  const back = await memberWrite(db, FULL, 'contract_installments', [inst.id], reduced);
+  expect(back.ops).toEqual(['collect']);
+  const b = back.writes.find((x) => x.id === doc)!;
+  expect(b.keys).toContain('amount_halalas');
+  expect(b.after.d!.amount_halalas).toBe(200000);
+  expect(opAllows('collect', 'contract_installments', 'update', b.keys)).toBe(false);
   db.close();
 });

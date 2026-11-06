@@ -95,6 +95,14 @@ export const OWNER_ACTOR = 'المالك'; // i18n-exempt: فاعلٌ مخزَّ
 export const SELF_AUDIT_ACTIONS = ['create', 'update'] as const;
 export const SELF_AUDIT_AHEAD_DAYS = 2;
 
+/**
+ * عمودٌ مُزامَن أضافته هجرةٌ بعد أن كُتبت مستندات السحابة (المراجعة الشاملة · البند ٣ تتمة · الهجرة ٤٨): الجهاز الأحدث يملؤه على
+ * كل صف والمستند القديم بلاه، فكتابة اللمس الجانبي تضيفه أو تنزعه · وقيمته المحايدة عمودٌ آخر في الصف (original_end
+ * بقيمة end كغيابه في الاستحقاق: agreedEnd). جهاز العضو لا يرفعه في اللمس الجانبي (sync/acl.ts touchLegacyColumns)،
+ * والقواعد تقبل إضافته أو نزعه بها من إصدارٍ آخر وترفض تغيير قيمته (rulesGen: legacyTouches)
+ */
+export const LEGACY_NEUTRAL = { table: 'contracts', col: 'original_end', equals: 'end' } as const;
+
 export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update' | 'delete', cols: string[] = []): boolean {
   const w = OP_WRITES[op];
   if (!w) return false;

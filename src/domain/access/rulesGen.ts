@@ -7,7 +7,7 @@ import { MEMBER_NO_HARD_DELETE } from '../../db/softDelete';
 import { NAME_CLASS, LETTER_FOLDS, RESERVED_CORE } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
-import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR, SELF_AUDIT_ACTIONS, SELF_AUDIT_AHEAD_DAYS } from './opWrites';
+import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR, SELF_AUDIT_ACTIONS, SELF_AUDIT_AHEAD_DAYS, LEGACY_NEUTRAL } from './opWrites';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, READ_TABLE, readSectionsOf } from './readSections';
 import { SYNC_TABLES } from '../../db/syncTables';
 import { BLOCK_SIZE, FIRST_GAP } from '../numbering';
@@ -32,13 +32,6 @@ export const END = '    // </org:generated>';
 const DIM_LINES_MAX = 24;
 
 const q = (xs: string[]) => '[' + xs.map((x) => `'${x}'`).join(', ') + ']';
-
-/**
- * عمودٌ مُزامَن أضافته هجرةٌ بعد أن كُتبت مستندات السحابة (المراجعة الشاملة · البند ٣ تتمة · الهجرة ٤٨): الجهاز الأحدث يملؤه على
- * كل صف والمستند القديم بلاه، فكتابة اللمس الجانبي من إصدارٍ آخر تضيفه أو تنزعه · وقيمته المحايدة عمودٌ آخر في الصف (original_end
- * بقيمة end كغيابه في الاستحقاق: agreedEnd) · فإضافته أو نزعه بها لا يُعدّ لمساً، وتغيير قيمته لمس
- */
-export const LEGACY_NEUTRAL = { table: 'contracts', col: 'original_end', equals: 'end' } as const;
 
 /** فروع opTouches لجدول LEGACY_NEUTRAL وحده من OP_WRITES (على المفاتيح k) */
 function legacyTouchBranches(): string {

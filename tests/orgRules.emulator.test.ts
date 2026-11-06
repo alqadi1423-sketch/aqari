@@ -363,6 +363,39 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     // وغير الملموس يبقى مرفوضاً
     expect(await write(TEN, { ...row(cb), d: { ...legacy(cb).d!, renew_note: 'ملاحظة مصطنعة' } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   });
+
+  // المتحقق المستقل على البند ٣: الجزئية بحقول اللمس وحدها كانت تُسقط غير الملموس بصمت، فيُقبل القسط بلا تخفيضه ويُحذف من الطابور
+  test('المراجعة الشاملة · البند ٣ (المتحقق المستقل): تخفيض القسط بـ«تنزيل من قيمة القسط» من عضو «إدخال» التحصيل يُرفض ظاهراً لا يُقبل بلا مبلغه · والموعد المتفق عليه وحده يمرّ', async () => {
+    const { addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract, recordRentPayment } = await import('@/domain/contracts/service');
+    const { syncOnce, buildDoc } = await import('@/sync/engine');
+    const { DISCOUNT_REDUCES_INSTALLMENT } = await import('@/domain/contracts/installments');
+    const k = confirmContract(db, contractInput(addUnit(db, 'P1', { id: 'UN-T8C' }), { tenant: 'مستأجر تنزيل تجريبي', idNumber: '1000000074', phone: '0500000074' }));
+    const owner = remoteFor(ORG, null);
+    expect((await syncOnce(db, owner, 'dev-owner')).pending).toBe(0);
+    const [i1, i2] = db.all<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 2`, [k]).map((x) => x.id);
+    const cloud = async (i: string) => (await owner.getDoc(`orgs/${ORG}/rows/contract_installments__${i}`))!.d as Record<string, unknown>;
+    expect((await cloud(i1)).amount_halalas).toBe(200000);
+    // جهاز العضو كما يرفع المحرّك (annotate العميل) · وما وصله من السحابة «بلا كاتب» (الهجرة ٤٢)، فلا سبب للرفض غير ما في d
+    for (const i of [i1, i2]) db.run(`INSERT OR REPLACE INTO row_by (tbl, pk, uid) VALUES ('contract_installments', ?, '')`, [i]);
+    const col = remoteFor(COLLECTOR.uid!, COLLECTOR);
+    const push = async (i: string) => {
+      const doc = col.annotate!(db, buildDoc(db, 'contract_installments', i, 'upsert', new Date().toISOString(), 'dev-col'));
+      expect(doc.op).toBe('collect');
+      return (await col.write([doc]))[0];
+    };
+    recordRentPayment(db, k, { installmentId: i1, period: 'يناير', date: '2026-01-05', notes: '',
+      discountHalalas: 10000, discountKind: DISCOUNT_REDUCES_INSTALLMENT, lines: [{ method: 'cash', amountHalalas: 190000 }] });
+    expect(await push(i1)).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect((await cloud(i1)).amount_halalas).toBe(200000);
+    // والملموس وحده يمرّ كما كان
+    db.run(`UPDATE contract_installments SET agreed_date = '2026-02-10' WHERE id = ?`, [i2]);
+    expect(await push(i2)).toMatchObject({ ok: true });
+    expect((await cloud(i2)).agreed_date).toBe('2026-02-10');
+    // والمالك يرفع التخفيض فيصل السحابة
+    expect((await syncOnce(db, owner, 'dev-owner')).pending).toBe(0);
+    expect((await cloud(i1)).amount_halalas).toBe(190000);
+  });
 });
 
 d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦-١٠-٠٥)', () => {
