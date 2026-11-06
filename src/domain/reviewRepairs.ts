@@ -102,13 +102,13 @@ export function previewRepairs(db: DB): RepairPreview[] {
       key: 'reservation_convert',
       title: 'عرابين حُوّلت لعقود بالقيد السابق',
       explain: 'قُيّد العربون دائناً لذمم العملاء والإيجار لا يمر عليها، فبقي رصيدها سالباً والقسط لم ينقص. '
-        + 'التطبيق يعكس ذلك القيد ويسدّد بالعربون المتبقي على أقساط العقد بالترتيب بتاريخ بدايته.',
+        + 'التطبيق يعكس ذلك القيد ويسدّد بالعربون المتبقي على أقساط العقد بالترتيب بتاريخ بدايته، أو بأول يومٍ مفتوح إن وقعت في فترةٍ قُدِّم إقرارها.',
       items: legacyConverts(db).map((x) => {
         const room = depositRoom(db, x.contractId);
         return {
           id: x.rid,
           label: x.name + ' · عقد ' + (x.contractNo || 'لا يوجد'),
-          detail: 'عربون ' + fmt(x.amount) + ' · بتاريخ ' + dfmt(x.start),
+          detail: 'عربون ' + fmt(x.amount) + ' · بتاريخ ' + dfmt(correctionDate(db, x.start)),
           blocked: room < x.amount ? 'المتبقي على أقساط العقد (' + fmt(room) + ') أقل من العربون · يحتاج قراراً منك' : undefined,
         };
       }),
@@ -127,7 +127,7 @@ export function previewRepairs(db: DB): RepairPreview[] {
     {
       key: 'cancelled_deposit',
       title: t('payment.stuckDepositTitle'),
-      explain: t('payment.stuckDepositExplain'),
+      explain: t('payment.stuckDepositExplain', { date: dfmt(correctionDate(db, today())) }),
       items: stuckDeposits(db).map((x) => {
         const room = depositRoom(db, x.contractId);
         return {

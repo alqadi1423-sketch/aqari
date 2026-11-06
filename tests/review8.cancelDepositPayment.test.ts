@@ -269,6 +269,8 @@ describe('البند ٢٧ (تتمة · المراجعة الأخيرة): أدا�
     fileQ4Early(db);
     expect(isFiledDate(db, '2026-11-06')).toBe(true);
     const ids = paymentIds(db, cid);
+    // المعاينة تذكر التاريخ الذي يُرحَّل به فعلاً (المتحقق المستقل على التتمة)
+    expect(previewRepairs(db).find((p) => p.key === 'cancelled_deposit')!.explain).toContain('01/01/2027');
     expect(applyRepair(db, 'cancelled_deposit')).toBe(1);
     expect(madeSince(db, cid, ids)).toEqual([{ date: '2027-01-01', je: '2027-01-01' }]);
     expect(filedDiff(db, 2026, 4)).toEqual([]);
@@ -282,6 +284,7 @@ describe('البند ٢٧ (تتمة · المراجعة الأخيرة): أدا�
     const { db, cid, deposits } = converted();
     legacyCancel(db, deposits[0].id, '2026-02-01');
     const ids = paymentIds(db, cid);
+    expect(previewRepairs(db).find((p) => p.key === 'cancelled_deposit')!.explain).toContain('06/11/2026');
     expect(applyRepair(db, 'cancelled_deposit')).toBe(1);
     expect(madeSince(db, cid, ids)).toEqual([{ date: '2026-11-06', je: '2026-11-06' }]);
     db.close();
@@ -304,6 +307,8 @@ describe('البند ٢٧ (تتمة · المراجعة الأخيرة): أدا�
       lines: [{ account: '2450', debit: 60000, credit: 0 }, { account: '1200', debit: 0, credit: 60000 }] });
     fileVatReturn(db, 2026, 1, '2026-04-15');
     const ids = paymentIds(db, cid);
+    // المعاينة تذكر التاريخ الذي يُرحَّل به فعلاً (المتحقق المستقل على التتمة)
+    expect(previewRepairs(db).find((p) => p.key === 'reservation_convert')!.items[0].detail).toContain('06/11/2026');
     expect(applyRepair(db, 'reservation_convert')).toBe(1);
     expect(madeSince(db, cid, ids)).toEqual([{ date: '2026-11-06', je: '2026-11-06' }]);
     expect(filedDiff(db, 2026, 1)).toEqual([]);
