@@ -232,6 +232,13 @@ export function outboxCount(db: DB): number {
 /** أسباب رفضٍ مصدرها مخطط الجهاز الأقدم: قيد CHECK أو عمودٌ أو جدولٌ لا يعرفه · يُعاد واردها بعد الترقية */
 const SCHEMA_REJECT = /CHECK constraint failed|has no column named|no such column|no such table/i;
 
+/**
+ * رفضٌ دائم من السحابة لصفٍّ بعينه (المراجعة الشاملة · البند ١٥): مستندٌ يرفضه الخادم لبنيته أو لحجمه لا تفيده الإعادة، وبقاؤه في رأس
+ * الطابور كان يسدّه · فيخرج إلى سجل المرفوض بسببه، ويعود إلى الطابور إن عُدّل الصف أو بعد ترقية التطبيق
+ */
+const PERMANENT_PUSH_CODES = new Set(['INVALID_ARGUMENT', 'DOC_TOO_LARGE']);
+const PERMANENT_PUSH_REASON = 'رفضته السحابة رفضاً دائماً'; // i18n-exempt: بادئة سبب الرفض المخزَّن
+
 /** مفتاح آخر إصدارٍ أُعيد فيه المرفوض */
 export const REJECTS_REPLAYED_KEY = 'rejects_replayed_sv';
 
@@ -247,7 +254,7 @@ export function replayRejectsAfterUpgrade(db: DB, sv: number): { requeued: numbe
   db.transaction(() => {
     for (const r of rows) {
       const t = syncTable(r.tbl);
-      if (r.reason.startsWith('خارج صلاحيتك')) { // i18n-exempt: بادئة سبب الرفض المخزَّن
+      if (r.reason.startsWith('خارج صلاحيتك') || r.reason.startsWith(PERMANENT_PUSH_REASON)) { // i18n-exempt: بادئة سبب الرفض المخزَّن
         if (!t) continue;
         const where = t.pkCols.map((c) => `"${c}" = ?`).join(' AND ');
         const exists = !!db.get(`SELECT 1 FROM "${r.tbl}" WHERE ${where}`, pkParams(r.tbl, r.pk));
@@ -1615,7 +1622,15 @@ export async function syncOnce(
             // i18n-exempt: سبب الرفض المخزَّن
             [docs[i].id, r.tbl, r.pk, 'نهائي في السحابة · نسخة هذا الجهاز تختلف عنها ولم تُرفع', JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
         }
-        if (res.ok || memberDenied || finalDenied) {
+        // الرفض الدائم لصفٍّ بعينه يخرج من الطابور إلى سجل المرفوض (البند ١٥)
+        const permanent = !res.ok && !memberDenied && !finalDenied && PERMANENT_PUSH_CODES.has(res.code ?? '');
+        if (permanent) {
+          db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
+            [docs[i].id, r.tbl, r.pk, (PERMANENT_PUSH_REASON + ' · ' + (res.code ?? '') + ' ' + (res.message ?? '')).slice(0, 300),
+              // بلا محتواه: يُعاد من الصف نفسه، والمستند الكبير لا يُخزَّن مرة ثانية
+              JSON.stringify({ id: docs[i].id, t: docs[i].t, k: docs[i].k, u: docs[i].u, del: docs[i].del }), nowIso()]);
+        }
+        if (res.ok || memberDenied || finalDenied || permanent) {
           // لا يُحذف إن تغيّر الصف أثناء الرفع · يبقى للدفعة التالية بوقته الجديد
           db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND changed_at = ?`, [r.tbl, r.pk, r.changed_at]);
           if (res.ok) {

@@ -141,6 +141,31 @@ function lastBefore(docs: RemoteDoc[], cutoffMs: number): Pos | null {
   return out;
 }
 
+/**
+ * حدّ حجم المستند في Firestore (١ ميغابايت) بهامشٍ لاسمه وحقول الخادم (المراجعة الشاملة · البند ١٥): ما فوقه يرفضه الخادم دائماً،
+ * فلا يُرسل ويعود مرفوضاً بسببه فيخرج من الطابور ولا يسدّه
+ */
+export const MAX_DOC_BYTES = 1_048_576 - 8_192;
+
+/** حجم النص بترميز UTF-8 · بلا مكتبة (محرّك الجوال) */
+function utf8Bytes(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) { n += 4; i++; }
+    else n += 3;
+  }
+  return n;
+}
+
+/** حجم المستند التقريبي كما يُخزَّن (الصف وإسقاطاته في التزامٍ واحد) */
+export function docBytes(d: RemoteDoc): number {
+  const { companions, ...rest } = d;
+  return Math.max(utf8Bytes(JSON.stringify(rest)), ...(companions ?? []).map((c) => utf8Bytes(JSON.stringify(c))));
+}
+
 /** أقصى كتابات الالتزام الواحد (حدّ Firestore التاريخي ٥٠٠ · دراسة ٨) */
 export const MAX_COMMIT_WRITES = 500;
 /** أقصى طلبات الكتابة لدفعةٍ واحدة حين تُقسم عند الرفض (المراجعات الخارجية «ثالثاً أ ١٠») */
@@ -211,7 +236,11 @@ export class FirestoreRemote implements RemoteStore {
   }
 
   async write(docs: RemoteDoc[]): Promise<WriteResult[]> {
-    return this.writeWithin(docs, { left: MAX_SPLIT_REQUESTS });
+    // ما فوق حدّ الحجم لا يُرسل (البند ١٥) · ويُكتب الباقي بترتيبه
+    const big = docs.map((d) => docBytes(d) > MAX_DOC_BYTES);
+    const sent = await this.writeWithin(docs.filter((_, i) => !big[i]), { left: MAX_SPLIT_REQUESTS });
+    let j = 0;
+    return docs.map((_, i) => (big[i] ? { ok: false, code: 'DOC_TOO_LARGE', message: 'document exceeds the size limit' } : sent[j++]));
   }
 
   /**
