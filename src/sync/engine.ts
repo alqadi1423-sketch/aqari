@@ -33,6 +33,7 @@ import { filingRecordedAt } from '../domain/vatFilings';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 import { isoCmp, isoNorm } from './isoTime';
+import { redactForReport } from '../domain/redact';
 
 const nowIso = () => new Date().toISOString();
 
@@ -962,7 +963,8 @@ function reject(db: DB, doc: RemoteDoc, reason: string): void {
   if (db.get(`SELECT 1 FROM sync_rejects WHERE doc = ? AND reason = ? AND payload = ?`, [doc.id, reason, payload])) return;
   db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
     [doc.id, doc.t, doc.k, reason, payload, nowIso()]);
-  try { logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${reason}`.slice(0, 300)); } catch { /* السجل لا يعطّل */ }
+  // سبب الرفض كاملاً في sync_rejects على الجهاز، وفي سجل العمليات المزامَن محجوباً كنص العطل (المراجعة الشاملة · البند ١٧ ونظيره)
+  try { logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${redactForReport(reason)}`.slice(0, 300)); } catch { /* السجل لا يعطّل */ }
 }
 
 function applyOne(
