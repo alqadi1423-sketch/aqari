@@ -7,7 +7,7 @@ import { uid } from './ids';
 import { today } from './dates';
 import { postClaim, postClaimCollection, reverseEntryBySource } from './accounting/post';
 import { logAudit } from './audit';
-import { correctionDate } from './vatFilings';
+import { correctionDate, requireOpenPeriod } from './vatFilings';
 import { propertyMoveLocked, type Access } from './access/access';
 
 export interface ClaimInput {
@@ -20,6 +20,8 @@ export interface ClaimInput {
 /** access: صلاحية من يعدّل · المحصور لا ينقل مطالبةً قائمة إلى عقد عقارٍ آخر (قرار المالك 2026-10-09 · التحقق المستقل) */
 export function saveClaim(db: DB, input: ClaimInput, existingId?: string, opts: { access?: Access } = {}): string {
   if (!input.contractId || !input.amountHalalas) throw new Error('اختر العقد وأدخل المبلغ');
+  // المطالبة الجديدة قيدٌ بتاريخها · وتعديل القائمة قيد تصحيحٍ بتاريخ التصحيح (#29)
+  if (!existingId) requireOpenPeriod(db, input.date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   return db.transaction(() => {
     if (existingId) {
       if (opts.access && propertyMoveLocked(opts.access, true)) {
@@ -69,6 +71,7 @@ export function saveClaim(db: DB, input: ClaimInput, existingId?: string, opts: 
 
 /** تحصيل مطالبة مفتوحة */
 export function collectClaim(db: DB, id: string, date: string = today()): void {
+  requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   db.transaction(() => {
     const cl = db.get<{ amount_halalas: number; reason: string; status: string }>(
       `SELECT amount_halalas, reason, status FROM claims WHERE id = ?`, [id]

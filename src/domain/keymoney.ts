@@ -8,6 +8,7 @@ import { today } from './dates';
 import { postKeyMoneyCommission } from './accounting/post';
 import { keyMoneyBlockReason, getContract } from './contracts/rules';
 import { logAudit } from './audit';
+import { requireOpenPeriod } from './vatFilings';
 
 export interface KeyMoneyInput {
   unitId: string;
@@ -32,6 +33,7 @@ export function recordKeyMoneyDeal(db: DB, input: KeyMoneyInput): string {
   }
   if (input.commissionHalalas > 0 && input.method === 'bank' && !input.bankId)
     throw new Error('اختر حساباً بنكياً أو بدِّل لنقداً');
+  if (input.commissionHalalas > 0) requireOpenPeriod(db, input.date || today()); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   return db.transaction(() => {
     const id = uid();
     const date = input.date || today();

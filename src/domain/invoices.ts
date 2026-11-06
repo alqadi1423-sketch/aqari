@@ -10,7 +10,7 @@ import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryB
 import { t } from '../i18n';
 import { lineTaxCode, type TaxCode } from './taxCode';
 import { lastReversedOf, repostDate } from './accounting/repost';
-import { isFiledDate } from './vatFilings';
+import { isFiledDate, requireOpenPeriod } from './vatFilings';
 import { mulQty, pctOf } from './money';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
@@ -221,6 +221,7 @@ function postCollection(db: DB, id: string, v: PayRow, pay: { method: InvoicePay
  * والفاتورة «مدفوعة» بتاريخ التحصيل وطريقته. فاتورةٌ مسودة لا تُحصَّل (لا ذمة لها بعد).
  */
 export function payInvoice(db: DB, id: string, pay: { method: InvoicePayMethod; bankId: string | null; date: string }): void {
+  requireOpenPeriod(db, pay.date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   db.transaction(() => {
     const v = db.get<PayRow & { status: string; journal_entry_id: string | null; payment_journal_entry_id: string | null }>(
       `SELECT no, customer_name, total_halalas, status, journal_entry_id, payment_journal_entry_id FROM invoices WHERE id = ? AND deleted_at IS NULL`, [id]);

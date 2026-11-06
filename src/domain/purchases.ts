@@ -11,7 +11,7 @@ import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryB
 import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
-import { correctionDate, isFiledDate } from './vatFilings';
+import { correctionDate, isFiledDate, requireOpenPeriod } from './vatFilings';
 import { t } from '../i18n';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber } from './numbering';
@@ -247,6 +247,7 @@ export function payPurchase(
   bankId: string | null,
   payDate: string = today()
 ): void {
+  requireOpenPeriod(db, payDate); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   db.transaction(() => {
     const p = db.get<{
       no: string; supplier_name: string; category: string; total_halalas: number; paid: number;
@@ -291,6 +292,7 @@ export interface PurchasePayLine {
  * مجموع الأسطر يجب أن يساوي إجمالي الفاتورة، وكل سطر غير نقدي يسجّل حركته البنكية.
  */
 export function payPurchaseSplit(db: DB, id: string, lines: PurchasePayLine[], payDate: string = today()): void {
+  requireOpenPeriod(db, payDate); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   db.transaction(() => {
     const p = db.get<{
       no: string; supplier_name: string; category: string; total_halalas: number; paid: number;
@@ -433,6 +435,7 @@ export function markVatFiled(db: DB, purchaseId: string): void {
 
 /** استرداد الضريبة نقداً: مدين 1100 / دائن 1270 · يُقفَل رصيد الفاتورة في 1270 */
 export function markVatRefunded(db: DB, purchaseId: string, date: string): void {
+  requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   const p = db.get<{ no: string; supplier_name: string; tax_halalas: number; tax_status: string; refund_status: string }>(
     `SELECT no, supplier_name, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ? AND deleted_at IS NULL`, [purchaseId]);
   if (!p) throw new Error('تعذّر العثور على الفاتورة');
@@ -457,6 +460,7 @@ export function markVatRefunded(db: DB, purchaseId: string, date: string): void 
 
 /** رفض الاسترداد: الضريبة تصير جزءاً من التكلفة · مدين مصروف الفئة / دائن 1270 */
 export function markVatRejected(db: DB, purchaseId: string, date: string): void {
+  requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   const p = db.get<{ no: string; supplier_name: string; category: string; tax_halalas: number; tax_status: string; refund_status: string }>(
     `SELECT no, supplier_name, category, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ? AND deleted_at IS NULL`, [purchaseId]);
   if (!p) throw new Error('تعذّر العثور على الفاتورة');

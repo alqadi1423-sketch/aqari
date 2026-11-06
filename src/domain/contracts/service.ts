@@ -3,7 +3,7 @@
  * كل دالة تتم بمعاملة واحدة، والترحيل المحاسبي عبر مسار postEvent الواحد.
  */
 import { contractDims } from '../accounting/dimensions';
-import { correctionDate, isFiledDate } from '../vatFilings';
+import { correctionDate, isFiledDate, requireOpenPeriod } from '../vatFilings';
 import type { DB } from '../../db/adapter';
 import { requireCash } from '../cashGuard';
 import type { ScheduleRow } from '../pdf/parseEjar';
@@ -352,6 +352,7 @@ export function applyTenantCredit(db: DB, contractId: string, input: { installme
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
   const amount = Math.round(input.amountHalalas);
   if (!(amount > 0)) throw new RuleViolation(t('credit.amountRequired'));
+  requireOpenPeriod(db, input.date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   if (amount > tenantCreditOf(db, contractId)) throw new RuleViolation(t('credit.overBalance'));
   const inst = openInstallments(db, contractId).find((i) => i.id === input.installmentId);
   if (!inst || amount > inst.remaining) throw new RuleViolation(t('credit.overRemaining'));

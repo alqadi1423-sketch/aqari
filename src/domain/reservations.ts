@@ -9,6 +9,7 @@ import { today, dfmt } from './dates';
 import { postReservationDeposit, postReservationForfeit, postReservationRefund } from './accounting/post';
 import { unitActiveReservation, unitCurrentContract } from './contracts/rules';
 import { logAudit } from './audit';
+import { requireOpenPeriod } from './vatFilings';
 
 export interface ReservationInput {
   unitId: string;
@@ -45,6 +46,7 @@ export function createReservation(db: DB, input: ReservationInput): string {
  * العربون يُسوّى مرة واحدة: المحوَّل لعقد أو المسوّى قبلُ يُرفض.
  */
 export function cancelReservation(db: DB, id: string, forfeitDeposit: boolean, date: string = today()): void {
+  requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   db.transaction(() => {
     const r = db.get<{ name: string; deposit_halalas: number; status: string; deposit_outcome: string | null }>(
       `SELECT name, deposit_halalas, status, deposit_outcome FROM reservations WHERE id = ?`, [id]

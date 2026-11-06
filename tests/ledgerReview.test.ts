@@ -21,6 +21,7 @@ import { createBackup, tableCounts } from '@/domain/backup/create';
 import { prepareRestore, commitRestore, abortRestore } from '@/domain/backup/restore';
 import { nodeHasher } from '@/files/nodeFs';
 import { planLedgerRepair, applyLedgerRepair, unbookedDiscounts, bookDiscount } from '@/domain/ledgerReview';
+import { fileVatReturn, correctionDate, isFiledDate } from '@/domain/vatFilings';
 import { INSTALLMENT_DISCOUNT_SQL, DISCOUNT_AFTER_DUE, DISCOUNT_REDUCES_INSTALLMENT } from '@/domain/contracts/installments';
 import { enableSync, syncOnce } from '@/sync/engine';
 import { getMeta } from '@/repos/settings';
@@ -292,6 +293,18 @@ describe('خصومات بلا سطر في الدفتر', () => {
     expect(db.get(`SELECT id FROM audit_log WHERE entity_type = 'خصم بعد الاستحقاق بأثر رجعي'`)).toBeTruthy();
     expect(() => bookDiscount(db, pid, DISCOUNT_AFTER_DUE)).toThrow('ربما حُدّد نوعه من قبل');
     expect(semanticIssues(db)).toEqual([]);
+    db.close();
+  });
+
+  test('المراجعة الشاملة · البند ٩ (نظيره): خصمٌ بأثر رجعي لدفعةٍ في ربعٍ قُدِّم إقراره يُقيَّد بتاريخ التصحيح لا في الفترة المجمَّدة', () => {
+    const db = memDb();
+    const k = contract(db, 100000, 12);
+    const pid = appPay(db, k.cid, k.insts[0], '2026-02-05', 80000, 20000);
+    fileVatReturn(db, 2026, 1, '2026-04-15');
+    bookDiscount(db, pid, DISCOUNT_AFTER_DUE);
+    const e = db.get<{ date: string }>(`SELECT date FROM journal_entries WHERE src_type = 'discount'`)!;
+    expect(e.date).toBe(correctionDate(db, '2026-02-05'));
+    expect(isFiledDate(db, e.date)).toBe(false);
     db.close();
   });
 

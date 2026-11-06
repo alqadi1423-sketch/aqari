@@ -204,6 +204,7 @@ export function recordManualBankTx(
   if (a.kind === 'deposit') return depositCashToBank(db, { bankId: a.bankId, amountHalalas: a.amountHalalas, date: a.date, notes: a.descr });
   if (a.kind === 'withdraw') return withdrawCashFromBank(db, { bankId: a.bankId, amountHalalas: a.amountHalalas, date: a.date, notes: a.descr });
   requirePositive(a.amountHalalas);
+  requireOpenPeriod(db, a.date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   const descr = a.descr.trim();
   if (!descr) throw new Error(t('bankTx.descrRequired'));
   const name = bankName(db, a.bankId);
