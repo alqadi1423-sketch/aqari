@@ -50,16 +50,33 @@ const WEEKLY_ID = 'weekly-export-reminder';
  * إلغاء التذكيرات المجدولة عند النظام وسجلّها (المراجعة الخارجية ٧ · النتيجة ٣٠): بعد التفريغ والإزالة والخروج كانت تبقى فتُظهر
  * أسماء وحدات حسابٍ لم يعد على الجهاز حتى يُفتح التطبيق · وتُعاد جدولتها من بيانات الجهاز عند الإقلاع وبعد كل تغيير
  */
-export async function cancelAllNotifications(db?: DB | null): Promise<void> {
-  try { await Notifications.cancelAllScheduledNotificationsAsync(); } catch { /* لا إذن */ }
-  try { db?.run(`DELETE FROM scheduled_notifications`); } catch { /* مغلقة */ }
+export function cancelAllNotifications(db?: DB | null): Promise<void> {
+  return serial(async () => {
+    try { await Notifications.cancelAllScheduledNotificationsAsync(); } catch { /* لا إذن */ }
+    try { db?.run(`DELETE FROM scheduled_notifications`); } catch { /* مغلقة */ }
+  });
+}
+
+/**
+ * تشغيلٌ واحد في كل لحظة (المراجعة الشاملة · البند ١٩): جدولتان متزامنتان كانتا تمسحان ثم تجدولان فتتداخلان بعد المسح فتتكرر
+ * التنبيهات · فكل تشغيلٍ ينتظر الذي قبله، وفشل أحدها لا يوقف ما بعده
+ */
+let chain: Promise<void> = Promise.resolve();
+function serial(fn: () => Promise<void>): Promise<void> {
+  const run = chain.then(fn, fn);
+  chain = run.catch(() => undefined);
+  return run;
 }
 
 /**
  * إعادة الجدولة الكاملة · تُستدعى بعد كل تغيير في العقود أو الدفعات
  * أو المستندات أو الإعدادات، وعند إقلاع التطبيق.
  */
-export async function rescheduleAllNotifications(db: DB): Promise<void> {
+export function rescheduleAllNotifications(db: DB): Promise<void> {
+  return serial(() => rescheduleNow(db));
+}
+
+async function rescheduleNow(db: DB): Promise<void> {
   const ok = await ensurePermission();
   if (!ok) return;
   await ensureChannel();
