@@ -6,6 +6,7 @@
  * تبقى صحيحة لا كسرية في Firestore كما هي في القاعدة المحلية.
  */
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, WriteResult } from '../sync/types';
+import { isoMs } from '../sync/isoTime';
 import { planBlocks, planInvoiceSeq, FirstIssueByOwnerError, type BlockRequest, type ReservedBlock, MAX_COUNTER_STEPS, CounterBehindError } from '../domain/numbering';
 import type { DB } from '../db/adapter';
 import { OWNER_ACCESS, type Access } from '../domain/access/access';
@@ -119,6 +120,27 @@ export interface FirestoreOptions {
   fetchImpl?: typeof fetch;
 }
 
+/**
+ * نافذة أمان السحب (المراجعة الشاملة · البند ٢): ts يملؤه الخادم بوقت الطلب لا بوقت الالتزام، فمستند عضوٍ قواعده ثقيلة يظهر
+ * بعد مستندٍ ts أكبر منه · والالتزام لا يتجاوز مهلة الطلب (٦٠ ثانية)، فما قبل وقت القراءة بها ظاهرٌ كله · وما بعده يُعاد سحبه
+ * في الدورة التالية، وتكراره آمن (stageInbox وsameContent وisEcho)
+ */
+export const PULL_SAFETY_MS = 60_000;
+
+type Pos = { ts: string; id: string };
+
+/** آخر مستندٍ في الصفحة وقته قبل الحد (الصفحة مرتبة بالوقت) */
+function lastBefore(docs: RemoteDoc[], cutoffMs: number): Pos | null {
+  let out: Pos | null = null;
+  for (const d of docs) {
+    if (!d.ts) continue;
+    const t = isoMs(d.ts);
+    if (!Number.isFinite(t) || t > cutoffMs) break;
+    out = { ts: d.ts, id: d.id };
+  }
+  return out;
+}
+
 /** أقصى كتابات الالتزام الواحد (حدّ Firestore التاريخي ٥٠٠ · دراسة ٨) */
 export const MAX_COMMIT_WRITES = 500;
 /** أقصى طلبات الكتابة لدفعةٍ واحدة حين تُقسم عند الرفض (المراجعات الخارجية «ثالثاً أ ١٠») */
@@ -180,6 +202,8 @@ export class FirestoreRemote implements RemoteStore {
    */
   /** وقت الالتزام في الخادم مقابل منتصف زمن الطلب على الجهاز · لفرق الساعة (المراجعة ٤.١٦) */
   private lastClock: { serverMs: number; localMs: number } | null = null;
+  /** آخر فرقٍ مقاس لساعة الخادم عن الجهاز · لحد السحب حين يغيب وقت القراءة (البند ٢) */
+  private skewMs = 0;
   clockSample(): { serverMs: number; localMs: number } | null {
     const s = this.lastClock;
     this.lastClock = null;
@@ -219,8 +243,11 @@ export class FirestoreRemote implements RemoteStore {
           };
         }),
       }) as { commitTime?: string };
-      const commit = res && typeof res.commitTime === 'string' ? Date.parse(res.commitTime) : NaN;
-      if (Number.isFinite(commit)) this.lastClock = { serverMs: commit, localMs: Math.round((t0 + Date.now()) / 2) };
+      const commit = res && typeof res.commitTime === 'string' ? isoMs(res.commitTime) : NaN;
+      if (Number.isFinite(commit)) {
+        this.lastClock = { serverMs: commit, localMs: Math.round((t0 + Date.now()) / 2) };
+        this.skewMs = this.lastClock.serverMs - this.lastClock.localMs;
+      }
       return docs.map(() => ({ ok: true, code: 'OK' }));
     } catch (e) {
       // ٤٠٠ (التزامٌ أكبر مما يقبله الخادم) يُقسم كما يُقسم ٤٠٣ (قرار المالك 2026-10-09) · والصف الواحد بـ٤٠٠ خطأٌ حقيقي
@@ -426,8 +453,11 @@ export class FirestoreRemote implements RemoteStore {
     return out;
   }
 
-  /** صفحة واحدة من الصفوف بعد مؤشر · بشرط رموز اختيارياً (array-contains-any حتى ٣٠ رمزاً) */
-  private async page(cursor: Cursor | null, limit: number, tokens: string[] | null): Promise<RemoteDoc[]> {
+  /**
+   * صفحة واحدة من الصفوف بعد مؤشر · بشرط رموز اختيارياً (array-contains-any حتى ٣٠ رمزاً) · ومعها حدّ الموضع الآمن:
+   * وقت القراءة في الخادم ناقص نافذة الأمان (البند ٢)، وبغيابه ساعة الجهاز مصحَّحةً بآخر فرقٍ مقاس
+   */
+  private async page(cursor: Pos | null, limit: number, tokens: string[] | null): Promise<{ docs: RemoteDoc[]; cutoffMs: number }> {
     const structuredQuery: Record<string, unknown> = {
       from: [{ collectionId: 'rows' }],
       orderBy: [{ field: { fieldPath: 'ts' }, direction: 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
@@ -443,37 +473,55 @@ export class FirestoreRemote implements RemoteStore {
       };
     }
     const rows = (await this.call(`${this.root}/${this.relPath}:runQuery`, { structuredQuery })) as
-      Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
+      Array<{ document?: { name: string; fields: Record<string, FsValue> }; readTime?: string }>;
     const docs: RemoteDoc[] = [];
+    let readMs = NaN;
     for (const r of rows) {
+      if (typeof r.readTime === 'string' && !Number.isFinite(readMs)) readMs = isoMs(r.readTime);
       if (!r.document) continue;
       const id = r.document.name.slice(r.document.name.lastIndexOf('/') + 1);
       docs.push(fieldsToDoc(id, r.document.fields));
     }
-    return docs;
+    const serverNow = Number.isFinite(readMs) ? readMs : Date.now() + this.skewMs;
+    return { docs, cutoffMs: serverNow - PULL_SAFETY_MS };
+  }
+
+  /** المؤشر المحفوظ: الموضع الآمن لا آخر ما قُرئ (البند ٢) · ومؤشرٌ محفوظ قبل الإصلاح بلا موضعٍ آمن هو موضعه */
+  durableCursor(c: Cursor): Cursor | null {
+    if (c.safe === undefined) return c;
+    return c.safe;
   }
 
   async pull(cursor: Cursor | null, limit: number): Promise<PullPage> {
     const tokens = this.o.memberTokens?.() ?? null;
+    // الموضع الآمن الذي بلغته الصفحات السابقة · ومؤشرٌ بلا موضعٍ آمن (من الدورة السابقة أو قبل الإصلاح) هو موضعه
+    const prevSafe = cursor ? (cursor.safe !== undefined ? cursor.safe : cursor) : null;
     if (!tokens) {
-      const docs = await this.page(cursor, limit, null);
+      const { docs, cutoffMs } = await this.page(cursor, limit, null);
       const last = docs[docs.length - 1];
+      const reached = lastBefore(docs, cutoffMs);
+      const safe = reached ?? (prevSafe ? { ts: prevSafe.ts, id: prevSafe.id } : null);
+      const next = last && last.ts ? { ts: last.ts, id: last.id, safe } : cursor ? { ts: cursor.ts, id: cursor.id, safe } : null;
       // المالك يقرأ المستندات الكاملة · والإسقاط بلا مبالغ (t~pub) للأعضاء وحدهم فلا يُطبَّق عنده
       // (كان يُرفض «جدولاً خارج المزامنة» فيظهر مرفوضاً على كل تثبيت جديد)
-      return { docs: docs.filter((d) => !d.t.endsWith('~pub')), next: last && last.ts ? { ts: last.ts, id: last.id } : cursor, more: docs.length >= limit };
+      return { docs: docs.filter((d) => !d.t.endsWith('~pub')), next, more: docs.length >= limit };
     }
     // العضو: استعلام لكل ٣٠ رمزاً بمؤشره · والإسقاط يُحوَّل إلى جدوله ما لم يقرأ العضو المستند الكامل
     const full = this.o.fullReadTables?.() ?? new Set<string>();
-    const parts: Record<string, Cursor> = { ...(cursor?.parts ?? {}) };
+    const parts: Record<string, Pos> = { ...(cursor?.parts ?? {}) };
+    // والموضع الآمن لكل دفعة رموز كذلك · ودفعةٌ لا موضع آمناً لها تبدأ الدورة التالية من أولها
+    const safeParts: Record<string, Pos> = { ...(prevSafe?.parts ?? {}) };
     const out: RemoteDoc[] = [];
     let more = false;
     for (let i = 0; i * 30 < Math.max(tokens.length, 1); i++) {
       const chunk = tokens.slice(i * 30, i * 30 + 30);
       if (!chunk.length) break;
       const key = chunk.join(',');
-      const docs = await this.page(parts[key] ?? null, limit, chunk);
+      const { docs, cutoffMs } = await this.page(parts[key] ?? null, limit, chunk);
       const last = docs[docs.length - 1];
       if (last && last.ts) parts[key] = { ts: last.ts, id: last.id };
+      const reached = lastBefore(docs, cutoffMs);
+      if (reached) safeParts[key] = reached;
       if (docs.length >= limit) more = true;
       for (const d of docs) {
         const pub = d.t.endsWith('~pub');
@@ -484,6 +532,6 @@ export class FirestoreRemote implements RemoteStore {
       }
     }
     const last = out[out.length - 1];
-    return { docs: out, next: { ts: last?.ts ?? cursor?.ts ?? '', id: last?.id ?? cursor?.id ?? '', parts }, more };
+    return { docs: out, next: { ts: last?.ts ?? cursor?.ts ?? '', id: last?.id ?? cursor?.id ?? '', parts, safe: { ts: '', id: '', parts: safeParts } }, more };
   }
 }

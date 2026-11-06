@@ -54,6 +54,11 @@ export interface Cursor {
   id: string;
   /** سحب العضو: مؤشر لكل دفعة رموز (cloud/firestore.ts) */
   parts?: Record<string, { ts: string; id: string }>;
+  /**
+   * الموضع الذي يُحفظ فتبدأ منه الدورة التالية (المراجعة الشاملة · البند ٢): آخر ما قُرئ ووقته قبل وقت القراءة في الخادم
+   * بنافذة الأمان · ts وقت الطلب لا الالتزام، فما بعده قد يظهر بعده مستندٌ أقدم منه · null: من البداية · وغيابه: المؤشر نفسه
+   */
+  safe?: { ts: string; id: string; parts?: Record<string, { ts: string; id: string }> } | null;
 }
 
 export interface WriteResult {
@@ -70,6 +75,10 @@ export interface RemoteStore {
    * (الصفحة قد تقصر عن الحد وقد بقي شيء حين يُهمل منها ما ليس للجهاز، كالإسقاط عند المالك)
    */
   pull(cursor: Cursor | null, limit: number): Promise<PullPage>;
+  /**
+   * المؤشر الذي يُحفظ بعد الصفحة (المراجعة الشاملة · البند ٢) · والتقليب داخل الدورة بالمؤشر نفسه · غيابه: يُحفظ المؤشر كما هو
+   */
+  durableCursor?(c: Cursor): Cursor | null;
   /** كتابة غير ذرية · نتيجة لكل مستند */
   write(docs: RemoteDoc[]): Promise<WriteResult[]>;
   /**

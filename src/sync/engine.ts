@@ -1339,7 +1339,8 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, e
     db.run(`DELETE FROM sync_inbox`);
     db.run(`DELETE FROM sync_outbox`);
     setSyncState(db, 'uid', uid);
-    setSyncState(db, 'cursor', plan.cursor ? JSON.stringify(plan.cursor) : null);
+    // آخر ما قُرئ لا موضعه الآمن: الاستبدال يغلب ما قبله في السحابة فلا يعود (البند ٢ للدورات لا للاعتماد)
+    setSyncState(db, 'cursor', plan.cursor ? JSON.stringify({ ...plan.cursor, safe: undefined }) : null);
     setSyncState(db, 'joining', null);
     setSyncState(db, 'restored_unadopted', null);
     // عهد المسح الحالي في السحابة يُسجَّل مع الاعتماد ذرياً (قاعدة المالك ٢٠٢٦-١٠-٠٥) · فلا يُفرَّغ الجهاز بعدها
@@ -1493,7 +1494,13 @@ export async function syncOnce(
       stageInbox(db, fresh);
       pulled += fresh.length;
     }
-    if (next) { cursor = next; setSyncState(db, 'cursor', JSON.stringify(next)); }
+    // التقليب داخل الدورة بالمؤشر، والمحفوظ موضعه الآمن (المراجعة الشاملة · البند ٢): ما قبل وقت القراءة بنافذة الأمان ·
+    // فمستندٌ تأخر التزامه عن وقته يُسحب في الدورة التالية ولا يُتخطى
+    if (next) {
+      cursor = next;
+      const keep = remote.durableCursor ? remote.durableCursor(next) : next;
+      setSyncState(db, 'cursor', keep ? JSON.stringify(keep) : null);
+    }
     if (!(more ?? docs.length >= PULL_PAGE)) break;
   }
 

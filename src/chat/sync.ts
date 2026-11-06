@@ -8,7 +8,7 @@
 import type { DB } from '../db/adapter';
 import { getSyncState, setSyncState } from '../sync/engine';
 import type { ChatRemote } from './remote';
-import type { ChatMe } from './types';
+import { normTs, type ChatMe } from './types';
 import {
   applyRemoteMessage, applyRemoteThread, heldThreads, markMessageRejected, markSent, markThreadPushed, markThreadRejected,
   pendingMessages, pendingThreads, forgetObserved, joinFloor, applyState, stateCursor, readToPush, markReadPushed, isUnsentLocal, isRejectedLocal, staleEdits, markEditUnreadable,
@@ -67,9 +67,25 @@ async function pullThread(db: DB, remote: ChatRemote, threadId: string, me: stri
   }
 }
 
+/**
+ * نافذة أمان السحب (المراجعة الشاملة · البند ٢): وقت الرسالة وقت طلبها في الخادم لا وقت التزامها، فرسالةٌ قواعدها أثقل تظهر بعد
+ * رسالةٍ وقتها أكبر منه · فيُعاد الاستعلام من المؤشر ناقص النافذة في كل سحب، والمكرَّر يُعرف برقمه فلا يتكرر (applyRemoteMessage)
+ */
+export const CHAT_PULL_SAFETY_MS = 60_000;
+
+/** المؤشر ناقص النافذة بصيغة وقت الخادم نفسها (أجزاء المليار) · والثواني وحدها تُحسب، فمحرّك الجوال لا يقرأ أكثر من ثلاثة أجزاء */
+function rewind(cursor: string | null): string | null {
+  if (!cursor) return cursor;
+  const m = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\.(\d{9})Z$/.exec(normTs(cursor));
+  if (!m) return cursor;
+  const t = Date.parse(m[1] + 'Z');
+  return Number.isFinite(t) ? new Date(t - CHAT_PULL_SAFETY_MS).toISOString().slice(0, 19) + '.' + m[2] + 'Z' : cursor;
+}
+
 async function pullThreadOnce(db: DB, remote: ChatRemote, threadId: string, me: string): Promise<number> {
   const floor = joinFloor(db, threadId, me);
-  let cursor = threadCursor(db, threadId);
+  let cursor = rewind(threadCursor(db, threadId));
+  // ولا يسبق وقتَ انضمامي (المجموعة «من لحظة انضمامه»)
   if (floor && (!cursor || cursor < floor)) cursor = floor;
   let n = 0;
   // الصفحة التالية تبدأ بعد آخر (وقتٍ، رقمٍ) أُخذ لا عند وقته: صفحةٌ كاملة بوقتٍ واحد لا توقف السحب (المراجعة الخارجية ٧ · النتيجة ٤٠)

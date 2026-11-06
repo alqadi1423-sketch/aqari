@@ -922,3 +922,20 @@ test('#٦ محادثة العقار حين يكون فيها عضو غير ال�
   await chatCancelTask(a, s, 'ORG', tid, m1, cloud.remote(OWNER.uid));
   expect(myTasks(a, OWNER.uid).map((x) => [x.title, x.cx])).toEqual([['تبقى', false], ['تُلغى', true]]);
 });
+
+test('المراجعة الشاملة · البند ٢: رسالةٌ تأخر التزامها عن وقتها (وقتها قبل آخر ما سُحب) تُسحب في الدورة التالية ولا يتخطاها المؤشر', async () => {
+  const cloud = fakeCloud();
+  const a = memDb();
+  const b = memDb();
+  const tid = openDirect(a, OWNER.uid, MEMBER.uid);
+  sendLocal(a, tid, OWNER, 'رسالة مصطنعة ظاهرة');
+  await chatSyncOnce(a, cloud.remote(OWNER.uid), OWNER);
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER);
+  expect(listMessages(b, tid).map((m) => m.body)).toEqual(['رسالة مصطنعة ظاهرة']);
+  // التزامٌ بطيء: وقت الخادم قبل الرسالة الظاهرة بخمس ثوانٍ ولم يظهر إلا الآن
+  const shown = cloud.msgs.get(tid)![0];
+  const late = new Date(Date.parse(shown.ts) - 5000).toISOString();
+  cloud.msgs.get(tid)!.unshift({ ...shown, id: 'late-msg-1', body: 'رسالة مصطنعة متأخرة', ts: late });
+  await chatSyncOnce(b, cloud.remote(MEMBER.uid), MEMBER, { threadId: tid });
+  expect(listMessages(b, tid).map((m) => m.body).sort()).toEqual(['رسالة مصطنعة ظاهرة', 'رسالة مصطنعة متأخرة'].sort());
+});
