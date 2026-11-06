@@ -64,15 +64,11 @@ function orphanSql(db: DB): string {
 const MARKED = (alias: string) =>
   `EXISTS (SELECT 1 FROM audit_log a WHERE a.entity_type = '${KEPT_REVIEW_ENTITY}' AND json_extract(a.after_json, '$.id') = ${alias}.id)`;
 
-/**
- * صافي حساب (مدين موجب) في القيود المعلَّمة وعكوسها · يُطرح من رصيد الدفتر قبل مطابقته بالمستندات · و«creditNotCarried» يقصره على
- * ما ضمّته الاستعادة ولم يُحمل أثره في رصيد المستأجر الدائن (markForReview)
- */
-export function markedNetOn(db: DB, account: string, only?: 'creditNotCarried'): number {
+/** صافي حساب (مدين موجب) في القيود المعلَّمة وعكوسها · يُطرح من رصيد الدفتر قبل مطابقته بالمستندات */
+export function markedNetOn(db: DB, account: string): number {
   // المعلَّم يُجمع مرة ثم عكوسه · لا مسح لسجل العمليات عند كل سطر
   return Number(db.get<{ s: number }>(
-    `WITH m AS (SELECT DISTINCT json_extract(after_json, '$.id') AS id FROM audit_log WHERE entity_type = ?
-                ${only ? `AND json_extract(after_json, '$.${only}') = 1` : ''}),
+    `WITH m AS (SELECT DISTINCT json_extract(after_json, '$.id') AS id FROM audit_log WHERE entity_type = ?),
           ids AS (SELECT id FROM m UNION SELECT e.reversed_by FROM journal_entries e JOIN m ON m.id = e.id WHERE e.reversed_by IS NOT NULL)
      SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS s
      FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
@@ -105,13 +101,8 @@ export function isOrphanEntry(db: DB, entryId: string): boolean {
   return !!db.get(`SELECT 1 FROM journal_entries e WHERE e.id = ? AND e.src_type IS NOT NULL AND ${orphanSql(db)}`, [entryId]);
 }
 
-/**
- * creditNotCarried: قيدٌ ضمّته الاستعادة ورصيد المستأجر الدائن رقمٌ على صفّه لا يُحمل معه (keepPosted.ts)، فأثره في 2410 خارج مطابقة
- * الرصيد بسجلات المستأجرين (integrity.ts) · لا ما وصل بالمزامنة ومستنده محذوف، فرصيد مستأجره على صفّه كما كتبه جهازه
- */
-export function markForReview(db: DB, entry: { id: string; no: string }, reason: string, opts?: { creditNotCarried?: boolean }): void {
-  logAudit(db, 'النسخ الاحتياطي', 'create', KEPT_REVIEW_ENTITY, entry.no, undefined,
-    { id: entry.id, no: entry.no, reason, ...(opts?.creditNotCarried ? { creditNotCarried: true } : {}) });
+export function markForReview(db: DB, entry: { id: string; no: string }, reason: string): void {
+  logAudit(db, 'النسخ الاحتياطي', 'create', KEPT_REVIEW_ENTITY, entry.no, undefined, { id: entry.id, no: entry.no, reason });
 }
 
 /** تعليم ما غاب مستنده · بعد اكتمال تطبيق الوارد · يعيد عدد ما عُلِّم */
