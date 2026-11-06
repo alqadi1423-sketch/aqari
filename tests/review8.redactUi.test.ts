@@ -32,3 +32,11 @@ test('١٧ ونظيره: رفض الوارد في سجل العمليات الم
   expect(db.get<{ r: string }>(`SELECT reason AS r FROM sync_rejects WHERE pk = 'T17'`)!.r).toMatch(/مفتاح الصف/);
   db.close();
 });
+
+test('١٨ مشاركة سبب تعذّر الترقية منقّحة', () => {
+  const g = src('src/ui/UpgradeGate.tsx');
+  const share = g.split('\n').filter((l) => l.includes('Share.share('));
+  expect(share.length).toBeGreaterThan(0);
+  for (const l of share) expect(l).toMatch(/Share\.share\(\{ message: redactForReport\(/);
+  expect(redactForReport('تعذّرت ترقية بيانات «مكتب مصطنع» · 0500000018')).not.toMatch(/مكتب مصطنع|0500000018/);
+});

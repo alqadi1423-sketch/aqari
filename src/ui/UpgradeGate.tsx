@@ -15,6 +15,7 @@ import { C, FONT, FONT_BOLD } from './theme';
 import { rawAppDb, clearUpgrade } from '../db/expoAdapter';
 import { upgradeState, makePreUpgradeBackup } from '../domain/backup/upgrade';
 import { appBackupEnv } from '../services/backupService';
+import { redactForReport } from '../domain/redact';
 import { cancelSource, isCancelled, progressView, progressLabel, progressLine, StallWatch, type ProgressInfo } from '../domain/progress';
 
 type Phase = 'ready' | 'backup' | 'failed';
@@ -119,7 +120,8 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
           <Text style={[txt(13, C.ink), { marginTop: 12, lineHeight: 22 }]}>{reason}</Text>
           <View style={{ marginTop: 18, gap: 10 }}>
             <Btn primary title="إعادة المحاولة" onPress={run} />
-            {cancelled ? null : <Btn title="مشاركة السبب" onPress={() => { Share.share({ message: reason }).catch(() => {}); }} />}
+            {/* ما يُشارك خارج الجهاز محجوبةٌ بياناته كتقرير الخطأ (المراجعة الشاملة · البند ١٨) */}
+            {cancelled ? null : <Btn title="مشاركة السبب" onPress={() => { Share.share({ message: redactForReport(reason) }).catch(() => {}); }} />}
           </View>
         </View>
       )}
