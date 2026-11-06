@@ -12,6 +12,7 @@ import { CYCLE_MONTHS } from './contracts/installments';
 import { recomputeInstallments } from './contracts/paid';
 import { allocateDeposit, depositRoom } from './contracts/service';
 import { t } from '../i18n';
+import { correctionDate } from './vatFilings';
 
 export interface RepairItem { id: string; label: string; detail: string; blocked?: string }
 export interface RepairPreview { key: RepairKey; title: string; explain: string; items: RepairItem[] }
@@ -147,15 +148,18 @@ export function applyRepair(db: DB, key: RepairKey): number {
     if (key === 'reservation_convert') {
       for (const x of legacyConverts(db)) {
         if (depositRoom(db, x.contractId) < x.amount) continue;
+        // بداية العقد في ربعٍ قُدِّم إقراره: التسديد بأول يومٍ مفتوح لا بها (المراجعة الشاملة · البند ٢٧ تتمة): لا يتغيّر إقرارٌ مقدَّم
+        const date = correctionDate(db, x.start);
         reverseEntryById(db, x.entryId, 'تصحيح تحويل العربون (المراجعة ٤.٤) · ' + x.name);
-        allocateDeposit(db, { rsvId: x.rid, amount: x.amount, contractId: x.contractId, contractNo: x.contractNo, tenant: x.tenant, date: x.start });
-        db.run(`UPDATE reservations SET deposit_outcome = 'محوَّل', deposit_settled_date = ? WHERE id = ?`, [x.start, x.rid]);
-        logAudit(db, 'العقود', 'update', 'تصحيح تحويل عربون', x.name, { entry: x.entryId }, { amount: x.amount, date: x.start });
+        allocateDeposit(db, { rsvId: x.rid, amount: x.amount, contractId: x.contractId, contractNo: x.contractNo, tenant: x.tenant, date });
+        db.run(`UPDATE reservations SET deposit_outcome = 'محوَّل', deposit_settled_date = ? WHERE id = ?`, [date, x.rid]);
+        logAudit(db, 'العقود', 'update', 'تصحيح تحويل عربون', x.name, { entry: x.entryId }, { amount: x.amount, date });
         n++;
       }
     } else if (key === 'cancelled_deposit') {
       // يسدّد بالعالق المتبقي على أقساط العقد بالترتيب، بقيد تحويل العربون نفسه (مدين 2450 / دائن الإيراد) بتاريخ اليوم · والملغاة تبقى
-      const date = today();
+      // واليوم في ربعٍ قُدِّم إقراره (قُدِّم مبكراً قبل البند ٨ أو وصل من جهازٍ ساعته متقدمة): أول يومٍ مفتوح بعده (المراجعة الأخيرة)
+      const date = correctionDate(db, today());
       for (const x of stuckDeposits(db)) {
         if (depositRoom(db, x.contractId) < x.amount) continue;
         allocateDeposit(db, { rsvId: x.rid, amount: x.amount, contractId: x.contractId, contractNo: x.contractNo, tenant: x.tenant, date });

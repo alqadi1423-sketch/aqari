@@ -16,7 +16,9 @@ import { accountBalance } from '@/domain/accounting/ledger';
 import { integrityChecks } from '@/domain/accounting/integrity';
 import { entrySourceAction } from '@/domain/accounting/sourceCancel';
 import { sourceCancelLocked } from '@/domain/accounting/sourceCancel';
-import { reverseEntryById } from '@/domain/accounting/post';
+import { reverseEntryById, postReservationDeposit, postEntry } from '@/domain/accounting/post';
+import { fileVatReturn, filedDiff, isFiledDate } from '@/domain/vatFilings';
+import { vatReturnData } from '@/domain/vatReturn';
 import { recomputeInstallments } from '@/domain/contracts/paid';
 import { previewRepairs, applyRepair } from '@/domain/reviewRepairs';
 import { OP_JOURNAL_SRC, journalSrcAllowed } from '@/domain/access/opWrites';
@@ -236,6 +238,77 @@ describe('البند ٢٧: ملاحظات المتحقق المستقل', () => 
       expect(plan).toMatchObject({ entries: [], installments: [], bank: [], creditReversal: 0, restoreAmount: null, cashShort: 0,
         blockers: [t('payment.cancelFromDeposit')] });
     }
+    db.close();
+  });
+});
+
+/* ─── المراجعة الأخيرة: أدوات البيانات السابقة لا ترحّل في ربعٍ قُدِّم إقراره (#29 · البند ٨) ─── */
+
+describe('البند ٢٧ (تتمة · المراجعة الأخيرة): أداة البيانات السابقة بتاريخ تصحيحٍ في فترةٍ مفتوحة', () => {
+  const at = (iso: string) => {
+    jest.useFakeTimers({ now: new Date(iso), doNotFake: ['nextTick', 'setImmediate', 'clearImmediate', 'setTimeout', 'clearTimeout',
+      'setInterval', 'clearInterval', 'queueMicrotask', 'hrtime', 'performance'] });
+  };
+  afterEach(() => jest.useRealTimers());
+  /** إقرار الربع الرابع مسجَّلٌ مقدَّماً قبل انتهائه بلقطة بنوده الآن · كما قُدِّم قبل منع التقديم المبكر أو وصل من جهازٍ ساعته متقدمة */
+  const fileQ4Early = (db: DB) => {
+    const data = vatReturnData(db, 2026, 4);
+    db.run(`INSERT INTO vat_filings (id, period_from, period_to, filed_at, snapshot, created_at) VALUES (?,?,?,?,?,?)`,
+      ['2026-Q4', '2026-10-01', '2026-12-31', '2026-11-05', JSON.stringify({ items: data.items, excluded: data.excluded }), '2026-11-05T00:00:00.000Z']);
+  };
+  const paymentIds = (db: DB, cid: string) => db.all<{ id: string }>(`SELECT id FROM contract_payments WHERE contract_id = ?`, [cid]).map((r) => r.id);
+  /** ما أنشأته الأداة من دفعات وتاريخ قيد كلٍّ منها */
+  const madeSince = (db: DB, cid: string, ids: string[]) => db.all<{ date: string; je: string }>(
+    `SELECT p.date, e.date AS je FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+     WHERE p.contract_id = ? AND p.id NOT IN (${ids.map(() => '?').join(',')}) ORDER BY p.rowid`, [cid, ...ids]);
+
+  test('٢٧ (المراجعة الأخيرة) اليوم في ربعٍ قُدِّم إقراره: تسديد العالق بأول يومٍ في الفترة المفتوحة التالية · والإقرار المقدَّم لا يتغيّر', () => {
+    at('2026-11-06T12:00:00');
+    const { db, cid, insts, deposits } = converted();
+    legacyCancel(db, deposits[0].id, '2026-02-01');
+    fileQ4Early(db);
+    expect(isFiledDate(db, '2026-11-06')).toBe(true);
+    const ids = paymentIds(db, cid);
+    expect(applyRepair(db, 'cancelled_deposit')).toBe(1);
+    expect(madeSince(db, cid, ids)).toEqual([{ date: '2027-01-01', je: '2027-01-01' }]);
+    expect(filedDiff(db, 2026, 4)).toEqual([]);
+    expect(accountBalance(db, '2450')).toBe(0);
+    expect(paidOf(db, insts[0])).toBe(200000);
+    db.close();
+  });
+
+  test('٢٧ (المراجعة الأخيرة) وفي ربعٍ مفتوح بتاريخ اليوم كما كان', () => {
+    at('2026-11-06T12:00:00');
+    const { db, cid, deposits } = converted();
+    legacyCancel(db, deposits[0].id, '2026-02-01');
+    const ids = paymentIds(db, cid);
+    expect(applyRepair(db, 'cancelled_deposit')).toBe(1);
+    expect(madeSince(db, cid, ids)).toEqual([{ date: '2026-11-06', je: '2026-11-06' }]);
+    db.close();
+  });
+
+  test('٢٧ (المراجعة الأخيرة) ونظيرتها «تحويل عربون بالقيد السابق»: بداية العقد في ربعٍ قُدِّم إقراره فالتسديد بتاريخ اليوم لا بها', () => {
+    at('2026-11-06T12:00:00');
+    const db = memDb();
+    const unit = addUnit(db, addProperty(db, { name: 'عقار تحويل قديم مصطنع' }));
+    const cid = confirmContract(db, contractInput(unit, { tenant: 'مستأجر تحويل قديم مصطنع', idNumber: '1000002702', phone: '0500002702',
+      start: '2026-02-01', end: '2027-01-31', valueHalalas: 1200000, cycle: 'شهرية', depositHalalas: 0 }));
+    const first = db.get<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1`, [cid])!;
+    recordRentPayment(db, cid, { installmentId: first.id, period: 'الأول', date: '2026-02-01', lines: [{ method: 'cash', amountHalalas: 100000 }],
+      discountHalalas: 0, notes: '' });
+    const rid = 'R_legacy_p27';
+    db.run(`INSERT INTO reservations (id, unit_id, name, deposit_halalas, expiry_date, created_date, status, converted_contract_id)
+            VALUES (?,?,?,?,?,?,'محوَّل لعقد',?)`, [rid, unit, 'حاجز قديم مصطنع', 60000, '2026-02-10', '2026-01-20', cid]);
+    postReservationDeposit(db, { id: rid, name: 'حاجز قديم مصطنع', deposit: 60000, date: '2026-01-20' });
+    postEntry(db, { date: '2026-01-25', memo: 'تحويل عربون إلى عقد (قديم)', srcType: 'reservation_convert', srcId: rid,
+      lines: [{ account: '2450', debit: 60000, credit: 0 }, { account: '1200', debit: 0, credit: 60000 }] });
+    fileVatReturn(db, 2026, 1, '2026-04-15');
+    const ids = paymentIds(db, cid);
+    expect(applyRepair(db, 'reservation_convert')).toBe(1);
+    expect(madeSince(db, cid, ids)).toEqual([{ date: '2026-11-06', je: '2026-11-06' }]);
+    expect(filedDiff(db, 2026, 1)).toEqual([]);
+    expect(accountBalance(db, '1200')).toBe(0);
+    expect(accountBalance(db, '2450')).toBe(0);
     db.close();
   });
 });
