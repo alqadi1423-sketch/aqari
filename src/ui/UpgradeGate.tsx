@@ -12,7 +12,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, ActivityIndicator, Share, type TextStyle } from 'react-native';
 import { C, FONT, FONT_BOLD } from './theme';
-import { rawAppDb, clearUpgrade } from '../db/expoAdapter';
+import { rawAppDb, clearUpgrade, appDb } from '../db/expoAdapter';
+import { applyScreenSecureFrom } from '../services/screenSecure';
+import { rescheduleAllNotifications } from '../services/notifications';
 import { upgradeState, makePreUpgradeBackup } from '../domain/backup/upgrade';
 import { appBackupEnv } from '../services/backupService';
 import { redactForReport } from '../domain/redact';
@@ -64,6 +66,10 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
         setMsg(m); setInfo(i ?? null);
       }, new Date(), src.signal);
       clearUpgrade();
+      // ما أجّله الإقلاع لأن القاعدة كانت تنتظر الترقية (المراجعة الشاملة · البند ٢٢): منع لقطة الشاشة الآن، والتنبيهات بعد مهلة
+      // الإقلاع نفسها
+      try { applyScreenSecureFrom(appDb()); } catch { /* يُطبَّق عند الإقلاع التالي */ }
+      setTimeout(() => { try { rescheduleAllNotifications(appDb()).catch(() => {}); } catch { /* الإقلاع التالي */ } }, 6000);
       setPhase('ready');
     } catch (e) {
       if (isCancelled(e) && cancelRef.current?.retry) { run(); return; }
