@@ -240,6 +240,7 @@ export class FirestoreRemote implements RemoteStore {
     const big = docs.map((d) => docBytes(d) > MAX_DOC_BYTES);
     const sent = await this.writeWithin(docs.filter((_, i) => !big[i]), { left: MAX_SPLIT_REQUESTS });
     let j = 0;
+    // i18n-exempt: رمز الرفض وسببه يُخزَّنان في سجل المرفوض كأسباب الخادم
     return docs.map((_, i) => (big[i] ? { ok: false, code: 'DOC_TOO_LARGE', message: 'document exceeds the size limit' } : sent[j++]));
   }
 
