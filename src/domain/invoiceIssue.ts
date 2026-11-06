@@ -32,15 +32,21 @@ export function pendingIssues(db: DB): string[] {
 const setPending = (db: DB, ids: string[]) => setMetaVal(db, INV_PENDING_KEY, ids.length ? JSON.stringify(ids) : null);
 export const isIssuePending = (db: DB, id: string): boolean => pendingIssues(db).includes(id);
 
-/** الرقم: المحجوز من محاولة سابقة إن بقي، وإلا من العدّاد · ويُحفظ محجوزاً حتى تُكتب الفاتورة */
+/**
+ * الرقم: المحجوز من محاولة سابقة إن بقي، وإلا من العدّاد · ويُحفظ محجوزاً حتى تُكتب الفاتورة · والمحجوز الذي استُعمل (لا يزيد على
+ * أعلى رقمٍ صدر على الجهاز) يُهمل (المراجعة الشاملة · البند ١٢): بقي من قبل تفريغه مع الحفظ، فكانت تفشل كل فاتورة بعده أو يتكرر رقمها
+ * في سنة جديدة
+ */
 async function reserveSeq(db: DB, src: InvoiceNumberSource): Promise<number> {
   const kept = Number(getMetaVal(db, INV_RESERVED_KEY));
-  if (Number.isInteger(kept) && kept > 0) return kept;
+  if (Number.isInteger(kept) && kept > 0 && kept > localMaxNumber(db, 'INV')) return kept;
   const n = await src.takeInvoiceSeq(localMaxNumber(db, 'INV'));
   setMetaVal(db, INV_RESERVED_KEY, String(n));
   return n;
 }
 const releaseSeq = (db: DB) => setMetaVal(db, INV_RESERVED_KEY, null);
+/** الكتابة برقمٍ محجوز وتفريغه في معاملة واحدة (البند ١٢): الإغلاق بينهما لا يترك رقماً مستعملاً محجوزاً · والفشل يُبقيه للتالية */
+const withSeq = <T>(db: DB, write: () => T): T => db.transaction(() => { const out = write(); releaseSeq(db); return out; });
 
 export interface IssueResult { id: string; pending: boolean }
 
@@ -59,8 +65,7 @@ export async function saveInvoiceIssued(
     setPending(db, [...pendingIssues(db).filter((x) => x !== id), id]);
     return { id, pending: true };
   }
-  const id = saveInvoice(db, input, status, existingId, invoiceNoFor(seq, input.issue));
-  releaseSeq(db);
+  const id = withSeq(db, () => saveInvoice(db, input, status, existingId, invoiceNoFor(seq, input.issue)));
   setPending(db, pendingIssues(db).filter((x) => x !== id));
   return { id, pending: false };
 }
@@ -83,8 +88,7 @@ export async function setInvoiceStatusIssued(
     return { id, pending: true };
   }
   const issue = db.get<{ issue: string }>(`SELECT issue FROM invoices WHERE id = ?`, [id])?.issue;
-  setInvoiceStatus(db, id, status, invoiceNoFor(seq, issue));
-  releaseSeq(db);
+  withSeq(db, () => setInvoiceStatus(db, id, status, invoiceNoFor(seq, issue)));
   setPending(db, pendingIssues(db).filter((x) => x !== id));
   return { id, pending: false };
 }
@@ -130,9 +134,7 @@ export async function issueCreditNote(db: DB, src: InvoiceNumberSource | null, i
   } catch {
     throw new Error(t('invoice.creditNeedsConnection'));
   }
-  const id = saveCreditNote(db, invoiceId, input, invoiceNoFor(seq, input.date));
-  releaseSeq(db);
-  return id;
+  return withSeq(db, () => saveCreditNote(db, invoiceId, input, invoiceNoFor(seq, input.date)));
 }
 
 /** يلغي انتظار الإصدار · حين يُبقيها المستخدم مسودةً بقصد */
