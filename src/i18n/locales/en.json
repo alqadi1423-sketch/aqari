@@ -698,6 +698,7 @@
     "needConnection": "Linking needs an internet connection"
   },
   "backup": {
+    "cipherChunkSize": "The encryption component returned a chunk of unexpected size · the backup was not encrypted",
     "passwordLost": "A backup password was set on this device but cannot be read, so no backup is exported or uploaded unencrypted. Set the password again, or remove it if you want unencrypted backups.",
     "passwordLostShort": "Unreadable",
     "archiveTooLarge": "The archive's total size exceeds what the device can hold"

@@ -121,7 +121,8 @@ export async function prepareRestore(
     let entries: Record<string, Uint8Array> | null;
     let raw: Uint8Array | null = env.fs.read(archivePath);
     // نسخةٌ مشفّرة بكلمة مرور · تُفكّ في الذاكرة قبل الفك المضغوط ولا تُكتب مفكوكةً على القرص
-    if (isEncryptedArchive(raw)) raw = await openEncrypted(env, raw, opts, onProgress);
+    // والمشفّرة لا يُبقيها هذا الإطار بعد أن تُسلَّم للفكّ (المراجعة الشاملة · البند ٢١)
+    if (isEncryptedArchive(raw)) { const sealed = raw; raw = null; raw = await openEncrypted(env, sealed, opts, onProgress); }
     try {
       entries = await unzipYielding(raw, undefined, (done, total) => {
         throwIfCancelled(opts.signal);

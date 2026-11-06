@@ -14,6 +14,8 @@
  *   41..   القطع: نصٌّ مشفّر ثم وسم ١٦ بايت · كل قطعة بحجمها إلا الأخيرة (قد تكون فارغة)
  * فأي أداة قياسية تفكّ النسخة بكلمة مرورها ومعرفة هذا الشكل. وكلمة المرور المنسية لا تُستعاد: لا مفتاح خلفي.
  */
+import { t } from '../../i18n';
+
 export const ENC_MAGIC = 'AQBKENC1';
 export const KDF_PBKDF2_SHA256 = 1;
 export const DEFAULT_ITERATIONS = 600_000;
@@ -86,14 +88,21 @@ export async function encryptArchiveWithKey(
   opts.onProgress?.('جاري تجهيز مفتاح التشفير');
   const key = await p.pbkdf2(password, salt, iterations);
   const full = Math.floor(plain.length / chunk);
-  const parts: Uint8Array[] = [header];
+  // مصفوفة إخراجٍ واحدة بحجمها المعروف (المراجعة الشاملة · البند ٢١): القطع ثم ضمّها كان يحمل النسخة مرتين فوق أصلها
+  const out = new Uint8Array(HEADER + plain.length + (full + 1) * TAG);
+  out.set(header, 0);
+  let at = HEADER;
   for (let i = 0; i <= full; i++) {
     const last = i === full;
     const { nonce, aad } = chunkParams(header, prefix, i, last);
-    parts.push(await p.seal(key, nonce, plain.subarray(i * chunk, last ? plain.length : (i + 1) * chunk), aad));
+    const sealed = await p.seal(key, nonce, plain.subarray(i * chunk, last ? plain.length : (i + 1) * chunk), aad);
+    if (at + sealed.length > out.length) throw new Error(t('backup.cipherChunkSize'));
+    out.set(sealed, at);
+    at += sealed.length;
     if (i % 4 === 3) { opts.onProgress?.(`جاري التشفير · ${i + 1} من ${full + 1}`); await tick(); }
   }
-  return { sealed: concat(parts), key };
+  if (at !== out.length) throw new Error(t('backup.cipherChunkSize'));
+  return { sealed: out, key };
 }
 
 export async function decryptArchive(
@@ -101,6 +110,23 @@ export async function decryptArchive(
   /** مفتاحٌ اشتُقّ لهذا الملف نفسه (encryptArchiveWithKey) · يُغني عن الاشتقاق */
   knownKey?: Uint8Array,
 ): Promise<Uint8Array> {
+  // مصفوفة إخراجٍ واحدة بحجم الأصل المعروف من الملف (البند ٢١) لا قطعٌ ثم ضمّها
+  let out: Uint8Array | null = null;
+  await forEachPlainChunk(bytes, password, p, (c, at, total) => {
+    if (!out) out = new Uint8Array(total);
+    out.set(c, at);
+  }, onProgress, knownKey);
+  return out ?? new Uint8Array(0);
+}
+
+/**
+ * فكّ النسخة قطعةً قطعة بلا تجميعها (البند ٢١): لكل قطعةٍ مفكوكة موضعها وحجم الأصل كله · فيُتحقق من النسخة بتجزئةٍ متدرجة
+ * دون أن يُحمل الأصل في الذاكرة
+ */
+export async function forEachPlainChunk(
+  bytes: Uint8Array, password: string, p: CipherProvider, onChunk: (plain: Uint8Array, at: number, total: number) => void,
+  onProgress?: (msg: string) => void, knownKey?: Uint8Array,
+): Promise<void> {
   if (!isEncryptedArchive(bytes)) throw new Error('الملف ليس نسخة مشفّرة');
   if (bytes[8] !== KDF_PBKDF2_SHA256) throw new Error('نسخة مشفّرة بإصدار أحدث من التطبيق');
   const header = bytes.subarray(0, HEADER);
@@ -110,9 +136,15 @@ export async function decryptArchive(
   const chunk = readU32(bytes, 37);
   if (!iterations || iterations > MAX_ITERATIONS || !chunk || chunk > 64 << 20) throw new WrongPasswordError();
   if (!knownKey) onProgress?.('جاري تجهيز مفتاح فكّ التشفير');
+  // حجم الأصل من شكل الملف: قطعٌ كاملة بوسمها ثم الأخيرة (وسمها على الأقل) · وما لا يطابق مبتور
+  const body = bytes.length - HEADER;
+  const fullChunks = Math.floor(body / (chunk + TAG));
+  const tail = body - fullChunks * (chunk + TAG);
+  if (tail < TAG) throw new WrongPasswordError(); // مبتور
+  const total = body - (fullChunks + 1) * TAG;
   const key = knownKey ?? await p.pbkdf2(password, salt, iterations);
-  const parts: Uint8Array[] = [];
   let at = HEADER;
+  let written = 0;
   let i = 0;
   for (;;) {
     const rest = bytes.length - at;
@@ -120,15 +152,19 @@ export async function decryptArchive(
     if (rest < TAG) throw new WrongPasswordError(); // مبتور
     const size = last ? rest : chunk + TAG;
     const { nonce, aad } = chunkParams(header, prefix, i, last);
+    let plainChunk: Uint8Array;
     try {
-      parts.push(await p.open(key, nonce, bytes.subarray(at, at + size), aad));
+      plainChunk = await p.open(key, nonce, bytes.subarray(at, at + size), aad);
     } catch {
       throw new WrongPasswordError();
     }
+    if (written + plainChunk.length > total) throw new WrongPasswordError();
+    onChunk(plainChunk, written, total);
+    written += plainChunk.length;
     at += size;
     i++;
     if (last) break;
     if (i % 4 === 0) { onProgress?.('جاري فكّ التشفير'); await tick(); }
   }
-  return concat(parts);
+  if (written !== total) throw new WrongPasswordError();
 }
