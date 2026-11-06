@@ -60,8 +60,10 @@ function commercialRent(db: DB, from: string, to: string): number {
 function invoiceSales(db: DB, from: string, to: string): { S: number; tax: number; Z: number; E: number } {
   const out = { S: 0, tax: 0, Z: 0, E: 0 };
   const registered = !!Number(db.get<{ v: number }>(`SELECT vat_enabled AS v FROM company WHERE id = 1`)?.v ?? 0);
-  const invs = db.all<{ id: string; subtotal_halalas: number; tax_halalas: number }>(
-    `SELECT id, subtotal_halalas, tax_halalas FROM invoices WHERE deleted_at IS NULL AND status != ? AND issue >= ? AND issue <= ?`,
+  const hasKind = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'kind');
+  const invs = db.all<{ id: string; subtotal_halalas: number; tax_halalas: number; kind: string | null }>(
+    `SELECT id, subtotal_halalas, tax_halalas, ${hasKind ? 'kind' : 'NULL AS kind'} AS kind FROM invoices
+     WHERE deleted_at IS NULL AND status != ? AND issue >= ? AND issue <= ?`,
     ['مسودة', from, to]); // i18n-exempt: حالة مخزّنة
   for (const v of invs) {
     const lines = db.all<{ qty: number; price_halalas: number; tax_pct: number; tax_code: string | null }>(
@@ -73,6 +75,12 @@ function invoiceSales(db: DB, from: string, to: string): { S: number; tax: numbe
         const net = mulQty(Number(l.qty), Number(l.price_halalas));
         return { code: lineTaxCode(l.tax_code, Number(l.tax_pct)), net, tax: pctOf(net, Number(l.tax_pct)) };
       });
+    // الإشعار الدائن المقسوم على رموز فاتورته (المراجعة الشاملة · البند ٧): ضريبته المرحّلة على سطره الخاضع، فيطابق الإقرار دفتره
+    // بالهللة ولا يُعاد حسابها سطراً سطراً
+    if (codes.size > 1 && v.kind === 'credit_note') {
+      const s = parts.find((p) => p.code === 'S');
+      if (s) s.tax = Number(v.tax_halalas) - parts.filter((p) => p !== s).reduce((x, p) => x + p.tax, 0);
+    }
     for (const p of parts) {
       if (p.code === 'S') { if (registered) { out.S += p.net; out.tax += p.tax; } }
       else if (p.code === 'Z') { if (registered) out.Z += p.net; }
