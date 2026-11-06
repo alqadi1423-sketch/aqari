@@ -23,6 +23,11 @@ export interface VatReturnData {
   items: VatItem[];
   /** إيجارٌ تجاري محصَّل في الفترة خارج البند ٥ (سطر رقابة حتى تُبنى ضريبة التجاري) */
   commercialRentHalalas: number;
+  /**
+   * الإيجار التجاري المحصَّل في الفترة قبل خصم ما أُلغي فيها من فتراتٍ سابقة (التحقق المستقل على البند ١٠): منع التقديم به لا بالصافي،
+   * فإلغاءٌ بالمبلغ نفسه لا يفتح تقديم إقرارٍ ناقص
+   */
+  commercialRentCollectedHalalas: number;
   /** المستبعدة من الإقرار خلال الفترة · سطر الرقابة */
   excluded: { count: number; amountHalalas: number; taxWithinHalalas: number };
   schedules: {
@@ -57,7 +62,7 @@ const CANCEL_DAY_SQL = `substr(p.cancelled_at, 1, 10)`;
  * الإيجار التجاري المحصَّل في الفترة (خارج البند ٥) · الدفعة في فترة قبضها ولو أُلغيت بعدها، وإلغاؤها يُخصم في فترة إلغائه
  * (المراجعة الشاملة · البند ١٠) · والملغاة في فترتها نفسها لا تُعدّ فيها أصلاً (صافيها صفر)
  */
-function commercialRent(db: DB, from: string, to: string): number {
+function commercialRentParts(db: DB, from: string, to: string): { paid: number; cancelled: number } {
   const paid = Number(db.get<{ s: number }>(
     `SELECT COALESCE(SUM(${PAY_NET_SQL}), 0) AS s
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
@@ -68,7 +73,7 @@ function commercialRent(db: DB, from: string, to: string): number {
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
      WHERE p.cancelled_at IS NOT NULL AND ${CANCEL_DAY_SQL} >= ? AND ${CANCEL_DAY_SQL} <= ? AND p.date < ? AND NOT ${RESIDENTIAL_SQL}`,
     [from, to, from])?.s ?? 0);
-  return paid - cancelled;
+  return { paid, cancelled };
 }
 
 /** مبيعات الفواتير بالرمز: الفاتورة برمزٍ واحد بمجاميعها المحفوظة، والمختلطة سطراً سطراً */
@@ -140,6 +145,7 @@ function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
 
 export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): VatReturnData {
   const { from, to } = quarterRange(year, quarter);
+  const commercial = commercialRentParts(db, from, to);
   const inPeriod = (col: string) => ` AND ${col} >= '${from}' AND ${col} <= '${to}'`;
 
   // ١ و٣ و٥ · فواتير البيع غير المسودة برمز ضريبة سطورها (الهجرة ٣٩): الخاضع في ١، والصفري في ٣، والمعفى في ٥ ·
@@ -223,7 +229,8 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
   );
 
   return {
-    period: `${year}-Q${quarter}`, from, to, items, commercialRentHalalas: commercialRent(db, from, to),
+    period: `${year}-Q${quarter}`, from, to, items, commercialRentHalalas: commercial.paid - commercial.cancelled,
+    commercialRentCollectedHalalas: commercial.paid,
     excluded: { count: Number(excl.n), amountHalalas: Number(excl.amt), taxWithinHalalas: Number(excl.tx) },
     schedules: { deductiblePurchases, excludedPurchases, exemptSales, transfers },
   };

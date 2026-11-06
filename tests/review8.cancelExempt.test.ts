@@ -49,3 +49,15 @@ test('١٠ والإيجار التجاري كذلك: الملغى في ربعٍ 
   expect(vatReturnData(db, 2026, 2).commercialRentHalalas).toBe(-amount);
   db.close();
 });
+
+test('١٠ (التحقق المستقل) إيجار تجاري محصَّل في ربعٍ مع إلغاء دفعةٍ من ربعٍ سابق بالمبلغ نفسه: تقديم الإقرار يبقى ممنوعاً', () => {
+  const { db, pay, amount } = world(true);
+  cancelPayment(db, pay, { date: '2026-04-10', reason: 'إلغاء مصطنع' });
+  const cid = db.get<{ c: string }>(`SELECT contract_id AS c FROM contract_payments WHERE id = ?`, [pay])!.c;
+  const i = db.all<{ id: string; amount_halalas: number }>(`SELECT id, amount_halalas FROM contract_installments WHERE contract_id = ? ORDER BY due_date`, [cid])[3];
+  recordRentPayment(db, cid, { installmentId: i.id, period: 'الرابع', date: '2026-05-05', lines: [{ method: 'cash', amountHalalas: Number(i.amount_halalas) }], discountHalalas: 0, notes: '' });
+  expect(Number(i.amount_halalas)).toBe(amount);
+  expect(vatReturnData(db, 2026, 2).commercialRentHalalas).toBe(0);
+  expect(() => fileVatReturn(db, 2026, 2, '2026-07-15')).toThrow();
+  db.close();
+});

@@ -110,7 +110,9 @@ export function fileVatReturn(db: DB, year: number, quarter: Quarter, filedAt: s
   const data = vatReturnData(db, year, quarter);
   // ضريبة الإيجار التجاري لم تُبنَ في الإقرار بعد: فلا يُقدَّم إقرارٌ ناقص (المراجعة الخارجية ٧ · النتيجة ٧ · قرار المالك
   // «رابعاً ٤» 2026-10-10: «منع تقديم الإقرار مع إيجار تجاري محصَّل»)
-  if (data.commercialRentHalalas > 0) throw new Error(t('vat.commercialRentBlock', { amount: fmt(data.commercialRentHalalas) }));
+  // بالمحصَّل في الفترة لا بصافيه بعد إلغاءٍ من فترةٍ سابقة (التحقق المستقل على البند ١٠)
+  const commercial = Math.max(data.commercialRentCollectedHalalas ?? 0, data.commercialRentHalalas);
+  if (commercial > 0) throw new Error(t('vat.commercialRentBlock', { amount: fmt(commercial) }));
   const { from, to } = quarterRange(year, quarter);
   const items = JSON.stringify({ items: data.items, excluded: data.excluded });
   db.transaction(() => {
