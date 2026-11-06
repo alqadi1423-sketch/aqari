@@ -16,3 +16,17 @@ test('٢٩ كل خدمةٍ من حزم expo في البيان حزمتها مث�
   for (const mod of services) expect(Object.keys(deps)).toContain('expo-' + mod);
   expect(manifest).not.toContain('expo.modules.audio.service.AudioControlsService');
 });
+
+test('٣٠ zod ليس في الاعتمادات ولا يستورده ملف (عليها ثغرة عالية ولا يستعملها التطبيق)', () => {
+  const pkg = JSON.parse(read('package.json'));
+  expect(Object.keys({ ...pkg.dependencies, ...pkg.devDependencies })).not.toContain('zod');
+  const walk = (d: string, out: string[] = []): string[] => {
+    for (const e of fs.readdirSync(path.join(root, d), { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p, out);
+      else if (/\.(ts|tsx|js)$/.test(e.name)) out.push(p);
+    }
+    return out;
+  };
+  for (const f of [...walk('src'), ...walk('app')]) expect(read(f)).not.toMatch(/from ['"]zod['"]|require\(['"]zod['"]\)/);
+});
