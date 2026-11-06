@@ -983,7 +983,8 @@ function deleteOverChildren(db: DB, table: string, key: string, at: string, join
 
 /**
  * صفٌّ وارد يخالف فهرساً فريداً وحاملُ القيمة هنا ينتظر حذفُه في الصندوق (المراجعة الشاملة · البند ١ · المراجعة الأخيرة): الحذف
- * مؤجَّلٌ لابنٍ تُطبَّق نسخته أولاً، فالقيمة تُفرَغ في المرور التالي · فيُعاد الصف ولا يُرفض أبداً
+ * مؤجَّلٌ لابنٍ تُطبَّق نسخته أولاً، فالقيمة تُفرَغ في المرور التالي · فيُعاد الصف ولا يُرفض أبداً · وكذلك إن رُفض الحذف لطول انتظار
+ * ابنه، فهو يعود حين تُطبَّق نسخة الابن (المتحقق المستقل)
  */
 function uniqueHolderLeaving(db: DB, doc: RemoteDoc, msg: string): boolean {
   if (doc.del || !doc.d) return false;
@@ -998,7 +999,19 @@ function uniqueHolderLeaving(db: DB, doc: RemoteDoc, msg: string): boolean {
   const holders = db.all<{ k: string }>(
     `SELECT ${t.pk(`"${doc.t}"`)} AS k FROM "${doc.t}" WHERE ${cols.map((c) => `"${c}" = ?`).join(' AND ')}`,
     cols.map((c) => doc.d![c as string] as SqlValue));
-  return holders.some((h) => h.k !== doc.k && !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 1`, [doc.t, h.k]));
+  return holders.some((h) => h.k !== doc.k && (!!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 1`, [doc.t, h.k])
+    || deleteWaitRejected(db, doc.t, h.k)));
+}
+
+/**
+ * حذفٌ وارد للصف رُفض لطول انتظار ابنه وما زال يُعاد حين تُطبَّق نسخة الابن (restageArrivedParents) · فحامل القيمة ما زال مغادراً
+ * (البند ١ · المتحقق المستقل: الصف الوارد بقيمته كان يُرفض بالفهرس الفريد رفضاً لا يعود، فيبقى غائباً بعد أن يُحذف حاملها)
+ */
+function deleteWaitRejected(db: DB, table: string, key: string): boolean {
+  return db.all<{ payload: string }>(`SELECT payload FROM sync_rejects WHERE tbl = ? AND pk = ? AND reason = ?`, [table, key, WAIT_REJECT])
+    .some((r) => {
+      try { return (JSON.parse(r.payload) as RemoteDoc).del === true; } catch { return false; }
+    });
 }
 
 /** وقت رفع ما فُكّ أو حُذف من ابنٍ بحذف أبيه الوارد: آخر ما عرفه الجهاز للابن إن سبق وقت الحذف، وإلا وقت الحذف */

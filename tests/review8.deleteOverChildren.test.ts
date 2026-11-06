@@ -8,7 +8,7 @@ import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { confirmContract } from '@/domain/contracts/service';
 import { mergeTenants, findOrCreateTenant } from '@/domain/tenants';
 import { purgeFromTrash } from '@/domain/trash';
-import { enableSync, syncOnce, docId } from '@/sync/engine';
+import { enableSync, syncOnce, docId, stageInbox, applyInbox } from '@/sync/engine';
 import { getMeta } from '@/repos/settings';
 import type { DB } from '@/db/adapter';
 import type { RemoteDoc } from '@/sync/types';
@@ -199,4 +199,42 @@ test('١ (المراجعة الأخيرة) وحذف حامل القيمة الف
   expect(b.get(`SELECT 1 FROM tenants WHERE id = ?`, [drop])).toBeFalsy();
   expect(natOf(b, nid)?.n).toBe('1000000071');
   a.close(); b.close();
+});
+
+test('١ (المتحقق المستقل) وحذف حامل القيمة الفريدة رُفض لطول انتظار ابنه: الصف الوارد بالقيمة نفسها يُعاد لا يُرفض · ويُطبَّق حين يُحذف حاملها', async () => {
+  const { r, b, c1, c2 } = await world();
+  const dev = getMeta(b, 'device_id')!;
+  const drop = tenantOf(b, c1)!;
+  const other = r.docs.get(docId('tenants', tenantOf(b, c2)!))!;
+  const cur = r.docs.get(docId('contracts', c1))!;
+  const unit = r.docs.get(docId('units', String(cur.d!.unit_id)))!;
+  // حذف المالك للمدموج · ونسخةٌ للعقد من جهازٍ ثالث تبقيه عليه وتنقله إلى وحدةٍ لم تصل بعد
+  const late = 'U_SYNTH_LATE_1';
+  const lateUnit: RemoteDoc = { ...unit, id: docId('units', late), k: late, u: '2099-01-01T00:00:00.000Z', ts: '2099-01-01T00:00:00.000Z', dev: 'third',
+    d: { ...unit.d!, id: late, unit_no: 'M-LATE-1' } };
+  stageInbox(b, [
+    { ...cur, d: { ...cur.d!, unit_id: late }, u: '2099-01-01T00:00:00.000Z', ts: '2099-01-01T00:00:00.000Z', dev: 'third' },
+    { id: docId('tenants', drop), t: 'tenants', k: drop, u: '2099-01-01T00:00:00.000Z', ts: '2099-01-01T00:00:00.000Z', dev: 'other', del: true, d: null, dby: OWN },
+  ]);
+  applyInbox(b, dev);
+  expect(waitingOf(b).map((x) => x.pk).sort()).toEqual([c1, drop].sort());
+  // طال انتظار الحذف ونسخة العقد وحدهما · ثم يصل الآن مستأجرٌ جديد بهوية المدموج
+  b.run(`UPDATE sync_inbox SET waiting_since = '2020-01-01T00:00:00.000Z', attempts = 50`);
+  const nid = 'T_SYNTH_NEW_2';
+  stageInbox(b, [{ ...other, id: docId('tenants', nid), k: nid, u: '2099-01-02T00:00:00.000Z', ts: '2099-01-02T00:00:00.000Z', dev: 'other',
+    d: { ...other.d!, id: nid, name: 'مستأجر جديد بالهوية مصطنع', national_id: '1000000071', credit_halalas: 0 } }]);
+  applyInbox(b, dev);
+  // الحذف ونسخة العقد يُرفضان لطول انتظارهما · والمستأجر الجديد لا يُرفض بالفهرس الفريد: حاملها لم يغادر بعد
+  expect(rejectsOf(b).filter((x) => !x.reason.includes('سجل أب')).map((x) => x.reason)).toEqual([]);
+  expect(waitingOf(b)).toEqual([{ tbl: 'tenants', pk: nid }]);
+  // وصلت الوحدة: يُطبَّق العقد عليها ثم يُحذف المدموج ثم يُطبَّق المستأجر الجديد بهويته
+  stageInbox(b, [lateUnit]);
+  applyInbox(b, dev);
+  applyInbox(b, dev);
+  expect(b.get(`SELECT unit_id AS u FROM contracts WHERE id = ?`, [c1])).toEqual({ u: late });
+  expect(b.get(`SELECT 1 FROM tenants WHERE id = ?`, [drop])).toBeFalsy();
+  expect(natOf(b, nid)?.n).toBe('1000000071');
+  expect(rejectsOf(b)).toEqual([]);
+  expect(waitingOf(b)).toEqual([]);
+  b.close();
 });
