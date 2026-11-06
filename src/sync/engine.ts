@@ -182,6 +182,13 @@ export function toServerClock(db: DB, iso: string): string {
   return skew && Number.isFinite(t) ? new Date(t + skew).toISOString() : iso;
 }
 
+/** وقتٌ بساعة الخادم إلى ساعة الجهاز · عكس toServerClock، فما يُدرج في الطابور بوقتٍ وارد يُرفع بالوقت نفسه */
+export function fromServerClock(db: DB, iso: string): string {
+  const skew = clockSkewMs(db);
+  const t = Date.parse(iso);
+  return skew && Number.isFinite(t) ? new Date(t - skew).toISOString() : iso;
+}
+
 /** فرقٌ دون ثانية ضجيجُ شبكة لا ساعة منحرفة · فلا يُحفظ */
 const SKEW_NOISE_MS = 1000;
 function recordClockSample(db: DB, s: { serverMs: number; localMs: number } | null | undefined): void {
@@ -860,9 +867,42 @@ function noteRowTime(db: DB, table: string, key: string, u: string): void {
     [table, key, u]);
 }
 
-function enqueue(db: DB, table: string, key: string, op: 'upsert' | 'delete'): void {
+/**
+ * صفٌّ إلى الطابور · بوقت الآن، أو بوقتٍ وارد بساعة الخادم (serverAt) حين يُرفع الصف لأن وارداً مسّه لا لأن المستخدم عدّله
+ * (المراجعة الشاملة · البندان ١ و١٣): وقت الآن كان يغلب نسخةً أحدث منه في الدفعة نفسها أو في جهاز آخر · وتعديلٌ محلي
+ * معلّق أحدث من الوقت الوارد يبقى بوقته
+ */
+function enqueue(db: DB, table: string, key: string, op: 'upsert' | 'delete', serverAt?: string): void {
+  if (serverAt === undefined) {
+    db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?,?,?,?)
+            ON CONFLICT(tbl, pk) DO UPDATE SET op = excluded.op, changed_at = excluded.changed_at`, [table, key, op, nowIso()]);
+    return;
+  }
   db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?,?,?,?)
-          ON CONFLICT(tbl, pk) DO UPDATE SET op = excluded.op, changed_at = excluded.changed_at`, [table, key, op, nowIso()]);
+          ON CONFLICT(tbl, pk) DO UPDATE SET op = excluded.op, changed_at = MAX(sync_outbox.changed_at, excluded.changed_at)`,
+    [table, key, op, fromServerClock(db, serverAt)]);
+}
+
+/** حذفٌ وارد ينتظر نسخ أبنائه الواردة في الصندوق نفسه (المراجعة الشاملة · البند ١) */
+class AwaitChildren extends Error {}
+
+/**
+ * هل لأحد الأبناء الذين يمسّهم حذف هذا الصف (فكّاً أو حذفاً، بالتسلسل نفسه) نسخةٌ واردة غير حذف في الصندوق؟ ·
+ * فإن كان، تُطبَّق قبل الحذف: الدمج يعيد العقد إلى الوجهة ثم يُحذف المدموج، فلا يُفكّ العقد ولا يُرفع مفكوكاً
+ */
+function childAwaitsIncoming(db: DB, table: string, key: string, depth = 0): boolean {
+  if (depth > 8) return false;
+  const row = readRow(db, table, key);
+  if (!row) return false;
+  for (const c of fkChildren(db, table)) {
+    const ct = syncTable(c.child)!;
+    const kids = db.all<{ k: string }>(`SELECT ${ct.pk(`"${c.child}"`)} AS k FROM "${c.child}" WHERE "${c.from}" = ?`, [row[c.to] as SqlValue]);
+    for (const kid of kids) {
+      if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 0`, [c.child, kid.k])) return true;
+      if (c.notNull && childAwaitsIncoming(db, c.child, kid.k, depth + 1)) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -871,8 +911,10 @@ function enqueue(db: DB, table: string, key: string, op: 'upsert' | 'delete'): v
  * بلا أبيه (مفتاحه إليه إلزامي) يُحذف معه، والابن الذي يقوم بلا أبيه يُفكّ ربطه (دفعةٌ حُذف قسطها تبقى
  * فائضاً على عقدها يظهر للرد) · ويُرفع ما حُذف وما فُكّ فتتطابق الأجهزة. والقيد المرحّل لا يُحذف:
  * ما غاب مستنده يُعلَّم للمراجعة بعد اكتمال الوارد (orphans.ts).
+ * ويُرفع ما حُذف وما فُكّ بوقت الحذف الوارد (at بساعة الخادم) لا بوقت الآن (المراجعة الشاملة · البند ١): فنسخة الابن الأحدث
+ * في جهاز آخر تغلبه ولا يغلبها.
  */
-function deleteOverChildren(db: DB, table: string, key: string, depth = 0): void {
+function deleteOverChildren(db: DB, table: string, key: string, at: string, depth = 0): void {
   if (depth > 8) throw new Error('تسلسل أبناء أعمق من المتوقع');
   const row = readRow(db, table, key);
   if (!row) return;
@@ -880,8 +922,8 @@ function deleteOverChildren(db: DB, table: string, key: string, depth = 0): void
     const ct = syncTable(c.child)!;
     const kids = db.all<{ k: string }>(`SELECT ${ct.pk(`"${c.child}"`)} AS k FROM "${c.child}" WHERE "${c.from}" = ?`, [row[c.to] as SqlValue]);
     for (const kid of kids) {
-      if (c.notNull) { deleteOverChildren(db, c.child, kid.k, depth + 1); enqueue(db, c.child, kid.k, 'delete'); }
-      else { db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k)); enqueue(db, c.child, kid.k, 'upsert'); }
+      if (c.notNull) { deleteOverChildren(db, c.child, kid.k, at, depth + 1); enqueue(db, c.child, kid.k, 'delete', at); }
+      else { db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k)); enqueue(db, c.child, kid.k, 'upsert', at); }
     }
   }
   deleteRow(db, table, key);
@@ -994,7 +1036,9 @@ function applyOne(
           // كان يفكّ العقد عن وحدته ويحذف الحجز ويعيد نشرهما للمنشأة كلها · وشاهدٌ بلا حاذف لا يُسلسل (إنشاء شاهد حذفٍ لصفٍّ ليس
           // في السحابة لا تفحص القواعد حاذفه، فكلفته على إنشاء العضو فوق ميزانية القواعد)
           if (doc.dby !== ownerUid(db)) throw new Error(tr('sync.cascadeNotOwner', { lng: 'ar' }));
-          deleteOverChildren(db, doc.t, doc.k);
+          // ولابنٍ نسخةٌ واردة لم تُطبَّق بعد: تُطبَّق الإضافات أولاً ثم يعود الحذف في المرور التالي (المراجعة الشاملة · البند ١)
+          if (childAwaitsIncoming(db, doc.t, doc.k)) throw new AwaitChildren();
+          deleteOverChildren(db, doc.t, doc.k, theirs0);
         }
       } else if (doc.t === 'journal_entries') {
         applyJournal(db, doc, { e: cols('journal_entries'), l: cols('journal_lines') });
@@ -1045,7 +1089,7 @@ function applyOne(
     return conflict ?? 'applied';
   } catch (e) {
     const msg = errText(e);
-    if (isMissingParent(msg) || e instanceof AwaitOriginal) return 'retry';
+    if (isMissingParent(msg) || e instanceof AwaitOriginal || e instanceof AwaitChildren) return 'retry';
     reject(db, doc, msg);
     return 'rejected';
   }
