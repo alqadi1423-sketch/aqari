@@ -347,8 +347,11 @@ export class ChatRemote {
     });
   }
 
-  /** حال المحادثة بعد مؤشر وقت الخادم · بلا محتوى رسائل */
-  async stateSince(threadId: string, cursor: string | null, limit = 300): Promise<RemoteState[]> {
+  /**
+   * حال المحادثة بعد مؤشر وقت الخادم · بلا محتوى رسائل · بترتيبه ثم باسم المستند · after: آخر ما أُخذ من الصفحة السابقة فتبدأ بعده
+   * لا عنده (المراجعة الشاملة · البند ٢ · تتمة المراجعة الأخيرة: صفحةٌ واحدة بحدّها كانت توقف المؤشر حين يملأ الحدَّ ما في نافذة الرجوع)
+   */
+  async stateSince(threadId: string, cursor: string | null, limit = 300, after: PageAfter | null = null): Promise<RemoteState[]> {
     const where = cursor
       ? { fieldFilter: { field: { fieldPath: 'ts' }, op: 'GREATER_THAN_OR_EQUAL', value: { timestampValue: cursor } } }
       : undefined;
@@ -356,7 +359,8 @@ export class ChatRemote {
       structuredQuery: {
         from: [{ collectionId: 'st' }],
         ...(where ? { where } : {}),
-        orderBy: [{ field: { fieldPath: 'ts' }, direction: 'ASCENDING' }],
+        orderBy: TS_THEN_NAME,
+        ...this.startAfter(threadId, 'st', after),
         limit,
       },
     })) as Array<{ document?: { name: string; fields: Record<string, FsValue> } }>;
@@ -598,7 +602,7 @@ export class ChatRemote {
   }
 
   /** بدء الصفحة بعد (الوقت، اسم المستند) · before: false = بعده */
-  private startAfter(threadId: string, coll: 'msgs' | 'ids', after: PageAfter | null): Record<string, unknown> {
+  private startAfter(threadId: string, coll: 'msgs' | 'ids' | 'st', after: PageAfter | null): Record<string, unknown> {
     if (!after) return {};
     return { startAt: { values: [{ timestampValue: after.ts }, { referenceValue: `${this.docsRoot}/${this.orgPath(`chats/${threadId}/${coll}/${after.id}`)}` }], before: false } };
   }
