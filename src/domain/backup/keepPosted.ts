@@ -296,7 +296,8 @@ export function applyKeepPosted(target: DB, plan: KeepPlan): KeepPlan {
     if (insts.size) recomputeInstallments(target, [...insts]);
 
     const add = entries.filter((e) => e.review).map((e) => ({ id: e.id, no: e.newNo || e.no, reason: e.review! }));
-    for (const x of add) markForReview(target, x, x.reason);
+    // ورصيد المستأجر الدائن لا يُحمل · فما مسّ 2410 من المعلَّم خارج مطابقته بسجلات المستأجرين (integrity.ts)
+    for (const x of add) markForReview(target, x, x.reason, { creditNotCarried: true });
     logAudit(target, 'النسخ الاحتياطي', 'update', 'ضمّ قيود بعد النسخة',
       entries.length + ' قيد مرحّل بقي مع الاستعادة: ' + entries.map((e) => e.newNo ? e.no + '←' + e.newNo : e.no).join('، ').slice(0, 220)
       + (add.length ? ' · للمراجعة ' + add.length : ''));
