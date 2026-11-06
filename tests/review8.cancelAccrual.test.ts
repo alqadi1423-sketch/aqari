@@ -109,3 +109,74 @@ test('٣ (التحقق المستقل) ملغى قبل الترقية في ال�
   expect(periodRevenueAccrual(a, '2026-01-01', '2026-03-31')).toBe(295890);
   a.close(); b.close();
 });
+
+/* ═══════════ تتمة · المراجعة الأخيرة: الملغى في يوم نهايته بالضبط لم تُقصّ نهايته فلا تُشتق ═══════════ */
+
+const OWNER = 'owner-1';
+const syncDev = (db: DB, r: MemoryRemote) => syncOnce(db, r, getMeta(db, 'device_id')!);
+const year = (db: DB) => periodRevenueAccrual(db, '2026-01-01', '2026-12-31');
+
+test('٣ تتمة: عقد ستة أشهر بدورة سنوية أُلغي في يوم نهايته يستحق قيمته كاملة لا ١٨١ من ٣٦٥ · وعلى الجهاز الجديد كذلك', async () => {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, OWNER);
+  const u = addUnit(a, addProperty(a, { name: 'عقار مصطنع' }), { unit_no: 'C-10' });
+  const cid = confirmContract(a, contractInput(u, { valueHalalas: 600000, cycle: 'سنوية', start: '2026-01-01', end: '2026-06-30', depositHalalas: 0 }));
+  expect(year(a)).toBe(600000);
+  cancelContract(a, cid, cancel('2026-06-30'));
+  expect(a.get(`SELECT end, original_end AS oe, cancel_date AS cd FROM contracts WHERE id = ?`, [cid]))
+    .toEqual({ end: '2026-06-30', oe: '2026-06-30', cd: '2026-06-30' });
+  expect(year(a)).toBe(600000);
+  await syncDev(a, r);
+  const b = memDb();
+  enableSync(b, OWNER);
+  await syncDev(b, r);
+  expect(year(b)).toBe(600000);
+  a.close(); b.close();
+});
+
+test('٣ تتمة: وأحد عشر شهراً بدورة ربع سنوية أُلغي في يوم نهايته يستحق ١١٬٠٠٠ كاملة', () => {
+  const db = memDb();
+  const u = addUnit(db, addProperty(db, { name: 'عقار مصطنع' }), { unit_no: 'C-11' });
+  const cid = confirmContract(db, contractInput(u, { valueHalalas: 1100000, cycle: 'ربع سنوية', start: '2026-01-01', end: '2026-11-30', depositHalalas: 0 }));
+  cancelContract(db, cid, cancel('2026-11-30'));
+  expect(year(db)).toBe(1100000);
+  db.close();
+});
+
+test('٣ تتمة: والملغى قبل الترقية بدورة سنوية في نصفه الثاني يتفق عليه الجهاز الجديد والمرقّى ولو عُدّل على الجديد', async () => {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, OWNER);
+  const u = addUnit(a, addProperty(a, { name: 'عقار مصطنع' }), { unit_no: 'C-12' });
+  const cid = confirmContract(a, contractInput(u, { valueHalalas: 1200000, cycle: 'سنوية', start: '2026-01-01', end: '2026-12-31', depositHalalas: 0 }));
+  // إلغاءٌ بالإصدار ٤٧ في ٣٠ سبتمبر: تاريخه في end ولا قسط بعده (قسطٌ واحد في يناير) · ومستند السحابة بلا original_end
+  a.run(`UPDATE contracts SET status = 'ملغى', cancel_date = '2026-09-30', end = '2026-09-30' WHERE id = ?`, [cid]);
+  await syncDev(a, r);
+  delete (r.docs.get(docId('contracts', cid))!.d as Record<string, unknown>).original_end;
+  // ١٢٠٠٠٠٠ × ٢٧٣ ÷ ٣٦٥
+  const share = Math.round((1200000 * 273) / 365);
+  expect(year(a)).toBe(share);
+  const b = memDb();
+  enableSync(b, OWNER);
+  await syncDev(b, r);
+  expect(year(b)).toBe(share);
+  b.run(`UPDATE contracts SET ejar_no = '99998' WHERE id = ?`, [cid]);
+  await syncDev(b, r);
+  await syncDev(a, r);
+  expect(year(a)).toBe(share);
+  const c = memDb();
+  enableSync(c, OWNER);
+  await syncDev(c, r);
+  expect(year(c)).toBe(share);
+  a.close(); b.close(); c.close();
+});
+
+test('٣ تتمة: ونهايةٌ متفق عليها كُتبت بالمقصوصة وبعد الإلغاء أقساطٌ مستحقة: القصّ ثابت فتُشتق من الجدول', () => {
+  const db = memDb();
+  const u = addUnit(db, addProperty(db, { name: 'عقار مصطنع' }), { unit_no: 'C-13' });
+  const cid = confirmContract(db, contractInput(u, { valueHalalas: 1200000, start: '2026-01-01', end: '2026-12-31', depositHalalas: 0 }));
+  db.run(`UPDATE contracts SET status = 'ملغى', cancel_date = '2026-03-31', end = '2026-03-31', original_end = '2026-03-31' WHERE id = ?`, [cid]);
+  expect(year(db)).toBe(295890);
+  db.close();
+});

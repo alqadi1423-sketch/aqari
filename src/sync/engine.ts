@@ -359,6 +359,18 @@ function upsertRow(db: DB, table: string, data: RowData, cols: Set<string>): voi
 }
 
 /**
+ * عقدٌ ملغى قُصّت نهايته (end = cancel_date) وصل ونهايته المتفق عليها غير معروفة: مستندٌ رفعه إصدارٌ قبل الهجرة ٤٨ بلا original_end
+ * (والهجرة لا ترفع ما عبّأته)، أو جهازٌ لم يعرفها فرفعها فارغة · تبقى فارغةً فيشتقها الاستحقاق من جدول أقساطه بقاعدة الهجرة نفسها
+ * (accrual.ts: agreedEnd) كما على الجهاز المرقّى · ومحفّز الإدراج كان يملؤها بالمقصوصة فتُحسب نهايةً معروفة، فلا يُفرَّق بينها وبين
+ * عقدٍ أُلغي بعد الهجرة في يوم نهايته (المراجعة الشاملة · البند ٣ · تتمة المراجعة الأخيرة) · ومستندٌ بلا الحقل لصفٍّ قائم لا يمسّه
+ */
+function keepUnknownOriginalEnd(db: DB, id: string, row: RowData, fresh: boolean): void {
+  if (row.original_end || (!('original_end' in row) && !fresh)) return;
+  db.run(`UPDATE contracts SET original_end = NULL WHERE id = ? AND status = ? AND cancel_date IS NOT NULL AND end = cancel_date
+            AND (original_end IS NULL OR original_end = end)`, [id, 'ملغى']); // i18n-exempt: حالة العقد المخزّنة
+}
+
+/**
  * القيد · الوحدة: القيد وسطوره معاً.
  * المرحّل محلياً لا يتغيّر إلا بربط قيده العكسي مرة واحدة · والوارد مرحّلاً يُنشأ مسودةً
  * بسطوره ثم يُرقّى فيمرّ بمحفّز التوازن كأي قيد.
@@ -1154,7 +1166,9 @@ function applyOne(
           const alias = noAliases(db)[row.journal_no];
           if (alias) row.journal_no = alias;
         }
+        const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         upsertRow(db, doc.t, row, cols(doc.t));
+        if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·
