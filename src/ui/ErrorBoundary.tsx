@@ -9,7 +9,7 @@ import { Icon } from './icons';
 import { C } from './theme';
 import { appDb } from '../db/expoAdapter';
 import { logAudit } from '../domain/audit';
-import { redactForReport } from '../domain/redact';
+import { redactForReport, failureAuditDetail } from '../domain/redact';
 
 interface Props {
   children: React.ReactNode;
@@ -29,8 +29,9 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     try {
+      // نص الخطأ محجوباً لا خاماً (المراجعة الشاملة · البند ١٧): سجل العمليات يُزامَن، ونص الخطأ قد يحمل اسماً أو مبلغاً
       logAudit(appDb(), 'الأعطال', 'update', 'خطأ في ' + this.props.where,
-        (error.message + ' ' + (info.componentStack ?? '')).slice(0, 300));
+        (failureAuditDetail(error) + ' ' + (info.componentStack ?? '')).slice(0, 300));
     } catch { /* السجل لا يعطّل */ }
   }
 

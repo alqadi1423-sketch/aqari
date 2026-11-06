@@ -23,6 +23,7 @@ import { whilePrompting } from './appLockService';
 
 export function appBackupEnv(db: AppDB): BackupEnv {
   const root = appDataRoot();
+  let open = true;
   return {
     db,
     dbPath: db.databasePath,
@@ -32,8 +33,10 @@ export function appBackupEnv(db: AppDB): BackupEnv {
     tmpDir: joinPath(root, 'tmp'),
     appVersion: '1.0.0',
     openDb: (path) => openTempSqlite(path),
-    closeLive: () => { try { db.close(); } catch { /* مغلقة */ } },
-    reopenLive: () => { db.reopen(); return db; },
+    // الإغلاق الذي يفشل يُرمى فتتوقف الاستعادة قبل أن تمسّ الملفات (المراجعة الشاملة · البند ٢٠) · ومسار التراجع يبتلعه بنفسه ·
+    // وما أغلقته هذه البيئة من قبل لا يُغلق مرتين
+    closeLive: () => { if (!open) return; db.close(); open = false; },
+    reopenLive: () => { db.reopen(); open = true; return db; },
     cipher: deviceCipher,
   };
 }

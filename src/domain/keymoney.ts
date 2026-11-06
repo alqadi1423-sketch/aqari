@@ -1,6 +1,12 @@
 /**
  * التقبيل (تنازل عن الموقع بمقابل مالي) · العمولة تُرحَّل مرة واحدة إلى 4300
- * (docs/DESIGN.md §٩ قرار 3)، وتُسجَّل حركة بنكية عند الاستلام بنكياً.
+ * (docs/DESIGN.md §٩ قرار 3)، وتُسجَّل حركة بنكية عند الاستلام بنكياً بالمقبوض كاملاً.
+ * والمنشأة المسجّلة في الضريبة تفصل من المقبوض ضريبته إلى 2200 (المراجعة الشاملة ٨ · البند ١١ · postKeyMoneyCommission)،
+ * فالعمولة بتاريخٍ في فترةٍ قُدِّم إقرارها مرفوضة كالدفعة والعملية النقدية (قرار المالك 2026-10-15 «٦»).
+ * والرفض للمنشأة غير المسجّلة أيضاً، قرارٌ صريح (التحقق المستقل على البند ١١): «كما كانت» في الخيار (أ) لقيدها (العمولة كلها
+ * في 4300) لا لقاعدة الفترة · فالعمولة قبضٌ نقدي، والقرار «٦» عامٌّ للعملية النقدية ولو لم تمسّ الإقرار (كالإيداع في البنك) ·
+ * والتسجيل يُقرأ يوم الصفقة، والفترة المقدَّمة قد تكون من زمنٍ كانت فيه مسجّلة، فربط الرفض بالتسجيل الحالي يفتح فترتها.
+ * والإلغاء لا يسبق تاريخ الصفقة، ولا تُستعاد إلى فترةٍ قُدِّم إقرارها (sourceCancel.ts · trash.ts).
  */
 import type { DB } from '../db/adapter';
 import { uid } from './ids';
@@ -8,6 +14,7 @@ import { today } from './dates';
 import { postKeyMoneyCommission } from './accounting/post';
 import { keyMoneyBlockReason, getContract } from './contracts/rules';
 import { logAudit } from './audit';
+import { requireOpenPeriod } from './vatFilings';
 
 export interface KeyMoneyInput {
   unitId: string;
@@ -32,9 +39,10 @@ export function recordKeyMoneyDeal(db: DB, input: KeyMoneyInput): string {
   }
   if (input.commissionHalalas > 0 && input.method === 'bank' && !input.bankId)
     throw new Error('اختر حساباً بنكياً أو بدِّل لنقداً');
+  const date = input.date || today();
+  if (input.commissionHalalas > 0) requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   return db.transaction(() => {
     const id = uid();
-    const date = input.date || today();
     const u = db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [input.unitId]);
     let journalId: string | null = null;
     if (input.commissionHalalas > 0) {

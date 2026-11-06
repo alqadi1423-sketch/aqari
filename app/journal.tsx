@@ -20,6 +20,7 @@ import { postManualEntry, saveManualDraft, postDraftEntry, manualCashOut, peekJo
 import { t } from '../src/i18n';
 import { reverseFromJournal, journalReversalBlock } from '../src/domain/accounting/journalReversal';
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
+import { sourceCancelLocked } from '../src/domain/accounting/sourceCancel';
 import { allAccounts } from '../src/domain/accounting/ledger';
 import { today, dfmt } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
@@ -34,15 +35,19 @@ interface JeLine { account: string; debit: string; credit: string }
 interface EntryRow {
   id: string; no: string; date: string; memo: string; status: string; auto: number;
   src_type: string | null; src_id: string | null; d: number; c: number;
+  /** لا إلغاء له من مصدره (sourceCancelLocked) */
+  locked?: boolean;
 }
 
 const EMPTY_ENTRIES: EntryRow[] = [];
 
 const EntryCard = React.memo(function EntryCard({
-  id, no, date, memo, status, srcType, auto, d, c, canReverse, canDeleteDraft, canPostDraft, onOpen, onReverse, onDeleteDraft, onPostDraft,
+  id, no, date, memo, status, srcType, auto, d, c, locked, canReverse, canDeleteDraft, canPostDraft, onOpen, onReverse, onDeleteDraft, onPostDraft,
 }: {
   id: string; no: string; date: string; memo: string; status: string; auto: boolean;
   srcType: string | null; d: number; c: number;
+  /** قيدٌ لا إلغاء له من مصدره ولا يُعكس من الدفتر (قيد دفعة العربون · البند ٢٧) */
+  locked: boolean;
   /** عكس المرحّل أو إلغاؤه من مصدره · كامل في الدفتر */
   canReverse: boolean;
   /** حذف المسودة · كامل، أو كاتبها بإدخال */
@@ -71,8 +76,8 @@ const EntryCard = React.memo(function EntryCard({
         </Row>
         <T size={10.5} color={C.muted} numberOfLines={1} style={{ marginTop: 3 }}>{srcTypeLabel(srcType)}</T>
       </Pressable>
-      {/* القيد الآلي يُلغى من عمليته الأصلية (sourceCancel.ts) · ومرآة القيد لا تُلغى فلا زرّ لها */}
-      {(status === 'مرحّل' && srcType?.endsWith('_rev')) || !(status === 'مرحّل' ? canReverse : (canDeleteDraft || canPostDraft)) ? null : (
+      {/* القيد الآلي يُلغى من عمليته الأصلية (sourceCancel.ts) · ومرآة القيد لا تُلغى فلا زرّ لها، ولا قيد دفعة العربون (البند ٢٧) */}
+      {(status === 'مرحّل' && (srcType?.endsWith('_rev') || locked)) || !(status === 'مرحّل' ? canReverse : (canDeleteDraft || canPostDraft)) ? null : (
         <Row style={{ justifyContent: 'flex-end', marginTop: 4 }}>
           <ActionMenuButton title={no} actions={status === 'مرحّل'
             ? [{
@@ -134,7 +139,7 @@ export default function Journal() {
        WHERE e.deleted_at IS NULL${searchSql}
        GROUP BY e.id ORDER BY e.created_at DESC LIMIT ? OFFSET ?`,
       [...searchParams, pager.limit, pager.offset]
-    );
+    ).map((r) => ({ ...r, locked: r.status === 'مرحّل' && sourceCancelLocked(db, r.id, r.src_type) })); // i18n-exempt: حالة القيد المخزّنة
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, searchSql, searchParams, pager.limit, pager.offset, ready]);
 
@@ -255,6 +260,7 @@ export default function Journal() {
     <EntryCard
       id={item.id} no={item.no} date={item.date} memo={item.memo} status={item.status}
       srcType={item.src_type} auto={Number(item.auto) === 1} d={Number(item.d)} c={Number(item.c)}
+      locked={!!item.locked}
       canReverse={perm.manage}
       // كاتب المسودة يُقرأ لها وحدها · المرحّل لا مسودة فيه
       canDeleteDraft={item.status === 'قيد الإنشاء'

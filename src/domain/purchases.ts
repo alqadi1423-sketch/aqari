@@ -8,10 +8,10 @@ import { uid } from './ids';
 import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
 import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount } from './accounting/post';
-import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
+import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseAssetsMoved, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
-import { correctionDate, isFiledDate } from './vatFilings';
+import { correctionDate, isFiledDate, requireOpenPeriod } from './vatFilings';
 import { t } from '../i18n';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber } from './numbering';
@@ -86,7 +86,11 @@ export function nextPurchaseNo(db: DB): string {
 
 export function savePurchase(db: DB, input: PurchaseInput, existingId?: string): string {
   if (!input.subtotalHalalas && !input.totalHalalas) throw new Error('الرجاء إدخال مبالغ الفاتورة');
-  if (existingId) failVatSettled(db, existingId);
+  if (existingId) {
+    // ما يمنع التعديل يُرفض قبل أي كتابة، وهو نفسه ما تُخفي به الواجهة «تعديل» (المراجعة الشاملة · البند ٤)
+    const block = purchaseEditBlock(db, existingId);
+    if (block) throw new Error(block);
+  }
   // لا شراء جديد ولا نقلُ تاريخٍ إلى فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم)
   if (isFiledDate(db, input.date)) throw new Error(t('purchase.filedPeriod'));
   return db.transaction(() => {
@@ -125,8 +129,7 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
       );
       if (!p) throw new Error('تعذّر العثور على الفاتورة');
       no = p.no;
-      // أصول الفاتورة: المحوّلة لا تُمسّ إلا بعكس تحويلها، وما بدأ إهلاكه يُعدَّل من الأصل نفسه
-      if (purchaseAssets(db, existingId).some((a) => a.source === 'convert')) failPurchaseLocked();
+      // أصول الفاتورة: المحوّلة وما بدأ إهلاكه رفضهما purchaseEditBlock قبل المعاملة · والباقي يُحذف أو يعود «بانتظار تكلفة»
       clearPurchaseAssets(db, existingId, new Date().toISOString());
       beforeSnap = {
         المورد: p.supplier_name, التاريخ: p.date, الاستحقاق: p.due,
@@ -247,6 +250,7 @@ export function payPurchase(
   bankId: string | null,
   payDate: string = today()
 ): void {
+  requireOpenPeriod(db, payDate); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   db.transaction(() => {
     const p = db.get<{
       no: string; supplier_name: string; category: string; total_halalas: number; paid: number;
@@ -291,6 +295,7 @@ export interface PurchasePayLine {
  * مجموع الأسطر يجب أن يساوي إجمالي الفاتورة، وكل سطر غير نقدي يسجّل حركته البنكية.
  */
 export function payPurchaseSplit(db: DB, id: string, lines: PurchasePayLine[], payDate: string = today()): void {
+  requireOpenPeriod(db, payDate); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   db.transaction(() => {
     const p = db.get<{
       no: string; supplier_name: string; category: string; total_halalas: number; paid: number;
@@ -363,6 +368,28 @@ function failVatSettled(db: DB, id: string): void {
   if (isPurchaseFiled(db, id)) throw new Error(t('purchase.filedLocked'));
 }
 
+/**
+ * ما يمنع تعديل فاتورة شراء قائمة، برسالته سبباً وما يُفعل · وnull إن جاز (المراجعة الشاملة · البند ٤) ·
+ * الحفظ يرفض به والواجهة تُخفي «تعديل» به في البطاقة والورقة، فلا يظهر زرٌّ يُرفض الحفظ بعده.
+ * الترتيب بما يُفعل أولاً: ما لا يفكّه التراجع عن السداد (الإقرار والضريبة المسترَدة، ثم السلة، ثم أصول الفاتورة)
+ * يسبق السداد، فلا يُرحَّل عكس سدادٍ بلا فائدة.
+ */
+export function purchaseEditBlock(db: DB, id: string): string | null {
+  const p = db.get<{ s: string | null; paid: number; deleted_at: string | null }>(
+    `SELECT refund_status AS s, paid, deleted_at FROM purchases WHERE id = ?`, [id]);
+  if (!p) return null; // الحفظ يرفضها بأنها غير موجودة
+  if (isVatSettled(p.s)) return t('purchase.vatSettled');
+  if (isPurchaseFiled(db, id)) return t('purchase.filedLocked');
+  // في السلة: قيد تسجيلها عكسه الحذف، فتعديلها يرحّل قيد تسجيلٍ جديداً لفاتورةٍ غير قائمة ويُخلّ 2100 · تُستعاد أولاً
+  if (p.deleted_at) return t('purchase.inTrash');
+  // المحوّلة لا تُمسّ إلا بعكس تحويلها، وما بدأ إهلاكه أو تحرّك يُعدَّل من الأصل نفسه
+  if (purchaseAssets(db, id).some((a) => a.source === 'convert') || purchaseAssetsMoved(db, id)) return t('assets.err.purchaseLocked');
+  // المسدَّدة وسدادها قائم: قيد السداد وحركته البنكية بإجماليها القديم، فإعادة ترحيل التسجيل وحده تُخلّ 2100 ·
+  // يُتراجع عن السداد أولاً فيُعكس قيده، ثم تُعدَّل وتُسدَّد · نظير المحصّلة في saveInvoice
+  if (Number(p.paid)) return t('purchase.paidLocked');
+  return null;
+}
+
 /** حذف ناعم · قيدا التسجيل والسداد يُعكَسان بقيدي مرآة ولا يُخفيان */
 export function deletePurchase(db: DB, id: string): void {
   failVatSettled(db, id);
@@ -433,6 +460,7 @@ export function markVatFiled(db: DB, purchaseId: string): void {
 
 /** استرداد الضريبة نقداً: مدين 1100 / دائن 1270 · يُقفَل رصيد الفاتورة في 1270 */
 export function markVatRefunded(db: DB, purchaseId: string, date: string): void {
+  requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   const p = db.get<{ no: string; supplier_name: string; tax_halalas: number; tax_status: string; refund_status: string }>(
     `SELECT no, supplier_name, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ? AND deleted_at IS NULL`, [purchaseId]);
   if (!p) throw new Error('تعذّر العثور على الفاتورة');
@@ -457,6 +485,7 @@ export function markVatRefunded(db: DB, purchaseId: string, date: string): void 
 
 /** رفض الاسترداد: الضريبة تصير جزءاً من التكلفة · مدين مصروف الفئة / دائن 1270 */
 export function markVatRejected(db: DB, purchaseId: string, date: string): void {
+  requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   const p = db.get<{ no: string; supplier_name: string; category: string; tax_halalas: number; tax_status: string; refund_status: string }>(
     `SELECT no, supplier_name, category, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ? AND deleted_at IS NULL`, [purchaseId]);
   if (!p) throw new Error('تعذّر العثور على الفاتورة');

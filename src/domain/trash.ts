@@ -8,7 +8,8 @@ import { restoreInvoice } from './invoices';
 import { restorePurchase } from './purchases';
 import { logAudit } from './audit';
 import { t } from '../i18n';
-import { lastReversedOf, repostBlockers, repostCopy } from './accounting/repost';
+import { lastReversedOf, repostBlockers, repostCopy, repostDate } from './accounting/repost';
+import { isFiledDate } from './vatFilings';
 
 export const TRASH_ENTITY_LABELS: Record<string, string> = {
   suppliers: 'مورد', tenants: 'مستأجر', contracts: 'عقد إيجار',
@@ -90,9 +91,23 @@ function reversedOnDelete(db: DB, table: string, id: string): string | null {
   return null;
 }
 
+/**
+ * استعادةٌ تكتب قيداً في فترةٍ قُدِّم إقرارها (المراجعة الشاملة ٨ · البند ١١ · التحقق المستقل): صفقة التقبيل تُستعاد بنسخة قيد
+ * عمولتها بتاريخ عكسه (repostDate)، فإن قُدِّم إقرار فترته بعد الإلغاء تغيّر بها البند ١ لإقرارٍ مقدَّم (وسطر 2200 فيه) ·
+ * فتُرفض كما تُرفض استعادة فاتورة الشراء إلى فترةٍ مقدَّمة، ولا يظهر زرّها. وتصحيحها تقبيلٌ جديد بتاريخٍ في فترةٍ مفتوحة.
+ * وتُرفض ولو بلا سطر 2200 (منشأة غير مسجّلة يومها، أو قيدٌ قبل هذا الإصلاح): العمولة عمليةٌ نقدية، ولا عملية نقدية في فترةٍ
+ * قُدِّم إقرارها (قرار المالك 2026-10-15 «٦»)، والتسجيل يُقرأ اليوم وقد تكون الفترة المقدَّمة من زمنٍ كانت فيه مسجّلة.
+ */
+export function restoreIntoFiledPeriod(db: DB, table: string, id: string): boolean {
+  if (table !== 'key_money_deals') return false;
+  const entry = lastReversedOf(db, 'key_money', id);
+  return !!entry && isFiledDate(db, repostDate(db, entry));
+}
+
 function restoreOne(db: DB, table: string, id: string): void {
   if (table === 'invoices') { restoreInvoice(db, id); return; }
   if (table === 'purchases') { restorePurchase(db, id); return; }
+  if (restoreIntoFiledPeriod(db, table, id)) throw new Error(t('restore.filedPeriod'));
   const entry = reversedOnDelete(db, table, id);
   if (entry) {
     const blockers = repostBlockers(db, entry);

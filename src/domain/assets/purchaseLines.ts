@@ -122,12 +122,16 @@ export const purchaseLinesOf = (db: DB, purchaseId: string) =>
   db.all<{ id: string; descr: string; qty: number; amount_halalas: number; is_asset: number; asset_category: string | null; life_months: number | null; unit_id: string | null; room: string }>(
     `SELECT id, descr, qty, amount_halalas, is_asset, asset_category, life_months, unit_id, room FROM purchase_lines WHERE purchase_id = ? AND deleted_at IS NULL ORDER BY sort`, [purchaseId]);
 
+/** لأصول الفاتورة إهلاكٌ أو حركةٌ بعد إنشائها · بلا رفض، فتسأله الواجهة قبل عرض «تعديل» (المراجعة الشاملة · البند ٤) */
+export function purchaseAssetsMoved(db: DB, purchaseId: string): boolean {
+  return purchaseAssets(db, purchaseId).some((a) =>
+    !!db.get(`SELECT 1 FROM asset_events WHERE asset_id = ? AND kind NOT IN ('cost', 'convert')`, [a.id])
+    || postedAccum(db, a.id) > 0 || a.status === 'disposed' || a.status === 'sold');
+}
+
 /** أصول الفاتورة بلا إهلاك ولا حركة بعد إنشائها · وإلا فالفاتورة مقفلة على التعديل والحذف */
 export function requirePurchaseAssetsFree(db: DB, purchaseId: string): void {
-  for (const a of purchaseAssets(db, purchaseId)) {
-    const moved = db.get(`SELECT 1 FROM asset_events WHERE asset_id = ? AND kind NOT IN ('cost', 'convert')`, [a.id]);
-    if (moved || postedAccum(db, a.id) > 0 || a.status === 'disposed' || a.status === 'sold') fail('purchaseLocked');
-  }
+  if (purchaseAssetsMoved(db, purchaseId)) fail('purchaseLocked');
 }
 
 /** قبل تعديل الفاتورة أو حذفها: أصولها التي أنشأتها تُحذف، وما أثبتت تكلفته يعود «بانتظار تكلفة» */

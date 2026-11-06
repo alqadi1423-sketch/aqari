@@ -22,9 +22,26 @@ import java.io.File
  * والتحديث على وجهين: دوري كل نصف ساعة (أدنى ما يسمح به أندرويد)، وفوري
  * كلما غادر المستخدم التطبيق — فالتطبيق يكتب اللقطة عند كل تغيير، وMainActivity
  * تُنبّه الودجتات عند التوقف.
+ *
+ * وقفل التطبيق المفعّل (المراجعة الشاملة · البند ٢٣) يكتب لقطةً بلا مبالغ ولا نسبة ولا نقد ومعها `locked`،
+ * فتعرض الودجت الأعداد وحدها و«المبالغ مخفية» · وفرع القفل يسبق كل فرعٍ يعرض مبلغاً فلا يُعرض ولو وُجد.
+ * ولا تثق الودجت بـ`locked` وحده: علامة القفل نفسها في المجلد نفسه تُعدّ قفلاً، فلقطةٌ لم تمرّ بالكتابة الأخيرة
+ * (نسخة حسابٍ عادت، أو لقطة إصدارٍ سابق قبل أول فتح، أو تعذّر حذفها) لا تُعرض مبالغها والقفل مفعّل.
  */
 
 private const val SNAPSHOT_FILE = "widget.json"
+
+/** علامة قفل التطبيق · يكتبها appLockService.ts في Paths.document، وهو context.filesDir نفسه */
+private const val LOCK_FLAG_FILE = "app-lock.flag"
+
+/** قفل التطبيق مفعّل بعلامته · تعذّر فحصها يُعدّ مفعّلاً كما في التطبيق (lockMaybeOn) */
+internal fun lockFlagged(context: Context): Boolean {
+    return try {
+        File(context.filesDir, LOCK_FLAG_FILE).exists()
+    } catch (e: Exception) {
+        true
+    }
+}
 
 /** بيانات اللقطة · قيمها الافتراضية حال غياب الملف أو تلفه */
 internal data class Snapshot(
@@ -36,6 +53,8 @@ internal data class Snapshot(
     val empty: Boolean = true,
     /** صلاحية العضو لا تشمل التحصيل · لا مبالغ في الملف أصلاً */
     val noCollect: Boolean = false,
+    /** قفل التطبيق مفعّل · لا مبالغ في الملف ولا تُعرض */
+    val locked: Boolean = false,
     val canCollect: Boolean = true,
     val canInvoices: Boolean = true,
     val canClaims: Boolean = true
@@ -54,6 +73,7 @@ internal fun readSnapshot(context: Context): Snapshot {
             monthPct = o.optInt("monthPct", 0),
             empty = o.optBoolean("empty", true),
             noCollect = o.optBoolean("noCollect", false),
+            locked = o.optBoolean("locked", false) || lockFlagged(context),
             canCollect = o.optJSONObject("can")?.optBoolean("collect", true) ?: true,
             canInvoices = o.optJSONObject("can")?.optBoolean("invoices", true) ?: true,
             canClaims = o.optJSONObject("can")?.optBoolean("claims", true) ?: true
@@ -107,6 +127,13 @@ class TodayStripWidget : AppWidgetProvider() {
             } else if (s.empty) {
                 v.setTextViewText(R.id.strip_title, context.getString(R.string.widget_empty_title))
                 v.setTextViewText(R.id.strip_amount, context.getString(R.string.widget_empty_hint))
+            } else if (s.locked) {
+                v.setTextViewText(
+                    R.id.strip_title,
+                    if (s.lateCount == 0) context.getString(R.string.widget_no_late)
+                    else context.getString(R.string.widget_late_count, s.lateCount)
+                )
+                v.setTextViewText(R.id.strip_amount, context.getString(R.string.widget_locked_amount))
             } else if (s.lateCount == 0) {
                 v.setTextViewText(R.id.strip_title, context.getString(R.string.widget_no_late))
                 v.setTextViewText(R.id.strip_amount, s.paidThisMonth)
@@ -161,13 +188,29 @@ class CollectionPanelWidget : AppWidgetProvider() {
                 v.setTextViewText(R.id.panel_pct, "")
                 v.setTextViewText(R.id.panel_late, "")
                 v.setProgressBar(R.id.panel_bar, 100, 0, false)
+                v.setViewVisibility(R.id.panel_bar, View.VISIBLE)
             } else if (s.empty) {
                 v.setTextViewText(R.id.panel_amount, context.getString(R.string.widget_empty_title))
                 v.setTextViewText(R.id.panel_sub, context.getString(R.string.widget_empty_hint))
                 v.setTextViewText(R.id.panel_pct, "")
                 v.setTextViewText(R.id.panel_late, "")
                 v.setProgressBar(R.id.panel_bar, 100, 0, false)
+                v.setViewVisibility(R.id.panel_bar, View.VISIBLE)
+            } else if (s.locked) {
+                // الشريط يُخفى ويبقى مكانه · فلا يقرأ أحدٌ الصفر نسبةً ولا يتغيّر التخطيط
+                // وكل فرعٍ يضبط ظهوره: RemoteViews يُطبَّق على العرض القائم فيبقى المخفيّ مخفياً في الحال التالية
+                v.setTextViewText(R.id.panel_amount, context.getString(R.string.widget_locked_amount))
+                v.setTextViewText(R.id.panel_sub, context.getString(R.string.widget_locked_hint))
+                v.setTextViewText(R.id.panel_pct, "")
+                v.setTextViewText(
+                    R.id.panel_late,
+                    if (s.lateCount == 0) context.getString(R.string.widget_no_late)
+                    else context.getString(R.string.widget_late_count, s.lateCount)
+                )
+                v.setProgressBar(R.id.panel_bar, 100, 0, false)
+                v.setViewVisibility(R.id.panel_bar, View.INVISIBLE)
             } else {
+                v.setViewVisibility(R.id.panel_bar, View.VISIBLE)
                 v.setTextViewText(R.id.panel_amount, s.paidThisMonth)
                 v.setTextViewText(
                     R.id.panel_sub,

@@ -19,6 +19,7 @@ import { dfmt, today, daysBetween, periodLabel } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
 import { CancelPaymentSheet } from './CancelPaymentPanel';
+import { paidFromDeposit } from '../domain/contracts/cancelPayment';
 import { usePerm } from './access';
 import { useSaveAttempt } from './formAttempt';
 
@@ -75,7 +76,7 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
          AND NOT EXISTS (SELECT 1 FROM payment_allocations x WHERE x.payment_id = p.id)
        ORDER BY date`,
       [installmentId, installmentId]
-    );
+    ).map((p) => ({ ...p, fromDeposit: paidFromDeposit(db, p.id) }));
     // خصم القسط · من دفعاته المباشرة وحدها (التخصيصات الجماعية بلا خصم)
     const discount = pays.reduce((s, p) => s + (p.alloc == null && !p.cancelled_at ? Number(p.discount_halalas) : 0), 0);
     const T_ = today();
@@ -197,7 +198,8 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
                 <T size={11.5} color={C.rose} style={{ marginTop: 2 }}>ملغاة {dfmt(p.cancelled_at)} · {p.cancel_reason}</T>
               ) : null}
               <Row style={{ justifyContent: 'flex-end', marginTop: 4 }}>
-                {!p.cancelled_at && perm.manage ? (
+                {/* دفعة العربون لا تُلغى فلا زرّ لها (البند ٢٧ · cancelPayment.ts) */}
+                {!p.cancelled_at && perm.manage && !p.fromDeposit ? (
                   <BtnGhost small danger title="إلغاء الدفعة" onPress={() => setCancelFor((c) => (c === p.id ? null : p.id))} />
                 ) : null}
                 {!p.cancelled_at ? (

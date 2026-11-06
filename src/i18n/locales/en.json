@@ -325,7 +325,14 @@
     "saveFailed": "Could not save"
   },
   "payment": {
-    "cancelTitle": "Cancel payment"
+    "cancelTitle": "Cancel payment",
+    "cancelFromDeposit": "Paid from the deposit of a reservation converted to this contract · it cannot be cancelled, as cancelling would return the amount to a held deposit that can no longer be refunded or forfeited",
+    "cancelBeforePayment": "The cancellation date is before the payment date ({{date}}) · choose that date or later",
+    "stuckDepositTitle": "Deposit returned to its liability by cancelling its conversion payment",
+    "stuckDepositExplain": "A payment made from the deposit of a reservation converted to a contract was cancelled before cancelling was blocked, so its amount went back to 2450 while a converted reservation can no longer be refunded or forfeited. Applying settles the contract's remaining installments in order with it, using the deposit conversion entry dated {{date}} (today, or the first open day if today falls in a period whose return was filed), and the cancelled payment stays as it is.",
+    "stuckDepositLabel": "{{name}} · {{tenant}}",
+    "stuckDepositDetail": "Stuck {{amount}}",
+    "stuckDepositBlocked": "The contract's remaining installments ({{room}}) are less than the stuck amount · needs your decision"
   },
   "costCenters": {
     "new": "New centre",
@@ -487,6 +494,9 @@
     "taskCancel": "Cancel task"
   },
   "auth": {
+    "driveCancelled": "Google account selection was cancelled · choose your signed-in account to reach Google Drive",
+    "driveOtherAccount": "You chose another account · choose the account signed in on this device",
+    "reauthFailed": "Couldn't confirm your identity with Google · try again",
     "fail": {
       "title": "Could not finish verifying {{email}}",
       "network": "No connection to the server · check the internet and retry",
@@ -534,6 +544,7 @@
   },
   "vat": {
     "alreadyFiled": "This period's return is already recorded as filed",
+    "fileBeforeEnd": "A quarter cannot be filed before it ends · its last day is {{date}}",
     "auditSection": "VAT return",
     "auditFiled": "Return recorded as filed",
     "auditUnfiled": "Filed record undone",
@@ -554,6 +565,7 @@
   },
   "invoice": {
     "locked": "An issued invoice can't be edited, returned to draft or deleted · correct it with a credit note",
+    "standardZeroRate": "A standard-rated line has a zero rate · set its rate, or mark it zero-rated or exempt",
     "notFound": "Invoice not found",
     "creditNote": "Credit note",
     "creditNotes": "Credit notes",
@@ -590,7 +602,9 @@
   "purchase": {
     "vatSettled": "This invoice's VAT is refunded or its refund was rejected, and its entry closed the account · cancel that entry from the ledger first",
     "filedLocked": "This purchase is in a filed VAT return, so it is not edited or deleted · correct it with an entry in an open period from the ledger",
-    "filedPeriod": "This date's period has a filed return, so no purchase is recorded in it · use a date in an open period"
+    "filedPeriod": "This date's period has a filed return, so no purchase is recorded in it · use a date in an open period",
+    "paidLocked": "This purchase is paid, so it is not edited while its payment stands · undo the payment first so its entry is reversed, then edit it and pay it again",
+    "inTrash": "This purchase is in the trash, so it is not edited · restore it from the trash first, then edit it"
   },
   "bankTx": {
     "descrRequired": "Enter a description",
@@ -696,6 +710,7 @@
     "needConnection": "Linking needs an internet connection"
   },
   "backup": {
+    "cipherChunkSize": "The encryption component returned a chunk of unexpected size · the backup was not encrypted",
     "passwordLost": "A backup password was set on this device but cannot be read, so no backup is exported or uploaded unencrypted. Set the password again, or remove it if you want unencrypted backups.",
     "passwordLostShort": "Unreadable",
     "archiveTooLarge": "The archive's total size exceeds what the device can hold"
@@ -715,7 +730,7 @@
     "pinLabel": "App code",
     "wrongPin": "Wrong code",
     "wait": "Too many wrong attempts · try again in {{n}} seconds",
-    "noDeviceLock": "The device lock was removed or the lock setting cannot be read · confirm your Google account to open the app.",
+    "noDeviceLock": "The device lock was removed or the lock setting cannot be read · confirm your Google account and choose an app PIN, or add a device lock.",
     "confirmAccount": "Confirm my Google account",
     "accountMismatch": "The account signed in on this device was not confirmed",
     "forgotPin": "Forgot the code · confirm my Google account",
@@ -738,7 +753,12 @@
     "saveFailed": "Could not save the app lock",
     "setNewPin": "Your account is confirmed · choose a new PIN to open the app",
     "saveNewPin": "Save the PIN and open",
-    "newPinFailed": "Could not save the new PIN"
+    "newPinFailed": "Could not save the new PIN",
+    "accountFailed": "Couldn't confirm the account · try again",
+    "resetLimit": "PIN reset limit reached · available again in {{n}} h",
+    "resetNoticeTitle": "App lock PIN was reset",
+    "resetStoreFailed": "Couldn't read or save the PIN reset record",
+    "resetNotice": "The app lock PIN was reset by confirming the Google account on {{when}}"
   },
   "imgMeta": {
     "unstripped": "Could not remove this image's metadata, so it was not attached · To attach it as is, turn off image metadata removal in Settings"
@@ -783,14 +803,17 @@
     "confirmPostTitle": "Post draft",
     "confirmPostBody": "Post entry {{no}}? It enters the balances and cannot be edited, only reversed.",
     "cancel": "Cancel",
-    "postFailed": "Posting failed"
+    "postFailed": "Posting failed",
+    "reverseBeforeOriginal": "The cancellation date is before the original entry date ({{date}}) · choose that date or later"
   },
   "sync": {
     "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded",
     "olderIncoming": "{{t}} · {{k}} · this device's newer copy ({{seen}}) won over an older incoming one ({{theirs}})"
   },
   "restore": {
-    "notInTrash": "Not in the trash · already restored"
+    "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",
+    "notInTrash": "Not in the trash · already restored",
+    "filedPeriod": "Its reversal falls in a period whose return was filed, so it cannot be restored into it · record it again with a date in an open period"
   },
   "bank": {
     "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"

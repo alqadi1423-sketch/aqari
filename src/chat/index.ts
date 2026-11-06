@@ -9,13 +9,13 @@ import type { DB } from '../db/adapter';
 import { readMembership } from '../services/access';
 import { getSyncState, setSyncState } from '../sync/engine';
 import { ChatRemote } from './remote';
-import { chatSyncOnce, type ChatSyncResult } from './sync';
+import { chatSyncOnce, pullState, type ChatSyncResult } from './sync';
 import { ensureChannels, autoJoinChannels } from './channels';
 export { ensureChannels, autoJoinChannels, qualifies, wantedChannels } from './channels';
 import { CHAT_BODY_MAX, CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe, type ChatTag, type ChatTask, type GroupSettings } from './types';
 import { logAudit } from '../domain/audit';
 import type { RemoteEdit, RemoteMessage, RemoteThread } from './remote';
-import { applyRemoteThread, applyRemoteMessage, applyState, stateCursor } from './store';
+import { applyRemoteThread, applyRemoteMessage, stateCursor } from './store';
 
 export * from './types';
 export {
@@ -204,14 +204,14 @@ export async function chatJoinGroup(db: DB, s: ChatSession, org: string, t: { id
 export async function chatSetPin(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, on: boolean,
   r: ChatRemote = remoteFor(s, org)): Promise<void> {
   await r.setPin(threadId, msgId, on);
-  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+  await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** تأكيد الاطلاع على إعلان مهم · ثم الحال كما في الخادم (الدفعة ٣) */
 export async function chatAcknowledge(db: DB, s: ChatSession, org: string, threadId: string, msgId: string,
   r: ChatRemote = remoteFor(s, org)): Promise<void> {
   await r.acknowledge(threadId, msgId);
-  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+  await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** تعديل رسالتي بسجلها · يحتاج اتصالاً · ثم الرسالة كما في الخادم (الدفعة ٣) */
@@ -222,7 +222,7 @@ export async function chatEditMessage(db: DB, s: ChatSession, org: string, threa
   if (text.length > CHAT_BODY_MAX) throw new Error('chat: message too long');
   await r.editMessage(threadId, msgId, text, tag);
   applyRemoteMessage(db, threadId, await r.getMessage(threadId, msgId));
-  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+  await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** المهمة من رسالة · ثم الحال كما في الخادم (الدفعة ٥) */
@@ -232,28 +232,28 @@ export async function chatSetTask(db: DB, s: ChatSession, org: string, threadId:
   if (!title) throw new Error('chat: task needs a title');
   if (!/^\d{4}-\d\d-\d\d$/.test(task.due)) throw new Error('chat: task due date');
   await r.setTask(threadId, msgId, { ...task, title });
-  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+  await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** إنجاز المهمة أو إعادة فتحها (الإنجاز وحده) · ثم الحال كما في الخادم */
 export async function chatSetTaskDone(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, done: boolean,
   r: ChatRemote = remoteFor(s, org)): Promise<void> {
   await r.setTaskDone(threadId, msgId, done);
-  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+  await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** إلغاء المهمة · لمنشئها · ثم الحال كما في الخادم (قرار المالك 2026-10-08T10:24Z) */
 export async function chatCancelTask(db: DB, s: ChatSession, org: string, threadId: string, msgId: string,
   r: ChatRemote = remoteFor(s, org)): Promise<void> {
   await r.cancelTask(threadId, msgId);
-  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+  await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** صوتي في استطلاع · ثم الحال كما في الخادم (الدفعة ٥) */
 export async function chatVote(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, options: number[],
   r: ChatRemote = remoteFor(s, org)): Promise<void> {
   await r.vote(threadId, msgId, Array.from(new Set(options)).sort((a, b) => a - b));
-  applyState(db, threadId, (await r.stateSince(threadId, stateCursor(db, threadId))) as unknown as Array<{ id: string; k: string; ts: string }>);
+  await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** سجل تعديلات رسالة · ما قبل كل تعديل (الدفعة ٣) */

@@ -9,7 +9,8 @@
 import type { DB } from '../db/adapter';
 import { localMaxNumber, FirstIssueByOwnerError } from './numbering';
 import {
-  saveInvoice, setInvoiceStatus, needsIssueNumber, invoiceNoFor, isTempInvoiceNo, saveCreditNote, type InvoiceInput, type CreditNoteInput,
+  saveInvoice, setInvoiceStatus, needsIssueNumber, invoiceNoFor, isTempInvoiceNo, saveCreditNote, checkInvoiceIssue, checkCreditNote,
+  type InvoiceInput, type CreditNoteInput,
 } from './invoices';
 import { t } from '../i18n';
 import { isFiledDate } from './vatFilings';
@@ -32,15 +33,30 @@ export function pendingIssues(db: DB): string[] {
 const setPending = (db: DB, ids: string[]) => setMetaVal(db, INV_PENDING_KEY, ids.length ? JSON.stringify(ids) : null);
 export const isIssuePending = (db: DB, id: string): boolean => pendingIssues(db).includes(id);
 
-/** الرقم: المحجوز من محاولة سابقة إن بقي، وإلا من العدّاد · ويُحفظ محجوزاً حتى تُكتب الفاتورة */
+/**
+ * صدر بهذا الرقم من التسلسل على الجهاز فاتورةٌ أو إشعارٌ دائن (صفّهما واحد)، أيّاً كانت سنته · والأرقام بحرف الجهاز تسلسلٌ قديمٌ آخر
+ * لا يأخذ من العدّاد · والمحذوف (المسودة وحدها تُحذف، ورقمها مؤقت) لا يُستثنى: الرقم الذي ظهر لا يُعاد
+ */
+const seqIssuedHere = (db: DB, n: number): boolean => !!db.get(
+  `SELECT 1 FROM invoices WHERE no GLOB 'INV-[0-9][0-9][0-9][0-9]-[0-9]*' AND NOT (no GLOB '*-[A-Z]' OR no GLOB '*-[A-Z][A-Z]')
+     AND CAST(substr(no, 10) AS INTEGER) = ? LIMIT 1`, [n]);
+
+/**
+ * الرقم: المحجوز من محاولة سابقة إن بقي، وإلا من العدّاد · ويُحفظ محجوزاً حتى تُكتب الفاتورة · والمحجوز الذي استُعمل (صدر به على
+ * الجهاز فاتورةٌ أو إشعار) يُهمل (المراجعة الشاملة · البند ١٢): بقي من قبل تفريغه مع الحفظ، فكانت تفشل كل فاتورة بعده أو يتكرر رقمها
+ * في سنة جديدة · ولا يُهمل لأنه دون أعلى رقمٍ محلي (تتمة · المراجعة الأخيرة): الأعلى قد يكون فاتورةَ جهازٍ آخر وصلت بالمزامنة، فيضيع
+ * رقمٌ لم يصدر وتبقى فجوة في التسلسل
+ */
 async function reserveSeq(db: DB, src: InvoiceNumberSource): Promise<number> {
   const kept = Number(getMetaVal(db, INV_RESERVED_KEY));
-  if (Number.isInteger(kept) && kept > 0) return kept;
+  if (Number.isInteger(kept) && kept > 0 && !seqIssuedHere(db, kept)) return kept;
   const n = await src.takeInvoiceSeq(localMaxNumber(db, 'INV'));
   setMetaVal(db, INV_RESERVED_KEY, String(n));
   return n;
 }
 const releaseSeq = (db: DB) => setMetaVal(db, INV_RESERVED_KEY, null);
+/** الكتابة برقمٍ محجوز وتفريغه في معاملة واحدة (البند ١٢): الإغلاق بينهما لا يترك رقماً مستعملاً محجوزاً · والفشل يُبقيه للتالية */
+const withSeq = <T>(db: DB, write: () => T): T => db.transaction(() => { const out = write(); releaseSeq(db); return out; });
 
 export interface IssueResult { id: string; pending: boolean }
 
@@ -49,6 +65,8 @@ export async function saveInvoiceIssued(
   db: DB, src: InvoiceNumberSource | null, input: InvoiceInput, status: 'مسودة' | 'مستحقة', existingId?: string,
 ): Promise<IssueResult> {
   if (!src || !needsIssueNumber(db, existingId, status)) return { id: saveInvoice(db, input, status, existingId), pending: false };
+  // ما يُرفض بمدخلاته لا يأخذ رقماً (تتمة البند ١٢): كان يُحجز له رقمٌ يبقى معلّقاً حتى يصدر الجهاز غيره
+  checkInvoiceIssue(db, input);
   let seq: number;
   try {
     seq = await reserveSeq(db, src);
@@ -59,8 +77,7 @@ export async function saveInvoiceIssued(
     setPending(db, [...pendingIssues(db).filter((x) => x !== id), id]);
     return { id, pending: true };
   }
-  const id = saveInvoice(db, input, status, existingId, invoiceNoFor(seq, input.issue));
-  releaseSeq(db);
+  const id = withSeq(db, () => saveInvoice(db, input, status, existingId, invoiceNoFor(seq, input.issue)));
   setPending(db, pendingIssues(db).filter((x) => x !== id));
   return { id, pending: false };
 }
@@ -74,6 +91,9 @@ export async function setInvoiceStatusIssued(
     if (status === 'مسودة') setPending(db, pendingIssues(db).filter((x) => x !== id));
     return { id, pending: false };
   }
+  // مسودةٌ تاريخها في ربعٍ قُدِّم إقراره لا تصدر · فلا تأخذ رقماً (تتمة البند ١٢)
+  const draftIssue = db.get<{ issue: string }>(`SELECT issue FROM invoices WHERE id = ?`, [id])?.issue;
+  if (draftIssue && isFiledDate(db, draftIssue)) throw new Error(t('invoice.filedPeriod'));
   let seq: number;
   try {
     seq = await reserveSeq(db, src);
@@ -83,8 +103,7 @@ export async function setInvoiceStatusIssued(
     return { id, pending: true };
   }
   const issue = db.get<{ issue: string }>(`SELECT issue FROM invoices WHERE id = ?`, [id])?.issue;
-  setInvoiceStatus(db, id, status, invoiceNoFor(seq, issue));
-  releaseSeq(db);
+  withSeq(db, () => setInvoiceStatus(db, id, status, invoiceNoFor(seq, issue)));
   setPending(db, pendingIssues(db).filter((x) => x !== id));
   return { id, pending: false };
 }
@@ -124,15 +143,15 @@ export async function issuePendingInvoices(db: DB, src: InvoiceNumberSource): Pr
  */
 export async function issueCreditNote(db: DB, src: InvoiceNumberSource | null, invoiceId: string, input: CreditNoteInput): Promise<string> {
   if (!src) return saveCreditNote(db, invoiceId, input);
+  // إشعارٌ سيُرفض بفاتورته أو مدخلاته لا يأخذ رقماً (تتمة البند ١٢) · ويصل المستخدمَ سببُه لا «لا اتصال»
+  checkCreditNote(db, invoiceId, input);
   let seq: number;
   try {
     seq = await reserveSeq(db, src);
   } catch {
     throw new Error(t('invoice.creditNeedsConnection'));
   }
-  const id = saveCreditNote(db, invoiceId, input, invoiceNoFor(seq, input.date));
-  releaseSeq(db);
-  return id;
+  return withSeq(db, () => saveCreditNote(db, invoiceId, input, invoiceNoFor(seq, input.date)));
 }
 
 /** يلغي انتظار الإصدار · حين يُبقيها المستخدم مسودةً بقصد */

@@ -21,7 +21,8 @@ import { liveBlobs } from '../files/store';
 import { appFilesEnv } from './filesEnv';
 import { getSetting } from '../repos/settings';
 import { signInWithGoogleIdToken, refreshIdToken, deleteFirebaseAccount } from '../cloud/authRest';
-import { createSession, type Session, type SessionUser } from '../cloud/session';
+import { createSession, type Session, type SessionUser, type AccountProof } from '../cloud/session';
+import { whilePrompting } from './appLockService';
 import { FirestoreRemote } from '../cloud/firestore';
 import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, deleteAllAppDataFiles, type DriveBackup, type DriveIO } from '../cloud/drive';
 import { resetDeviceData } from './deviceReset';
@@ -30,7 +31,7 @@ import { cancelAllNotifications } from './notifications';
 import { hasUserData } from '../domain/backup/upgrade';
 import {
   enableSync, syncOnce, syncStatus, setSyncState, getSyncState, planCloudReplace, adoptAsCloudTruth, readCloud, planFromSnapshot, syncBackoffUntil,
-  type SyncStatus, type CloudReplacePlan, type CloudSnapshot, replayRejectsAfterUpgrade } from '../sync/engine';
+  type SyncStatus, type CloudReplacePlan, type CloudSnapshot, replayRejectsAfterUpgrade, clockSkewMs } from '../sync/engine';
 import type { DB } from '../db/adapter';
 import { ensureDeviceId } from '../db/seed';
 import { expoHasher, expoMd5Base64 } from '../files/expoFs';
@@ -86,12 +87,13 @@ function getSession(): Session | null {
   const authOpts = { apiKey: cfg.apiKey };
   session = createSession({
     google: {
-      async signIn() {
+      // نافذة قوقل تُخرج التطبيق إلى الخلفية: لا يُحسب ذلك خروجاً فيُقفل عند العودة (services/appLockService.ts)
+      signIn: () => whilePrompting(async () => {
         await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
         const res = await GoogleSignin.signIn();
         if (!isSuccessResponse(res) || !res.data.idToken) return null;
         return { idToken: res.data.idToken, email: res.data.user.email };
-      },
+      }),
       async signInSilently() {
         const res = await GoogleSignin.signInSilently();
         return res.type === 'success';
@@ -182,13 +184,13 @@ function remoteOf(db: DB, uid: string, idToken: () => Promise<string>, legacy = 
       projectId: cfg.projectId, uid, idToken, org: m.org,
       memberTokens: () => memberTokens(readAccess(db)),
       fullReadTables: () => fullReadTables(readAccess(db), tables),
-      access: () => readAccess(db), sv: svOf,
+      access: () => readAccess(db), sv: svOf, serverSkewMs: () => clockSkewMs(db),
     });
   }
   if (!legacy && getSyncState(db, 'org') === uid) {
-    return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid, access: () => readAccess(db), sv: svOf });
+    return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid, access: () => readAccess(db), sv: svOf, serverSkewMs: () => clockSkewMs(db) });
   }
-  return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken });
+  return new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, serverSkewMs: () => clockSkewMs(db) });
 }
 
 /** ربط الجهاز بعضويته بعد تفريغه · بلا رفع ما زُرع عليه (ليس للعضو أن يكتبه في منشأة غيره) */
@@ -510,11 +512,19 @@ export async function activateAccount(u: SessionUser): Promise<void> {
 }
 
 /** بيانات بلا حساب على الجهاز: يربطها الداخل بحسابه بقراره */
-/** قفل التطبيق (#51): يؤكَّد الحساب المسجّل على الجهاز نفسه بقوقل دون مسّ الجلسة (cloud/session.ts) · true إن طابق */
-export async function confirmSameAccount(): Promise<boolean> {
+/**
+ * قفل التطبيق (#51): يؤكَّد الحساب المسجّل على الجهاز نفسه بقوقل دون مسّ الجلسة · بخروجٍ من قوقل ثم دخولٍ جديد يُفحص رمز هويته
+ * (cloud/session.ts · المراجعة الشاملة · البند ٥)
+ */
+export async function confirmSameAccount(): Promise<AccountProof> {
   const s = getSession();
-  if (!s || !state.user) return false;
+  if (!s || !state.user) return { ok: false, why: 'none' };
   return s.confirmSameAccount();
+}
+
+/** على الجهاز حسابٌ يؤكَّد به قفل التطبيق (وإلا لا يُعرض «نسيت الرمز» ولا «تأكيد حسابي»: لا ينجحان) · يتغيّر بـsubscribeCloud */
+export function accountConfirmable(): boolean {
+  return !!cloudConfig() && !!state.user;
 }
 
 export async function bindUnboundToAccount(db: AppDB): Promise<void> {
@@ -644,10 +654,14 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
   if (!s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
   if (!state.online) throw new Error('حذف الحساب يحتاج اتصالاً بالإنترنت');
   const uid = state.user.uid;
+  // خروجٌ من قوقل ثم دخولٌ جديد للحساب نفسه (المراجعة الشاملة · البند ٥: كان signIn وحده يعيد الحساب الحالي بلا نافذة، وحسابٌ آخر
+  // فيه يُكتب في الجلسة قبل المقارنة)
   onProgress?.('جاري تأكيد هويتك بقوقل');
-  const fresh = await s.signIn();
-  if (!fresh) throw new Error('أُلغي تأكيد الهوية');
-  if (fresh.uid !== uid) throw new Error('اخترت حساباً آخر · اختر الحساب نفسه لحذفه');
+  const proof = await s.reauthSameAccount();
+  if (!proof.ok) {
+    throw new Error(proof.why === 'cancel' ? 'أُلغي تأكيد الهوية'
+      : proof.why === 'mismatch' ? 'اخترت حساباً آخر · اختر الحساب نفسه لحذفه' : t('auth.reauthFailed'));
+  }
   await pauseSync();
   try {
     onProgress?.('جاري حذف بياناتك من السحابة');

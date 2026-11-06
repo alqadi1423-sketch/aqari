@@ -194,6 +194,8 @@ export function ownerCashOut(
  * الحركة البنكية اليدوية بنوعها (#33): المحفظة والبنوك كلها في 1100، فالحركة بلا قيد تحويلٌ خفي بين المحفظة والبنك ·
  * فتُسجَّل بنوعها في مسارها: إيداعٌ من المحفظة أو سحبٌ إليها (بكفايتهما)، أو رسومٌ مصروفاً، أو واردٌ آخر إيراداً، بقيدٍ
  * مرتبطٍ بالحركة · قرار المالك 2026-10-05: «كل صرف نقدي يتحقق من رصيد النقد، ولا يصير النقد سالباً أبداً».
+ * والوارد الآخر إيرادٌ في 4300 بلا ضريبة مخرجات ولو كانت المنشأة مسجّلة (المراجعة الشاملة ٨ · البند ١١): قد يكون عائداً بنكياً
+ * معفى أو استرداداً لا توريداً، ولا مدخل فيه يقول إنه خدمةٌ خاضعة · فلا تُفرض عليه ضريبةٌ تلقائياً كعمولة التقبيل.
  */
 export type ManualBankKind = 'deposit' | 'withdraw' | 'fee' | 'income';
 
@@ -204,6 +206,7 @@ export function recordManualBankTx(
   if (a.kind === 'deposit') return depositCashToBank(db, { bankId: a.bankId, amountHalalas: a.amountHalalas, date: a.date, notes: a.descr });
   if (a.kind === 'withdraw') return withdrawCashFromBank(db, { bankId: a.bankId, amountHalalas: a.amountHalalas, date: a.date, notes: a.descr });
   requirePositive(a.amountHalalas);
+  requireOpenPeriod(db, a.date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   const descr = a.descr.trim();
   if (!descr) throw new Error(t('bankTx.descrRequired'));
   const name = bankName(db, a.bankId);

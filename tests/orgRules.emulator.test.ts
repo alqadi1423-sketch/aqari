@@ -313,6 +313,89 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     expect(await putDoc(`orgs/${ORG}/meta/counters`, { JE: b.hi + 5 }, COLLECTOR.uid!)).toBe(403);
     expect(await putDoc(`orgs/${ORG}/meta/counters`, { ...cur, JE: b.hi + 5 }, COLLECTOR.uid!)).toBe(200);
   });
+
+  // الهجرة ٤٨ أضافت original_end ويملؤه الجهاز على كل صف، ومستندات العقود القديمة في السحابة بلاه · فكتابة اللمس الجانبي كانت تُعدّه لمساً
+  test('المراجعة الشاملة · البند ٣: عضو المستأجرين يعدّل الاسم ويدمج على عقودٍ كتبتها السحابة قبل الهجرة ٤٨ · ولا يغيّر original_end', async () => {
+    const { addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const { syncOnce, buildDoc } = await import('@/sync/engine');
+    const { renameTenant, mergeTenants } = await import('@/domain/tenants');
+    const TEN = member('U-TEN', { tenants: 3, contracts: 1, props: 1 }, 'all');
+    expect(await putDoc(`orgs/${ORG}/members/U-TEN`, { email: 'u-ten@example.test', perm: TEN.perms, all: true, props: [], tokens: memberTokens(TEN) }, ORG)).toBe(200);
+    const ca = confirmContract(db, contractInput(addUnit(db, 'P1', { id: 'UN-T8A' }), { tenant: 'مستأجر لمس أول تجريبي', idNumber: '1000000058', phone: '0500000058' }));
+    const cb = confirmContract(db, contractInput(addUnit(db, 'P1', { id: 'UN-T8B' }), { tenant: 'مستأجر لمس ثانٍ تجريبي', idNumber: '1000000066', phone: '0500000066' }));
+    const owner = remoteFor(ORG, null);
+    expect((await syncOnce(db, owner, 'dev-owner')).pending).toBe(0);
+    const at = () => new Date().toISOString();
+    const row = (k: string) => buildDoc(db, 'contracts', k, 'upsert', at(), 'dev-x');
+    const cloud = async (k: string) => (await owner.getDoc(`orgs/${ORG}/rows/contracts__${k}`))!.d as Record<string, unknown>;
+    // نسخة السحابة كما كتبها إصدارٌ قبل الهجرة ٤٨: المستند وإسقاطه بلا original_end
+    const legacy = (k: string): RemoteDoc => { const x = row(k); const { original_end: _o, ...rest } = x.d!; return { ...x, d: rest }; };
+    for (const k of [ca, cb]) expect((await owner.write([owner.annotate!(db, legacy(k))]))[0]).toMatchObject({ ok: true });
+    expect('original_end' in (await cloud(ca))).toBe(false);
+    const tid = (k: string) => db.get<{ t: string }>(`SELECT tenant_id AS t FROM contracts WHERE id = ?`, [k])!.t;
+    // جهاز العضو كما يرفع المحرّك (annotate العميل): اللمس الجانبي جزئيٌّ بحقوله
+    const ten = remoteFor('U-TEN', TEN);
+    const push = async (k: string) => (await ten.write([ten.annotate!(db, row(k))]))[0];
+    renameTenant(db, tid(ca), 'مستأجر لمس معدَّل تجريبي');
+    expect(await push(ca)).toMatchObject({ ok: true });
+    const keep = tid(ca);
+    mergeTenants(db, keep, [tid(cb)], { allowDifferentIds: true });
+    expect(await push(cb)).toMatchObject({ ok: true });
+    const b = await cloud(cb);
+    expect([b.tenant_id, b.tenant_name, 'original_end' in b]).toEqual([keep, 'مستأجر لمس معدَّل تجريبي', false]);
+    const pub = (await owner.getDoc(`orgs/${ORG}/rows/contracts~pub__${cb}`))!.d as Record<string, unknown>;
+    expect([pub.tenant_id, 'original_end' in pub]).toEqual([keep, false]);
+
+    // كتابةٌ كاملة من إصدارٍ آخر (rulesGen: legacyTouches): إضافة original_end بقيمة نهاية العقد نفسها تمرّ على المستند الذي بلاه
+    const end = String(db.get<{ e: string }>(`SELECT end AS e FROM contracts WHERE id = ?`, [ca])!.e);
+    expect(row(ca).d!.original_end).toBe(end);
+    renameTenant(db, keep, 'مستأجر لمس ثالث تجريبي');
+    expect(await write(TEN, row(ca))).toMatchObject({ ok: true });
+    expect((await cloud(ca)).original_end).toBe(end);
+    // وتغيير قيمته من عضو المستأجرين مرفوض · وإضافته بغير نهاية العقد مرفوضة
+    expect(await write(TEN, { ...row(ca), d: { ...row(ca).d!, original_end: '2099-12-31' } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect(await write(TEN, { ...row(cb), d: { ...row(cb).d!, original_end: '2099-12-31' } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    // وإصدارٌ قبل الهجرة ٤٨ يكتب المستند كاملاً بلاه: نزعه وقيمته نهاية العقد يمرّ، وما سواه من d كما هو
+    renameTenant(db, keep, 'مستأجر لمس رابع تجريبي');
+    expect(await write(TEN, legacy(ca))).toMatchObject({ ok: true });
+    expect('original_end' in (await cloud(ca))).toBe(false);
+    // وغير الملموس يبقى مرفوضاً
+    expect(await write(TEN, { ...row(cb), d: { ...legacy(cb).d!, renew_note: 'ملاحظة مصطنعة' } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  });
+
+  // المتحقق المستقل على البند ٣: الجزئية بحقول اللمس وحدها كانت تُسقط غير الملموس بصمت، فيُقبل القسط بلا تخفيضه ويُحذف من الطابور
+  test('المراجعة الشاملة · البند ٣ (المتحقق المستقل): تخفيض القسط بـ«تنزيل من قيمة القسط» من عضو «إدخال» التحصيل يُرفض ظاهراً لا يُقبل بلا مبلغه · والموعد المتفق عليه وحده يمرّ', async () => {
+    const { addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract, recordRentPayment } = await import('@/domain/contracts/service');
+    const { syncOnce, buildDoc } = await import('@/sync/engine');
+    const { DISCOUNT_REDUCES_INSTALLMENT } = await import('@/domain/contracts/installments');
+    const k = confirmContract(db, contractInput(addUnit(db, 'P1', { id: 'UN-T8C' }), { tenant: 'مستأجر تنزيل تجريبي', idNumber: '1000000074', phone: '0500000074' }));
+    const owner = remoteFor(ORG, null);
+    expect((await syncOnce(db, owner, 'dev-owner')).pending).toBe(0);
+    const [i1, i2] = db.all<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 2`, [k]).map((x) => x.id);
+    const cloud = async (i: string) => (await owner.getDoc(`orgs/${ORG}/rows/contract_installments__${i}`))!.d as Record<string, unknown>;
+    expect((await cloud(i1)).amount_halalas).toBe(200000);
+    // جهاز العضو كما يرفع المحرّك (annotate العميل) · وما وصله من السحابة «بلا كاتب» (الهجرة ٤٢)، فلا سبب للرفض غير ما في d
+    for (const i of [i1, i2]) db.run(`INSERT OR REPLACE INTO row_by (tbl, pk, uid) VALUES ('contract_installments', ?, '')`, [i]);
+    const col = remoteFor(COLLECTOR.uid!, COLLECTOR);
+    const push = async (i: string) => {
+      const doc = col.annotate!(db, buildDoc(db, 'contract_installments', i, 'upsert', new Date().toISOString(), 'dev-col'));
+      expect(doc.op).toBe('collect');
+      return (await col.write([doc]))[0];
+    };
+    recordRentPayment(db, k, { installmentId: i1, period: 'يناير', date: '2026-01-05', notes: '',
+      discountHalalas: 10000, discountKind: DISCOUNT_REDUCES_INSTALLMENT, lines: [{ method: 'cash', amountHalalas: 190000 }] });
+    expect(await push(i1)).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect((await cloud(i1)).amount_halalas).toBe(200000);
+    // والملموس وحده يمرّ كما كان
+    db.run(`UPDATE contract_installments SET agreed_date = '2026-02-10' WHERE id = ?`, [i2]);
+    expect(await push(i2)).toMatchObject({ ok: true });
+    expect((await cloud(i2)).agreed_date).toBe('2026-02-10');
+    // والمالك يرفع التخفيض فيصل السحابة
+    expect((await syncOnce(db, owner, 'dev-owner')).pending).toBe(0);
+    expect((await cloud(i1)).amount_halalas).toBe(190000);
+  });
 });
 
 d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦-١٠-٠٥)', () => {
@@ -363,6 +446,68 @@ d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦
     };
     expect((await push('بيانات عضو')).ok).toBe(true);
     expect((await push('عقد')).ok).toBe(false);
+  });
+
+  test('المراجعة الشاملة · البند ٢٨: صفّ سجل العضو عن نفسه برموز رؤيةٍ مزوّرة أو بحقولٍ فوق حدّها مرفوض · والسليم مقبول', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { logAudit } = await import('@/domain/audit');
+    const { buildDoc } = await import('@/sync/engine');
+    const mdb = memDb();
+    const make = (name = 'عضو تجريبي') => {
+      logAudit(mdb, 'الأعضاء', 'update', 'بيانات عضو', name);
+      const k = mdb.get<{ id: string }>(`SELECT id FROM audit_log ORDER BY rowid DESC LIMIT 1`)!.id;
+      return annotate(mdb, buildDoc(mdb, 'audit_log', k, 'upsert', new Date().toISOString(), 'dev-view'), VIEWER).doc;
+    };
+    const write = async (doc: ReturnType<typeof make>) => (await remoteFor('U-VIEW', VIEWER).write([doc]))[0];
+    expect((await write(make())).ok).toBe(true);
+    // رموز رؤيةٍ لعقارٍ بعينه أو بصيغةٍ غير صيغة الرؤية العامة
+    expect((await write({ ...make(), g: ['contracts|P-ANY'] })).ok).toBe(false);
+    expect((await write({ ...make(), g: ['contracts|*', 'x y'] })).ok).toBe(false);
+    // حقلٌ فوق حدّه، وحقلٌ ليس من سجل العمليات
+    expect((await write(make('س'.repeat(400)))).ok).toBe(false);
+    const extra = make();
+    expect((await write({ ...extra, d: { ...extra.d!, note: 'حقل مصطنع' } })).ok).toBe(false);
+    const big = make();
+    expect((await write({ ...big, d: { ...big.d!, after_json: 'x'.repeat(5000) } })).ok).toBe(false);
+
+    // (تتمة · المراجعة الأخيرة) نوع العملية ووقتها: ما يكتبه التطبيق وحده · إنشاء بياناته، وسطر إعادة ضبط رمز القفل (البند ٥)
+    const { logLockReset } = await import('@/domain/lockReset');
+    const last = () => {
+      const k = mdb.get<{ id: string }>(`SELECT id FROM audit_log ORDER BY rowid DESC LIMIT 1`)!.id;
+      return annotate(mdb, buildDoc(mdb, 'audit_log', k, 'upsert', new Date().toISOString(), 'dev-view'), VIEWER).doc;
+    };
+    logAudit(mdb, 'الأعضاء', 'create', 'بيانات عضو', 'عضو تجريبي', { الاسم: 'أُدخل' }, { الاسم: 'أُدخل' });
+    const created = last();
+    expect([created.d!.action_type, String(created.d!.ts).length]).toEqual(['create', 19]);
+    expect((await write(created)).ok).toBe(true);
+    mdb.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('membership', ?)`, [JSON.stringify({ org: ORG, profile: { name: 'عضو تجريبي' } })]);
+    logLockReset(mdb, Date.now());
+    const reset = last();
+    expect([reset.d!.entity_type, reset.d!.action_type]).toEqual(['بيانات عضو', 'update']);
+    expect((await write(reset)).ok).toBe(true);
+    // نوعٌ ليس مما يكتبه هذا المسار، أو ضخم، أو ليس نصاً · ووقتٌ ضخم، أو ليس بصيغة ISO، أو ليس نصاً، أو بعيدٌ في المستقبل فيبقى أول السجل
+    const forged = (d: Record<string, unknown>) => { const x = make(); return { ...x, d: { ...x.d!, ...d } as typeof x.d }; };
+    const now = String(make().d!.ts);
+    const bad: Array<[string, Record<string, unknown>]> = [
+      ['نوع حذف', { action_type: 'delete' }], ['نوع ضخم', { action_type: 'حذف كل العقود'.repeat(2000) }], ['نوع رقم', { action_type: 1 }],
+      ['وقت ضخم', { ts: now + 'x'.repeat(5000) }], ['وقت نص', { ts: 'أمس' }], ['وقت بلا تاريخ صحيح', { ts: '2026-13-45T99:00:00' }],
+      ['وقت رقم', { ts: 1767225600000 }], ['وقت بعيد', { ts: '9999-12-31T00:00:00' }],
+      // (تتمة · المتحقق المستقل) الساعة والدقيقة والثانية في مداها: بتاريخ اليوم كانت T99:99:99 تُقبل، فيظهر وقتها «NaN» على جهاز
+      // المالك ويغيب السطر عن مرشحات الشهر والسنة (date(ts) في SQLite تعيده NULL) ويُرتَّب فوق سطور يومه
+      ['ساعة ودقيقة وثانية فوق مداها', { ts: now.slice(0, 10) + 'T99:99:99' }], ['ساعة ٢٤', { ts: now.slice(0, 10) + 'T24:00:00' }],
+      ['دقيقة ٦٠', { ts: now.slice(0, 10) + 'T23:60:00' }], ['ثانية ٦٠', { ts: now.slice(0, 10) + 'T23:59:60' }],
+      ['ساعة ٢٩ بصيغة toISOString', { ts: now.slice(0, 10) + 'T29:00:00.000Z' }],
+    ];
+    const accepted: string[] = [];
+    for (const [label, d] of bad) if ((await write(forged(d))).ok) accepted.push(label);
+    expect(accepted).toEqual([]);
+    // وصيغة toISOString كاملةً مقبولة، وساعة جهازٍ متقدمةٌ يوماً، وسطرٌ قديمٌ رُفع بعد انقطاع
+    expect((await write(forged({ ts: new Date().toISOString() }))).ok).toBe(true);
+    expect((await write(forged({ ts: new Date(Date.now() + 86_400_000).toISOString().slice(0, 19) }))).ok).toBe(true);
+    expect((await write(forged({ ts: '2026-01-01T00:00:00' }))).ok).toBe(true);
+    // وأطراف المدى بتاريخ اليوم
+    expect((await write(forged({ ts: now.slice(0, 10) + 'T23:59:59' }))).ok).toBe(true);
+    expect((await write(forged({ ts: now.slice(0, 10) + 'T00:00:00.000Z' }))).ok).toBe(true);
   });
 });
 

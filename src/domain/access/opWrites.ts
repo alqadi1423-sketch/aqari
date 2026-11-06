@@ -88,6 +88,20 @@ export const SELF_AUDIT_ENTITY = 'بيانات عضو';
 /** وحدة سطر بيانات العضو · وفاعل المالك في سجل العمليات (auditActor) لا يكتبه عضو (مراجعة التثبيت #54) */
 export const SELF_AUDIT_MODULE = 'الأعضاء'; // i18n-exempt: وحدة مخزّنة في سجل العمليات
 export const OWNER_ACTOR = 'المالك'; // i18n-exempt: فاعلٌ مخزَّن في سجل العمليات
+/**
+ * نوع عملية سطر بيانات العضو كما يكتبه التطبيق وحده (المراجعة الشاملة · البند ٢٨ تتمة): logProfileEdit (إنشاءٌ أو تعديل) وlogLockReset
+ * (تعديل) · وأقصى أيامٍ يسبق بها وقتُه (ts بساعة الجهاز) وقتَ الخادم، فلا يُكتب سطرٌ بوقتٍ بعيد يبقى أول السجل
+ */
+export const SELF_AUDIT_ACTIONS = ['create', 'update'] as const;
+export const SELF_AUDIT_AHEAD_DAYS = 2;
+
+/**
+ * عمودٌ مُزامَن أضافته هجرةٌ بعد أن كُتبت مستندات السحابة (المراجعة الشاملة · البند ٣ تتمة · الهجرة ٤٨): الجهاز الأحدث يملؤه على
+ * كل صف والمستند القديم بلاه، فكتابة اللمس الجانبي تضيفه أو تنزعه · وقيمته المحايدة عمودٌ آخر في الصف (original_end
+ * بقيمة end كغيابه في الاستحقاق: agreedEnd). جهاز العضو لا يرفعه في اللمس الجانبي (sync/acl.ts touchLegacyColumns)،
+ * والقواعد تقبل إضافته أو نزعه بها من إصدارٍ آخر وترفض تغيير قيمته (rulesGen: legacyTouches)
+ */
+export const LEGACY_NEUTRAL = { table: 'contracts', col: 'original_end', equals: 'end' } as const;
 
 export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update' | 'delete', cols: string[] = []): boolean {
   const w = OP_WRITES[op];
@@ -102,13 +116,14 @@ export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update
 /**
  * مصادر القيود التي ينشئها كل قسم (مراجعة التثبيت #40 · جردٌ مستقل لكل مسار يرحّل وكل بوابة في الشاشة): القواعد تشترط
  * مصدر القيد الجديد من قسم العملية، فلا ينشئ العضو قيداً لعملية قسمٍ ليس له. والعابر للأقسام مقصود: العقد يرحّل تأمينه
- * وتحويل عربونه، والتسوية مطالبة زيادتها، والشراء لحاق إهلاك أصوله، والتحصيل عكس تحويل العربون بإلغاء دفعته.
- * والدفتر يدويّه (بلا مصدر) وكل عكسٍ (…_rev، ومنه عكس مصادر قديمة مستوردة).
+ * وتحويل عربونه، والتسوية مطالبة زيادتها، والشراء لحاق إهلاك أصوله · ولا عكس تحويل العربون للتحصيل: دفعة العربون لا تُلغى
+ * (المراجعة الشاملة · البند ٢٧)، فكان مصدره يجيز لعضوٍ بنسخة قديمة رفع عكسها.
+ * والدفتر يدويّه (بلا مصدر) وكل عكسٍ (…_rev، ومنه عكس مصادر قديمة مستوردة) · وعكس دفعة العربون منه يرفضه جهاز المالك (sync/engine.ts).
  * ومصادر يرحّلها المالك وحده (الخصم المحجوز، والفائض، وعكس الإهلاك المكرر، واسترجاع السلة) ليست هنا.
  */
 export const OP_JOURNAL_SRC: Partial<Record<SectionKey, string[]>> = {
   contracts: ['contract_deposit', 'deposit_carry', 'reservation_convert'],
-  collect: ['rent', 'rent_rev', 'reservation_convert_rev', 'discount_rev', 'rent_payment_rev'],
+  collect: ['rent', 'rent_rev', 'discount_rev', 'rent_payment_rev'],
   deposits: ['deposit_deduct', 'deposit_deduct_move', 'deposit_refund',
     'deposit_deduct_rev', 'deposit_deduct_move_rev', 'deposit_refund_rev', 'claim'],
   reservations: ['reservation', 'reservation_forfeit', 'reservation_refund', 'key_money'],

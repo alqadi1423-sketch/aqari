@@ -14,7 +14,7 @@
 import type { DB } from '../db/adapter';
 import { daysBetween, addDays, contractEndFromDuration } from './dates';
 import { TS_DEDUCTIBLE } from './purchases';
-import { DISCOUNT_REDUCES_INSTALLMENT } from './contracts/installments';
+import { DISCOUNT_REDUCES_INSTALLMENT, CYCLE_MONTHS } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
 import { ASSET_CATEGORIES } from './assets/catalog';
 
@@ -151,6 +151,33 @@ export interface ContractAccrualRow {
   end: string | null;
   status?: string;
   cancel_date?: string | null;
+  /** النهاية المتفق عليها (الهجرة ٤٨) · الإلغاء يقصّ end ولا يمسّها · وغيابها: end */
+  original_end?: string | null;
+  /** دورة العقد وعدد أقساطه · لاشتقاق النهاية المتفق عليها لملغى قُصّت نهايته ولا original_end سليمة له */
+  cycle?: string | null;
+  installments?: number;
+  /** أقساطه المستحقة بعد تاريخ الإلغاء · دليل القصّ: الجدول يقع في المدة المتفق عليها، فقسطٌ بعد الإلغاء نهايته بعده */
+  installments_after_cancel?: number;
+}
+
+/**
+ * النهاية المتفق عليها للعقد الملغى (المراجعة الشاملة · البند ٣، وتتمة المتحقق المستقل): original_end إن جاوزت تاريخ الإلغاء · وإلا
+ * فلملغى قُصّت نهايته (end = cancel_date) ولا تُعرف نهايته المتفق عليها: من جدول أقساطه بقاعدة الهجرة نفسها (عدد الأقساط × أشهر
+ * الدورة، contractEndFromDuration)، فيتفق كل جهاز على مقامٍ واحد · ولا تقلّ عن end.
+ * ولا تُشتق إلا بدليل (تتمة · المراجعة الأخيرة): original_end غائبة (ملغى قبل الهجرة ٤٨ وصل جهازاً جديداً، فالمزامنة تُبقيها فارغة ·
+ * sync/engine.ts: keepUnknownOriginalEnd) أو قسطٌ مستحق بعد تاريخ الإلغاء (قُصّت يقيناً) · فما أُلغي بعد الهجرة في يوم نهايته بالضبط
+ * لم تُقصّ نهايته، وoriginal_end = end نهايته: كان يُشتق له فتطول إن لم تقسم الدورة المدة (ستة أشهر بدورة سنوية) فيُبخس الإيراد
+ */
+export function agreedEnd(c: ContractAccrualRow): string {
+  const end = c.end || '';
+  const cd = c.cancel_date || '';
+  if (c.original_end && c.original_end > cd && c.original_end > end) return c.original_end;
+  const cut = !c.original_end || (c.installments_after_cancel ?? 0) > 0;
+  if (c.status === 'ملغى' && cd && end === cd && cut && c.start && (c.installments ?? 0) > 0) { // i18n-exempt: حالة العقد المخزّنة
+    const derived = contractEndFromDuration(c.start, (c.installments ?? 0) * (CYCLE_MONTHS[c.cycle ?? ''] || 12));
+    if (derived > end) return derived;
+  }
+  return c.original_end && c.original_end > end ? c.original_end : end;
 }
 
 export interface ContractAccrualWindow {
@@ -174,7 +201,9 @@ export function contractAccrualWindow(c: ContractAccrualRow): ContractAccrualWin
   if (c.status === 'ملغى') {
     const cd = c.cancel_date || '';
     if (!cd || cd < start) return null;
-    return { start, end, accrueUntil: cd < end ? cd : end };
+    // المقام المدة المتفق عليها لا المقصوصة بالإلغاء (المراجعة الشاملة · البند ٣): عقد سنةٍ أُلغي بعد ربعها استحق ربعها
+    const full = agreedEnd(c);
+    return { start, end: full, accrueUntil: cd < full ? cd : full };
   }
   return { start, end, accrueUntil: end };
 }
@@ -202,12 +231,15 @@ interface AccrualReduction { amount: number; start: string; end: string; accrueU
 function accrualReductions(db: DB): AccrualReduction[] {
   const rows = db.all<{
     amount: number; due: string; next_due: string | null;
-    start: string | null; end: string | null; status: string; cancel_date: string | null; value_halalas: number;
+    start: string | null; end: string | null; status: string; cancel_date: string | null; value_halalas: number; original_end: string | null;
+    cycle: string | null; installments: number; after_cancel: number;
   }>(
     `SELECT p.discount_halalas AS amount, i.due_date AS due,
             (SELECT MIN(i2.due_date) FROM contract_installments i2
              WHERE i2.contract_id = i.contract_id AND i2.due_date > i.due_date) AS next_due,
-            c.start, c.end, c.status, c.cancel_date, c.value_halalas
+            c.start, c.end, c.status, c.cancel_date, c.value_halalas, c.original_end, c.cycle,
+            (SELECT COUNT(*) FROM contract_installments i3 WHERE i3.contract_id = c.id) AS installments,
+            (SELECT COUNT(*) FROM contract_installments i4 WHERE i4.contract_id = c.id AND i4.due_date > c.cancel_date) AS after_cancel
      FROM contract_payments p
      JOIN contract_installments i ON i.id = p.installment_id
      JOIN contracts c ON c.id = i.contract_id
@@ -216,7 +248,8 @@ function accrualReductions(db: DB): AccrualReduction[] {
   );
   const out: AccrualReduction[] = [];
   for (const r of rows) {
-    const w = contractAccrualWindow({ value_halalas: Number(r.value_halalas), start: r.start, end: r.end, status: r.status, cancel_date: r.cancel_date });
+    const w = contractAccrualWindow({ value_halalas: Number(r.value_halalas), start: r.start, end: r.end, status: r.status, cancel_date: r.cancel_date,
+      original_end: r.original_end, cycle: r.cycle, installments: Number(r.installments), installments_after_cancel: Number(r.after_cancel) });
     if (!w) continue;
     const start = r.due < w.start ? w.start : r.due;
     let end = r.next_due ? addDays(r.next_due, -1) : w.end;
@@ -239,13 +272,18 @@ function reductionShare(r: AccrualReduction, from: string | null, to: string | n
 function accrualContracts(db: DB): ContractAccrualRow[] {
   return db.all<{
     id: string; value_halalas: number; start: string | null; end: string | null;
-    status: string; cancel_date: string | null;
+    status: string; cancel_date: string | null; original_end: string | null; cycle: string | null; installments: number;
+    installments_after_cancel: number;
   }>(
-    `SELECT id, ${contractTotalSql(db)} AS value_halalas, start, end, status, cancel_date
+    `SELECT id, ${contractTotalSql(db)} AS value_halalas, start, end, status, cancel_date, original_end, cycle,
+            (SELECT COUNT(*) FROM contract_installments i WHERE i.contract_id = contracts.id) AS installments,
+            (SELECT COUNT(*) FROM contract_installments i WHERE i.contract_id = contracts.id AND i.due_date > contracts.cancel_date)
+              AS installments_after_cancel
      FROM contracts
      WHERE deleted_at IS NULL AND status != 'مسودة'
        AND start IS NOT NULL AND end IS NOT NULL AND start != '' AND end != ''`
-  ).map((r) => ({ ...r, value_halalas: Number(r.value_halalas) }));
+  ).map((r) => ({ ...r, value_halalas: Number(r.value_halalas), installments: Number(r.installments),
+    installments_after_cancel: Number(r.installments_after_cancel) }));
 }
 
 // ─── فواتير الشراء ───

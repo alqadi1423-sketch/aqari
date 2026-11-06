@@ -22,7 +22,7 @@ import { costCenters, dimsLabel } from '../src/domain/accounting/dimensions';
 import { cashFlowFigures } from '../src/domain/finStatements';
 import { useLang } from '../src/i18n';
 import { vatReturnData } from '../src/domain/vatReturn';
-import { filedReturn, filedDiff, fileVatReturn, unfileVatReturn } from '../src/domain/vatFilings';
+import { filedReturn, filedDiff, fileVatReturn, unfileVatReturn, canFileVatReturn } from '../src/domain/vatFilings';
 import { useDialog } from '../src/ui/AppDialog';
 import { dataYears, dataQuarters, defaultPeriod, quarterRange, QUARTER_AR, previousPeriod } from '../src/domain/periods';
 import { useRouter } from 'expo-router';
@@ -783,7 +783,8 @@ function VatFilingCard({ year, q, canManage }: { year: number; q: 1 | 2 | 3 | 4;
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, year, q, filed]);
   if (!filed) {
-    return canManage ? (
+    // الربع الذي لم ينته لا يُقدَّم إقراره · فلا يظهر زره (المراجعة الشاملة · البند ٨)
+    return canManage && canFileVatReturn(year, q) ? (
       <View style={{ marginVertical: 6 }}>
         <BtnGhost small icon="lock" title={t('vat.markFiled')} onPress={() => dialog({
           title: t('vat.markFiled'), body: t('vat.markFiledBody'),

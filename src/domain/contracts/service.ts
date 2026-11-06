@@ -3,7 +3,7 @@
  * كل دالة تتم بمعاملة واحدة، والترحيل المحاسبي عبر مسار postEvent الواحد.
  */
 import { contractDims } from '../accounting/dimensions';
-import { correctionDate, isFiledDate } from '../vatFilings';
+import { correctionDate, isFiledDate, requireOpenPeriod } from '../vatFilings';
 import type { DB } from '../../db/adapter';
 import { requireCash } from '../cashGuard';
 import type { ScheduleRow } from '../pdf/parseEjar';
@@ -314,12 +314,15 @@ export function confirmContract(db: DB, inputRaw: ContractDraftInput, draftId?: 
     // استلام التأمين
     db.run(`UPDATE contracts SET deposit_holder = ?, deposit_holder_name = ? WHERE id = ?`,
       [input.depositHolder || 'المكتب', input.depositHolderName || '', id]);
+    // بتاريخ بداية العقد، إلا إن قُدِّم إقرار ربعه فبتاريخ التصحيح (#29): عقدٌ يُدخل متأخراً لا يكتب في فترةٍ مجمَّدة (التحقق المستقل على
+    // البند ٩: التأمين والعربون المحوَّل ودفعاته كانت تُرحَّل فيها فيتغير الإقرار المقدَّم)
+    const postDate = correctionDate(db, input.start);
     postContractDeposit(db, {
-      id, contract_no: contractNo, tenant: input.tenant, start: input.start,
+      id, contract_no: contractNo, tenant: input.tenant, start: postDate,
       deposit: input.depositHalalas, holder: input.depositHolder,
     });
     // تحويل الحجز لعقد · بمعرّف الحجز الذي اختاره المستخدم، والعربون يسدّد الأقساط بالترتيب بتاريخ العقد (المراجعة ٤.٤)
-    if (input.reservationId) convertReservation(db, input.reservationId, id, contractNo, input.tenant, input.start);
+    if (input.reservationId) convertReservation(db, input.reservationId, id, contractNo, input.tenant, postDate);
     // نموذج الاستلام والتسليم يُنشأ تلقائياً من تفاصيل الوحدة · واحد لكل عقد
     createHandoverForContract(db, id);
     logAudit(db, 'العقود', 'create', 'عقد إيجار', input.tenant, null, { contractNo });
@@ -352,6 +355,7 @@ export function applyTenantCredit(db: DB, contractId: string, input: { installme
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
   const amount = Math.round(input.amountHalalas);
   if (!(amount > 0)) throw new RuleViolation(t('credit.amountRequired'));
+  requireOpenPeriod(db, input.date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   if (amount > tenantCreditOf(db, contractId)) throw new RuleViolation(t('credit.overBalance'));
   const inst = openInstallments(db, contractId).find((i) => i.id === input.installmentId);
   if (!inst || amount > inst.remaining) throw new RuleViolation(t('credit.overRemaining'));
@@ -476,11 +480,13 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
       );
     }
     const newEnd = c.end && c.end > date ? date : c.end; // الوحدة تصبح متاحة من تاريخ الإلغاء
+    // والنهاية المتفق عليها تبقى مقام الاستحقاق (المراجعة الشاملة · البند ٣ · الهجرة ٤٨)
     db.run(
       `UPDATE contracts SET status='ملغى', cancel_date=?, cancel_reason=?,
-        cancel_deduction_halalas=?, cancel_refund_halalas=?, cancel_deduction_reason=?, end=?
+        cancel_deduction_halalas=?, cancel_refund_halalas=?, cancel_deduction_reason=?, original_end=COALESCE(original_end, end), end=?
        WHERE id = ?`,
-      [date, input.reason.trim(), input.settle ? input.deductionHalalas : null,
+      // المخصوم من التأمين بعد طرح الزائد عليه (صار مطالبة) لا المُدخَل (المراجعة الشاملة · البند ٢٤)
+      [date, input.reason.trim(), input.settle ? deduction : null,
        input.settle ? refund : null, input.deductionReason.trim() || null, newEnd, contractId]
     );
     logAudit(db, 'العقود', 'update', 'إلغاء عقد', c.tenant_name, { status: c.status }, { status: 'ملغى' });
@@ -572,16 +578,18 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
     });
     db.run(`UPDATE contracts SET status='منتهٍ', renewed_to=? WHERE id = ?`, [contractNo, c.id]);
 
+    // بتاريخ بداية التجديد، إلا إن قُدِّم إقرار ربعه فبتاريخ التصحيح (#29 · التحقق المستقل على البند ٩)
+    const postDate = correctionDate(db, input.start);
     if (input.carryDeposit && Number(c.deposit_halalas) > 0) {
       postDepositCarry(db, {
         fromNo: c.contract_no || '', toNo: contractNo, toId: newId, fromId: c.id,
-        deposit: Number(c.deposit_halalas), date: input.start,
+        deposit: Number(c.deposit_halalas), date: postDate,
       });
     }
     if ((input.extraDepositHalalas || 0) > 0) {
       postContractDeposit(db, {
         id: newId, contract_no: contractNo, tenant: c.tenant_name,
-        start: input.start, deposit: input.extraDepositHalalas, holder: (c as unknown as { deposit_holder?: string }).deposit_holder,
+        start: postDate, deposit: input.extraDepositHalalas, holder: (c as unknown as { deposit_holder?: string }).deposit_holder,
       });
     }
     createHandoverForContract(db, newId); // العقد الجديد له نموذجه الواحد

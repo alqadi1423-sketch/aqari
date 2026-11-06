@@ -26,12 +26,15 @@ import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
 import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
+import { paidFromDeposit } from '../domain/contracts/cancelPayment';
 import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
+import { isoCmp, isoNorm } from './isoTime';
+import { redactForReport } from '../domain/redact';
 
 const nowIso = () => new Date().toISOString();
 
@@ -175,11 +178,18 @@ export function clockSkewMs(db: DB): number {
   return Number.isFinite(v) ? v : 0;
 }
 
-/** وقتٌ بساعة الجهاز إلى ساعة الخادم */
+/** وقتٌ بساعة الجهاز إلى ساعة الخادم · بصيغة واحدة (أجزاء الألف) أياً كانت دقة كسوره (المراجعة الشاملة · البند ١٦) */
 export function toServerClock(db: DB, iso: string): string {
   const skew = clockSkewMs(db);
-  const t = Date.parse(iso);
-  return skew && Number.isFinite(t) ? new Date(t + skew).toISOString() : iso;
+  const t = Date.parse(isoNorm(iso));
+  return skew && Number.isFinite(t) ? new Date(t + skew).toISOString() : isoNorm(iso);
+}
+
+/** وقتٌ بساعة الخادم إلى ساعة الجهاز · عكس toServerClock، فما يُدرج في الطابور بوقتٍ وارد يُرفع بالوقت نفسه */
+export function fromServerClock(db: DB, iso: string): string {
+  const skew = clockSkewMs(db);
+  const t = Date.parse(isoNorm(iso));
+  return skew && Number.isFinite(t) ? new Date(t - skew).toISOString() : isoNorm(iso);
 }
 
 /** فرقٌ دون ثانية ضجيجُ شبكة لا ساعة منحرفة · فلا يُحفظ */
@@ -225,6 +235,13 @@ export function outboxCount(db: DB): number {
 /** أسباب رفضٍ مصدرها مخطط الجهاز الأقدم: قيد CHECK أو عمودٌ أو جدولٌ لا يعرفه · يُعاد واردها بعد الترقية */
 const SCHEMA_REJECT = /CHECK constraint failed|has no column named|no such column|no such table/i;
 
+/**
+ * رفضٌ دائم من السحابة لصفٍّ بعينه (المراجعة الشاملة · البند ١٥): مستندٌ يرفضه الخادم لبنيته أو لحجمه لا تفيده الإعادة، وبقاؤه في رأس
+ * الطابور كان يسدّه · فيخرج إلى سجل المرفوض بسببه، ويعود إلى الطابور إن عُدّل الصف أو بعد ترقية التطبيق
+ */
+const PERMANENT_PUSH_CODES = new Set(['INVALID_ARGUMENT', 'DOC_TOO_LARGE']);
+const PERMANENT_PUSH_REASON = 'رفضته السحابة رفضاً دائماً'; // i18n-exempt: بادئة سبب الرفض المخزَّن
+
 /** مفتاح آخر إصدارٍ أُعيد فيه المرفوض */
 export const REJECTS_REPLAYED_KEY = 'rejects_replayed_sv';
 
@@ -240,7 +257,7 @@ export function replayRejectsAfterUpgrade(db: DB, sv: number): { requeued: numbe
   db.transaction(() => {
     for (const r of rows) {
       const t = syncTable(r.tbl);
-      if (r.reason.startsWith('خارج صلاحيتك')) { // i18n-exempt: بادئة سبب الرفض المخزَّن
+      if (r.reason.startsWith('خارج صلاحيتك') || r.reason.startsWith(PERMANENT_PUSH_REASON)) { // i18n-exempt: بادئة سبب الرفض المخزَّن
         if (!t) continue;
         const where = t.pkCols.map((c) => `"${c}" = ?`).join(' AND ');
         const exists = !!db.get(`SELECT 1 FROM "${r.tbl}" WHERE ${where}`, pkParams(r.tbl, r.pk));
@@ -269,12 +286,13 @@ export function stageInbox(db: DB, docs: RemoteDoc[]): void {
       // الأحدث بوقت الخادم وحده، ومن يغلب الصفَّ المحلي يقرّره التطبيق (المراجعة الخارجية ٧ · النتيجة ١٩: نسخةٌ بـ u = 2099 تنتظر أباها
       // كانت تغلب النسخة الأحدث الصحيحة فيُطبَّق القديم ويتجاوزه المؤشر · والمتحقق المستقل، الجولة ٣٠: وكاتبٌ ساعته متأخرة كذلك) ·
       // والوارد بلا وقت خادم بوقته المعلن كما كان
-      const at = d.ts || d.u;
+      // بصيغة واحدة: وقت الخادم بأجزاء المليون أو أقل، ووقت الجهاز بأجزاء الألف، والمقارنة نصاً بينهما تخطئ (البند ١٦)
+      const at = isoNorm(d.ts || d.u);
       db.run(
         `INSERT INTO sync_inbox (doc, tbl, pk, rank, payload, updated_at, device_id, attempts, last_error, del)
          VALUES (?,?,?,?,?,?,?,0,NULL,?)
          ON CONFLICT(doc) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at,
-           device_id = excluded.device_id, attempts = 0, last_error = NULL, del = excluded.del
+           device_id = excluded.device_id, attempts = 0, last_error = NULL, del = excluded.del, waiting_since = NULL
          WHERE excluded.updated_at >= sync_inbox.updated_at`,
         [d.id, d.t, d.k, SYNC_RANK[d.t] ?? 999, JSON.stringify(d), at, d.dev, d.del ? 1 : 0]);
       // كاتب الصف يصل مع مستنده (المنشأة) · فيعرف الجهاز مسودة من هي، ويرسل العضو الكاتب نفسه عند التعديل · والوارد بلا كاتب
@@ -288,6 +306,13 @@ export function stageInbox(db: DB, docs: RemoteDoc[]): void {
 const isMissingParent = (msg: string) => /FOREIGN KEY constraint failed/i.test(msg);
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const MAX_ATTEMPTS = 20;
+/**
+ * مهلة انتظار الأب بالزمن لا بالمرور (المراجعة الشاملة · البند ١٤): أبٌ غائب مؤقتاً (جهازٌ لم يرفع بعد، أو رفعٌ انقطع) كان يصير رفضاً
+ * نهائياً بعد نحو عشر دورات · فلا رفض قبل ثلاثين يوماً من بدء الانتظار ولا قبل MAX_ATTEMPTS محاولة معاً
+ */
+const WAIT_LIMIT_MS = 30 * 24 * 3600 * 1000;
+/** سبب رفض الانتظار الطويل · ويُعاد واردُه حين يصل أبوه */
+const WAIT_REJECT = 'سجل أب غير موجود بعد محاولات متكررة';
 
 function stable(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
@@ -331,6 +356,18 @@ function upsertRow(db: DB, table: string, data: RowData, cols: Set<string>): voi
       ? 'UPDATE SET ' + nonPk.map((c) => `"${c}" = excluded."${c}"`).join(', ')
       : 'NOTHING'}`;
   db.run(sql, keys.map((c) => data[c] as SqlValue));
+}
+
+/**
+ * عقدٌ ملغى قُصّت نهايته (end = cancel_date) وصل ونهايته المتفق عليها غير معروفة: مستندٌ رفعه إصدارٌ قبل الهجرة ٤٨ بلا original_end
+ * (والهجرة لا ترفع ما عبّأته)، أو جهازٌ لم يعرفها فرفعها فارغة · تبقى فارغةً فيشتقها الاستحقاق من جدول أقساطه بقاعدة الهجرة نفسها
+ * (accrual.ts: agreedEnd) كما على الجهاز المرقّى · ومحفّز الإدراج كان يملؤها بالمقصوصة فتُحسب نهايةً معروفة، فلا يُفرَّق بينها وبين
+ * عقدٍ أُلغي بعد الهجرة في يوم نهايته (المراجعة الشاملة · البند ٣ · تتمة المراجعة الأخيرة) · ومستندٌ بلا الحقل لصفٍّ قائم لا يمسّه
+ */
+function keepUnknownOriginalEnd(db: DB, id: string, row: RowData, fresh: boolean): void {
+  if (row.original_end || (!('original_end' in row) && !fresh)) return;
+  db.run(`UPDATE contracts SET original_end = NULL WHERE id = ? AND status = ? AND cancel_date IS NOT NULL AND end = cancel_date
+            AND (original_end IS NULL OR original_end = end)`, [id, 'ملغى']); // i18n-exempt: حالة العقد المخزّنة
 }
 
 /**
@@ -428,6 +465,12 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   if (!originals.length) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
   const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
   if (!issues.includes('')) throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' }));
+  // ولا يعكس عضوٌ قيد دفعةٍ سُدّدت من عربون الحجز (المراجعة الشاملة · البند ٢٧ · المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها،
+  // و«الدفتر» يجيز له كل عكس) · وعكس المالك يُقبل كما كتبه، ورصيده العالق يُحمّر فحص عربون الحجوزات
+  if (base === 'reservation_convert' && byMember(db, doc, true)
+    && originals.some((o, i) => issues[i] === '' && db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: ربط القيد بمستنده */ WHERE journal_entry_id = ?`, [o.id]))) { // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
+    throw new Error(tr('mirror.revRejected', { why: tr('payment.cancelFromDeposit', { lng: 'ar' }), lng: 'ar' }));
+  }
   if (!freeOriginals(db, doc.k, src, srcId, originals.map((o) => o.id)).length) {
     throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
   }
@@ -571,7 +614,7 @@ function rentCheckAgainst(db: DB, e: { srcId: string; date: string; lines: Array
   const no = (why: string) => new Error(tr('derive.rejected', { why, lng: 'ar' }));
   // القرار ٦ عبر المزامنة: ما وصل الخادم بعد تسجيل تقديم ربعه يُرفض (المتحقق المستقل، الجولة ٣٥ (أ٤))
   const filed = filingRecordedAt(db, e.date);
-  if (filed && (!ts || ts > filed)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
+  if (filed && (!ts || isoCmp(ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
   const lines = rowsHereOrInbox<{ amount_halalas: number }>(db, 'payment_lines', 'payment_id', pay.id);
   const alloc = pay.installment_id ? [] : rowsHereOrInbox<{ installment_id: string; amount_halalas: number }>(db, 'payment_allocations', 'payment_id', pay.id);
   const allocWhy = alloc.length ? allocationIssue(db, pay, alloc) : '';
@@ -710,6 +753,9 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
     }
     // وإلغاء دفعةٍ لها قيد بعاكسٍ لقيدها وحده (المتحقق المستقل، الجولة ٣٧ (ر٥): كان الإلغاء بتعديلٍ وحده فيبقى قيدها لدفعةٍ ملغاة)
     if (doc.t === 'contract_payments' && row.cancelled_at && !cur.cancelled_at && cur.journal_entry_id) {
+      // ودفعة العربون لا يلغيها عضو (المراجعة الشاملة · البند ٢٧ · المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها فيعود مبلغها
+      // عالقاً في 2450) · وإلغاء المالك من جهازه الآخر يُقبل كما كتبه، فلا تفترق أجهزته، ورصيده العالق يُحمّر فحص عربون الحجوزات
+      if (byMember(db, doc, false) && paidFromDeposit(db, doc.k)) throw no(tr('payment.cancelFromDeposit', { lng: 'ar' }));
       const rev = (row.cancel_entry_id as string | null) ?? null;
       const orig = db.get<{ t: string | null; s: string | null }>(`SELECT src_type AS t, src_id AS s FROM journal_entries WHERE id = ?`, [cur.journal_entry_id as string]);
       if (!rev || !orig) throw no(tr('derive.cancelNoReversal', { lng: 'ar' }));
@@ -760,6 +806,16 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
 
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
 const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? getSyncState(db, 'org') : getSyncState(db, 'uid'));
+
+/**
+ * كتب المستندَ عضو (المتحقق المستقل على البند ٢٧): القواعد تشترط «op» على كل كتابة عضو، إنشاءً وتعديلاً، والمالك لا يكتبه
+ * (acl.ts: annotate) وكتابته كاملة تمحوه · و«by» كاتب الصف الأول: يدل على العضو في إنشاء الصف وحده، ويبقى على تعديله بعده
+ * فلا يدل على من عدّل (من ألغى دفعةً أنشأها غيره) · created: المستند ينشئ الصف
+ */
+function byMember(db: DB, doc: RemoteDoc, created: boolean): boolean {
+  if (typeof doc.op === 'string' && doc.op !== '') return true;
+  return created && !!doc.by && doc.by !== ownerUid(db);
+}
 
 const DIM_COLS = ['property_id', 'unit_id', 'contract_id', 'cost_center_id', 'asset_id'] as const;
 const DRAFT_CONTRACT = 'مسودة'; // i18n-exempt: حالة العقد المخزّنة
@@ -857,12 +913,45 @@ function fkChildren(db: DB, parent: string): Array<{ child: string; from: string
 /** وقت آخر نسخةٍ عرفها الجهاز للصف · لا يرجع إلى الوراء (الهجرة ٤٣) */
 function noteRowTime(db: DB, table: string, key: string, u: string): void {
   db.run(`INSERT INTO sync_rowtime (tbl, pk, u) VALUES (?, ?, ?) ON CONFLICT(tbl, pk) DO UPDATE SET u = excluded.u WHERE excluded.u > sync_rowtime.u`,
-    [table, key, u]);
+    [table, key, isoNorm(u)]);
 }
 
-function enqueue(db: DB, table: string, key: string, op: 'upsert' | 'delete'): void {
+/**
+ * صفٌّ إلى الطابور · بوقت الآن، أو بوقتٍ وارد بساعة الخادم (serverAt) حين يُرفع الصف لأن وارداً مسّه لا لأن المستخدم عدّله
+ * (المراجعة الشاملة · البندان ١ و١٣): وقت الآن كان يغلب نسخةً أحدث منه في الدفعة نفسها أو في جهاز آخر · وتعديلٌ محلي
+ * معلّق أحدث من الوقت الوارد يبقى بوقته
+ */
+function enqueue(db: DB, table: string, key: string, op: 'upsert' | 'delete', serverAt?: string): void {
+  if (serverAt === undefined) {
+    db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?,?,?,?)
+            ON CONFLICT(tbl, pk) DO UPDATE SET op = excluded.op, changed_at = excluded.changed_at`, [table, key, op, nowIso()]);
+    return;
+  }
   db.run(`INSERT INTO sync_outbox (tbl, pk, op, changed_at) VALUES (?,?,?,?)
-          ON CONFLICT(tbl, pk) DO UPDATE SET op = excluded.op, changed_at = excluded.changed_at`, [table, key, op, nowIso()]);
+          ON CONFLICT(tbl, pk) DO UPDATE SET op = excluded.op, changed_at = MAX(sync_outbox.changed_at, excluded.changed_at)`,
+    [table, key, op, fromServerClock(db, serverAt)]);
+}
+
+/** حذفٌ وارد ينتظر نسخ أبنائه الواردة في الصندوق نفسه (المراجعة الشاملة · البند ١) */
+class AwaitChildren extends Error {}
+
+/** وقت المستند الوارد للمقارنة: لا يتجاوز وقت كتابته في الخادم (مراجعة التثبيت #56) · بصيغة واحدة (البند ١٦) */
+const incomingAt = (doc: RemoteDoc): string => isoNorm(doc.ts && isoCmp(doc.ts, doc.u) < 0 ? doc.ts : doc.u);
+
+/**
+ * نسخة الابن الواردة غير الحذف التي تنتظر في الصندوق ويُتوقع أن تُطبَّق: لا أقدم مما عرفه الجهاز للصف (وإلا غلبها ما هنا كما في
+ * applyOne فلا تُطبَّق) · null إن لم تكن
+ */
+function incomingVersion(db: DB, table: string, key: string, joining: boolean): RowData | null {
+  const r = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 0`, [table, key]);
+  if (!r) return null;
+  const doc = JSON.parse(r.payload) as RemoteDoc;
+  if (!doc.d) return null;
+  if (!joining) {
+    const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [table, key])?.u;
+    if (seen && isoCmp(incomingAt(doc), seen) < 0) return null;
+  }
+  return doc.d;
 }
 
 /**
@@ -871,8 +960,15 @@ function enqueue(db: DB, table: string, key: string, op: 'upsert' | 'delete'): v
  * بلا أبيه (مفتاحه إليه إلزامي) يُحذف معه، والابن الذي يقوم بلا أبيه يُفكّ ربطه (دفعةٌ حُذف قسطها تبقى
  * فائضاً على عقدها يظهر للرد) · ويُرفع ما حُذف وما فُكّ فتتطابق الأجهزة. والقيد المرحّل لا يُحذف:
  * ما غاب مستنده يُعلَّم للمراجعة بعد اكتمال الوارد (orphans.ts).
+ * ويُرفع ما حُذف وما فُكّ بوقت الحذف الوارد (at بساعة الخادم) لا بوقت الآن (المراجعة الشاملة · البند ١): فنسخة الابن الأحدث
+ * في جهاز آخر تغلبه ولا يغلبها.
+ * والابن الذي تنتظر له في الصندوق نسخةٌ واردة تنقله عن هذا الأب (الدمج: العقد إلى الوجهة) ومفتاحه يقبل الفراغ يُفكّ هنا وحده،
+ * بلا طابور ولا مسّ لوقته، فيُحذف الأب في خطوة الحذف نفسها وتعيد نسخته الواردة ربطه في مرحلة الصفوف من المرور نفسه (البند ١ ·
+ * المراجعة الأخيرة: تأجيل الأب كله إلى المرور التالي كان يبقيه حاملاً قيمةً فريدة يحتاجها صفٌّ وارد، كهوية المدموج في الوجهة،
+ * فيُرفض ذلك الصف أبداً، أو يتعطّل الأب والابن ووجهته الجديدة معاً) · وإن فشلت نسخته بعدُ بقيت في الصندوق تُعاد حتى يصل ما
+ * تنتظره، ولم يُرفع منه شيء · وما لا يُفكّ (مفتاحه إلزامي) أو تبقيه نسخته على هذا الأب يُطبَّق أولاً ويعود الحذف في المرور التالي
  */
-function deleteOverChildren(db: DB, table: string, key: string, depth = 0): void {
+function deleteOverChildren(db: DB, table: string, key: string, at: string, joining: boolean, depth = 0): void {
   if (depth > 8) throw new Error('تسلسل أبناء أعمق من المتوقع');
   const row = readRow(db, table, key);
   if (!row) return;
@@ -880,19 +976,72 @@ function deleteOverChildren(db: DB, table: string, key: string, depth = 0): void
     const ct = syncTable(c.child)!;
     const kids = db.all<{ k: string }>(`SELECT ${ct.pk(`"${c.child}"`)} AS k FROM "${c.child}" WHERE "${c.from}" = ?`, [row[c.to] as SqlValue]);
     for (const kid of kids) {
-      if (c.notNull) { deleteOverChildren(db, c.child, kid.k, depth + 1); enqueue(db, c.child, kid.k, 'delete'); }
-      else { db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k)); enqueue(db, c.child, kid.k, 'upsert'); }
+      const next = incomingVersion(db, c.child, kid.k, joining);
+      if (next) {
+        const moves = c.from in next && String(next[c.from] ?? '') !== String(row[c.to] ?? '');
+        if (!moves || c.notNull) throw new AwaitChildren();
+        db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k));
+        continue;
+      }
+      // بوقت آخر نسخةٍ عرفها الجهاز للابن إن سبقت الحذف (التحقق المستقل على البند ١: رفعٌ منقسم يصل فيه الحذف قبل نقل الابن) ·
+      // فمآل الابن الذي يرفعه الحاذف (نقله في الدمج ثم إفراغ السلة، أو فكّه) أحدث منه فيغلبه · وتعديلٌ معلّق هنا يبقى بوقته
+      const when = childTime(db, c.child, kid.k, at);
+      if (c.notNull) { deleteOverChildren(db, c.child, kid.k, at, joining, depth + 1); enqueue(db, c.child, kid.k, 'delete', when); }
+      else { db.run(`UPDATE "${c.child}" SET "${c.from}" = NULL WHERE ${pkWhere(c.child)}`, pkParams(c.child, kid.k)); enqueue(db, c.child, kid.k, 'upsert', when); }
     }
   }
   deleteRow(db, table, key);
 }
 
+/**
+ * صفٌّ وارد يخالف فهرساً فريداً وحاملُ القيمة هنا ينتظر حذفُه في الصندوق (المراجعة الشاملة · البند ١ · المراجعة الأخيرة): الحذف
+ * مؤجَّلٌ لابنٍ تُطبَّق نسخته أولاً، فالقيمة تُفرَغ في المرور التالي · فيُعاد الصف ولا يُرفض أبداً · وكذلك إن رُفض الحذف لطول انتظار
+ * ابنه، فهو يعود حين تُطبَّق نسخة الابن (المتحقق المستقل)
+ */
+function uniqueHolderLeaving(db: DB, doc: RemoteDoc, msg: string): boolean {
+  if (doc.del || !doc.d) return false;
+  const m = /UNIQUE constraint failed: ([^\n]+)/i.exec(msg);
+  if (!m) return false;
+  const named = /^index '([^']+)'/.exec(m[1].trim());
+  const cols = named
+    ? db.all<{ name: string | null }>(`PRAGMA index_info("${named[1].replace(/"/g, '')}")`).map((c) => c.name)
+    : m[1].split(',').map((p) => p.trim()).map((p) => (p.startsWith(doc.t + '.') ? p.slice(doc.t.length + 1) : null));
+  if (!cols.length || cols.some((c) => !c || !(c in doc.d!))) return false;
+  const t = syncTable(doc.t)!;
+  const holders = db.all<{ k: string }>(
+    `SELECT ${t.pk(`"${doc.t}"`)} AS k FROM "${doc.t}" WHERE ${cols.map((c) => `"${c}" = ?`).join(' AND ')}`,
+    cols.map((c) => doc.d![c as string] as SqlValue));
+  return holders.some((h) => h.k !== doc.k && (!!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 1`, [doc.t, h.k])
+    || deleteWaitRejected(db, doc.t, h.k)));
+}
+
+/**
+ * حذفٌ وارد للصف رُفض لطول انتظار ابنه وما زال يُعاد حين تُطبَّق نسخة الابن (restageArrivedParents) · فحامل القيمة ما زال مغادراً
+ * (البند ١ · المتحقق المستقل: الصف الوارد بقيمته كان يُرفض بالفهرس الفريد رفضاً لا يعود، فيبقى غائباً بعد أن يُحذف حاملها)
+ */
+function deleteWaitRejected(db: DB, table: string, key: string): boolean {
+  return db.all<{ payload: string }>(`SELECT payload FROM sync_rejects WHERE tbl = ? AND pk = ? AND reason = ?`, [table, key, WAIT_REJECT])
+    .some((r) => {
+      try { return (JSON.parse(r.payload) as RemoteDoc).del === true; } catch { return false; }
+    });
+}
+
+/** وقت رفع ما فُكّ أو حُذف من ابنٍ بحذف أبيه الوارد: آخر ما عرفه الجهاز للابن إن سبق وقت الحذف، وإلا وقت الحذف */
+function childTime(db: DB, table: string, key: string, at: string): string {
+  const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [table, key])?.u;
+  return seen && isoCmp(seen, at) < 0 ? seen : at;
+}
+
 type ApplyOutcome = 'applied' | 'skipped' | 'conflict-local' | 'conflict-remote' | 'retry' | 'rejected';
 
 function reject(db: DB, doc: RemoteDoc, reason: string): void {
+  // المستند نفسه يُسحب ثانيةً في نافذة الأمان (البند ٢) · فرفضه بالسبب نفسه لا يتكرر في السجل ولا في سجل العمليات (التحقق المستقل)
+  const payload = JSON.stringify(doc);
+  if (db.get(`SELECT 1 FROM sync_rejects WHERE doc = ? AND reason = ? AND payload = ?`, [doc.id, reason, payload])) return;
   db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
-    [doc.id, doc.t, doc.k, reason, JSON.stringify(doc), nowIso()]);
-  try { logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${reason}`.slice(0, 300)); } catch { /* السجل لا يعطّل */ }
+    [doc.id, doc.t, doc.k, reason, payload, nowIso()]);
+  // سبب الرفض كاملاً في sync_rejects على الجهاز، وفي سجل العمليات المزامَن محجوباً كنص العطل (المراجعة الشاملة · البند ١٧ ونظيره)
+  try { logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${redactForReport(reason)}`.slice(0, 300)); } catch { /* السجل لا يعطّل */ }
 }
 
 function applyOne(
@@ -952,8 +1101,10 @@ function applyOne(
     // الطرفان بساعة الخادم: تعديل هذا الجهاز مصحَّحاً بفرق ساعته، والوارد مكتوب مصحَّحاً من جهازه
     const mine = toServerClock(db, pending.changed_at);
     // الوقت الوارد لا يتجاوز وقت كتابته في الخادم: «u» يكتبه الجهاز فيقدّمه العضو ليغلب كل تعارض (مراجعة التثبيت #56)
-    const theirs = doc.ts && doc.ts < doc.u ? doc.ts : doc.u;
-    const localWins = !joining && (mine > theirs || (mine === theirs && deviceId > doc.dev));
+    const theirs = doc.ts && isoCmp(doc.ts, doc.u) < 0 ? doc.ts : doc.u;
+    // باللحظة لا بالنص (المراجعة الشاملة · البند ١٦): «…00.995Z» أحدث من «…00.99Z» ونصّه أصغر
+    const order = isoCmp(mine, theirs);
+    const localWins = !joining && (order > 0 || (order === 0 && deviceId > doc.dev));
     if (localWins) {
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', `${doc.t} · ${doc.k} · غلب تعديل هذا الجهاز (${mine}) على الوارد (${doc.u})`);
       return 'conflict-local';
@@ -961,13 +1112,15 @@ function applyOne(
     conflict = 'conflict-remote';
   }
   // الوقت الوارد لا يتجاوز وقت كتابته في الخادم (#56)
-  const theirs0 = doc.ts && doc.ts < doc.u ? doc.ts : doc.u;
+  const theirs0 = incomingAt(doc);
   // ولا طابور: الوارد أقدم مما عرفه الجهاز للصف (رفعه أو طبّقه) لا يكتب فوقه، ويُرفع ما عنده فيتفق الأجهزة (المراجعة الخارجية ٧ ·
   // النتيجة ٨: دورة جهازٍ سحبت قبل تعديل غيره ودفعت بعده فكان الأقدم يغلب بلا أثر) · وأول دورةٍ للجهاز ما في الحساب يغلب
   if (!pending && !joining && !t.appendOnly) {
     const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u;
-    if (seen && theirs0 < seen) {
-      enqueue(db, doc.t, doc.k, readRow(db, doc.t, doc.k) ? 'upsert' : 'delete');
+    if (seen && isoCmp(theirs0, seen) < 0) {
+      // بوقت النسخة المعروفة لا بوقت الآن (المراجعة الشاملة · البند ١٣): إعادة التأكيد لا تجعل النسخة أحدث مما هي، فلا تغلب تعديلاً
+      // أحدث منها من جهازٍ آخر يصل بعدها في الدفعة نفسها أو بعدها
+      enqueue(db, doc.t, doc.k, readRow(db, doc.t, doc.k) ? 'upsert' : 'delete', seen);
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', // i18n-exempt: وحدة السجل ونوعه المخزّنان
         tr('sync.olderIncoming', { t: doc.t, k: doc.k, seen, theirs: theirs0, lng: 'ar' }));
       return 'conflict-local';
@@ -994,7 +1147,8 @@ function applyOne(
           // كان يفكّ العقد عن وحدته ويحذف الحجز ويعيد نشرهما للمنشأة كلها · وشاهدٌ بلا حاذف لا يُسلسل (إنشاء شاهد حذفٍ لصفٍّ ليس
           // في السحابة لا تفحص القواعد حاذفه، فكلفته على إنشاء العضو فوق ميزانية القواعد)
           if (doc.dby !== ownerUid(db)) throw new Error(tr('sync.cascadeNotOwner', { lng: 'ar' }));
-          deleteOverChildren(db, doc.t, doc.k);
+          // ولابنٍ نسخةٌ واردة لم تُطبَّق بعد: يُفكّ هنا وحده لتعيد ربطه، أو يُطبَّق أولاً ويعود الحذف (المراجعة الشاملة · البند ١)
+          deleteOverChildren(db, doc.t, doc.k, theirs0, joining);
         }
       } else if (doc.t === 'journal_entries') {
         applyJournal(db, doc, { e: cols('journal_entries'), l: cols('journal_lines') });
@@ -1012,7 +1166,9 @@ function applyOne(
           const alias = noAliases(db)[row.journal_no];
           if (alias) row.journal_no = alias;
         }
+        const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         upsertRow(db, doc.t, row, cols(doc.t));
+        if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·
@@ -1045,10 +1201,86 @@ function applyOne(
     return conflict ?? 'applied';
   } catch (e) {
     const msg = errText(e);
-    if (isMissingParent(msg) || e instanceof AwaitOriginal) return 'retry';
+    if (isMissingParent(msg) || e instanceof AwaitOriginal || e instanceof AwaitChildren || uniqueHolderLeaving(db, doc, msg)) return 'retry';
     reject(db, doc, msg);
     return 'rejected';
   }
+}
+
+type FkRow = { table: string; from: string; to: string | null };
+
+/**
+ * ما ينتظره المستند بمفاتيحه الأجنبية · مفاتيح جدوله، وللقيد مفاتيح سطوره كما يُدرجها applyJournal (الحساب account_code، وأي مفتاحٍ
+ * أجنبي يُضاف إليها كمراكز التكلفة) لا جدوله وحده (المراجعة الشاملة · البند ١٤ · المراجعة الأخيرة: مفتاحه الوحيد reversed_by، فقيدٌ انتظر حساباً
+ * في سطوره لم يكن يعود أبداً) · والقيد لا ينتظر قيداً: عاكسه يُربط معلّقاً حتى يصل (linkReversal)، والسطر لقيده نفسه
+ */
+function awaitedRefs(doc: RemoteDoc, fkOf: (t: string) => FkRow[]): Array<{ table: string; to: string; value: SqlValue }> {
+  const out: Array<{ table: string; to: string; value: SqlValue }> = [];
+  const add = (table: string, row: RowData) => {
+    for (const k of fkOf(table)) {
+      if ((table === 'journal_entries' || table === 'journal_lines') && k.table === 'journal_entries') continue;
+      const v = row[k.from];
+      if (v == null || v === '') continue;
+      out.push({ table: k.table, to: k.to ?? syncTable(k.table)?.pkCols[0] ?? 'id', value: v });
+    }
+  };
+  add(doc.t, doc.d!);
+  if (doc.t === 'journal_entries') for (const l of doc.lines ?? []) add('journal_lines', l);
+  return out;
+}
+
+/** لأحد أبناء الصف (أو أبنائهم بالتسلسل نفسه) نسخةٌ مرفوضة لطول انتظارها · فحذفه يُنتظر حتى تعود وتُطبَّق أولاً */
+function kidWaitRejected(db: DB, table: string, key: string, depth = 0): boolean {
+  if (depth > 8) return true;
+  const row = readRow(db, table, key);
+  if (!row) return false;
+  for (const c of fkChildren(db, table)) {
+    const ct = syncTable(c.child)!;
+    const kids = db.all<{ k: string }>(`SELECT ${ct.pk(`"${c.child}"`)} AS k FROM "${c.child}" WHERE "${c.from}" = ?`, [row[c.to] as SqlValue]);
+    for (const kid of kids) {
+      if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = ? AND pk = ? AND reason = ?`, [c.child, kid.k, WAIT_REJECT])) return true;
+      if (c.notNull && kidWaitRejected(db, c.child, kid.k, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+/** وقت انتظارٍ قديم يُعطى لما يُعاد من المرفوض على التجربة · فإن احتاج الانتظار ثانيةً عاد إليه في المرور نفسه */
+const PROBATION_SINCE = '1970-01-01T00:00:00.000Z';
+
+/**
+ * الوارد المرفوض لطول انتظاره يعود إلى الصندوق حين يصل ما ينتظره (المراجعة الشاملة · البند ١٤): كل مفتاحٍ أجنبي فيه يشير إلى صفٍّ
+ * موجود الآن، وللقيد مفاتيح سطوره (awaitedRefs) · وما ينتظر غير المفاتيح (العاكس ينتظر أصله، والدفعة قيد إلغائها، والصف قيمةً فريدة
+ * يُفرغها حذفٌ مؤجَّل) يُجرَّب كذلك ما دامت مفاتيحه حاضرة، فلا يبقى مرفوضاً بعد وصول ما ينتظره (المراجعة الأخيرة: كان يبقى «حتى
+ * إعادة الترقية» وإعادة الترقية لا تعيد إلا أسباب المخطط) · وحذفٌ انتظر نسخة ابنه يعود حين لا يبقى من أبنائه مرفوضٌ بالانتظار
+ * (نسخة الابن تُطبَّق أولاً، وإلا سلسله الحذف كأنه بلا نسخة) · وكلٌّ على التجربة: سجل رفضه يبقى حتى يُطبَّق، فإن بقي ينتظر عاد إلى
+ * المرفوض في المرور نفسه بصمت (لا يُعدّ ولا يُسجَّل ثانيةً) ولا ينتظر ثلاثين يوماً أخرى في الصندوق
+ */
+function restageArrivedParents(db: DB, waitRejected?: Set<string>): number {
+  const rows = db.all<{ doc: string; payload: string }>(`SELECT doc, payload FROM sync_rejects WHERE reason = ?`, [WAIT_REJECT]);
+  const fks = new Map<string, FkRow[]>();
+  const fkOf = (t: string) => {
+    let f = fks.get(t);
+    if (!f) { f = db.all<FkRow>(`PRAGMA foreign_key_list("${t}")`); fks.set(t, f); }
+    return f;
+  };
+  let n = 0;
+  for (const r of rows) {
+    waitRejected?.add(r.doc);
+    let doc: RemoteDoc | null = null;
+    try { doc = JSON.parse(r.payload) as RemoteDoc; } catch { doc = null; }
+    if (!doc || !doc.id || !syncTable(doc.t)) continue;
+    if (doc.d) {
+      const arrived = awaitedRefs(doc, fkOf).every((k) => !!db.get(`SELECT 1 FROM "${k.table}" WHERE "${k.to}" = ?`, [k.value]));
+      if (!arrived) continue;
+    } else if (!doc.del || kidWaitRejected(db, doc.t, doc.k)) continue;
+    stageInbox(db, [doc]);
+    // ونسخةٌ أحدث منه في الصندوق تبقى على انتظارها
+    db.run(`UPDATE sync_inbox SET attempts = ?, waiting_since = ? WHERE doc = ? AND payload = ?`,
+      [MAX_ATTEMPTS, PROBATION_SINCE, doc.id, JSON.stringify(doc)]);
+    n++;
+  }
+  return n;
 }
 
 /** sync_ctl.applying · تقرؤه محفّزات سقف الدفعة (الهجرة ٢١) */
@@ -1086,6 +1318,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
   const money = moneyColumns(db); // مرة لكل تطبيق لا لكل صف
   const joining = getSyncState(db, 'joining') === '1';
   const touched = new Set<string>();
+  /** ما له رفضُ انتظار (يملؤه restageArrivedParents في كل مرور) · فلا يُبحث في سجل المرفوض لكل صفٍّ يُطبَّق */
+  const waitRejected = new Set<string>();
   /** معاملةٌ والوارد لا يرتدّ صداه إلى الطابور، ودفعةٌ سُجّلت على جهاز آخر لا يرفضها فحص «المتبقي» المحلي */
   const quiet = (fn: () => void) => db.transaction(() => {
     const wasOn = captureOn(db);
@@ -1095,6 +1329,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
   });
   for (let pass = 0; pass < 4; pass++) {
     let progress = 0;
+    // ما رُفض لانتظار أبيه ووصل أبوه قبل هذه الدورة يعود إلى الصندوق فيُطبَّق فيها (البند ١٤)
+    if (pass === 0) quiet(() => { restageArrivedParents(db, waitRejected); });
     // شواهد الحذف أولاً والأبناء قبل الآباء (المفتاح الأجنبي يمنع حذف أبٍ له أبناء) · ثم الصفوف
     // والآباء قبل الأبناء · وإلا وصل صفٌّ جديد يحمل رقماً فريداً قبل حذف من كان يحمله فرُفض بلا رجعة
     // (وجده اختبار الثوابت: عقد حُذف باستعادة ثم أُنشئ غيره بالرقم نفسه)
@@ -1103,8 +1339,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
       let lastKey = -1, lastU = '', lastDoc = '';
       for (;;) {
         // علامة الحذف عمودٌ مفهرس (الهجرة ٢٥) · فلا تُفكّ الحمولات لكل صفحة
-        const page = db.all<{ doc: string; k: number; updated_at: string; payload: string; attempts: number }>(
-          `SELECT doc, ${key} AS k, updated_at, payload, attempts FROM sync_inbox
+        const page = db.all<{ doc: string; k: number; updated_at: string; payload: string; attempts: number; waiting_since: string | null }>(
+          `SELECT doc, ${key} AS k, updated_at, payload, attempts, waiting_since FROM sync_inbox
            WHERE del = ? AND (${key}, updated_at, doc) > (?, ?, ?)
            ORDER BY ${key}, updated_at, doc LIMIT ${pageSize}`, [deletes ? 1 : 0, lastKey, lastU, lastDoc]);
         if (!page.length) break;
@@ -1113,16 +1349,25 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
             const doc = JSON.parse(r.payload) as RemoteDoc;
             const res = applyOne(db, doc, deviceId, cache, money, joining);
             if (res === 'retry') {
-              if (r.attempts + 1 >= MAX_ATTEMPTS) {
-                reject(db, doc, 'سجل أب غير موجود بعد محاولات متكررة');
+              // بالزمن لا بالمرور (البند ١٤): المرور الواحد قد يتكرر أربع مرات في الدورة
+              const since = r.waiting_since ? Date.parse(r.waiting_since) : NaN;
+              if (r.attempts + 1 >= MAX_ATTEMPTS && Number.isFinite(since) && Date.now() - since > WAIT_LIMIT_MS) {
+                // وما أُعيد على التجربة (restageArrivedParents) ولم يصل ما ينتظره يرجع بصمت: سجله باقٍ بحمولته نفسها · ونسخةٌ أحدث تحلّ محله
+                if (!db.get(`SELECT 1 FROM sync_rejects WHERE doc = ? AND reason = ? AND payload = ?`, [r.doc, WAIT_REJECT, r.payload])) {
+                  db.run(`DELETE FROM sync_rejects WHERE doc = ? AND reason = ?`, [r.doc, WAIT_REJECT]);
+                  reject(db, doc, WAIT_REJECT);
+                  out.rejected++;
+                }
                 db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
-                out.rejected++;
               } else {
-                db.run(`UPDATE sync_inbox SET attempts = attempts + 1, last_error = 'بانتظار سجل أب' WHERE doc = ?`, [r.doc]);
+                db.run(`UPDATE sync_inbox SET attempts = attempts + 1, last_error = 'بانتظار سجل أب',
+                        waiting_since = COALESCE(waiting_since, ?) WHERE doc = ?`, [nowIso(), r.doc]);
               }
               continue;
             }
             db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
+            // انتهى انتظاره (طُبّق أو غلبه ما هنا أو رُفض لسببٍ آخر يُسجَّل بنفسه) · فلا يبقى له رفضُ انتظار
+            if (waitRejected.has(r.doc)) db.run(`DELETE FROM sync_rejects WHERE doc = ? AND reason = ?`, [r.doc, WAIT_REJECT]);
             progress++;
             if (res === 'applied' || res === 'conflict-remote') markTouched(db, doc, touched);
             if (res === 'applied') out.applied++;
@@ -1136,6 +1381,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
       }
     }
     if (!progress) break;
+    // ووصل أبوه في هذا المرور: يُطبَّق في المرور التالي من الدورة نفسها
+    quiet(() => { restageArrivedParents(db, waitRejected); });
     const left = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
     if (!left) break;
   }
@@ -1295,7 +1542,8 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, e
     db.run(`DELETE FROM sync_inbox`);
     db.run(`DELETE FROM sync_outbox`);
     setSyncState(db, 'uid', uid);
-    setSyncState(db, 'cursor', plan.cursor ? JSON.stringify(plan.cursor) : null);
+    // آخر ما قُرئ لا موضعه الآمن: الاستبدال يغلب ما قبله في السحابة فلا يعود (البند ٢ للدورات لا للاعتماد)
+    setSyncState(db, 'cursor', plan.cursor ? JSON.stringify({ ...plan.cursor, safe: undefined }) : null);
     setSyncState(db, 'joining', null);
     setSyncState(db, 'restored_unadopted', null);
     // عهد المسح الحالي في السحابة يُسجَّل مع الاعتماد ذرياً (قاعدة المالك ٢٠٢٦-١٠-٠٥) · فلا يُفرَّغ الجهاز بعدها
@@ -1449,7 +1697,13 @@ export async function syncOnce(
       stageInbox(db, fresh);
       pulled += fresh.length;
     }
-    if (next) { cursor = next; setSyncState(db, 'cursor', JSON.stringify(next)); }
+    // التقليب داخل الدورة بالمؤشر، والمحفوظ موضعه الآمن (المراجعة الشاملة · البند ٢): ما قبل وقت القراءة بنافذة الأمان ·
+    // فمستندٌ تأخر التزامه عن وقته يُسحب في الدورة التالية ولا يُتخطى
+    if (next) {
+      cursor = next;
+      const keep = remote.durableCursor ? remote.durableCursor(next) : next;
+      setSyncState(db, 'cursor', keep ? JSON.stringify(keep) : null);
+    }
     if (!(more ?? docs.length >= PULL_PAGE)) break;
   }
 
@@ -1522,13 +1776,21 @@ export async function syncOnce(
             // i18n-exempt: سبب الرفض المخزَّن
             [docs[i].id, r.tbl, r.pk, 'نهائي في السحابة · نسخة هذا الجهاز تختلف عنها ولم تُرفع', JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
         }
-        if (res.ok || memberDenied || finalDenied) {
+        // الرفض الدائم لصفٍّ بعينه يخرج من الطابور إلى سجل المرفوض (البند ١٥)
+        const permanent = !res.ok && !memberDenied && !finalDenied && PERMANENT_PUSH_CODES.has(res.code ?? '');
+        if (permanent) {
+          db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
+            [docs[i].id, r.tbl, r.pk, (PERMANENT_PUSH_REASON + ' · ' + (res.code ?? '') + ' ' + (res.message ?? '')).slice(0, 300),
+              // بلا محتواه: يُعاد من الصف نفسه، والمستند الكبير لا يُخزَّن مرة ثانية
+              JSON.stringify({ id: docs[i].id, t: docs[i].t, k: docs[i].k, u: docs[i].u, del: docs[i].del }), nowIso()]);
+        }
+        if (res.ok || memberDenied || finalDenied || permanent) {
           // لا يُحذف إن تغيّر الصف أثناء الرفع · يبقى للدفعة التالية بوقته الجديد
           db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND changed_at = ?`, [r.tbl, r.pk, r.changed_at]);
           if (res.ok) {
             pushed++;
             // بوقت الالتزام في الخادم إن عُرف، ولا يتجاوز وقت المستند · وبلا وقت الخادم لا يُحفظ (الوارد يغلب كما كان)
-            if (commitIso) noteRowTime(db, r.tbl, r.pk, docs[i].u < commitIso ? docs[i].u : commitIso);
+            if (commitIso) noteRowTime(db, r.tbl, r.pk, isoCmp(docs[i].u, commitIso) < 0 ? docs[i].u : commitIso);
           }
           progressed++;
         } else {

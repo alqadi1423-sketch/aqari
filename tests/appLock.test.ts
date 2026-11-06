@@ -95,6 +95,13 @@ test('إعدادٌ تعذّرت قراءته والقفل مُعلَّم مفع�
 
 /* ═══ تأكيد الحساب (نسيان الرمز أو غياب قفل الجهاز) لا يمسّ الجلسة المحفوظة ═══ */
 
+/** رمز هوية Firebase من دخولٍ جديد (البند ٥ من المراجعة الشاملة: يُفحص حداثته ورقم حسابه) */
+const freshIdToken = (uid: string) => {
+  const b = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const at = Math.floor(Date.now() / 1000);
+  return b({ alg: 'RS256' }) + '.' + b({ user_id: uid, auth_time: at, iat: at, firebase: { sign_in_provider: 'google.com' } }) + '.c2ln';
+};
+
 function fakeSession(chosenUid: string) {
   const kv = new Map<string, string>([[KEYS.uid, 'uid-owner-a'], [KEYS.refresh, 'r-owner-a'], [KEYS.email, 'a@example.test']]);
   const calls = { googleSignOut: 0, idp: 0 };
@@ -106,7 +113,7 @@ function fakeSession(chosenUid: string) {
       signOut: async () => { calls.googleSignOut++; },
     },
     store: { get: async (k) => kv.get(k) ?? null, set: async (k, v) => { kv.set(k, v); }, del: async (k) => { kv.delete(k); } },
-    signInWithIdp: async (t) => { calls.idp++; const uid = t.replace('tok-', ''); return { uid, email: uid + '@example.test', idToken: 'id-' + uid, refreshToken: 'r-' + uid, expiresAt: 9e15 }; },
+    signInWithIdp: async (t) => { calls.idp++; const uid = t.replace('tok-', ''); return { uid, email: uid + '@example.test', idToken: freshIdToken(uid), refreshToken: 'r-' + uid, expiresAt: 9e15 }; },
     refresh: async (r) => ({ uid: 'x', idToken: 'id', refreshToken: r, expiresAt: 9e15 }),
   });
   return { s, kv, calls };
@@ -115,21 +122,22 @@ function fakeSession(chosenUid: string) {
 test('المتحقق المستقل: حسابٌ آخر في تأكيد الحساب يُرفض ولا يستبدل الجلسة المحفوظة', async () => {
   const { s, kv, calls } = fakeSession('uid-intruder-b');
   await s.restore();
-  expect(await s.confirmSameAccount()).toBe(false);
+  expect((await s.confirmSameAccount()).ok).toBe(false);
   expect(kv.get(KEYS.uid)).toBe('uid-owner-a');
   expect(kv.get(KEYS.refresh)).toBe('r-owner-a');
   expect(s.current()?.uid).toBe('uid-owner-a');
-  // والحساب المختار يُخرج من قوقل فلا تصير رموز Drive له
-  expect(calls.googleSignOut).toBe(1);
+  // خروجٌ قبل الدخول (البند ٥) · والحساب المختار يُخرج من قوقل بعده فلا تصير رموز Drive له
+  expect(calls.googleSignOut).toBe(2);
 });
 
 test('تأكيد الحساب نفسه يُقبل ولا يكتب شيئاً', async () => {
   const { s, kv, calls } = fakeSession('uid-owner-a');
   await s.restore();
   const before = JSON.stringify([...kv]);
-  expect(await s.confirmSameAccount()).toBe(true);
+  expect((await s.confirmSameAccount()).ok).toBe(true);
   expect(JSON.stringify([...kv])).toBe(before);
-  expect(calls.googleSignOut).toBe(0);
+  // الخروج من قوقل قبل الدخول وحده (البند ٥): يُفرض اختيار الحساب
+  expect(calls.googleSignOut).toBe(1);
   expect(calls.idp).toBe(1);
 });
 
@@ -137,5 +145,5 @@ test('بلا جلسة محفوظة لا تأكيد', async () => {
   const { s, kv } = fakeSession('uid-owner-a');
   kv.clear();
   await s.restore();
-  expect(await s.confirmSameAccount()).toBe(false);
+  expect((await s.confirmSameAccount()).ok).toBe(false);
 });

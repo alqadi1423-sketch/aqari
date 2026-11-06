@@ -23,7 +23,7 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import { exportStatus } from '../src/domain/reminders';
-import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash, restoreCashOut } from '../src/domain/trash';
+import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash, restoreCashOut, restoreIntoFiledPeriod } from '../src/domain/trash';
 import { createAndShareBackup, pickAndPrepareRestore, prepareRestoreFromSafety, commitPreparedRestore, abortPreparedRestore, appBackupEnv } from '../src/services/backupService';
 import { fingerprintData } from '../src/domain/backup/create';
 import {
@@ -1312,10 +1312,11 @@ export default function Settings() {
                   <T size={TYPE.cardTitle} med style={{ flex: 1 }}>{t.entityLabel}: {t.label}</T>
                   <Badge kind={t.daysLeft <= 5 ? 'overdue' : 'due'} label={t.daysLeft + ' يوم متبقٍ'} />
                 </Row>
-                {/* استعادةٌ تُعيد صرفاً نقدياً لا تظهر حين لا يكفي النقد · ومكانها السبب والإيداع (قرار المالك ٢٠٢٦-١٠-٠٥) */}
+                {/* استعادةٌ تُعيد صرفاً نقدياً لا تظهر حين لا يكفي النقد · ومكانها السبب والإيداع (قرار المالك ٢٠٢٦-١٠-٠٥) ·
+                    ولا ما تكتب قيداً في فترةٍ قُدِّم إقرارها (المراجعة الشاملة ٨ · البند ١١) */}
                 <CashShortNote needed={restoreCashOut(db, t.table, t.id)} what="إعادة سداد الفاتورة نقداً" />
                 <Row style={{ justifyContent: 'flex-end', marginTop: 6 }}>
-                  {cashShortfall(db, restoreCashOut(db, t.table, t.id)) <= 0 ? (
+                  {cashShortfall(db, restoreCashOut(db, t.table, t.id)) <= 0 && !restoreIntoFiledPeriod(db, t.table, t.id) ? (
                   <BtnGhost small icon="undo" title="استعادة"
                     onPress={() => {
                       try { restoreFromTrash(db, t.table, t.id); toast('تمت الاستعادة بنجاح'); }

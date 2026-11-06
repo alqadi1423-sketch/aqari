@@ -7,8 +7,8 @@
  */
 import type { DB } from '../db/adapter';
 import { getSyncState, setSyncState } from '../sync/engine';
-import type { ChatRemote } from './remote';
-import type { ChatMe } from './types';
+import type { ChatRemote, PageAfter } from './remote';
+import { normTs, type ChatMe } from './types';
 import {
   applyRemoteMessage, applyRemoteThread, heldThreads, markMessageRejected, markSent, markThreadPushed, markThreadRejected,
   pendingMessages, pendingThreads, forgetObserved, joinFloor, applyState, stateCursor, readToPush, markReadPushed, isUnsentLocal, isRejectedLocal, staleEdits, markEditUnreadable,
@@ -38,8 +38,8 @@ const CHANNEL_PULL_EVERY_MS = 10 * 60_000;
 async function syncState(db: DB, remote: ChatRemote, threadId: string, me: string): Promise<void> {
   const up = readToPush(db, threadId, me);
   if (up) { await remote.markReadUpTo(threadId, up); markReadPushed(db, threadId, me, up); }
-  const items = await remote.stateSince(threadId, stateCursor(db, threadId));
-  applyState(db, threadId, items as unknown as Array<{ id: string; k: string; ts: string }>);
+  // حال المحادثة بوقت الطلب كذلك · فبالنافذة نفسها (التحقق المستقل على البند ٢) · صفحةً صفحة حتى صفحةٍ قصيرة
+  await pullState(db, remote, threadId, rewind(stateCursor(db, threadId)));
   // ما عُدِّل في الخادم يُجلب رسالةً رسالة (الدفعة ٣) · وما لا يحق لي قراءته (قبل انضمامي) يُترك
   for (const id of staleEdits(db, threadId)) {
     try { applyRemoteMessage(db, threadId, await remote.getMessage(threadId, id)); } catch (e) {
@@ -49,6 +49,29 @@ async function syncState(db: DB, remote: ChatRemote, threadId: string, me: strin
   }
 }
 const PAGE = 200;
+/** صفحة الحال: حدّ ChatRemote.stateSince نفسه */
+const STATE_PAGE = 300;
+
+/**
+ * حال المحادثة من مؤشرٍ صفحةً صفحة في الدورة الواحدة (المراجعة الشاملة · البند ٢ · تتمة المراجعة الأخيرة): الصفحة التالية تبدأ بعد آخر
+ * (وقتٍ، رقمٍ) أُخذ كما تُقلَّب الرسائل، فثلاثمئة عنصرٍ أو أكثر في نافذة الرجوع لا تعيد الصفحة نفسها كل دورة فيقف المؤشر أبداً ·
+ * وكل صفحةٍ تُحفظ حين تصل (applyState يقدّم المؤشر ولا يرجعه) · وكل من يسحب الحال يمرّ بها
+ */
+export async function pullState(db: DB, remote: ChatRemote, threadId: string, from: string | null): Promise<number> {
+  let cursor = from;
+  let after: PageAfter | null = null;
+  let n = 0;
+  for (let guard = 0; guard < 50; guard++) {
+    const page = await remote.stateSince(threadId, cursor, STATE_PAGE, after);
+    applyState(db, threadId, page as unknown as Array<{ id: string; k: string; ts: string }>);
+    n += page.length;
+    const last = page.length ? page[page.length - 1] : null;
+    if (page.length < STATE_PAGE || !last?.ts || !last.id) break;
+    after = { ts: last.ts, id: last.id };
+    cursor = last.ts;
+  }
+  return n;
+}
 
 const stamp = (db: DB, k: string) => Number(getSyncState(db, k) ?? 0);
 
@@ -67,9 +90,25 @@ async function pullThread(db: DB, remote: ChatRemote, threadId: string, me: stri
   }
 }
 
+/**
+ * نافذة أمان السحب (المراجعة الشاملة · البند ٢): وقت الرسالة وقت طلبها في الخادم لا وقت التزامها، فرسالةٌ قواعدها أثقل تظهر بعد
+ * رسالةٍ وقتها أكبر منه · فيُعاد الاستعلام من المؤشر ناقص النافذة في كل سحب، والمكرَّر يُعرف برقمه فلا يتكرر (applyRemoteMessage)
+ */
+export const CHAT_PULL_SAFETY_MS = 60_000;
+
+/** المؤشر ناقص النافذة بصيغة وقت الخادم نفسها (أجزاء المليار) · والثواني وحدها تُحسب، فمحرّك الجوال لا يقرأ أكثر من ثلاثة أجزاء */
+function rewind(cursor: string | null): string | null {
+  if (!cursor) return cursor;
+  const m = /^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)\.(\d{9})Z$/.exec(normTs(cursor));
+  if (!m) return cursor;
+  const t = Date.parse(m[1] + 'Z');
+  return Number.isFinite(t) ? new Date(t - CHAT_PULL_SAFETY_MS).toISOString().slice(0, 19) + '.' + m[2] + 'Z' : cursor;
+}
+
 async function pullThreadOnce(db: DB, remote: ChatRemote, threadId: string, me: string): Promise<number> {
   const floor = joinFloor(db, threadId, me);
-  let cursor = threadCursor(db, threadId);
+  let cursor = rewind(threadCursor(db, threadId));
+  // ولا يسبق وقتَ انضمامي (المجموعة «من لحظة انضمامه»)
   if (floor && (!cursor || cursor < floor)) cursor = floor;
   let n = 0;
   // الصفحة التالية تبدأ بعد آخر (وقتٍ، رقمٍ) أُخذ لا عند وقته: صفحةٌ كاملة بوقتٍ واحد لا توقف السحب (المراجعة الخارجية ٧ · النتيجة ٤٠)

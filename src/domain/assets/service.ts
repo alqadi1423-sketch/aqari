@@ -9,6 +9,7 @@
 import type { DB } from '../../db/adapter';
 import { uid } from '../ids';
 import { today as todayFn, addDays } from '../dates';
+import { requireOpenPeriod } from '../vatFilings';
 import { logAudit } from '../audit';
 import { postEntry } from '../accounting/post';
 import { t } from '../../i18n';
@@ -180,6 +181,8 @@ export function transferAsset(db: DB, id: string, input: { unitId: string; room?
   requireLive(a);
   if (!input.unitId) fail('unit');
   if (input.unitId === a.unit_id && (input.room ?? '') === a.room) fail('sameUnit');
+  // النقل بين وحدتين قيدٌ بتاريخه (البند ٩ ونظيره هنا)
+  if (a.cost_halalas != null && a.unit_id !== input.unitId) requireOpenPeriod(db, input.date);
   const today = input.today ?? todayFn();
   db.transaction(() => {
     if (a.cost_halalas != null) {
@@ -217,6 +220,7 @@ export function disposeAsset(db: DB, id: string, input: { date: string; reason: 
   const a = getAsset(db, id);
   requireLive(a);
   if (!input.reason.trim()) fail('reason');
+  if (a.cost_halalas != null) requireOpenPeriod(db, input.date); // الاستبعاد قيدٌ بتاريخه (البند ٩ ونظيره هنا)
   const today = input.today ?? todayFn();
   db.transaction(() => {
     let entryId: string | null = null;
@@ -253,6 +257,7 @@ export function sellAsset(db: DB, id: string, input: {
   if (a.cost_halalas == null) fail('pending');
   if (!(input.amountHalalas >= 0) || !Number.isFinite(input.amountHalalas)) fail('saleAmount');
   if (input.method === 'bank' && !input.bankId) fail('bank');
+  requireOpenPeriod(db, input.date); // البيع قيدٌ ونقدٌ بتاريخه (البند ٩ ونظيره هنا)
   const today = input.today ?? todayFn();
   db.transaction(() => {
     requireOpenDate(db, a, input.date);

@@ -11,7 +11,7 @@ import type { Access } from '../domain/access/access';
 import { level } from '../domain/access/access';
 import { SECTION_KEYS, type SectionKey } from '../domain/access/sections';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, isMoneyColumn, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
-import { OP_WRITES, OP_JOURNAL_SRC, SELF_OP, SELF_AUDIT_ENTITY, journalSrcAllowed } from '../domain/access/opWrites';
+import { OP_WRITES, OP_JOURNAL_SRC, SELF_OP, SELF_AUDIT_ENTITY, LEGACY_NEUTRAL, journalSrcAllowed } from '../domain/access/opWrites';
 import { journalSection } from '../domain/access/readSections';
 
 export const ORG_WIDE = '*';
@@ -139,6 +139,20 @@ export function hiddenColumns(a: Access, table: string, row: Record<string, unkn
   if (fullReadTables(a, [table]).has(table)) return [];
   const drop = new Set(CROSS_PROPERTY[table] ?? []);
   return Object.keys(row).filter((k) => isMoneyColumn(k) || drop.has(k));
+}
+
+/**
+ * أعمدةٌ لا يرفعها جهاز العضو في اللمس الجانبي (الفرع الثالث في chooseOp: العملية لا تنشئ الجدول ولا تملكه): عمود LEGACY_NEUTRAL
+ * في جدوله وحده (المراجعة الشاملة · البند ٣ تتمة: original_end من الهجرة ٤٨، والمستند القديم في السحابة بلاه فكان يُعدّ لمساً
+ * وتُرفض الكتابة كلها) · فيُرفع المستند جزئياً بلاه، وما سواه من d يُرفع كما هو.
+ * لا بحقول اللمس وحدها (المتحقق المستقل): ذلك يُسقط بصمت كل تغييرٍ في غير الملموس، فتخفيض القسط بخصم «تنزيل من قيمة القسط» أو
+ * إرجاعه بإلغاء الدفعة من عضو التحصيل كان يُقبل بلا amount_halalas ويُحذف من الطابور ولا يصل سجل المرفوض · وغير الملموس ترفضه
+ * القواعد ظاهراً فيراه العضو ويُعاد بعد الترقية
+ */
+export function touchLegacyColumns(op: string | null | undefined, table: string): string[] {
+  const w = op ? OP_WRITES[op as SectionKey] : undefined;
+  if (!w || w.own.includes(table) || w.create.includes(table) || !w.touch?.[table]) return [];
+  return table === LEGACY_NEUTRAL.table ? [LEGACY_NEUTRAL.col] : [];
 }
 
 export interface AclDocs {

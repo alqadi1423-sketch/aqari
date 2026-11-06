@@ -1,5 +1,6 @@
 package com.aqari.app
 
+import android.content.Context
 import android.view.WindowManager
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
@@ -15,8 +16,21 @@ import com.facebook.react.uimanager.ViewManager
 class AqariSecureModule(private val ctx: ReactApplicationContext) : ReactContextBaseJavaModule(ctx) {
   override fun getName() = "AqariSecure"
 
+  companion object {
+    private const val PREFS = "aqari_secure"
+    private const val KEY = "block_screenshots"
+
+    /**
+     * آخر ما طبّقه التطبيق · يقرؤه MainActivity.onCreate قبل أن يعمل جافاسكربت (المراجعة الشاملة · البند ٢٢): القاعدة المنتظرة
+     * للترقية كانت تمنع تطبيقه عند الإقلاع
+     */
+    fun saved(context: Context): Boolean =
+      context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY, false)
+  }
+
   @ReactMethod
   fun setSecure(on: Boolean) {
+    try { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY, on).apply() } catch (e: Exception) { }
     val activity = ctx.currentActivity ?: return
     activity.runOnUiThread {
       if (on) activity.window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)

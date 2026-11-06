@@ -12,9 +12,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, ActivityIndicator, Share, type TextStyle } from 'react-native';
 import { C, FONT, FONT_BOLD } from './theme';
-import { rawAppDb, clearUpgrade } from '../db/expoAdapter';
+import { rawAppDb, clearUpgrade, appDb } from '../db/expoAdapter';
+import { applyScreenSecureFrom } from '../services/screenSecure';
+import { rescheduleAllNotifications } from '../services/notifications';
 import { upgradeState, makePreUpgradeBackup } from '../domain/backup/upgrade';
 import { appBackupEnv } from '../services/backupService';
+import { redactForReport } from '../domain/redact';
 import { cancelSource, isCancelled, progressView, progressLabel, progressLine, StallWatch, type ProgressInfo } from '../domain/progress';
 
 type Phase = 'ready' | 'backup' | 'failed';
@@ -63,6 +66,10 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
         setMsg(m); setInfo(i ?? null);
       }, new Date(), src.signal);
       clearUpgrade();
+      // ما أجّله الإقلاع لأن القاعدة كانت تنتظر الترقية (المراجعة الشاملة · البند ٢٢): منع لقطة الشاشة الآن، والتنبيهات بعد مهلة
+      // الإقلاع نفسها
+      try { applyScreenSecureFrom(appDb()); } catch { /* يُطبَّق عند الإقلاع التالي */ }
+      setTimeout(() => { try { rescheduleAllNotifications(appDb()).catch(() => {}); } catch { /* الإقلاع التالي */ } }, 6000);
       setPhase('ready');
     } catch (e) {
       if (isCancelled(e) && cancelRef.current?.retry) { run(); return; }
@@ -119,7 +126,8 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
           <Text style={[txt(13, C.ink), { marginTop: 12, lineHeight: 22 }]}>{reason}</Text>
           <View style={{ marginTop: 18, gap: 10 }}>
             <Btn primary title="إعادة المحاولة" onPress={run} />
-            {cancelled ? null : <Btn title="مشاركة السبب" onPress={() => { Share.share({ message: reason }).catch(() => {}); }} />}
+            {/* ما يُشارك خارج الجهاز محجوبةٌ بياناته كتقرير الخطأ (المراجعة الشاملة · البند ١٨) */}
+            {cancelled ? null : <Btn title="مشاركة السبب" onPress={() => { Share.share({ message: redactForReport(reason) }).catch(() => {}); }} />}
           </View>
         </View>
       )}

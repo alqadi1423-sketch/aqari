@@ -5,7 +5,7 @@
  */
 import type { DB } from '../db/adapter';
 import { mulQty, pctOf } from './money';
-import { lineTaxCode } from './taxCode';
+import { lineTaxCode, vatRegistered } from './taxCode';
 
 export interface VatItem {
   no: string;
@@ -23,6 +23,11 @@ export interface VatReturnData {
   items: VatItem[];
   /** إيجارٌ تجاري محصَّل في الفترة خارج البند ٥ (سطر رقابة حتى تُبنى ضريبة التجاري) */
   commercialRentHalalas: number;
+  /**
+   * الإيجار التجاري المحصَّل في الفترة قبل خصم ما أُلغي فيها من فتراتٍ سابقة (التحقق المستقل على البند ١٠): منع التقديم به لا بالصافي،
+   * فإلغاءٌ بالمبلغ نفسه لا يفتح تقديم إقرارٍ ناقص
+   */
+  commercialRentCollectedHalalas: number;
   /** المستبعدة من الإقرار خلال الفترة · سطر الرقابة */
   excluded: { count: number; amountHalalas: number; taxWithinHalalas: number };
   schedules: {
@@ -47,21 +52,38 @@ type ExemptRow = VatReturnData['schedules']['exemptSales'][number];
 const RESIDENTIAL_TYPES = ['سكني', 'سكن طلاب', 'سكن طالبات']; // i18n-exempt: أنواع وحدة مخزّنة
 const RESIDENTIAL_SQL = `(COALESCE(c.unit_type, '') = '' OR c.unit_type IN (${RESIDENTIAL_TYPES.map((x) => `'${x}'`).join(', ')}))`;
 
-/** الإيجار التجاري المحصَّل في الفترة (خارج البند ٥) */
-function commercialRent(db: DB, from: string, to: string): number {
-  return Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas) FROM journal_lines l
-       WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410'), 0)), 0) AS s
+/** صافي الدفعة بلا فائضها الذي صار رصيداً دائناً للمستأجر (دائن 2410 في قيدها) */
+const PAY_NET_SQL = `p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas) FROM journal_lines l
+  WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410'), 0)`;
+/** يوم إلغاء الدفعة · المخزَّن تاريخٌ، والقديم قد يكون لحظة */
+const CANCEL_DAY_SQL = `substr(p.cancelled_at, 1, 10)`;
+
+/**
+ * الإيجار التجاري المحصَّل في الفترة (خارج البند ٥) · الدفعة في فترة قبضها ولو أُلغيت بعدها، وإلغاؤها يُخصم في فترة إلغائه
+ * (المراجعة الشاملة · البند ١٠) · والملغاة في فترتها نفسها لا تُعدّ فيها أصلاً (صافيها صفر)
+ */
+function commercialRentParts(db: DB, from: string, to: string): { paid: number; cancelled: number } {
+  const paid = Number(db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(${PAY_NET_SQL}), 0) AS s
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.cancelled_at IS NULL AND p.date >= ? AND p.date <= ? AND NOT ${RESIDENTIAL_SQL}`, [from, to])?.s ?? 0);
+     WHERE p.date >= ? AND p.date <= ? AND (p.cancelled_at IS NULL OR ${CANCEL_DAY_SQL} > ?) AND NOT ${RESIDENTIAL_SQL}`,
+    [from, to, to])?.s ?? 0);
+  const cancelled = Number(db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(${PAY_NET_SQL}), 0) AS s
+     FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
+     WHERE p.cancelled_at IS NOT NULL AND ${CANCEL_DAY_SQL} >= ? AND ${CANCEL_DAY_SQL} <= ? AND p.date < ? AND NOT ${RESIDENTIAL_SQL}`,
+    [from, to, from])?.s ?? 0);
+  return { paid, cancelled };
 }
 
 /** مبيعات الفواتير بالرمز: الفاتورة برمزٍ واحد بمجاميعها المحفوظة، والمختلطة سطراً سطراً */
 function invoiceSales(db: DB, from: string, to: string): { S: number; tax: number; Z: number; E: number } {
   const out = { S: 0, tax: 0, Z: 0, E: 0 };
-  const registered = !!Number(db.get<{ v: number }>(`SELECT vat_enabled AS v FROM company WHERE id = 1`)?.v ?? 0);
-  const invs = db.all<{ id: string; subtotal_halalas: number; tax_halalas: number }>(
-    `SELECT id, subtotal_halalas, tax_halalas FROM invoices WHERE deleted_at IS NULL AND status != ? AND issue >= ? AND issue <= ?`,
+  const registered = vatRegistered(db);
+  const hasKind = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'kind');
+  const invs = db.all<{ id: string; subtotal_halalas: number; tax_halalas: number; kind: string | null }>(
+    `SELECT id, subtotal_halalas, tax_halalas, ${hasKind ? 'kind' : 'NULL AS kind'} AS kind FROM invoices
+     WHERE deleted_at IS NULL AND status != ? AND issue >= ? AND issue <= ?`,
     ['مسودة', from, to]); // i18n-exempt: حالة مخزّنة
   for (const v of invs) {
     const lines = db.all<{ qty: number; price_halalas: number; tax_pct: number; tax_code: string | null }>(
@@ -73,6 +95,12 @@ function invoiceSales(db: DB, from: string, to: string): { S: number; tax: numbe
         const net = mulQty(Number(l.qty), Number(l.price_halalas));
         return { code: lineTaxCode(l.tax_code, Number(l.tax_pct)), net, tax: pctOf(net, Number(l.tax_pct)) };
       });
+    // الإشعار الدائن المقسوم على رموز فاتورته (المراجعة الشاملة · البند ٧): ضريبته المرحّلة على سطره الخاضع، فيطابق الإقرار دفتره
+    // بالهللة ولا يُعاد حسابها سطراً سطراً
+    if (codes.size > 1 && v.kind === 'credit_note') {
+      const s = parts.find((p) => p.code === 'S');
+      if (s) s.tax = Number(v.tax_halalas) - parts.filter((p) => p !== s).reduce((x, p) => x + p.tax, 0);
+    }
     for (const p of parts) {
       if (p.code === 'S') { if (registered) { out.S += p.net; out.tax += p.tax; } }
       else if (p.code === 'Z') { if (registered) out.Z += p.net; }
@@ -83,18 +111,42 @@ function invoiceSales(db: DB, from: string, to: string): { S: number; tax: numbe
 }
 
 /**
+ * عمولات التقبيل الخاضعة في البند ١ (المراجعة الشاملة ٨ · البند ١١): من سطور قيودها نفسها في الدفتر، فيطابق البند ١ حركةَ 2200
+ * بالهللة · القيد الذي حمل ضريبة مخرجات (منشأة مسجّلة يوم الصفقة) وعكسه (key_money_rev) ونسخة استعادته من السلة، كلٌّ بتاريخه:
+ * فالإلغاء ينقص البند ١ في فترة العكس كما ينقص الدفتر. والعمولة بلا سطر 2200 (منشأة غير مسجّلة يومها) خارجه كما كانت.
+ */
+function keyMoneySales(db: DB, from: string, to: string): { net: number; tax: number } {
+  const r = db.get<{ net: number; tax: number }>(
+    `SELECT COALESCE(SUM(CASE WHEN l.account_code = '4300' THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS net,
+            COALESCE(SUM(CASE WHEN l.account_code = '2200' THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS tax
+     FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type IN ('key_money', 'key_money_rev') AND e.status = ? AND e.deleted_at IS NULL AND e.date >= ? AND e.date <= ?
+       AND EXISTS (SELECT 1 FROM journal_lines x WHERE x.entry_id = e.id AND x.account_code = '2200')`,
+    ['مرحّل', from, to]); // i18n-exempt: حالة مخزّنة
+  return { net: Number(r?.net ?? 0), tax: Number(r?.tax ?? 0) };
+}
+
+/**
  * صفوف المبيعات المعفاة (البند ٥ وكشفه معاً · #31 والتحقق المستقل):
- *  - كل دفعة إيجار قائمة بصافيها بلا فائضها الذي صار رصيداً دائناً للمستأجر (دائن 2410 في قيدها): التزامٌ له لا توريد.
+ *  - كل دفعة إيجار بصافيها بلا فائضها الذي صار رصيداً دائناً للمستأجر (دائن 2410 في قيدها): التزامٌ له لا توريد.
+ *  - والدفعة الملغاة بعد فترتها تبقى فيها، ويُخصم صافيها بصفٍّ سالب بتاريخ إلغائها (المراجعة الشاملة · البند ١٠): كان الإلغاء يُسقطها
+ *    من فترتها الأصلية فيتغير ما قُدِّم، ولا يظهر في فترة الإلغاء · والملغاة في فترتها نفسها لا تظهر فيها (صافيها صفر).
  *  - وفائضٌ قديمٌ دخل إيراداً ثم سُوّي رصيداً أو رُدّ (surplus_credit وsurplus_refund وعكوسهما): ينقص في فترة تسويته.
  */
 function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
   const none = 'لا يوجد'; // i18n-exempt: نص الكشف المصدَّر بالعربية
   const pays = db.all<ExemptRow>(
     `SELECT p.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
-            p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas) FROM journal_lines l
-              WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410'), 0) AS net
+            ${PAY_NET_SQL} AS net
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.cancelled_at IS NULL AND p.date >= ? AND p.date <= ? AND ${RESIDENTIAL_SQL} ORDER BY p.date`, [none, from, to]);
+     WHERE p.date >= ? AND p.date <= ? AND (p.cancelled_at IS NULL OR ${CANCEL_DAY_SQL} > ?) AND ${RESIDENTIAL_SQL}
+     ORDER BY p.date`, [none, from, to, to]);
+  const cancelled = db.all<ExemptRow>(
+    `SELECT ${CANCEL_DAY_SQL} AS date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
+            -(${PAY_NET_SQL}) AS net
+     FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
+     WHERE p.cancelled_at IS NOT NULL AND ${CANCEL_DAY_SQL} >= ? AND ${CANCEL_DAY_SQL} <= ? AND p.date < ? AND ${RESIDENTIAL_SQL}
+     ORDER BY ${CANCEL_DAY_SQL}`, [none, from, to, from]);
   const settled = db.all<ExemptRow>(
     `SELECT e.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
             -SUM(l.debit_halalas - l.credit_halalas) AS net
@@ -103,17 +155,20 @@ function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
        AND e.status = ? AND e.deleted_at IS NULL AND l.account_code LIKE '42%' AND e.date >= ? AND e.date <= ?
      GROUP BY e.id ORDER BY e.date`,
     [none, 'مرحّل', from, to]); // i18n-exempt: حالة مخزّنة
-  return [...pays, ...settled.filter((r) => Number(r.net) !== 0)]
+  return [...pays, ...cancelled.filter((r) => Number(r.net) !== 0), ...settled.filter((r) => Number(r.net) !== 0)]
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
 export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): VatReturnData {
   const { from, to } = quarterRange(year, quarter);
+  const commercial = commercialRentParts(db, from, to);
   const inPeriod = (col: string) => ` AND ${col} >= '${from}' AND ${col} <= '${to}'`;
 
   // ١ و٣ و٥ · فواتير البيع غير المسودة برمز ضريبة سطورها (الهجرة ٣٩): الخاضع في ١، والصفري في ٣، والمعفى في ٥ ·
   // والمنشأة غير المسجّلة لا مبيعات خاضعة لها (دراسة القائم)
   const sales = invoiceSales(db, from, to);
+  // ١ · وعمولات التقبيل الخاضعة من قيودها (المراجعة الشاملة ٨ · البند ١١)
+  const keyMoney = keyMoneySales(db, from, to);
 
   // ٥ · المبيعات المعفاة = إيرادات الإيجار السكني المحصَّلة، من صفوف كشفها نفسها (exemptSalesRows)
 
@@ -141,7 +196,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
      FROM purchases WHERE deleted_at IS NULL AND tax_status = 'غير قابلة للخصم'${inPeriod('date')}`
   )!;
 
-  const salesSub = sales.S, salesTax = sales.tax, zeroSales = sales.Z;
+  const salesSub = sales.S + keyMoney.net, salesTax = sales.tax + keyMoney.tax, zeroSales = sales.Z;
   const exemptSales = exemptSalesRows(db, from, to);
   const rentNet = exemptSales.reduce((s, r) => s + Number(r.net), 0);
   const dedSub = Number(ded.sub), dedTax = Number(ded.tax);
@@ -192,7 +247,8 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
   );
 
   return {
-    period: `${year}-Q${quarter}`, from, to, items, commercialRentHalalas: commercialRent(db, from, to),
+    period: `${year}-Q${quarter}`, from, to, items, commercialRentHalalas: commercial.paid - commercial.cancelled,
+    commercialRentCollectedHalalas: commercial.paid,
     excluded: { count: Number(excl.n), amountHalalas: Number(excl.amt), taxWithinHalalas: Number(excl.tx) },
     schedules: { deductiblePurchases, excludedPurchases, exemptSales, transfers },
   };

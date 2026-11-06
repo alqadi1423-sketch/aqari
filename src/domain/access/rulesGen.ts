@@ -7,7 +7,7 @@ import { MEMBER_NO_HARD_DELETE } from '../../db/softDelete';
 import { NAME_CLASS, LETTER_FOLDS, RESERVED_CORE } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
-import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR } from './opWrites';
+import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR, SELF_AUDIT_ACTIONS, SELF_AUDIT_AHEAD_DAYS, LEGACY_NEUTRAL } from './opWrites';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, READ_TABLE, readSectionsOf } from './readSections';
 import { SYNC_TABLES } from '../../db/syncTables';
 import { BLOCK_SIZE, FIRST_GAP } from '../numbering';
@@ -32,6 +32,13 @@ export const END = '    // </org:generated>';
 const DIM_LINES_MAX = 24;
 
 const q = (xs: string[]) => '[' + xs.map((x) => `'${x}'`).join(', ') + ']';
+
+/** فروع opTouches لجدول LEGACY_NEUTRAL وحده من OP_WRITES (على المفاتيح k) */
+function legacyTouchBranches(): string {
+  const rows = (Object.entries(OP_WRITES) as Array<[SectionKey, NonNullable<(typeof OP_WRITES)[SectionKey]>]>)
+    .filter(([, w]) => w.touch?.[LEGACY_NEUTRAL.table]);
+  return rows.length ? rows.map(([s, w]) => `(op == '${s}' && k.hasOnly(${q(w.touch![LEGACY_NEUTRAL.table])}))`).join(' || ') : 'false';
+}
 
 function writesFns(): string {
   const entries = Object.entries(OP_WRITES) as Array<[SectionKey, NonNullable<(typeof OP_WRITES)[SectionKey]>]>;
@@ -383,10 +390,44 @@ ${guardFns(schema)}
     }
     // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥) · وما سواه لا يُكتب
     // بهذه العملية (مستواها صفر)
+    // ورموز رؤيته رموزٌ عامة («قسم|*» أو «قسم|@») وحقوله حقول سجل العمليات بحدودها (المراجعة الشاملة · البند ٢٨): كان يكتب رموزاً
+    // ونصوصاً بلا حد
     function memberSelfAudit(r) {
       return r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)
+        && gPropOk(r.get('g', []), '*') && selfAuditSized(r.d)
         && r.d.get('module', '') == '${SELF_AUDIT_MODULE}' && r.d.get('user_name', '') != '${OWNER_ACTOR}'
         && r.get('by', '') == request.auth.uid;
+    }
+    // ونوعه مما يكتبه التطبيق، ووقته نصٌّ بصيغة toISOString لا يسبق وقت الخادم بأكثر من أيامٍ عددها ${SELF_AUDIT_AHEAD_DAYS} (البند ٢٨ تتمة · المراجعة
+    // الأخيرة: كانا بلا قيد، فيُكتب نوعٌ مضلّل أو ضخم ووقتٌ بعيدٌ يبقى أول السجل) · والساعة والدقيقة والثانية في مداها (المتحقق المستقل:
+    // T99:99:99 بتاريخ اليوم كانت تُقبل، فيظهر وقتها «NaN» عند المالك ويغيب السطر عن مرشحات السجل)
+    function selfAuditSized(d) {
+      return d.keys().hasOnly(['id', 'ts', 'user_name', 'module', 'action_type', 'entity_type', 'entity_name', 'before_json', 'after_json'])
+        && d.get('action_type', null) in ${q([...SELF_AUDIT_ACTIONS])}
+        && d.get('ts', null) is string && d.ts.size() <= 24
+        && d.ts.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]{1,3})?Z?')
+        && selfAuditNotAhead(d.ts.split('T')[0].split('-'))
+        && d.get('user_name', '') is string && d.get('user_name', '').size() <= 200
+        && d.get('entity_name', '') is string && d.get('entity_name', '').size() <= 300
+        && (d.get('before_json', null) == null || (d.before_json is string && d.before_json.size() <= 4000))
+        && (d.get('after_json', null) == null || (d.after_json is string && d.after_json.size() <= 4000));
+    }
+
+    function selfAuditNotAhead(p) {
+      return timestamp.date(int(p[0]), int(p[1]), int(p[2])) < request.time + duration.value(${SELF_AUDIT_AHEAD_DAYS}, 'd');
+    }
+
+    // عمودٌ أضافته هجرةٌ بعد أن كُتبت مستندات السحابة (المراجعة الشاملة · البند ٣ تتمة · الهجرة ٤٨): إضافته أو نزعه في كتابة إصدارٍ
+    // آخر لا يُعدّ لمساً ما دامت قيمته في طرفه قيمة ${LEGACY_NEUTRAL.equals} نفسها (كغيابه) · وتغيير قيمته لمسٌ يُرفض · دالةٌ لجدوله وحده
+    // تُستدعى بشرطٍ ثلاثي، ومفاتيحها محسوبةٌ مرة (let)، والقيمتان لا تُقرآن إلا إن مسّ المفتاح، وفيها فرع جدولها من opTouches وحده
+    // (OP_WRITES) لا سلسلته كلها: مسار لمس العقد قريبٌ من حدّ الألف تعبير، فلا تزيد كلفته (ميزانية القواعد على المحاكي)
+    function legacyTouches(op, b, a) {
+      let keys = a.diff(b).affectedKeys();
+      let k = keys.hasAny(['${LEGACY_NEUTRAL.col}'])
+          && b.get('${LEGACY_NEUTRAL.col}', b.get('${LEGACY_NEUTRAL.equals}', null)) == b.get('${LEGACY_NEUTRAL.equals}', null)
+          && a.get('${LEGACY_NEUTRAL.col}', a.get('${LEGACY_NEUTRAL.equals}', null)) == a.get('${LEGACY_NEUTRAL.equals}', null)
+        ? keys.difference(['${LEGACY_NEUTRAL.col}'].toSet()) : keys;
+      return ${legacyTouchBranches()};
     }
 
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
@@ -443,7 +484,8 @@ ${guardFns(schema)}
           // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)
           || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(m, before, after)
               && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'sv', 'dr', 'cr'])
-              && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys())
+              && (after.t in ['${LEGACY_NEUTRAL.table}', '${LEGACY_NEUTRAL.table}~pub'] ? legacyTouches(op, before.d, after.d)
+                  : opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
               // ولا يُلغي القسط: إلغاؤه بإلغاء العقد لـ«كامل» العقود (مراجعة التثبيت #53)
               && (baseT(after.t) != 'contract_installments' || after.d.get('status', '') != 'ملغية'))
         );

@@ -24,7 +24,7 @@ import { Icon } from '../src/ui/icons';
 import {
   savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax, priorPaymentCashOut,
   TAX_STATUSES, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
-  type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled,
+  type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled, purchaseEditBlock,
 } from '../src/domain/purchases';
 import { today as todayFn } from '../src/domain/dates';
 import { metersForPurchase } from '../src/domain/meters';
@@ -87,7 +87,7 @@ function statusBadge(p: { paid: number; due: string }) {
  * الضغط على البطاقة يفتح ورقة العرض الشاملة · السداد المسدَّد لا يُعدَّل بل يُتراجع عنه */
 const PurchaseCard = React.memo(function PurchaseCard({
   id, no, supplierName, date, due, category, subtotalHalalas, taxHalalas, totalHalalas,
-  exempt, excludeFromVat, paid, taxStatus, refundStatus, filedLocked, hasOriginal, canManage,
+  exempt, excludeFromVat, paid, taxStatus, refundStatus, filedLocked, editLocked, hasOriginal, canManage,
   onDetail, onPay, onEdit, onUndoPay, onPrint, onDelete, onVatFiled, onVatRefunded, onVatRejected,
 }: {
   id: string; no: string; supplierName: string; date: string; due: string; category: string;
@@ -96,6 +96,8 @@ const PurchaseCard = React.memo(function PurchaseCard({
   refundStatus: string; hasOriginal: boolean;
   /** مقدَّمة في إقرار ضريبي: لا تعديل ولا حذف (قرار المالك 2026-10-09) */
   filedLocked: boolean;
+  /** ما يرفض به الحفظ التعديل (purchaseEditBlock): السداد والإقرار والضريبة المسترَدة والسلة وأصول الفاتورة */
+  editLocked: boolean;
   /** «المشتريات والموردون: كامل» · السداد والتراجع والتعديل والحذف واسترداد الضريبة */
   canManage: boolean;
   onDetail: (id: string) => void;
@@ -121,8 +123,8 @@ const PurchaseCard = React.memo(function PurchaseCard({
   return (
     <Pressable onPress={() => onDetail(id)}>
       <Card style={{ paddingVertical: 10 }}>
-        {/* زر ⋮ أعلى البطاقة يساراً بمحاذاة العنوان · والمسدَّدة لا «سداد» لها ولا «تعديل»
-            (يبقى «التراجع عن السداد») · وبلا مستند أصلي مرفق لا يُعرض زر «الفاتورة الأصلية» */}
+        {/* زر ⋮ أعلى البطاقة يساراً بمحاذاة العنوان · والمسدَّدة لا «سداد» لها (يبقى «التراجع عن السداد») ·
+            و«تعديل» يغيب حيث يرفضه الحفظ · وبلا مستند أصلي مرفق لا يُعرض زر «الفاتورة الأصلية» */}
         <Row style={{ justifyContent: 'space-between' }}>
           <T size={TYPE.sectionTitle} bold style={{ flex: 1 }}>{supplierName}</T>
           <Row gap={8}>
@@ -131,7 +133,7 @@ const PurchaseCard = React.memo(function PurchaseCard({
               { icon: 'eye', label: 'عرض التفاصيل', onPress: () => onDetail(id) },
               canManage && !paid ? { icon: 'card', label: 'تسديد الفاتورة', onPress: () => onPay(id, totalHalalas) } : null,
               canManage && paid ? { icon: 'undo', label: 'التراجع عن السداد', onPress: () => onUndoPay(id) } : null,
-              paid || !canManage || contentLocked ? null : { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) },
+              canManage && !editLocked ? { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) } : null,
               hasOriginal ? { icon: 'print' as const, label: 'الفاتورة الأصلية', onPress: () => onPrint(id, no) } : null,
               ...vatActions,
               // الضريبة المسترَدة أو المرفوضة تقفل الفاتورة حتى يُلغى قيدها من الدفتر (#32)
@@ -550,6 +552,7 @@ export default function Purchases() {
       totalHalalas={Number(item.total_halalas)} exempt={Number(item.exempt)} excludeFromVat={Number(item.exclude_from_vat)}
       paid={Number(item.paid)} taxStatus={item.tax_status ?? ''} refundStatus={item.refund_status ?? ''}
       hasOriginal={!!Number(item.att_n)} canManage={perm.manage} filedLocked={isPurchaseFiled(db, item.id)}
+      editLocked={!!purchaseEditBlock(db, item.id)}
       onDetail={openDetail} onPay={openPay} onEdit={openEdit} onUndoPay={undoPay} onPrint={printOriginal} onDelete={doDelete}
       onVatFiled={vatFiled} onVatRefunded={vatRefunded} onVatRejected={vatRejected}
     />
@@ -1013,7 +1016,9 @@ function PurchaseDetailSheet({ purchaseId, onClose, onEdit }: {
     const attCount = Number(db.get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM attachments WHERE entity_type = 'purchase' AND entity_id = ? AND deleted_at IS NULL`,
       [purchaseId])?.n ?? 0);
-    return { p, supplierVat: (p.supplier_vatno || sup?.vat || '').trim(), meter, bank, je, payJe, attCount };
+    // «تعديل» يغيب حيث يرفضه الحفظ: المسدَّدة والمقدَّمة في إقرار والمسترَدة ضريبتها والمحذوفة والمقفلة بأصولها
+    return { p, supplierVat: (p.supplier_vatno || sup?.vat || '').trim(), meter, bank, je, payJe, attCount,
+      editBlock: purchaseEditBlock(db, purchaseId) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, purchaseId]);
 
@@ -1031,17 +1036,17 @@ function PurchaseDetailSheet({ purchaseId, onClose, onEdit }: {
   }, [db, version, entryFor]);
 
   if (!data) return null;
-  const { p, supplierVat, meter, bank, je, payJe, attCount } = data;
+  const { p, supplierVat, meter, bank, je, payJe, attCount, editBlock } = data;
   const paid = Number(p.paid);
   /** خانة تفاصيل · الفارغة لا تظهر هي ولا عنوانها · والصفر قيمة تُعرض */
   // الخانة الواحدة لكل بطاقة تفاصيل · تغيب بعنوانها إن غابت قيمتها
   const cell = (label: string, v: React.ReactNode) => <KV label={label} v={v} flex />;
   return (
     <Sheet visible onClose={onClose} title={'فاتورة شراء ' + p.no} tall>
-      {/* المسدَّدة لا يُعرض لها «تعديل» · التصحيح بالتراجع عن السداد ثم التعديل */}
+      {/* «تعديل» لا يُعرض حيث يرفضه الحفظ · المسدَّدة تُصحَّح بالتراجع عن السداد ثم التعديل */}
       <Row style={{ justifyContent: 'space-between', marginBottom: 10 }}>
         {statusBadge({ paid, due: p.due })}
-        {paid || !canManage ? null : <BtnGhost small icon="edit" title="تعديل" onPress={() => { onClose(); onEdit(p.id); }} />}
+        {!canManage || editBlock ? null : <BtnGhost small icon="edit" title="تعديل" onPress={() => { onClose(); onEdit(p.id); }} />}
       </Row>
       <Row style={{ marginBottom: 8 }}>
         {cell('المورد', <T size={12.5} bold>{p.supplier_name}</T>)}

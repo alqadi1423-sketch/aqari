@@ -17,7 +17,7 @@ import { uid } from './ids';
 import { logAudit } from './audit';
 import { fmt } from './money';
 import { t } from '../i18n';
-import { requireOpenPeriod } from './vatFilings';
+import { requireOpenPeriod, correctionDate } from './vatFilings';
 import { postBookedDiscount, postEntry, type PostedEntry } from './accounting/post';
 import { walletCashBalance, bankBalance } from './accounting/ledger';
 import { DERIVED_PAID_SQL, recomputeInstallments } from './contracts/paid';
@@ -312,8 +312,9 @@ export function bookDiscount(db: DB, paymentId: string, kind: DiscountKind): voi
   const amount = Number(p.discount);
   db.transaction(() => {
     if (kind === DISCOUNT_AFTER_DUE) {
+      // قيد الخصم بأثر رجعي قيد تصحيح: بتاريخ الدفعة إلا في فترةٍ قُدِّم إقرارها فبتاريخ التصحيح (#29 · البند ٩ ونظيره هنا)
       const entry = postBookedDiscount(db, {
-        paymentId: p.id, tenant: who.tenant, contractNo: who.contractNo, amount, date: p.date, paymentDate: p.date,
+        paymentId: p.id, tenant: who.tenant, contractNo: who.contractNo, amount, date: correctionDate(db, p.date), paymentDate: p.date,
       });
       db.run(`UPDATE contract_payments SET discount_kind = ? WHERE id = ?`, [DISCOUNT_AFTER_DUE, p.id]);
       logAudit(db, 'التحصيل', 'update', 'خصم بعد الاستحقاق بأثر رجعي',

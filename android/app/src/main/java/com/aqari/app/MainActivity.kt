@@ -3,6 +3,7 @@ import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 
 import com.facebook.react.ReactActivity
 import com.facebook.react.ReactActivityDelegate
@@ -21,6 +22,10 @@ class MainActivity : ReactActivity() {
     SplashScreenManager.registerOnActivity(this)
     // @generated end expo-splashscreen
     super.onCreate(null)
+    // منع لقطة الشاشة من آخر ما طبّقه التطبيق قبل أن يعمل جافاسكربت (المراجعة الشاملة · البند ٢٢)
+    try {
+      if (AqariSecureModule.saved(this)) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    } catch (e: Exception) { }
   }
 
   /**
