@@ -167,7 +167,7 @@ export function agreedEnd(c: ContractAccrualRow): string {
   const end = c.end || '';
   const cd = c.cancel_date || '';
   if (c.original_end && c.original_end > cd && c.original_end > end) return c.original_end;
-  if (c.status === 'ملغى' && cd && end === cd && c.start && (c.installments ?? 0) > 0) {
+  if (c.status === 'ملغى' && cd && end === cd && c.start && (c.installments ?? 0) > 0) { // i18n-exempt: حالة العقد المخزّنة
     const derived = contractEndFromDuration(c.start, (c.installments ?? 0) * (CYCLE_MONTHS[c.cycle ?? ''] || 12));
     if (derived > end) return derived;
   }
