@@ -1180,27 +1180,77 @@ function applyOne(
   }
 }
 
+type FkRow = { table: string; from: string; to: string | null };
+
 /**
- * الوارد المرفوض لطول انتظار أبيه يعود إلى الصندوق حين يصل الأب (المراجعة الشاملة · البند ١٤): كل مفتاحٍ أجنبي فيه يشير إلى صفٍّ
- * موجود الآن · وما لا مفتاح أجنبياً فيه (العاكس ينتظر أصله) يبقى مرفوضاً حتى إعادة الترقية، فلا يدور بين الصندوق والمرفوض
+ * ما ينتظره المستند بمفاتيحه الأجنبية · مفاتيح جدوله، وللقيد مفاتيح سطوره كما يُدرجها applyJournal (الحساب account_code، وأي مفتاحٍ
+ * أجنبي يُضاف إليها كمراكز التكلفة) لا جدوله وحده (المراجعة الشاملة · البند ١٤ · المراجعة الأخيرة: مفتاحه الوحيد reversed_by، فقيدٌ انتظر حساباً
+ * في سطوره لم يكن يعود أبداً) · والقيد لا ينتظر قيداً: عاكسه يُربط معلّقاً حتى يصل (linkReversal)، والسطر لقيده نفسه
  */
-function restageArrivedParents(db: DB): number {
-  const rows = db.all<{ id: number; tbl: string; payload: string }>(`SELECT id, tbl, payload FROM sync_rejects WHERE reason = ?`, [WAIT_REJECT]);
+function awaitedRefs(doc: RemoteDoc, fkOf: (t: string) => FkRow[]): Array<{ table: string; to: string; value: SqlValue }> {
+  const out: Array<{ table: string; to: string; value: SqlValue }> = [];
+  const add = (table: string, row: RowData) => {
+    for (const k of fkOf(table)) {
+      if ((table === 'journal_entries' || table === 'journal_lines') && k.table === 'journal_entries') continue;
+      const v = row[k.from];
+      if (v == null || v === '') continue;
+      out.push({ table: k.table, to: k.to ?? syncTable(k.table)?.pkCols[0] ?? 'id', value: v });
+    }
+  };
+  add(doc.t, doc.d!);
+  if (doc.t === 'journal_entries') for (const l of doc.lines ?? []) add('journal_lines', l);
+  return out;
+}
+
+/** لأحد أبناء الصف (أو أبنائهم بالتسلسل نفسه) نسخةٌ مرفوضة لطول انتظارها · فحذفه يُنتظر حتى تعود وتُطبَّق أولاً */
+function kidWaitRejected(db: DB, table: string, key: string, depth = 0): boolean {
+  if (depth > 8) return true;
+  const row = readRow(db, table, key);
+  if (!row) return false;
+  for (const c of fkChildren(db, table)) {
+    const ct = syncTable(c.child)!;
+    const kids = db.all<{ k: string }>(`SELECT ${ct.pk(`"${c.child}"`)} AS k FROM "${c.child}" WHERE "${c.from}" = ?`, [row[c.to] as SqlValue]);
+    for (const kid of kids) {
+      if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = ? AND pk = ? AND reason = ?`, [c.child, kid.k, WAIT_REJECT])) return true;
+      if (c.notNull && kidWaitRejected(db, c.child, kid.k, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+/** وقت انتظارٍ قديم يُعطى لما يُعاد من المرفوض على التجربة · فإن احتاج الانتظار ثانيةً عاد إليه في المرور نفسه */
+const PROBATION_SINCE = '1970-01-01T00:00:00.000Z';
+
+/**
+ * الوارد المرفوض لطول انتظاره يعود إلى الصندوق حين يصل ما ينتظره (المراجعة الشاملة · البند ١٤): كل مفتاحٍ أجنبي فيه يشير إلى صفٍّ
+ * موجود الآن، وللقيد مفاتيح سطوره (awaitedRefs) · وما ينتظر غير المفاتيح (العاكس ينتظر أصله، والدفعة قيد إلغائها، والصف قيمةً فريدة
+ * يُفرغها حذفٌ مؤجَّل) يُجرَّب كذلك ما دامت مفاتيحه حاضرة، فلا يبقى مرفوضاً بعد وصول ما ينتظره (المراجعة الأخيرة: كان يبقى «حتى
+ * إعادة الترقية» وإعادة الترقية لا تعيد إلا أسباب المخطط) · وحذفٌ انتظر نسخة ابنه يعود حين لا يبقى من أبنائه مرفوضٌ بالانتظار
+ * (نسخة الابن تُطبَّق أولاً، وإلا سلسله الحذف كأنه بلا نسخة) · وكلٌّ على التجربة: سجل رفضه يبقى حتى يُطبَّق، فإن بقي ينتظر عاد إلى
+ * المرفوض في المرور نفسه بصمت (لا يُعدّ ولا يُسجَّل ثانيةً) ولا ينتظر ثلاثين يوماً أخرى في الصندوق
+ */
+function restageArrivedParents(db: DB, waitRejected?: Set<string>): number {
+  const rows = db.all<{ doc: string; payload: string }>(`SELECT doc, payload FROM sync_rejects WHERE reason = ?`, [WAIT_REJECT]);
+  const fks = new Map<string, FkRow[]>();
+  const fkOf = (t: string) => {
+    let f = fks.get(t);
+    if (!f) { f = db.all<FkRow>(`PRAGMA foreign_key_list("${t}")`); fks.set(t, f); }
+    return f;
+  };
   let n = 0;
   for (const r of rows) {
+    waitRejected?.add(r.doc);
     let doc: RemoteDoc | null = null;
     try { doc = JSON.parse(r.payload) as RemoteDoc; } catch { doc = null; }
-    if (!doc || !doc.id || !doc.d || !syncTable(doc.t)) continue;
-    const fks = db.all<{ table: string; from: string; to: string | null }>(`PRAGMA foreign_key_list("${doc.t}")`);
-    const refs = fks.filter((k) => doc!.d![k.from] != null && doc!.d![k.from] !== '');
-    if (!refs.length) continue;
-    const arrived = refs.every((k) => {
-      const to = k.to ?? syncTable(k.table)?.pkCols[0] ?? 'id';
-      return !!db.get(`SELECT 1 FROM "${k.table}" WHERE "${to}" = ?`, [doc!.d![k.from] as SqlValue]);
-    });
-    if (!arrived) continue;
+    if (!doc || !doc.id || !syncTable(doc.t)) continue;
+    if (doc.d) {
+      const arrived = awaitedRefs(doc, fkOf).every((k) => !!db.get(`SELECT 1 FROM "${k.table}" WHERE "${k.to}" = ?`, [k.value]));
+      if (!arrived) continue;
+    } else if (!doc.del || kidWaitRejected(db, doc.t, doc.k)) continue;
     stageInbox(db, [doc]);
-    db.run(`DELETE FROM sync_rejects WHERE id = ?`, [r.id]);
+    // ونسخةٌ أحدث منه في الصندوق تبقى على انتظارها
+    db.run(`UPDATE sync_inbox SET attempts = ?, waiting_since = ? WHERE doc = ? AND payload = ?`,
+      [MAX_ATTEMPTS, PROBATION_SINCE, doc.id, JSON.stringify(doc)]);
     n++;
   }
   return n;
@@ -1241,6 +1291,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
   const money = moneyColumns(db); // مرة لكل تطبيق لا لكل صف
   const joining = getSyncState(db, 'joining') === '1';
   const touched = new Set<string>();
+  /** ما له رفضُ انتظار (يملؤه restageArrivedParents في كل مرور) · فلا يُبحث في سجل المرفوض لكل صفٍّ يُطبَّق */
+  const waitRejected = new Set<string>();
   /** معاملةٌ والوارد لا يرتدّ صداه إلى الطابور، ودفعةٌ سُجّلت على جهاز آخر لا يرفضها فحص «المتبقي» المحلي */
   const quiet = (fn: () => void) => db.transaction(() => {
     const wasOn = captureOn(db);
@@ -1251,7 +1303,7 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
   for (let pass = 0; pass < 4; pass++) {
     let progress = 0;
     // ما رُفض لانتظار أبيه ووصل أبوه قبل هذه الدورة يعود إلى الصندوق فيُطبَّق فيها (البند ١٤)
-    if (pass === 0) quiet(() => { restageArrivedParents(db); });
+    if (pass === 0) quiet(() => { restageArrivedParents(db, waitRejected); });
     // شواهد الحذف أولاً والأبناء قبل الآباء (المفتاح الأجنبي يمنع حذف أبٍ له أبناء) · ثم الصفوف
     // والآباء قبل الأبناء · وإلا وصل صفٌّ جديد يحمل رقماً فريداً قبل حذف من كان يحمله فرُفض بلا رجعة
     // (وجده اختبار الثوابت: عقد حُذف باستعادة ثم أُنشئ غيره بالرقم نفسه)
@@ -1273,9 +1325,13 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
               // بالزمن لا بالمرور (البند ١٤): المرور الواحد قد يتكرر أربع مرات في الدورة
               const since = r.waiting_since ? Date.parse(r.waiting_since) : NaN;
               if (r.attempts + 1 >= MAX_ATTEMPTS && Number.isFinite(since) && Date.now() - since > WAIT_LIMIT_MS) {
-                reject(db, doc, WAIT_REJECT);
+                // وما أُعيد على التجربة (restageArrivedParents) ولم يصل ما ينتظره يرجع بصمت: سجله باقٍ بحمولته نفسها · ونسخةٌ أحدث تحلّ محله
+                if (!db.get(`SELECT 1 FROM sync_rejects WHERE doc = ? AND reason = ? AND payload = ?`, [r.doc, WAIT_REJECT, r.payload])) {
+                  db.run(`DELETE FROM sync_rejects WHERE doc = ? AND reason = ?`, [r.doc, WAIT_REJECT]);
+                  reject(db, doc, WAIT_REJECT);
+                  out.rejected++;
+                }
                 db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
-                out.rejected++;
               } else {
                 db.run(`UPDATE sync_inbox SET attempts = attempts + 1, last_error = 'بانتظار سجل أب',
                         waiting_since = COALESCE(waiting_since, ?) WHERE doc = ?`, [nowIso(), r.doc]);
@@ -1283,6 +1339,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
               continue;
             }
             db.run(`DELETE FROM sync_inbox WHERE doc = ?`, [r.doc]);
+            // انتهى انتظاره (طُبّق أو غلبه ما هنا أو رُفض لسببٍ آخر يُسجَّل بنفسه) · فلا يبقى له رفضُ انتظار
+            if (waitRejected.has(r.doc)) db.run(`DELETE FROM sync_rejects WHERE doc = ? AND reason = ?`, [r.doc, WAIT_REJECT]);
             progress++;
             if (res === 'applied' || res === 'conflict-remote') markTouched(db, doc, touched);
             if (res === 'applied') out.applied++;
@@ -1297,7 +1355,7 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
     }
     if (!progress) break;
     // ووصل أبوه في هذا المرور: يُطبَّق في المرور التالي من الدورة نفسها
-    quiet(() => { restageArrivedParents(db); });
+    quiet(() => { restageArrivedParents(db, waitRejected); });
     const left = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
     if (!left) break;
   }

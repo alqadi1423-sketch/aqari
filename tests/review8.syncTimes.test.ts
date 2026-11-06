@@ -7,6 +7,8 @@ import { enableSync, syncOnce, docId, applyInbox, stageInbox } from '@/sync/engi
 import { getMeta } from '@/repos/settings';
 import type { DB } from '@/db/adapter';
 import type { RemoteDoc } from '@/sync/types';
+import { saveAccount } from '@/domain/accounting/chart';
+import { postManualEntry, reverseEntryById } from '@/domain/accounting/post';
 
 const UID = 'user-1';
 const sync = (db: DB, r: MemoryRemote) => syncOnce(db, r, getMeta(db, 'device_id')!);
@@ -94,6 +96,134 @@ test('١٤ وما طال انتظاره (أكثر من مهلة الانتظار
   applyInbox(db, 'this-device');
   expect(rejects(db, 'UW3')).toBe(1);
   expect(db.get(`SELECT 1 FROM sync_inbox WHERE pk = 'UW3'`)).toBeFalsy();
+  db.close();
+});
+
+/* ═══ تتمة المراجعة الأخيرة: ما انتظر غير مفاتيح جدوله (حساب سطور القيد، أصل العاكس، نسخة الابن) يعود حين يصل ═══ */
+
+const WAIT_REJECT = 'سجل أب غير موجود بعد محاولات متكررة';
+const posted = (db: DB, id: string) => db.get<{ s: string; r: string | null }>(`SELECT status AS s, reversed_by AS r FROM journal_entries WHERE id = ?`, [id]);
+const waitingIn = (db: DB) => db.all<{ pk: string }>(`SELECT pk FROM sync_inbox`).map((x) => x.pk);
+/** يطيل انتظار ما في الصندوق فوق المهلة ثم يطبّق: يُرفض لطول انتظاره */
+const outwait = (db: DB) => {
+  db.run(`UPDATE sync_inbox SET waiting_since = '2020-01-01T00:00:00.000Z', attempts = 50`);
+  return applyInbox(db, 'this-device');
+};
+const legacyReject = (db: DB, doc: RemoteDoc) => db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
+  [doc.id, doc.t, doc.k, WAIT_REJECT, JSON.stringify(doc), '2026-02-03T00:00:00.000Z']);
+
+/** جهاز المالك يرحّل قيداً يدوياً بحسابين جديدين (ومعه عاكسه إن طُلب) ويرفع · ويُعاد ما في السحابة بمعرّفه */
+async function ledger(opts: { newAccounts: boolean; reverse: boolean }) {
+  const r = new MemoryRemote();
+  const a = memDb();
+  enableSync(a, UID);
+  const [dr, cr] = opts.newAccounts ? ['5999', '3999'] : ['1100', '3100'];
+  if (opts.newAccounts) {
+    saveAccount(a, { code: '5999', name: 'مصروف مصطنع', type: 'مصروف', openingHalalas: 0 });
+    saveAccount(a, { code: '3999', name: 'حقوق مصطنعة', type: 'حقوق ملكية', openingHalalas: 0 });
+  }
+  const e = postManualEntry(a, { date: '2026-02-01', memo: 'قيد مصطنع', lines: [{ account: dr, debit: 1000, credit: 0 }, { account: cr, debit: 0, credit: 1000 }] })!;
+  const rev = opts.reverse ? reverseEntryById(a, e.id)! : null;
+  await sync(a, r);
+  a.close();
+  const doc = (t: string, k: string) => r.docs.get(docId(t, k))!;
+  return { e: e.id, rev: rev?.id ?? '', doc };
+}
+
+test('١٤ (المراجعة الأخيرة) قيدٌ رُفض لطول انتظار حسابٍ في سطوره وحدها يعود حين يصل الحساب ويُطبَّق', async () => {
+  const { e, doc } = await ledger({ newAccounts: true, reverse: false });
+  const c = memDb();
+  enableSync(c, UID);
+  stageInbox(c, [doc('journal_entries', e)]);
+  applyInbox(c, 'this-device');
+  expect(waitingIn(c)).toEqual([e]);
+  outwait(c);
+  expect(rejects(c, e)).toBe(1);
+  // وصل الحسابان: القيد يعود ويُرحَّل
+  stageInbox(c, [doc('accounts', '5999'), doc('accounts', '3999')]);
+  applyInbox(c, 'this-device');
+  expect(posted(c, e)?.s).toBe('مرحّل');
+  expect(rejects(c, e)).toBe(0);
+  expect(waitingIn(c)).toEqual([]);
+  c.close();
+});
+
+test('١٤ (المراجعة الأخيرة) ومن إصدارٍ سابق: القيد وعاكسه المرفوضان لانتظار حسابهما يعودان معاً حين يصل · والقيد لا ينتظر عاكسه', async () => {
+  const { e, rev, doc } = await ledger({ newAccounts: true, reverse: true });
+  const c = memDb();
+  enableSync(c, UID);
+  // القيد يحمل معرّف عاكسه، والعاكس ينتظر أصله · وكلاهما مرفوضٌ بالانتظار
+  expect((doc('journal_entries', e).d as Record<string, unknown>).reversed_by).toBe(rev);
+  legacyReject(c, doc('journal_entries', e));
+  legacyReject(c, doc('journal_entries', rev));
+  stageInbox(c, [doc('accounts', '5999'), doc('accounts', '3999')]);
+  applyInbox(c, 'this-device');
+  expect(posted(c, e)).toEqual({ s: 'مرحّل', r: rev });
+  expect(posted(c, rev)?.s).toBe('مرحّل');
+  expect(rejects(c, e) + rejects(c, rev)).toBe(0);
+  expect(waitingIn(c)).toEqual([]);
+  c.close();
+});
+
+test('١٤ (المراجعة الأخيرة) والعاكس المرفوض لطول انتظار أصله (لا مفتاح أجنبياً ينتظره) يعود حين يصل الأصل', async () => {
+  const { e, rev, doc } = await ledger({ newAccounts: false, reverse: true });
+  const c = memDb();
+  enableSync(c, UID);
+  stageInbox(c, [doc('journal_entries', rev)]);
+  applyInbox(c, 'this-device');
+  expect(waitingIn(c)).toEqual([rev]);
+  outwait(c);
+  expect(rejects(c, rev)).toBe(1);
+  stageInbox(c, [doc('journal_entries', e)]);
+  applyInbox(c, 'this-device');
+  expect(posted(c, rev)?.s).toBe('مرحّل');
+  expect(posted(c, e)).toEqual({ s: 'مرحّل', r: rev });
+  expect(rejects(c, rev)).toBe(0);
+  c.close();
+});
+
+test('١٤ (المراجعة الأخيرة) وما يُعاد على التجربة ولم يصل ما ينتظره يرجع إلى المرفوض بصمت: لا يُعدّ ولا يُسجَّل ثانيةً ولا يبقى في الصندوق', async () => {
+  const { rev, doc } = await ledger({ newAccounts: false, reverse: true });
+  const c = memDb();
+  enableSync(c, UID);
+  legacyReject(c, doc('journal_entries', rev));
+  const audits = () => Number(c.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log`)!.n);
+  const before = audits();
+  for (let i = 0; i < 3; i++) {
+    // صفٌّ آخر يصل في كل دورة فيتقدّم التطبيق
+    stageInbox(c, [propDoc('P-PROBE' + i)]);
+    const out = applyInbox(c, 'this-device');
+    expect(out.rejected).toBe(0);
+  }
+  expect(rejects(c, rev)).toBe(1);
+  expect(waitingIn(c)).toEqual([]);
+  expect(audits()).toBe(before);
+  expect(posted(c, rev)).toBeUndefined();
+  c.close();
+});
+
+test('١٤ (المراجعة الأخيرة) وحذفٌ رُفض لطول انتظار نسخة ابنه يعود حين تعود نسخة الابن وتُطبَّق', () => {
+  const db = memDb();
+  enableSync(db, UID);
+  stageInbox(db, [propDoc('P-OLD4')]);
+  stageInbox(db, [unitDoc('UW4', 'P-OLD4')]);
+  applyInbox(db, 'this-device');
+  // المالك نقل الوحدة إلى عقارٍ جديد لم يصل بعد ثم حذف القديم
+  const moved = { ...unitDoc('UW4', 'P-NEW4'), u: '2026-02-05T00:00:00.000Z', ts: '2026-02-05T00:00:00.000Z' };
+  const tomb: RemoteDoc = { id: docId('properties', 'P-OLD4'), t: 'properties', k: 'P-OLD4', u: '2026-02-06T00:00:00.000Z',
+    ts: '2026-02-06T00:00:00.000Z', dev: 'other', del: true, d: null, dby: UID };
+  stageInbox(db, [moved, tomb]);
+  applyInbox(db, 'this-device');
+  expect(waitingIn(db).sort()).toEqual(['P-OLD4', 'UW4']);
+  outwait(db);
+  expect(rejects(db, 'UW4') + rejects(db, 'P-OLD4')).toBe(2);
+  // وصل العقار الجديد: تُطبَّق الوحدة عليه ثم يُحذف القديم
+  stageInbox(db, [propDoc('P-NEW4')]);
+  applyInbox(db, 'this-device');
+  expect(db.get(`SELECT property_id AS p FROM units WHERE id = 'UW4'`)).toEqual({ p: 'P-NEW4' });
+  expect(db.get(`SELECT 1 FROM properties WHERE id = 'P-OLD4'`)).toBeFalsy();
+  expect(rejects(db, 'UW4') + rejects(db, 'P-OLD4')).toBe(0);
+  expect(waitingIn(db)).toEqual([]);
   db.close();
 });
 
