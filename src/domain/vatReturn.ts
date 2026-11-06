@@ -5,7 +5,7 @@
  */
 import type { DB } from '../db/adapter';
 import { mulQty, pctOf } from './money';
-import { lineTaxCode } from './taxCode';
+import { lineTaxCode, vatRegistered } from './taxCode';
 
 export interface VatItem {
   no: string;
@@ -79,7 +79,7 @@ function commercialRentParts(db: DB, from: string, to: string): { paid: number; 
 /** مبيعات الفواتير بالرمز: الفاتورة برمزٍ واحد بمجاميعها المحفوظة، والمختلطة سطراً سطراً */
 function invoiceSales(db: DB, from: string, to: string): { S: number; tax: number; Z: number; E: number } {
   const out = { S: 0, tax: 0, Z: 0, E: 0 };
-  const registered = !!Number(db.get<{ v: number }>(`SELECT vat_enabled AS v FROM company WHERE id = 1`)?.v ?? 0);
+  const registered = vatRegistered(db);
   const hasKind = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'kind');
   const invs = db.all<{ id: string; subtotal_halalas: number; tax_halalas: number; kind: string | null }>(
     `SELECT id, subtotal_halalas, tax_halalas, ${hasKind ? 'kind' : 'NULL AS kind'} AS kind FROM invoices
@@ -108,6 +108,22 @@ function invoiceSales(db: DB, from: string, to: string): { S: number; tax: numbe
     }
   }
   return out;
+}
+
+/**
+ * عمولات التقبيل الخاضعة في البند ١ (المراجعة الشاملة ٨ · البند ١١): من سطور قيودها نفسها في الدفتر، فيطابق البند ١ حركةَ 2200
+ * بالهللة · القيد الذي حمل ضريبة مخرجات (منشأة مسجّلة يوم الصفقة) وعكسه (key_money_rev) ونسخة استعادته من السلة، كلٌّ بتاريخه:
+ * فالإلغاء ينقص البند ١ في فترة العكس كما ينقص الدفتر. والعمولة بلا سطر 2200 (منشأة غير مسجّلة يومها) خارجه كما كانت.
+ */
+function keyMoneySales(db: DB, from: string, to: string): { net: number; tax: number } {
+  const r = db.get<{ net: number; tax: number }>(
+    `SELECT COALESCE(SUM(CASE WHEN l.account_code = '4300' THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS net,
+            COALESCE(SUM(CASE WHEN l.account_code = '2200' THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS tax
+     FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type IN ('key_money', 'key_money_rev') AND e.status = ? AND e.deleted_at IS NULL AND e.date >= ? AND e.date <= ?
+       AND EXISTS (SELECT 1 FROM journal_lines x WHERE x.entry_id = e.id AND x.account_code = '2200')`,
+    ['مرحّل', from, to]); // i18n-exempt: حالة مخزّنة
+  return { net: Number(r?.net ?? 0), tax: Number(r?.tax ?? 0) };
 }
 
 /**
@@ -151,6 +167,8 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
   // ١ و٣ و٥ · فواتير البيع غير المسودة برمز ضريبة سطورها (الهجرة ٣٩): الخاضع في ١، والصفري في ٣، والمعفى في ٥ ·
   // والمنشأة غير المسجّلة لا مبيعات خاضعة لها (دراسة القائم)
   const sales = invoiceSales(db, from, to);
+  // ١ · وعمولات التقبيل الخاضعة من قيودها (المراجعة الشاملة ٨ · البند ١١)
+  const keyMoney = keyMoneySales(db, from, to);
 
   // ٥ · المبيعات المعفاة = إيرادات الإيجار السكني المحصَّلة، من صفوف كشفها نفسها (exemptSalesRows)
 
@@ -178,7 +196,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
      FROM purchases WHERE deleted_at IS NULL AND tax_status = 'غير قابلة للخصم'${inPeriod('date')}`
   )!;
 
-  const salesSub = sales.S, salesTax = sales.tax, zeroSales = sales.Z;
+  const salesSub = sales.S + keyMoney.net, salesTax = sales.tax + keyMoney.tax, zeroSales = sales.Z;
   const exemptSales = exemptSalesRows(db, from, to);
   const rentNet = exemptSales.reduce((s, r) => s + Number(r.net), 0);
   const dedSub = Number(ded.sub), dedTax = Number(ded.tax);

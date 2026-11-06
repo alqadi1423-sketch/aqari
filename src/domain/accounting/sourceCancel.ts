@@ -4,7 +4,7 @@
  *  - قيد دفعة إيجار ← «إلغاء الدفعة» (cancelPayment.ts).
  *  - قيد خصم مربوط بدفعة أو قسط ← «إلغاء قيد الخصم»: يُعكس، والدفعة ترجع خصماً بلا نوع كما قبل حجزه.
  *  - عملية نقد (مصروف نثري · إيداع المالك · مسحوباته) ← «إلغاء العملية»: تُعكس، ولا يُسحب من المحفظة ما ليس فيها.
- *  - عمولة تقبيل ← «إلغاء التقبيل»: تُعكس وحركة بنكها، والصفقة تدخل السلة.
+ *  - عمولة تقبيل ← «إلغاء التقبيل»: تُعكس وحركة بنكها، والصفقة تدخل السلة · لا بتاريخٍ قبل تاريخ قيدها.
  *  - استرداد ضريبة أو رفضه ← «إلغاء الاسترداد»: يُعكس وترجع الفاتورة «لم يُطلب».
  *  - ردّ فائض أو تحويله رصيداً ← «إلغاء الرد»: يُعكس، وحركة البنك بمثلها، والرصيد الدائن يُطرح إن لم يُستعمل.
  *  - قيدٌ غاب مستنده (بقي بعد استعادة · orphans.ts) ← «عكس القيد»: لا مستند يُلغى منه.
@@ -29,7 +29,7 @@ export type SourceAction =
   | { kind: 'document' }
   | null;
 
-interface EntryRow { id: string; no: string; auto: number; src_type: string | null; src_id: string | null; status: string; reversed_by: string | null }
+interface EntryRow { id: string; no: string; date: string; auto: number; src_type: string | null; src_id: string | null; status: string; reversed_by: string | null }
 
 const DOCUMENT_SOURCES = ['invoice', 'purchase', 'purchase_pay', 'claim', 'claim_collect', 'contract_deposit',
   'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', 'reservation', 'reservation_convert', 'reservation_forfeit', 'reservation_refund'];
@@ -48,14 +48,25 @@ function reverseBankTx(db: DB, entryNo: string, revNo: string, date: string, des
   }
 }
 
+/**
+ * عكس عمولة التقبيل لا يسبق تاريخ قيدها (المراجعة الشاملة ٨ · البند ١١ · التحقق المستقل): عكسها ينقص البند ١ في فترة تاريخه
+ * كما ينقصه الإشعار الدائن، والإشعار لا يسبق تاريخ فاتورته (invoices.ts) · فلا مبيعاتٌ خاضعة سالبة في فترةٍ قبل التوريد نفسه
+ */
+function requireNotBeforeKeyMoney(e: EntryRow, date: string): void {
+  if (e.src_type === 'key_money' && date && date.slice(0, 10) < e.date.slice(0, 10)) {
+    throw new RuleViolation(t('journal.reverseBeforeOriginal', { date: e.date.slice(0, 10) }));
+  }
+}
+
 function reverse(db: DB, e: EntryRow, date: string, memo: string): string {
+  requireNotBeforeKeyMoney(e, date);
   const rev = reverseEntryById(db, e.id, memo, date);
   if (!rev) throw new RuleViolation('القيد ' + e.no + ' معكوس من قبل');
   return rev.no;
 }
 
 export function entrySourceAction(db: DB, entryId: string): SourceAction {
-  const e = db.get<EntryRow>(`SELECT id, no, auto, src_type, src_id, status, reversed_by FROM journal_entries WHERE id = ?`, [entryId]);
+  const e = db.get<EntryRow>(`SELECT id, no, date, auto, src_type, src_id, status, reversed_by FROM journal_entries WHERE id = ?`, [entryId]);
   if (!e || e.status !== 'مرحّل' || e.reversed_by || !e.src_type || Number(e.auto) !== 1) return null;
   if (e.src_type.endsWith('_rev')) return null; // مرآة قيد · لا يُلغى المُلغي
 

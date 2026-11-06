@@ -8,6 +8,7 @@ import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
 import { rentRevenueLines } from './rentSplit';
+import { splitVatInclusive, vatRegistered } from '../taxCode';
 import { dimsFromSource, hasDimColumns, lineDims, ambientCostCenter, inheritedCostCenter, GENERAL_COST_CENTER, type Dims } from './dimensions';
 
 export interface EntryLine {
@@ -305,6 +306,14 @@ export const postContractDeposit = (
 /**
  * الخصم من التأمين · ولدى «طرف آخر» (لم يدخل 2400): لا قيد عند الخصم، ويُسجَّل قبضاً إن وصل المال للمكتب
  * (قرار المالك على مراجعة التثبيت #26)
+ *
+ * مصادر 4300 غير عمولة التقبيل بلا ضريبة مخرجات ولو كانت المنشأة مسجّلة (المراجعة الشاملة ٨ · البند ١١ · قرارٌ بسببه كالوارد
+ * البنكي اليدوي في cashOps.ts): عمولة التقبيل وحدها مقابلُ خدمةٍ يقدّمها المكتب، وهذه ليست كذلك بطبيعتها ولا مدخل فيها يقول إنها
+ * خاضعة، فلا تُفرض عليها ضريبةٌ تلقائياً:
+ *  - الخصم من التأمين: تعويضٌ عن ضررٍ أو متأخراتٍ لا مقابل توريد، أو تابعٌ لإيجارٍ سكني معفى.
+ *  - مصادرة العربون (postReservationForfeit): تتبع طبيعة العقد الذي لم يتمّ.
+ *  - المطالبة (postClaim): تعويض ضررٍ أو استرداد تكلفة.
+ * وما كان منها لوحدةٍ تجارية يتبع ضريبة الإيجار التجاري حين تُبنى في الإقرار (قرار المالك «رابعاً ٤» 2026-10-10).
  */
 export const postDepositDeduct = (db: DB, c: { id: string; contract_no: string; holder?: string; received?: boolean }, deduction: number, date: string) =>
   deduction > 0 && (c.holder || 'المكتب') === 'طرف آخر' // i18n-exempt: جهة مخزّنة
@@ -413,6 +422,7 @@ export const postReservationDeposit = (db: DB, rv: { id: string; name: string; d
       })
     : null;
 
+/** مصادرة العربون · إيرادٌ في 4300 بلا ضريبة مخرجات تلقائية (المراجعة الشاملة ٨ · البند ١١ · سببه فوق postDepositDeduct) */
 export const postReservationForfeit = (db: DB, rv: { id: string; name: string; deposit: number; date?: string }) =>
   rv.deposit > 0
     ? postEntry(db, {
@@ -466,6 +476,7 @@ export const postReservationRefund = (db: DB, rv: { id: string; name: string; de
       })
     : null;
 
+/** المطالبة · إيرادٌ في 4300 بلا ضريبة مخرجات تلقائية (المراجعة الشاملة ٨ · البند ١١ · سببه فوق postDepositDeduct) */
 export const postClaim = (db: DB, cl: { id: string; amount: number; reason: string; date?: string }) =>
   cl.amount > 0
     ? postEntry(db, {
@@ -565,22 +576,29 @@ export const postBookedDiscount = (
     srcId: d.paymentId,
   });
 
+/**
+ * عمولة التقبيل · مدين النقدية بالمقبوض كاملاً. والمنشأة المسجّلة في الضريبة (company.vat_enabled) تقدّم خدمةً خاضعة:
+ * المقبوض شاملٌ ضريبته بالنسبة الأساسية، فدائن 4300 بصافيه ودائن 2200 بضريبته (المراجعة الشاملة ٨ · البند ١١ · الخيار (أ)) ·
+ * فيدخل البند ١ من الإقرار من سطور هذا القيد نفسها (vatReturn.ts). وغير المسجّلة دائن 4300 بالمقبوض كما كانت.
+ */
 export const postKeyMoneyCommission = (
   db: DB,
   k: { id: string; unitLabel: string; outgoing: string; incoming: string; commission: number; date?: string }
-) =>
-  k.commission > 0
-    ? postEntry(db, {
-        date: k.date ?? today(),
-        memo: 'عمولة تقبيل · وحدة ' + k.unitLabel + ' (' + k.outgoing + ' ← ' + k.incoming + ')',
-        lines: [
-          { account: CASH, descr: 'عمولة مستلمة', debit: k.commission, credit: 0 },
-          { account: '4300', descr: 'إيراد عمولة تقبيل', debit: 0, credit: k.commission },
-        ],
-        srcType: 'key_money',
-        srcId: k.id,
-      })
-    : null;
+) => {
+  if (!(k.commission > 0)) return null;
+  const { net, tax } = vatRegistered(db) ? splitVatInclusive(k.commission) : { net: k.commission, tax: 0 };
+  return postEntry(db, {
+    date: k.date ?? today(),
+    memo: 'عمولة تقبيل · وحدة ' + k.unitLabel + ' (' + k.outgoing + ' ← ' + k.incoming + ')',
+    lines: [
+      { account: CASH, descr: 'عمولة مستلمة', debit: k.commission, credit: 0 },
+      { account: '4300', descr: 'إيراد عمولة تقبيل', debit: 0, credit: net },
+      ...(tax ? [{ account: '2200', descr: 'ضريبة مخرجات عمولة تقبيل', debit: 0, credit: tax }] : []), // i18n-exempt: بيان القيد المخزَّن
+    ],
+    srcType: 'key_money',
+    srcId: k.id,
+  });
+};
 
 /* ─── قيود الفواتير والمشتريات (كما في النموذج حرفياً) ─── */
 

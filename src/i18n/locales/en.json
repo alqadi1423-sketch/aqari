@@ -796,7 +796,8 @@
     "confirmPostTitle": "Post draft",
     "confirmPostBody": "Post entry {{no}}? It enters the balances and cannot be edited, only reversed.",
     "cancel": "Cancel",
-    "postFailed": "Posting failed"
+    "postFailed": "Posting failed",
+    "reverseBeforeOriginal": "The cancellation date is before the original entry date ({{date}}) · choose that date or later"
   },
   "sync": {
     "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded",
@@ -804,7 +805,8 @@
   },
   "restore": {
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",
-    "notInTrash": "Not in the trash · already restored"
+    "notInTrash": "Not in the trash · already restored",
+    "filedPeriod": "Its reversal falls in a period whose return was filed, so it cannot be restored into it · record it again with a date in an open period"
   },
   "bank": {
     "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"
