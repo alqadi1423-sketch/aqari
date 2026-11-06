@@ -101,7 +101,7 @@ describe('لقطة الودجت', () => {
     const round = JSON.parse(JSON.stringify(s));
     expect(round).toEqual(s);
     // الحقول التي تقرؤها كوتلن بالاسم · تغيير اسم واحد يكسر الودجت صامتاً
-    for (const k of ['lateCount', 'lateSum', 'dueThisMonth', 'paidThisMonth', 'monthPct', 'empty']) {
+    for (const k of ['lateCount', 'lateSum', 'dueThisMonth', 'paidThisMonth', 'monthPct', 'empty', 'noCollect', 'locked']) {
       expect(Object.prototype.hasOwnProperty.call(round, k)).toBe(true);
     }
     db.close();
@@ -138,5 +138,40 @@ describe('الودجت تتبع صلاحية الأقسام (توجيه الما
     expect(s.noCollect).toBe(false);
     expect(s.lateCount).toBeGreaterThan(0);
     expect(s.can).toEqual({ collect: true, invoices: true, claims: true });
+  });
+});
+
+describe('البند ٢٣ · حال قفل التطبيق (المراجعة الشاملة · الخيار أ)', () => {
+  test('٢٣ · القفل يُبقي الأعداد كما هي ويُفرغ المبالغ ونسبة التحصيل والنقد · وبلا قفل كما كانت', () => {
+    const db = memDb();
+    const cid = seedContract(db, { unitNo: 'L-1', start: '2026-01-01', value: 1200000 });
+    // دفعة نقدية لقسط الشهر · فالمحصَّل والنسبة والنقد غير صفرية
+    const inst = db.get<{ id: string; amount_halalas: number }>(
+      `SELECT id, amount_halalas FROM contract_installments WHERE contract_id = ? AND due_date LIKE '2026-06%'`, [cid])!;
+    recordRentPayment(db, cid, {
+      installmentId: inst.id, date: T, period: '', discountHalalas: 0, notes: '',
+      lines: [{ method: 'cash', amountHalalas: Number(inst.amount_halalas) }],
+    });
+    const open = buildWidgetSnapshot(db, T);
+    const shut = buildWidgetSnapshot(db, T, undefined, { locked: true });
+    expect(open.locked).toBe(false);
+    expect(buildWidgetSnapshot(db, T, undefined, { locked: false }).lateSum).toBe(open.lateSum);
+    for (const v of [open.lateSum, open.dueThisMonth, open.paidThisMonth, open.cash]) expect(v).toMatch(/^[\d,]+\.\d{2}$/);
+    expect(open.monthPct).toBeGreaterThan(0);
+
+    expect(shut.locked).toBe(true);
+    expect([shut.lateSum, shut.dueThisMonth, shut.paidThisMonth, shut.cash, shut.monthPct]).toEqual(['', '', '', '', 0]);
+    expect(JSON.stringify({ ...shut, at: null })).not.toMatch(/\d\.\d{2}/);
+    expect(shut.lateCount).toBeGreaterThan(0);
+    expect([shut.lateCount, shut.occupiedUnits, shut.totalUnits]).toEqual([open.lateCount, open.occupiedUnits, open.totalUnits]);
+    expect([shut.empty, shut.noCollect, shut.can]).toEqual([open.empty, open.noCollect, open.can]);
+    db.close();
+  });
+
+  test('٢٣ · قاعدة فارغة والقفل مفعّل: لقطة الترحيب نفسها معلَّمةً بالقفل', () => {
+    const db = memDb();
+    const s = buildWidgetSnapshot(db, T, undefined, { locked: true });
+    expect([s.empty, s.locked, s.lateCount]).toEqual([true, true, 0]);
+    db.close();
   });
 });

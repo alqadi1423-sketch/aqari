@@ -3,7 +3,7 @@
  * القاعدة النشطة (aqari.db ومرفقاتها) لحسابٍ واحد · وعند الخروج أو دخول حساب آخر تُركن نسخة الحساب
  * كما هي في accounts/{uid}/ مقفلةً لا يفتحها غيره، وطابورها معها فلا يضيع تغيير لم يُرفع.
  * وعند الدخول تعود نسخة الحساب إن كانت مركونة، وإلا فنسخة جديدة تُسحب من سحابته.
- * لا مسح هنا أبداً: النقل وحده.
+ * لا مسح لبيانات هنا أبداً: النقل وحده · وما يُشتق منها (لقطة الودجت) يُحذف ولا يُنقل، ويُبنى من القاعدة النشطة.
  */
 import type { DB } from '../db/adapter';
 import type { FS } from '../files/fsAdapter';
@@ -12,7 +12,19 @@ import { getSyncState } from '../sync/engine';
 import { hasUserData } from '../domain/backup/upgrade';
 
 /** ما يخص الحساب في جذر بيانات التطبيق · القاعدة نفسها تُنقل بملفاتها الثلاثة */
-const ITEMS = ['attachments', 'thumbs', 'backups', 'widget.json'];
+const ITEMS = ['attachments', 'thumbs', 'backups'];
+/**
+ * ما يُشتق من القاعدة فلا يُركن معها ولا يعود: لقطة الودجت تُبنى عند كل كتابة بحال قفل التطبيق ساعتها، والقفل للجهاز لا للحساب ·
+ * فلقطةٌ رُكنت والقفل مطفأ كانت تعود بمبالغها والقفل مفعّل (المراجعة الشاملة · البند ٢٣، المتحقق المستقل) · وتُحذف
+ * عند الركن فلا يراها الداخل بعده، وعند العودة (ومعها ما ركنه إصدارٌ سابق) فلا يُعرض إلا ما يُبنى من النسخة العائدة
+ */
+const DERIVED = ['widget.json'];
+/** حذفُ ما يُشتق · تعذّره لا يوقف النقل (والودجت تفحص علامة القفل بنفسها · AqariWidgets.kt: lockFlagged) */
+function dropDerived(env: SlotEnv, dir: string): void {
+  for (const it of DERIVED) {
+    try { const p = joinPath(dir, it); if (env.fs.exists(p)) env.fs.remove(p); } catch { /* يُعاد بناؤه */ }
+  }
+}
 const DB_SUFFIXES = ['', '-wal', '-shm'];
 /** مكان البيانات التي لا حساب لها (جهاز قديم قبل الدخول الإلزامي) حين يختار الداخل ألا يربطها */
 export const UNBOUND = '_unbound';
@@ -53,6 +65,7 @@ export function parkActive(env: SlotEnv, uid: string): void {
   if (env.fs.exists(joinPath(dir, 'aqari.db'))) {
     throw new Error('للحساب نسخة مركونة على الجهاز بالفعل · لا تُكتب فوقها');
   }
+  dropDerived(env, env.root);
   checkpoint(env.db());
   env.close();
   env.fs.mkdirp(dir);
@@ -82,6 +95,8 @@ export function restoreParked(env: SlotEnv, uid: string): boolean {
     if (env.fs.exists(p)) env.fs.remove(p);
   }
   const dir = slotDir(env, uid);
+  dropDerived(env, env.root);
+  dropDerived(env, dir);
   for (const s of DB_SUFFIXES) {
     const from = joinPath(dir, 'aqari.db' + s);
     if (env.fs.exists(from)) env.fs.rename(from, env.dbFile + s);
