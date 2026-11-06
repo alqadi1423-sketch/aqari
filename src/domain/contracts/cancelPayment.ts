@@ -102,16 +102,8 @@ const payDay = (p: PaymentRow): string => String(p.date ?? '').slice(0, 10);
  * البند ٥ في الربعين والدفتر يتحرك فيهما، ويتغيّر إقرار ربعها إن قُدِّم · كما لا يسبق عكسُ التقبيل قيده ولا الإشعارُ فاتورته
  */
 function cancelDateError(p: PaymentRow, date: string): string | null {
-  return cancelDateIssue(payDay(p), date);
-}
-
-/**
- * القاعدة نفسها بتاريخَي الدفعة والإلغاء (يوماهما من المخزَّن) · lng لغة السبب: المزامنة تخزّنه بالعربية · وبها يرفض جهاز المالك
- * إلغاء العضو بتاريخٍ قبل الدفعة وعاكسه (البند ١٠ · تتمة المتحقق المستقل)
- */
-export function cancelDateIssue(paymentDate: unknown, date: unknown, lng?: string): string | null {
-  const day = String(paymentDate ?? '').slice(0, 10);
-  return day && String(date ?? '').slice(0, 10) < day ? t('payment.cancelBeforePayment', { date: dfmt(day), ...(lng ? { lng } : {}) }) : null;
+  const day = payDay(p);
+  return day && String(date).slice(0, 10) < day ? t('payment.cancelBeforePayment', { date: dfmt(day) }) : null;
 }
 
 /** تاريخ الإلغاء الافتراضي: اليوم، أو تاريخ الدفعة إن كان بعده (شيكٌ مؤجَّل سُجّل بتاريخه) · فلا يُرفض بقيمته الافتراضية */

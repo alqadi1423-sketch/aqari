@@ -26,7 +26,7 @@ import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
 import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
-import { paidFromDeposit, cancelDateIssue } from '../domain/contracts/cancelPayment';
+import { paidFromDeposit } from '../domain/contracts/cancelPayment';
 import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc } from '../domain/accounting/derive';
@@ -471,18 +471,6 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
     && originals.some((o, i) => issues[i] === '' && db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: ربط القيد بمستنده */ WHERE journal_entry_id = ?`, [o.id]))) { // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
     throw new Error(tr('mirror.revRejected', { why: tr('payment.cancelFromDeposit', { lng: 'ar' }), lng: 'ar' }));
   }
-  // ولا يعكس عضوٌ قيد دفعة إيجار بتاريخٍ قبل تاريخها (المراجعة الشاملة · البند ١٠ · تتمة المتحقق المستقل: جهاز العضو بنسخة قديمة
-  // يلغيها بتاريخٍ سابق، فيتحرك الدفتر في الربعين وتخرج من البند ٥ فيهما) · بالدفعة التي تسمّيه عاكس إلغائها، هنا أو في الوارد،
-  // وإلا بدفعات الأصول التي يعكسها إن كانت كلها بعده (وصل العاكس قبل وسم دفعته) · وقيد الإيجار بلا دفعة كما كان
-  if (base === 'rent' && byMember(db, doc, true)) {
-    const day = doc.d!.date;
-    const named = rowsHereOrInbox<{ date: string }>(db, 'contract_payments', 'cancel_entry_id', doc.k);
-    const mirrored = originals.filter((_, i) => issues[i] === '').map((o) => db.get<{ date: string }>(
-      `SELECT date FROM contract_payments /* تشمل الملغاة: ربط القيد بمستنده */ WHERE journal_entry_id = ? LIMIT 1`, [o.id])); // i18n-exempt: تعليل الاستعلام
-    const why = named.map((p) => cancelDateIssue(p.date, day, 'ar')).find((w) => !!w)
-      ?? (mirrored.length && mirrored.every((p) => p && cancelDateIssue(p.date, day, 'ar')) ? cancelDateIssue(mirrored[0]!.date, day, 'ar') : null);
-    if (why) throw new Error(tr('mirror.revRejected', { why, lng: 'ar' }));
-  }
   if (!freeOriginals(db, doc.k, src, srcId, originals.map((o) => o.id)).length) {
     throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
   }
@@ -768,11 +756,6 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
       // ودفعة العربون لا يلغيها عضو (المراجعة الشاملة · البند ٢٧ · المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها فيعود مبلغها
       // عالقاً في 2450) · وإلغاء المالك من جهازه الآخر يُقبل كما كتبه، فلا تفترق أجهزته، ورصيده العالق يُحمّر فحص عربون الحجوزات
       if (byMember(db, doc, false) && paidFromDeposit(db, doc.k)) throw no(tr('payment.cancelFromDeposit', { lng: 'ar' }));
-      // ولا يلغيها عضوٌ بتاريخٍ قبل تاريخها (المراجعة الشاملة · البند ١٠ · تتمة المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها
-      // بتاريخٍ سابق فتخرج من البند ٥ في الربعين والدفتر يتحرك فيهما، ويتغيّر الإقرار المقدَّم) · وعاكسه يُرفض بالسبب نفسه
-      // (memberReversalCheck) · وإلغاء المالك من جهازه الآخر يُقبل كما كتبه، فلا تفترق أجهزته
-      const early = byMember(db, doc, false) ? cancelDateIssue(cur.date, row.cancelled_at, 'ar') : null;
-      if (early) throw no(early);
       const rev = (row.cancel_entry_id as string | null) ?? null;
       const orig = db.get<{ t: string | null; s: string | null }>(`SELECT src_type AS t, src_id AS s FROM journal_entries WHERE id = ?`, [cur.journal_entry_id as string]);
       if (!rev || !orig) throw no(tr('derive.cancelNoReversal', { lng: 'ar' }));
