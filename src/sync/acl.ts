@@ -141,6 +141,18 @@ export function hiddenColumns(a: Access, table: string, row: Record<string, unkn
   return Object.keys(row).filter((k) => isMoneyColumn(k) || drop.has(k));
 }
 
+/**
+ * حقول اللمس الجانبي للعملية إن كانت لا تنشئ الجدول ولا تملكه (الفرع الثالث في chooseOp) · null غير ذلك.
+ * القواعد لا تجيز لكتابةٍ بهذه العملية أن تمسّ من d غيرها، فتُرفع جزئيةً بها وحدها ويبقى ما سواها في السحابة كما هو
+ * (المراجعة الشاملة · البند ٣ تتمة): المستند الكامل كان يحمل عموداً أضافته هجرةٌ بعد أن كُتب في السحابة (الهجرة ٤٨ ·
+ * original_end) فيُعدّ لمساً وتُرفض الكتابة كلها، ويُرجع ما غيّره غيره ولم يصل الجهاز بعد
+ */
+export function touchOnlyColumns(op: string | null | undefined, table: string): string[] | null {
+  const w = op ? OP_WRITES[op as SectionKey] : undefined;
+  if (!w || w.own.includes(table) || w.create.includes(table)) return null;
+  return w.touch?.[table] ?? null;
+}
+
 export interface AclDocs {
   /** المستند الكامل بحقول الرؤية */
   doc: RemoteDoc;

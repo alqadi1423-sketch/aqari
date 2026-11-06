@@ -33,6 +33,20 @@ const DIM_LINES_MAX = 24;
 
 const q = (xs: string[]) => '[' + xs.map((x) => `'${x}'`).join(', ') + ']';
 
+/**
+ * عمودٌ مُزامَن أضافته هجرةٌ بعد أن كُتبت مستندات السحابة (المراجعة الشاملة · البند ٣ تتمة · الهجرة ٤٨): الجهاز الأحدث يملؤه على
+ * كل صف والمستند القديم بلاه، فكتابة اللمس الجانبي من إصدارٍ آخر تضيفه أو تنزعه · وقيمته المحايدة عمودٌ آخر في الصف (original_end
+ * بقيمة end كغيابه في الاستحقاق: agreedEnd) · فإضافته أو نزعه بها لا يُعدّ لمساً، وتغيير قيمته لمس
+ */
+export const LEGACY_NEUTRAL = { table: 'contracts', col: 'original_end', equals: 'end' } as const;
+
+/** فروع opTouches لجدول LEGACY_NEUTRAL وحده من OP_WRITES (على المفاتيح k) */
+function legacyTouchBranches(): string {
+  const rows = (Object.entries(OP_WRITES) as Array<[SectionKey, NonNullable<(typeof OP_WRITES)[SectionKey]>]>)
+    .filter(([, w]) => w.touch?.[LEGACY_NEUTRAL.table]);
+  return rows.length ? rows.map(([s, w]) => `(op == '${s}' && k.hasOnly(${q(w.touch![LEGACY_NEUTRAL.table])}))`).join(' || ') : 'false';
+}
+
 function writesFns(): string {
   const entries = Object.entries(OP_WRITES) as Array<[SectionKey, NonNullable<(typeof OP_WRITES)[SectionKey]>]>;
   // سلسلةٌ تتوقف عند أول قسمٍ مطابق · لا خريطة قيم: الخريطة تُقيَّم كلها بقوائمها في كل طلب (قياس التغطية على المحاكي 2026-10-10)
@@ -399,6 +413,19 @@ ${guardFns(schema)}
         && (d.get('after_json', null) == null || (d.after_json is string && d.after_json.size() <= 4000));
     }
 
+    // عمودٌ أضافته هجرةٌ بعد أن كُتبت مستندات السحابة (المراجعة الشاملة · البند ٣ تتمة · الهجرة ٤٨): إضافته أو نزعه في كتابة إصدارٍ
+    // آخر لا يُعدّ لمساً ما دامت قيمته في طرفه قيمة ${LEGACY_NEUTRAL.equals} نفسها (كغيابه) · وتغيير قيمته لمسٌ يُرفض · دالةٌ لجدوله وحده
+    // تُستدعى بشرطٍ ثلاثي، ومفاتيحها محسوبةٌ مرة (let)، والقيمتان لا تُقرآن إلا إن مسّ المفتاح، وفيها فرع جدولها من opTouches وحده
+    // (OP_WRITES) لا سلسلته كلها: مسار لمس العقد قريبٌ من حدّ الألف تعبير، فلا تزيد كلفته (ميزانية القواعد على المحاكي)
+    function legacyTouches(op, b, a) {
+      let keys = a.diff(b).affectedKeys();
+      let k = keys.hasAny(['${LEGACY_NEUTRAL.col}'])
+          && b.get('${LEGACY_NEUTRAL.col}', b.get('${LEGACY_NEUTRAL.equals}', null)) == b.get('${LEGACY_NEUTRAL.equals}', null)
+          && a.get('${LEGACY_NEUTRAL.col}', a.get('${LEGACY_NEUTRAL.equals}', null)) == a.get('${LEGACY_NEUTRAL.equals}', null)
+        ? keys.difference(['${LEGACY_NEUTRAL.col}'].toSet()) : keys;
+      return ${legacyTouchBranches()};
+    }
+
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
     function memberUpdates(org) {
       let before = resource.data;
@@ -453,7 +480,8 @@ ${guardFns(schema)}
           // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)
           || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(m, before, after)
               && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'sv', 'dr', 'cr'])
-              && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys())
+              && (after.t in ['${LEGACY_NEUTRAL.table}', '${LEGACY_NEUTRAL.table}~pub'] ? legacyTouches(op, before.d, after.d)
+                  : opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
               // ولا يُلغي القسط: إلغاؤه بإلغاء العقد لـ«كامل» العقود (مراجعة التثبيت #53)
               && (baseT(after.t) != 'contract_installments' || after.d.get('status', '') != 'ملغية'))
         );

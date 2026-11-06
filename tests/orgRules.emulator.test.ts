@@ -313,6 +313,56 @@ d('قواعد المنشأة · صلاحيات الأقسام', () => {
     expect(await putDoc(`orgs/${ORG}/meta/counters`, { JE: b.hi + 5 }, COLLECTOR.uid!)).toBe(403);
     expect(await putDoc(`orgs/${ORG}/meta/counters`, { ...cur, JE: b.hi + 5 }, COLLECTOR.uid!)).toBe(200);
   });
+
+  // الهجرة ٤٨ أضافت original_end ويملؤه الجهاز على كل صف، ومستندات العقود القديمة في السحابة بلاه · فكتابة اللمس الجانبي كانت تُعدّه لمساً
+  test('المراجعة الشاملة · البند ٣: عضو المستأجرين يعدّل الاسم ويدمج على عقودٍ كتبتها السحابة قبل الهجرة ٤٨ · ولا يغيّر original_end', async () => {
+    const { addUnit, contractInput } = await import('./helpers/fixtures');
+    const { confirmContract } = await import('@/domain/contracts/service');
+    const { syncOnce, buildDoc } = await import('@/sync/engine');
+    const { renameTenant, mergeTenants } = await import('@/domain/tenants');
+    const TEN = member('U-TEN', { tenants: 3, contracts: 1, props: 1 }, 'all');
+    expect(await putDoc(`orgs/${ORG}/members/U-TEN`, { email: 'u-ten@example.test', perm: TEN.perms, all: true, props: [], tokens: memberTokens(TEN) }, ORG)).toBe(200);
+    const ca = confirmContract(db, contractInput(addUnit(db, 'P1', { id: 'UN-T8A' }), { tenant: 'مستأجر لمس أول تجريبي', idNumber: '1000000058', phone: '0500000058' }));
+    const cb = confirmContract(db, contractInput(addUnit(db, 'P1', { id: 'UN-T8B' }), { tenant: 'مستأجر لمس ثانٍ تجريبي', idNumber: '1000000066', phone: '0500000066' }));
+    const owner = remoteFor(ORG, null);
+    expect((await syncOnce(db, owner, 'dev-owner')).pending).toBe(0);
+    const at = () => new Date().toISOString();
+    const row = (k: string) => buildDoc(db, 'contracts', k, 'upsert', at(), 'dev-x');
+    const cloud = async (k: string) => (await owner.getDoc(`orgs/${ORG}/rows/contracts__${k}`))!.d as Record<string, unknown>;
+    // نسخة السحابة كما كتبها إصدارٌ قبل الهجرة ٤٨: المستند وإسقاطه بلا original_end
+    const legacy = (k: string): RemoteDoc => { const x = row(k); const { original_end: _o, ...rest } = x.d!; return { ...x, d: rest }; };
+    for (const k of [ca, cb]) expect((await owner.write([owner.annotate!(db, legacy(k))]))[0]).toMatchObject({ ok: true });
+    expect('original_end' in (await cloud(ca))).toBe(false);
+    const tid = (k: string) => db.get<{ t: string }>(`SELECT tenant_id AS t FROM contracts WHERE id = ?`, [k])!.t;
+    // جهاز العضو كما يرفع المحرّك (annotate العميل): اللمس الجانبي جزئيٌّ بحقوله
+    const ten = remoteFor('U-TEN', TEN);
+    const push = async (k: string) => (await ten.write([ten.annotate!(db, row(k))]))[0];
+    renameTenant(db, tid(ca), 'مستأجر لمس معدَّل تجريبي');
+    expect(await push(ca)).toMatchObject({ ok: true });
+    const keep = tid(ca);
+    mergeTenants(db, keep, [tid(cb)], { allowDifferentIds: true });
+    expect(await push(cb)).toMatchObject({ ok: true });
+    const b = await cloud(cb);
+    expect([b.tenant_id, b.tenant_name, 'original_end' in b]).toEqual([keep, 'مستأجر لمس معدَّل تجريبي', false]);
+    const pub = (await owner.getDoc(`orgs/${ORG}/rows/contracts~pub__${cb}`))!.d as Record<string, unknown>;
+    expect([pub.tenant_id, 'original_end' in pub]).toEqual([keep, false]);
+
+    // كتابةٌ كاملة من إصدارٍ آخر (rulesGen: legacyTouches): إضافة original_end بقيمة نهاية العقد نفسها تمرّ على المستند الذي بلاه
+    const end = String(db.get<{ e: string }>(`SELECT end AS e FROM contracts WHERE id = ?`, [ca])!.e);
+    expect(row(ca).d!.original_end).toBe(end);
+    renameTenant(db, keep, 'مستأجر لمس ثالث تجريبي');
+    expect(await write(TEN, row(ca))).toMatchObject({ ok: true });
+    expect((await cloud(ca)).original_end).toBe(end);
+    // وتغيير قيمته من عضو المستأجرين مرفوض · وإضافته بغير نهاية العقد مرفوضة
+    expect(await write(TEN, { ...row(ca), d: { ...row(ca).d!, original_end: '2099-12-31' } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect(await write(TEN, { ...row(cb), d: { ...row(cb).d!, original_end: '2099-12-31' } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    // وإصدارٌ قبل الهجرة ٤٨ يكتب المستند كاملاً بلاه: نزعه وقيمته نهاية العقد يمرّ، وما سواه من d كما هو
+    renameTenant(db, keep, 'مستأجر لمس رابع تجريبي');
+    expect(await write(TEN, legacy(ca))).toMatchObject({ ok: true });
+    expect('original_end' in (await cloud(ca))).toBe(false);
+    // وغير الملموس يبقى مرفوضاً
+    expect(await write(TEN, { ...row(cb), d: { ...legacy(cb).d!, renew_note: 'ملاحظة مصطنعة' } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+  });
 });
 
 d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦-١٠-٠٥)', () => {

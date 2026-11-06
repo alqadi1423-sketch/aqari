@@ -497,6 +497,19 @@ service cloud.firestore {
         && (d.get('after_json', null) == null || (d.after_json is string && d.after_json.size() <= 4000));
     }
 
+    // عمودٌ أضافته هجرةٌ بعد أن كُتبت مستندات السحابة (المراجعة الشاملة · البند ٣ تتمة · الهجرة ٤٨): إضافته أو نزعه في كتابة إصدارٍ
+    // آخر لا يُعدّ لمساً ما دامت قيمته في طرفه قيمة end نفسها (كغيابه) · وتغيير قيمته لمسٌ يُرفض · دالةٌ لجدوله وحده
+    // تُستدعى بشرطٍ ثلاثي، ومفاتيحها محسوبةٌ مرة (let)، والقيمتان لا تُقرآن إلا إن مسّ المفتاح، وفيها فرع جدولها من opTouches وحده
+    // (OP_WRITES) لا سلسلته كلها: مسار لمس العقد قريبٌ من حدّ الألف تعبير، فلا تزيد كلفته (ميزانية القواعد على المحاكي)
+    function legacyTouches(op, b, a) {
+      let keys = a.diff(b).affectedKeys();
+      let k = keys.hasAny(['original_end'])
+          && b.get('original_end', b.get('end', null)) == b.get('end', null)
+          && a.get('original_end', a.get('end', null)) == a.get('end', null)
+        ? keys.difference(['original_end'].toSet()) : keys;
+      return (op == 'tenants' && k.hasOnly(['tenant_id', 'tenant_name']));
+    }
+
     // كامل في جدول القسم · أو مسودةُ كاتبها بإدخال (قرار المالك) · أو حقولٌ مجازة جانبياً بإدخال
     function memberUpdates(org) {
       let before = resource.data;
@@ -551,7 +564,8 @@ service cloud.firestore {
           // اللمس الجانبي: حقوله وحدها في d، ولا يغيّر من المستند غير d والرؤية وحقول الكتابة (المراجعة #39)
           || (!owns && level >= 2 && after.del == false && before.d != null && propsTouch(m, before, after)
               && after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'sv', 'dr', 'cr'])
-              && opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys())
+              && (after.t in ['contracts', 'contracts~pub'] ? legacyTouches(op, before.d, after.d)
+                  : opTouches(op, baseT(after.t), after.d.diff(before.d).affectedKeys()))
               // ولا يُلغي القسط: إلغاؤه بإلغاء العقد لـ«كامل» العقود (مراجعة التثبيت #53)
               && (baseT(after.t) != 'contract_installments' || after.d.get('status', '') != 'ملغية'))
         );

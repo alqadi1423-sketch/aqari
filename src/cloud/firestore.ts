@@ -10,7 +10,7 @@ import { isoMs } from '../sync/isoTime';
 import { planBlocks, planInvoiceSeq, FirstIssueByOwnerError, type BlockRequest, type ReservedBlock, MAX_COUNTER_STEPS, CounterBehindError } from '../domain/numbering';
 import type { DB } from '../db/adapter';
 import { OWNER_ACCESS, type Access } from '../domain/access/access';
-import { annotate as aclAnnotate, hiddenColumns } from '../sync/acl';
+import { annotate as aclAnnotate, hiddenColumns, touchOnlyColumns } from '../sync/acl';
 
 type FsValue =
   | { nullValue: null }
@@ -199,10 +199,15 @@ export class FirestoreRemote implements RemoteStore {
         const { doc: d0, pub } = aclAnnotate(db, doc, a);
         // ما يقرؤه العضو إسقاطاً لا يُرفع منه: قيمته عنده افتراضها لا الحقيقية (المراجعة #17)
         const hidden = new Set(hiddenColumns(a, doc.t, doc.d as Record<string, unknown> | null));
-        const d = hidden.size && d0.d
-          ? { ...d0, partial: true, d: Object.fromEntries(Object.entries(d0.d).filter(([k]) => !hidden.has(k))) as typeof d0.d }
-          : d0;
-        return pub ? { ...d, companions: [pub] } : d;
+        // واللمس الجانبي بحقوله وحدها، في المستند وإسقاطه (المراجعة الشاملة · البند ٣ تتمة: عمودٌ أضافته هجرةٌ بعد أن كُتب المستند
+        // في السحابة كان يُعدّ لمساً فتُرفض الكتابة)
+        const touch = a.owner ? null : touchOnlyColumns(d0.op, doc.t);
+        const only = (x: RemoteDoc, drop: Set<string>): RemoteDoc => (x.d
+          ? { ...x, partial: true, d: Object.fromEntries(Object.entries(x.d).filter(([k]) => !drop.has(k) && (!touch || touch.includes(k)))) as typeof x.d }
+          : x);
+        const d = hidden.size || touch ? only(d0, hidden) : d0;
+        const p = pub && touch ? only(pub, new Set()) : pub;
+        return p ? { ...d, companions: [p] } : d;
       };
     }
   }
