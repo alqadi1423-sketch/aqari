@@ -47,13 +47,28 @@ type ExemptRow = VatReturnData['schedules']['exemptSales'][number];
 const RESIDENTIAL_TYPES = ['سكني', 'سكن طلاب', 'سكن طالبات']; // i18n-exempt: أنواع وحدة مخزّنة
 const RESIDENTIAL_SQL = `(COALESCE(c.unit_type, '') = '' OR c.unit_type IN (${RESIDENTIAL_TYPES.map((x) => `'${x}'`).join(', ')}))`;
 
-/** الإيجار التجاري المحصَّل في الفترة (خارج البند ٥) */
+/** صافي الدفعة بلا فائضها الذي صار رصيداً دائناً للمستأجر (دائن 2410 في قيدها) */
+const PAY_NET_SQL = `p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas) FROM journal_lines l
+  WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410'), 0)`;
+/** يوم إلغاء الدفعة · المخزَّن تاريخٌ، والقديم قد يكون لحظة */
+const CANCEL_DAY_SQL = `substr(p.cancelled_at, 1, 10)`;
+
+/**
+ * الإيجار التجاري المحصَّل في الفترة (خارج البند ٥) · الدفعة في فترة قبضها ولو أُلغيت بعدها، وإلغاؤها يُخصم في فترة إلغائه
+ * (المراجعة الشاملة · البند ١٠) · والملغاة في فترتها نفسها لا تُعدّ فيها أصلاً (صافيها صفر)
+ */
 function commercialRent(db: DB, from: string, to: string): number {
-  return Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas) FROM journal_lines l
-       WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410'), 0)), 0) AS s
+  const paid = Number(db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(${PAY_NET_SQL}), 0) AS s
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.cancelled_at IS NULL AND p.date >= ? AND p.date <= ? AND NOT ${RESIDENTIAL_SQL}`, [from, to])?.s ?? 0);
+     WHERE p.date >= ? AND p.date <= ? AND (p.cancelled_at IS NULL OR ${CANCEL_DAY_SQL} > ?) AND NOT ${RESIDENTIAL_SQL}`,
+    [from, to, to])?.s ?? 0);
+  const cancelled = Number(db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(${PAY_NET_SQL}), 0) AS s
+     FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
+     WHERE p.cancelled_at IS NOT NULL AND ${CANCEL_DAY_SQL} >= ? AND ${CANCEL_DAY_SQL} <= ? AND p.date < ? AND NOT ${RESIDENTIAL_SQL}`,
+    [from, to, from])?.s ?? 0);
+  return paid - cancelled;
 }
 
 /** مبيعات الفواتير بالرمز: الفاتورة برمزٍ واحد بمجاميعها المحفوظة، والمختلطة سطراً سطراً */
@@ -92,17 +107,25 @@ function invoiceSales(db: DB, from: string, to: string): { S: number; tax: numbe
 
 /**
  * صفوف المبيعات المعفاة (البند ٥ وكشفه معاً · #31 والتحقق المستقل):
- *  - كل دفعة إيجار قائمة بصافيها بلا فائضها الذي صار رصيداً دائناً للمستأجر (دائن 2410 في قيدها): التزامٌ له لا توريد.
+ *  - كل دفعة إيجار بصافيها بلا فائضها الذي صار رصيداً دائناً للمستأجر (دائن 2410 في قيدها): التزامٌ له لا توريد.
+ *  - والدفعة الملغاة بعد فترتها تبقى فيها، ويُخصم صافيها بصفٍّ سالب بتاريخ إلغائها (المراجعة الشاملة · البند ١٠): كان الإلغاء يُسقطها
+ *    من فترتها الأصلية فيتغير ما قُدِّم، ولا يظهر في فترة الإلغاء · والملغاة في فترتها نفسها لا تظهر فيها (صافيها صفر).
  *  - وفائضٌ قديمٌ دخل إيراداً ثم سُوّي رصيداً أو رُدّ (surplus_credit وsurplus_refund وعكوسهما): ينقص في فترة تسويته.
  */
 function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
   const none = 'لا يوجد'; // i18n-exempt: نص الكشف المصدَّر بالعربية
   const pays = db.all<ExemptRow>(
     `SELECT p.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
-            p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas) FROM journal_lines l
-              WHERE l.entry_id = p.journal_entry_id AND l.account_code = '2410'), 0) AS net
+            ${PAY_NET_SQL} AS net
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.cancelled_at IS NULL AND p.date >= ? AND p.date <= ? AND ${RESIDENTIAL_SQL} ORDER BY p.date`, [none, from, to]);
+     WHERE p.date >= ? AND p.date <= ? AND (p.cancelled_at IS NULL OR ${CANCEL_DAY_SQL} > ?) AND ${RESIDENTIAL_SQL}
+     ORDER BY p.date`, [none, from, to, to]);
+  const cancelled = db.all<ExemptRow>(
+    `SELECT ${CANCEL_DAY_SQL} AS date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
+            -(${PAY_NET_SQL}) AS net
+     FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
+     WHERE p.cancelled_at IS NOT NULL AND ${CANCEL_DAY_SQL} >= ? AND ${CANCEL_DAY_SQL} <= ? AND p.date < ? AND ${RESIDENTIAL_SQL}
+     ORDER BY ${CANCEL_DAY_SQL}`, [none, from, to, from]);
   const settled = db.all<ExemptRow>(
     `SELECT e.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
             -SUM(l.debit_halalas - l.credit_halalas) AS net
@@ -111,7 +134,7 @@ function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
        AND e.status = ? AND e.deleted_at IS NULL AND l.account_code LIKE '42%' AND e.date >= ? AND e.date <= ?
      GROUP BY e.id ORDER BY e.date`,
     [none, 'مرحّل', from, to]); // i18n-exempt: حالة مخزّنة
-  return [...pays, ...settled.filter((r) => Number(r.net) !== 0)]
+  return [...pays, ...cancelled.filter((r) => Number(r.net) !== 0), ...settled.filter((r) => Number(r.net) !== 0)]
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
