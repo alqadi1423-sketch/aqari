@@ -23,6 +23,16 @@ npm run typecheck       # فحص الأنواع
 
 الربط بقوقل يُقرأ وقت البناء من `EXPO_PUBLIC_FIREBASE_API_KEY` و`EXPO_PUBLIC_FIREBASE_PROJECT_ID` و`EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`. غيابها يعني بناءً بلا ربط: التطبيق يعمل محلياً كاملاً بلا دخول ولا مزامنة.
 
+### مجلد android وملف app.json
+مجلد `android` مرفوعٌ في المستودع ولا يُعاد توليده (لا `expo prebuild` ولا ما يعيد توليده · القواعد، القاعدة ٤١)، فما في `app.json`
+من إعدادات الإضافات والأيقونة والاتجاه والأذونات **لا ينتقل إلى بناء أندرويد وحده**. أي تغيير فيه يُنقل يدوياً إلى موضعه في `android`:
+- الاسم الظاهر: `android/app/src/main/res/values/strings.xml` (`app_name`) · الحزمة والإصدار: `android/app/build.gradle`.
+- الاتجاه والمخطط ومنع النسخ الاحتياطي والأذونات المحجوبة: `android/app/src/main/AndroidManifest.xml`.
+- ألوان الشاشة الافتتاحية والتنبيهات والأساسي والخلفية: `android/app/src/main/res/values/colors.xml`.
+- **الأيقونة يملكها `android` وحده:** `mipmap-*` و`drawable/aqari_icon_fg` ولون `iconBackground`، وما في `app.json` منها (`adaptiveIcon`) لا يُستعمل في البناء.
+
+والقيم الأساسية يطابقها اختبار `tests/review8.appJsonParity.test.ts`، فيسقط إن تغيّرت في أحدهما دون الآخر.
+
 ## الاختبارات
 
 ```bash
