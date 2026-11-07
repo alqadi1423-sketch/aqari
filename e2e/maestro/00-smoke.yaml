@@ -1,0 +1,18 @@
+# الجوال الافتراضي · ٠٠ · الإقلاع والتنقل بين التبويبات الخمسة (التوجيه الرابع ٤ · ١) · بلا بيانات حقيقية
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- takeScreenshot: 00-home
+- tapOn: "العقارات"
+- assertVisible: "+ عقار جديد"
+- takeScreenshot: 00-properties
+- tapOn: "العقود"
+- takeScreenshot: 00-contracts
+- tapOn: "التحصيل"
+- takeScreenshot: 00-collect
+- tapOn: "المزيد"
+- takeScreenshot: 00-more
