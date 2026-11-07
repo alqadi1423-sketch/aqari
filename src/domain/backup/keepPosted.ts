@@ -8,9 +8,6 @@
  *  - مبلغ القسط حين نزّلته الدفعة («تنزيل من القسط») أو أعاده إلغاؤها.
  *  - حركات البنك المربوطة برقم القيد متى كان بنكها في النسخة.
  *  - ربط القيد العكسي بأصله (reversed_by).
- *  - أثر القيد في 2410 على رصيد مستأجره الدائن في النسخة (التوجيه الثالث · العطل ٨): الرصيد رقمٌ على صفّه، فيُضاف إليه أثر
- *    سطور 2410 المنسوبة إليه (بعقد السطر، أو بعقد دفعته، أو بعقد قيد الفائض) · لا رصيد المصدر: قد يكون فيه ما لا تحمله الاستعادة
- *    (دمج مستأجرين بعد النسخة) · وما لا يُنسب إلى مستأجرٍ في النسخة يُحفظ مبلغه في علامة قيده فيخرج من مطابقة 2410 وحده.
  * وما لا يُحمل مستنده (فاتورة · مشتريات · تأمين · حجز · تقبيل …) يُضمّ قيده كما هو ويُدرج في أداة
  * المراجعة «قيد بلا مستند بعد الاستعادة» · إلا زوجاً عكَس أحدُه الآخر، فأثرهما صفر.
  * ورقمٌ مستعمل في النسخة لقيد آخر يأخذ القيدُ المضموم رقماً جديداً من تسلسل الجهاز ويُذكر القديم في بيانه.
@@ -40,8 +37,6 @@ export interface KeptEntry {
   carried: string[];
   /** سبب إدراجه في المراجعة · null حين لا يحتاجها */
   review: string | null;
-  /** صافي 2410 فيه (دائن موجب) لم يُنسب إلى مستأجرٍ في النسخة فلم يُحمل إلى رصيدٍ دائن · 0 حين حُمل كله */
-  creditGap: number;
 }
 
 interface EntryDoc { row: RowData; lines: RowData[]; from: Set<'device' | 'cloud'> }
@@ -59,8 +54,6 @@ export interface KeepPlan {
     installments: Array<{ id: string; amount: number }>;
     /** أصلٌ في النسخة يُربط بقيده العكسي المضموم */
     links: Array<{ id: string; reversedBy: string }>;
-    /** ما يُضاف إلى رصيد مستأجرٍ في النسخة من أثر القيود المضمومة في 2410 */
-    credits: Array<{ id: string; amount: number }>;
   };
 }
 
@@ -111,7 +104,7 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
     if (have) { have.from.add('cloud'); if (!have.row.reversed_by && d.d.reversed_by) have.row = { ...have.row, reversed_by: d.d.reversed_by }; continue; }
     byId.set(d.k, { row: { ...d.d }, lines: d.lines ?? [], from: new Set(['cloud']) });
   }
-  const empty: KeepPlan = { entries: [], docs: { entries: [], payments: [], paymentLines: [], allocations: [], bankTx: [], installments: [], links: [], credits: [] } };
+  const empty: KeepPlan = { entries: [], docs: { entries: [], payments: [], paymentLines: [], allocations: [], bankTx: [], installments: [], links: [] } };
   if (!byId.size) return empty;
 
   const docs = [...byId.values()].sort((a, b) => String(a.row.date).localeCompare(String(b.row.date)) || String(a.row.no).localeCompare(String(b.row.no)));
@@ -136,15 +129,12 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
     }
   }
   const outPayments: RowData[] = [];
-  /** عقد الدفعة لكل قيدٍ من قيودها (قيدها وقيد إلغائها وقيد خصمها) · محمولةً كانت أو لا: لنسبة سطور 2410 إلى المستأجر */
-  const payContract = new Map<string, string>();
   const outLines: RowData[] = [];
   const outAllocs: RowData[] = [];
   const outInsts: Array<{ id: string; amount: number }> = [];
   for (const { row: p, from } of payments.values()) {
     const entriesOf = [p.journal_entry_id, p.cancel_entry_id].map((x) => String(x ?? '')).filter((x) => keptIds.has(x));
     for (const d of docs) if (/^discount(_rev)?$/.test(String(d.row.src_type ?? '')) && d.row.src_id === p.id) entriesOf.push(String(d.row.id));
-    if (p.contract_id) for (const e of entriesOf) payContract.set(e, String(p.contract_id));
     const lines = rowsFrom(src, from, 'payment_lines', 'payment_id', [String(p.id)]);
     const allocs = rowsFrom(src, from, 'payment_allocations', 'payment_id', [String(p.id)]);
     const why = !exists(target, 'contracts', p.contract_id as string) ? 'دفعة إيجار · عقدها ليس في النسخة'
@@ -158,6 +148,14 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       const srcInst = rowsFrom(src, from, 'contract_installments', 'id', [String(p.installment_id)])[0];
       const cur = target.get<{ a: number }>(`SELECT amount_halalas AS a FROM contract_installments WHERE id = ?`, [p.installment_id as string]);
       if (srcInst && cur && Number(srcInst.amount_halalas) !== Number(cur.a)) outInsts.push({ id: String(p.installment_id), amount: Number(srcInst.amount_halalas) });
+    }
+    // رصيد المستأجر الدائن رقمٌ على صفّه لا يُحمل · فإن اختلف بين المصدر والنسخة يُراجَع
+    const tenant = target.get<{ id: string; c: number }>(
+      `SELECT t.id, t.credit_halalas AS c FROM tenants t JOIN contracts k ON k.tenant_id = t.id WHERE k.id = ?`, [p.contract_id as string]);
+    const srcTenant = tenant ? rowsFrom(src, from, 'tenants', 'id', [tenant.id])[0] : undefined;
+    if (tenant && srcTenant && Number(srcTenant.credit_halalas ?? 0) !== Number(tenant.c)) {
+      for (const e of entriesOf) if (!review.has(e)) review.set(e, 'الدفعة حُملت · ورصيد المستأجر الدائن لم يُحمل (في النسخة '
+        + fmt(Number(tenant.c)) + ' وقبل الاستعادة ' + fmt(Number(srcTenant.credit_halalas ?? 0)) + ')');
     }
     outLines.push(...lines);
     outAllocs.push(...allocs);
@@ -197,36 +195,6 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
     if (t && !t.rb) { links.push({ id: orig, reversedBy: rev }); mark(rev, 'ربطه بأصله'); }
   }
 
-  // ٣ب) رصيد المستأجر الدائن (التوجيه الثالث · العطل ٨): أثر سطور 2410 في القيود المضمومة لكل مستأجرٍ حيٍّ في النسخة يُضاف إلى
-  //   رصيده فيها، فيبقى الدفتر وسجلات المستأجرين متطابقين بالبناء · والعقد من السطر، وإلا من دفعة القيد، وإلا من قيد الفائض
-  //   (مصدره العقد) · والمستأجر من عقده في النسخة، وإلا من عقده في المصدر · وما لا يُنسب إلى مستأجرٍ حيٍّ في النسخة فجوةٌ بمبلغها
-  const creditBy = new Map<string, number>();
-  const gapBy = new Map<string, number>();
-  const tenantOfContract = new Map<string, string | null>();
-  const tenantOf = (cid: string): string | null => {
-    if (!tenantOfContract.has(cid)) {
-      const here = target.get<{ t: string | null }>(`SELECT tenant_id AS t FROM contracts WHERE id = ?`, [cid]);
-      const there = here ? null : (rowsFrom(src, 'device', 'contracts', 'id', [cid])[0] ?? rowsFrom(src, 'cloud', 'contracts', 'id', [cid])[0]);
-      tenantOfContract.set(cid, here ? here.t : there ? ((there.tenant_id as string | null) ?? null) : null);
-    }
-    return tenantOfContract.get(cid)!;
-  };
-  const liveTenant = (tid: string | null) => !!tid && !!target.get(`SELECT 1 FROM tenants WHERE id = ? AND deleted_at IS NULL`, [tid]);
-  for (const d of docs) {
-    const id = String(d.row.id);
-    const base = String(d.row.src_type ?? '').replace(/_rev$/, '');
-    const entryContract = payContract.get(id) ?? (base === 'surplus_credit' || base === 'surplus_refund' ? String(d.row.src_id ?? '') || null : null);
-    for (const l of d.lines) {
-      if (l.account_code !== '2410') continue;
-      const net = Number(l.credit_halalas ?? 0) - Number(l.debit_halalas ?? 0);
-      if (!net) continue;
-      const cid = (l.contract_id as string | null) || entryContract;
-      const tid = cid ? tenantOf(cid) : null;
-      if (liveTenant(tid)) { creditBy.set(tid!, (creditBy.get(tid!) ?? 0) + net); mark(id, 'رصيد المستأجر'); } // i18n-exempt: وصفٌ مخزَّن كأخواته
-      else gapBy.set(id, (gapBy.get(id) ?? 0) + net);
-    }
-  }
-
   // ٤) المراجعة: ما له مستند لم يُحمل · إلا الزوج المضموم، واليدوي، وعملية النقد
   for (const d of docs) {
     const id = String(d.row.id);
@@ -244,16 +212,6 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       : `قيد ${label} · ${inBackup ? 'مستنده في النسخة بحاله قبل هذا القيد' : 'مستنده ليس في النسخة'}`);
   }
 
-  // ٤ب) قيدٌ آليٌّ بمستندٍ غير مزدوج فيه فجوة 2410 ولا سبب مراجعةٍ له: يُراجَع بها (ومبلغها في علامته · applyKeepPosted) · وما لا
-  //    مستند له (يدويٌّ أو بلا نوع) لا يُعلَّم: فجوته فرقٌ حقيقي يبقى ظاهراً في الفحص
-  for (const d of docs) {
-    const id = String(d.row.id);
-    const type = String(d.row.src_type ?? '');
-    if (!type || SELF_CONTAINED.has(type.replace(/_rev$/, ''))) { gapBy.delete(id); continue; }
-    if (!gapBy.get(id) || paired.has(id) || Number(d.row.auto) !== 1 || review.has(id)) continue;
-    review.set(id, 'رصيده الدائن لم يُحمل · مستأجره ليس في النسخة'); // i18n-exempt: سبب مراجعةٍ مخزَّن كأخواته
-  }
-
   // ٥) رقمٌ مستعمل في النسخة لقيد آخر · يُعلَّم هنا ويُرقَّم عند التطبيق
   const takenNos = new Set(target.all<{ no: string }>(`SELECT no FROM journal_entries`).map((r) => r.no));
   const seenNos = new Set<string>();
@@ -266,12 +224,9 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       id: String(d.row.id), no, newNo: clash ? '' : null, date: String(d.row.date), memo: String(d.row.memo ?? ''),
       amount: d.lines.reduce((s, l) => s + Number(l.debit_halalas ?? 0), 0), from,
       carried: [...(carried.get(String(d.row.id)) ?? [])], review: review.get(String(d.row.id)) ?? null,
-      // الفجوة تُحفظ للمعلَّم وحده: المزدوج أثره صفر، واليدوي فرقٌ حقيقي يبقى ظاهراً في الفحص
-      creditGap: review.has(String(d.row.id)) ? gapBy.get(String(d.row.id)) ?? 0 : 0,
     };
   });
-  const credits = [...creditBy].filter(([, amount]) => amount !== 0).map(([id, amount]) => ({ id, amount }));
-  return { entries, docs: { entries: docs, payments: outPayments, paymentLines: outLines, allocations: outAllocs, bankTx: outBank, installments: outInsts, links, credits } };
+  return { entries, docs: { entries: docs, payments: outPayments, paymentLines: outLines, allocations: outAllocs, bankTx: outBank, installments: outInsts, links } };
 }
 
 function columnsOf(db: DB, table: string): Set<string> {
@@ -340,11 +295,8 @@ export function applyKeepPosted(target: DB, plan: KeepPlan): KeepPlan {
     for (const a of plan.docs.allocations) insts.add(String(a.installment_id));
     if (insts.size) recomputeInstallments(target, [...insts]);
 
-    // رصيد المستأجر الدائن بأثر ما ضُمّ في 2410 (التوجيه الثالث · العطل ٨) · بعد «الوارد» فيُرفع كأي تعديل
-    for (const c of plan.docs.credits ?? []) target.run(`UPDATE tenants SET credit_halalas = credit_halalas + ? WHERE id = ?`, [c.amount, c.id]);
-
-    const add = entries.filter((e) => e.review).map((e) => ({ id: e.id, no: e.newNo || e.no, reason: e.review!, gap: e.creditGap }));
-    for (const x of add) markForReview(target, x, x.reason, x.gap ? { creditGap: x.gap } : undefined);
+    const add = entries.filter((e) => e.review).map((e) => ({ id: e.id, no: e.newNo || e.no, reason: e.review! }));
+    for (const x of add) markForReview(target, x, x.reason);
     logAudit(target, 'النسخ الاحتياطي', 'update', 'ضمّ قيود بعد النسخة',
       entries.length + ' قيد مرحّل بقي مع الاستعادة: ' + entries.map((e) => e.newNo ? e.no + '←' + e.newNo : e.no).join('، ').slice(0, 220)
       + (add.length ? ' · للمراجعة ' + add.length : ''));

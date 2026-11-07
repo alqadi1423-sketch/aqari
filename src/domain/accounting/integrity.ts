@@ -1,6 +1,6 @@
 import type { DB } from '../../db/adapter';
 import { accountBalance, allAccounts, ledgerNet } from './ledger';
-import { markedNetOn, markedCreditGap, unmarkedOrphans, memberDevice } from './orphans';
+import { markedNetOn, unmarkedOrphans, memberDevice } from './orphans';
 import { fmt } from '../money';
 
 export interface IntegrityCheck {
@@ -17,9 +17,6 @@ export interface IntegrityCheck {
 function hasCol(db: DB, table: string, col: string): boolean {
   return db.all<{ name: string }>(`PRAGMA table_info(${table})`).some((c) => c.name === col);
 }
-
-/** ما أُخرج من المطابقة من أثر القيود غائبة المستند (orphans.ts) · يُذكر بعد القيمتين */
-const outsideMarked = (amount: number): string => (amount ? ' · خارجها قيود بلا مستند ' + fmt(amount) : '');
 
 export function integrityChecks(db: DB): IntegrityCheck[] {
   const out: IntegrityCheck[] = [];
@@ -63,7 +60,7 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
   out.push({
     name: 'تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة)',
     ok: bal2400 === Number(dep.s),
-    value: fmt(bal2400) + ' / ' + fmt(Number(dep.s)) + outsideMarked(-out2400),
+    value: fmt(bal2400) + ' / ' + fmt(Number(dep.s)) + (out2400 ? ' · خارجها قيود بلا مستند ' + fmt(-out2400) : ''),
   });
 
   // ٤) رصيد 1250 = مجموع المطالبات المفتوحة
@@ -76,7 +73,7 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
   out.push({
     name: 'ذمم المطالبات = المطالبات المفتوحة',
     ok: bal1250 === Number(openClaims.s),
-    value: fmt(bal1250) + ' / ' + fmt(Number(openClaims.s)) + outsideMarked(out1250),
+    value: fmt(bal1250) + ' / ' + fmt(Number(openClaims.s)) + (out1250 ? ' · خارجها قيود بلا مستند ' + fmt(out1250) : ''),
   });
 
   // ٥) لا حركات بنكية يتيمة: كل حركة حيّة تشير إلى حساب بنكي حيّ
@@ -125,16 +122,13 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
 
   // رصيد المستأجرين الدائن في سجلاتهم يطابق حسابه 2410 (مراجعة التثبيت #63 · قرار المالك) · وجهاز العضو تصله القيود ولا تصله
   // أرصدة المستأجرين بلا قسمٍ يقرأ مبالغهم، فلا يُحكم فيه به (التحقق المستقل من 37085a3)
-  // وما ضمّته الاستعادة ولم يُنسب إلى مستأجرٍ فيها (مستأجره أُنشئ بعد النسخة) يخرج بمبلغه المحفوظ في علامته وحده حتى يُعكس قيده
-  // (التوجيه الثالث · العطل ٨): وأثر المضموم المنسوب إلى مستأجرٍ فيها يُحمل إلى رصيده (keepPosted.ts)، فلا يُخرج شيء غيره
   if (!memberDevice(db)) {
-    const gap = markedCreditGap(db);
-    const ledger2410 = accountBalance(db, '2410') - gap;
+    const ledger2410 = accountBalance(db, '2410');
     const tenants = Number(db.get<{ s: number }>(`SELECT COALESCE(SUM(credit_halalas), 0) AS s FROM tenants WHERE deleted_at IS NULL`)?.s ?? 0);
     out.push({
       name: 'الرصيد الدائن للمستأجرين يطابق حسابه 2410', // i18n-exempt: اسم فحصٍ مخزَّن في بيان النسخة كأخواته
       ok: ledger2410 === tenants,
-      value: fmt(tenants) + ' / ' + fmt(ledger2410) + outsideMarked(gap),
+      value: fmt(tenants) + ' / ' + fmt(ledger2410),
     });
   }
 
