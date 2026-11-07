@@ -27,3 +27,14 @@ export function statementLineKeys(bankId: string, lines: Array<Pick<StatementLin
     return fnv64(base + '#' + n);
   });
 }
+
+/** بصمة بايتات الملف (منع قراءة الملف نفسه مرتين) */
+export function bytesHash(bytes: Uint8Array): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x050c5d1f;
+  for (let i = 0; i < bytes.length; i++) {
+    h1 = Math.imul(h1 ^ bytes[i], 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ bytes[i] ^ (h1 >>> 7), 0x01000193) >>> 0;
+  }
+  return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0') + '-' + bytes.length;
+}

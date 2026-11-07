@@ -58,7 +58,8 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
     touch: { ...LINKS_REVERSAL, meters: ['supplier_id'] },
   },
   handover: { own: ['handovers'], create: ['audit_log'] },
-  banks: { own: ['banks', 'bank_tx'], create: POSTS, touch: LINKS_REVERSAL },
+  // وكشف البنك (الهجرة ٥٥ · DESIGN §١٣.٢٢): يقرؤه ويحفظه من يسجّل حركة (٢)، ويطابق ويستبعد من يملك القسم (٣)
+  banks: { own: ['banks', 'bank_tx', 'bank_statements', 'bank_statement_lines'], create: [...POSTS, 'bank_statements', 'bank_statement_lines'], touch: LINKS_REVERSAL },
   ledger: { own: ['journal_entries', 'accounts', 'cost_centers'], create: ['audit_log'] },
   library: { own: [], create: ['audit_log'] },
   assets: {

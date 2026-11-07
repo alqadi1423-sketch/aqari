@@ -89,6 +89,12 @@ export const VAT_SYNC_TABLES: SyncTable[] = [
   { name: 'vat_filings', pk: id, pkCols: ['id'] },
 ];
 
+/** كشوف البنك وسطورها (الهجرة ٥٥ · التوجيه الرابع ٦ · ٢) · بعد البنوك وحركاتها التي تشير إليها */
+export const STATEMENT_SYNC_TABLES: SyncTable[] = [
+  { name: 'bank_statements', pk: id, pkCols: ['id'] },
+  { name: 'bank_statement_lines', pk: id, pkCols: ['id'] },
+];
+
 /** جداول المزامنة كما كانت عند الهجرة ٤٢ · مخرَجها ثابت فلا تتغير الترحيلة بإضافة جدولٍ بعدها */
 export const ROW_BY_TABLES_42: SyncTable[] = [...BASE_SYNC_TABLES, ...LATER_SYNC_TABLES, ...DIMENSION_SYNC_TABLES, ...ASSET_SYNC_TABLES, ...VAT_SYNC_TABLES];
 
@@ -100,6 +106,7 @@ export const SYNC_TABLES: SyncTable[] = [
   ...ASSET_SYNC_TABLES,
   ...LATER_SYNC_TABLES,
   ...VAT_SYNC_TABLES,
+  ...STATEMENT_SYNC_TABLES,
   ...BASE_SYNC_TABLES.filter((t) => t.name === 'audit_log'),
 ];
 

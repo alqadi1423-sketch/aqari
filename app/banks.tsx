@@ -3,6 +3,7 @@
  * الضغط على أي حساب يفتح بياناته وكل عملياته بأنواعها، والمحفظة تُحصي الكاش الحاضر.
  */
 import React, { useCallback, useMemo, useState } from 'react';
+import { t } from '../src/i18n';
 import { CashShortNote } from '../src/ui/CashGate';
 import { cashShortfall } from '../src/domain/cashGuard';
 import { View, Pressable, FlatList, type ListRenderItem } from 'react-native';
@@ -393,6 +394,8 @@ function BankDetailSheet({ bankId, onClose, onEdit }: { bankId: string; onClose:
         <KpiCard label="الوارد" tone="pos" value={<Money halalas={inflow} />} />
         <KpiCard label="الصادر" tone="neg" value={<Money halalas={-outflow} />} />
       </Row>
+      {/* كشف الحساب والمطابقة (التوجيه الرابع ٦ · ٢) · لمن يرى البنوك */}
+      <BtnGhost small icon="swap" title={t('bankStatement.open')} onPress={() => { onClose(); router.push({ pathname: '/bankStatement', params: { bank: bankId } }); }} />
 
       <CollapsibleSection title="الوارد" count={Number(sums?.in_n ?? 0)} icon="wallet" pageKey="bankIn">
         {(page) => db.all<{ id: string; date: string; descr: string; amount_halalas: number; source: string; journal_no: string }>(

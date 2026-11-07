@@ -3,10 +3,10 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
+import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, STATEMENT_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 54;
+export const SCHEMA_VERSION = 55;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1907,4 +1907,49 @@ ALTER TABLE purchases ADD COLUMN qr_key TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS ix_purchases_qr_key ON purchases(qr_key) WHERE qr_key != '';
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53, MIGRATION_54];
+/**
+ * الهجرة ٥٥ (التوجيه الرابع ٦ · ٢ · كشف البنك): الكشف بفترته وافتتاحيه وختاميه وبصمة ملفه، وسطوره ببصمتها (فريدةٌ لكل بنكٍ بين الكشوف
+ * الحية: الكشفان المتداخلان لا يضيفان السطر نفسه) وحالها (مفتوح، مطابَق بحركة بنكٍ واحدة، مستبعَد بسببه) · وربط أعمدة الكشف لكل بنك ·
+ * والكشف لا يمسّ رصيداً: مطابقته ربطٌ بحركاتٍ قائمة
+ */
+export const MIGRATION_55 = `
+CREATE TABLE IF NOT EXISTS bank_statements (
+  id              TEXT PRIMARY KEY,
+  bank_id         TEXT NOT NULL REFERENCES banks(id),
+  period_from     TEXT NOT NULL,
+  period_to       TEXT NOT NULL,
+  opening_halalas INTEGER NOT NULL,
+  closing_halalas INTEGER NOT NULL,
+  file_name       TEXT NOT NULL DEFAULT '',
+  file_hash       TEXT NOT NULL DEFAULT '',
+  line_count      INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL,
+  deleted_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_bstmt_bank ON bank_statements(bank_id, period_from);
+CREATE TABLE IF NOT EXISTS bank_statement_lines (
+  id              TEXT PRIMARY KEY,
+  statement_id    TEXT NOT NULL REFERENCES bank_statements(id),
+  bank_id         TEXT NOT NULL REFERENCES banks(id),
+  line_key        TEXT NOT NULL,
+  date            TEXT NOT NULL,
+  value_date      TEXT,
+  descr           TEXT NOT NULL DEFAULT '',
+  ref             TEXT,
+  amount_halalas  INTEGER NOT NULL,
+  balance_halalas INTEGER,
+  bank_tx_id      TEXT REFERENCES bank_tx(id),
+  status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','matched','excluded')),
+  note            TEXT NOT NULL DEFAULT '',
+  matched_at      TEXT,
+  created_at      TEXT NOT NULL,
+  deleted_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_bsl_bank ON bank_statement_lines(bank_id, line_key);
+CREATE INDEX IF NOT EXISTS ix_bsl_stmt ON bank_statement_lines(statement_id);
+CREATE INDEX IF NOT EXISTS ix_bsl_tx ON bank_statement_lines(bank_tx_id) WHERE bank_tx_id IS NOT NULL;
+ALTER TABLE banks ADD COLUMN stmt_mapping TEXT NOT NULL DEFAULT '';
+${buildSyncTriggers(STATEMENT_SYNC_TABLES)}
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53, MIGRATION_54, MIGRATION_55];

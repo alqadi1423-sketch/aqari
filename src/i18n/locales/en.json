@@ -92,14 +92,18 @@
   "dataLabels": {
     "table": {
       "assets": "Assets",
-      "purchase_lines": "Purchase invoice lines"
+      "purchase_lines": "Purchase invoice lines",
+      "bank_statements": "Bank statements",
+      "bank_statement_lines": "Bank statement lines"
     },
     "column": {
       "cost_halalas": "Asset cost",
       "salvage_halalas": "Residual value",
       "sale_halalas": "Sale amount",
       "services_halalas": "Contract services amount",
-      "parking_halalas": "Contract parking amount"
+      "parking_halalas": "Contract parking amount",
+      "closing_halalas": "Closing balance",
+      "balance_halalas": "Balance"
     }
   },
   "assets": {
@@ -960,5 +964,93 @@
     "duplicate": "This invoice is already recorded as {{no}} on {{date}} · it cannot be recorded twice",
     "file": "E-invoice file (PDF or XML)",
     "creditNote": "The file is a credit note from the supplier, not a purchase invoice · record it as a reduction of its invoice"
+  },
+  "bankStatement": {
+    "auditModule": "Bank statement",
+    "auditEntity": "Statement",
+    "duplicateFile": "This file was already read and saved for this bank",
+    "nothingNew": "Every line of this statement is already saved for this bank · nothing new",
+    "lineNotOpen": "This line is not open for matching",
+    "txMissing": "The transaction is not in this bank",
+    "amountDiffers": "The transaction amount differs from the statement line · the difference stays in the reconciliation report",
+    "txTaken": "This transaction is matched to another line",
+    "noteRequired": "Write the reason for excluding it",
+    "title": "Statement & reconciliation",
+    "open": "Statement & reconciliation",
+    "noBank": "The bank account was not found",
+    "read": "Read a statement",
+    "reading": "Reading the statement…",
+    "notRead": "Couldn't read the statement",
+    "err": {
+      "format": "This file isn't a readable statement · a text PDF, Excel, CSV or MT940",
+      "encrypted": "The file is password-protected · export it from the bank without protection",
+      "columns": "The statement's columns weren't recognised (date, and amount or debit and credit)",
+      "empty": "No transactions in the statement",
+      "balance": "Opening plus transactions doesn't equal the printed balances or the closing · nothing was saved",
+      "needBalances": "The statement prints no balances · enter the opening and closing from its header"
+    },
+    "needTitle": "Opening and closing",
+    "opening": "Opening balance",
+    "closing": "Closing balance",
+    "preview": "{{n}} transactions from {{from}} to {{to}}\nOpening {{opening}} · Closing {{closing}}\nOpening plus transactions equals the closing",
+    "shapeChanged": "The statement's layout changed since this bank's last one · review the transactions before saving",
+    "warn": {
+      "openingPrinted": "The printed previous balance contradicts the balances and totals, so the opening was taken from their chain"
+    },
+    "save": "Save statement",
+    "saved": "Statement saved · {{added}} new transactions",
+    "savedSkipped": "Statement saved · {{added}} new transactions; {{skipped}} already saved were skipped",
+    "suggestions": "Suggested matches",
+    "ready": "Ready to approve",
+    "review": "Needs review",
+    "withTx": "With: {{descr}} · {{date}} · {{no}}",
+    "why": {
+      "amount": "same amount",
+      "sameDay": "same day",
+      "days": "close date",
+      "ref": "shared number",
+      "words": "shared word",
+      "unique": "only candidate",
+      "ambiguous": "two equal candidates"
+    },
+    "approve": "Approve",
+    "approveAll": "Approve all ready ({{n}})",
+    "approveAllBody": "{{n}} ready matches will be approved, each with the same amount and a close date",
+    "approved": "Match approved",
+    "openLines": "Unmatched statement lines",
+    "record": "Record",
+    "exclude": "Exclude",
+    "excludeReason": "Reason for excluding",
+    "excludedAs": "Excluded: {{note}}",
+    "reopen": "Reopen",
+    "recordTitle": "Record a transaction from the statement line",
+    "amount": "Amount",
+    "descr": "Description",
+    "kind": {
+      "fee": "Bank fee",
+      "income": "Other income",
+      "withdraw": "Withdraw to wallet",
+      "deposit": "Deposit from wallet"
+    },
+    "report": "Reconciliation report",
+    "prevMonth": "Previous month",
+    "nextMonth": "Next month",
+    "notCovered": "No saved statement for this month",
+    "stmtOpening": "Statement opening",
+    "stmtClosing": "Statement closing",
+    "booksOpening": "Books at month start",
+    "booksClosing": "Books at month end",
+    "matchedN": "Matched: {{n}}",
+    "onlyStatement": "In the statement, not in the books",
+    "onlyBooks": "In the books, not in the statement",
+    "excludedLines": "Excluded with a reason",
+    "unexplained": "Unexplained difference: {{amount}}",
+    "gap": "Gap after {{after}}: closing {{closing}} and next opening {{next}}",
+    "none": "Nothing",
+    "statements": "Saved statements",
+    "stmtRow": "{{from}} to {{to}} · {{n}} transactions",
+    "deleteStmt": "Delete statement",
+    "deleteStmtBody": "The statement and its lines are deleted and stay in the trash",
+    "deleteMatched": "The statement has matched lines · unmatch them first"
   }
 }

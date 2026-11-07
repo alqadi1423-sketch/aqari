@@ -46,6 +46,9 @@ export const READ_TABLE: Record<string, SectionKey[]> = {
   invoice_lines: ['invoices', 'reports', 'ledger'],
   purchases: ['purchases', 'reports', 'ledger', 'banks'],
   bank_tx: ['banks', 'reports', 'ledger'],
+  // كشوف البنك وسطورها (الهجرة ٥٥): لمن يرى حركات البنك
+  bank_statements: ['banks', 'reports', 'ledger'],
+  bank_statement_lines: ['banks', 'reports', 'ledger'],
   handovers: ['handover', 'contracts'],
   audit_log: ['audit'],
   journal_entries: MONEY_BOOKS,
