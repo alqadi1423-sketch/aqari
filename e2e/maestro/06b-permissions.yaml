@@ -1,0 +1,16 @@
+# الجوال الافتراضي · ٠٦ ب · بلا أذونات: الإقلاع والتبويبات بلا انهيار (التوجيه الرابع ٤ · ١)
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: false
+- tapOn:
+    text: "Don.t allow|لا تسمح|Deny"
+    optional: true
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- tapOn: "العقارات"
+- tapOn: "العقود"
+- tapOn: "التحصيل"
+- tapOn: "المزيد"
+- takeScreenshot: 06-no-permissions

@@ -42,6 +42,9 @@ export function DateField({
         ) : (
           <Pressable
             onPress={() => setPickerOpen(true)}
+            // معرّف الحقل باسمه لاختبار الجوال الافتراضي (التوجيه الرابع ٤ · ١) · لا يظهر
+            testID={'date-' + label}
+            accessibilityLabel={label}
             style={{
               flex: 1, borderWidth: error ? 1.6 : 1, borderColor: error ? C.rose : C.line, borderRadius: 8, minHeight: 44,
               paddingHorizontal: 11, justifyContent: 'center', backgroundColor: error ? C.roseSoft : '#FAFAF7',

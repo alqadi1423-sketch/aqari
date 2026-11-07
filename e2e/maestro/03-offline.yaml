@@ -1,0 +1,28 @@
+# الجوال الافتراضي · ٠٣ · بلا شبكة (التوجيه الرابع ٤ · ١): وضع الطيران ثم إضافة عقارٍ وظهوره، فالتطبيق يعمل على الجهاز بلا اتصال ·
+# بلا بيانات حقيقية
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- setAirplaneMode: enabled
+- tapOn: "العقارات"
+- tapOn: "+ عقار جديد"
+- tapOn:
+    id: "field-اسم العقار"
+- inputText: "E2E Offline"
+- tapOn:
+    id: "field-عدد الوحدات"
+- inputText: "1"
+- hideKeyboard
+- tapOn: "إضافة العقار"
+- tapOn:
+    text: "إضافة الوحدات الآن"
+    optional: true
+- extendedWaitUntil:
+    visible: "E2E Offline"
+    timeout: 20000
+- takeScreenshot: 03-offline-saved
+- setAirplaneMode: disabled

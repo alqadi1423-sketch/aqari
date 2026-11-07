@@ -29,13 +29,27 @@ describe('سير عمل الجوال الافتراضي', () => {
     for (const m of wf.matchAll(/uses: ([^\s]+)/g)) expect(m[1]).toMatch(/@[0-9a-f]{40}$/);
   });
 
-  test('كل تدفقٍ يستهدف com.aqari.app، واسمه برقم ترتيبه', () => {
+  test('كل تدفقٍ يستهدف com.aqari.app، واسمه برقم ترتيبه (وحرفٌ للخطوات المتتابعة)', () => {
     const dir = path.join(ROOT, 'e2e/maestro');
     const flows = fs.readdirSync(dir).filter((f) => f.endsWith('.yaml'));
     expect(flows.length).toBeGreaterThan(0);
     for (const f of flows) {
-      expect(f).toMatch(/^\d{2}-[a-z0-9-]+\.yaml$/);
+      expect(f).toMatch(/^\d{2}[a-z]?-[a-z0-9-]+\.yaml$/);
       expect(fs.readFileSync(path.join(dir, f), 'utf8')).toMatch(/^appId: com\.aqari\.app$/m);
     }
+  });
+
+  test('خطوات الجهاز (sh) سكربتات bash مرتّبة مع التدفقات، ويحكم عليها آخر أمر فيها', () => {
+    const dir = path.join(ROOT, 'e2e/maestro');
+    const steps = fs.readdirSync(dir).filter((f) => f.endsWith('.sh'));
+    for (const f of steps) {
+      expect(f).toMatch(/^\d{2}[a-z]?-[a-z0-9-]+\.sh$/);
+      const src = fs.readFileSync(path.join(dir, f), 'utf8');
+      expect(src).toMatch(/^#!\/bin\/bash\n/);
+      expect(src).toMatch(/^set -u$/m);
+    }
+    const run = fs.readFileSync(path.join(ROOT, 'e2e/run.sh'), 'utf8');
+    expect(run).toContain('ls e2e/maestro/[0-9]*.yaml e2e/maestro/[0-9]*.sh 2>/dev/null | LC_ALL=C sort');
+    expect(run).toContain('run=(bash "$f" "$OUT")');
   });
 });
