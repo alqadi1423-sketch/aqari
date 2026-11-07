@@ -1,0 +1,8 @@
+Anonymous analytics enabled. To opt out, set MAESTRO_CLI_NO_ANALYTICS environment variable to any value before running Maestro.
+
+
+Waiting for flows to complete...
+[Failed] 00-smoke (2m 7s) (Assertion is false: "الرئيسية" is visible)
+
+1/1 Flow Failed
+

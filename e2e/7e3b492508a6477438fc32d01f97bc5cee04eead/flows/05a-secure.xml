@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="123.563" timestamp="2026-11-07T22:44:21">
+    <testcase id="05a-secure" name="05a-secure" classname="05a-secure" file="e2e/maestro/05a-secure.yaml" time="123.55" timestamp="2026-11-07T22:44:21" status="ERROR">
+      <failure>Assertion is false: "الرئيسية" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
