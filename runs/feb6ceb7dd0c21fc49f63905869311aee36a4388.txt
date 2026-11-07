@@ -1,0 +1,6 @@
+commit feb6ceb7dd0c21fc49f63905869311aee36a4388
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42368939757
+os Linux · node v24.22.2 · TZ Asia/Riyadh
+success true
+suites 249 passed / 249 total
+tests 1803 passed · 0 failed · 0 skipped / 1803 total
