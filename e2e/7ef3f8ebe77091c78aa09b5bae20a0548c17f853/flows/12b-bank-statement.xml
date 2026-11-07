@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="43.194" timestamp="2026-11-08T00:37:54">
+    <testcase id="12b-bank-statement" name="12b-bank-statement" classname="12b-bank-statement" file="e2e/maestro/12b-bank-statement.yaml" time="43.179" timestamp="2026-11-08T00:37:54" status="ERROR">
+      <failure>Element not found: Text matching regex: كشف الحساب والمطابقة</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
