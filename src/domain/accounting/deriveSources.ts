@@ -16,7 +16,7 @@ import { isFiledDate } from '../vatFilings';
 import { unitPastProperties } from '../unitMove';
 import {
   contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
-  reservationDepositLines, reservationForfeitLines, reservationRefundLines, type EntryLine,
+  reservationDepositLines, reservationForfeitLines, reservationRefundLines, keyMoneyLines, type EntryLine,
 } from './post';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
@@ -51,6 +51,7 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   reservation: ['1100', '2450'],
   reservation_forfeit: ['2450', '4300'],
   reservation_refund: ['2450', '1100'],
+  key_money: ['1100', '4300', '2200'],
 };
 
 /** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة) */
@@ -149,6 +150,21 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (rv.deposit_outcome !== (e.src === 'reservation_forfeit' ? FORFEITED : REFUNDED)) return no('noEntry');
       const lines = want(e.src === 'reservation_forfeit' ? reservationForfeitLines(deposit) : reservationRefundLines(deposit), () => dims);
       return lines ? { lines, date: rv.deposit_settled_date ?? '', correctable: false } : no('noEntry');
+    }
+    case 'key_money': {
+      // عمولة التقبيل (keymoney.ts): المقبوض من الصفقة، وضريبته بتسجيل المنشأة في الضريبة (keyMoneyLines كما رحّلها الكاتب)،
+      // والتاريخ تاريخ الصفقة · وقيد الصفقة قيدها نفسه
+      const k = r.row<{ unit_id: string | null; contract_id: string | null; date: string | null; commission_halalas: number;
+        journal_entry_id: string | null }>('key_money_deals', e.srcId);
+      if (!k) return AWAIT;
+      if (k.journal_entry_id && k.journal_entry_id !== e.id) return no('noEntry');
+      // والقيد يُرحَّل قبل صفّ صفقته (recordKeyMoneyDeal) فلا يجد dimsFromSource مستنده فتُكتب سطوره بلا أبعاد · ويُقبل بأبعاد
+      // صفقته (عقدها أو وحدتها) إن مُلئت، ولا يُقبل بأبعاد مستندٍ آخر
+      const none: DimSpec = { contract: null, unit: null, props: [null] };
+      const own = k.contract_id ? contractDims(db, r, k.contract_id) : unitDims(db, r, k.unit_id ?? null);
+      if (!own) return AWAIT;
+      const lines = want(keyMoneyLines(db, num(k.commission_halalas)), () => [none, own]);
+      return lines ? { lines, date: k.date ?? '', correctable: false } : no('noEntry');
     }
     case 'deposit_deduct':
     case 'deposit_deduct_move':
