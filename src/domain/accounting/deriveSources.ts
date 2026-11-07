@@ -5,8 +5,10 @@
  * السطور نفسها التي رحّل بها الجهاز الكاتب (post.ts)، وتُقارن حساباً بحساب ومبلغاً بمبلغ وبُعداً ببُعد (أبعاد المصدر كما يشتقها
  * dimsFromSource) · ويُرفض القيد كله إن خالف، ويُنتظر إن لم يصل مستنده.
  *
- *  - القيد الذي وصل معكوساً (reversed_by) أثره صفر متى طابقه عاكسه: يُفحص عاكسه مرآةً لسطوره بالحساب والمبلغ والبُعد، وحساباته من
- *    أطراف مصدره، ولا يُطابق بمستنده الحالي (تعديل التسوية أو المطالبة يعكس القديم ويرحّل الجديد، فالمستند يحمل القيم الجديدة).
+ *  - القيد الذي وصل معكوساً (reversed_by) أثره صفر متى طُبِّق عاكسه بعده: يُفحص عاكسه مرآةً لسطوره كلها بالحساب والمبلغ والبُعد،
+ *    وحساباته من أطراف مصدره، ولا يُطابق بمستنده الحالي (تعديل التسوية أو المطالبة يعكس القديم ويرحّل الجديد، فالمستند يحمل القيم
+ *    الجديدة) · والعاكس سيُقبل بعده فعلاً (المتحقق المستقل): لم يُطبَّق قبله، ولا سمّاه قيدٌ آخر، ويمرّ بفحص memberReversalCheck
+ *    وبتفرّد رقمه وسطوره · وإلا بقي القيد حياً بأي مبلغٍ وعاكسه مرفوض.
  *  - وقيدٌ ثانٍ حيّ من المصدر نفسه لا يدخل حتى يُطبَّق عاكس الأول (مرحَّلٌ مرتين بالمبلغ الصحيح يضاعف أثره): يُنتظر، فإن لم يصل
  *    عاكسٌ رُفض لطول انتظاره ولم يدخل الدفتر.
  */
@@ -22,11 +24,16 @@ import {
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
 export interface SrcLine {
-  account_code?: unknown; debit_halalas?: unknown; credit_halalas?: unknown;
+  id?: unknown; entry_id?: unknown; account_code?: unknown; debit_halalas?: unknown; credit_halalas?: unknown;
   contract_id?: unknown; unit_id?: unknown; property_id?: unknown;
 }
-/** قيدٌ مرحّل لمصدرٍ هنا أو في الوارد */
-export interface SrcEntry { id: string; src_type: string | null; src_id: string | null; lines: SrcLine[] }
+/** قيدٌ مرحّل لمصدرٍ هنا أو في الوارد · وعاكسه المربوط به هنا */
+export interface SrcEntry { id: string; src_type: string | null; src_id: string | null; lines: SrcLine[]; reversed_by?: string | null }
+/** قيدٌ بمعرّفه كما سيُطبَّق: هنا (here) أو من الوارد بأعمدة مستنده */
+export interface RevEntry extends SrcEntry {
+  here: boolean; key: string | null; no: string | null; status: string | null; date: string | null; created_at: string | null;
+  deleted_at: string | null;
+}
 
 /** قارئ المستندات على جهاز المالك (sync/engine.ts): أحدث نسخةٍ للصف (الوارد المنتظر ثم القائم)، والقيود المرحّلة بمصدرها */
 export interface SourceReader {
@@ -36,8 +43,12 @@ export interface SourceReader {
    * القيد في المرور التالي بعد تطبيقه
    */
   entries(srcType: string, srcId: string): SrcEntry[];
-  /** قيدٌ مرحّل بمعرّفه هنا أو في الوارد */
-  entry(id: string): SrcEntry | null;
+  /** قيدٌ مرحّل بمعرّفه هنا، أو في الوارد مرحّلاً ولم يُطبَّق هنا بعد */
+  entry(id: string): RevEntry | null;
+  /** القيود التي تسمّي revId عاكساً لها: هنا، وفي الربط المعلّق والمخمَّن، وفي الوارد */
+  claimants(revId: string): string[];
+  /** رقمٌ أو معرّف سطرٍ يحمله قيدٌ غير exceptId هنا أو في الوارد (فيُرفض قيد exceptId بتفرّدهما حين يُطبَّق) */
+  taken(no: string, lineIds: string[], exceptId: string): boolean;
   /** معرّفات القيود المرحّلة بمصدرها في الوارد ولم تُطبَّق هنا بعد */
   pending(srcType: string, srcId: string): string[];
 }
@@ -68,6 +79,7 @@ const nonZero = <T extends SrcLine>(ls: T[]) => ls.filter((l) => num(l.debit_hal
 const total = (e: SrcEntry) => e.lines.reduce((s, l) => s + num(l.credit_halalas), 0);
 
 const AWAIT = 'await';
+const POSTED = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
 type Outcome = Derived | typeof AWAIT | string;
 
 /** أبعاد عقدٍ ووحدته وعقارها كما يشتقها dimsFromSource على الجهاز الكاتب · null إن لم يصل العقد */
@@ -241,25 +253,57 @@ function dateIssue(db: DB, got: string, d: Derived): string {
   return d.correctable && g > want && isFiledDate(db, want) ? '' : no('date');
 }
 
-/** عاكس القيد الوارد معكوساً: مرحّلٌ بمصدره، وسطوره مرآةٌ لسطوره بالحساب والمبلغ والبُعد · '' أو 'await' أو السبب */
-function reversedIssue(r: SourceReader, e: { id: string; src: string; srcId: string; lines: SrcLine[] }, revId: string): string {
+/** بُعدٌ واحد · الفارغ كالغائب (mirror.ts: sameDim) */
+const sameDim = (a: unknown, b: unknown) => str(a) === str(b);
+/**
+ * rev مرآة orig بسطوره كلها، الصفري منها (mirrorIssue يعدّها كلها): كل سطرٍ يقابله سطرٌ واحد بحسابه، ومبلغه مقلوباً، وعقده ووحدته
+ * وعقاره · وأضيق من mirrorIssue (لا استثناء للأرباح المحتجزة 3200) فما قُبل هنا لا يرفضه هناك
+ */
+function sameMirror(orig: SrcLine[], rev: SrcLine[]): boolean {
+  if (!orig.length || orig.length !== rev.length) return false;
+  const used = new Set<number>();
+  for (const l of rev) {
+    const i = orig.findIndex((x, j) => !used.has(j) && String(x.account_code ?? '') === String(l.account_code ?? '')
+      && num(x.debit_halalas) === num(l.credit_halalas) && num(x.credit_halalas) === num(l.debit_halalas)
+      && sameDim(x.contract_id, l.contract_id) && sameDim(x.unit_id, l.unit_id) && sameDim(x.property_id, l.property_id));
+    if (i < 0) return false;
+    used.add(i);
+  }
+  return true;
+}
+
+/**
+ * عاكس القيد الوارد معكوساً · '' أو 'await' أو السبب · القيد يُقبل بلا مطابقة مستنده لأن عاكسه يمحو أثره، فلا يُقبل إلا بعاكسٍ سيُقبل
+ * بعده فعلاً (المتحقق المستقل: عاكسٌ بسطرٍ صفري زائد يُرفض بعده فيبقى القيد بأي مبلغ، وعاكسٌ مشروع مربوطٌ بأصله يُسمّى ثانيةً لنسخةٍ
+ * منه فيُقبلان معاً):
+ *  - في الوارد لم يُطبَّق هنا: العاكس المقبول يُربط بأصله حين يُقبل (guessLink)، فعاكسٌ هنا قبل القيد عاكس قيدٍ آخر · ولا يسمّيه
+ *    قيدٌ آخر هنا أو في الربط المعلّق أو في الوارد.
+ *  - ويمرّ بفحص memberReversalCheck حين يأتي دوره: مرحّلٌ بمصدره، مرآةٌ بسطوره كلها، ولا عواكس هنا أكثر من أصولها، ولا عاكس هنا غير
+ *    مربوط يطابق القيد (فلا يكون القيد أصلاً حراً له).
+ *  - ويُدرج بلا رفض: مفتاحه مفتاح مستنده، وسطوره لقيده، ورقمه ومعرّفات سطوره لا يحملها قيدٌ آخر، وتاريخه ووقت إنشائه.
+ */
+function reversedIssue(r: SourceReader, e: { id: string; src: string; srcId: string; no: string | null; lines: SrcLine[] }, revId: string): string {
   const rev = r.entry(revId);
   if (!rev) return AWAIT;
-  if (rev.src_type !== e.src + '_rev' || (rev.src_id ?? '') !== e.srcId) return no('mirror');
-  const orig = nonZero(e.lines);
-  const back = nonZero(rev.lines);
-  if (orig.length !== back.length) return no('mirror');
-  const used = new Set<number>();
-  for (const l of back) {
-    const i = orig.findIndex((x, j) => !used.has(j) && String(x.account_code) === String(l.account_code)
-      && num(x.debit_halalas) === num(l.credit_halalas) && num(x.credit_halalas) === num(l.debit_halalas)
-      && str(x.contract_id) === str(l.contract_id) && str(x.unit_id) === str(l.unit_id) && str(x.property_id) === str(l.property_id));
-    if (i < 0) return no('mirror');
-    used.add(i);
+  if (rev.here || r.claimants(revId).some((id) => id !== e.id)) return no('revTaken');
+  if (rev.key !== revId || rev.status !== POSTED || rev.deleted_at || rev.src_type !== e.src + '_rev' || rev.src_id !== e.srcId) return no('mirror');
+  if (!sameMirror(e.lines, rev.lines)) return no('mirror');
+  const originals = r.entries(e.src, e.srcId);
+  const revs = r.entries(e.src + '_rev', e.srcId);
+  const linked = new Set(originals.map((o) => o.reversed_by).filter(Boolean));
+  if (revs.length > originals.length || revs.some((x) => !linked.has(x.id) && sameMirror(e.lines, x.lines))) return no('revTaken');
+  const ids = rev.lines.map((l) => str(l.id) ?? '');
+  const mine = new Set(e.lines.map((l) => str(l.id)));
+  if (!rev.no || rev.no === e.no || !rev.date || !rev.created_at || ids.some((x) => !x || mine.has(x)) || new Set(ids).size !== ids.length
+    || rev.lines.some((l) => str(l.entry_id) !== null && str(l.entry_id) !== revId) || r.taken(rev.no, ids, revId)) return no('revApply');
+  // وقيد الصفقة قيدها نفسه في هذا المسار أيضاً (عمولة التقبيل)
+  if (e.src === 'key_money') {
+    const k = r.row<{ journal_entry_id: string | null }>('key_money_deals', e.srcId);
+    if (k?.journal_entry_id && k.journal_entry_id !== e.id) return no('noEntry');
   }
   // وما يُشتق منه بلا مستنده: حساباته من أطراف مصدره
   const allowed = DERIVED_SOURCES[e.src];
-  const bad = orig.find((l) => !allowed.includes(String(l.account_code)));
+  const bad = e.lines.find((l) => !allowed.includes(String(l.account_code)));
   return bad ? no('account', { account: String(bad.account_code) }) : '';
 }
 
@@ -268,11 +312,11 @@ function reversedIssue(r: SourceReader, e: { id: string; src: string; srcId: str
  * (أو عاكسه، أو عاكس قيدٍ حيٍّ قبله من المصدر نفسه)
  */
 export function memberSourceIssue(db: DB, r: SourceReader,
-  e: { id: string; src_type: string | null; src_id: string | null; date: string; reversed_by: string | null; lines: SrcLine[] }): string {
+  e: { id: string; src_type: string | null; src_id: string | null; no?: string | null; date: string; reversed_by: string | null; lines: SrcLine[] }): string {
   const src = e.src_type ?? '';
   if (!DERIVED_SOURCES[src]) return '';
   const srcId = e.src_id ?? '';
-  if (e.reversed_by) return reversedIssue(r, { id: e.id, src, srcId, lines: e.lines }, e.reversed_by);
+  if (e.reversed_by) return reversedIssue(r, { id: e.id, src, srcId, no: e.no ?? null, lines: e.lines }, e.reversed_by);
   if (live(r, src, srcId, e.id, () => 1) > 0) return AWAIT;
   // وقيدٌ آخر من المصدر نفسه في الوارد يُطبَّق قبله: القديم الواصل معكوساً يسبق الجديد، وإلا وصل عاكس القديم والجديد وحده هنا فلا
   // يطابقه فيُرفض، ويبقى القديم بلا عاكسٍ ينتظره (تعديل التسوية أو المطالبة في مزامنةٍ واحدة بترتيبٍ آخر)

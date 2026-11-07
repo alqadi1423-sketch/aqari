@@ -652,26 +652,45 @@ function latestRowByKey<T>(db: DB, table: string, key: string): T | null {
 }
 
 const POSTED = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
-const SRC_LINE_COLS = 'account_code, debit_halalas, credit_halalas, contract_id, unit_id, property_id';
+const SRC_LINE_COLS = 'id, entry_id, account_code, debit_halalas, credit_halalas, contract_id, unit_id, property_id';
 
 /** قارئ مستندات القيد لإعادة الاشتقاق (deriveSources.ts) على جهاز المالك */
 function sourceReader(db: DB): SourceReader {
   const linesHere = (id: string) => db.all<SrcLine>(`SELECT ${SRC_LINE_COLS} FROM journal_lines WHERE entry_id = ? ORDER BY rowid`, [id]);
+  type Head = { id: string; src_type: string | null; src_id: string | null; reversed_by: string | null; no: string | null; status: string | null;
+    date: string | null; created_at: string | null; deleted_at: string | null };
   return {
     row: <T>(table: string, key: string) => latestRowByKey<T>(db, table, key),
-    entries: (srcType, srcId) => db.all<{ id: string; src_type: string | null; src_id: string | null }>(
-      `SELECT id, src_type, src_id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = ?`, [srcType, srcId, POSTED])
+    entries: (srcType, srcId) => db.all<{ id: string; src_type: string | null; src_id: string | null; reversed_by: string | null }>(
+      `SELECT id, src_type, src_id, reversed_by FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = ?`, [srcType, srcId, POSTED])
       .map((e) => ({ ...e, lines: linesHere(e.id) })),
     entry: (id) => {
-      const here = db.get<{ id: string; src_type: string | null; src_id: string | null }>(
-        `SELECT id, src_type, src_id FROM journal_entries WHERE id = ? AND status = ?`, [id, POSTED]);
-      if (here) return { ...here, lines: linesHere(id) };
-      const d = latestRow<{ status?: string; src_type?: string | null; src_id?: string | null }>(db, 'journal_entries', id);
+      const here = db.get<Head>(
+        `SELECT id, src_type, src_id, reversed_by, no, status, date, created_at, deleted_at FROM journal_entries WHERE id = ? AND status = ?`, [id, POSTED]);
+      if (here) return { ...here, here: true, key: here.id, lines: linesHere(id) };
+      // كما سيُطبَّق من الوارد: أعمدة مستنده وسطوره، ومفتاحه في مستنده (applyOne يرفض ما خالف مفتاحُه مفتاحَ المستند)
+      const p = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [id]);
+      const doc = p ? JSON.parse(p.payload) as RemoteDoc : null;
+      const d = (doc?.d ?? null) as Partial<Record<keyof Head, unknown>> | null;
       if (!d || d.status !== POSTED) return null;
-      const doc = JSON.parse(db.get<{ payload: string }>(
-        `SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [id])?.payload ?? '{}') as RemoteDoc;
-      return { id, src_type: d.src_type ?? null, src_id: d.src_id ?? null, lines: (doc.lines ?? []) as SrcLine[] };
+      const s = (v: unknown) => (v == null || v === '' ? null : String(v));
+      return { id, here: false, key: s(d.id), src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), no: s(d.no),
+        status: s(d.status), date: s(d.date), created_at: s(d.created_at), deleted_at: s(d.deleted_at), lines: (doc!.lines ?? []) as SrcLine[] };
     },
+    claimants: (revId) => {
+      const ids = new Set(db.all<{ id: string }>(
+        `SELECT id FROM journal_entries WHERE reversed_by = ?
+         UNION SELECT pk AS id FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.reversed_by') = ?`,
+        [revId, revId]).map((x) => x.id));
+      const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
+      for (const [e, r] of [...Object.entries(pending), ...Object.entries(guessesOf(db))]) if (r === revId) ids.add(e);
+      return [...ids];
+    },
+    taken: (no, lineIds, exceptId) => !!db.get(`SELECT 1 FROM journal_entries WHERE no = ? AND id != ?`, [no, exceptId])
+      || !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND pk != ? AND json_extract(payload, '$.d.no') = ?`, [exceptId, no])
+      || !!db.get(`SELECT 1 FROM journal_lines WHERE entry_id != ? AND id IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)])
+      || !!db.get(`SELECT 1 FROM sync_inbox i, json_each(i.payload, '$.lines') j WHERE i.tbl = 'journal_entries' AND i.del = 0 AND i.pk != ?
+           AND json_extract(j.value, '$.id') IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)]),
     pending: (srcType, srcId) => db.all<{ pk: string }>(
       `SELECT i.pk FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.src_type') = ?
          AND json_extract(i.payload, '$.d.src_id') = ? AND json_extract(i.payload, '$.d.status') = ?
@@ -693,7 +712,7 @@ function memberSourceCheck(db: DB, doc: RemoteDoc): void {
   const filed = filingRecordedAt(db, date);
   if (filed && (!doc.ts || isoCmp(doc.ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
   const why = memberSourceIssue(db, sourceReader(db), {
-    id: doc.k, src_type: src, src_id: (doc.d!.src_id as string | null) ?? null, date,
+    id: doc.k, src_type: src, src_id: (doc.d!.src_id as string | null) ?? null, no: (doc.d!.no as string | null) ?? null, date,
     reversed_by: (doc.d!.reversed_by as string | null) ?? null, lines: (doc.lines ?? []) as SrcLine[],
   });
   if (why === 'await') throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));

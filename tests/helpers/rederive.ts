@@ -56,3 +56,31 @@ export async function ownerPulls(owner: DB, r: MemoryRemote) {
   await sync(owner, r);
   await sync(owner, r);
 }
+
+let forged = 0;
+/** قيدٌ مزوّر من عضو على مثال قيدٍ في الحساب: معرّفٌ ورقمٌ ومعرّفات سطورٍ جديدة · وعاكسه إن سُمّي */
+export function forge(base: RemoteDoc, over: { k?: string; src_type?: string; no?: string; reversed_by?: string | null; lines: Lines }): RemoteDoc {
+  const n = ++forged;
+  const k = over.k ?? 'forged-' + n;
+  return {
+    ...base, id: 'journal_entries__' + k, k, by: MEMBER,
+    d: { ...base.d, id: k, no: over.no ?? 'FG-' + n, src_type: over.src_type ?? base.d!.src_type, reversed_by: over.reversed_by ?? null },
+    lines: over.lines.map((l, i) => ({ ...l, id: k + '-l' + i, entry_id: k })),
+  };
+}
+/** مرآة السطور: مدينها دائن ودائنها مدين */
+export const mirrorOf = (ls: Lines): Lines => ls.map((l) => ({ ...l, debit_halalas: l.credit_halalas, credit_halalas: l.debit_halalas }));
+/** رصيد حسابٍ في الدفتر المرحّل (مدينه موجب) · وبشرطٍ على القيد إن أُعطي */
+export const net = (db: DB, account: string, where = '1 = 1', params: string[] = []) => Number(db.get<{ n: number }>(
+  `SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+   WHERE e.status = 'مرحّل' AND l.account_code = ? AND ${where}`, [account, ...params])!.n);
+/** كل قيود المصدر (بعواكسها إن طابقها النمط) في الحساب بكاتبها العضو */
+export function srcAsMember(r: MemoryRemote, re: RegExp): string[] {
+  const ids: string[] = [];
+  for (const d of [...r.docs.values()]) {
+    if (d.t !== 'journal_entries' || !re.test(String(d.d?.src_type))) continue;
+    r.inject({ ...d, by: MEMBER });
+    ids.push(d.k);
+  }
+  return ids;
+}
