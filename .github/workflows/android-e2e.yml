@@ -56,7 +56,7 @@ jobs:
       - name: بناء حزمة الاختبار (x86_64)
         working-directory: android
         run: |
-          ./gradlew :app:assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 \
+          bash ./gradlew :app:assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 \
             "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
           ls -l app/build/outputs/apk/release/
 

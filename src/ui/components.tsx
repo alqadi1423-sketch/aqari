@@ -246,6 +246,9 @@ export function Field({
     <View style={st.field}>
       <Text style={{ fontFamily: FONT_MED, fontSize: fs(TYPE.caption), color: error ? C.rose : C.muted, marginBottom: 5 }}>{label}</Text>
       <TextInput
+        // اسم الحقل لقارئ الشاشة، ومعرّفه لاختبار الجوال الافتراضي (e2e/maestro · التوجيه الرابع ٤ · ١)
+        accessibilityLabel={label || placeholder}
+        testID={'field-' + (label || placeholder || '')}
         value={value}
         onChangeText={(v) => { markDirty(); onChange?.(v); }}
         placeholder={placeholder}
