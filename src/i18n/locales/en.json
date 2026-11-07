@@ -792,7 +792,8 @@
     "date": "Its date does not match its document's date",
     "noEntry": "Its document does not post an entry with this source",
     "mirror": "An entry that arrived reversed does not match its reversal",
-    "settlement": "The deposit settlement does not distribute the contract's whole deposit"
+    "settlement": "The deposit settlement does not distribute the contract's whole deposit",
+    "carryOver": "The new contract's deposit is less than what was carried to it and received for it"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",

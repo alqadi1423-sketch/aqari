@@ -14,7 +14,7 @@ import type { DB } from '../../db/adapter';
 import { t } from '../../i18n';
 import { isFiledDate } from '../vatFilings';
 import { unitPastProperties } from '../unitMove';
-import { contractDepositLines, depositDeductLines, depositDeductMoveLines, depositRefundLines, type EntryLine } from './post';
+import { contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines, type EntryLine } from './post';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
 export interface SrcLine {
@@ -44,6 +44,7 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   deposit_deduct: ['2400', '4300', '1100'],
   deposit_deduct_move: ['1265', '1100', '1260'],
   deposit_refund: ['2400', '1100', '1260'],
+  deposit_carry: ['2400'],
 };
 
 /** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة) */
@@ -99,6 +100,24 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const dims = contractDims(db, r, e.srcId);
       if (!dims) return AWAIT;
       const lines = want(contractDepositLines(amount, c.deposit_holder), () => [dims]);
+      return lines ? { lines, date: c.start ?? '', correctable: true } : no('noEntry');
+    }
+    case 'deposit_carry': {
+      // ترحيل التأمين عند التجديد (renewContract): تأمين العقد السابق كاملاً، وسطر إقفاله بعقد السابق ووحدته وعقاره من الجديد
+      // (lineDims: الصريح فيه العقد وحده)، والجديد دائن بأبعاده
+      const c = r.row<{ deposit_halalas: number; renewed_from: string | null; start: string | null; contract_no: string | null }>('contracts', e.srcId);
+      if (!c) return AWAIT;
+      if (!c.renewed_from) return no('noEntry');
+      const prev = r.row<{ deposit_halalas: number; renewed_to: string | null }>('contracts', c.renewed_from);
+      if (!prev || !prev.renewed_to) return AWAIT;
+      // والسابق مجدَّدٌ إلى هذا العقد نفسه: لا يُرحَّل تأمينه إلى عقدين
+      if (prev.renewed_to !== c.contract_no) return no('noEntry');
+      const carried = num(prev.deposit_halalas);
+      // وتأمين الجديد يتسع للمرحَّل مع ما قُبض له (totalDeposit: المرحَّل وزيادته)
+      if (live(r, 'contract_deposit', e.srcId, e.id, total) + carried > num(c.deposit_halalas)) return no('carryOver');
+      const dims = contractDims(db, r, e.srcId);
+      if (!dims) return AWAIT;
+      const lines = want(depositCarryLines(carried, c.renewed_from), (l) => [l.dims?.contractId ? { ...dims, contract: l.dims.contractId } : dims]);
       return lines ? { lines, date: c.start ?? '', correctable: true } : no('noEntry');
     }
     case 'deposit_deduct':
