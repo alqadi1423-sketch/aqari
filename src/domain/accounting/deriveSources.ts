@@ -388,14 +388,19 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       // قيدها السابق · والأبعاد عقار الفاتورة ووحدتها
       const v = r.row<InvoiceRow>('invoices', e.srcId);
       if (!v) return AWAIT;
-      // المسودة لا قيد لها، والصادرة لا تُحذف ولا تعود مسودة (قرار المالك على #30) فلا قيد حيّاً لمحذوفةٍ ولا لمسودة
+      // الصادرة لا تُحذف ولا تعود مسودة (قرار المالك على #30) فلا قيد حيّاً لمحذوفة · والمسودة لا قيد لها: صفّها الذي صدرت به لم يصل
+      // بعد (المتحقق المستقل: مسودةٌ عرفها المالك ثم أصدرها العضو، ووصل قيدها قبل صفّها المحدَّث، كان يُرفض نهائياً) فيُنتظر كالعقد
+      // المسودة في contract_deposit، والمزوَّر يُرفض لطول انتظاره ولا يدخل الدفتر
       if (v.deleted_at) return no('deleted');
-      if (v.status === DRAFT_INVOICE) return no('noEntry');
+      if (v.status === DRAFT_INVOICE) return AWAIT;
       const dims = docDims(db, r, v.unit_id ?? null, v.property_id ?? null);
       const also = revDates(r, e.src, e.srcId);
       const credit = v.kind === KIND_CREDIT;
       if (e.src === 'invoice_pay') {
-        if (credit || (v.payment_journal_entry_id && v.payment_journal_entry_id !== e.id)) return no('noEntry');
+        if (credit) return no('noEntry');
+        // تحصيلٌ بتاريخٍ جديد يعكس السابق: الصف القديم يسمّي قيده
+        const other = namedOther(r, e.src, e.srcId, v.payment_journal_entry_id, e.id);
+        if (other) return other;
         // تحصيلٌ لم يصل وسمه بعد يُنتظر
         if (!v.paid_date) return AWAIT;
         const remaining = num(v.total_halalas) + creditNotesOf(r, e.srcId).reduce((s, n) => s + num(n.total_halalas), 0);
@@ -404,7 +409,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
         const lines = remaining > 0 ? want(invoicePaymentLines(remaining), () => [dims]) : null;
         return lines ? { lines, date: v.paid_date, also, correctable: false } : no('noEntry');
       }
-      if (v.journal_entry_id && v.journal_entry_id !== e.id) return no('noEntry');
+      const other = namedOther(r, e.src, e.srcId, v.journal_entry_id, e.id);
+      if (other) return other;
       const lines = invoiceLinesOf(r, e.srcId);
       const head = { subtotal: num(v.subtotal_halalas), tax: num(v.tax_halalas), total: num(v.total_halalas) };
       if (credit) {

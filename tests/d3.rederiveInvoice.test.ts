@@ -6,7 +6,7 @@
  */
 import { saveInvoice, saveCreditNote, payInvoice, setInvoiceStatus, type InvoiceInput } from '@/domain/invoices';
 import { addProperty, addUnit } from './helpers/fixtures';
-import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, lastEntry, type Lines } from './helpers/rederive';
+import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, lastEntry, holdBack, type Lines } from './helpers/rederive';
 import type { MemoryRemote } from './helpers/memoryRemote';
 import type { DB } from '@/db/adapter';
 
@@ -205,6 +205,53 @@ describe('إعادة اشتقاق قيود فاتورة المبيعات وإش�
     await ownerPulls(s.owner, s.r);
     expect(reasonOf(s.owner, k)).toBe('');
     expect(has(s.owner, k)).toBe(true);
+    s.close();
+  });
+
+  test('إيجابي · مسودةٌ عرفها المالك ثم صدرت، ووصل قيدها قبل صفّها المحدَّث: يُنتظر ثم يُقبل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const draft = saveInvoice(s.dev, inv(s.ua, [{ descr: 'مسودة مصطنعة', qty: 2, priceHalalas: 15000, taxPct: 15, taxCode: 'S' }]), 'مسودة');
+    await sync(s.dev, s.r);
+    await ownerPulls(s.owner, s.r);
+    setInvoiceStatus(s.dev, draft, ISSUED);
+    await sync(s.dev, s.r);
+    const k = asMember(s.r, 'invoice');
+    const late = holdBack(s.r, (d) => d.t === 'invoices' && d.k === draft);
+    expect(late.count).toBe(1);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(false);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(true);
+    expect(net(s.owner, '1200')).toBe(34500);
+    s.close();
+  });
+
+  test('إيجابي · تحصيل فاتورةٍ محصّلة من قبل بتاريخٍ جديد، ووصل قيده قبل صفّها المحدَّث: يُنتظر ثم يُقبل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const id = plain(s.dev, s.ua);
+    payInvoice(s.dev, id, { method: 'cash', bankId: null, date: '2026-10-20' });
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^invoice(_pay)?$/);
+    await ownerPulls(s.owner, s.r);
+    payInvoice(s.dev, id, { method: 'cash', bankId: null, date: '2026-10-22' });
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^invoice_pay(_rev)?$/);
+    expect(ids.length).toBe(3);
+    const k = lastEntry(s.r, 'invoice_pay').k;
+    const late = holdBack(s.r, (d) => d.t === 'invoices' && d.k === id);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(false);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    for (const x of ids) {
+      expect(reasonOf(s.owner, x)).toBe('');
+      expect(has(s.owner, x)).toBe(true);
+    }
+    expect(net(s.owner, '1200')).toBe(0);
     s.close();
   });
 });
