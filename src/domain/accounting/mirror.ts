@@ -8,11 +8,14 @@ import type { DB } from '../../db/adapter';
 import { t } from '../../i18n';
 
 const ACC_RETAINED = '3200';
-type Line = { account_code: string; debit_halalas: number; credit_halalas: number; type: string | null };
+type Line = { account_code: string; debit_halalas: number; credit_halalas: number; type: string | null;
+  contract_id: string | null; property_id: string | null; unit_id: string | null };
 
 const linesOf = (db: DB, id: string) => db.all<Line>(
-  `SELECT l.account_code, l.debit_halalas, l.credit_halalas, a.type FROM journal_lines l
+  `SELECT l.account_code, l.debit_halalas, l.credit_halalas, a.type, l.contract_id, l.property_id, l.unit_id FROM journal_lines l
    LEFT JOIN accounts a ON a.code = l.account_code WHERE l.entry_id = ? ORDER BY l.rowid`, [id]);
+/** بُعدٌ واحد · الفارغ كالغائب */
+const sameDim = (a: string | null, b: string | null) => (a || null) === (b || null);
 
 const isIncome = (type: string | null) => type === 'إيراد' || type === 'مصروف'; // i18n-exempt: نوع حساب مخزَّن
 
@@ -31,7 +34,9 @@ export function mirrorIssue(db: DB, entryId: string, revId: string): string {
   for (const l of rev) {
     const i = orig.findIndex((x, j) => !used.has(j)
       && Number(x.debit_halalas) === Number(l.credit_halalas) && Number(x.credit_halalas) === Number(l.debit_halalas)
-      && (x.account_code === l.account_code || (l.account_code === ACC_RETAINED && isIncome(x.type))));
+      && (x.account_code === l.account_code || (l.account_code === ACC_RETAINED && isIncome(x.type)))
+      // وأبعاده أبعاد أصله (التوجيه الثالث · ١): عاكسٌ بعقدٍ أو عقارٍ آخر ينقل الرصيد الدائن والإيراد بين المستأجرين والعقارات
+      && sameDim(x.contract_id, l.contract_id) && sameDim(x.property_id, l.property_id) && sameDim(x.unit_id, l.unit_id));
     if (i < 0) return t('mirror.line', { lng: 'ar' });
     used.add(i);
   }

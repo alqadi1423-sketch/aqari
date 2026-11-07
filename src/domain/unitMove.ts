@@ -19,6 +19,21 @@ const marks = (n: number) => Array(n).fill('?').join(',');
 export interface UnitMove { unit: string; from: string; to: string; at: string }
 export const PENDING_MOVES_KEY = 'unit_moves_pending';
 
+/**
+ * سجلٌ دائمٌ على هذا الجهاز لما نُقل من وحدات (التوجيه الثالث · ١): ما بانتظار النشر يُفرَّغ بعد نشره، وقيدُ تحصيلٍ كتبه عضوٌ قبل أن
+ * يصله النقل يحمل عقار الوحدة القديم بحق · فيُعرف العقار القديم من هنا · آخر ٥٠٠ نقل
+ */
+export const UNIT_MOVES_LOG_KEY = 'unit_moves_log';
+const MOVES_LOG_KEEP = 500;
+function movesLog(db: DB): UnitMove[] {
+  try { return JSON.parse(db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = ?`, [UNIT_MOVES_LOG_KEY])?.v || '[]') as UnitMove[]; }
+  catch { return []; }
+}
+/** العقارات التي نُقلت منها الوحدة على هذا الجهاز (بانتظار النشر وما نُشر) */
+export function unitPastProperties(db: DB, unitId: string): string[] {
+  return [...new Set([...pendingUnitMoves(db), ...movesLog(db)].filter((m) => m.unit === unitId).map((m) => m.from))];
+}
+
 export function pendingUnitMoves(db: DB): UnitMove[] {
   try { return JSON.parse(db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = ?`, [PENDING_MOVES_KEY])?.v || '[]') as UnitMove[]; }
   catch { return []; }
@@ -27,6 +42,8 @@ export function pendingUnitMoves(db: DB): UnitMove[] {
 export function retagUnitTree(db: DB, unitId: string, oldPropertyId: string, newPropertyId: string): void {
   db.run(`UPDATE purchases SET property_id = ? WHERE unit_id = ?`, [newPropertyId, unitId]);
   db.run(`UPDATE invoices SET property_id = ? WHERE unit_id = ?`, [newPropertyId, unitId]);
+  const logged = [...movesLog(db), { unit: unitId, from: oldPropertyId, to: newPropertyId, at: new Date().toISOString() }].slice(-MOVES_LOG_KEEP);
+  db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [UNIT_MOVES_LOG_KEY, JSON.stringify(logged)]);
   if (!capturing(db)) return;
   const moves = [...pendingUnitMoves(db), { unit: unitId, from: oldPropertyId, to: newPropertyId, at: new Date().toISOString() }];
   db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [PENDING_MOVES_KEY, JSON.stringify(moves)]);

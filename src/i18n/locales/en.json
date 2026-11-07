@@ -781,7 +781,8 @@
     "installmentDelete": "A member cannot delete an installment of a confirmed contract · it was uploaded again",
     "noReservation": "No existing reservation converted to the payment's contract",
     "overDeposit": "The converted amount exceeds the reservation's deposit or what was received",
-    "cancelNoReversal": "A payment cancelled without an entry reversing its entry"
+    "cancelNoReversal": "A payment cancelled without an entry reversing its entry",
+    "dims": "A line dimension (contract, unit or property) does not match its document's contract"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",
