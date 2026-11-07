@@ -784,6 +784,15 @@
     "cancelNoReversal": "A payment cancelled without an entry reversing its entry",
     "dims": "A line dimension (contract, unit or property) does not match its document's contract"
   },
+  "deriveSrc": {
+    "rejected": "Member entry ({{source}}) rejected · {{why}}",
+    "noDoc": "A member entry whose document has not arrived yet",
+    "account": "Account {{account}} or its amount does not match what the entry's document derives",
+    "dims": "A dimension of the line on account {{account}} (contract, unit or property) does not match the entry's document",
+    "date": "Its date does not match its document's date",
+    "noEntry": "Its document does not post an entry with this source",
+    "mirror": "An entry that arrived reversed does not match its reversal"
+  },
   "mirror": {
     "missing": "The entry or its reversal does not exist",
     "notPosted": "The reversal is not posted",

@@ -31,6 +31,7 @@ import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
+import { memberSourceIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 import { isoCmp, isoNorm } from './isoTime';
@@ -642,6 +643,59 @@ function rentCheckAgainst(db: DB, e: { srcId: string; date: string; lines: Array
   if (why) throw no(why);
 }
 
+/** أحدث نسخةٍ لصفٍّ بمفتاحه الأول (صفّ التسوية بعقده) · كـ latestRow */
+function latestRowByKey<T>(db: DB, table: string, key: string): T | null {
+  const inbox = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 0`, [table, key]);
+  if (inbox) return ((JSON.parse(inbox.payload) as RemoteDoc).d ?? null) as T | null;
+  const col = syncTable(table)?.pkCols[0] ?? 'id';
+  return db.get<T>(`SELECT * FROM "${table}" WHERE "${col}" = ?`, [key]) ?? null;
+}
+
+const POSTED = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
+const SRC_LINE_COLS = 'account_code, debit_halalas, credit_halalas, contract_id, unit_id, property_id';
+
+/** قارئ مستندات القيد لإعادة الاشتقاق (deriveSources.ts) على جهاز المالك */
+function sourceReader(db: DB): SourceReader {
+  const linesHere = (id: string) => db.all<SrcLine>(`SELECT ${SRC_LINE_COLS} FROM journal_lines WHERE entry_id = ? ORDER BY rowid`, [id]);
+  return {
+    row: <T>(table: string, key: string) => latestRowByKey<T>(db, table, key),
+    entries: (srcType, srcId) => db.all<{ id: string; src_type: string | null; src_id: string | null }>(
+      `SELECT id, src_type, src_id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = ?`, [srcType, srcId, POSTED])
+      .map((e) => ({ ...e, lines: linesHere(e.id) })),
+    entry: (id) => {
+      const here = db.get<{ id: string; src_type: string | null; src_id: string | null }>(
+        `SELECT id, src_type, src_id FROM journal_entries WHERE id = ? AND status = ?`, [id, POSTED]);
+      if (here) return { ...here, lines: linesHere(id) };
+      const d = latestRow<{ status?: string; src_type?: string | null; src_id?: string | null }>(db, 'journal_entries', id);
+      if (!d || d.status !== POSTED) return null;
+      const doc = JSON.parse(db.get<{ payload: string }>(
+        `SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [id])?.payload ?? '{}') as RemoteDoc;
+      return { id, src_type: d.src_type ?? null, src_id: d.src_id ?? null, lines: (doc.lines ?? []) as SrcLine[] };
+    },
+  };
+}
+
+/**
+ * إعادة اشتقاق قيد العضو من مستنده · بقية المراحل (التوجيه الثالث · ١ · قرار المالك 2026-10-15 «١» و2026-11-07): القيد المرحّل الذي
+ * كتبه عضو بمصدرٍ من DERIVED_SOURCES تُحسب سطوره على جهاز المالك من مستنده بدوال الترحيل نفسها، ويُرفض كله إن خالفها حساباً أو
+ * مبلغاً أو بُعداً أو تاريخاً · وما لم يصل مستنده بعد يُنتظر كالأصل الناقص · وما كتبه المالك لا يُعاد · وما وصل بعد تسجيل تقديم
+ * ربعه يُرفض كقيد التحصيل (القرار ٦ عبر المزامنة)
+ */
+function memberSourceCheck(db: DB, doc: RemoteDoc): void {
+  const src = (doc.d!.src_type as string | null) ?? '';
+  if (!DERIVED_SOURCES[src] || getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
+  const no = (why: string) => new Error(tr('deriveSrc.rejected', { source: src, why, lng: 'ar' }));
+  const date = String(doc.d!.date ?? '');
+  const filed = filingRecordedAt(db, date);
+  if (filed && (!doc.ts || isoCmp(doc.ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
+  const why = memberSourceIssue(db, sourceReader(db), {
+    id: doc.k, src_type: src, src_id: (doc.d!.src_id as string | null) ?? null, date,
+    reversed_by: (doc.d!.reversed_by as string | null) ?? null, lines: (doc.lines ?? []) as SrcLine[],
+  });
+  if (why === 'await') throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
+  if (why) throw no(why);
+}
+
 /**
  * الرصيد الدائن المتاح لمستأجر العقد (المتحقق المستقل، الجولة ٣٦ (ع٣): كان سطر 2410 في قيد السداد منه بلا بُعد عقد، فلا ينقص به
  * الرصيد ويُصرف مرتين): 2410 على عقوده في الدفتر بلا قيود دفعات السداد منه ولا عواكسها، ناقصاً تلك الدفعات غير الملغاة هنا وفي
@@ -857,6 +911,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   const posted = d.status === 'مرحّل';
   // قبل إدخاله: توزيع الإيراد يُحسب من المرحَّل قبله
   if (posted) memberRentCheck(db, doc);
+  if (posted) memberSourceCheck(db, doc);
   if (local) db.run(`DELETE FROM journal_lines WHERE entry_id = ?`, [doc.k]); // مسودة · سطورها تُستبدل
   renumberJoiningCollision(db, 'journal_entries', doc.k, d.no);
   const entry: RowData = { ...d, status: posted ? 'قيد الإنشاء' : d.status, reversed_by: null };
