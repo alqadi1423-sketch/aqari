@@ -707,14 +707,17 @@ export const postInvoiceToLedger = (
   postEntry(db, {
     date: v.issue,
     memo: 'فاتورة مبيعات ' + v.no + ' · ' + v.customer,
-    lines: [
-      { account: '1200', debit: v.total, credit: 0 },
-      ...(v.subtotal ? [{ account: '4100', debit: 0, credit: v.subtotal }] : []),
-      ...(v.tax ? [{ account: '2200', debit: 0, credit: v.tax }] : []),
-    ],
+    lines: invoiceLedgerLines(v),
     srcType: 'invoice',
     srcId: v.id,
   });
+
+/** سطور قيد فاتورة المبيعات من صافيها وضريبتها وإجماليها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
+export const invoiceLedgerLines = (v: { subtotal: number; tax: number; total: number }): EntryLine[] => [
+  { account: '1200', debit: v.total, credit: 0 },
+  ...(v.subtotal ? [{ account: '4100', debit: 0, credit: v.subtotal }] : []),
+  ...(v.tax ? [{ account: '2200', debit: 0, credit: v.tax }] : []),
+];
 
 /**
  * إشعار دائن على فاتورة مبيعات (قرار المالك على #30): عكس جزءٍ منها أو كلها بتاريخه · مدين 4100 بالصافي ومدين 2200
@@ -727,14 +730,17 @@ export const postCreditNoteToLedger = (
   postEntry(db, {
     date: v.date,
     memo: 'إشعار دائن ' + v.no + ' على الفاتورة ' + v.refNo + ' · ' + v.customer, // i18n-exempt: بيان القيد المخزَّن
-    lines: [
-      ...(v.subtotal ? [{ account: '4100', debit: v.subtotal, credit: 0 }] : []),
-      ...(v.tax ? [{ account: '2200', debit: v.tax, credit: 0 }] : []),
-      { account: '1200', debit: 0, credit: v.total },
-    ],
+    lines: creditNoteLedgerLines(v),
     srcType: 'invoice',
     srcId: v.id,
   });
+
+/** سطور قيد الإشعار الدائن من صافيه وضريبته وإجماليه (موجبةً) · بها يعيد جهاز المالك اشتقاق قيد العضو من إشعاره */
+export const creditNoteLedgerLines = (v: { subtotal: number; tax: number; total: number }): EntryLine[] => [
+  ...(v.subtotal ? [{ account: '4100', debit: v.subtotal, credit: 0 }] : []),
+  ...(v.tax ? [{ account: '2200', debit: v.tax, credit: 0 }] : []),
+  { account: '1200', debit: 0, credit: v.total },
+];
 
 /**
  * فاتورة شراء: دائن 2100 بالإجمالي، ومدينها:
@@ -785,13 +791,16 @@ export const postInvoicePayment = (
   postEntry(db, {
     date: payDate,
     memo: 'تحصيل فاتورة ' + v.no + ' · ' + v.customer + (cash ? ' (نقداً)' : ''),
-    lines: [
-      { account: CASH, debit: v.total, credit: 0 },
-      { account: '1200', debit: 0, credit: v.total },
-    ],
+    lines: invoicePaymentLines(v.total),
     srcType: 'invoice_pay',
     srcId: v.id,
   });
+
+/** سطور قيد تحصيل فاتورة المبيعات بما بقي منها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
+export const invoicePaymentLines = (total: number): EntryLine[] => [
+  { account: CASH, debit: total, credit: 0 },
+  { account: '1200', debit: 0, credit: total },
+];
 
 /** سداد فاتورة شراء: مدين 2100 / دائن 1100 */
 export const postPurchasePayment = (

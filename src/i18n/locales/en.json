@@ -796,7 +796,10 @@
     "revTaken": "Its reversal was applied before it or another entry names it as its reversal",
     "revApply": "Its reversal cannot be applied after it: its number or line ids belong to another entry, or it lacks a date",
     "settlement": "The deposit settlement does not distribute the contract's whole deposit",
-    "carryOver": "The new contract's deposit is less than what was carried to it and received for it"
+    "carryOver": "The new contract's deposit is less than what was carried to it and received for it",
+    "taxCode": "An invoice line's tax code does not match its rate: standard-rated at zero",
+    "invoiceTotals": "The invoice's net, tax or total does not match its lines by their codes and rates",
+    "creditNote": "The credit note does not match what its invoice and the notes before it derive by tax code"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",

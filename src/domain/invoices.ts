@@ -9,6 +9,7 @@ import { ambientCostCenter } from './accounting/dimensions';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment, postCreditNoteToLedger } from './accounting/post';
 import { t } from '../i18n';
 import { lineTaxCode, type TaxCode } from './taxCode';
+import { remainingByCodeOf, creditNoteAmounts, creditTaxFor, type CodePart, type StoredInvoiceLine } from './creditNote';
 import { lastReversedOf, repostDate } from './accounting/repost';
 import { isFiledDate, requireOpenPeriod } from './vatFilings';
 import { mulQty, pctOf } from './money';
@@ -425,70 +426,19 @@ export function creditLeft(db: DB, id: string, subtotal: number, tax: number): {
   return { sub: subtotal + Number(c?.s ?? 0), tax: tax + Number(c?.t ?? 0) };
 }
 
-interface CodePart { code: TaxCode; net: number; tax: number; pct: number }
-
 /**
  * صافي كل رمزٍ ضريبي في الفاتورة وضريبته، ناقصاً ما أشعرت به إشعاراتها الدائنة من الرمز نفسه (المراجعة الشاملة · البند ٧) ·
- * ضريبة الإشعار على سطره الخاضع (الصفري والمعفى نسبتهما صفر · البند ٦) · والنسبة نسبة سطور الرمز إن اتحدت، وإلا الفعلية
+ * الحساب نفسه في creditNote.ts بلا قاعدة بيانات، فيعيد به جهاز المالك اشتقاق إشعار العضو
  */
 function remainingByCode(db: DB, invoiceId: string): CodePart[] {
-  const parts = new Map<TaxCode, CodePart & { pcts: Set<number> }>();
-  const at = (code: TaxCode) => {
-    let p = parts.get(code);
-    if (!p) { p = { code, net: 0, tax: 0, pct: 0, pcts: new Set() }; parts.set(code, p); }
-    return p;
-  };
-  for (const l of db.all<{ qty: number; price_halalas: number; tax_pct: number; tax_code: string | null }>(
-    `SELECT qty, price_halalas, tax_pct, tax_code FROM invoice_lines WHERE invoice_id = ? ORDER BY sort`, [invoiceId])) {
-    const pct = Number(l.tax_pct);
-    const p = at(lineTaxCode(l.tax_code, pct));
-    const net = mulQty(Number(l.qty), Number(l.price_halalas));
-    p.net += net; p.tax += pctOf(net, pct); p.pcts.add(pct);
-  }
+  const linesOf = (id: string) => db.all<StoredInvoiceLine>(
+    `SELECT qty, price_halalas, tax_pct, tax_code FROM invoice_lines WHERE invoice_id = ? ORDER BY sort`, [id]);
   const notes = db.all<{ id: string; tax: number }>(
     `SELECT id, tax_halalas AS tax FROM invoices WHERE ref_invoice_id = ? AND kind = ? AND deleted_at IS NULL`, [invoiceId, KIND_CREDIT]);
-  for (const n of notes) {
-    const lines = db.all<{ qty: number; price_halalas: number; tax_pct: number; tax_code: string | null }>(
-      `SELECT qty, price_halalas, tax_pct, tax_code FROM invoice_lines WHERE invoice_id = ? ORDER BY sort`, [n.id]);
-    let taxLeft = Number(n.tax);
-    const codes = lines.map((l) => lineTaxCode(l.tax_code, Number(l.tax_pct)));
-    const taxed = codes.includes('S') ? 'S' : codes[0];
-    lines.forEach((l, i) => {
-      const p = at(codes[i]);
-      p.net += mulQty(Number(l.qty), Number(l.price_halalas));
-      if (codes[i] === taxed) { p.tax += taxLeft; taxLeft = 0; }
-    });
-  }
-  return [...parts.values()].map(({ pcts, ...p }) => ({
-    ...p, pct: pcts.size === 1 ? [...pcts][0] : p.net ? Math.round((p.tax * 100) / p.net) : 0,
-  }));
+  return remainingByCodeOf(linesOf(invoiceId), notes.map((n) => ({ tax: Number(n.tax), lines: linesOf(n.id) })));
 }
 
-/**
- * توزيع صافي الإشعار على رموز فاتورته بنسبة الباقي من صافي كل رمز (البند ٧) · بالهللة الصحيحة: الكسور الأكبر تأخذ الباقي،
- * ولا يزيد رمزٌ على باقيه · وإشعار الباقي كله يأخذ باقي كل رمز
- */
-function splitCredit(parts: CodePart[], sub: number): Array<CodePart & { take: number }> {
-  const open = parts.filter((p) => p.net > 0);
-  const room = open.reduce((s, p) => s + p.net, 0);
-  if (!room) return [];
-  const out = open.map((p) => {
-    const exact = (sub * p.net) / room;
-    return { ...p, take: Math.min(p.net, Math.floor(exact)), frac: exact - Math.floor(exact) };
-  });
-  let left = sub - out.reduce((s, p) => s + p.take, 0);
-  for (const p of [...out].sort((a, b) => b.frac - a.frac)) {
-    if (left <= 0) break;
-    const add = Math.min(left, p.net - p.take);
-    p.take += add; left -= add;
-  }
-  return out.filter((p) => p.take > 0).map(({ frac: _f, ...p }) => p);
-}
-
-/** ضريبة مبلغٍ بنسبة ضريبة الفاتورة نفسها (صافيها إلى ضريبتها) */
-export function creditTaxFor(inv: { subtotal: number; tax: number }, subtotal: number): number {
-  return inv.subtotal ? Math.round((subtotal * inv.tax) / inv.subtotal) : 0;
-}
+export { creditTaxFor };
 
 /**
  * إشعار دائن على فاتورة صادرة غير محصّلة (قرار المالك على #30): صفٌّ في الفواتير بنوعه ومرجعه وسببه ورقمه من
@@ -535,13 +485,8 @@ export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput
     // كله يُرمَّز خاضعاً بضريبة الفاتورة المتوسطة فيُنقص الخاضع في الإقرار بما ليس منه
     // فاتورةٌ عليها إشعارٌ قديم رُمِّز كله خاضعاً (قبل البند ٧) فصار باقي رمزٍ سالباً: سطرٌ واحد كما كان، فلا تُحمَّل ضريبةٌ على سطرٍ
     // معفى فيختلف الدفتر عن الإقرار (التحقق المستقل)
-    const byCode = remainingByCode(db, invoiceId);
-    const split = byCode.some((p) => p.net < 0) ? [] : splitCredit(byCode, sub);
-    const lineTax = split.map((p) => (p.take === p.net ? p.tax : Math.min(p.tax, p.pct > 0 ? pctOf(p.take, p.pct) : 0)));
-    const splitTax = lineTax.reduce((s, x) => s + x, 0);
-    const tax = sub === left.sub ? left.tax
-      : split.length ? Math.min(left.tax, splitTax)
-        : Math.min(left.tax, creditTaxFor({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) }, sub));
+    const { tax, lines } = creditNoteAmounts({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) },
+      remainingByCode(db, invoiceId), left, sub);
     const total = sub + tax;
     if (total > invoiceRemaining(db, invoiceId, Number(v.total_halalas))) throw new Error(t('invoice.creditOver'));
     const id = uid();
@@ -553,18 +498,12 @@ export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput
       [id, no, v.customer_name, v.customer_vat, input.date, input.date,
        'مستحقة', // i18n-exempt: حالة مخزّنة · الإشعار لا يُحصَّل ولا يتأخر، وذمته تتبع فاتورته
        -sub, -tax, -total, v.unit_id, v.property_id, new Date().toISOString(), KIND_CREDIT, invoiceId, reason]);
-    if (split.length) {
-      // رمز كل سطرٍ رمزه في الفاتورة ونسبته نسبته (التحقق المستقل: كان الرمز من مبلغ الضريبة فالصفري يُرمَّز معفى)
-      split.forEach((p, i) => {
-        db.run(`INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort, tax_code) VALUES (?,?,?,?,?,?,?,?)`,
-          [uid(), id, reason, 1, -p.take, p.code === 'S' ? p.pct : 0, i, p.code]);
-      });
-    } else {
-      // فاتورةٌ بلا سطور (قديمة)، أو باقٍ سالبٌ لرمزٍ بإشعارٍ قديم: سطرٌ واحد بضريبتها كما كان
-      const pct = Number(v.subtotal_halalas) ? Math.round((Number(v.tax_halalas) * 100) / Number(v.subtotal_halalas)) : 0;
-      db.run(`INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort, tax_code) VALUES (?,?,?,?,?,?,0,?)`,
-        [uid(), id, reason, 1, -sub, pct, tax > 0 ? 'S' : 'E']);
-    }
+    // رمز كل سطرٍ رمزه في الفاتورة ونسبته نسبته (التحقق المستقل: كان الرمز من مبلغ الضريبة فالصفري يُرمَّز معفى) · وفاتورةٌ بلا سطور
+    // (قديمة)، أو باقٍ سالبٌ لرمزٍ بإشعارٍ قديم: سطرٌ واحد بضريبتها كما كان
+    lines.forEach((l, i) => {
+      db.run(`INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort, tax_code) VALUES (?,?,?,?,?,?,?,?)`,
+        [uid(), id, reason, 1, l.price, l.pct, i, l.code]);
+    });
     const entry = postCreditNoteToLedger(db, { id, no, refNo: v.no, customer: v.customer_name, date: input.date, subtotal: sub, tax, total });
     if (entry) db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = ?`, [entry.id, id]);
     logAudit(db, 'الفواتير', 'create', t('invoice.creditNote', { lng: 'ar' }), no + ' · ' + v.no); // i18n-exempt: سجل العمليات بالعربية

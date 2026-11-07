@@ -19,9 +19,14 @@ import { unitPastProperties } from '../unitMove';
 import {
   contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
   reservationDepositLines, reservationForfeitLines, reservationRefundLines, keyMoneyLines,
-  claimLines, claimCollectionLines, purchaseLedgerLines, purchasePaymentLines, PURCHASE_CATEGORY_ACCOUNT, type EntryLine,
+  claimLines, claimCollectionLines, purchaseLedgerLines, purchasePaymentLines, PURCHASE_CATEGORY_ACCOUNT,
+  invoiceLedgerLines, creditNoteLedgerLines, invoicePaymentLines, type EntryLine,
 } from './post';
 import { TS_DEDUCTIBLE } from '../purchases';
+import { invoiceTotals, normalizeInvoiceLines, KIND_CREDIT } from '../invoices';
+import { remainingByCodeOf, creditNoteAmounts, type StoredInvoiceLine } from '../creditNote';
+import { lineTaxCode, type TaxCode } from '../taxCode';
+import { mulQty } from '../money';
 import { lineCosts, splitQty } from '../assets/purchaseLines';
 import { ASSET_CATEGORIES } from '../assets/catalog';
 
@@ -74,6 +79,9 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   // فاتورة الشراء: مصروف فئتها، وحسابات فئات أصول بنودها، وضريبة المدخلات القابلة للاسترداد، وفرق التقريب، والذمم الدائنة
   purchase: [...new Set([...Object.values(PURCHASE_CATEGORY_ACCOUNT), '5300']), ...ASSET_CATEGORIES.map((c) => c.code), '1270', '5900', '2100'],
   purchase_pay: ['2100', '1100'],
+  // فاتورة المبيعات وإشعارها الدائن (مصدره صفّ الإشعار نفسه) وتحصيلها
+  invoice: ['1200', '4100', '2200'],
+  invoice_pay: ['1100', '1200'],
 };
 
 /** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة)، والأصل (بنود الشراء الأصول وحدها) */
@@ -162,6 +170,48 @@ function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, tax: nu
     }
   }
   return assets.some((a) => a.source === 'purchase') ? [form] : [form, none];
+}
+
+interface InvoiceRow {
+  id?: string; kind: string | null; status: string | null; subtotal_halalas: number; tax_halalas: number; total_halalas: number;
+  issue: string | null; unit_id: string | null; property_id: string | null; deleted_at: string | null; journal_entry_id: string | null;
+  payment_journal_entry_id: string | null; paid_date: string | null; ref_invoice_id: string | null; created_at: string | null;
+}
+const DRAFT_INVOICE = 'مسودة'; // i18n-exempt: حالة الفاتورة المخزّنة
+
+/** سطور فاتورةٍ أو إشعارٍ بترتيبها (هنا وفي الوارد) */
+const invoiceLinesOf = (r: SourceReader, id: string) =>
+  r.rows<StoredInvoiceLine & { sort: number }>('invoice_lines', 'invoice_id', id).sort((a, b) => num(a.sort) - num(b.sort));
+/** الإشعارات الدائنة القائمة على فاتورة */
+const creditNotesOf = (r: SourceReader, invoiceId: string) =>
+  r.rows<InvoiceRow & { id: string }>('invoices', 'ref_invoice_id', invoiceId).filter((n) => n.kind === KIND_CREDIT && !n.deleted_at);
+
+/**
+ * الإشعار الدائن يُشتق من فاتورته وإشعاراتها قبله (saveCreditNote · المراجعة الشاملة · البند ٧): صافيه لا يتجاوز الباقي منها، وسطوره
+ * سطرٌ لكل رمزٍ ضريبي بنسبة الباقي من صافيه ونسبة رمزه (الصفري والمعفى بلا نسبة · البند ٦)، وضريبته وإجماليه كما يحسبها
+ * creditNoteAmounts، ولا يتجاوز إجماليه ما بقي على العميل، ولا يسبق تاريخه تاريخها · '' أو 'await' أو السبب
+ */
+function creditNoteIssue(r: SourceReader, id: string, v: InvoiceRow, lines: StoredInvoiceLine[]): string {
+  if (!v.ref_invoice_id) return no('creditNote');
+  const ref = r.row<InvoiceRow>('invoices', v.ref_invoice_id);
+  if (!ref) return AWAIT;
+  if (ref.kind === KIND_CREDIT || ref.status === DRAFT_INVOICE || ref.deleted_at || String(v.issue ?? '') < String(ref.issue ?? '')) return no('creditNote');
+  const sub = -num(v.subtotal_halalas);
+  const prior = creditNotesOf(r, v.ref_invoice_id).filter((n) => n.id !== id && String(n.created_at ?? '') < String(v.created_at ?? ''));
+  const left = {
+    sub: num(ref.subtotal_halalas) + prior.reduce((s, n) => s + num(n.subtotal_halalas), 0),
+    tax: num(ref.tax_halalas) + prior.reduce((s, n) => s + num(n.tax_halalas), 0),
+  };
+  if (sub <= 0 || sub > left.sub) return no('creditNote');
+  const byCode = remainingByCodeOf(invoiceLinesOf(r, v.ref_invoice_id), prior.map((n) => ({ tax: num(n.tax_halalas), lines: invoiceLinesOf(r, n.id) })));
+  const x = creditNoteAmounts({ subtotal: num(ref.subtotal_halalas), tax: num(ref.tax_halalas) }, byCode, left, sub);
+  const total = sub + x.tax;
+  if (num(v.tax_halalas) !== -x.tax || num(v.total_halalas) !== -total) return no('creditNote');
+  if (total > num(ref.total_halalas) + prior.reduce((s, n) => s + num(n.total_halalas), 0)) return no('creditNote');
+  const key = (code: TaxCode, pct: number, price: number) => code + '|' + pct + '|' + price;
+  const got = lines.map((l) => key(lineTaxCode(l.tax_code, num(l.tax_pct)), num(l.tax_pct), mulQty(num(l.qty), num(l.price_halalas)))).sort();
+  const exp = x.lines.map((l) => key(l.code, l.pct, l.price)).sort();
+  return got.join() === exp.join() ? '' : no('creditNote');
 }
 
 /** سطور القيد المتوقعة من مستنده · 'await' لمستندٍ لم يصل · أو سبب الرفض */
@@ -261,6 +311,51 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!cl.collected_at) return AWAIT;
       const lines = want(claimCollectionLines(num(cl.amount_halalas)), () => [dims]);
       return lines ? { lines, date: cl.collected_at, correctable: false } : no('noEntry');
+    }
+    case 'invoice':
+    case 'invoice_pay': {
+      // فاتورة المبيعات (invoices.ts): قيد إصدارها من سطورها برمز كل سطرٍ ونسبته كما يحسبها saveInvoice (invoiceTotals)، ورأسها
+      // يطابقها (البند ٦: سطرٌ صفري أو معفى بنسبةٍ يرحّل ضريبةً لا يراها الإقرار) · والإشعار الدائن (مصدره صفّه، بنوعه) من فاتورته
+      // مقسوماً على رموزها (البند ٧) · وتحصيلها بما بقي منها بعد إشعاراتها وبتاريخ تحصيلها · ونسخة الاستعادة من السلة بتاريخ عكس
+      // قيدها السابق · والأبعاد عقار الفاتورة ووحدتها
+      const v = r.row<InvoiceRow>('invoices', e.srcId);
+      if (!v) return AWAIT;
+      // المسودة لا قيد لها، والصادرة لا تُحذف ولا تعود مسودة (قرار المالك على #30) فلا قيد حيّاً لمحذوفةٍ ولا لمسودة
+      if (v.deleted_at) return no('deleted');
+      if (v.status === DRAFT_INVOICE) return no('noEntry');
+      const dims = docDims(db, r, v.unit_id ?? null, v.property_id ?? null);
+      const also = revDates(r, e.src, e.srcId);
+      const credit = v.kind === KIND_CREDIT;
+      if (e.src === 'invoice_pay') {
+        if (credit || (v.payment_journal_entry_id && v.payment_journal_entry_id !== e.id)) return no('noEntry');
+        // تحصيلٌ لم يصل وسمه بعد يُنتظر
+        if (!v.paid_date) return AWAIT;
+        const remaining = num(v.total_halalas) + creditNotesOf(r, e.srcId).reduce((s, n) => s + num(n.total_halalas), 0);
+        const lines = remaining > 0 ? want(invoicePaymentLines(remaining), () => [dims]) : null;
+        return lines ? { lines, date: v.paid_date, also, correctable: false } : no('noEntry');
+      }
+      if (v.journal_entry_id && v.journal_entry_id !== e.id) return no('noEntry');
+      const lines = invoiceLinesOf(r, e.srcId);
+      const head = { subtotal: num(v.subtotal_halalas), tax: num(v.tax_halalas), total: num(v.total_halalas) };
+      if (credit) {
+        const why = creditNoteIssue(r, e.srcId, v, lines);
+        if (why) return why;
+        const built = want(creditNoteLedgerLines({ subtotal: -head.subtotal, tax: -head.tax, total: -head.total }), () => [dims]);
+        return built ? { lines: built, date: v.issue ?? '', also, correctable: false } : no('noEntry');
+      }
+      if (lines.length) {
+        let calc: { subtotal: number; tax: number; total: number };
+        try {
+          calc = invoiceTotals(normalizeInvoiceLines(lines.map((l) => ({
+            descr: '', qty: num(l.qty), priceHalalas: num(l.price_halalas), taxPct: num(l.tax_pct), taxCode: (l.tax_code ?? undefined) as TaxCode | undefined,
+          }))));
+        } catch {
+          return no('taxCode');
+        }
+        if (calc.subtotal !== head.subtotal || calc.tax !== head.tax || calc.total !== head.total) return no('invoiceTotals');
+      } else if (head.subtotal + head.tax !== head.total) return no('invoiceTotals');
+      const built = want(invoiceLedgerLines(head), () => [dims]);
+      return built ? { lines: built, date: v.issue ?? '', also, correctable: false } : no('noEntry');
     }
     case 'purchase':
     case 'purchase_pay': {
