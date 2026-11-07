@@ -322,4 +322,28 @@ describe('إعادة اشتقاق قيود فاتورة المبيعات وإش�
     }
     s.close();
   });
+
+  test('سلبي · البند ٦ بسطورٍ مؤخَّرة: رأسٌ بضريبةٍ على سطرٍ صفري وقيده يصلان قبل السطور، فلا يدخل الدفتر ويُرفض حين تصل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const id = saveInvoice(s.dev, inv(s.ua, [
+      { descr: 'خاضع مصطنع', qty: 1, priceHalalas: 10000, taxPct: 15, taxCode: 'S' },
+      { descr: 'صفري مصطنع', qty: 1, priceHalalas: 20000, taxPct: 0, taxCode: 'Z' },
+    ]), ISSUED);
+    await sync(s.dev, s.r);
+    // العضو المزوِّر يحمّل رأس الفاتورة وقيدها ضريبةً على السطر الصفري، ويؤخر سطورها
+    const head = docsOf(s.r, 'invoices', 'id', id)[0];
+    s.r.inject({ ...head, d: { ...head.d, tax_halalas: 4500, total_halalas: 34500 } });
+    const k = asMember(s.r, 'invoice', amounts({ '1200': [34500, 0], '2200': [0, 4500] }));
+    const late = holdBack(s.r, (d) => d.t === 'invoice_lines' && d.d?.invoice_id === id);
+    expect(late.count).toBe(2);
+    await ownerPulls(s.owner, s.r);
+    expect(has(s.owner, k)).toBe(false);
+    expect(net(s.owner, '2200')).toBe(0);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    expect(has(s.owner, k)).toBe(false);
+    expect(reasonOf(s.owner, k)).toMatch(/سطورها برموزها/);
+    expect(net(s.owner, '2200')).toBe(0);
+    s.close();
+  });
 });

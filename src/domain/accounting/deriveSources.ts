@@ -446,7 +446,12 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
         if (calc.subtotal !== head.subtotal || calc.tax !== head.tax || calc.total !== head.total) {
           return twoSaves(lines) ? AWAIT : no('invoiceTotals');
         }
-      } else if (head.subtotal + head.tax !== head.total) return no('invoiceTotals');
+      } else {
+        // ولا سطر هنا: الرأس وحده لا يُقبل وإن اتسق مع نفسه (المتحقق المستقل: رأسٌ بضريبةٍ على سطرٍ صفري وقيده يصلان والسطور مؤخَّرة،
+        // فكان يُقبل ولا يُعاد فحصه حين تصل) · فاتورةٌ بقيدٍ لها سطورٌ دائماً (رأسها من invoiceTotals على سطورها)، فسطورها لم تصل بعد
+        // فيُنتظر، ثم يُفحص حين تصل أو يُرفض لطول انتظاره
+        return AWAIT;
+      }
       const built = want(invoiceLedgerLines(head), () => [dims]);
       return built ? { lines: built, date: v.issue ?? '', also, correctable: false } : no('noEntry');
     }
