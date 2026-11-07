@@ -834,3 +834,18 @@ export const vatRejectLines = (category: string | null | undefined, no: string, 
   { account: purchaseExpenseAccount(category), descr: 'ضريبة غير مستردة', debit: tax, credit: 0 }, // i18n-exempt: بيان القيد المخزَّن
   { account: '1270', descr: 'إقفال ضريبة الفاتورة ' + no, debit: 0, credit: tax }, // i18n-exempt: بيان القيد المخزَّن
 ];
+
+/** نوع العملية النقدية التي ترحّل قيداً (cashOps.ts) */
+export type CashOpKind = 'petty' | 'ownerIn' | 'ownerOut' | 'fee' | 'income';
+
+/**
+ * سطور قيد العملية النقدية بنوعها (cashOps.ts): المصروف النثري ورسوم البنك (5400 / 1100)، وإيداع المالك (1100 / 3100) ومسحوباته
+ * (3100 / 1100)، والوارد البنكي الآخر (1100 / 4300) بلا ضريبة مخرجات (المراجعة الشاملة · البند ١١) · descr بيان الحساب المقابل للنقد،
+ * وcash بيان سطر النقد · بها يعيد جهاز المالك اشتقاق قيد العضو
+ */
+export function cashOpLines(kind: CashOpKind, amount: number, descr: string, cash: string): EntryLine[] {
+  if (kind === 'ownerIn') return [{ account: CASH, descr: cash, debit: amount, credit: 0 }, { account: '3100', descr, debit: 0, credit: amount }];
+  if (kind === 'ownerOut') return [{ account: '3100', descr, debit: amount, credit: 0 }, { account: CASH, descr: cash, debit: 0, credit: amount }];
+  if (kind === 'income') return [{ account: CASH, descr: cash, debit: amount, credit: 0 }, { account: '4300', descr, debit: 0, credit: amount }];
+  return [{ account: '5400', descr, debit: amount, credit: 0 }, { account: CASH, descr: cash, debit: 0, credit: amount }];
+}

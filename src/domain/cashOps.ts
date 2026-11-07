@@ -10,7 +10,7 @@ import { requireCash } from './cashGuard';
 import { uid } from './ids';
 import { fmt } from './money';
 import { logAudit } from './audit';
-import { postEntry } from './accounting/post';
+import { postEntry, cashOpLines } from './accounting/post';
 import { walletCashBalance, bankBalance } from './accounting/ledger';
 import { t } from '../i18n';
 
@@ -128,10 +128,7 @@ export function pettyCashExpense(
       date: args.date,
       memo: 'مصروف نثري نقداً · ' + descr,
       srcType: 'cash_op', srcId: opId,
-      lines: [
-        { account: '5400', descr, debit: args.amountHalalas, credit: 0 },
-        { account: '1100', descr: 'نقداً من المحفظة', debit: 0, credit: args.amountHalalas },
-      ],
+      lines: cashOpLines('petty', args.amountHalalas, descr, 'نقداً من المحفظة'),
     });
     logAudit(db, MODULE, 'create', 'مصروف نثري', descr, undefined, {
       amount_halalas: args.amountHalalas, date: args.date,
@@ -153,10 +150,7 @@ export function ownerCashIn(
       date: args.date,
       memo,
       srcType: 'cash_op', srcId: opId,
-      lines: [
-        { account: '1100', descr: memo, debit: args.amountHalalas, credit: 0 },
-        { account: '3100', descr: memo, debit: 0, credit: args.amountHalalas },
-      ],
+      lines: cashOpLines('ownerIn', args.amountHalalas, memo, memo),
     });
     logAudit(db, MODULE, 'create', 'إيداع المالك', memo, undefined, {
       amount_halalas: args.amountHalalas, date: args.date,
@@ -179,10 +173,7 @@ export function ownerCashOut(
       date: args.date,
       memo,
       srcType: 'cash_op', srcId: opId,
-      lines: [
-        { account: '3100', descr: memo, debit: args.amountHalalas, credit: 0 },
-        { account: '1100', descr: memo, debit: 0, credit: args.amountHalalas },
-      ],
+      lines: cashOpLines('ownerOut', args.amountHalalas, memo, memo),
     });
     logAudit(db, MODULE, 'create', 'مسحوبات المالك', memo, undefined, {
       amount_halalas: args.amountHalalas, date: args.date,
@@ -220,9 +211,7 @@ export function recordManualBankTx(
       date: a.date,
       memo: descr + ' · ' + name,
       srcType: 'cash_op', srcId: opId,
-      lines: fee
-        ? [{ account: '5400', descr, debit: a.amountHalalas, credit: 0 }, { account: '1100', descr: name, debit: 0, credit: a.amountHalalas }]
-        : [{ account: '1100', descr: name, debit: a.amountHalalas, credit: 0 }, { account: '4300', descr, debit: 0, credit: a.amountHalalas }],
+      lines: cashOpLines(fee ? 'fee' : 'income', a.amountHalalas, descr, name),
     });
     db.run(
       `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)

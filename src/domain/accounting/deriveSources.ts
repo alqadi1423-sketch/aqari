@@ -20,7 +20,7 @@ import {
   contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
   reservationDepositLines, reservationForfeitLines, reservationRefundLines, keyMoneyLines,
   claimLines, claimCollectionLines, purchaseLedgerLines, purchasePaymentLines, PURCHASE_CATEGORY_ACCOUNT,
-  invoiceLedgerLines, creditNoteLedgerLines, invoicePaymentLines, vatRefundLines, vatRejectLines, type EntryLine,
+  invoiceLedgerLines, creditNoteLedgerLines, invoicePaymentLines, vatRefundLines, vatRejectLines, cashOpLines, type EntryLine,
 } from './post';
 import { TS_DEDUCTIBLE } from '../purchases';
 import { invoiceTotals, normalizeInvoiceLines, KIND_CREDIT } from '../invoices';
@@ -84,6 +84,8 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   purchase_pay: ['2100', '1100'],
   // استرداد ضريبة المدخلات نقداً، أو رفضه تكلفةً في مصروف الفئة
   vat_refund: ['1100', '1270', ...EXPENSE_ACCOUNTS],
+  // العملية النقدية: المصروف النثري ورسوم البنك، وإيداع المالك ومسحوباته، والوارد البنكي الآخر (بلا ضريبة مخرجات · البند ١١)
+  cash_op: ['1100', '5400', '3100', '4300'],
   // فاتورة المبيعات وإشعارها الدائن (مصدره صفّ الإشعار نفسه) وتحصيلها
   invoice: ['1200', '4100', '2200'],
   invoice_pay: ['1100', '1200'],
@@ -221,8 +223,24 @@ function creditNoteIssue(r: SourceReader, id: string, v: InvoiceRow, lines: Stor
 }
 
 /** سطور القيد المتوقعة من مستنده · 'await' لمستندٍ لم يصل · أو سبب الرفض */
-function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: string; no: string | null; total: number }): Outcome {
+function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: string; no: string | null; total: number; lines: SrcLine[] }): Outcome {
   switch (e.src) {
+    case 'cash_op': {
+      // العملية النقدية (cashOps.ts): معرّف مصدرها عشوائي ولا صفّ يحمل مبلغها إلا حركة البنك اليدوية (الرسوم والوارد الآخر: recordManualBankTx)
+      // المربوطة برقم قيدها، فتُشتق منها نوعاً ومبلغاً وتاريخاً · وبلا حركة: المصروف النثري وإيداع المالك ومسحوباته بأطرافها الثابتة
+      // ومجموع القيد نفسه (لا مستند يحمل مبلغها) · ولا ضريبة مخرجات على الوارد (المراجعة الشاملة · البند ١١) · ولا أبعاد لها
+      const txs = e.no ? r.rows<{ amount_halalas: number; date: string | null; deleted_at?: string | null }>('bank_tx', 'journal_no', e.no).filter((x) => !x.deleted_at) : [];
+      if (txs.length > 1) return no('cashOp');
+      if (txs.length === 1) {
+        const amount = num(txs[0].amount_halalas);
+        const lines = amount ? want(cashOpLines(amount < 0 ? 'fee' : 'income', Math.abs(amount), '', ''), () => [NONE]) : null;
+        return lines ? { lines, date: txs[0].date ?? '', correctable: false } : no('noEntry');
+      }
+      // الوارد إلى 4300 لا يُرحَّل إلا مع حركة بنكه في المعاملة نفسها: حركته لم تصل بعد فيُنتظر
+      if (e.lines.some((l) => String(l.account_code) === '4300')) return AWAIT;
+      const [first, ...alts] = (['petty', 'ownerIn', 'ownerOut'] as const).map((k) => want(cashOpLines(k, e.total, '', ''), () => [NONE])!);
+      return { lines: first, alts, date: null, correctable: false };
+    }
     case 'contract_deposit': {
       // التأمين المقبوض: تأمين العقد ناقصاً ما رُحِّل إليه من عقده السابق (التجديد: تأمينه المرحَّل وزيادته)
       const c = r.row<{ deposit_halalas: number; deposit_holder: string | null; start: string | null; status: string; renewed_from: string | null }>('contracts', e.srcId);
@@ -452,6 +470,9 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
   return '';
 }
 
+/** بداية سبب البُعد (deriveSrc.dims قبل رقم حسابه) · يُميَّز به بين أسباب الأشكال البديلة */
+const dimsPrefix = () => no('dims', { account: '\u0000' }).split('\u0000')[0];
+
 /** المطابقة: كل سطرٍ وارد يقابله سطرٌ مشتق واحد بحسابه ومدينه ودائنه وأبعاده · '' إن طابقت */
 function matchIssue(got: SrcLine[], want: Want[]): string {
   const g = nonZero(got);
@@ -547,11 +568,13 @@ export function memberSourceIssue(db: DB, r: SourceReader,
   // وقيدٌ آخر من المصدر نفسه في الوارد يُطبَّق قبله: القديم الواصل معكوساً يسبق الجديد، وإلا وصل عاكس القديم والجديد وحده هنا فلا
   // يطابقه فيُرفض، ويبقى القديم بلا عاكسٍ ينتظره (تعديل التسوية أو المطالبة في مزامنةٍ واحدة بترتيبٍ آخر)
   if (r.pending(src, srcId).some((id) => id !== e.id)) return AWAIT;
-  const d = derive(db, r, { id: e.id, src, srcId, no: e.no ?? null, total: nonZero(e.lines).reduce((s, l) => s + num(l.credit_halalas), 0) });
+  const d = derive(db, r, { id: e.id, src, srcId, no: e.no ?? null, total: nonZero(e.lines).reduce((s, l) => s + num(l.credit_halalas), 0), lines: e.lines });
   if (typeof d === 'string') return d;
   const dateWhy = dateIssue(db, e.date, d);
   if (dateWhy) return dateWhy;
-  // يكفي أن يطابق شكلاً واحداً مما يرحّله التطبيق من المستند · وإلا فسبب الأول
+  // يكفي أن يطابق شكلاً واحداً مما يرحّله التطبيق من المستند · وإلا فسبب شكلٍ طابقت حساباته ومبالغه وخالف بُعده، ثم سبب الأول
   const whys = [d.lines, ...(d.alts ?? [])].map((w) => matchIssue(e.lines, w));
-  return whys.includes('') ? '' : whys[0];
+  if (whys.includes('')) return '';
+  const dims = dimsPrefix();
+  return whys.find((w) => w.startsWith(dims)) ?? whys[0];
 }
