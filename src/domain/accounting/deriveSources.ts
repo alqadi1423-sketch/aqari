@@ -28,8 +28,8 @@ import { remainingByCodeOf, creditNoteAmounts, type StoredInvoiceLine } from '..
 import { lineTaxCode, type TaxCode } from '../taxCode';
 import { mulQty } from '../money';
 import { lineCosts, splitQty } from '../assets/purchaseLines';
-import { ASSET_CATEGORIES, isAssetCategory, ENDED, ACC_ACCUM, ACC_DEPRECIATION } from '../assets/catalog';
-import { expectedThrough, monthEnd, monthIndex, type DepreciableAsset } from '../assets/depreciation';
+import { ASSET_CATEGORIES, isAssetCategory, ENDED, ACC_ACCUM, ACC_DEPRECIATION, ACC_RETAINED, ACC_CAPITAL } from '../assets/catalog';
+import { catchUpAmounts, expectedThrough, monthEnd, monthIndex, type DepreciableAsset } from '../assets/depreciation';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
 export interface SrcLine {
@@ -95,6 +95,9 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   // الإهلاك الشهري (runDepreciation) وإهلاك أصلٍ واحد حتى تاريخ عمليته (depreciateAssetTo): مصروف الإهلاك ومجمعه
   depreciation: [ACC_DEPRECIATION, ACC_ACCUM],
   asset_dep: [ACC_DEPRECIATION, ACC_ACCUM],
+  // إثبات تكلفة أصلٍ بلا فاتورة (دائن رأس المال) ومعه إهلاك ما فات، وإهلاك ما فات لأصول فاتورةٍ بتاريخٍ مضى أو محوّلة
+  asset_cost: [...ASSET_CATEGORIES.map((c) => c.code), ACC_CAPITAL, ACC_DEPRECIATION, ACC_RETAINED, ACC_ACCUM],
+  asset_catchup: [ACC_DEPRECIATION, ACC_RETAINED, ACC_ACCUM],
 };
 
 /**
@@ -406,6 +409,29 @@ function depOf(db: DB, r: SourceReader, assetId: string, exceptId: string, w: Wh
   return { a, amt: expectedThrough(depreciable(a), through) - led.accum, specs: assetSpecs(db, r, a, through), pending: led.pending };
 }
 
+/**
+ * إهلاك ما فات للأصل بتاريخ إثبات تكلفته (catchUpLines): مبالغه من catchUpAmounts بعد ما رُحِّل له قبله · السنة الجارية على مصروف
+ * الإهلاك وما قبلها على الأرباح المحتجزة، ودائن المجمع بمجموعهما · pending: قيدٌ سابقٌ في الوارد، أو مجمعٌ في القيد دون المستحق
+ */
+function catchUpOf(db: DB, r: SourceReader, a: AssetDoc, exceptId: string, today: string, lines: SrcLine[], costHere = false):
+  { lines: Want[]; pending: boolean } | string {
+  const led = ledgerOf(r, a.id, a.category, exceptId, { kind: 'catchup', d: today });
+  // وتكلفةٌ يثبتها القيد نفسه (asset_cost) أساسها فيه
+  const why = basisIssue(a, costHere ? { ...led, cost: led.cost + num(a.cost_halalas) } : led);
+  if (why) return why;
+  const c = catchUpAmounts(depreciable(a), today, led.accum);
+  if (c.total <= 0) return { lines: [], pending: led.pending };
+  const dims = assetSpecs(db, r, a, today);
+  const got = accumIn(lines, a.id);
+  return {
+    lines: [
+      { account: ACC_DEPRECIATION, debit: c.current, credit: 0, dims }, { account: ACC_RETAINED, debit: c.prior, credit: 0, dims },
+      { account: ACC_ACCUM, debit: 0, credit: c.total, dims },
+    ],
+    pending: led.pending || (got > 0 && got < c.total),
+  };
+}
+
 /** المنتهي (المستبعد أو المبيع) لا يُهلك بعد تاريخ انتهائه */
 const endedBy = (a: AssetDoc, d: string) => ENDED.includes(a.status as never) && String(a.end_date ?? '').slice(0, 10) < d;
 
@@ -444,6 +470,51 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (typeof x === 'string') return x;
       const got = accumIn(e.lines, e.srcId);
       return { lines: depPair(endedBy(x.a, d) ? 0 : x.amt, x.specs), date: d, correctable: false, pending: x.pending || (got > 0 && got < x.amt) };
+    }
+    case 'asset_cost': {
+      // إثبات تكلفة قطعةٍ بلا فاتورة (setAssetCost): مدين حساب فئتها ودائن رأس المال بتكلفتها في صفّها، ومعه إهلاك ما فات منذ شرائها
+      // حتى آخر شهرٍ انتهى قبل تاريخه، بتاريخ حدث إثباتها المسمّي هذا القيد · والقطعة بانتظار تكلفةٍ قبله: لا فاتورة لها، ولا تكلفة
+      // لها في الدفتر قبله
+      const a = r.row<AssetDoc>('assets', e.srcId);
+      if (!a) return AWAIT;
+      if (a.purchase_id || a.source === 'purchase' || a.source === 'convert') return no('noEntry');
+      // تكلفةٌ لم يصل صفّها المحدَّث بعد
+      if (a.cost_halalas == null) return AWAIT;
+      const evs = r.rows<AssetEvent>('asset_events', 'entry_id', e.id);
+      if (!evs.length) return AWAIT;
+      if (evs.length > 1 || evs[0].kind !== 'cost' || evs[0].asset_id !== a.id) return no('noEntry');
+      const today = String(evs[0].date ?? '').slice(0, 10);
+      const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'catchup', d: today });
+      if (led.cost) return led.pending ? AWAIT : no('assetCost');
+      const cu = catchUpOf(db, r, a, e.id, today, e.lines, true);
+      if (typeof cu === 'string') return cu;
+      const dims = assetSpecs(db, r, a, today);
+      const cost = num(a.cost_halalas);
+      return {
+        lines: [{ account: a.category, debit: cost, credit: 0, dims }, { account: ACC_CAPITAL, debit: 0, credit: cost, dims }, ...cu.lines],
+        date: today, correctable: false, pending: cu.pending,
+      };
+    }
+    case 'asset_catchup': {
+      // إهلاك ما فات لأصول فاتورة الشراء (purchaseCatchUp بتاريخ حفظها، وconvertPurchase بتاريخ تحويلها): لكل أصلٍ قائمٍ بتكلفته من
+      // أصولها حتى آخر شهرٍ انتهى قبل تاريخ القيد · وتاريخه لا يُخزَّن في مستند، فلا يسبق تاريخ الفاتورة
+      const p = r.row<PurchaseRow>('purchases', e.srcId);
+      if (!p) return AWAIT;
+      if (p.deleted_at) return no('deleted');
+      const today = e.date.slice(0, 10);
+      if (today < String(p.date ?? '').slice(0, 10)) return no('date');
+      const assets = r.rows<AssetDoc>('assets', 'purchase_id', e.srcId).filter((a) => !a.deleted_at && a.cost_halalas != null);
+      // أصولٌ لم يصل صفّها بعد
+      if (!assets.length) return AWAIT;
+      const lines: Want[] = [];
+      let pending = false;
+      for (const a of assets) {
+        const cu = catchUpOf(db, r, a, e.id, today, e.lines);
+        if (typeof cu === 'string') return cu;
+        lines.push(...cu.lines);
+        pending ||= cu.pending;
+      }
+      return { lines, date: null, correctable: false, pending };
     }
     case 'cash_op': {
       // العملية النقدية (cashOps.ts): معرّف مصدرها عشوائي ولا صفّ يحمل مبلغها إلا حركة البنك اليدوية (الرسوم والوارد الآخر: recordManualBankTx)
