@@ -13,6 +13,12 @@ export function today(): string {
   return toLocalISODate(new Date());
 }
 
+/**
+ * التاريخ فيما يخرج من التطبيق (التصدير والمطبوعات والرسائل): الغائب خانةٌ خالية لا «لا يوجد» (قرار المالك 2026-09-09، والبند ٤ (أ)
+ * من القرارات المعلّقة 2026-11-07: «لأن قارئها لا يعلم ما حُذف») · والحاضر كـ dfmt
+ */
+export const dfmtOut = (iso: string | null | undefined): string => (iso ? dfmt(iso) : '');
+
 /** العرض dd/mm/yyyy · مطابق لـ dfmt في النموذج */
 export function dfmt(iso: string | null | undefined): string {
   if (!iso) return 'لا يوجد';

@@ -136,7 +136,7 @@ function keyMoneySales(db: DB, from: string, to: string): { net: number; tax: nu
  *  - وفائضٌ قديمٌ دخل إيراداً ثم سُوّي رصيداً أو رُدّ (surplus_credit وsurplus_refund وعكوسهما): ينقص في فترة تسويته.
  */
 function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
-  const none = 'لا يوجد'; // i18n-exempt: نص الكشف المصدَّر بالعربية
+  const none = ''; // i18n-exempt: نص الكشف المصدَّر بالعربية
   const pays = db.all<ExemptRow>(
     `SELECT p.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
             ${PAY_NET_SQL} AS net
@@ -242,7 +242,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
 
   const transfers = db.all<{ date: string; amount: number; party: string; purpose: string; bankRef: string; invoiceNo: string }>(
     `SELECT pu.paid_date AS date, pu.total_halalas AS amount, pu.supplier_name AS party,
-            pu.category AS purpose, COALESCE(je.no,'لا يوجد') AS bankRef, pu.no AS invoiceNo
+            pu.category AS purpose, COALESCE(je.no,'') AS bankRef, pu.no AS invoiceNo
      FROM purchases pu LEFT JOIN journal_entries je ON je.id = pu.payment_journal_entry_id
      WHERE pu.deleted_at IS NULL AND pu.paid = 1 AND pu.payment_method LIKE '%تحويل%'
        AND pu.paid_date >= '${from}' AND pu.paid_date <= '${to}' ORDER BY pu.paid_date`

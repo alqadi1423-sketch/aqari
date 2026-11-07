@@ -569,20 +569,6 @@ function orgOfAccount(db: DB): string {
   return readMembership(db)?.org ?? state.user!.uid;
 }
 
-/**
- * «دمج مع السحابة» بقرار المستخدم · تُرفع العلامة وتعمل المزامنة بقاعدتها المعتادة (الأحدث يغلب) ·
- * وعهد المسح الحالي يُسجَّل معه، فالنسخة المستعادة لا تُفرَّغ بعهدٍ قديم (قاعدة المالك ٢٠٢٦-١٠-٠٥)
- */
-export async function clearRestoredUnadopted(db: AppDB, uid: string): Promise<void> {
-  const epoch = state.online ? await readEpoch(remoteFor(), orgOfAccount(db)).catch(() => null) : null;
-  db.transaction(() => {
-    setSyncState(db, 'restored_unadopted', null);
-    if (epoch !== null) { setSyncState(db, 'wipe_epoch', String(epoch)); setSyncState(db, 'epoch_pending', null); }
-  });
-  enableSync(db, uid);
-  patch({ sync: syncStatus(db), lastError: null });
-}
-
 function remoteFor(): FirestoreRemote {
   const s = getSession();
   const cfg = cloudConfig();

@@ -42,7 +42,7 @@ import { isCancelled } from '../src/domain/progress';
 import { reportFailure, arabicMessage } from '../src/ui/failureDialog';
 import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
-  pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
+  pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted,
   restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
   leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything, filesCloudOn, downloadAllFiles, fileCacheUsage, clearFileCacheNow,
 } from '../src/services/cloud';
@@ -443,7 +443,10 @@ export default function Settings() {
     setBusy(false);
   };
 
-  /** نسخة استُعيدت خارج الحساب · تُعتمد للسحابة أو تُدمج معها بقرار صريح */
+  /**
+   * نسخة استُعيدت خارج الحساب · تُعتمد للسحابة بقرار صريح، أو يُلغى فتبقى المزامنة منتظرة · ولا «دمج» (قرار المالك 2026-10-03:
+   * «اعتماد هذه النسخة واستبدال بيانات السحابة بها» أو «إلغاء»، والبند ١ (أ) من القرارات المعلّقة 2026-11-07)
+   */
   const doAdoptPending = async () => {
     setBusy(true);
     try {
@@ -454,16 +457,11 @@ export default function Settings() {
       dialog({
         title: 'اعتماد بيانات هذا الجهاز',
         body: 'استُعيدت على هذا الجهاز نسخة ولم يُكتب منها شيء إلى السحابة.\n' + cloudReplaceText({ ...p, immutable: { ...p.immutable, entries: 0 } })
-          + keptText(ready.keep.entries)
-          + '\n\nأو «دمج مع السحابة»: يغلب في كل سجل الأحدثُ تعديلاً بين الجهاز والسحابة.',
+          + keptText(ready.keep.entries),
         tone: 'normal',
         locked: true,
         actions: [
           { label: 'إلغاء', variant: 'ghost', onPress: () => resumeSync() },
-          { label: 'دمج مع السحابة', variant: 'ghost', onPress: () => {
-            const uid = cloudState().user?.uid;
-            if (uid) clearRestoredUnadopted(db, uid).then(() => { resumeSync(); syncNow(); bump(); }).catch((e) => reportFailure({ title: 'تعذّر الدمج', e }));
-          } },
           { label: 'اعتماد بيانات هذا الجهاز واستبدال بيانات السحابة بها', variant: 'primary', onPress: async () => {
             try {
               const { queued, kept } = await adoptPendingWithKeep(db, ready);
@@ -689,7 +687,7 @@ export default function Settings() {
             {admin && restoreAwaitingAdoption(db) ? (
               <View style={{ marginTop: 6 }}>
                 <Note tone="danger">استُعيدت على هذا الجهاز نسخة ولم تُعتمد للسحابة · المزامنة متوقفة حتى تقرّر</Note>
-                {cloud.online ? <BtnPrimary title="اعتماد النسخة أو دمجها" onPress={doAdoptPending} loading={busy} /> : null}
+                {cloud.online ? <BtnPrimary title="اعتماد النسخة" onPress={doAdoptPending} loading={busy} /> : null}
               </View>
             ) : null}
           </>
@@ -728,7 +726,6 @@ export default function Settings() {
       {/* ٣ · المالية */}
       {admin ? <Card>
         <CardTitle>المالية</CardTitle>
-        <ValueRow icon="wallet" title="العملة ودليل الحسابات" value={(data.counts.find(([k]) => k === 'حسابات')?.[1] ?? 0) + ' حساباً'} onPress={() => router.push('/accounts')} />
         <ValueRow icon="invoice" title="ضريبة القيمة المضافة" value={vatOn ? 'مفعّلة' : 'مطفأة · لا تُحتسب'}
           onPress={() => openChoice('ضريبة القيمة المضافة', [[0, 'مطفأة · لا تُحتسب'], [1, 'مفعّلة']], vatOn,
             (v) => { db.transaction(() => db.run(`UPDATE company SET vat_enabled = ? WHERE id = 1`, [v])); bump(); })} />

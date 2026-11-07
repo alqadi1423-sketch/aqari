@@ -10,7 +10,7 @@ import * as Sharing from 'expo-sharing';
 import { File, Directory, Paths } from 'expo-file-system';
 import type { DB } from '../db/adapter';
 import { fmt } from '../domain/money';
-import { dfmt, today } from '../domain/dates';
+import { dfmtOut, today } from '../domain/dates';
 import {
   PRINT_CSS, letterhead, esc, type CompanyInfo, type CopyKind,
   buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc,
@@ -42,14 +42,14 @@ export function companyInfo(db: DB): CompanyInfo {
 /** ترويسة التقارير (تستعملها reportExport) · نفس بيانات المنشأة */
 export function companyHeader(db: DB): string {
   const co = companyInfo(db);
-  return `<div><div style="font-weight:800;font-size:16px">${esc(co.name || 'لا يوجد')}</div>
+  return `<div><div style="font-weight:800;font-size:16px">${esc(co.name || '')}</div>
     ${co.vatno ? `<div style="font-size:11.5px;color:#77808F;margin-top:4px">الرقم الضريبي: <span class="num">${esc(co.vatno)}</span></div>` : ''}</div>`;
 }
 
 const issuedNow = (): string => {
   const d = new Date();
   const two = (n: number) => String(n).padStart(2, '0');
-  return `${dfmt(`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`)} ${two(d.getHours())}:${two(d.getMinutes())}`;
+  return `${dfmtOut(`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`)} ${two(d.getHours())}:${two(d.getMinutes())}`;
 };
 
 /** توليد PDF باسم مفهوم · يعيد مساره */
@@ -201,8 +201,8 @@ export async function printContractDoc(db: DB, contractId: string): Promise<void
   const propertyName = c.unit_id
     ? db.get<{ name: string }>(
         `SELECT p.name FROM properties p JOIN units u ON u.property_id = p.id WHERE u.id = ?`, [c.unit_id]
-      )?.name ?? 'لا يوجد'
-    : 'لا يوجد';
+      )?.name ?? ''
+    : '';
   const installments = db.all<{ due_date: string; amount_halalas: number; paid_halalas: number; status: string }>(
     `SELECT due_date, amount_halalas, paid_halalas, status FROM contract_installments
      WHERE contract_id = ? AND status != 'ملغية' ORDER BY due_date`, [contractId]
@@ -217,7 +217,7 @@ export async function printContractDoc(db: DB, contractId: string): Promise<void
       ? depositState(c.deposit_holder, c.deposit_holder_name).label
       : undefined,
     // الحالة في المطبوعة محسوبة كما تظهر في الشاشات · لا الحالة المخزّنة الخام
-    cycle: c.cycle || 'لا يوجد', status: contractStatusLabel(c), installments,
+    cycle: c.cycle || '', status: contractStatusLabel(c), installments,
   }, issuedNow());
   const filename = 'عقد · ' + (c.contract_no || c.tenant_name);
   const uri = await renderPdf('عقد إيجار · ' + c.tenant_name, body, filename);
@@ -234,10 +234,10 @@ export async function printClaim(db: DB, claimId: string): Promise<void> {
     `SELECT contract_no, tenant_name, unit_label FROM contracts WHERE id = ?`, [cl.contract_id]
   );
   const body = buildClaimDoc(companyInfo(db), {
-    contractNo: c?.contract_no || '', tenantName: c?.tenant_name || 'لا يوجد', unitLabel: c?.unit_label || '',
+    contractNo: c?.contract_no || '', tenantName: c?.tenant_name || '', unitLabel: c?.unit_label || '',
     amountHalalas: Number(cl.amount_halalas), reason: cl.reason, date: cl.date,
   }, issuedNow());
-  const filename = 'إشعار مطالبة · ' + (c?.contract_no || dfmt(cl.date));
+  const filename = 'إشعار مطالبة · ' + (c?.contract_no || dfmtOut(cl.date));
   const uri = await renderPdf('إشعار مطالبة', body, filename);
   await outputPdf(db, uri, 'إشعار مطالبة', filename, { entityType: 'claim', entityId: cl.id, kind: 'claim' });
 }

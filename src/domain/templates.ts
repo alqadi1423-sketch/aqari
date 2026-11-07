@@ -2,7 +2,7 @@
  * قوالب الرسائل · الرموز الخمسة عشر وسياقها وحلّها، منقولة من النموذج.
  */
 import type { DB } from '../db/adapter';
-import { today, dfmt } from './dates';
+import { today, dfmtOut } from './dates';
 import { fmt } from './money';
 import { INSTALLMENT_DISCOUNT_SQL, installmentState } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
@@ -37,7 +37,7 @@ export function templateContext(db: DB, contractId: string | null, name?: string
   const company = db.get<{ name: string }>(`SELECT name FROM company WHERE id = 1`);
   const ctx: Record<string, string> = {
     '{المنشأة}': company?.name || 'إدارة العقارات',
-    '{اليوم}': dfmt(today()),
+    '{اليوم}': dfmtOut(today()),
     '{المستأجر}': name || '',
   };
   if (!contractId) return ctx;
@@ -81,8 +81,8 @@ export function templateContext(db: DB, contractId: string | null, name?: string
     '{العقار}': p?.name || '',
     '{الوحدة}': u?.unit_no || c.unit_label || '',
     '{رقم_العقد}': c.contract_no || '',
-    '{بداية_العقد}': c.start ? dfmt(c.start) : '',
-    '{نهاية_العقد}': c.end ? dfmt(c.end) : '',
+    '{بداية_العقد}': c.start ? dfmtOut(c.start) : '',
+    '{نهاية_العقد}': c.end ? dfmtOut(c.end) : '',
     '{قيمة_العقد}': fmt(Number(c.value_halalas)),
     '{التأمين}': fmt(Number(c.deposit_halalas)),
     // لا قسط مفتوح: لا مبلغ مستحق (المراجعة #6) · والمتبقي من الأقساط الحيّة
@@ -91,7 +91,7 @@ export function templateContext(db: DB, contractId: string | null, name?: string
     '{إجمالي_العقد}': fmt(Number(c.total_halalas)), // i18n-exempt: رمز قالب
     '{الخدمات}': fmt(Number(c.services_halalas)), // i18n-exempt: رمز قالب
     '{المواقف}': fmt(Number(c.parking_halalas)), // i18n-exempt: رمز قالب
-    '{التاريخ}': st ? dfmt(st.effectiveDue) : c.end ? dfmt(c.end) : 'لا يوجد',
+    '{التاريخ}': st ? dfmtOut(st.effectiveDue) : c.end ? dfmtOut(c.end) : '',
     '{أيام_التأخير}': st ? String(Math.max(0, st.daysLate)) : '0',
   });
   return ctx;
@@ -100,7 +100,8 @@ export function templateContext(db: DB, contractId: string | null, name?: string
 export function resolveTemplateTokens(text: string, ctx: Record<string, string>): string {
   let out = String(text || '');
   for (const k of Object.keys(ctx)) {
-    const v = ctx[k] == null || ctx[k] === '' ? 'لا يوجد' : ctx[k];
+    // الرمز بلا قيمة خانةٌ خالية لا «لا يوجد» (البند ٤ (أ) من القرارات المعلّقة، قرار المالك 2026-11-07)
+    const v = ctx[k] ?? '';
     out = out.split(k).join(v);
     out = out.split(k.replace('{', '[').replace('}', ']')).join(v);
   }
@@ -124,7 +125,7 @@ export function collectionMessage(
       amount: Number(i.amount_halalas), paid: Number(i.paid_halalas), discount: Number(i.discount), status: i.status,
     }, today());
     ctx['{المبلغ}'] = fmt(st.remaining); // i18n-exempt: رمز قالب مخزَّن
-    ctx['{التاريخ}'] = dfmt(st.effectiveDue); // i18n-exempt: رمز قالب مخزَّن
+    ctx['{التاريخ}'] = dfmtOut(st.effectiveDue); // i18n-exempt: رمز قالب مخزَّن
     ctx['{أيام_التأخير}'] = String(Math.max(0, st.daysLate)); // i18n-exempt: رمز قالب مخزَّن
   }
   if (row.unitNo) ctx['{الوحدة}'] = row.unitNo; // i18n-exempt: رمز قالب مخزَّن

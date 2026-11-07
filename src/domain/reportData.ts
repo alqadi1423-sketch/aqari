@@ -41,7 +41,7 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
     `SELECT unit_no, floor, type, subtype, rent_monthly_halalas, property_id FROM units WHERE id = ?`, [unitId]
   );
   if (!unit) return null;
-  const propertyName = db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [unit.property_id])?.name ?? 'لا يوجد';
+  const propertyName = db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [unit.property_id])?.name ?? '';
   // حالة العقد في التقرير محسوبة كما تظهر في الشاشات · لا المخزّنة الخام
   const contracts = db.all<UnitReport['contracts'][number]>(
     `SELECT contract_no, tenant_name, start, end, value_halalas, ${contractTotalSql(db)} AS total_halalas,
@@ -77,7 +77,7 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
     outstanding: Number(instRow.outstanding),
   };
   const unitMeters = db.all<{ kind: string; number: string; supplier: string }>(
-    `SELECT m.kind, m.number, COALESCE(sp.name,'لا يوجد') AS supplier FROM meters m
+    `SELECT m.kind, m.number, COALESCE(sp.name,'') AS supplier FROM meters m
      LEFT JOIN suppliers sp ON sp.id = m.supplier_id
      WHERE m.owner_type = 'unit' AND m.owner_id = ? AND m.deleted_at IS NULL`, [unitId]
   );
@@ -171,8 +171,8 @@ export function supplierReportData(db: DB, supplierId: string, from: string | nu
     `SELECT kind, number, owner_type, owner_id FROM meters WHERE supplier_id = ? AND deleted_at IS NULL`, [supplierId]
   ).map((m) => {
     const label = m.owner_type === 'property'
-      ? (db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [m.owner_id])?.name ?? 'لا يوجد') + ' (مشترك)'
-      : 'وحدة ' + (db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [m.owner_id])?.unit_no ?? 'لا يوجد');
+      ? (db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [m.owner_id])?.name ?? '') + ' (مشترك)'
+      : 'وحدة ' + (db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [m.owner_id])?.unit_no ?? '');
     return { kind: m.kind, number: m.number, label };
   });
   const purchases = db.all<{ no: string; date: string; category: string; total_halalas: number; paid: number; unit_id: string | null; property_id: string | null }>(
@@ -181,10 +181,10 @@ export function supplierReportData(db: DB, supplierId: string, from: string | nu
      ORDER BY date DESC`, [supplierId]
   ).map((p) => {
     const target = p.unit_id
-      ? 'وحدة ' + (db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [p.unit_id])?.unit_no ?? 'لا يوجد')
+      ? 'وحدة ' + (db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [p.unit_id])?.unit_no ?? '')
       : p.property_id
-        ? (db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [p.property_id])?.name ?? 'لا يوجد')
-        : 'لا يوجد';
+        ? (db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [p.property_id])?.name ?? '')
+        : '';
     return { no: p.no, date: p.date, category: p.category, total_halalas: p.total_halalas, paid: p.paid, target };
   });
   const total = purchases.reduce((s, p) => s + Number(p.total_halalas), 0);
