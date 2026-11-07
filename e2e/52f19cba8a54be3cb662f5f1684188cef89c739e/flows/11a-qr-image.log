@@ -1,0 +1,3 @@
+/home/runner/work/aqari/aqari/e2e-out/qr-invoice.png AQ9FMkUgUVIgU3VwcGxpZXICDzMwMDAwMDAwMDAwMDAwMwMUMjAyNi0xMS0wMVQwOTowMDowMFoEBzExNTAuMDAFBjE1MC4wMA==
+adb: device 'emulator-5554' not found
+adb: error: failed to get feature set: device 'emulator-5554' not found

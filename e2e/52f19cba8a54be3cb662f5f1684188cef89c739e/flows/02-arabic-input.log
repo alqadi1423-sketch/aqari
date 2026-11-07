@@ -1,0 +1,26 @@
+
+Waiting for flows to complete...
+[Passed] 02-arabic-input (31s)
+
+1/1 Flow Passed in 31s
+
+Exception in thread "Thread-5" java.io.EOFException
+	at okio.RealBufferedSource.require(RealBufferedSource.kt:225)
+	at okio.RealBufferedSource.readByte(RealBufferedSource.kt:235)
+	at dadb.AdbShellStream.read(AdbShell.kt:62)
+	at dadb.AdbShellStream.readAll(AdbShell.kt:42)
+	at dadb.Dadb$DefaultImpls.shell(Dadb.kt:36)
+	at dadb.adbserver.AdbServerDadb.shell(AdbServer.kt:122)
+	at dadb.Dadb$DefaultImpls.uninstall(Dadb.kt:195)
+	at dadb.adbserver.AdbServerDadb.uninstall(AdbServer.kt:122)
+	at maestro.android.AndroidDeviceConnection.uninstall(AndroidDeviceConnection.kt:171)
+	at maestro.drivers.AndroidDriver.uninstall(AndroidDriver.kt:1330)
+	at maestro.drivers.AndroidDriver.bestEffortUninstall(AndroidDriver.kt:1311)
+	at maestro.drivers.AndroidDriver.uninstallMaestroDriverApp$lambda$89(AndroidDriver.kt:1296)
+	at maestro.utils.Metrics.measured(Metrics.kt:48)
+	at maestro.drivers.AndroidDriver.uninstallMaestroDriverApp(AndroidDriver.kt:1295)
+	at maestro.drivers.AndroidDriver.close(AndroidDriver.kt:182)
+	at maestro.Maestro.close(Maestro.kt:602)
+	at maestro.cli.session.MaestroSessionManager$MaestroSession.close(MaestroSessionManager.kt:471)
+	at maestro.cli.session.MaestroSessionManager.newSession$lambda$2(MaestroSessionManager.kt:129)
+	at kotlin.concurrent.ThreadsKt$thread$thread$1.run(Thread.kt:30)

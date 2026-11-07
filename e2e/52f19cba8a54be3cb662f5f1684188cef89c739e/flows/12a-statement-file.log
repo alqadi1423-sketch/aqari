@@ -1,0 +1,2 @@
+adb: device 'emulator-5554' not found
+adb: error: failed to get feature set: device 'emulator-5554' not found
