@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="42.376" timestamp="2026-11-07T21:24:31">
+    <testcase id="02-arabic-input" name="02-arabic-input" classname="02-arabic-input" file="e2e/maestro/02-arabic-input.yaml" time="42.363" timestamp="2026-11-07T21:24:31" status="ERROR">
+      <failure>Assertion is false: "برج تجربة" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
