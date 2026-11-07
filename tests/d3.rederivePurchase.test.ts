@@ -249,4 +249,36 @@ describe('إعادة اشتقاق قيدي فاتورة الشراء وسداد�
     expect(net(s.owner, '2100')).toBe(0);
     s.close();
   });
+
+  test('إيجابي · تعديل بنود فاتورةٍ وصلت بنودها الجديدة قبل حذف القديمة: يُنتظر ثم يُقبل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const id = buy(s.dev, s.ua, withAsset(s.ua));
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^purchase$/);
+    await ownerPulls(s.owner, s.r);
+    buy(s.dev, s.ua, {
+      excludeFromVat: true, subtotalHalalas: 500000, taxHalalas: 0, totalHalalas: 500000,
+      lines: [
+        { descr: 'مكيف مصطنع', qty: 1, amountHalalas: 350000, isAsset: true, category: '1410', unitId: s.ua, room: '' },
+        { descr: 'تركيب مصطنع', qty: 1, amountHalalas: 150000, isAsset: false },
+      ],
+    }, id);
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^purchase(_rev)?$/);
+    const k = lastEntry(s.r, 'purchase').k;
+    const late = holdBack(s.r, (d) => d.t === 'purchase_lines' && !!d.d?.deleted_at);
+    expect(late.count).toBe(2);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(false);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    for (const x of ids) {
+      expect(reasonOf(s.owner, x)).toBe('');
+      expect(has(s.owner, x)).toBe(true);
+    }
+    expect(net(s.owner, '1410')).toBe(350000);
+    expect(net(s.owner, '2100')).toBe(-500000);
+    s.close();
+  });
 });

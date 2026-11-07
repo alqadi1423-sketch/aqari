@@ -48,8 +48,6 @@ export interface SourceReader {
   row<T>(table: string, key: string): T | null;
   /** صفوف جدولٍ بعمودٍ وقيمته: هنا، وأحدث نسخها في الوارد تغلبها، والمحذوف فيه يُسقطها (سطور المستند وأصوله وإشعاراته) */
   rows<T>(table: string, col: string, value: string): T[];
-  /** للصف نسخةٌ في الوارد لم تُطبَّق هنا بعد (سطرٌ وصل في هذا السحب، لا قائمٌ من قبل) */
-  fresh(table: string, key: string): boolean;
   /**
    * القيود المرحّلة بمصدرها هنا وحده: ما في الوارد لم يُفحص بعد (عاكسٌ مزوّر فيه كان يُحتسب) · وما يُنتظر منه يُنتظر به، فيُعاد
    * القيد في المرور التالي بعد تطبيقه
@@ -172,14 +170,11 @@ interface PurchaseRow {
 }
 
 /**
- * سطور مستندٍ بعضها قائمٌ هنا وبعضها وصل في هذا السحب (المتحقق المستقل): تعديل السطور يحذف القديمة ويُدرج جديدةً بمعرّفاتٍ أخرى،
- * والحذف والإدراج في رتبةٍ واحدة يُرتَّبان بالمفتاح فيقعان في دفعاتٍ مختلفة، فقد تصل الجديدة قبل حذف القديمة · فما خالف رأسه
- * منها يُنتظر ولا يُرفض
+ * سطور مستندٍ من حفظين (المتحقق المستقل): تعديل السطور يحذف القديمة ويُدرج جديدةً بمعرّفاتٍ أخرى، والحذف والإدراج في رتبةٍ واحدة
+ * يُرتَّبان بالمفتاح فيقعان في دفعاتٍ مختلفة، فقد تصل الجديدة قبل حذف القديمة · وكل حفظٍ يرقّم سطوره من الصفر (sort)، فترتيبٌ مكرر
+ * يعني أن بعضها من حفظٍ سابق لم يصل حذفه بعد · فما خالف رأسه منها يُنتظر ولا يُرفض
  */
-function mixed(r: SourceReader, table: string, rows: Array<{ id?: unknown }>): boolean {
-  const fresh = rows.map((x) => r.fresh(table, String(x.id ?? '')));
-  return fresh.some(Boolean) && fresh.some((x) => !x);
-}
+const twoSaves = (rows: Array<{ sort?: unknown }>): boolean => new Set(rows.map((x) => num(x.sort))).size < rows.length;
 
 /** سطور أصول بنود الفاتورة في قيد تسجيلها وأبعاد كل سطر · وشكلٌ بلا أصول */
 interface AssetForm { lines: EntryLine[]; specs: DimSpec[][] }
@@ -202,9 +197,9 @@ function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, subtota
   if (assets.some((a) => a.source === 'convert')) return [none];
   // بنود الحفظ مجموعها أساس الفاتورة (validateLines) · ودونه بنودٌ لم تصل بعد: العضو يرفع على دفعاتٍ صغيرة بترتيب الجداول، فقد يصل
   // القيد ورأس الفاتورة قبل بقية بنودها · ويُفحص قبل البحث عن بند أصل (المتحقق المستقل: بند الأصل وحده إن تأخر بدت الفاتورة بلا أصول
-  // فرُفض قيدها) · وفوقه وبعضها هنا وبعضها في الوارد: بنودٌ جديدة وصلت قبل حذف القديمة
+  // فرُفض قيدها) · وفوقه من حفظين: بنودٌ جديدة وصلت قبل حذف القديمة
   const sum = lines.reduce((s, l) => s + num(l.amount_halalas), 0);
-  if (sum < subtotal || (sum !== subtotal && mixed(r, 'purchase_lines', lines))) return AWAIT;
+  if (sum < subtotal || (sum !== subtotal && twoSaves(lines))) return AWAIT;
   if (!lines.some((l) => num(l.is_asset))) return [none];
   const costs = lineCosts(lines.map((l) => ({ descr: '', qty: num(l.qty), amountHalalas: num(l.amount_halalas), isAsset: !!num(l.is_asset) })), tax, deductible);
   const form: AssetForm = { lines: [], specs: [] };
@@ -230,7 +225,7 @@ const DRAFT_INVOICE = 'مسودة'; // i18n-exempt: حالة الفاتورة ا
 
 /** سطور فاتورةٍ أو إشعارٍ بترتيبها (هنا وفي الوارد) */
 const invoiceLinesOf = (r: SourceReader, id: string) =>
-  r.rows<StoredInvoiceLine & { sort: number }>('invoice_lines', 'invoice_id', id).sort((a, b) => num(a.sort) - num(b.sort));
+  r.rows<StoredInvoiceLine & { id: string; sort: number }>('invoice_lines', 'invoice_id', id).sort((a, b) => num(a.sort) - num(b.sort));
 /** الإشعارات الدائنة القائمة على فاتورة */
 const creditNotesOf = (r: SourceReader, invoiceId: string) =>
   r.rows<InvoiceRow & { id: string }>('invoices', 'ref_invoice_id', invoiceId).filter((n) => n.kind === KIND_CREDIT && !n.deleted_at);
@@ -426,11 +421,14 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
             descr: '', qty: num(l.qty), priceHalalas: num(l.price_halalas), taxPct: num(l.tax_pct), taxCode: (l.tax_code ?? undefined) as TaxCode | undefined,
           }))));
         } catch {
-          return no('taxCode');
+          return twoSaves(lines) ? AWAIT : no('taxCode');
         }
-        // صافي سطورها دون صافي رأسها: سطورٌ لم تصل بعد (العضو يرفع على دفعاتٍ صغيرة بترتيب الجداول) فيُنتظر · وما سواه مخالفة
+        // صافي سطورها دون صافي رأسها: سطورٌ لم تصل بعد (العضو يرفع على دفعاتٍ صغيرة بترتيب الجداول) فيُنتظر · وما خالفه وسطوره من
+        // حفظين: سطورٌ جديدة وصلت قبل حذف القديمة (المتحقق المستقل: تعديل سطور المسودة وإصدارها في حفظٍ واحد) فيُنتظر · وما سواه مخالفة
         if (calc.subtotal < head.subtotal) return AWAIT;
-        if (calc.subtotal !== head.subtotal || calc.tax !== head.tax || calc.total !== head.total) return no('invoiceTotals');
+        if (calc.subtotal !== head.subtotal || calc.tax !== head.tax || calc.total !== head.total) {
+          return twoSaves(lines) ? AWAIT : no('invoiceTotals');
+        }
       } else if (head.subtotal + head.tax !== head.total) return no('invoiceTotals');
       const built = want(invoiceLedgerLines(head), () => [dims]);
       return built ? { lines: built, date: v.issue ?? '', also, correctable: false } : no('noEntry');

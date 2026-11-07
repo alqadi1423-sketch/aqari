@@ -254,4 +254,29 @@ describe('إعادة اشتقاق قيود فاتورة المبيعات وإش�
     expect(net(s.owner, '1200')).toBe(0);
     s.close();
   });
+
+  test('إيجابي · مسودةٌ عُدّلت سطورها وصدرت في حفظٍ واحد، ووصلت سطورها الجديدة قبل حذف القديمة: يُنتظر ثم يُقبل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const draft = saveInvoice(s.dev, inv(s.ua, [
+      { descr: 'سطر أول مصطنع', qty: 1, priceHalalas: 10000, taxPct: 15, taxCode: 'S' },
+      { descr: 'سطر ثانٍ مصطنع', qty: 1, priceHalalas: 20000, taxPct: 15, taxCode: 'S' },
+    ]), 'مسودة');
+    await sync(s.dev, s.r);
+    await ownerPulls(s.owner, s.r);
+    saveInvoice(s.dev, inv(s.ua, [{ descr: 'سطر معدَّل مصطنع', qty: 1, priceHalalas: 50000, taxPct: 15, taxCode: 'S' }]), ISSUED, draft);
+    await sync(s.dev, s.r);
+    const k = asMember(s.r, 'invoice');
+    // حذف السطرين القديمين في دفعةٍ لاحقة: المالك يرى القديمين والجديد معاً
+    const late = holdBack(s.r, (d) => d.t === 'invoice_lines' && !!d.del);
+    expect(late.count).toBe(2);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(false);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(true);
+    expect(net(s.owner, '1200')).toBe(57500);
+    s.close();
+  });
 });
