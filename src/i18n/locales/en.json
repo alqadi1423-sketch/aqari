@@ -532,7 +532,9 @@
   },
   "claims": {
     "collectedLocked": "The claim is collected and posted · only its reason can be edited",
-    "collectedNoDelete": "The claim is collected and posted · it cannot be deleted"
+    "collectedNoDelete": "The claim is collected and posted · it cannot be deleted",
+    "bankCollectDescr": "Claim collection · {{reason}}",
+    "bankCollectSource": "Claim collection · bank transfer"
   },
   "deposit": {
     "refundOver": "The refund exceeds the deposit itself",
@@ -1021,7 +1023,10 @@
       "ref": "shared number",
       "words": "shared word",
       "unique": "only candidate",
-      "ambiguous": "two equal candidates"
+      "ambiguous": "two equal candidates",
+      "several": "several installments in one transfer",
+      "name": "name in the description",
+      "date": "near the due date"
     },
     "approve": "Approve",
     "approveAll": "Approve all ready ({{n}})",
@@ -1040,7 +1045,8 @@
       "fee": "Bank fee",
       "income": "Other income",
       "withdraw": "Withdraw to wallet",
-      "deposit": "Deposit from wallet"
+      "deposit": "Deposit from wallet",
+      "transfer": "Transfer between accounts"
     },
     "report": "Reconciliation report",
     "prevMonth": "Previous month",
@@ -1088,6 +1094,26 @@
       "ref": "Reference",
       "type": "Transaction type",
       "none": "Nothing"
-    }
+    },
+    "collect": {
+      "installments": "Installment of {{tenant}} · contract {{no}} · {{period}}",
+      "claim": "Claim: {{reason}} · {{tenant}}",
+      "invoice": "Invoice {{no}} · {{customer}}",
+      "note": "From the bank statement: {{descr}}",
+      "notDeposit": "The line is not a deposit · collections match deposits only",
+      "amountDiffers": "The line amount does not equal what remains on your choice · record the collection from its screen",
+      "auditEntity": "Collection approved from bank statement",
+      "auditName": "{{kind}} · {{descr}}",
+      "title": "Suggested collections for deposits",
+      "approve": "Approve collection",
+      "approved": "Collection recorded and the line matched",
+      "approveAll": "Approve the ready ones ({{n}})",
+      "approveAllBody": "{{n}} deposits are recorded as collections in this bank by their usual path on each line's date, then each line is matched to its transaction",
+      "needPerm": "Approval is for those who record collections and match statements"
+    },
+    "asExpense": "Expense (purchase invoice)",
+    "asCollection": "New collection",
+    "transferTo": "To account",
+    "transferFrom": "From account"
   }
 }

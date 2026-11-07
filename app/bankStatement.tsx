@@ -6,7 +6,7 @@
  */
 import React, { useMemo, useState } from 'react';
 import { View } from 'react-native';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { t } from '../src/i18n';
 import { Screen } from '../src/ui/Screen';
 import { Card, T, Num, Money, Row, BtnPrimary, BtnGhost, BtnIcon, Field, ChipGroup, EmptyState, Note, KpiCard } from '../src/ui/components';
@@ -21,7 +21,8 @@ import { pickFile } from '../src/ui/attach';
 import { reportFailure } from '../src/ui/failureDialog';
 import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
-import { recordManualBankTx, type ManualBankKind } from '../src/domain/cashOps';
+import { recordManualBankTx, transferBetweenBanks, type ManualBankKind } from '../src/domain/cashOps';
+import { collectionSuggestions, approveCollection, type CollectSuggestion } from '../src/domain/bankStatement/collect';
 import { statementSource, type StatementSource } from '../src/services/bankStatement';
 import { unverifiedResult, type StatementResult, type StatementOk, type ColumnMapping, type ReadOpts } from '../src/domain/bankStatement/read';
 import type { Role } from '../src/domain/bankStatement/columns';
@@ -47,6 +48,12 @@ export default function BankStatementScreen() {
   const { bank: bankId = '' } = useLocalSearchParams<{ bank?: string }>();
   const { db, version, bump } = useApp();
   const perm = usePerm('banks');
+  // اعتماد التحصيل من الكشف: تسجيله بصلاحية قسمه ومطابقته بصلاحية البنوك (سجل القرارات ٥٩)
+  const collectPerm = usePerm('collect');
+  const claimsPerm = usePerm('claims');
+  const invoicesPerm = usePerm('invoices');
+  const purchasesPerm = usePerm('purchases');
+  const router = useRouter();
   const dialog = useDialog();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
@@ -58,7 +65,8 @@ export default function BankStatementScreen() {
   const [mapEdit, setMapEdit] = useState<{
     src: StatementSource; base: ColumnMapping; r: StatementOk | null; hash: string; roles: Array<Role | null>; order: DateOrder;
   } | null>(null);
-  const [record, setRecord] = useState<{ line: LineView; kind: ManualBankKind; amount: string; date: string; descr: string } | null>(null);
+  // وغير المطابق (قرار المالك ج.٤): رسوم أو وارد أو سحب أو إيداع أو تحويلٌ بين حسابين بنكيين، أو مصروفٌ أو تحصيلٌ من شاشته، أو يبقى معلّقاً
+  const [record, setRecord] = useState<{ line: LineView; kind: ManualBankKind | 'transfer'; other: string; amount: string; date: string; descr: string } | null>(null);
   const [exclude, setExclude] = useState<{ line: LineView; note: string } | null>(null);
 
   const bank = useMemo(() => db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ? AND deleted_at IS NULL`, [bankId]),
@@ -67,6 +75,12 @@ export default function BankStatementScreen() {
   const suggestions = useMemo(() => (bank ? matchSuggestions(db, bankId) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, bankId, version, bank]);
+  const collects = useMemo(() => (bank ? collectionSuggestions(db, bankId) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, bankId, version, bank]);
+  const otherBanks = useMemo(() => db.all<{ id: string; name: string }>(`SELECT id, name FROM banks WHERE id != ? AND deleted_at IS NULL ORDER BY name`, [bankId]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, bankId, version]);
   const openLines = useMemo(() => db.all<{ id: string; date: string; descr: string; amount: number; status: string; note: string }>(
     `SELECT id, date, descr, amount_halalas AS amount, status, note FROM bank_statement_lines
      WHERE bank_id = ? AND deleted_at IS NULL AND status != 'matched' ORDER BY date DESC, rowid DESC LIMIT 200`, [bankId]),
@@ -184,6 +198,26 @@ export default function BankStatementScreen() {
     });
   };
 
+  const canCollect = (s: CollectSuggestion) => perm.manage
+    && (s.target.kind === 'installments' ? collectPerm.add : s.target.kind === 'claim' ? claimsPerm.add : invoicesPerm.add);
+  const approveCollect = (list: CollectSuggestion[]) => {
+    try {
+      for (const s of list) approveCollection(db, s.line.id, s.target);
+      bump();
+      toast(t('bankStatement.collect.approved'));
+    } catch (e) { bump(); fail(e); }
+  };
+  const approveCollectAll = () => {
+    const ready = collects.filter((s) => s.level === 'ready' && canCollect(s));
+    dialog({
+      title: t('bankStatement.collect.approveAll', { n: ready.length }), body: t('bankStatement.collect.approveAllBody', { n: ready.length }),
+      actions: [
+        { label: t('bankStatement.collect.approve'), variant: 'primary', onPress: () => approveCollect(ready) },
+        { label: t('common.cancel'), variant: 'ghost' },
+      ],
+    });
+  };
+
   const amountColor = (a: number) => (a >= 0 ? C.emerald : C.rose);
   const lineHead = (l: { date: string; descr: string; amount: number }) => (
     <Row style={{ justifyContent: 'space-between' }}>
@@ -226,6 +260,29 @@ export default function BankStatementScreen() {
         )}
       </CollapsibleSection>
 
+      <CollapsibleSection title={t('bankStatement.collect.title')} count={collects.length} icon="collect" pageKey="stmtCollect">
+        {() => (
+          <>
+            {collects.some((s) => s.level === 'ready' && canCollect(s)) ? (
+              <BtnGhost small title={t('bankStatement.collect.approveAll', { n: collects.filter((s) => s.level === 'ready' && canCollect(s)).length })} onPress={approveCollectAll} />
+            ) : null}
+            {collects.map((s) => (
+              <Card key={s.line.id}>
+                {lineHead(s.line)}
+                <T size={TYPE.caption} color={C.muted} style={{ marginTop: 4 }}>{s.label}</T>
+                <Row style={{ justifyContent: 'space-between', marginTop: 6 }}>
+                  <T size={TYPE.caption} color={s.level === 'ready' ? C.emerald : C.gold} style={{ flex: 1 }}>
+                    {t('bankStatement.' + s.level)} · {s.score} · {s.reasons.map((r) => t('bankStatement.why.' + r)).join(' · ')}
+                  </T>
+                  {canCollect(s) ? <BtnPrimary small title={t('bankStatement.collect.approve')} onPress={() => approveCollect([s])} />
+                    : <T size={TYPE.caption} color={C.muted}>{t('bankStatement.collect.needPerm')}</T>}
+                </Row>
+              </Card>
+            ))}
+          </>
+        )}
+      </CollapsibleSection>
+
       <CollapsibleSection title={t('bankStatement.openLines')} count={openLines.length} icon="invoice" pageKey="stmtOpen">
         {() => openLines.map((l) => (
           <Card key={l.id}>
@@ -233,8 +290,11 @@ export default function BankStatementScreen() {
             {l.status === 'excluded' ? <T size={TYPE.caption} color={C.muted}>{t('bankStatement.excludedAs', { note: l.note })}</T> : null}
             <Row style={{ marginTop: 6 }}>
               {l.status === 'open' && perm.add ? <BtnGhost small title={t('bankStatement.record')} onPress={() => setRecord({
-                line: l, kind: l.amount < 0 ? 'fee' : 'income', amount: fmt(Math.abs(l.amount)).replace(/,/g, ''), date: l.date, descr: l.descr,
+                line: l, kind: l.amount < 0 ? 'fee' : 'income', other: otherBanks[0]?.id ?? '', amount: fmt(Math.abs(l.amount)).replace(/,/g, ''), date: l.date, descr: l.descr,
               })} /> : null}
+              {/* والمصروف بفاتورة شراءٍ من شاشتها، والتحصيل الجديد من شاشة التحصيل، ثم يُطابَق السطر بحركته */}
+              {l.status === 'open' && l.amount < 0 && purchasesPerm.add ? <BtnGhost small title={t('bankStatement.asExpense')} onPress={() => router.push('/purchases')} /> : null}
+              {l.status === 'open' && l.amount > 0 && collectPerm.add ? <BtnGhost small title={t('bankStatement.asCollection')} onPress={() => router.push('/collect')} /> : null}
               {l.status === 'open' && perm.manage ? <BtnGhost small title={t('bankStatement.exclude')} onPress={() => setExclude({ line: l, note: '' })} /> : null}
               {l.status === 'excluded' && perm.manage ? <BtnGhost small title={t('bankStatement.reopen')} onPress={() => {
                 try { unmatchLine(db, l.id); bump(); } catch (e) { fail(e); }
@@ -348,15 +408,28 @@ export default function BankStatementScreen() {
         footer={<View style={{ flex: 1 }}><BtnPrimary title={t('common.save')} onPress={() => {
           if (!record) return;
           try {
-            recordManualBankTx(db, { kind: record.kind, bankId, amountHalalas: toHalalas(record.amount), date: record.date, descr: record.descr });
+            const amountHalalas = toHalalas(record.amount);
+            if (record.kind === 'transfer') {
+              // التحويل بين حسابين: الخارج من هذا البنك إلى الآخر، والوارد من الآخر إليه
+              const [fromBankId, toBankId] = record.line.amount < 0 ? [bankId, record.other] : [record.other, bankId];
+              transferBetweenBanks(db, { fromBankId, toBankId, amountHalalas, date: record.date, notes: record.descr });
+            } else recordManualBankTx(db, { kind: record.kind, bankId, amountHalalas, date: record.date, descr: record.descr });
             setRecord(null); bump();
           } catch (e) { fail(e); }
         }} /></View>}>
         {record ? (
           <>
             {lineHead(record.line)}
-            <ChipGroup<ManualBankKind> value={record.kind} onChange={(k) => setRecord({ ...record, kind: k })}
-              options={(record.line.amount < 0 ? ['fee', 'withdraw'] : ['income', 'deposit']).map((k) => [k as ManualBankKind, t('bankStatement.kind.' + k)])} />
+            <ChipGroup<ManualBankKind | 'transfer'> value={record.kind} onChange={(k) => setRecord({ ...record, kind: k })}
+              options={[...(record.line.amount < 0 ? ['fee', 'withdraw'] : ['income', 'deposit']), ...(otherBanks.length ? ['transfer'] : [])]
+                .map((k) => [k as ManualBankKind | 'transfer', t('bankStatement.kind.' + k)])} />
+            {record.kind === 'transfer' ? (
+              <>
+                <T size={TYPE.caption} color={C.muted}>{t(record.line.amount < 0 ? 'bankStatement.transferTo' : 'bankStatement.transferFrom')}</T>
+                <ChipGroup<string> value={record.other} onChange={(v) => setRecord({ ...record, other: v })}
+                  options={otherBanks.map((b) => [b.id, b.name] as [string, string])} />
+              </>
+            ) : null}
             <Field label={t('bankStatement.amount')} value={record.amount} keyboard="numeric" ltr onChange={(v) => setRecord({ ...record, amount: v })} />
             <Field label={t('bankStatement.descr')} value={record.descr} onChange={(v) => setRecord({ ...record, descr: v })} />
           </>

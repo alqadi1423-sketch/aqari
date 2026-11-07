@@ -70,17 +70,29 @@ export function saveClaim(db: DB, input: ClaimInput, existingId?: string, opts: 
   });
 }
 
-/** تحصيل مطالبة مفتوحة */
-export function collectClaim(db: DB, id: string, date: string = today()): void {
+/**
+ * تحصيل مطالبة مفتوحة · نقداً، أو في حسابٍ بنكي (bankId): القيد نفسه (مدين النقدية 1100) وحركة بنكٍ برقمه كتحصيل الإيجار بتحويل
+ * (كشف البنك · قرار المالك 2026-10-09 ج.١: الإيداع يُطابَق بالمطالبة)
+ */
+export function collectClaim(db: DB, id: string, date: string = today(), bankId?: string | null): string | null {
   requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
-  db.transaction(() => {
+  return db.transaction(() => {
     const cl = db.get<{ amount_halalas: number; reason: string; status: string }>(
       `SELECT amount_halalas, reason, status FROM claims WHERE id = ?`, [id]
     );
     if (!cl || cl.status !== 'مفتوحة') throw new Error('المطالبة غير مفتوحة');
-    postClaimCollection(db, { id, amount: Number(cl.amount_halalas), reason: cl.reason }, date);
+    if (bankId && !db.get(`SELECT 1 FROM banks WHERE id = ? AND deleted_at IS NULL`, [bankId])) throw new Error(t('bankStatement.txMissing'));
+    const entry = postClaimCollection(db, { id, amount: Number(cl.amount_halalas), reason: cl.reason }, date);
+    let txId: string | null = null;
+    if (bankId && entry) {
+      txId = uid();
+      db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at) VALUES (?,?,?,?,?,1,?,?,?)`,
+        [txId, bankId, date, t('claims.bankCollectDescr', { reason: cl.reason, lng: 'ar' }), Number(cl.amount_halalas), entry.no,
+          t('claims.bankCollectSource', { lng: 'ar' }), new Date().toISOString()]);
+    }
     db.run(`UPDATE claims SET status = 'محصَّلة', collected_at = ? WHERE id = ?`, [date, id]);
     logAudit(db, 'المطالبات', 'update', 'تحصيل مطالبة', cl.reason || id);
+    return txId;
   });
 }
 
