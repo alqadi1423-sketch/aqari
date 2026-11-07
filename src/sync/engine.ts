@@ -672,6 +672,10 @@ function sourceReader(db: DB): SourceReader {
         `SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [id])?.payload ?? '{}') as RemoteDoc;
       return { id, src_type: d.src_type ?? null, src_id: d.src_id ?? null, lines: (doc.lines ?? []) as SrcLine[] };
     },
+    pending: (srcType, srcId) => db.all<{ pk: string }>(
+      `SELECT i.pk FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.src_type') = ?
+         AND json_extract(i.payload, '$.d.src_id') = ? AND json_extract(i.payload, '$.d.status') = ?
+         AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.id = i.pk AND e.status = ?)`, [srcType, srcId, POSTED, POSTED]).map((x) => x.pk),
   };
 }
 

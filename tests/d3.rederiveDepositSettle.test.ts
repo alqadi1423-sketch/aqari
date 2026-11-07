@@ -138,6 +138,25 @@ describe('إعادة اشتقاق قيود تسوية التأمين من صفّ
     s.close();
   });
 
+  test('إيجابي · تعديل التسوية في مزامنةٍ واحدة والقيد الجديد يسبق القديم وعاكسه في ترتيب التطبيق: يُقبل كله', async () => {
+    const s = await setup();
+    const a = await ended(s, s.ua, 13);
+    settle(s.dev, a, 100000, 200000);
+    settle(s.dev, a, 50000, 250000);
+    await sync(s.dev, s.r);
+    const ids = allAsMember(s.r);
+    // ترتيب التطبيق (rank ثم وقت الخادم): الحيّ الجديد أولاً، ثم عاكس القديم، ثم القديم المعكوس
+    const docs = [...s.r.docs.values()].filter((d) => d.t === 'journal_entries' && ids.includes(d.k));
+    const rev = (d: (typeof docs)[number]) => String(d.d?.src_type).endsWith('_rev');
+    for (const d of [...docs.filter((d) => !rev(d) && !d.d?.reversed_by), ...docs.filter(rev), ...docs.filter((d) => !rev(d) && d.d?.reversed_by)]) s.r.inject(d);
+    await ownerPulls(s.owner, s.r);
+    for (const k of ids) {
+      expect(reasonOf(s.owner, k)).toBe('');
+      expect(has(s.owner, k)).toBe(true);
+    }
+    s.close();
+  });
+
   test('سلبي · صفّ تسويةٍ ردُّه ضعفه وقيد ردٍّ يطابقه (التسوية تتجاوز التأمين): يُرفض', async () => {
     const s = await setup();
     const c = await ended(s, s.ua, 12);

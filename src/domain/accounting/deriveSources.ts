@@ -34,6 +34,8 @@ export interface SourceReader {
   entries(srcType: string, srcId: string): SrcEntry[];
   /** قيدٌ مرحّل بمعرّفه هنا أو في الوارد */
   entry(id: string): SrcEntry | null;
+  /** معرّفات القيود المرحّلة بمصدرها في الوارد ولم تُطبَّق هنا بعد */
+  pending(srcType: string, srcId: string): string[];
 }
 
 /** المصادر التي يُعاد اشتقاقها هنا · وأطراف حساباتها (لما وصل معكوساً) */
@@ -187,6 +189,9 @@ export function memberSourceIssue(db: DB, r: SourceReader,
   const srcId = e.src_id ?? '';
   if (e.reversed_by) return reversedIssue(r, { id: e.id, src, srcId, lines: e.lines }, e.reversed_by);
   if (live(r, src, srcId, e.id, () => 1) > 0) return AWAIT;
+  // وقيدٌ آخر من المصدر نفسه في الوارد يُطبَّق قبله: القديم الواصل معكوساً يسبق الجديد، وإلا وصل عاكس القديم والجديد وحده هنا فلا
+  // يطابقه فيُرفض، ويبقى القديم بلا عاكسٍ ينتظره (تعديل التسوية أو المطالبة في مزامنةٍ واحدة بترتيبٍ آخر)
+  if (r.pending(src, srcId).some((id) => id !== e.id)) return AWAIT;
   const d = derive(db, r, { id: e.id, src, srcId, total: nonZero(e.lines).reduce((s, l) => s + num(l.credit_halalas), 0) });
   if (typeof d === 'string') return d;
   return dateIssue(db, e.date, d) || matchIssue(e.lines, d.lines);
