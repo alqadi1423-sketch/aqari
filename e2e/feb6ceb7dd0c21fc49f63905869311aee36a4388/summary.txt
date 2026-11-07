@@ -1,0 +1,6 @@
+commit feb6ceb7dd0c21fc49f63905869311aee36a4388
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42368939754
+success true
+flows 2 · failed 0
+00-smoke pass 36s
+01-property pass 50s
