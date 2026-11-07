@@ -227,9 +227,9 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string, date?: 
       })),
       srcType: (e.src_type ?? 'manual') + '_rev',
       srcId: e.src_id ?? e.id,
-      // والفارغ من أبعاد الأصل يبقى فارغاً (المتحقق المستقل): قيد عمولة التقبيل يُرحَّل قبل صفّ صفقته فتُكتب سطوره بلا أبعاد، وكان
-      // العاكس يملؤها من الصفقة فيرفضه جهاز المالك (mirrorIssue يطابق الأبعاد) ويبقى إيراد التقبيل الملغى · كما يعكس
-      // reverseAllPostedEntries
+      // والفارغ من أبعاد الأصل يبقى فارغاً (المتحقق المستقل): قيد عمولة التقبيل كان يُرحَّل قبل صفّ صفقته فتُكتب سطوره بلا أبعاد
+      // (رُتّب بعده في التوجيه الرابع ٣ · ١، وتبقى القيود القديمة كما رُحّلت)، وكان العاكس يملؤها من الصفقة فيرفضه جهاز المالك
+      // (mirrorIssue يطابق الأبعاد) ويبقى إيراد التقبيل الملغى · كما يعكس reverseAllPostedEntries
       exactDims: true,
     });
     if (posted) db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [posted.id, e.id]);

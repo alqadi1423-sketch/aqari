@@ -835,12 +835,12 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
         journal_entry_id: string | null }>('key_money_deals', e.srcId);
       if (!k) return AWAIT;
       if (k.journal_entry_id && k.journal_entry_id !== e.id) return no('noEntry');
-      // والقيد يُرحَّل قبل صفّ صفقته (recordKeyMoneyDeal) فلا يجد dimsFromSource مستنده فتُكتب سطوره بلا أبعاد · ويُقبل بأبعاد
-      // صفقته (عقدها أو وحدتها) إن مُلئت، ولا يُقبل بأبعاد مستندٍ آخر
-      const none: DimSpec = { contract: null, unit: null, props: [null] };
+      // والقيد يُرحَّل بعد صفّ صفقته (recordKeyMoneyDeal · قرار المالك 2026-11-07 «قيد عمولة التقبيل يُرحّل بعد صف الصفقة، وتحقق
+      // جهاز المالك يرفض القيد بلا أبعاد») فيحمل أبعادها: عقدها ووحدته وعقاره، أو وحدتها وعقارها · ولا يُقبل بلا أبعاد ولا بأبعاد
+      // مستندٍ آخر (ما كتبه إصدارٌ أقدم بلا أبعاد يُرفض ويظهر سببه، ويُعاد بإصدارٍ حديث)
       const own = k.contract_id ? contractDims(db, r, k.contract_id) : unitDims(db, r, k.unit_id ?? null);
       if (!own) return AWAIT;
-      const lines = want(keyMoneyLines(db, num(k.commission_halalas)), () => [none, own]);
+      const lines = want(keyMoneyLines(db, num(k.commission_halalas)), () => [own]);
       return lines ? { lines, date: k.date ?? '', correctable: false } : no('noEntry');
     }
     case 'claim':
