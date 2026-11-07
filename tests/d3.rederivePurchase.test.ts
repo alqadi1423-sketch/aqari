@@ -153,4 +153,22 @@ describe('إعادة اشتقاق قيدي فاتورة الشراء وسداد�
     expect(net(s.owner, '2100')).toBe(-230000);
     s.close();
   });
+  test('إيجابي · قيد فاتورةٍ وصل قبل بعض بنودها (رفع العضو على دفعات) يُنتظر ثم يُقبل حين تصل', async () => {
+    const s = await setup();
+    // غير قابلة للخصم: ضريبتها موزّعةٌ على البنود بأساس كلٍّ منها، فبندٌ لم يصل يغيّر نصيب الأصل منها
+    const id = buy(s.dev, s.ua, { ...withAsset(s.ua), excludeFromVat: false, taxHalalas: 60000, totalHalalas: 460000 });
+    await sync(s.dev, s.r);
+    const k = asMember(s.r, 'purchase');
+    const late = [...s.r.docs.values()].filter((d) => d.t === 'purchase_lines' && d.d?.purchase_id === id && !d.d?.is_asset);
+    expect(late.length).toBe(1);
+    for (const d of late) s.r.docs.delete(d.id);
+    await ownerPulls(s.owner, s.r);
+    expect(has(s.owner, k)).toBe(false);
+    expect(reasonOf(s.owner, k)).toBe('');
+    for (const d of late) s.r.inject(d);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(true);
+    s.close();
+  });
 });

@@ -157,7 +157,7 @@ interface AssetForm { lines: EntryLine[]; specs: DimSpec[][] }
  * وعقارها) · وبنودٌ كتبها «تحويل المصروف إلى أصول» (أصولها من مصدر convert) لم تكن في قيد التسجيل، فلا أصول فيه · والبنود التي
  * أثبتت تكلفة أصولٍ قائمة وحدها (لا مصدر يميّز وقت كتابتها) تُقبل بالشكلين · 'await' لأصلٍ لم يصل
  */
-function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, tax: number, deductible: boolean, dims: DimSpec): AssetForm[] | typeof AWAIT {
+function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, subtotal: number, tax: number, deductible: boolean, dims: DimSpec): AssetForm[] | typeof AWAIT {
   const none: AssetForm = { lines: [], specs: [] };
   const lines = r.rows<{ id: string; qty: number; amount_halalas: number; is_asset: number; asset_category: string | null; sort: number; deleted_at?: string | null }>(
     'purchase_lines', 'purchase_id', purchaseId).filter((l) => !l.deleted_at).sort((a, b) => num(a.sort) - num(b.sort));
@@ -165,6 +165,9 @@ function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, tax: nu
   const assets = r.rows<{ id: string; purchase_line_id: string | null; unit_id: string | null; property_id: string | null; source: string | null; deleted_at?: string | null }>(
     'assets', 'purchase_id', purchaseId).filter((a) => !a.deleted_at);
   if (assets.some((a) => a.source === 'convert')) return [none];
+  // بنود الحفظ مجموعها أساس الفاتورة (validateLines) · ودونه بنودٌ لم تصل بعد: العضو يرفع على دفعاتٍ صغيرة بترتيب الجداول، فقد يصل
+  // القيد ورأس الفاتورة قبل بقية بنودها
+  if (lines.reduce((s, l) => s + num(l.amount_halalas), 0) < subtotal) return AWAIT;
   const costs = lineCosts(lines.map((l) => ({ descr: '', qty: num(l.qty), amountHalalas: num(l.amount_halalas), isAsset: !!num(l.is_asset) })), tax, deductible);
   const form: AssetForm = { lines: [], specs: [] };
   for (const [i, l] of lines.entries()) {
@@ -216,6 +219,8 @@ function creditNoteIssue(r: SourceReader, id: string, v: InvoiceRow, lines: Stor
   const total = sub + x.tax;
   if (num(v.tax_halalas) !== -x.tax || num(v.total_halalas) !== -total) return no('creditNote');
   if (total > num(ref.total_halalas) + prior.reduce((s, n) => s + num(n.total_halalas), 0)) return no('creditNote');
+  // سطورٌ صافيها دون صافي رأسه لم تصل كلها بعد فيُنتظر
+  if (-lines.reduce((s, l) => s + mulQty(num(l.qty), num(l.price_halalas)), 0) < sub) return AWAIT;
   const key = (code: TaxCode, pct: number, price: number) => code + '|' + pct + '|' + price;
   const got = lines.map((l) => key(lineTaxCode(l.tax_code, num(l.tax_pct)), num(l.tax_pct), mulQty(num(l.qty), num(l.price_halalas)))).sort();
   const exp = x.lines.map((l) => key(l.code, l.pct, l.price)).sort();
@@ -355,6 +360,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
         // تحصيلٌ لم يصل وسمه بعد يُنتظر
         if (!v.paid_date) return AWAIT;
         const remaining = num(v.total_halalas) + creditNotesOf(r, e.srcId).reduce((s, n) => s + num(n.total_halalas), 0);
+        // دون الباقي: إشعارٌ دائن قبله لم يصل صفّه بعد فيُنتظر (ويُرفض لطول انتظاره إن لم يصل)
+        if (e.total > 0 && e.total < remaining) return AWAIT;
         const lines = remaining > 0 ? want(invoicePaymentLines(remaining), () => [dims]) : null;
         return lines ? { lines, date: v.paid_date, also, correctable: false } : no('noEntry');
       }
@@ -376,6 +383,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
         } catch {
           return no('taxCode');
         }
+        // صافي سطورها دون صافي رأسها: سطورٌ لم تصل بعد (العضو يرفع على دفعاتٍ صغيرة بترتيب الجداول) فيُنتظر · وما سواه مخالفة
+        if (calc.subtotal < head.subtotal) return AWAIT;
         if (calc.subtotal !== head.subtotal || calc.tax !== head.tax || calc.total !== head.total) return no('invoiceTotals');
       } else if (head.subtotal + head.tax !== head.total) return no('invoiceTotals');
       const built = want(invoiceLedgerLines(head), () => [dims]);
@@ -430,7 +439,7 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       }
       if (p.journal_entry_id && p.journal_entry_id !== e.id) return no('noEntry');
       const deductible = p.tax_status === TS_DEDUCTIBLE;
-      const forms = purchaseAssetForms(db, r, e.srcId, tax, deductible, dims);
+      const forms = purchaseAssetForms(db, r, e.srcId, subtotal, tax, deductible, dims);
       if (forms === AWAIT) return AWAIT;
       const built = forms.map((f) => want(purchaseLedgerLines(
         { category: p.category ?? '', subtotal, tax, total, roundingDiff: total - subtotal - tax, deductible }, f.lines),
