@@ -1,0 +1,7 @@
+commit 18c43c8be523d9cac0d4304591a2662ac02554fd
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42341394062
+os Linux · node v24.22.2 · TZ Asia/Riyadh
+success false
+suites 237 passed / 238 total
+tests 1716 passed · 1 failed · 0 skipped / 1717 total
+failed-suite tests/d3.rederiveDepreciation.test.ts
