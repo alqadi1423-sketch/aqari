@@ -185,8 +185,12 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
     case 'claim_collect': {
       // المطالبة (claims.ts، ومطالبة زيادة التسوية): قيدها بمبلغها وتاريخها أو تاريخ التصحيح بعده (تعديل المفتوحة يعكس القديم ويرحّل
       // الجديد) · وتحصيلها بمبلغها وتاريخ تحصيلها المخزَّن · والأبعاد عقد المطالبة ووحدته وعقاره
-      const cl = r.row<{ contract_id: string | null; amount_halalas: number; date: string | null; collected_at: string | null }>('claims', e.srcId);
+      const cl = r.row<{ contract_id: string | null; amount_halalas: number; date: string | null; collected_at: string | null;
+        deleted_at: string | null }>('claims', e.srcId);
       if (!cl) return AWAIT;
+      // والمحذوفة عُكس قيدها حين حُذفت (deleteClaim) فلا قيد حيّاً لها: قيدٌ جديد بمبلغها يُدخل ذمةً وإيراداً لا مستند لهما
+      // (المتحقق المستقل) · وقيدها القديم الواصل معكوساً يمرّ بمسار العكس قبل هذا
+      if (cl.deleted_at) return no('deleted');
       const dims = cl.contract_id ? contractDims(db, r, cl.contract_id) : unitDims(db, r, null);
       if (!dims) return AWAIT;
       if (e.src === 'claim') {

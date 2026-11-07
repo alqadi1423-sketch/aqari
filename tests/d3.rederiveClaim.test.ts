@@ -4,9 +4,9 @@
  * (يعكس القديم ويرحّل الجديد) في مزامنةٍ واحدة · بيانات مصطنعة.
  */
 import { confirmContract, saveDepositSettlement } from '@/domain/contracts/service';
-import { saveClaim, collectClaim } from '@/domain/claims';
+import { saveClaim, collectClaim, deleteClaim } from '@/domain/claims';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
-import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, MEMBER } from './helpers/rederive';
+import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, MEMBER, forge, net, srcAsMember } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
 
 async function setup() {
@@ -71,6 +71,42 @@ describe('إعادة اشتقاق قيدي المطالبة وتحصيلها م�
     const k = asMember(s.r, 'claim_collect', doubled);
     await ownerPulls(s.owner, s.r);
     expect(has(s.owner, k)).toBe(false);
+    s.close();
+  });
+
+  test('سلبي · قيدٌ جديد بمبلغ مطالبةٍ محذوفة (عُكس قيدها فلا قيد حيّاً لها): يُرفض ولا يدخل الدفتر', async () => {
+    const s = await setup();
+    const id = claim(s.dev, s.a);
+    await sync(s.dev, s.r);
+    await ownerPulls(s.owner, s.r);
+    deleteClaim(s.dev, id);
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^claim(_rev)?$/);
+    await ownerPulls(s.owner, s.r);
+    expect(net(s.owner, '1250')).toBe(0);
+    const o = [...s.r.docs.values()].find((d) => d.t === 'journal_entries' && d.d?.src_type === 'claim')!;
+    const f = forge(o, { lines: o.lines! });
+    s.r.inject(f);
+    await ownerPulls(s.owner, s.r);
+    expect(has(s.owner, f.k)).toBe(false);
+    expect(reasonOf(s.owner, f.k)).toMatch(/claim/);
+    expect(net(s.owner, '1250')).toBe(0);
+    s.close();
+  });
+
+  test('إيجابي · مطالبةٌ أُنشئت وحُذفت في مزامنةٍ واحدة: قيدها المعكوس وعاكسه يُقبلان ورصيدها صفر', async () => {
+    const s = await setup();
+    const id = claim(s.dev, s.a);
+    deleteClaim(s.dev, id);
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^claim(_rev)?$/);
+    expect(ids.length).toBe(2);
+    await ownerPulls(s.owner, s.r);
+    for (const k of ids) {
+      expect(reasonOf(s.owner, k)).toBe('');
+      expect(has(s.owner, k)).toBe(true);
+    }
+    expect(net(s.owner, '1250')).toBe(0);
     s.close();
   });
 

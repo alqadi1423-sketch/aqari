@@ -791,6 +791,7 @@
     "dims": "A dimension of the line on account {{account}} (contract, unit or property) does not match the entry's document",
     "date": "Its date does not match its document's date",
     "noEntry": "Its document does not post an entry with this source",
+    "deleted": "Its document is deleted, so it has no live entry",
     "mirror": "An entry that arrived reversed does not match its reversal",
     "revTaken": "Its reversal was applied before it or another entry names it as its reversal",
     "revApply": "Its reversal cannot be applied after it: its number or line ids belong to another entry, or it lacks a date",
