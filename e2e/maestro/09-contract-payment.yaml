@@ -68,6 +68,10 @@ appId: com.aqari.app
     timeout: 15000
 - takeScreenshot: 09-review
 - tapOn: "تأكيد وإنشاء العقد"
+# «تم توثيق العقد» يعرض نموذج الاستلام · لاحقاً
+- tapOn:
+    text: "لاحقاً"
+    optional: true
 - extendedWaitUntil:
     visible: "E2E Tenant"
     timeout: 20000

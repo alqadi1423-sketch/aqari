@@ -69,7 +69,7 @@ import { useAccess } from '../src/ui/access';
 import { canView, isAdmin } from '../src/domain/access/access';
 import { LEAFLET_VERSION, LEAFLET_LICENSE } from '../src/ui/leafletBundle';
 import { useAppLockSetting } from '../src/ui/AppLockSettings';
-import { getBackupPassword, backupSecretKind, newRecoveryKey, saveRecoveryKey, type SecretKind } from '../src/services/backupPassword';
+import { getBackupPasswords, backupSecretKind, newRecoveryKey, saveRecoveryKey, type SecretKind } from '../src/services/backupPassword';
 import { formatRecoveryKey, confirmsRecoveryKey, isValidRecoveryKey, sealingSecretOf } from '../src/domain/backup/recoveryKey';
 import { RecoveryKeyRequiredError } from '../src/domain/backup/passwordGate';
 import * as Clipboard from 'expo-clipboard';
@@ -202,23 +202,28 @@ export default function Settings() {
   const [secretKind, setSecretKind] = useState<SecretKind>('off');
   // قفل التطبيق (#51)
   const lock = useAppLockSetting();
-  useEffect(() => { backupSecretKind().then(setSecretKind).catch(() => {}); }, []);
+  // سرّ الحساب الداخل (لكل حسابٍ سرّه · المدقق الخارجي D١)
+  const account = getSyncState(db, 'uid');
+  useEffect(() => { backupSecretKind(account).then(setSecretKind).catch(() => {}); }, [account]);
   const [keyOpen, setKeyOpen] = useState(false);
   // المفتاح الجديد يُعرض مرةً في الورقة حتى يُؤكَّد حفظه، ثم يُنسى من الواجهة
   const [newKey, setNewKey] = useState<string | null>(null);
   const [keyTail, setKeyTail] = useState('');
+  const [keyStep, setKeyStep] = useState<'show' | 'confirm'>('show');
   const openKey = () => { setNewKey(null); setKeyTail(''); setKeyOpen(true); };
   // سؤال كلمة مرور نسخةٍ مشفّرة أثناء الاستعادة · يُجاب بوعد
   const [pwAsk, setPwAsk] = useState<{ note: string; resolve: (v: string | null) => void } | null>(null);
   const [pwTyped, setPwTyped] = useState('');
   const askPassword = (note: string) => new Promise<string | null>((resolve) => { setPwTyped(''); setPwAsk({ note, resolve }); });
-  /** كلمة المحفوظة أولاً بلا سؤال، ثم السؤال · ورسالة الخطأ بحسب من أخطأ */
+  /** أسرار الحساب المحفوظة أولاً بلا سؤال (الحالي ثم السابقة · المدقق الخارجي D٢)، ثم السؤال · ورسالة الخطأ بحسب من أخطأ */
   const restorePassword = () => {
     let last: 'stored' | 'typed' | null = null;
+    let stored: string[] | null = null;
     return async (wrong: boolean) => {
-      if (!last) {
-        const stored = await getBackupPassword();
-        if (stored) { last = 'stored'; return stored; }
+      if (last !== 'typed') {
+        if (!stored) stored = await getBackupPasswords(account);
+        const next = stored.shift();
+        if (next) { last = 'stored'; return next; }
       }
       const note = !wrong ? t('backup.key.askNote') : last === 'stored' ? t('backup.key.askOther') : t('backup.key.askWrong');
       last = 'typed';
@@ -572,6 +577,7 @@ export default function Settings() {
       const b = await backupToDrive(db, setProgress, signal);
       bump();
       if (b.notes) notesDialog('رُفعت النسخة إلى Google Drive وفيها ملاحظات', reviewData(db).notes);
+      else if (b.visibleFailed) dialog({ title: t('drive.visibleFailed'), body: t('drive.visibleNote', { why: b.visibleFailed }), actions: [{ label: t('crash.close'), variant: 'ghost' }] });
       else toast('رُفعت النسخة مشفّرة إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
     } catch (e) {
       if (isCancelled(e)) { endCancelled('أُلغي النسخ على Google Drive', () => { doDriveBackup(); }); return; }
@@ -1065,16 +1071,24 @@ export default function Settings() {
       {/* مفتاح الاسترداد (التوجيه الرابع ٤ · ٣): يُعرض مرة، ولا يُحفظ حتى تُكتب آخر مجموعةٍ منه */}
       <Sheet visible={keyOpen} onClose={() => { setKeyOpen(false); setNewKey(null); }} title={t('backup.key.title')}>
         {secretKind === 'lost' ? <Note tone="danger">{t('backup.passwordLost')}</Note> : null}
-        {newKey ? (
+        {/* خطوتان (المدقق الخارجي D٦): المفتاح ظاهرٌ ونسخه، ثم يُخفى ويُطلب آخر مجموعةٍ منه · فالتأكيد من المحفوظ لا من الشاشة */}
+        {newKey && keyStep === 'show' ? (
           <>
             <Note tone="danger">{t('backup.key.warn')}</Note>
-            <T size={TYPE.screenTitle} bold style={{ textAlign: 'center', marginVertical: 12, writingDirection: 'ltr', letterSpacing: 1 }}>{formatRecoveryKey(newKey)}</T>
+            <T testID="recovery-key" size={TYPE.screenTitle} bold style={{ textAlign: 'center', marginVertical: 12, writingDirection: 'ltr', letterSpacing: 1 }}>{formatRecoveryKey(newKey)}</T>
             <BtnGhost icon="clipboard" title={t('backup.key.copy')} onPress={async () => { await Clipboard.setStringAsync(formatRecoveryKey(newKey)); toast(t('backup.key.copied')); }} />
+            <View style={{ height: 8 }} />
+            <BtnPrimary title={t('backup.key.next')} onPress={() => { setKeyTail(''); setKeyStep('confirm'); }} />
+          </>
+        ) : newKey ? (
+          <>
+            <T size={TYPE.body} style={{ marginBottom: 8 }}>{t('backup.key.confirmNote')}</T>
             <Field label={t('backup.key.confirmLabel')} value={keyTail} onChange={setKeyTail} ltr />
+            <BtnGhost title={t('backup.key.showAgain')} onPress={() => setKeyStep('show')} />
             {confirmsRecoveryKey(newKey, keyTail) ? (
               <BtnPrimary title={t('backup.key.saved')} onPress={async () => {
                 try {
-                  await saveRecoveryKey(newKey);
+                  await saveRecoveryKey(newKey, account);
                   setSecretKind('key'); setNewKey(null); setKeyOpen(false); toast(t('backup.key.savedToast'));
                 } catch (e) { reportFailure({ title: t('backup.key.title'), e }); }
               }} />
@@ -1087,12 +1101,16 @@ export default function Settings() {
               title: t('backup.key.replace'), body: t('backup.key.replaceBody'), tone: 'danger',
               actions: [
                 { label: t('common.cancel'), variant: 'ghost' },
-                { label: t('backup.key.replaceConfirm'), variant: 'primary', onPress: () => { setKeyTail(''); setNewKey(newRecoveryKey()); } },
+                { label: t('backup.key.replaceConfirm'), variant: 'primary', onPress: () => { setKeyTail(''); setKeyStep('show'); setNewKey(newRecoveryKey()); } },
               ],
             })} />
           </>
         ) : (
-          <BtnPrimary title={t('backup.key.create')} onPress={() => { setKeyTail(''); setNewKey(newRecoveryKey()); }} />
+          <>
+            {/* وكلمة المرور القديمة تبقى سرّاً سابقاً يفتح النسخ السابقة على هذا الجهاز (المدقق الخارجي D٢) */}
+            {secretKind === 'password' ? <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>{t('backup.key.fromPassword')}</T> : null}
+            <BtnPrimary title={t('backup.key.create')} onPress={() => { setKeyTail(''); setKeyStep('show'); setNewKey(newRecoveryKey()); }} />
+          </>
         )}
       </Sheet>
 

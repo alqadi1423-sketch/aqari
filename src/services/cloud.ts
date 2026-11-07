@@ -71,7 +71,7 @@ import {
   updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
-import { throwIfCancelled, CancelledError, type CancelSignal, type ProgressFn } from '../domain/progress';
+import { throwIfCancelled, isCancelled, CancelledError, type CancelSignal, type ProgressFn } from '../domain/progress';
 import { saveInvoiceIssued, setInvoiceStatusIssued, issuePendingInvoices, issueCreditNote, type InvoiceNumberSource, type IssueResult } from '../domain/invoiceIssue';
 import type { InvoiceInput, CreditNoteInput } from '../domain/invoices';
 
@@ -1084,20 +1084,28 @@ export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?:
   const manifest = await createBackup(env, out, onProgress, { signal, dataOnly: filesCloudOn() });
   try {
     // نسخة Drive مشفّرة دائماً بمفتاح الاسترداد (التوجيه الرابع ٤ · ٣) · وبلا مفتاحٍ أو تعذّرت قراءته: لا رفع
-    const secret = await backupSecretForSealing();
+    // سرّ الحساب الداخل لا سرّ الجهاز (المدقق الخارجي D١)
+    const secret = await backupSecretForSealing(getSyncState(db, 'uid'));
     await sealBackupFile(env, out, secret, onProgress);
     throwIfCancelled(signal);
     const token = await driveToken();
     const meta = { encrypted: true, notes: !!manifest.notes?.length, onProgress, signal };
     const b = await uploadBackupToDrive(driveIO, token, out, name, meta);
-    // ونسخةٌ في المجلد الظاهر (التوجيه الرابع ٤ · ٣) · حسابٌ دخل قبل نطاقه يُسأل عنه مرةً ثم يُعاد الرفع
-    throwIfCancelled(signal);
+    // ونسخةٌ في المجلد الظاهر (التوجيه الرابع ٤ · ٣) · حسابٌ دخل قبل نطاقه يُسأل عنه مرةً ثم يُعاد الرفع · وتعذّرها بعد أن رُفعت المخفية
+    // وطابقت لا يُعلن فشل النسخ كله (المدقق الخارجي D٤: كان يقال «تعذّر النسخ» والنسخة في Drive، ومن رفض النطاق لا تنجح له نسخةٌ أبداً)،
+    // بل يُذكر للمستخدم مع النجاح
     try {
-      await uploadVisibleCopy(driveIO, token, out, name, meta);
+      throwIfCancelled(signal);
+      try {
+        await uploadVisibleCopy(driveIO, token, out, name, meta);
+      } catch (e) {
+        if (!(e instanceof DriveError) || e.status !== 403) throw e;
+        await whilePrompting(() => GoogleSignin.addScopes({ scopes: [DRIVE_FILE_SCOPE] }));
+        await uploadVisibleCopy(driveIO, await driveToken(), out, name, meta);
+      }
     } catch (e) {
-      if (!(e instanceof DriveError) || e.status !== 403) throw e;
-      await whilePrompting(() => GoogleSignin.addScopes({ scopes: [DRIVE_FILE_SCOPE] }));
-      await uploadVisibleCopy(driveIO, await driveToken(), out, name, meta);
+      const m = e instanceof Error ? e.message : '';
+      return { ...b, visibleFailed: isCancelled(e) ? t('drive.visibleCancelled') : (/[؀-ۿ]/.test(m) ? m : t('drive.visibleFailed')) };
     }
     return b;
   } finally {

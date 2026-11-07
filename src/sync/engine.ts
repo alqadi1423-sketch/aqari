@@ -495,6 +495,12 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
     && originals.some((o, i) => issues[i] === '' && db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: ربط القيد بمستنده */ WHERE journal_entry_id = ?`, [o.id]))) { // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
     throw new Error(tr('mirror.revRejected', { why: tr('payment.cancelFromDeposit', { lng: 'ar' }), lng: 'ar' }));
   }
+  // ولا يعكس عضوٌ قيد نقل أصلٍ ما دام حدث نقله قائماً (المدقق الخارجي ج٦): لا مسار في التطبيق يعكسه، وعكسه يعيد تكلفة الأصل في الدفتر
+  // إلى وحدته القديمة وصفُّه وحدثه في الجديدة، فيُقبل به إهلاكٌ بالوحدة القديمة · وقيد النقل اليتيم (بلا حدثه) يُعكس كغيره
+  if (base === 'asset_transfer' && byMember(db, doc, true)
+    && originals.some((o, i) => issues[i] === '' && db.get(`SELECT 1 FROM asset_events WHERE entry_id = ?`, [o.id]))) {
+    throw new Error(tr('mirror.revRejected', { why: tr('mirror.transferLive', { lng: 'ar' }), lng: 'ar' }));
+  }
   if (!freeOriginals(db, doc.k, src, srcId, originals.map((o) => o.id)).length) {
     throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
   }
@@ -754,7 +760,7 @@ function sourceReader(db: DB): SourceReader {
       const s = (v: unknown) => (v == null || v === '' ? null : String(v));
       const inbox = db.all<{ pk: string; payload: string }>(
         `SELECT i.pk, i.payload FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.status') = ?
-           AND EXISTS (SELECT 1 FROM json_each(i.payload, '$.lines') j WHERE json_extract(j.value, '$.asset_id') = ?)`, [POSTED, assetId])
+           AND EXISTS (SELECT 1 FROM json_each(i.payload, '$.lines') j WHERE j.type = 'object' AND json_extract(j.value, '$.asset_id') = ?)`, [POSTED, assetId])
         .filter((x) => !ids.has(x.pk)).map((x) => {
           const doc = JSON.parse(x.payload) as RemoteDoc;
           const d = doc.d ?? {};
@@ -799,8 +805,11 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown>)
   if (getSyncState(db, 'membership') || !byMember(db, doc, true) || row.deleted_at) return;
   const no = String(row.journal_no ?? '');
   if (!no || db.get(`SELECT 1 FROM journal_entries WHERE no = ?`, [no])) return;
-  if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.no') = ?
-       AND NOT EXISTS (SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.no') = ?)`, [no, no])) {
+  // ورفضُ قيدها لطول انتظاره (WAIT_REJECT) مؤقتٌ يُعاد على التجربة، فتنتظر معه ولا تُرفض (المدقق الخارجي ج٣: كانت تُرفض نهائياً
+  // ثم يعود القيد ويُطبَّق وحركته مرفوضة)
+  if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.no') = ? AND reason != ?
+       AND NOT EXISTS (SELECT 1 FROM sync_rejects w WHERE w.tbl = 'journal_entries' AND w.reason = ? AND json_extract(w.payload, '$.d.no') = ?)
+       AND NOT EXISTS (SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.no') = ?)`, [no, WAIT_REJECT, WAIT_REJECT, no, no])) {
     throw new Error(tr('sync.bankTxEntryRejected', { no, lng: 'ar' }));
   }
   throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));

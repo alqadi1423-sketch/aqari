@@ -6,7 +6,7 @@
 import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 52;
+export const SCHEMA_VERSION = 53;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1852,7 +1852,7 @@ CREATE TRIGGER IF NOT EXISTS trg_inbox_lines_ins AFTER INSERT ON sync_inbox
 WHEN NEW.tbl = 'journal_entries' AND NEW.del = 0
 BEGIN
   INSERT INTO sync_inbox_lines (line_id, doc)
-    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j WHERE json_extract(j.value, '$.id') IS NOT NULL;
+    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j WHERE j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
 END;
 CREATE TRIGGER IF NOT EXISTS trg_inbox_lines_upd AFTER UPDATE OF payload, del ON sync_inbox
 WHEN NEW.tbl = 'journal_entries' OR OLD.tbl = 'journal_entries'
@@ -1860,7 +1860,7 @@ BEGIN
   DELETE FROM sync_inbox_lines WHERE doc = OLD.doc;
   INSERT INTO sync_inbox_lines (line_id, doc)
     SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j
-    WHERE NEW.tbl = 'journal_entries' AND NEW.del = 0 AND json_extract(j.value, '$.id') IS NOT NULL;
+    WHERE NEW.tbl = 'journal_entries' AND NEW.del = 0 AND j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
 END;
 CREATE TRIGGER IF NOT EXISTS trg_inbox_lines_del AFTER DELETE ON sync_inbox
 WHEN OLD.tbl = 'journal_entries'
@@ -1870,8 +1870,31 @@ END;
 DELETE FROM sync_inbox_lines;
 INSERT INTO sync_inbox_lines (line_id, doc)
   SELECT json_extract(j.value, '$.id'), i.doc FROM sync_inbox i, json_each(i.payload, '$.lines') j
-  WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(j.value, '$.id') IS NOT NULL;
+  WHERE i.tbl = 'journal_entries' AND i.del = 0 AND j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_je_reversed_by ON journal_entries(reversed_by) WHERE reversed_by IS NOT NULL;
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52];
+/**
+ * الهجرة ٥٣ (المدقق الخارجي ج١ · حرج): محفّزات سطور الوارد بشرط «السطر كائن» · مستند قيدٍ من عضوٍ سطوره نصوص كان يرمي «malformed JSON»
+ * داخل الإدراج في الوارد فيتوقف كل جهازٍ يسحبه · والهجرة ٥٢ صُحّحت بالشرط نفسه، وهذه تعيد بناء المحفّزات لقاعدةٍ جرت عليها قبله
+ */
+export const MIGRATION_53 = `
+DROP TRIGGER IF EXISTS trg_inbox_lines_ins;
+DROP TRIGGER IF EXISTS trg_inbox_lines_upd;
+CREATE TRIGGER trg_inbox_lines_ins AFTER INSERT ON sync_inbox
+WHEN NEW.tbl = 'journal_entries' AND NEW.del = 0
+BEGIN
+  INSERT INTO sync_inbox_lines (line_id, doc)
+    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j WHERE j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
+END;
+CREATE TRIGGER trg_inbox_lines_upd AFTER UPDATE OF payload, del ON sync_inbox
+WHEN NEW.tbl = 'journal_entries' OR OLD.tbl = 'journal_entries'
+BEGIN
+  DELETE FROM sync_inbox_lines WHERE doc = OLD.doc;
+  INSERT INTO sync_inbox_lines (line_id, doc)
+    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j
+    WHERE NEW.tbl = 'journal_entries' AND NEW.del = 0 AND j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
+END;
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53];

@@ -1,0 +1,64 @@
+# الجوال الافتراضي · ١٠ أ · مفتاح الاسترداد على الجهاز (خطوتان: يُعرض ويُنسخ، ثم يُخفى ويُكتب آخره) ثم نسخةٌ مشفّرة إلى نافذة المشاركة
+# (التوجيه الرابع ٤ · ١ و٤ · ٣) · بلا بيانات حقيقية
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- tapOn: "العقارات"
+- tapOn: "+ عقار جديد"
+- tapOn:
+    id: "field-اسم العقار"
+- inputText: "E2E Backup"
+- tapOn:
+    id: "field-عدد الوحدات"
+- inputText: "1"
+- hideKeyboard
+- tapOn: "إضافة العقار"
+- tapOn:
+    text: "إضافة الوحدات الآن"
+    optional: true
+- extendedWaitUntil:
+    visible: "E2E Backup"
+    timeout: 20000
+- tapOn: "المزيد"
+- scrollUntilVisible:
+    element: "الإعدادات"
+    direction: DOWN
+- tapOn: "الإعدادات"
+- scrollUntilVisible:
+    element: "مفتاح الاسترداد"
+    direction: DOWN
+- tapOn: "مفتاح الاسترداد"
+- tapOn: "إنشاء مفتاح الاسترداد"
+- extendedWaitUntil:
+    visible:
+      id: "recovery-key"
+    timeout: 10000
+- copyTextFrom:
+    id: "recovery-key"
+- takeScreenshot: 10a-key
+- tapOn: "كتبته أو نسخته · التالي"
+- assertNotVisible:
+    id: "recovery-key"
+- tapOn:
+    id: "field-اكتب آخر خمسة أحرف من المفتاح"
+- inputText: ${maestro.copiedText.substring(maestro.copiedText.length - 5)}
+- hideKeyboard
+- tapOn: "حفظته"
+- extendedWaitUntil:
+    visible: "محفوظ على هذا الجهاز"
+    timeout: 10000
+- scrollUntilVisible:
+    element: "النسخ الاحتياطي"
+    direction: UP
+- tapOn:
+    text: "النسخ الاحتياطي"
+    index: 1
+- extendedWaitUntil:
+    visible: "Share|مشاركة|Nearby|تصدير النسخة الاحتياطية"
+    timeout: 60000
+- takeScreenshot: 10a-share
+- back

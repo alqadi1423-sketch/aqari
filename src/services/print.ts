@@ -40,9 +40,9 @@ export function companyInfo(db: DB): CompanyInfo {
 }
 
 /** ترويسة التقارير (تستعملها reportExport) · نفس بيانات المنشأة */
-export function companyHeader(db: DB, vatReturn = false): string {
+export function companyHeader(db: DB, vatReturn?: { filed: boolean }): string {
   const co = companyInfo(db);
-  const vat = vatReturn ? vatReturnVatNo(co) : shownVatNo(co);
+  const vat = vatReturn ? vatReturnVatNo(co, vatReturn.filed) : shownVatNo(co);
   return `<div><div style="font-weight:800;font-size:16px">${esc(co.name || '')}</div>
     ${vat !== undefined ? `<div style="font-size:11.5px;color:#77808F;margin-top:4px">الرقم الضريبي: <span class="num">${esc(vat)}</span></div>` : ''}</div>`;
 }

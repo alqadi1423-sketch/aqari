@@ -87,7 +87,7 @@ export async function makeSafetyBackup(
   const empty = !hasUserData(env.db);
   const keep = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}${empty ? EMPTY_MARK : ''}.aqbk`;
   const outPath = joinPath(dir, keep);
-  await createBackup(env, outPath, onProgress);
+  await createBackup(env, outPath, onProgress, { asIs: true });
   // نسخ ما قبل الترقية لها سقفها في upgrade.ts · لا تحذفها نسخة استعادة ولا مسح
   for (const name of env.fs.list(dir)) {
     if (name === keep || !name.endsWith('.aqbk') || name.startsWith(PRE_UPGRADE_PREFIX)) continue;
@@ -212,6 +212,12 @@ export interface CreateBackupOptions {
    * بصمة القاعدة، وإعادة فتح الأرشيف، وintegrity_check، ومطابقة الأعداد، وبصمة كل مرفق محفوظ.
    */
   preUpgrade?: boolean;
+  /**
+   * نسخة الأمان قبل الاستعادة أو المسح بالحكم نفسه (المدقق الخارجي D٣ · القاعدة ٩٩): نسخةٌ تلقائية تحفظ الحال كما هي لتُرجع إليها،
+   * فلا يمنعها ملفٌ مفقود أو فحصٌ متعذّر (كانت ترفض فتُلغى استعادة نسخة ما قبل الترقية الناقصة) · والنسخة التي يصنعها المستخدم
+   * (التصدير وDrive) ترفض وتسمّي المفقود كما قرر المالك
+   */
+  asIs?: boolean;
   /** الإلغاء بيد المستخدم · يُفحص بين الخطوات ولا يبقى بعده أرشيف جزئي (progress.ts) */
   signal?: CancelSignal;
   /**
@@ -228,6 +234,7 @@ export async function createBackup(
   onProgress?: ProgressFn,
   opts: CreateBackupOptions = {}
 ): Promise<BackupManifest> {
+  const tolerant = !!(opts.preUpgrade || opts.asIs);
   if (!env.hasher) throw new HashingUnavailableError();
   const hasher = env.hasher;
 
@@ -237,13 +244,13 @@ export async function createBackup(
   try {
     integrity = integrityChecks(env.db);
   } catch (e) {
-    if (!opts.preUpgrade) throw e;
+    if (!tolerant) throw e;
     // بنية أقدم من أعمدة الفحوص · يُكتب ذلك في البيان والقاعدة تُحفظ كما هي
     integrity = [{ name: 'فحوص الدفتر', ok: false, value: 'بنية الإصدار ' + currentSchemaVersion(env.db) + ' أقدم من أن تُفحص قبل ترقيتها' }];
   }
   // الحكم نفسه في الاستعادة (checks.ts): التلف يمنع النسخة، والفرق المحاسبي يُكتب فيها «ملاحظات» ولا يمنع حفظ البيانات
   let notes: string[] = [];
-  if (!opts.preUpgrade) {
+  if (!tolerant) {
     let review: ReturnType<typeof reviewData>;
     try {
       review = reviewData(env.db);
@@ -261,7 +268,7 @@ export async function createBackup(
   try {
     ledger = ledgerTotals(env.db);
   } catch (e) {
-    if (!opts.preUpgrade) throw e;
+    if (!tolerant) throw e;
     ledger = { total_debit_halalas: 0, total_credit_halalas: 0, balances: {} };
   }
   const schemaVersion = currentSchemaVersion(env.db);
@@ -330,7 +337,7 @@ export async function createBackup(
       const p = joinPath(env.attachmentsDir, `${b.sha256}.${b.ext}`);
       const label = () => attachmentLabel(env.db, b.sha256, b.ext);
       if (!env.fs.exists(p)) {
-        if (opts.preUpgrade) { missing.push(`${b.sha256}.${b.ext}`); continue; }
+        if (tolerant) { missing.push(`${b.sha256}.${b.ext}`); continue; }
         throw new BackupVerificationError(`الملف «${label()}» مفقود من القرص · يُرفض إنشاء النسخة`);
       }
       const bytes = env.fs.read(p);
@@ -338,7 +345,7 @@ export async function createBackup(
       try { actual = await hasher(bytes); }
       catch { throw new BackupVerificationError(`تعذّر حساب بصمة الملف «${label()}» · يُرفض إنشاء النسخة`); }
       if (actual !== b.sha256) {
-        if (opts.preUpgrade) { missing.push(`${b.sha256}.${b.ext}`); continue; }
+        if (tolerant) { missing.push(`${b.sha256}.${b.ext}`); continue; }
         throw new BackupVerificationError(`بصمة الملف «${label()}» لا تطابق المسجَّلة له · الملف تالف · يُرفض إنشاء النسخة`);
       }
       // المرفقات تُخزَّن بلا إعادة ضغط · صورها وملفاتها مضغوطة أصلاً

@@ -561,7 +561,9 @@
     "commercialRentControl": "Commercial rent collected outside item 5 (its VAT comes with commercial leasing)",
     "filedDate": "This date is in a filed VAT period, so no reversal or settlement can be dated in it · choose a date in an open period",
     "commercialRentBlock": "Commercial rent was collected in this period ({{amount}}) and its VAT is not built into the return yet, so the return cannot be filed until it is",
-    "filedEntry": "A VAT return was filed for this date's period, so no payment, cash operation or manual entry can be recorded in it · choose a date in an open period"
+    "filedEntry": "A VAT return was filed for this date's period, so no payment, cash operation or manual entry can be recorded in it · choose a date in an open period",
+    "companyLabel": "Organization",
+    "vatNoLabel": "VAT number"
   },
   "invoice": {
     "locked": "An issued invoice can't be edited, returned to draft or deleted · correct it with a credit note",
@@ -711,7 +713,7 @@
   },
   "backup": {
     "cipherChunkSize": "The encryption component returned a chunk of unexpected size · the backup was not encrypted",
-    "passwordLost": "A backup password was set on this device but cannot be read, so no backup is exported or uploaded unencrypted. Set the password again, or remove it if you want unencrypted backups.",
+    "passwordLost": "The backup secret saved on this device cannot be read, so no backup is exported or uploaded. Create a new recovery key to resume backups; earlier backups open with their secret if you type it.",
     "keyRequired": "No backup leaves the device unencrypted · create the recovery key under “Backup” first, and keep it somewhere safe.",
     "passwordLostShort": "Unreadable",
     "archiveTooLarge": "The archive's total size exceeds what the device can hold",
@@ -723,7 +725,7 @@
       "state.off": "Not created",
       "create": "Create the recovery key",
       "replace": "New key",
-      "replaceBody": "Upcoming backups are encrypted with the new key; earlier backups still open only with their old key, so keep it.",
+      "replaceBody": "New backups are encrypted with the new key. Earlier backups open on this device automatically, and elsewhere only with their old key, so keep it.",
       "replaceConfirm": "Create",
       "warn": "This key is shown once. Without it your backups can never be opened, not by us or anyone. Write it down or copy it somewhere safe outside the phone.",
       "copy": "Copy the key",
@@ -736,7 +738,11 @@
       "askLabel": "Recovery key or password",
       "askNote": "This backup is encrypted · type the recovery key or the password it was encrypted with.",
       "askOther": "This backup is encrypted with a key other than the one saved on this device · type its key.",
-      "askWrong": "Wrong key or password · try again."
+      "askWrong": "Wrong key or password · try again.",
+      "next": "I wrote or copied it · Next",
+      "confirmNote": "The key is now hidden · type the last five characters from what you saved, not from the screen.",
+      "showAgain": "Show the key again",
+      "fromPassword": "Your old password stays on this device and opens your earlier backups; new backups are encrypted with the key."
     },
     "device": {
       "title": "Backups on this device",
@@ -852,7 +858,8 @@
     "linkRejected": "Reversal link rejected · {{why}}",
     "noOriginal": "A member reversal with no original to reverse",
     "revRejected": "Reversal rejected · {{why}}",
-    "extra": "More reversals than originals"
+    "extra": "More reversals than originals",
+    "transferLive": "The asset transfer still exists with its event, so its entry is not reversed"
   },
   "journal": {
     "saveDraft": "Save draft",
@@ -890,13 +897,16 @@
   "drive": {
     "findFolder": "finding the visible backups folder",
     "makeFolder": "creating the visible backups folder",
-    "makeFolderFailed": "Could not create the visible backups folder"
+    "makeFolderFailed": "Could not create the visible backups folder",
+    "visibleFailed": "Could not upload the visible copy",
+    "visibleCancelled": "Uploading the visible copy was cancelled",
+    "visibleNote": "The backup was uploaded encrypted to Google Drive and its fingerprint matched, but it was not saved in the visible folder «Aqari · Backups»: {{why}}. Back up again later, and allow file access if asked."
   },
   "upgrade": {
     "missingTitle": "Backup saved except for missing files",
     "missingBody": "A full backup of your data was saved before the upgrade, except {{count}} attached file(s) that were not found on the phone or were damaged, so they are not in it:",
     "missingMore": "and {{count}} more",
-    "missingNote": "The records themselves are saved, and a missing file stays missing after the upgrade just as before it. If you have it elsewhere, attach it again after the upgrade.",
+    "missingNote": "The records themselves are saved, and a missing file stays missing after the upgrade just as before it. Backups you make (export and Google Drive) will refuse and name it until you attach it again from elsewhere or delete the attachment; the pre-upgrade backup stays under «Data and storage ← Restore».",
     "continue": "Continue the upgrade"
   },
   "crash": {

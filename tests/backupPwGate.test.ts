@@ -39,13 +39,14 @@ test('قراءةٌ واحدة: إن قُرئت الكلمة ثم تعذّرت ق
 
 test('التصدير والرفع إلى Drive يأخذان الكلمة من البوابة لا من القراءة الصامتة · وتعذّر فحص العلامة يُعدّ «وُضعت»', () => {
   const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
-  expect(read('src/services/backupPassword.ts')).toContain('flagged: () => { try { return flagFile().exists; } catch { return true; } }');
+  expect(read('src/services/backupPassword.ts')).toContain('flagged: () => { try { return flagFile(slot).exists; } catch { return true; } }');
   for (const f of ['src/services/backupService.ts', 'src/services/cloud.ts']) {
     const s = read(f);
     // التوجيه الرابع ٤ · ٣: البوابة نفسها بسرٍّ إجباري (backupSecretForSealing)، والختم بلا شرط فلا نسخة تخرج بلا تشفير
-    expect(s).toMatch(/backupSecretForSealing\(\)/);
+    // وسرّ الحساب الداخل (لكل حسابٍ سرّه · المدقق الخارجي D١)
+    expect(s).toMatch(/backupSecretForSealing\(getSyncState\(db, 'uid'\)\)/);
     expect(s).toMatch(/await sealBackupFile\(env, \w+, secret, onProgress\)/);
     expect(s).not.toMatch(/if \(pw\) await sealBackupFile/);
-    expect(s).not.toMatch(/getBackupPassword\(\)/);
+    expect(s).not.toMatch(/getBackupPasswords?\(/);
   }
 });

@@ -37,6 +37,8 @@ export interface DriveBackup {
   encrypted?: boolean;
   /** فيها ملاحظات محاسبية (checks.ts) */
   notes?: boolean;
+  /** رُفعت المخفية وتعذّرت النسخة في المجلد الظاهر · سببه بالعربية (المدقق الخارجي D٤) */
+  visibleFailed?: string;
 }
 
 export class DriveError extends Error {
@@ -148,17 +150,49 @@ export async function downloadBackupFromDrive(io: DriveIO, token: string, b: Dri
 }
 
 /** «حذف حسابي»: كل ملفات التطبيق في مجلده الخاص على Drive · يعيد عددها */
+const deleteError = (status: number) => new DriveError(`تعذّر حذف نسخة من Drive (${status})`);
+
 export async function deleteAllAppDataFiles(io: DriveIO, token: string): Promise<number> {
   let n = 0;
   for (;;) {
     const list = await listDriveBackups(io, token);
-    if (!list.length) return n;
+    if (!list.length) break;
     for (const b of list) {
       const res = await io.fetch(`${API}/files/${b.id}`, { method: 'DELETE', headers: auth(token) });
-      if (res.status !== 204 && res.status !== 404) throw new DriveError(`تعذّر حذف نسخة من Drive (${res.status})`);
+      if (res.status !== 204 && res.status !== 404) throw deleteError(res.status);
       n++;
     }
   }
+  // ونسخ التطبيق في المجلد الظاهر معها (المدقق الخارجي D٥: «حذف حسابي» يَعِد بحذف نسخ التطبيق على Drive)
+  return n + await deleteVisibleCopies(io, token);
+}
+
+/**
+ * نسخ التطبيق في المجلد الظاهر (بعلامتها) تُحذف · والمجلد يبقى: قد يضع فيه المستخدم غيرها، ونطاق drive.file لا يرى ما لم ينشئه التطبيق ·
+ * وحسابٌ لم يُمنح النطاق (403) لم تُرفع له نسخةٌ ظاهرة أصلاً
+ */
+async function deleteVisibleCopies(io: DriveIO, token: string): Promise<number> {
+  const fq = new URLSearchParams({
+    q: `mimeType='${FOLDER_MIME}' and trashed=false and appProperties has { key='app' and value='${VISIBLE_FOLDER_TAG}' }`,
+    spaces: 'drive', fields: 'files(id)',
+  });
+  const fr = await io.fetch(`${API}/files?${fq.toString()}`, { headers: auth(token) });
+  if (fr.status === 403) return 0;
+  const folders = (await json<{ files?: Array<{ id: string }> }>(fr, t('drive.findFolder'))).files ?? [];
+  let n = 0;
+  for (const f of folders) {
+    const q = new URLSearchParams({
+      q: `'${f.id}' in parents and trashed=false and appProperties has { key='app' and value='aqari' }`,
+      spaces: 'drive', fields: 'files(id)',
+    });
+    const files = (await json<{ files?: Array<{ id: string }> }>(await io.fetch(`${API}/files?${q.toString()}`, { headers: auth(token) }), t('drive.findFolder'))).files ?? [];
+    for (const x of files) {
+      const res = await io.fetch(`${API}/files/${x.id}`, { method: 'DELETE', headers: auth(token) });
+      if (res.status !== 204 && res.status !== 404) throw deleteError(res.status);
+      n++;
+    }
+  }
+  return n;
 }
 
 /** اسم المجلد الظاهر في Drive المستخدم، وعلامته في خصائص التطبيق (يُعرف بها ولو أعاد المستخدم تسميته) */

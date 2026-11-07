@@ -72,7 +72,7 @@ describe('١٨ · لا رقم ضريبي فيما يخرج لمنشأة غير �
   test('رأس التقارير المطبوعة وملفات التصدير يأخذان الرقم من shownVatNo', () => {
     const src = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
     expect(src('src/services/print.ts')).toMatch(/function companyHeader[\s\S]{0,200}shownVatNo\(/);
-    expect(src('src/services/reportExport.ts')).toMatch(/companyVatno: (vatReturn \? vatReturnVatNo\(co\) : )?shownVatNo\(/);
+    expect(src('src/services/reportExport.ts')).toMatch(/companyVatno: (vatReturn \? vatReturnVatNo\(co, vatReturn\.filed\) : )?shownVatNo\(/);
   });
 });
 

@@ -44,11 +44,11 @@ const scopeCriteria = (label: string, blocks: ReportBlock[]): Array<[string, str
 ];
 
 /** ترويسة الملف: المنشأة ورقمها الضريبي من جدول company · واسم التقرير وفترته ووقت إصداره */
-function xlsxDoc(db: DB, report: string, period: string, criteria: Array<[string, string]>, vatReturn = false): XlsxDoc {
+function xlsxDoc(db: DB, report: string, period: string, criteria: Array<[string, string]>, vatReturn?: { filed: boolean }): XlsxDoc {
   const co = companyInfo(db);
   return {
     companyName: co.name || '',
-    companyVatno: vatReturn ? vatReturnVatNo(co) : shownVatNo(co),
+    companyVatno: vatReturn ? vatReturnVatNo(co, vatReturn.filed) : shownVatNo(co),
     report, period, issuedAt: issuedAt(), criteria,
   };
 }
@@ -202,7 +202,7 @@ const htmlTable = (header: string[], rows: Cell[][]) =>
   rows.map((r) => `<tr>${r.map((c) => `<td class="${isNum(c) ? 'num' : ''}">${esc(cellHtml(c))}</td>`).join('')}</tr>`).join('') +
   '</tbody></table>';
 
-function blocksToHtml(db: DB, title: string, sub: string, blocks: ReportBlock[], vatReturn = false): string {
+function blocksToHtml(db: DB, title: string, sub: string, blocks: ReportBlock[], vatReturn?: { filed: boolean }): string {
   const inner = blocks.map((b, bi) => {
     const metaHtml = b.meta.length
       ? `<div class="inv-meta"><div class="inv-box">${b.meta.map(([k, v]) => `<b>${esc(k)}:</b> ${esc(v)}`).join('<br>')}</div></div>`
@@ -345,7 +345,7 @@ export async function exportVatReturn(
   };
   const filenameBase = 'vat-return-' + d.period + (approved ? '' : '-draft');
   if (kind === 'pdf') {
-    const html = blocksToHtml(db, title, `${dfmtOut(d.from)} إلى ${dfmtOut(d.to)}` + (approved ? '' : ' · مسودة'), [mainBlock, schedules], true);
+    const html = blocksToHtml(db, title, `${dfmtOut(d.from)} إلى ${dfmtOut(d.to)}` + (approved ? '' : ' · مسودة'), [mainBlock, schedules], { filed: !!filed });
     await printHtmlDoc(title, (approved ? '' : WATERMARK) + html, filenameBase);
     return;
   }
@@ -375,9 +375,14 @@ export async function exportVatReturn(
         ['غير القابلة للخصم (مستبعدة من البند ٧)', String(d.schedules.excludedPurchases.length) + ' فاتورة'],
         ['المبيعات المعفاة · الإيجار السكني', String(d.schedules.exemptSales.length) + ' مقبوض'],
         ['بيان الحوالات', String(d.schedules.transfers.length) + ' حوالة'],
-      ], true)), 'xlsx');
+      ], { filed: !!filed })), 'xlsx');
     return;
   }
+  // وورد بلا ترويسة: المنشأة ورقمها في أول بيانات النموذج كما في PDF وإكسل (المدقق الخارجي D٧)
+  const co = companyInfo(db);
+  const vat = vatReturnVatNo(co, !!filed);
+  mainBlock.meta.unshift([t('vat.companyLabel', { lng: 'ar' }), co.name || ''],
+    ...(vat !== undefined ? [[t('vat.vatNoLabel', { lng: 'ar' }), vat] as [string, string]] : []));
   await shareOfficeFile(filenameBase + '.docx',
     buildDocx(title, `${dfmtOut(d.from)} إلى ${dfmtOut(d.to)}`, [mainBlock, schedules],
       'صدر عبر تطبيق عقاري · أحد حلول منصة رِكز', ['المحاسب', 'المدير']), 'docx');

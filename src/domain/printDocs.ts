@@ -78,11 +78,12 @@ export const shownVatNo = (co: { vatEnabled: boolean; vatno?: string | null }): 
   (co.vatEnabled ? (co.vatno ?? '') : undefined);
 
 /**
- * رقم المنشأة في الإقرار الضريبي (القاعدة ٩٩ · ملاحظة المدقق الخارجي ن١): الإقرار وثيقة المكلَّف لفترته، ويُقدَّم الأخير منه بعد إلغاء
- * التسجيل برقم التسجيل نفسه · فيحمل الرقم المحفوظ متى وُجد ولو أُطفئت الضريبة بعده، وإلا فكسائر ما يخرج
+ * رقم المنشأة في الإقرار الضريبي (القاعدة ٩٩ · ملاحظة المدقق الخارجي ن١): الإقرار وثيقة المكلَّف لفترته · فالمسجّلة الآن كسائر ما يخرج،
+ * والإقرار المقدَّم (filed) يحمل الرقم المحفوظ ولو أُطفئت الضريبة بعده
  */
-export const vatReturnVatNo = (co: { vatEnabled: boolean; vatno?: string | null }): string | undefined =>
-  (co.vatno ? co.vatno : shownVatNo(co));
+export const vatReturnVatNo = (co: { vatEnabled: boolean; vatno?: string | null }, filed: boolean): string | undefined =>
+  // ومنشأةٌ لم تُسجَّل ورقمٌ مكتوبٌ في ملفها لا يظهر رقمها (المدقق الخارجي D٨): الإقرار المقدَّم وحده يشهد أنها كانت مسجّلةً لفترته
+  (co.vatEnabled ? shownVatNo(co) : filed && co.vatno ? co.vatno : undefined);
 
 /** الترويسة الكاملة · بيانات المنشأة من «بيانات المنشأة» لا تُكتب في كل مستند */
 export function letterhead(co: CompanyInfo, docTitle: string, docNo?: string, copyLabel?: string): string {

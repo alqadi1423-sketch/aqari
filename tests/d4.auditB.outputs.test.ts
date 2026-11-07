@@ -65,6 +65,9 @@ test('منشأة مسجّلة بلا رقمٍ ضريبي: ترويسة التق�
 test('ن١ (القاعدة ٩٩): إقرارٌ قُدِّم والمنشأة مسجّلة، يُصدَّر إكسلاً بعد إلغاء التسجيل: يحمل رقمها الضريبي', async () => {
   const db = memDb();
   db.run(`UPDATE company SET name = 'منشأة مصطنعة', vat_enabled = 1, vatno = '300000000000003' WHERE id = 1`);
+  // «قُدِّم»: سجلّ التقديم يشهد أنها كانت مسجّلةً لفترته (D٨: الرقم المكتوب وحده لا يشهد)
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('@/domain/vatFilings').fileVatReturn(db, 2026, 1, '2026-04-20');
   await exportVatReturn(db, 2026, 1, 'xlsx', true);
   db.run(`UPDATE company SET vat_enabled = 0 WHERE id = 1`);
   await exportVatReturn(db, 2026, 1, 'xlsx', true);

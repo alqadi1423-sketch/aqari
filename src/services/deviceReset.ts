@@ -12,10 +12,14 @@ import { appDataRoot, expoFs } from '../files/expoFs';
 import { migrate } from '../db/migrations';
 import { seed, ensureDeviceId } from '../db/seed';
 import { clearBackupSecretForReset } from './backupPassword';
+import { getSyncState } from '../sync/engine';
 import { disableLock } from './appLockService';
 import { cancelAllNotifications } from './notifications';
 
 export async function resetDeviceData(db: AppDB): Promise<void> {
+  // سرّ نسخ الحساب الذي يُفرَّغ (لكل حسابٍ سرّه · المدقق الخارجي D١) · يُقرأ قبل أن تُحذف القاعدة
+  let account: string | null = null;
+  try { account = getSyncState(db, 'uid'); } catch { account = null; }
   await cancelAllNotifications();
   const root = appDataRoot();
   const dbPath = db.databasePath;
@@ -30,6 +34,6 @@ export async function resetDeviceData(db: AppDB): Promise<void> {
   migrate(db);
   seed(db);
   ensureDeviceId(db);
-  try { await clearBackupSecretForReset(); } catch { /* لا سرّ */ }
+  try { await clearBackupSecretForReset(account); } catch { /* لا سرّ */ }
   try { await disableLock(); } catch { /* لا قفل */ }
 }

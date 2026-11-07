@@ -17,6 +17,7 @@ import { toLocalISODate } from '../domain/dates';
 import { openNodeDbCompat } from './openTempDb';
 import { deviceCipher } from './cipher';
 import { backupSecretForSealing } from './backupPassword';
+import { getSyncState } from '../sync/engine';
 import { sealBackupFile } from '../domain/backup/seal';
 import type { CancelSignal, ProgressFn } from '../domain/progress';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
@@ -59,7 +60,7 @@ export async function createAndShareBackup(
   const outPath = joinPath(env.tmpDir, name);
   const manifest = await createBackup(env, outPath, onProgress, { signal });
   // مشفّرة دائماً بمفتاح الاسترداد (التوجيه الرابع ٤ · ٣) · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق · وبلا مفتاحٍ أو تعذّرت قراءته: لا تصدير
-  const secret = await backupSecretForSealing();
+  const secret = await backupSecretForSealing(getSyncState(db, 'uid'));
   await sealBackupFile(env, outPath, secret, onProgress);
   setSetting(db, 'lastBackupAt', new Date().toISOString());
   onProgress?.('جاري فتح نافذة المشاركة');
