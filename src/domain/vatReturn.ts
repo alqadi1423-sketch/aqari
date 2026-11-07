@@ -59,20 +59,21 @@ const PAY_NET_SQL = `p.net_halalas - COALESCE((SELECT SUM(l.credit_halalas) FROM
 const CANCEL_DAY_SQL = `substr(p.cancelled_at, 1, 10)`;
 
 /**
- * الإيجار التجاري المحصَّل في الفترة (خارج البند ٥) · الدفعة في فترة قبضها ولو أُلغيت بعدها، وإلغاؤها يُخصم في فترة إلغائه
- * (المراجعة الشاملة · البند ١٠) · والملغاة في فترتها نفسها لا تُعدّ فيها أصلاً (صافيها صفر)
+ * الإيجار التجاري المحصَّل في الفترة (خارج البند ٥) · الدفعة في فترة قبضها ولو أُلغيت، وإلغاؤها يُخصم في فترة إلغائه (المراجعة
+ * الشاملة · البند ١٠) أيّاً كان ترتيبهما (التوجيه الثالث · العطل ٩: إلغاءٌ بتاريخٍ قبل الدفعة من إصدارٍ قديم كان يُسقطها من الفترتين
+ * والدفتر يتحرك فيهما) · والدفعة وإلغاؤها في الفترة نفسها لا يُعدّان فيها (صافيهما صفر كالدفتر)
  */
 function commercialRentParts(db: DB, from: string, to: string): { paid: number; cancelled: number } {
   const paid = Number(db.get<{ s: number }>(
     `SELECT COALESCE(SUM(${PAY_NET_SQL}), 0) AS s
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.date >= ? AND p.date <= ? AND (p.cancelled_at IS NULL OR ${CANCEL_DAY_SQL} > ?) AND NOT ${RESIDENTIAL_SQL}`,
-    [from, to, to])?.s ?? 0);
+     WHERE p.date >= ? AND p.date <= ? AND (p.cancelled_at IS NULL OR ${CANCEL_DAY_SQL} < ? OR ${CANCEL_DAY_SQL} > ?) AND NOT ${RESIDENTIAL_SQL}`,
+    [from, to, from, to])?.s ?? 0);
   const cancelled = Number(db.get<{ s: number }>(
     `SELECT COALESCE(SUM(${PAY_NET_SQL}), 0) AS s
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.cancelled_at IS NOT NULL AND ${CANCEL_DAY_SQL} >= ? AND ${CANCEL_DAY_SQL} <= ? AND p.date < ? AND NOT ${RESIDENTIAL_SQL}`,
-    [from, to, from])?.s ?? 0);
+     WHERE p.cancelled_at IS NOT NULL AND ${CANCEL_DAY_SQL} >= ? AND ${CANCEL_DAY_SQL} <= ? AND (p.date < ? OR p.date > ?) AND NOT ${RESIDENTIAL_SQL}`,
+    [from, to, from, to])?.s ?? 0);
   return { paid, cancelled };
 }
 
@@ -129,8 +130,9 @@ function keyMoneySales(db: DB, from: string, to: string): { net: number; tax: nu
 /**
  * صفوف المبيعات المعفاة (البند ٥ وكشفه معاً · #31 والتحقق المستقل):
  *  - كل دفعة إيجار بصافيها بلا فائضها الذي صار رصيداً دائناً للمستأجر (دائن 2410 في قيدها): التزامٌ له لا توريد.
- *  - والدفعة الملغاة بعد فترتها تبقى فيها، ويُخصم صافيها بصفٍّ سالب بتاريخ إلغائها (المراجعة الشاملة · البند ١٠): كان الإلغاء يُسقطها
- *    من فترتها الأصلية فيتغير ما قُدِّم، ولا يظهر في فترة الإلغاء · والملغاة في فترتها نفسها لا تظهر فيها (صافيها صفر).
+ *  - والدفعة الملغاة في غير فترتها تبقى فيها، ويُخصم صافيها بصفٍّ سالب بتاريخ إلغائها (المراجعة الشاملة · البند ١٠): كان الإلغاء
+ *    يُسقطها من فترتها الأصلية فيتغير ما قُدِّم، ولا يظهر في فترة الإلغاء · وأيّاً كان ترتيبهما، فالإلغاء بتاريخٍ قبل الدفعة (إصدار
+ *    عضوٍ قديم · التوجيه الثالث · العطل ٩) سالبٌ في فترته وهي موجبةٌ في فترتها، كالدفتر · والملغاة في فترتها نفسها لا تظهر فيها.
  *  - وفائضٌ قديمٌ دخل إيراداً ثم سُوّي رصيداً أو رُدّ (surplus_credit وsurplus_refund وعكوسهما): ينقص في فترة تسويته.
  */
 function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
@@ -139,14 +141,14 @@ function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
     `SELECT p.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
             ${PAY_NET_SQL} AS net
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.date >= ? AND p.date <= ? AND (p.cancelled_at IS NULL OR ${CANCEL_DAY_SQL} > ?) AND ${RESIDENTIAL_SQL}
-     ORDER BY p.date`, [none, from, to, to]);
+     WHERE p.date >= ? AND p.date <= ? AND (p.cancelled_at IS NULL OR ${CANCEL_DAY_SQL} < ? OR ${CANCEL_DAY_SQL} > ?) AND ${RESIDENTIAL_SQL}
+     ORDER BY p.date`, [none, from, to, from, to]);
   const cancelled = db.all<ExemptRow>(
     `SELECT ${CANCEL_DAY_SQL} AS date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
             -(${PAY_NET_SQL}) AS net
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.cancelled_at IS NOT NULL AND ${CANCEL_DAY_SQL} >= ? AND ${CANCEL_DAY_SQL} <= ? AND p.date < ? AND ${RESIDENTIAL_SQL}
-     ORDER BY ${CANCEL_DAY_SQL}`, [none, from, to, from]);
+     WHERE p.cancelled_at IS NOT NULL AND ${CANCEL_DAY_SQL} >= ? AND ${CANCEL_DAY_SQL} <= ? AND (p.date < ? OR p.date > ?) AND ${RESIDENTIAL_SQL}
+     ORDER BY ${CANCEL_DAY_SQL}`, [none, from, to, from, to]);
   const settled = db.all<ExemptRow>(
     `SELECT e.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
             -SUM(l.debit_halalas - l.credit_halalas) AS net

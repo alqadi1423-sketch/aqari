@@ -29,7 +29,7 @@ import { recomputeInstallments, installmentsOfPayment } from '../domain/contract
 import { paidFromDeposit } from '../domain/contracts/cancelPayment';
 import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
-import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc } from '../domain/accounting/derive';
+import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
@@ -601,6 +601,9 @@ function memberRentCheck(db: DB, doc: RemoteDoc): void {
   if (!pay || !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [pay.contract_id])) {
     throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
   }
+  // أبعاد السطور من عقد الدفعة كالحساب والمبلغ (التوجيه الثالث · ١)
+  const dimsWhy = entryDimsIssue(db, doc.lines ?? [], pay.contract_id);
+  if (dimsWhy) throw new Error(tr('derive.rejected', { why: dimsWhy, lng: 'ar' }));
   rentCheckAgainst(db, {
     srcId: String(doc.d!.src_id ?? ''),
     date: String(doc.d!.date ?? ''),

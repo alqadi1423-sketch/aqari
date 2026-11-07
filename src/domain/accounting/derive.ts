@@ -10,6 +10,7 @@ import { t } from '../../i18n';
 import { rentCollectionLines, type EntryLine } from './post';
 import { rentRevenueLines, RENT_REVENUE_GROUP } from './rentSplit';
 import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, type DiscountKind } from '../contracts/installments';
+import { unitPastProperties } from '../unitMove';
 
 export interface RentPaymentSrc {
   id: string;
@@ -47,6 +48,28 @@ export function allocationIssue(db: DB, pay: RentPaymentSrc, allocs: Array<{ ins
 }
 
 export interface IncomingLines { srcId: string; date: string; lines: Array<{ account: string; debit: number; credit: number }> }
+
+/** أبعاد سطرٍ وارد كما في مستنده (journal_lines) */
+export interface LineDims { contract_id?: unknown; property_id?: unknown; unit_id?: unknown }
+
+/**
+ * أبعاد سطور قيدٍ تُشتق من عقد مستنده وتُطابق كالحساب والمبلغ (التوجيه الثالث · ١ · قرار المالك 2026-11-07: rentEntryIssue كان
+ * يطابق الحساب والمبلغ وحدهما، فعضوٌ يضع فائض 2410 على عقد مستأجرٍ آخر و«الرصيد المتاح» يُحسب منه فيُسدَّد به قسط غيره) · كل سطر:
+ * عقده عقد المستند، ووحدته وحدة العقد، وعقاره عقار الوحدة أو عقارٌ نُقلت منه (unitMove.ts: قيدٌ كُتب قبل أن يصل النقل) ·
+ * وسطرٌ بلا عقدٍ يُرفض (شكلٌ قديم يُفلت الرصيد من مستأجره) · '' إن طابقت · ولكل مرحلةٍ قادمة من إعادة الاشتقاق
+ */
+export function entryDimsIssue(db: DB, lines: LineDims[], contractId: string): string {
+  const c = db.get<{ unit_id: string | null }>(`SELECT unit_id FROM contracts WHERE id = ?`, [contractId]);
+  if (!c) return t('derive.dims', { lng: 'ar' });
+  const unit = c.unit_id ?? null;
+  const now = unit ? db.get<{ p: string | null }>(`SELECT property_id AS p FROM units WHERE id = ?`, [unit])?.p ?? null : null;
+  const props = new Set([now, ...(unit ? unitPastProperties(db, unit) : [])]);
+  const str = (v: unknown) => (v == null || v === '' ? null : String(v));
+  for (const l of lines) {
+    if (str(l.contract_id) !== contractId || str(l.unit_id) !== unit || !props.has(str(l.property_id))) return t('derive.dims', { lng: 'ar' });
+  }
+  return '';
+}
 
 const CASH = '1100';
 const TENANT_CREDIT = '2410';
