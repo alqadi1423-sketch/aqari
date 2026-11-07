@@ -1,0 +1,24 @@
+commit e7c151c9294427b7b430aeb77a2e68f53c03287c
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42401842096
+success true
+flows 20 · failed 0
+00-smoke pass 43s
+01-property pass 54s
+02-arabic-input pass 29s
+03-offline pass 44s
+04a-persist pass 40s
+04b-memory pass 3s
+04c-alive pass 17s
+04d-kill pass 2s
+04e-restore pass 15s
+05a-secure pass 33s
+05b-secure pass 0s
+06a-permissions pass 1s
+06b-permissions pass 28s
+07-widget pass 0s
+08-coldstart pass 10s
+09-contract-payment pass 115s
+10a-recovery-key pass 81s
+10b-wipe-restore pass 89s
+11a-qr-image pass 6s
+11b-qr-purchase pass 83s
