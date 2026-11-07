@@ -1,16 +1,7 @@
-commit e8d6c1936cc2dbb12d65207ba7294aed4dc787d0
-run https://github.com/alqadi1423-sketch/aqari/actions/runs/42388562076
+commit 27faa10c68b41abc81ac5e9314718a807b9372bb
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42391231026
 success false
-flows 12 · failed 9
-00-smoke fail 145s
-01-property fail 132s
-02-arabic-input fail 130s
-03-offline fail 131s
-04a-persist fail 131s
-04b-memory pass 3s
-04c-alive fail 25s
-04d-kill pass 3s
-04e-restore fail 130s
-05a-secure fail 130s
-05b-secure fail 0s
-06a-permissions pass 1s
+flows 3 · failed 3
+00-smoke fail 147s
+01-property fail 134s
+02-arabic-input fail 134s

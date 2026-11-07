@@ -1,0 +1,6 @@
+19:49:16.151 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandStart: Define variables RUNNING
+19:49:16.154 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandFinished: Define variables COMPLETED
+19:49:16.155 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandStart: Apply configuration RUNNING
+19:49:16.155 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandFinished: Apply configuration COMPLETED
+19:49:16.156 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandStart: Launch app "com.aqari.app" with clear state RUNNING
+19:49:16.157 [ INFO] maestro.Maestro.clearAppState$lambda$8: Clearing app state com.aqari.app

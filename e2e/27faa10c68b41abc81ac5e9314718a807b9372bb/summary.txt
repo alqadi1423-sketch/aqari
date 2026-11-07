@@ -1,0 +1,7 @@
+commit 27faa10c68b41abc81ac5e9314718a807b9372bb
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42391231026
+success false
+flows 3 · failed 3
+00-smoke fail 147s
+01-property fail 134s
+02-arabic-input fail 134s
