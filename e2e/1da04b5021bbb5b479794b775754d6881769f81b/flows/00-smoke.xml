@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="0" time="32.943" timestamp="2026-11-07T20:40:42">
+    <testcase id="00-smoke" name="00-smoke" classname="00-smoke" file="e2e/maestro/00-smoke.yaml" time="32.926" timestamp="2026-11-07T20:40:42" status="SUCCESS"/>
+  </testsuite>
+</testsuites>
