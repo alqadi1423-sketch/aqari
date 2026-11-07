@@ -652,7 +652,7 @@ function latestRowByKey<T>(db: DB, table: string, key: string): T | null {
 }
 
 const POSTED = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
-const SRC_LINE_COLS = 'id, entry_id, account_code, debit_halalas, credit_halalas, contract_id, unit_id, property_id';
+const SRC_LINE_COLS = 'id, entry_id, account_code, debit_halalas, credit_halalas, contract_id, unit_id, property_id, asset_id';
 
 /** قارئ مستندات القيد لإعادة الاشتقاق (deriveSources.ts) على جهاز المالك */
 function sourceReader(db: DB): SourceReader {
@@ -661,8 +661,22 @@ function sourceReader(db: DB): SourceReader {
     date: string | null; created_at: string | null; deleted_at: string | null };
   return {
     row: <T>(table: string, key: string) => latestRowByKey<T>(db, table, key),
-    entries: (srcType, srcId) => db.all<{ id: string; src_type: string | null; src_id: string | null; reversed_by: string | null }>(
-      `SELECT id, src_type, src_id, reversed_by FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = ?`, [srcType, srcId, POSTED])
+    rows: <T>(table: string, col: string, value: string) => {
+      // الصفوف هنا بعمودها، وما في الوارد أحدث منها ويغلبها بمفتاحه، والمحذوف في الوارد يُسقطها
+      const pk = syncTable(table)?.pkCols[0] ?? 'id';
+      const out = new Map<string, T>();
+      for (const x of db.all<Record<string, unknown>>(`SELECT * FROM "${table}" WHERE "${col}" = ?`, [value])) out.set(String(x[pk]), x as T);
+      for (const i of db.all<{ pk: string; payload: string; del: number }>(
+        `SELECT pk, payload, del FROM sync_inbox WHERE tbl = ? AND (json_extract(payload, '$.d.${col}') = ? OR pk IN (SELECT value FROM json_each(?)))`,
+        [table, value, JSON.stringify([...out.keys()])])) {
+        const d = (JSON.parse(i.payload) as RemoteDoc).d;
+        if (i.del || !d || String(d[col] ?? '') !== value) out.delete(i.pk);
+        else out.set(i.pk, d as T);
+      }
+      return [...out.values()];
+    },
+    entries: (srcType, srcId) => db.all<{ id: string; src_type: string | null; src_id: string | null; reversed_by: string | null; date: string | null }>(
+      `SELECT id, src_type, src_id, reversed_by, date FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = ?`, [srcType, srcId, POSTED])
       .map((e) => ({ ...e, lines: linesHere(e.id) })),
     entry: (id) => {
       const here = db.get<Head>(

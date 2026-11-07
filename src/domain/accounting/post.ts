@@ -748,26 +748,32 @@ export const postPurchaseToLedger = (
   p: { id: string; no: string; supplier: string; date: string; category: string; subtotal: number; tax: number; total: number; roundingDiff?: number; deductible?: boolean },
   /** بنود الفاتورة التي صارت أصولاً (الهجرة ٢٩): مدين حسابات الفئات بأبعاد كل أصل، فيقلّ المصروف بقدرها */
   assetLines: EntryLine[] = [],
-) => {
+) => postEntry(db, {
+  date: p.date,
+  memo: 'فاتورة شراء ' + p.no + ' · ' + p.supplier,
+  lines: purchaseLedgerLines(p, assetLines),
+  srcType: 'purchase',
+  srcId: p.id,
+});
+
+/** سطور قيد فاتورة الشراء من قيمها وأصول بنودها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
+export function purchaseLedgerLines(
+  p: { category: string; subtotal: number; tax: number; total: number; roundingDiff?: number; deductible?: boolean },
+  assetLines: EntryLine[] = [],
+): EntryLine[] {
   const diff = p.roundingDiff ?? 0;
   const assetSum = assetLines.reduce((s, l) => s + (l.debit || 0), 0);
   // «خاضعة باسمنا» وحدها تفصل ضريبتها أصلاً قابلاً للاسترداد (1270) · الباقي بالتكلفة الكاملة
   const dedTax = p.deductible ? p.tax : 0;
-  return postEntry(db, {
-    date: p.date,
-    memo: 'فاتورة شراء ' + p.no + ' · ' + p.supplier,
-    lines: [
-      { account: purchaseExpenseAccount(p.category), debit: p.subtotal + p.tax - dedTax - assetSum, credit: 0 },
-      ...assetLines,
-      ...(dedTax ? [{ account: '1270', descr: 'ضريبة مدخلات قابلة للاسترداد', debit: dedTax, credit: 0 }] : []),
-      ...(diff > 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: diff, credit: 0 }] : []),
-      { account: '2100', debit: 0, credit: p.total },
-      ...(diff < 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: 0, credit: -diff }] : []),
-    ],
-    srcType: 'purchase',
-    srcId: p.id,
-  });
-};
+  return [
+    { account: purchaseExpenseAccount(p.category), debit: p.subtotal + p.tax - dedTax - assetSum, credit: 0 },
+    ...assetLines,
+    ...(dedTax ? [{ account: '1270', descr: 'ضريبة مدخلات قابلة للاسترداد', debit: dedTax, credit: 0 }] : []),
+    ...(diff > 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: diff, credit: 0 }] : []),
+    { account: '2100', debit: 0, credit: p.total },
+    ...(diff < 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: 0, credit: -diff }] : []),
+  ];
+}
 
 /** تحصيل فاتورة مبيعات (المراجعة ٤.٢): مدين 1100 / دائن 1200 بالإجمالي */
 export const postInvoicePayment = (
@@ -797,10 +803,13 @@ export const postPurchasePayment = (
   postEntry(db, {
     date: payDate,
     memo: 'سداد فاتورة ' + p.no + ' · ' + p.supplier + (cash ? ' (نقداً)' : ''),
-    lines: [
-      { account: '2100', debit: p.total, credit: 0 },
-      { account: CASH, debit: 0, credit: p.total },
-    ],
+    lines: purchasePaymentLines(p.total),
     srcType: 'purchase_pay',
     srcId: p.id,
   });
+
+/** سطور قيد سداد فاتورة الشراء بإجماليها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
+export const purchasePaymentLines = (total: number): EntryLine[] => [
+  { account: '2100', debit: total, credit: 0 },
+  { account: CASH, debit: 0, credit: total },
+];

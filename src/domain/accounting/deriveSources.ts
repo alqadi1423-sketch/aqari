@@ -19,16 +19,19 @@ import { unitPastProperties } from '../unitMove';
 import {
   contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
   reservationDepositLines, reservationForfeitLines, reservationRefundLines, keyMoneyLines,
-  claimLines, claimCollectionLines, type EntryLine,
+  claimLines, claimCollectionLines, purchaseLedgerLines, purchasePaymentLines, PURCHASE_CATEGORY_ACCOUNT, type EntryLine,
 } from './post';
+import { TS_DEDUCTIBLE } from '../purchases';
+import { lineCosts, splitQty } from '../assets/purchaseLines';
+import { ASSET_CATEGORIES } from '../assets/catalog';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
 export interface SrcLine {
   id?: unknown; entry_id?: unknown; account_code?: unknown; debit_halalas?: unknown; credit_halalas?: unknown;
-  contract_id?: unknown; unit_id?: unknown; property_id?: unknown;
+  contract_id?: unknown; unit_id?: unknown; property_id?: unknown; asset_id?: unknown;
 }
 /** قيدٌ مرحّل لمصدرٍ هنا أو في الوارد · وعاكسه المربوط به هنا */
-export interface SrcEntry { id: string; src_type: string | null; src_id: string | null; lines: SrcLine[]; reversed_by?: string | null }
+export interface SrcEntry { id: string; src_type: string | null; src_id: string | null; lines: SrcLine[]; reversed_by?: string | null; date?: string | null }
 /** قيدٌ بمعرّفه كما سيُطبَّق: هنا (here) أو من الوارد بأعمدة مستنده */
 export interface RevEntry extends SrcEntry {
   here: boolean; key: string | null; no: string | null; status: string | null; date: string | null; created_at: string | null;
@@ -38,6 +41,8 @@ export interface RevEntry extends SrcEntry {
 /** قارئ المستندات على جهاز المالك (sync/engine.ts): أحدث نسخةٍ للصف (الوارد المنتظر ثم القائم)، والقيود المرحّلة بمصدرها */
 export interface SourceReader {
   row<T>(table: string, key: string): T | null;
+  /** صفوف جدولٍ بعمودٍ وقيمته: هنا، وأحدث نسخها في الوارد تغلبها، والمحذوف فيه يُسقطها (سطور المستند وأصوله وإشعاراته) */
+  rows<T>(table: string, col: string, value: string): T[];
   /**
    * القيود المرحّلة بمصدرها هنا وحده: ما في الوارد لم يُفحص بعد (عاكسٌ مزوّر فيه كان يُحتسب) · وما يُنتظر منه يُنتظر به، فيُعاد
    * القيد في المرور التالي بعد تطبيقه
@@ -66,12 +71,19 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   key_money: ['1100', '4300', '2200'],
   claim: ['1250', '4300'],
   claim_collect: ['1100', '1250'],
+  // فاتورة الشراء: مصروف فئتها، وحسابات فئات أصول بنودها، وضريبة المدخلات القابلة للاسترداد، وفرق التقريب، والذمم الدائنة
+  purchase: [...new Set([...Object.values(PURCHASE_CATEGORY_ACCOUNT), '5300']), ...ASSET_CATEGORIES.map((c) => c.code), '1270', '5900', '2100'],
+  purchase_pay: ['2100', '1100'],
 };
 
-/** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة) */
-interface DimSpec { contract: string | null; unit: string | null; props: Array<string | null> }
+/** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة)، والأصل (بنود الشراء الأصول وحدها) */
+interface DimSpec { contract: string | null; unit: string | null; props: Array<string | null>; asset?: string | null }
 interface Want { account: string; debit: number; credit: number; dims: DimSpec[] }
-interface Derived { lines: Want[]; date: string; correctable: boolean }
+/**
+ * السطور المشتقة وتاريخها · alts: أشكالٌ أخرى يرحّلها التطبيق من المستند نفسه (يكفي أن يطابق أحدها) · date: null لمستندٍ لا يخزّن
+ * تاريخ قيده · also: تواريخ أخرى مقبولة (نسخة الاستعادة من السلة بتاريخ عكس قيدها السابق: repostDate)
+ */
+interface Derived { lines: Want[]; alts?: Want[][]; date: string | null; also?: string[]; correctable: boolean }
 
 const str = (v: unknown) => (v == null || v === '' ? null : String(v));
 const num = (v: unknown) => Number(v) || 0;
@@ -93,6 +105,16 @@ function unitDims(db: DB, r: SourceReader, unitId: string | null): DimSpec {
   const now = r.row<{ property_id: string | null }>('units', unitId)?.property_id ?? null;
   return { contract: null, unit: unitId, props: [now, ...unitPastProperties(db, unitId)] };
 }
+/** أبعاد فاتورة الشراء أو المبيعات (dimsFromSource): عقارها المختار وإلا عقار وحدتها، ووحدتها، ولا عقد */
+function docDims(db: DB, r: SourceReader, unitId: string | null, propertyId: string | null): DimSpec {
+  const u = unitDims(db, r, unitId ?? null);
+  return { contract: null, unit: unitId ?? null, props: propertyId ? [propertyId] : u.props };
+}
+/** لا بُعد: مصدرٌ لا يشتق dimsFromSource أبعاده (العملية النقدية واسترداد الضريبة) */
+const NONE: DimSpec = { contract: null, unit: null, props: [null] };
+/** تواريخ عواكس المصدر هنا: نسخة الاستعادة من السلة تُرحَّل بتاريخ عكس قيدها السابق (repostCopy وrestoreInvoice: repostDate) */
+const revDates = (r: SourceReader, src: string, srcId: string): string[] =>
+  r.entries(src + '_rev', srcId).map((x) => String(x.date ?? '')).filter(Boolean);
 const want = (lines: EntryLine[] | null, dims: (l: EntryLine, i: number) => DimSpec[]): Want[] | null =>
   lines ? lines.map((l, i) => ({ account: l.account, debit: l.debit || 0, credit: l.credit || 0, dims: dims(l, i) })) : null;
 
@@ -104,8 +126,46 @@ function live(r: SourceReader, src: string, srcId: string, exceptId: string, by:
     - r.entries(src + '_rev', srcId).reduce((s, e) => s + by(e), 0);
 }
 
+interface PurchaseRow {
+  category: string | null; subtotal_halalas: number; tax_halalas: number; total_halalas: number; tax_status: string | null;
+  date: string | null; unit_id: string | null; property_id: string | null; deleted_at: string | null; journal_entry_id: string | null;
+  payment_journal_entry_id: string | null; paid: number; paid_date: string | null;
+}
+
+/** سطور أصول بنود الفاتورة في قيد تسجيلها وأبعاد كل سطر · وشكلٌ بلا أصول */
+interface AssetForm { lines: EntryLine[]; specs: DimSpec[][] }
+
+/**
+ * أشكال سطور أصول فاتورة الشراء في قيد تسجيلها (writePurchaseLines كما رحّلها الكاتب): كل بندٍ أصلٍ بتكلفته (أساسه ونصيبه من
+ * الضريبة: lineCosts) مقسومةً على كميته (splitQty) على حساب فئته، وبُعده أصلٌ من أصول بنده بوحدته وعقاره (وإلا وحدة الفاتورة
+ * وعقارها) · وبنودٌ كتبها «تحويل المصروف إلى أصول» (أصولها من مصدر convert) لم تكن في قيد التسجيل، فلا أصول فيه · والبنود التي
+ * أثبتت تكلفة أصولٍ قائمة وحدها (لا مصدر يميّز وقت كتابتها) تُقبل بالشكلين · 'await' لأصلٍ لم يصل
+ */
+function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, tax: number, deductible: boolean, dims: DimSpec): AssetForm[] | typeof AWAIT {
+  const none: AssetForm = { lines: [], specs: [] };
+  const lines = r.rows<{ id: string; qty: number; amount_halalas: number; is_asset: number; asset_category: string | null; sort: number; deleted_at?: string | null }>(
+    'purchase_lines', 'purchase_id', purchaseId).filter((l) => !l.deleted_at).sort((a, b) => num(a.sort) - num(b.sort));
+  if (!lines.some((l) => num(l.is_asset))) return [none];
+  const assets = r.rows<{ id: string; purchase_line_id: string | null; unit_id: string | null; property_id: string | null; source: string | null; deleted_at?: string | null }>(
+    'assets', 'purchase_id', purchaseId).filter((a) => !a.deleted_at);
+  if (assets.some((a) => a.source === 'convert')) return [none];
+  const costs = lineCosts(lines.map((l) => ({ descr: '', qty: num(l.qty), amountHalalas: num(l.amount_halalas), isAsset: !!num(l.is_asset) })), tax, deductible);
+  const form: AssetForm = { lines: [], specs: [] };
+  for (const [i, l] of lines.entries()) {
+    if (!num(l.is_asset)) continue;
+    const mine = assets.filter((a) => a.purchase_line_id === l.id);
+    if (mine.length < num(l.qty)) return AWAIT;
+    const specs = mine.map((a): DimSpec => ({ contract: null, unit: a.unit_id ?? dims.unit, props: a.property_id ? [a.property_id] : dims.props, asset: a.id }));
+    for (const cost of splitQty(costs[i], num(l.qty))) {
+      form.lines.push({ account: String(l.asset_category ?? ''), debit: cost, credit: 0 });
+      form.specs.push(specs);
+    }
+  }
+  return assets.some((a) => a.source === 'purchase') ? [form] : [form, none];
+}
+
 /** سطور القيد المتوقعة من مستنده · 'await' لمستندٍ لم يصل · أو سبب الرفض */
-function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: string; total: number }): Outcome {
+function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: string; no: string | null; total: number }): Outcome {
   switch (e.src) {
     case 'contract_deposit': {
       // التأمين المقبوض: تأمين العقد ناقصاً ما رُحِّل إليه من عقده السابق (التجديد: تأمينه المرحَّل وزيادته)
@@ -202,6 +262,39 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const lines = want(claimCollectionLines(num(cl.amount_halalas)), () => [dims]);
       return lines ? { lines, date: cl.collected_at, correctable: false } : no('noEntry');
     }
+    case 'purchase':
+    case 'purchase_pay': {
+      // فاتورة الشراء (purchases.ts): قيد تسجيلها من قيمها ووضعها الضريبي وفئتها وأصول بنودها (postPurchaseToLedger) بتاريخها أو
+      // تاريخ التصحيح بعده (تعديلها يعكس القديم ويرحّل الجديد)، وقيد سدادها بإجماليها وتاريخ سدادها (postPurchasePayment) ·
+      // ونسخة الاستعادة من السلة بتاريخ عكس قيدها السابق · والأبعاد عقار الفاتورة ووحدتها، وسطر كل أصلٍ بأصله
+      const p = r.row<PurchaseRow>('purchases', e.srcId);
+      if (!p) return AWAIT;
+      // المحذوفة عُكس قيداها حين حُذفت (deletePurchase) فلا قيد حيّاً لها · وقيدها القديم الواصل معكوساً يمرّ بمسار العكس قبل هذا
+      if (p.deleted_at) return no('deleted');
+      const dims = docDims(db, r, p.unit_id ?? null, p.property_id ?? null);
+      const also = revDates(r, e.src, e.srcId);
+      const subtotal = num(p.subtotal_halalas);
+      const tax = num(p.tax_halalas);
+      const total = num(p.total_halalas);
+      if (e.src === 'purchase_pay') {
+        if (p.payment_journal_entry_id && p.payment_journal_entry_id !== e.id) return no('noEntry');
+        // سدادٌ لم يصل وسمه بعد يُنتظر
+        if (!num(p.paid) || !p.paid_date) return AWAIT;
+        const lines = want(purchasePaymentLines(total), () => [dims]);
+        return lines ? { lines, date: p.paid_date, also, correctable: false } : no('noEntry');
+      }
+      if (p.journal_entry_id && p.journal_entry_id !== e.id) return no('noEntry');
+      const deductible = p.tax_status === TS_DEDUCTIBLE;
+      const forms = purchaseAssetForms(db, r, e.srcId, tax, deductible, dims);
+      if (forms === AWAIT) return AWAIT;
+      const built = forms.map((f) => want(purchaseLedgerLines(
+        { category: p.category ?? '', subtotal, tax, total, roundingDiff: total - subtotal - tax, deductible }, f.lines),
+      (l) => {
+        const i = f.lines.indexOf(l);
+        return i < 0 ? [dims] : f.specs[i];
+      })!);
+      return { lines: built[0], alts: built.slice(1), date: p.date ?? '', also, correctable: true };
+    }
     case 'deposit_deduct':
     case 'deposit_deduct_move':
     case 'deposit_refund': {
@@ -241,7 +334,8 @@ function matchIssue(got: SrcLine[], want: Want[]): string {
     const acc = String(l.account_code ?? '');
     const same = (x: Want) => x.account === acc && x.debit === num(l.debit_halalas) && x.credit === num(l.credit_halalas);
     const i = w.findIndex((x, j) => !used.has(j) && same(x) && x.dims.some((d) =>
-      d.contract === str(l.contract_id) && d.unit === str(l.unit_id) && d.props.includes(str(l.property_id))));
+      d.contract === str(l.contract_id) && d.unit === str(l.unit_id) && d.props.includes(str(l.property_id))
+      && (d.asset ?? null) === str(l.asset_id)));
     if (i < 0) return w.some((x, j) => !used.has(j) && same(x)) ? no('dims', { account: acc }) : no('account', { account: acc });
     used.add(i);
   }
@@ -251,9 +345,10 @@ function matchIssue(got: SrcLine[], want: Want[]): string {
 
 /** تاريخ القيد تاريخ مستنده · أو بعده إن قُدِّم إقرار ربعه (قيد تصحيحٍ بتاريخ اليوم: correctionDate) */
 function dateIssue(db: DB, got: string, d: Derived): string {
+  if (d.date === null) return '';
   const g = got.slice(0, 10);
   const want = d.date.slice(0, 10);
-  if (g === want) return '';
+  if (g === want || (d.also ?? []).some((x) => x.slice(0, 10) === g)) return '';
   return d.correctable && g > want && isFiledDate(db, want) ? '' : no('date');
 }
 
@@ -325,7 +420,11 @@ export function memberSourceIssue(db: DB, r: SourceReader,
   // وقيدٌ آخر من المصدر نفسه في الوارد يُطبَّق قبله: القديم الواصل معكوساً يسبق الجديد، وإلا وصل عاكس القديم والجديد وحده هنا فلا
   // يطابقه فيُرفض، ويبقى القديم بلا عاكسٍ ينتظره (تعديل التسوية أو المطالبة في مزامنةٍ واحدة بترتيبٍ آخر)
   if (r.pending(src, srcId).some((id) => id !== e.id)) return AWAIT;
-  const d = derive(db, r, { id: e.id, src, srcId, total: nonZero(e.lines).reduce((s, l) => s + num(l.credit_halalas), 0) });
+  const d = derive(db, r, { id: e.id, src, srcId, no: e.no ?? null, total: nonZero(e.lines).reduce((s, l) => s + num(l.credit_halalas), 0) });
   if (typeof d === 'string') return d;
-  return dateIssue(db, e.date, d) || matchIssue(e.lines, d.lines);
+  const dateWhy = dateIssue(db, e.date, d);
+  if (dateWhy) return dateWhy;
+  // يكفي أن يطابق شكلاً واحداً مما يرحّله التطبيق من المستند · وإلا فسبب الأول
+  const whys = [d.lines, ...(d.alts ?? [])].map((w) => matchIssue(e.lines, w));
+  return whys.includes('') ? '' : whys[0];
 }
