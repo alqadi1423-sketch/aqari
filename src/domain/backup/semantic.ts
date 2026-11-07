@@ -13,6 +13,7 @@
  * كل بند جملة عربية تسمّي موضعه · وأي بند يرفض ما ورد كاملاً.
  */
 import type { DB, SqlValue } from '../../db/adapter';
+import { allIn, chunks } from '../../db/inList';
 import { fmt } from '../money';
 import { INSTALLMENT_DISCOUNT_SQL, DISCOUNT_AFTER_DUE, DISCOUNT_KINDS } from '../contracts/installments';
 import { t as tr } from '../../i18n';
@@ -59,11 +60,18 @@ function listOf(items: string[], total: number): string {
   return items.join('، ') + (total > items.length ? ` و${total - items.length} غيرها` : '');
 }
 
-/** شرط «ضمن النطاق» لعمود · بلا نطاق: الكل */
-function within(col: string, ids: string[] | undefined): { sql: string; params: SqlValue[] } {
-  if (!ids) return { sql: '1', params: [] };
-  if (!ids.length) return { sql: '0', params: [] };
-  return { sql: `${col} IN (${ids.map(() => '?').join(',')})`, params: ids };
+/** «ضمن النطاق» لعمود · بلا نطاق (ids غائب): الكل · ونطاقٌ فارغ: لا شيء */
+interface Within { col: string; ids: string[] | undefined }
+const within = (col: string, ids: string[] | undefined): Within => ({ col, ids });
+const none = (w: Within) => !!w.ids && !w.ids.length;
+/**
+ * صفوف العبارة على النطاق قطعاً (التوجيه الرابع ٣ · ٢: قائمةٌ يكبر طولها بالبيانات كانت تُسقط العبارة بـ too many SQL variables)، ثم
+ * ترتيبها بمفتاحها: الترتيب بين القطع ليس ترتيب العبارة · sql يأخذ شرط النطاق، وbefore معاملاتٌ قبله في النص
+ */
+function rowsIn<T>(db: DB, w: Within, sql: (cond: string) => string, key: (r: T) => string, before: SqlValue[] = []): T[] {
+  if (none(w)) return [];
+  const rows = w.ids ? allIn<T>(db, sql(`${w.col} IN (:list)`), w.ids, before) : db.all<T>(sql('1'), before);
+  return rows.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
 }
 
 /** الأعمدة المالية في القاعدة: كل عمود ينتهي بـ _halalas */
@@ -105,22 +113,25 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
       for (const x of nonIntegers(db, r.table, cols, r.where, r.params)) bad.push(`${tableLabel(r.table)} · ${columnLabel(x.col)}`);
     }
     if (scope.entryIds?.length) {
-      const w = within('entry_id', scope.entryIds);
-      for (const x of nonIntegers(db, 'journal_lines', money.get('journal_lines') ?? [], w.sql, w.params)) {
-        bad.push(`${tableLabel('journal_lines')} · ${columnLabel(x.col)} (${x.n} سطر)`);
+      // قطعاً، والعدّ مجموع القطع
+      const n = new Map<string, number>();
+      for (const c of chunks([...new Set(scope.entryIds)])) {
+        for (const x of nonIntegers(db, 'journal_lines', money.get('journal_lines') ?? [], `entry_id IN (${c.map(() => '?').join(',')})`, c)) {
+          n.set(x.col, (n.get(x.col) ?? 0) + x.n);
+        }
       }
+      for (const [col, k] of n) bad.push(`${tableLabel('journal_lines')} · ${columnLabel(col)} (${k} سطر)`);
     }
   }
   if (bad.length) out.push(NON_INTEGER_ISSUE + ': ' + listOf(bad.slice(0, SHOW), bad.length));
 
   /* ١) القيود المرحّلة */
   const e = within('e.id', scope ? scope.entryIds ?? [] : undefined);
-  const none = (w: { sql: string }) => w.sql === '0';
-  const unbalanced = none(e) ? [] : db.all<{ no: string; diff: number }>(
+  const unbalanced = rowsIn<{ no: string; diff: number }>(db, e, (w) =>
     `SELECT e.no, SUM(l.debit_halalas - l.credit_halalas) AS diff
      FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
-     WHERE e.status = 'مرحّل' AND ${e.sql}
-     GROUP BY e.id HAVING diff != 0 ORDER BY e.no`, e.params
+     WHERE e.status = 'مرحّل' AND ${w}
+     GROUP BY e.id HAVING diff != 0 ORDER BY e.no`, (r) => String(r.no)
   );
   if (unbalanced.length) {
     out.push('قيد مرحّل غير متوازن: ' + listOf(
@@ -128,11 +139,11 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
       unbalanced.length));
   }
 
-  const lineless = none(e) ? [] : db.all<{ no: string }>(
+  const lineless = rowsIn<{ no: string }>(db, e, (w) =>
     `SELECT e.no FROM journal_entries e
-     WHERE e.status = 'مرحّل' AND ${e.sql}
+     WHERE e.status = 'مرحّل' AND ${w}
        AND NOT EXISTS (SELECT 1 FROM journal_lines l WHERE l.entry_id = e.id)
-     ORDER BY e.no`, e.params
+     ORDER BY e.no`, (r) => String(r.no)
   );
   if (lineless.length) {
     out.push('قيد مرحّل بلا سطور: ' + listOf(lineless.slice(0, SHOW).map((r) => r.no), lineless.length));
@@ -141,15 +152,15 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
   /* ٢) سقف القسط بخصم الدفتر · النص نفسه الذي تقرأ به الشاشات ومحفّزات السقف، ومحصور في النطاق */
   const ids = scope ? scope.installmentIds ?? [] : undefined;
   const inst = within('i.id', ids);
-  const over = none(inst) ? [] : db.all<{ tenant: string | null; contract_no: string | null; due: string; amount: number; paid: number; disc: number }>(
+  const over = rowsIn<{ tenant: string | null; contract_no: string | null; due: string; amount: number; paid: number; disc: number }>(db, inst, (w) =>
     `SELECT tenant, contract_no, due, amount, paid, disc FROM (
        SELECT c.tenant_name AS tenant, c.contract_no, i.due_date AS due,
               i.amount_halalas AS amount, i.paid_halalas AS paid, ${INSTALLMENT_DISCOUNT_SQL} AS disc
        FROM contract_installments i
        LEFT JOIN contracts c ON c.id = i.contract_id
-       WHERE ${inst.sql}
+       WHERE ${w}
      ) WHERE paid < 0 OR paid + disc > amount
-     ORDER BY due`, inst.params
+     ORDER BY due`, (r) => String(r.due)
   );
   if (over.length) {
     out.push('قسط يتجاوز المسدَّدُ مع الخصم مبلغَه أو مسدَّده سالب: ' + listOf(
@@ -160,11 +171,11 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
 
   /* ٣) دفعات سالبة */
   const pay = within('p.id', scope ? scope.paymentIds ?? [] : undefined);
-  const negative = none(pay) ? [] : db.all<{ tenant: string | null; date: string }>(
+  const negative = rowsIn<{ tenant: string | null; date: string }>(db, pay, (w) =>
     `SELECT c.tenant_name AS tenant, p.date FROM contract_payments p
      LEFT JOIN contracts c ON c.id = p.contract_id
-     WHERE p.installment_id IS NOT NULL AND p.cancelled_at IS NULL AND (p.net_halalas < 0 OR p.discount_halalas < 0) AND ${pay.sql}
-     ORDER BY p.date`, pay.params
+     WHERE p.installment_id IS NOT NULL AND p.cancelled_at IS NULL AND (p.net_halalas < 0 OR p.discount_halalas < 0) AND ${w}
+     ORDER BY p.date`, (r) => String(r.date)
   );
   if (negative.length) {
     out.push('دفعة على قسط بصافٍ أو خصم سالب: ' + listOf(
@@ -173,7 +184,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
 
   /* ٣ب) دفعة بنوع خصم تتجاوز وحدها مبلغ قسطها · وهو أول ما يفحصه محفّز إدراج الدفعة، فلا تمرّ
      الاستعادة بما ترفضه المزامنة · و«تنزيل من القسط» نزل من المبلغ فلا يُضاف خصمه ثانية */
-  const big = none(pay) ? [] : db.all<{ tenant: string | null; date: string; total: number; amount: number }>(
+  const big = rowsIn<{ tenant: string | null; date: string; total: number; amount: number }>(db, pay, (w) =>
     `SELECT c.tenant_name AS tenant, p.date,
             p.net_halalas + (CASE WHEN p.discount_kind = '${DISCOUNT_AFTER_DUE}' THEN p.discount_halalas ELSE 0 END) AS total,
             i.amount_halalas AS amount
@@ -182,8 +193,8 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
      LEFT JOIN contracts c ON c.id = p.contract_id
      WHERE p.discount_kind IS NOT NULL AND p.cancelled_at IS NULL
        AND p.net_halalas + (CASE WHEN p.discount_kind = '${DISCOUNT_AFTER_DUE}' THEN p.discount_halalas ELSE 0 END) > i.amount_halalas
-       AND ${pay.sql}
-     ORDER BY p.date`, pay.params
+       AND ${w}
+     ORDER BY p.date`, (r) => String(r.date)
   );
   if (big.length) {
     out.push('دفعة تتجاوز وحدها مبلغ قسطها: ' + listOf(
@@ -194,17 +205,17 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
   /* ٥) نوع الخصم · معروف ولا يكون بلا خصم، وخصم «بعد الاستحقاق» له سطر 4900 بقيمته في الدفتر:
      في قيد الدفعة نفسه أو في قيد خصم مربوط بها · كما يشترط الحارس عند الحفظ */
   const kinds = DISCOUNT_KINDS.map(() => '?').join(',');
-  const badKind = none(pay) ? [] : db.all<{ tenant: string | null; date: string }>(
+  const badKind = rowsIn<{ tenant: string | null; date: string }>(db, pay, (w) =>
     `SELECT c.tenant_name AS tenant, p.date FROM contract_payments p
      LEFT JOIN contracts c ON c.id = p.contract_id
-     WHERE p.discount_kind IS NOT NULL AND p.cancelled_at IS NULL AND (p.discount_kind NOT IN (${kinds}) OR p.discount_halalas <= 0) AND ${pay.sql}
-     ORDER BY p.date`, [...DISCOUNT_KINDS, ...pay.params]
+     WHERE p.discount_kind IS NOT NULL AND p.cancelled_at IS NULL AND (p.discount_kind NOT IN (${kinds}) OR p.discount_halalas <= 0) AND ${w}
+     ORDER BY p.date`, (r) => String(r.date), [...DISCOUNT_KINDS]
   );
   if (badKind.length) {
     out.push('دفعة بنوع خصم غير معروف أو بلا خصم: ' + listOf(
       badKind.slice(0, SHOW).map((r) => `${r.tenant || 'بلا مستأجر'} · ${r.date}`), badKind.length));
   }
-  const unbooked = none(pay) ? [] : db.all<{ tenant: string | null; date: string; disc: number; booked: number }>(
+  const unbooked = rowsIn<{ tenant: string | null; date: string; disc: number; booked: number }>(db, pay, (w) =>
     `SELECT tenant, date, disc, booked FROM (
        SELECT c.tenant_name AS tenant, p.date, p.discount_halalas AS disc,
               COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas)
@@ -213,9 +224,9 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
                           AND e.status = 'مرحّل' AND e.reversed_by IS NULL), 0) AS booked
        FROM contract_payments p
        LEFT JOIN contracts c ON c.id = p.contract_id
-       WHERE p.discount_kind = '${DISCOUNT_AFTER_DUE}' AND p.cancelled_at IS NULL AND ${pay.sql}
+       WHERE p.discount_kind = '${DISCOUNT_AFTER_DUE}' AND p.cancelled_at IS NULL AND ${w}
      ) WHERE booked != disc
-     ORDER BY date`, pay.params
+     ORDER BY date`, (r) => String(r.date)
   );
   if (unbooked.length) {
     out.push('خصم بعد الاستحقاق بلا سطر خصم مساوٍ له في الدفتر: ' + listOf(

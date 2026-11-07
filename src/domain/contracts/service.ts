@@ -5,6 +5,7 @@
 import { contractDims } from '../accounting/dimensions';
 import { correctionDate, isFiledDate, requireOpenPeriod } from '../vatFilings';
 import type { DB } from '../../db/adapter';
+import { allIn } from '../../db/inList';
 import { requireCash } from '../cashGuard';
 import type { ScheduleRow } from '../pdf/parseEjar';
 import { uid } from '../ids';
@@ -909,13 +910,14 @@ export function recordBulkRentPayment(
   }
   if (!input.installmentIds.length) throw new RuleViolation('اختر قسطاً واحداً على الأقل');
   return db.transaction(() => {
-    const insts = db.all<{ id: string; due_date: string; amount_halalas: number; paid_halalas: number; discount: number; status: string }>(
+    // قطعاً (التوجيه الرابع ٣ · ٢)، والترتيب بالاستحقاق بعدها
+    const insts = allIn<{ id: string; due_date: string; amount_halalas: number; paid_halalas: number; discount: number; status: string }>(db,
       `SELECT i.id, i.due_date, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount, i.status
        FROM contract_installments i
-       WHERE i.contract_id = ? AND i.id IN (${input.installmentIds.map(() => '?').join(',')})
+       WHERE i.contract_id = ? AND i.id IN (:list)
          AND i.status != 'ملغية' ORDER BY i.due_date`,
-      [contractId, ...input.installmentIds]
-    );
+      input.installmentIds, [contractId]
+    ).sort((a, b) => (a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : 0));
     if (!insts.length) throw new RuleViolation('الأقساط المحددة غير موجودة على هذا العقد');
     const net = rawLines.reduce((s, l) => s + l.amountHalalas, 0);
     const date = input.date || today();

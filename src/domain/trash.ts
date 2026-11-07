@@ -2,6 +2,7 @@
  * سلة المحذوفات · قائمة موحّدة فوق الحذف الناعم، مدتها من الإعدادات (٣٠/٦٠/٩٠).
  */
 import type { DB } from '../db/adapter';
+import { allIn, runIn } from '../db/inList';
 import { entryCashEffect } from './cashGuard';
 import { getSetting } from '../repos/settings';
 import { restoreInvoice } from './invoices';
@@ -150,8 +151,8 @@ export function purgeManyFromTrash(db: DB, items: Array<{ table: string; id: str
     arr.push(i.id);
     ids.set(i.table, arr);
   }
-  const qs = (n: number) => Array.from({ length: n }, () => '?').join(',');
-  const del = (sql: string, params: string[]) => { if (params.length) db.run(sql, params); };
+  // كل عبارةٍ قطعاً (التوجيه الرابع ٣ · ٢): عناصر السلة يكبر عددها بالبيانات، وأثر كل عبارةٍ هنا على كل صفٍّ وحده
+  const del = (sql: string, params: string[]) => runIn(db, sql, params);
 
   db.transaction(() => {
     db.exec('PRAGMA defer_foreign_keys = ON');
@@ -159,46 +160,44 @@ export function purgeManyFromTrash(db: DB, items: Array<{ table: string; id: str
     // ١ · سطور القيود المحذوفة · المسودات وحدها: القيد المرحّل لا يُحذف أبداً ولو بقي في السلة من إصدار سابق
     const jeAll = ids.get('journal_entries') ?? [];
     const je = jeAll.length
-      ? db.all<{ id: string }>(
-          `SELECT id FROM journal_entries WHERE id IN (${qs(jeAll.length)}) AND status != 'مرحّل'`, jeAll
-        ).map((r) => r.id)
+      ? allIn<{ id: string }>(db, `SELECT id FROM journal_entries WHERE id IN (:list) AND status != 'مرحّل'`, jeAll).map((r) => r.id)
       : [];
-    del(`DELETE FROM journal_lines WHERE entry_id IN (${qs(je.length)})`, je);
+    del(`DELETE FROM journal_lines WHERE entry_id IN (:list)`, je);
 
     // ٢ · الأوراق البسيطة بلا مُعالين
     for (const t of ['attachments', 'message_scripts', 'company_docs', 'form_templates', 'handovers', 'reservations', 'key_money_deals', 'claims', 'bank_tx'] as const) {
       const arr = ids.get(t) ?? [];
-      del(`DELETE FROM "${t}" WHERE id IN (${qs(arr.length)}) AND deleted_at IS NOT NULL`, arr);
+      del(`DELETE FROM "${t}" WHERE id IN (:list) AND deleted_at IS NOT NULL`, arr);
     }
 
     // ٣ · الفواتير قبل قيودها (مفتاح journal_entry_id يمنع العكس)
     for (const t of ['invoices', 'purchases'] as const) {
       const arr = ids.get(t) ?? [];
-      del(`DELETE FROM "${t}" WHERE id IN (${qs(arr.length)}) AND deleted_at IS NOT NULL`, arr);
+      del(`DELETE FROM "${t}" WHERE id IN (:list) AND deleted_at IS NOT NULL`, arr);
     }
 
     // ٤ · القيود: الصفوف الحية المشيرة إليها تُفكّ إشارتها ثم تُحذف القيود
     if (je.length) {
-      db.run(`UPDATE contract_payments SET journal_entry_id = NULL WHERE journal_entry_id IN (${qs(je.length)})`, je);
-      db.run(`UPDATE invoices SET journal_entry_id = NULL WHERE journal_entry_id IN (${qs(je.length)})`, je);
-      db.run(`UPDATE purchases SET journal_entry_id = NULL WHERE journal_entry_id IN (${qs(je.length)})`, je);
-      db.run(`UPDATE journal_entries SET reversed_by = NULL WHERE reversed_by IN (${qs(je.length)})`, je);
-      del(`DELETE FROM journal_entries WHERE id IN (${qs(je.length)}) AND deleted_at IS NOT NULL`, je);
+      runIn(db, `UPDATE contract_payments SET journal_entry_id = NULL WHERE journal_entry_id IN (:list)`, je);
+      runIn(db, `UPDATE invoices SET journal_entry_id = NULL WHERE journal_entry_id IN (:list)`, je);
+      runIn(db, `UPDATE purchases SET journal_entry_id = NULL WHERE journal_entry_id IN (:list)`, je);
+      runIn(db, `UPDATE journal_entries SET reversed_by = NULL WHERE reversed_by IN (:list)`, je);
+      del(`DELETE FROM journal_entries WHERE id IN (:list) AND deleted_at IS NOT NULL`, je);
     }
 
     // ٥ · العقود: مُعاليها أولاً (دفعاتها وسطورها وتوزيعاتها وساكنوها وتسوياتها وتقييماتها ومطالباتها)
     const cs = ids.get('contracts') ?? [];
     if (cs.length) {
-      db.run(`DELETE FROM payment_lines WHERE payment_id IN (SELECT id FROM contract_payments WHERE contract_id IN (${qs(cs.length)}))`, cs);
-      db.run(`DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM contract_payments WHERE contract_id IN (${qs(cs.length)}))`, cs);
-      db.run(`DELETE FROM contract_payments WHERE contract_id IN (${qs(cs.length)})`, cs);
-      db.run(`DELETE FROM occupants WHERE contract_id IN (${qs(cs.length)})`, cs);
-      db.run(`DELETE FROM contract_occupants WHERE contract_id IN (${qs(cs.length)})`, cs);
-      db.run(`DELETE FROM deposit_settlements WHERE contract_id IN (${qs(cs.length)})`, cs);
-      db.run(`DELETE FROM tenant_ratings WHERE contract_id IN (${qs(cs.length)})`, cs);
-      db.run(`DELETE FROM claims WHERE contract_id IN (${qs(cs.length)})`, cs);
-      db.run(`DELETE FROM handovers WHERE contract_id IN (${qs(cs.length)})`, cs);
-      del(`DELETE FROM contracts WHERE id IN (${qs(cs.length)}) AND deleted_at IS NOT NULL`, cs);
+      runIn(db, `DELETE FROM payment_lines WHERE payment_id IN (SELECT id FROM contract_payments WHERE contract_id IN (:list))`, cs);
+      runIn(db, `DELETE FROM payment_allocations WHERE payment_id IN (SELECT id FROM contract_payments WHERE contract_id IN (:list))`, cs);
+      runIn(db, `DELETE FROM contract_payments WHERE contract_id IN (:list)`, cs);
+      runIn(db, `DELETE FROM occupants WHERE contract_id IN (:list)`, cs);
+      runIn(db, `DELETE FROM contract_occupants WHERE contract_id IN (:list)`, cs);
+      runIn(db, `DELETE FROM deposit_settlements WHERE contract_id IN (:list)`, cs);
+      runIn(db, `DELETE FROM tenant_ratings WHERE contract_id IN (:list)`, cs);
+      runIn(db, `DELETE FROM claims WHERE contract_id IN (:list)`, cs);
+      runIn(db, `DELETE FROM handovers WHERE contract_id IN (:list)`, cs);
+      del(`DELETE FROM contracts WHERE id IN (:list) AND deleted_at IS NOT NULL`, cs);
     }
 
     // ٦ · الوحدات ثم العقارات (توابعها المتسلسلة تُكنس بالتسلسل المعرَّف في المخطط)
@@ -209,45 +208,45 @@ export function purgeManyFromTrash(db: DB, items: Array<{ table: string; id: str
     // والقاعدة كقاعدة الحسابات في ٨: ما زال عليه معالون أحياء لا يُحذف ويُترك في السلة.
     const us = ids.get('units') ?? [];
     if (us.length) {
-      db.run(`DELETE FROM reservations WHERE unit_id IN (${qs(us.length)})`, us);
-      db.run(`DELETE FROM key_money_deals WHERE unit_id IN (${qs(us.length)})`, us);
-      db.run(`UPDATE occupants SET unit_id = NULL WHERE unit_id IN (${qs(us.length)})`, us);
-      db.run(`DELETE FROM meters WHERE owner_type = 'unit' AND owner_id IN (${qs(us.length)})
+      runIn(db, `DELETE FROM reservations WHERE unit_id IN (:list)`, us);
+      runIn(db, `DELETE FROM key_money_deals WHERE unit_id IN (:list)`, us);
+      runIn(db, `UPDATE occupants SET unit_id = NULL WHERE unit_id IN (:list)`, us);
+      runIn(db, `DELETE FROM meters WHERE owner_type = 'unit' AND owner_id IN (:list)
                 AND owner_id NOT IN (SELECT unit_id FROM contracts WHERE unit_id IS NOT NULL)`, us);
-      del(`DELETE FROM units WHERE id IN (${qs(us.length)}) AND deleted_at IS NOT NULL
+      del(`DELETE FROM units WHERE id IN (:list) AND deleted_at IS NOT NULL
              AND id NOT IN (SELECT unit_id FROM contracts WHERE unit_id IS NOT NULL)`, us);
     }
     const ps = ids.get('properties') ?? [];
     if (ps.length) {
-      db.run(`DELETE FROM meters WHERE owner_type = 'property' AND owner_id IN (${qs(ps.length)})
+      runIn(db, `DELETE FROM meters WHERE owner_type = 'property' AND owner_id IN (:list)
                 AND owner_id NOT IN (SELECT property_id FROM units)`, ps);
-      del(`DELETE FROM properties WHERE id IN (${qs(ps.length)}) AND deleted_at IS NOT NULL
+      del(`DELETE FROM properties WHERE id IN (:list) AND deleted_at IS NOT NULL
              AND id NOT IN (SELECT property_id FROM units)`, ps);
     }
 
     // ٧ · الأطراف: الصفوف الحية المشيرة إليها تُفكّ إشارتها
     const ts = ids.get('tenants') ?? [];
     if (ts.length) {
-      db.run(`UPDATE contracts SET tenant_id = NULL WHERE tenant_id IN (${qs(ts.length)})`, ts);
-      del(`DELETE FROM tenants WHERE id IN (${qs(ts.length)}) AND deleted_at IS NOT NULL`, ts);
+      runIn(db, `UPDATE contracts SET tenant_id = NULL WHERE tenant_id IN (:list)`, ts);
+      del(`DELETE FROM tenants WHERE id IN (:list) AND deleted_at IS NOT NULL`, ts);
     }
     const ss = ids.get('suppliers') ?? [];
     if (ss.length) {
-      db.run(`UPDATE meters SET supplier_id = NULL WHERE supplier_id IN (${qs(ss.length)})`, ss);
-      del(`DELETE FROM suppliers WHERE id IN (${qs(ss.length)}) AND deleted_at IS NOT NULL`, ss);
+      runIn(db, `UPDATE meters SET supplier_id = NULL WHERE supplier_id IN (:list)`, ss);
+      del(`DELETE FROM suppliers WHERE id IN (:list) AND deleted_at IS NOT NULL`, ss);
     }
     const bs = ids.get('banks') ?? [];
     if (bs.length) {
-      db.run(`DELETE FROM bank_tx WHERE bank_id IN (${qs(bs.length)})`, bs);
-      db.run(`UPDATE payment_lines SET bank_id = NULL WHERE bank_id IN (${qs(bs.length)})`, bs);
-      del(`DELETE FROM banks WHERE id IN (${qs(bs.length)}) AND deleted_at IS NOT NULL`, bs);
+      runIn(db, `DELETE FROM bank_tx WHERE bank_id IN (:list)`, bs);
+      runIn(db, `UPDATE payment_lines SET bank_id = NULL WHERE bank_id IN (:list)`, bs);
+      del(`DELETE FROM banks WHERE id IN (:list) AND deleted_at IS NOT NULL`, bs);
     }
 
     // ٨ · الحسابات المحاسبية: ما عليه سطور لا يُحذف (التاريخ لا يُمحى) ويُترك في السلة
     const as = ids.get('accounts') ?? [];
     if (as.length) {
-      db.run(
-        `DELETE FROM accounts WHERE code IN (${qs(as.length)}) AND deleted_at IS NOT NULL
+      runIn(db,
+        `DELETE FROM accounts WHERE code IN (:list) AND deleted_at IS NOT NULL
          AND code NOT IN (SELECT DISTINCT account_code FROM journal_lines)`, as);
     }
   });

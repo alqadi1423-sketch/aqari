@@ -2,6 +2,7 @@
  * مخزن المحادثة على الجهاز (الهجرة ٣٤) · ما يُكتب بلا اتصال يبقى «لم يُرسل» حتى تُرفع · ولا حذف للرسائل.
  */
 import type { DB, SqlValue } from '../db/adapter';
+import { allIn, runIn } from '../db/inList';
 import { uid as newId } from '../domain/ids';
 import {
   CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, POLL_MAX, directId, groupSettings, tsGte,
@@ -74,11 +75,11 @@ export function forgetObserved(db: DB, me: string): number {
       && !db.get(`SELECT 1 FROM chat_messages WHERE thread_id = ? AND sender = ? LIMIT 1`, [t.id, me]))
     .map((t) => t.id);
   if (!ids.length) return 0;
-  const marks = ids.map(() => '?').join(',');
   db.transaction(() => {
     db.run(`DROP TRIGGER IF EXISTS trg_chat_msg_no_delete`);
-    db.run(`DELETE FROM chat_messages WHERE thread_id IN (${marks})`, ids);
-    db.run(`DELETE FROM chat_threads WHERE id IN (${marks})`, ids);
+    // قطعاً (التوجيه الرابع ٣ · ٢): قائمةٌ يكبر طولها بالمحادثات
+    runIn(db, `DELETE FROM chat_messages WHERE thread_id IN (:list)`, ids);
+    runIn(db, `DELETE FROM chat_threads WHERE id IN (:list)`, ids);
     db.run(CHAT_NO_DELETE_TRIGGER);
   });
   return ids.length;
@@ -505,13 +506,16 @@ export function searchMessages(db: DB, me: string, q: ChatSearch, onlyMine = fal
   };
   const from = bound(q.from, false);
   const to = bound(q.to, true);
-  const where = ['sys IS NULL', `thread_id IN (${threads.map(() => '?').join(',')})`];
-  const args: SqlValue[] = [...threads];
+  const where = ['sys IS NULL', 'thread_id IN (:list)'];
+  const args: SqlValue[] = [];
   if (q.sender) { where.push('sender = ?'); args.push(q.sender); }
   if (from) { where.push('COALESCE(server_ts, local_at) >= ?'); args.push(from); }
   if (to) { where.push('COALESCE(server_ts, local_at) < ?'); args.push(to); }
   if (q.tag) { where.push(`x LIKE ?`); args.push('%"tag":"' + q.tag + '"%'); }
-  return db.all<MsgRow>(`SELECT * FROM chat_messages WHERE ${where.join(' AND ')} ORDER BY COALESCE(server_ts, local_at) DESC`, args).map(msgOf)
+  // قائمة المحادثات قطعاً (التوجيه الرابع ٣ · ٢)، والترتيب بعدها: الأحدث أولاً بوقت الخادم أو وقت الجهاز كما في العبارة الواحدة
+  const at = (m: MsgRow) => m.server_ts ?? m.local_at;
+  return allIn<MsgRow>(db, `SELECT * FROM chat_messages WHERE ${where.join(' AND ')}`, threads, [], args)
+    .sort((a, b) => (at(a) < at(b) ? 1 : at(a) > at(b) ? -1 : 0)).map(msgOf)
     .filter((m) => (!q.tag || m.tag === q.tag)
       && (!text || m.body.toLowerCase().includes(text) || (m.link?.label ?? '').toLowerCase().includes(text)))
     .slice(0, limit);

@@ -10,6 +10,7 @@
  */
 import type { DB } from '../../db/adapter';
 import { INSTALLMENT_DISCOUNT_SQL } from './installments';
+import { allIn } from '../../db/inList';
 
 /** مجموع ما دُفع على القسط i من الدفعات وتوزيعها · نصّ SQL على اسم الجدول المستعار i */
 export const DERIVED_PAID_SQL = `(COALESCE((SELECT SUM(p.net_halalas) FROM contract_payments p
@@ -40,13 +41,12 @@ export function derivedStatus(amount: number, paid: number, discount: number): '
  * يكتب ما تغيّر وحده ويعيد قائمته · والقسط «الملغية» لا يُمسّ.
  */
 export function recomputeInstallments(db: DB, installmentIds?: string[]): PaidChange[] {
-  const scope = installmentIds
-    ? (installmentIds.length ? `i.id IN (${installmentIds.map(() => '?').join(',')})` : '0')
-    : '1';
-  const rows = db.all<{ id: string; contract_id: string; due: string; amount: number; paid: number; status: string; disc: number; derived: number }>(
-    `SELECT i.id, i.contract_id, i.due_date AS due, i.amount_halalas AS amount, i.paid_halalas AS paid, i.status,
+  type Row = { id: string; contract_id: string; due: string; amount: number; paid: number; status: string; disc: number; derived: number };
+  const sql = (scope: string) => `SELECT i.id, i.contract_id, i.due_date AS due, i.amount_halalas AS amount, i.paid_halalas AS paid, i.status,
             ${INSTALLMENT_DISCOUNT_SQL} AS disc, ${DERIVED_PAID_SQL} AS derived
-     FROM contract_installments i WHERE ${scope} AND i.status != 'ملغية'`, installmentIds ?? []);
+     FROM contract_installments i WHERE ${scope} AND i.status != 'ملغية'`;
+  // القائمة قطعاً (التوجيه الرابع ٣ · ٢): أول مزامنة لجهاز جديد تمسّ أكثر من 32,766 قسطاً فكانت تسقط بـ too many SQL variables
+  const rows = installmentIds ? allIn<Row>(db, sql('i.id IN (:list)'), installmentIds) : db.all<Row>(sql('1'));
   const changes: PaidChange[] = [];
   db.transaction(() => {
     for (const r of rows) {
