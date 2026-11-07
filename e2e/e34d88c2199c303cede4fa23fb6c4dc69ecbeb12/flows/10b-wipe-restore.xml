@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="0" time="90.358" timestamp="2026-11-07T17:43:36">
+    <testcase id="10b-wipe-restore" name="10b-wipe-restore" classname="10b-wipe-restore" file="e2e/maestro/10b-wipe-restore.yaml" time="90.336" timestamp="2026-11-07T17:43:36" status="SUCCESS"/>
+  </testsuite>
+</testsuites>

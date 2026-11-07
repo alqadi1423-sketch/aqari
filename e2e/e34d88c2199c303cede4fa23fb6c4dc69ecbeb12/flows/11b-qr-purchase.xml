@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="84.887" timestamp="2026-11-07T17:45:22">
+    <testcase id="11b-qr-purchase" name="11b-qr-purchase" classname="11b-qr-purchase" file="e2e/maestro/11b-qr-purchase.yaml" time="84.865" timestamp="2026-11-07T17:45:22" status="ERROR">
+      <failure>Assertion is false: "موردٌ غير مسجّل" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
