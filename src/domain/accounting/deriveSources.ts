@@ -26,7 +26,7 @@ import {
 import { TS_DEDUCTIBLE } from '../purchases';
 import { invoiceTotals, normalizeInvoiceLines, KIND_CREDIT } from '../invoices';
 import { remainingByCodeOf, creditNoteAmounts, type StoredInvoiceLine } from '../creditNote';
-import { lineTaxCode, type TaxCode } from '../taxCode';
+import { lineTaxCode, vatRegistered, type TaxCode } from '../taxCode';
 import { mulQty } from '../money';
 import { lineCosts, splitQty } from '../assets/purchaseLines';
 import {
@@ -188,6 +188,12 @@ function namedOther(r: SourceReader, src: string, srcId: string, named: string |
   if (!named || named === id) return '';
   const x = r.entry(named);
   return x?.here && x.src_type === src && x.src_id === srcId ? AWAIT : no('noEntry');
+}
+
+/** «قابلة للخصم» والمنشأة غير مسجّلة في الضريبة على هذا الجهاز، والفاتورة لم تكن هنا قابلةً للخصم */
+export function deductibleIssue(db: DB, purchaseId: string): boolean {
+  if (vatRegistered(db)) return false;
+  return db.get<{ s: string | null }>(`SELECT tax_status AS s FROM purchases WHERE id = ?`, [purchaseId])?.s !== TS_DEDUCTIBLE;
 }
 
 /** المصدر الحيّ الذي لم يُعكس: قيوده المرحّلة هنا ناقصاً عواكسها · بمجموع مبالغها أو عددها */
@@ -448,16 +454,27 @@ function placeOf(r: SourceReader, a: AssetDoc, exceptId: string, keep: (x: SrcEn
     const ls = nonZero(x.lines).filter((l) => str(l.asset_id) === a.id && String(l.account_code ?? '') === a.category);
     if (!ls.length) continue;
     const base = String(x.src_type ?? '').replace(/_rev$/, '');
-    // والاستبعاد والبيع في الوارد لا يغيّران موضعها قبلهما · وahead: ما في الوارد محسوبٌ كأنه طُبِّق (الموضع بعد تطبيقه)
+    // والاستبعاد والبيع في الوارد لا يغيّران موضعها قبلهما · وahead: ما في الوارد محسوبٌ كأنه طُبِّق (الموضع بعد تطبيقه)، إلا قيد نقلٍ
+    // لا يشهد له حدثه (المدقق الخارجي ح١ وح٢: نقلٌ مزوَّر أو ناقصٌ حدثُه يبقى في الوارد فيجعل وحدةً قديمة «صحيحة بعد الوارد»، أو يحبس
+    // إهلاك الأصل المشروع حتى يُرفض بعد ثلاثين يوماً)
     if (!x.here) {
       pending ||= base !== 'asset_dispose' && base !== 'asset_sell';
       if (!ahead) continue;
+      if (x.src_type === 'asset_transfer' && !evidencedTransfer(r, a, x.id, ls)) continue;
     }
     for (const l of ls) seen.add(str(l.unit_id));
     if (base === 'asset_dispose' || base === 'asset_sell' || (base === 'asset_transfer' && !keep(x))) continue;
     for (const l of ls) net.set(str(l.unit_id), (net.get(str(l.unit_id)) ?? 0) + num(l.debit_halalas) - num(l.credit_halalas));
   }
   return { net, at: [...net].filter(([, v]) => v > 0).map(([u]) => u), seen, pending };
+}
+/** قيد نقلٍ يشهد له حدثه: حدث نقلٍ واحد للأصل يسمّيه، يُخرج التكلفة من وحدة حدثه ويُدخلها وحدته الأخرى كما في سطوره */
+function evidencedTransfer(r: SourceReader, a: AssetDoc, entryId: string, ls: SrcLine[]): boolean {
+  const evs = r.rows<AssetEvent>('asset_events', 'entry_id', entryId).filter((v) => v.kind === 'transfer' && v.asset_id === a.id);
+  if (evs.length !== 1) return false;
+  const from = evs[0].from_unit_id ?? null;
+  const to = evs[0].to_unit_id ?? null;
+  return from !== to && ls.every((l) => str(l.unit_id) === (num(l.credit_halalas) > 0 ? from : to));
 }
 /** وحدةٌ تكلفة الأصل فيها كلها في الموضع */
 const holding = (p: Place, cost: number) => [...p.net].filter(([, v]) => cost > 0 && v === cost).map(([u]) => u);
@@ -473,8 +490,15 @@ const transferOut = (r: SourceReader, a: AssetDoc, exceptId: string, unit?: stri
  */
 function depUnits(r: SourceReader, a: AssetDoc, exceptId: string, w: When): { units: Array<string | null>; pending: boolean } {
   const now = placeOf(r, a, exceptId);
+  // وحدة النقل في يوم العملية من حدثٍ يشهد له قيده (المدقق الخارجي ح٣: حدثٌ بلا قيد، أو غُيّرت وحدته، كان يُدخل إهلاكاً بوحدةٍ قديمة
+  // في عقارٍ آخر)
   const fromOp = w.kind === 'month' ? [] : r.rows<AssetEvent>('asset_events', 'asset_id', a.id)
-    .filter((v) => v.kind === 'transfer' && String(v.date ?? '').slice(0, 10) === w.d)
+    .filter((v) => v.kind === 'transfer' && String(v.date ?? '').slice(0, 10) === w.d && !!v.entry_id)
+    .filter((v) => {
+      const x = r.entry(v.entry_id!);
+      return !!x && x.src_type === 'asset_transfer' && x.src_id === a.id
+        && evidencedTransfer(r, a, x.id, nonZero(x.lines).filter((l) => str(l.asset_id) === a.id && String(l.account_code ?? '') === a.category));
+    })
     .map((v) => v.from_unit_id ?? null).filter((u) => now.seen.has(u));
   const unitsOf = (ahead: boolean) => {
     const cur = ahead ? placeOf(r, a, exceptId, () => true, true) : now;
@@ -482,7 +506,9 @@ function depUnits(r: SourceReader, a: AssetDoc, exceptId: string, w: When): { un
     return new Set([...then, ...cur.at]);
   };
   const here = unitsOf(false);
-  if (!now.pending) return { units: [...here], pending: false };
+  // وحدث نقلٍ وصل وقيده لم يصل بعد (المدقق الخارجي ح٤: العضو يرفع بدفعات، فقد يصل إهلاك الشهر بوحدته الجديدة قبل قيد النقل): يُنتظر
+  // قيده ولا يُرفض المشروع
+  if (!now.pending) return { units: [...here], pending: transferOut(r, a, exceptId) };
   // ونقلٌ أو تكلفةٌ في الوارد لم تُطبَّق هنا (التوجيه الرابع · كان اختبار d3 يسقط مرةً من أربع على main): الموضع من الدفتر هنا وحده قديم،
   // وكان قيدٌ مزوَّر بالوحدة القديمة يطابقه ويُقبل حين يُفحص قبل النقل في المرور نفسه · فالمقبول ما يصح في الموضعين معاً: هنا، وبعد تطبيق
   // ما في الوارد · وما خالف ينتظر (pending) حتى يُطبَّق أو يُرفض ما في الوارد · ولا يُنتظر النقل نفسه مقدّماً، فالتاريخ حقلٌ حر لا يدل على
@@ -644,14 +670,21 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       // والأصل المنتهي: قيد انتهائه آخر ما يُرحَّل له، فموضعه بعد كل نقلٍ موضع قيد انتهائه (نقلٌ بعد الاستبعاد يُرفض)
       const end = ENDED.includes(a.status as never) && a.end_entry_id ? r.entry(a.end_entry_id) : null;
       if (end) {
-        const after = new Map(place.net);
-        for (const l of nonZero(e.lines).filter((x) => str(x.asset_id) === a.id && String(x.account_code ?? '') === a.category)) {
-          after.set(str(l.unit_id), (after.get(str(l.unit_id)) ?? 0) + num(l.debit_halalas) - num(l.credit_halalas));
-        }
         const last = [...new Set(nonZero(end.lines).filter((x) => str(x.asset_id) === a.id && String(x.account_code ?? '') === a.category)
           .map((x) => str(x.unit_id)))];
-        const at = [...after].filter(([, v]) => v > 0).map(([u]) => u);
-        if (at.length !== 1 || last.length !== 1 || at[0] !== last[0]) return place.pending || transferOut(r, a, e.id) ? AWAIT : no('assetPlace');
+        const endsThere = (p: Place) => {
+          const after = new Map(p.net);
+          for (const l of nonZero(e.lines).filter((x) => str(x.asset_id) === a.id && String(x.account_code ?? '') === a.category)) {
+            after.set(str(l.unit_id), (after.get(str(l.unit_id)) ?? 0) + num(l.debit_halalas) - num(l.credit_halalas));
+          }
+          const at = [...after].filter(([, v]) => v > 0).map(([u]) => u);
+          return at.length === 1 && last.length === 1 && at[0] === last[0];
+        };
+        // وموضعه بعد هذا النقل وحده، أو بعد ما في الوارد من نقلٍ يشهد له حدثه (المدقق الخارجي ح٥: نقلان ثم استبعادٌ يرفعها العضو معاً
+        // كان الأول ينتظر الثاني لأن موضعه بعده وحده غير موضع الاستبعاد، والثاني ينتظر الأول، فيتوقف جهاز المالك بلا مخرج)
+        if (!endsThere(place) && !(place.pending && endsThere(placeOf(r, a, e.id, () => true, true)))) {
+          return place.pending || transferOut(r, a, e.id) ? AWAIT : no('assetPlace');
+        }
       }
       const from = assetSpecs(db, r, a, d, [fromU]);
       const to = assetSpecs(db, r, a, d, [ev.to_unit_id ?? null]);
@@ -848,14 +881,22 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const k = r.row<{ unit_id: string | null; contract_id: string | null; date: string | null; commission_halalas: number;
         journal_entry_id: string | null }>('key_money_deals', e.srcId);
       if (!k) return AWAIT;
-      if (k.journal_entry_id && k.journal_entry_id !== e.id) return no('noEntry');
+      if (k.journal_entry_id && k.journal_entry_id !== e.id) {
+        // استعادةٌ من السلة بإصدارٍ قبل إصلاح ك١ (المدقق الخارجي): الصفّ يسمّي القيد المعكوس، وهذه نسخته الحيّة الوحيدة · وغيرها كما
+        // في المستندات الأخرى: صفٌّ قديم ينتظر محدَّثه، أو مستندٌ لا يرحّل هذا القيد
+        const named = r.entry(k.journal_entry_id);
+        const restored = !!named && named.src_type === 'key_money' && named.src_id === e.srcId && !!named.reversed_by
+          && live(r, 'key_money', e.srcId, e.id, () => 1) === 0;
+        if (!restored) return namedOther(r, e.src, e.srcId, k.journal_entry_id, e.id) || no('noEntry');
+      }
       // والقيد يُرحَّل بعد صفّ صفقته (recordKeyMoneyDeal · قرار المالك 2026-11-07 «قيد عمولة التقبيل يُرحّل بعد صف الصفقة، وتحقق
       // جهاز المالك يرفض القيد بلا أبعاد») فيحمل أبعادها: عقدها ووحدته وعقاره، أو وحدتها وعقارها · ولا يُقبل بلا أبعاد ولا بأبعاد
       // مستندٍ آخر (ما كتبه إصدارٌ أقدم بلا أبعاد يُرفض ويظهر سببه، ويُعاد بإصدارٍ حديث)
       const own = k.contract_id ? contractDims(db, r, k.contract_id) : unitDims(db, r, k.unit_id ?? null);
       if (!own) return AWAIT;
       const lines = want(keyMoneyLines(db, num(k.commission_halalas)), () => [own]);
-      return lines ? { lines, date: k.date ?? '', correctable: false } : no('noEntry');
+      // ونسخة الاستعادة من السلة بتاريخ عكس قيدها السابق (repostDate)
+      return lines ? { lines, date: k.date ?? '', also: revDates(r, e.src, e.srcId), correctable: false } : no('noEntry');
     }
     case 'claim':
     case 'claim_collect': {
@@ -994,6 +1035,9 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const other = namedOther(r, e.src, e.srcId, p.journal_entry_id, e.id);
       if (other) return other;
       const deductible = p.tax_status === TS_DEDUCTIBLE;
+      // «قابلة للخصم» للمنشأة المسجّلة وحدها، إلا فاتورةً كانت هنا قابلةً للخصم فتبقى بوضعها (taxStatusesFor · المدقق الخارجي ض١:
+      // الحارس كان في الحفظ المحلي وحده، فجهاز عضوٍ يرى المنشأة مسجّلة يدخل ضريبة مدخلاتٍ لا تُسترد)
+      if (deductible && deductibleIssue(db, e.srcId)) return no('notRegistered');
       const forms = purchaseAssetForms(db, r, e.srcId, subtotal, tax, deductible, dims, nonZero(e.lines).some((l) => isAssetCategory(String(l.account_code))));
       if (forms === AWAIT) return AWAIT;
       const built = forms.map((f) => want(purchaseLedgerLines(

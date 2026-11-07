@@ -745,7 +745,8 @@
         "pre-restore": "Safety backup before a restore",
         "pre-wipe": "Safety backup before a wipe",
         "pre-upgrade": "Backup before an app upgrade"
-      }
+      },
+      "empty": "no data"
     }
   },
   "wipe": {
@@ -839,7 +840,8 @@
     "convertSum": "What was converted to assets exceeds what the invoice expensed",
     "assetBasis": "A member cannot change an asset's depreciation basis (cost, life, salvage, purchase date and category) after its cost is posted",
     "future": "A month that has not ended yet on the owner's device: its depreciation is not posted before it ends",
-    "assetPlace": "The asset's unit in the entry is not the unit where its cost sits in the ledger"
+    "assetPlace": "The asset's unit in the entry is not the unit where its cost sits in the ledger",
+    "notRegistered": "The organization is not VAT-registered on the owner's device, so the invoice's input VAT is not deductible"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",
@@ -866,7 +868,8 @@
   },
   "sync": {
     "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded",
-    "olderIncoming": "{{t}} · {{k}} · this device's newer copy ({{seen}}) won over an older incoming one ({{theirs}})"
+    "olderIncoming": "{{t}} · {{k}} · this device's newer copy ({{seen}}) won over an older incoming one ({{theirs}})",
+    "bankTxEntryRejected": "Bank transaction of a rejected entry ({{no}}) · not applied without its entry"
   },
   "restore": {
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",

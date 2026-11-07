@@ -12,7 +12,7 @@ import type { DB } from '../db/adapter';
 import { fmt } from '../domain/money';
 import { dfmtOut, today } from '../domain/dates';
 import {
-  PRINT_CSS, letterhead, esc, shownVatNo, type CompanyInfo, type CopyKind,
+  PRINT_CSS, letterhead, esc, shownVatNo, vatReturnVatNo, type CompanyInfo, type CopyKind,
   buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc,
   buildHandoverDoc, buildClaimDoc,
 } from '../domain/printDocs';
@@ -20,7 +20,7 @@ import type { HandoverSection } from '../domain/handover/build';
 import { HANDOVER_LEGAL_FOOTER } from '../domain/handover/build';
 import { putAttachment } from '../files/store';
 import { appFilesEnv } from './filesEnv';
-import { occupantsOf } from '../domain/occupants';
+import { occupantsOf, shownNationalId } from '../domain/occupants';
 import { depositState } from '../domain/contracts/vocab';
 import { contractStatusLabel } from '../domain/contracts/rules';
 import { tenantStatementRows } from '../domain/statement';
@@ -40,9 +40,9 @@ export function companyInfo(db: DB): CompanyInfo {
 }
 
 /** ترويسة التقارير (تستعملها reportExport) · نفس بيانات المنشأة */
-export function companyHeader(db: DB): string {
+export function companyHeader(db: DB, vatReturn = false): string {
   const co = companyInfo(db);
-  const vat = shownVatNo(co);
+  const vat = vatReturn ? vatReturnVatNo(co) : shownVatNo(co);
   return `<div><div style="font-weight:800;font-size:16px">${esc(co.name || '')}</div>
     ${vat !== undefined ? `<div style="font-size:11.5px;color:#77808F;margin-top:4px">الرقم الضريبي: <span class="num">${esc(vat)}</span></div>` : ''}</div>`;
 }
@@ -256,7 +256,8 @@ export async function printHandoverDoc(
 ): Promise<void> {
   const occ = h.contractId ? occupantsOf(db, h.contractId)
     .filter((o) => !o.moved_out)
-    .map((o) => ({ name: o.name, relation: o.relation, nationalId: o.national_id })) : [];
+    // وما خُزّن قبل الإصلاح للهوية الغائبة يُطبع خانةً خالية (shownNationalId)
+    .map((o) => ({ name: o.name, relation: o.relation, nationalId: shownNationalId(o.national_id) })) : [];
   const body = buildHandoverDoc(companyInfo(db), { ...h, occupants: occ, legalFooter: HANDOVER_LEGAL_FOOTER }, issuedNow(), copy);
   const filename = 'محضر · ' + h.type + ' · ' + h.tenantName;
   const uri = await renderPdf('محضر ' + h.type + ' · ' + h.tenantName, body, filename);

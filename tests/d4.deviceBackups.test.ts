@@ -72,6 +72,16 @@ describe('البند ١٧ · نسخ هذا الجهاز', () => {
     env.live().close();
   });
 
+  test('نسخة القاعدة الفارغة موسومة في اسمها، ولا يختارها الزرّ قبل نسخةٍ فيها بيانات (المدقق الخارجي B2)', () => {
+    const env = oldEnv(root, 16);
+    put(env, 'pre-wipe-2026-11-07T10-00-00-000Z.aqbk');
+    put(env, 'pre-wipe-2026-11-07T11-00-00-000Z-empty.aqbk');
+    expect(parseDeviceBackupName('pre-wipe-2026-11-07T11-00-00-000Z-empty.aqbk')?.empty).toBe(true);
+    expect(deviceBackups(env).map((b) => !!b.empty)).toEqual([true, false]);
+    expect(path.basename(deviceBackupPath(env)!)).toBe('pre-wipe-2026-11-07T10-00-00-000Z.aqbk');
+    env.live().close();
+  });
+
   test('اسمٌ ليس في القائمة يُرفض ولا يُقرأ ملفٌ خارج المجلد · ولا نسخ فـnull', () => {
     const env = oldEnv(root, 16);
     expect(deviceBackupPath(env)).toBeNull();

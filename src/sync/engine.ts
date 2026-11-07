@@ -32,7 +32,8 @@ import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
-import { memberSourceIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
+import { TS_DEDUCTIBLE } from '../domain/purchases';
+import { memberSourceIssue, deductibleIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 import { isoCmp, isoNorm } from './isoTime';
@@ -392,6 +393,26 @@ const linkRejected = (db: DB, entryId: string, why: string, doc?: RemoteDoc) =>
  */
 const GUESSED_REV = 'guessed_reversal_links';
 const guessesOf = (db: DB) => JSON.parse(getSyncState(db, GUESSED_REV) ?? '{}') as Record<string, string>;
+
+/**
+ * الأصول المربوطة بالعاكس في خريطة ربطٍ محفوظة (المعلَّق والمخمَّن) · بفهرسٍ عكسي يُبنى مرةً لكل نصٍّ محفوظ (المدقق الخارجي B1: كانت
+ * الخريطة تُحلَّل كاملةً لكل قيد عضو، ونصّها يكبر مع العواكس المنتظرة فيصير الفحص تربيعياً)
+ */
+const linkIndex = new Map<string, { raw: string; byRev: Map<string, string[]> }>();
+function linksTo(key: string, raw: string | null, revId: string): string[] {
+  const text = raw ?? '{}';
+  let c = linkIndex.get(key);
+  if (!c || c.raw !== text) {
+    const byRev = new Map<string, string[]>();
+    for (const [e, r] of Object.entries(JSON.parse(text) as Record<string, string>)) {
+      const a = byRev.get(r);
+      if (a) a.push(e); else byRev.set(r, [e]);
+    }
+    c = { raw: text, byRev };
+    linkIndex.set(key, c);
+  }
+  return c.byRev.get(revId) ?? [];
+}
 const saveGuesses = (db: DB, g: Record<string, string>) => setSyncState(db, GUESSED_REV, Object.keys(g).length ? JSON.stringify(g) : null);
 
 /**
@@ -676,9 +697,14 @@ function sourceReader(db: DB): SourceReader {
       const pk = syncTable(table)?.pkCols[0] ?? 'id';
       const out = new Map<string, T>();
       for (const x of db.all<Record<string, unknown>>(`SELECT * FROM "${table}" WHERE "${col}" = ?`, [value])) out.set(String(x[pk]), x as T);
-      for (const i of db.all<{ pk: string; payload: string; del: number }>(
-        `SELECT pk, payload, del FROM sync_inbox WHERE tbl = ? AND (json_extract(payload, '$.d.${col}') = ? OR pk IN (SELECT value FROM json_each(?)))`,
-        [table, value, JSON.stringify([...out.keys()])])) {
+      // عبارتان مفهرستان لا «OR» واحدة (المدقق الخارجي B1: الـOR يُسقط فهرس العمود فيُمسح الوارد كله لكل قيد عضو)
+      const byCol = db.all<{ pk: string; payload: string; del: number }>(
+        `SELECT pk, payload, del FROM sync_inbox WHERE tbl = ? AND json_extract(payload, '$.d.${col}') = ?`, [table, value]);
+      const seenPk = new Set(byCol.map((x) => x.pk));
+      const byPk = out.size ? db.all<{ pk: string; payload: string; del: number }>(
+        `SELECT pk, payload, del FROM sync_inbox WHERE tbl = ? AND pk IN (SELECT value FROM json_each(?))`,
+        [table, JSON.stringify([...out.keys()])]).filter((x) => !seenPk.has(x.pk)) : [];
+      for (const i of [...byCol, ...byPk]) {
         const d = (JSON.parse(i.payload) as RemoteDoc).d;
         if (i.del || !d || String(d[col] ?? '') !== value) out.delete(i.pk);
         else out.set(i.pk, d as T);
@@ -702,19 +728,23 @@ function sourceReader(db: DB): SourceReader {
         status: s(d.status), date: s(d.date), created_at: s(d.created_at), deleted_at: s(d.deleted_at), lines: (doc!.lines ?? []) as SrcLine[] };
     },
     claimants: (revId) => {
-      const ids = new Set(db.all<{ id: string }>(
-        `SELECT id FROM journal_entries WHERE reversed_by = ?
-         UNION SELECT pk AS id FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.reversed_by') = ?`,
-        [revId, revId]).map((x) => x.id));
-      const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
-      for (const [e, r] of [...Object.entries(pending), ...Object.entries(guessesOf(db))]) if (r === revId) ids.add(e);
+      // عبارتان مفهرستان لا «UNION» (B1: الدمج المرتَّب كان يختار فهرس (tbl, pk) فيمسح قيود الوارد كلها، والدفتر بلا فهرسٍ للعاكس)
+      const ids = new Set([
+        ...db.all<{ id: string }>(`SELECT id FROM journal_entries WHERE reversed_by = ?`, [revId]).map((x) => x.id),
+        ...db.all<{ id: string }>(`SELECT pk AS id FROM sync_inbox WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.reversed_by') = ? AND del = 0`,
+          [revId]).map((x) => x.id),
+      ]);
+      for (const k of [PENDING_REV, GUESSED_REV]) for (const e of linksTo(k, getSyncState(db, k), revId)) ids.add(e);
       return [...ids];
     },
     taken: (no, lineIds, exceptId) => !!db.get(`SELECT 1 FROM journal_entries WHERE no = ? AND id != ?`, [no, exceptId])
       || !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND pk != ? AND json_extract(payload, '$.d.no') = ?`, [exceptId, no])
       || !!db.get(`SELECT 1 FROM journal_lines WHERE entry_id != ? AND id IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)])
-      || !!db.get(`SELECT 1 FROM sync_inbox i, json_each(i.payload, '$.lines') j WHERE i.tbl = 'journal_entries' AND i.del = 0 AND i.pk != ?
-           AND json_extract(j.value, '$.id') IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)]),
+      // سطور قيود الوارد من جدولها المفهرس (الهجرة ٥٢ · B1) لا بمسح كل حمولةٍ في الوارد
+      // CROSS JOIN يُلزم المخطِّط بالبدء من معرّفات السطور (كان يبدأ من قيود الوارد كلها)
+      || !!db.get(`SELECT 1 FROM sync_inbox_lines l CROSS JOIN sync_inbox i ON i.doc = l.doc
+           WHERE l.line_id IN (SELECT value FROM json_each(?)) AND i.tbl = 'journal_entries' AND i.del = 0 AND i.pk != ?`,
+           [JSON.stringify(lineIds), exceptId]),
     assetEntries: (assetId) => {
       const here = db.all<{ id: string; src_type: string | null; src_id: string | null; reversed_by: string | null; date: string | null }>(
         `SELECT id, src_type, src_id, reversed_by, date FROM journal_entries WHERE status = ? AND deleted_at IS NULL
@@ -757,6 +787,22 @@ function memberSourceCheck(db: DB, doc: RemoteDoc): void {
   });
   if (why === 'await') throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
   if (why) throw no(why);
+}
+
+/**
+ * حركة بنكٍ كتبها عضوٌ برقم قيد (المدقق الخارجي ك٢): لا تُطبَّق على جهاز المالك قبل قيدها · فرصيد البنك يُحسب من الحركات، وقيدٌ
+ * مرفوض (عمولة تقبيلٍ بلا أبعاد من إصدارٍ أقدم مثلاً) كانت حركته تُطبَّق فيرتفع رصيد البنك بلا قيد · قيدها هنا تُطبَّق، وفي الوارد أو
+ * لم يصل بعد تُنتظر، ومرفوضٌ تُرفض معه بسببه · والمحذوفة تُطبَّق (حذفها لا يُدخل مالاً)
+ */
+function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown>): void {
+  if (getSyncState(db, 'membership') || !byMember(db, doc, true) || row.deleted_at) return;
+  const no = String(row.journal_no ?? '');
+  if (!no || db.get(`SELECT 1 FROM journal_entries WHERE no = ?`, [no])) return;
+  if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.no') = ?
+       AND NOT EXISTS (SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.no') = ?)`, [no, no])) {
+    throw new Error(tr('sync.bankTxEntryRejected', { no, lng: 'ar' }));
+  }
+  throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
 }
 
 /**
@@ -1322,10 +1368,14 @@ function applyOne(
         if (doc.t === 'purchases') renumberJoiningCollision(db, 'purchases', doc.k, row.no);
         collectionRowCheck(db, doc, row);
         assetBasisCheck(db, doc, row);
+        // وصفّ فاتورة الشراء «قابلة للخصم» من عضوٍ والمنشأة غير مسجّلة (المدقق الخارجي ض١): الإقرار يقرأ الوضع المخزّن، فلا يُطبَّق
+        if (doc.t === 'purchases' && !getSyncState(db, 'membership') && byMember(db, doc, true) && row.tax_status === TS_DEDUCTIBLE
+          && deductibleIssue(db, doc.k)) throw new Error(tr('deriveSrc.rejected', { source: 'purchases', why: tr('deriveSrc.notRegistered', { lng: 'ar' }), lng: 'ar' }));
         // حركة البنك برقم قيدها على هذا الجهاز (noteJournalNoAlias)
         if (doc.t === 'bank_tx' && typeof row.journal_no === 'string') {
           const alias = noAliases(db)[row.journal_no];
           if (alias) row.journal_no = alias;
+          memberBankTxCheck(db, doc, row);
         }
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         upsertRow(db, doc.t, row, cols(doc.t));

@@ -1011,7 +1011,7 @@ export default function Settings() {
         options={(deviceList ?? []).map((b) => ({
           value: b.name,
           label: dfmt(localDateOf(b.at)) + ' · ' + localTimeOf(b.at) + ' · ' + libSizeLabel(b.size),
-          sub: t('backup.device.kind.' + b.kind),
+          sub: t('backup.device.kind.' + b.kind) + (b.empty ? ' · ' + t('backup.device.empty') : ''),
         }))}
         value={''}
         onPick={(name) => {

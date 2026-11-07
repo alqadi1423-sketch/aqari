@@ -118,7 +118,11 @@ function restoreOne(db: DB, table: string, id: string): void {
   // الحي لا «يُستعاد» فيُعاد ترحيل قيده (المراجعة الخارجية ٧ · النتيجة ٤)
   if (!db.get(`SELECT 1 FROM "${table}" WHERE ${pk} = ? AND deleted_at IS NOT NULL`, [id])) throw new Error(t('restore.notInTrash'));
   db.run(`UPDATE "${table}" SET deleted_at = NULL WHERE ${pk} = ?`, [id]);
-  if (entry) repostCopy(db, entry, 'استعادة من السلة');
+  if (!entry) return;
+  const copy = repostCopy(db, entry, 'استعادة من السلة');
+  // والصفقة تسمّي قيدها الحيّ (المدقق الخارجي ك١: كانت تبقى تسمّي القيد المعكوس، فيرفض جهاز المالك نسخة العضو رفضاً نهائياً، وفي
+  // دفتر العضو إيرادٌ ونقدٌ ليسا عند المالك)
+  if (copy && table === 'key_money_deals') db.run(`UPDATE key_money_deals SET journal_entry_id = ? WHERE id = ?`, [copy.id, id]);
 }
 
 /**

@@ -155,14 +155,15 @@ export function planCancelPayment(db: DB, paymentId: string, date?: string): Can
   const restoreAmount = p.discount_kind === DISCOUNT_REDUCES_INSTALLMENT && p.installment_id
     ? { installmentId: p.installment_id, by: Number(p.discount_halalas) } : null;
   // المسدَّد بعد الإلغاء: المحسوب من الدفعات بلا هذه الدفعة · محدوداً بالمبلغ بعد رجوع التنزيل
-  const installments = instIds.length ? allIn<{ id: string; due: string; paid: number; amount: number; mine: number; derived: number }>(db,
-    `SELECT i.id, i.due_date AS due, i.paid_halalas AS paid, i.amount_halalas AS amount,
+  // والمتساويات في الاستحقاق بترتيبها في الجدول ثم بمعرّفها بعد القطع (المدقق الخارجي B4)
+  const installments = instIds.length ? allIn<{ id: string; due: string; sort: number; paid: number; amount: number; mine: number; derived: number }>(db,
+    `SELECT i.id, i.due_date AS due, i.sort, i.paid_halalas AS paid, i.amount_halalas AS amount,
             ${DERIVED_PAID_SQL} AS derived,
             COALESCE((SELECT SUM(a.amount_halalas) FROM payment_allocations a WHERE a.payment_id = ? AND a.installment_id = i.id), 0)
             + (CASE WHEN ? = i.id AND NOT EXISTS (SELECT 1 FROM payment_allocations a WHERE a.payment_id = ?) THEN ? ELSE 0 END) AS mine
-     FROM contract_installments i WHERE i.id IN (:list) ORDER BY i.due_date`,
+     FROM contract_installments i WHERE i.id IN (:list) ORDER BY i.due_date, i.sort, i.id`,
     instIds, [p.id, p.installment_id ?? '', p.id, Number(p.net_halalas)])
-    .sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : 0)).map((r) => {
+    .sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : Number(a.sort) - Number(b.sort) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))).map((r) => {
       const amount = Number(r.amount) + (restoreAmount && restoreAmount.installmentId === r.id ? restoreAmount.by : 0);
       return { id: r.id, due: r.due, fromPaid: Number(r.paid), toPaid: Math.min(Math.max(0, Number(r.derived) - Number(r.mine)), amount) };
     }) : [];

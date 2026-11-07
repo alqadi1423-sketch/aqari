@@ -6,7 +6,7 @@
 import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 51;
+export const SCHEMA_VERSION = 52;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1839,4 +1839,39 @@ WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) = 'مرحّل'
 BEGIN SELECT RAISE(ABORT, 'بُعد سطر القيد المرحّل يُملأ مرة ولا يُغيَّر'); END;
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51];
+/**
+ * الهجرة ٥٢ (المدقق الخارجي B1 · التوجيه الرابع ٣ · ٢): ما لم يستعمل فيه المخطِّط فهارس الهجرة ٥٠ · معرّفات سطور القيود في الوارد في
+ * جدولٍ صغير تحفظه المحفّزات (taken: كان يمسح سطور كل قيود الوارد بـ json_each لكل قيد عضو)، وفهرس العاكس في الدفتر (claimants) ·
+ * جدولٌ محلي مشتق لا يُزامَن ولا يُنسخ معناه: يُعاد بناؤه من الوارد
+ */
+export const MIGRATION_52 = `
+CREATE TABLE IF NOT EXISTS sync_inbox_lines (line_id TEXT NOT NULL, doc TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_inbox_lines_line ON sync_inbox_lines(line_id);
+CREATE INDEX IF NOT EXISTS ix_inbox_lines_doc ON sync_inbox_lines(doc);
+CREATE TRIGGER IF NOT EXISTS trg_inbox_lines_ins AFTER INSERT ON sync_inbox
+WHEN NEW.tbl = 'journal_entries' AND NEW.del = 0
+BEGIN
+  INSERT INTO sync_inbox_lines (line_id, doc)
+    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j WHERE json_extract(j.value, '$.id') IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_inbox_lines_upd AFTER UPDATE OF payload, del ON sync_inbox
+WHEN NEW.tbl = 'journal_entries' OR OLD.tbl = 'journal_entries'
+BEGIN
+  DELETE FROM sync_inbox_lines WHERE doc = OLD.doc;
+  INSERT INTO sync_inbox_lines (line_id, doc)
+    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j
+    WHERE NEW.tbl = 'journal_entries' AND NEW.del = 0 AND json_extract(j.value, '$.id') IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_inbox_lines_del AFTER DELETE ON sync_inbox
+WHEN OLD.tbl = 'journal_entries'
+BEGIN
+  DELETE FROM sync_inbox_lines WHERE doc = OLD.doc;
+END;
+DELETE FROM sync_inbox_lines;
+INSERT INTO sync_inbox_lines (line_id, doc)
+  SELECT json_extract(j.value, '$.id'), i.doc FROM sync_inbox i, json_each(i.payload, '$.lines') j
+  WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(j.value, '$.id') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_je_reversed_by ON journal_entries(reversed_by) WHERE reversed_by IS NOT NULL;
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52];

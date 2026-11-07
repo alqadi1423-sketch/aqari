@@ -77,11 +77,19 @@ export const PRINT_CSS = `
 export const shownVatNo = (co: { vatEnabled: boolean; vatno?: string | null }): string | undefined =>
   (co.vatEnabled ? (co.vatno ?? '') : undefined);
 
+/**
+ * رقم المنشأة في الإقرار الضريبي (القاعدة ٩٩ · ملاحظة المدقق الخارجي ن١): الإقرار وثيقة المكلَّف لفترته، ويُقدَّم الأخير منه بعد إلغاء
+ * التسجيل برقم التسجيل نفسه · فيحمل الرقم المحفوظ متى وُجد ولو أُطفئت الضريبة بعده، وإلا فكسائر ما يخرج
+ */
+export const vatReturnVatNo = (co: { vatEnabled: boolean; vatno?: string | null }): string | undefined =>
+  (co.vatno ? co.vatno : shownVatNo(co));
+
 /** الترويسة الكاملة · بيانات المنشأة من «بيانات المنشأة» لا تُكتب في كل مستند */
 export function letterhead(co: CompanyInfo, docTitle: string, docNo?: string, copyLabel?: string): string {
   const sub = [
     co.cr ? 'س.ت <span class="num">' + esc(co.cr) + '</span>' : '',
-    shownVatNo(co) ? 'الرقم الضريبي <span class="num">' + esc(shownVatNo(co)) + '</span>' : '',
+    // والمسجّلة بلا رقمٍ سطرها بخانةٍ خالية كترويسة التقارير (المدقق الخارجي B7 · البند ٤: قارئ المطبوع لا يعلم ما حُذف)
+    shownVatNo(co) !== undefined ? 'الرقم الضريبي <span class="num">' + esc(shownVatNo(co)) + '</span>' : '',
     co.phone ? 'هاتف <span class="num">' + esc(co.phone) + '</span>' : '',
     co.address ? esc(co.address) : '',
   ].filter(Boolean).join(' · ');

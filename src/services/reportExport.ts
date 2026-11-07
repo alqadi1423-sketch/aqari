@@ -7,7 +7,7 @@ import type { DB } from '../db/adapter';
 import { fmt } from '../domain/money';
 import { dfmtOut } from '../domain/dates';
 import { printHtmlDoc, companyHeader, companyInfo } from './print';
-import { shownVatNo } from '../domain/printDocs';
+import { shownVatNo, vatReturnVatNo } from '../domain/printDocs';
 import {
   unitReportData, propertyReportData, supplierReportData, invoicesReportData,
 } from '../domain/reportData';
@@ -44,11 +44,11 @@ const scopeCriteria = (label: string, blocks: ReportBlock[]): Array<[string, str
 ];
 
 /** ترويسة الملف: المنشأة ورقمها الضريبي من جدول company · واسم التقرير وفترته ووقت إصداره */
-function xlsxDoc(db: DB, report: string, period: string, criteria: Array<[string, string]>): XlsxDoc {
+function xlsxDoc(db: DB, report: string, period: string, criteria: Array<[string, string]>, vatReturn = false): XlsxDoc {
   const co = companyInfo(db);
   return {
     companyName: co.name || '',
-    companyVatno: shownVatNo(co),
+    companyVatno: vatReturn ? vatReturnVatNo(co) : shownVatNo(co),
     report, period, issuedAt: issuedAt(), criteria,
   };
 }
@@ -202,7 +202,7 @@ const htmlTable = (header: string[], rows: Cell[][]) =>
   rows.map((r) => `<tr>${r.map((c) => `<td class="${isNum(c) ? 'num' : ''}">${esc(cellHtml(c))}</td>`).join('')}</tr>`).join('') +
   '</tbody></table>';
 
-function blocksToHtml(db: DB, title: string, sub: string, blocks: ReportBlock[]): string {
+function blocksToHtml(db: DB, title: string, sub: string, blocks: ReportBlock[], vatReturn = false): string {
   const inner = blocks.map((b, bi) => {
     const metaHtml = b.meta.length
       ? `<div class="inv-meta"><div class="inv-box">${b.meta.map(([k, v]) => `<b>${esc(k)}:</b> ${esc(v)}`).join('<br>')}</div></div>`
@@ -215,7 +215,7 @@ function blocksToHtml(db: DB, title: string, sub: string, blocks: ReportBlock[])
     const brk = bi < blocks.length - 1 ? '<div style="page-break-after:always"></div>' : '';
     return head + metaHtml + secs + totals + brk;
   }).join('');
-  return `<div class="inv-doc"><div class="inv-top">${companyHeader(db)}
+  return `<div class="inv-doc"><div class="inv-top">${companyHeader(db, vatReturn)}
     <div style="text-align:left"><div class="inv-title">${esc(title)}</div>
     <div style="font-size:11px;color:#77808F">${esc(sub)}</div></div></div>${inner}</div>`;
 }
@@ -345,7 +345,7 @@ export async function exportVatReturn(
   };
   const filenameBase = 'vat-return-' + d.period + (approved ? '' : '-draft');
   if (kind === 'pdf') {
-    const html = blocksToHtml(db, title, `${dfmtOut(d.from)} إلى ${dfmtOut(d.to)}` + (approved ? '' : ' · مسودة'), [mainBlock, schedules]);
+    const html = blocksToHtml(db, title, `${dfmtOut(d.from)} إلى ${dfmtOut(d.to)}` + (approved ? '' : ' · مسودة'), [mainBlock, schedules], true);
     await printHtmlDoc(title, (approved ? '' : WATERMARK) + html, filenameBase);
     return;
   }
@@ -375,7 +375,7 @@ export async function exportVatReturn(
         ['غير القابلة للخصم (مستبعدة من البند ٧)', String(d.schedules.excludedPurchases.length) + ' فاتورة'],
         ['المبيعات المعفاة · الإيجار السكني', String(d.schedules.exemptSales.length) + ' مقبوض'],
         ['بيان الحوالات', String(d.schedules.transfers.length) + ' حوالة'],
-      ])), 'xlsx');
+      ], true)), 'xlsx');
     return;
   }
   await shareOfficeFile(filenameBase + '.docx',

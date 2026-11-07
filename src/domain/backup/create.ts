@@ -57,6 +57,9 @@ export function missingFileLabels(db: DB | null, missing: readonly string[]): st
 /** ضعفُ ما تشغله البيانات · القاعدة تُنسخ ثم تُضغط ثم يُفكّ بعضها، فالثلاثة هي الحدّ الآمن */
 const SPACE_FACTOR = 3;
 
+/** وسم نسخة الأمان من قاعدةٍ بلا بيانات في اسمها */
+export const EMPTY_MARK = '-empty';
+
 /** بادئة نسخ ما قبل الترقية في مجلد نسخ الأمان */
 export const PRE_UPGRADE_PREFIX = 'pre-upgrade';
 
@@ -78,15 +81,17 @@ export async function makeSafetyBackup(
 ): Promise<string> {
   const dir = safetyBackupsDir(env);
   env.fs.mkdirp(dir);
-  const keep = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}.aqbk`;
+  // ونسخةٌ من قاعدةٍ بلا بيانات لا تحذف ما قبلها (القاعدة ٩٩ · القرارات المعلّقة القسم ٥ البند ١٦): مسحٌ ثم مسحٌ آخر كان يُبقي نسخة
+  // القاعدة الفارغة وحدها وقد حذف التي فيها البيانات · وتُوسم في اسمها «فارغة» فتبقى آخرها وحدها (المدقق الخارجي B3: كانت تتراكم بلا سقف)،
+  // ولا يختارها زرّ «استعادة» قبل نسخةٍ فيها بيانات (B2) · وأول نسخةٍ من قاعدةٍ فيها بيانات بعدها تعيد «واحدة تبقى»
+  const empty = !hasUserData(env.db);
+  const keep = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}${empty ? EMPTY_MARK : ''}.aqbk`;
   const outPath = joinPath(dir, keep);
   await createBackup(env, outPath, onProgress);
-  // ونسخةٌ من قاعدةٍ بلا بيانات لا تحذف ما قبلها (القاعدة ٩٩ · القرارات المعلّقة القسم ٥ البند ١٦): مسحٌ ثم مسحٌ آخر كان يُبقي نسخة
-  // القاعدة الفارغة وحدها وقد حذف التي فيها البيانات · وأول نسخةٍ من قاعدةٍ فيها بيانات بعدها تعيد «واحدة تبقى»
-  if (!hasUserData(env.db)) return outPath;
   // نسخ ما قبل الترقية لها سقفها في upgrade.ts · لا تحذفها نسخة استعادة ولا مسح
   for (const name of env.fs.list(dir)) {
     if (name === keep || !name.endsWith('.aqbk') || name.startsWith(PRE_UPGRADE_PREFIX)) continue;
+    if (empty && !name.endsWith(EMPTY_MARK + '.aqbk')) continue;
     try { env.fs.remove(joinPath(dir, name)); } catch { /* التالي · لا يعطّل */ }
   }
   return outPath;
