@@ -69,6 +69,8 @@ function utf8(b: Uint8Array): string | null {
       if ((x & 0xc0) !== 0x80) return null;
       cp = (cp << 6) | (x & 0x3f);
     }
+    // ولا محرفاً فوق U+10FFFF ولا نصف زوجٍ بديل ولا ترميزاً أطول من حاجته (المدقق الخارجي L٥: كان يرمي فتسقط قراءة الصورة كلها)
+    if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) || (n === 3 && cp < 0x800) || (n === 4 && cp < 0x10000)) return null;
     s += String.fromCodePoint(cp);
     i += n;
   }
@@ -98,11 +100,30 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}
 /** الوقت بلا منطقة وقتُ الفاتورة المحلي (ISO 8601) · وبمنطقة يُحوَّل */
 export { latinDigits };
 export const hasZone = (iso: string) => /(Z|[+-]\d{2}:?\d{2})$/.test(iso.trim());
-/** وقتٌ مقروء بالثانية (أو بالدقيقة) · لا تاريخٌ وحده ولا نصٌّ لا يُقرأ */
-export const readableTime = (iso: string) => ISO_TIME.test(iso.trim()) && !Number.isNaN(Date.parse(iso.trim().replace(' ', 'T')));
+/** يومٌ في التقويم (المدقق الخارجي L١: «2026-02-30» كان يُقرأ بلا تنبيه، وبمنطقته يصير صامتاً 2 مارس) */
+const realDay = (iso: string): boolean => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return false;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+  return mo >= 1 && mo <= 12 && d >= 1 && d <= days;
+};
+/** وقتٌ مقروء بالدقيقة أو بالثانية في يومٍ من التقويم · لا تاريخٌ وحده ولا نصٌّ لا يُقرأ */
+export const readableTime = (iso: string) => {
+  const t = latinDigits(iso.trim());
+  return ISO_TIME.test(t) && realDay(t) && !Number.isNaN(Date.parse(t.replace(' ', 'T')));
+};
+/** والمفتاح من وقتٍ بالثانية وحده (L٢: الدقيقة وحدها لا تميّز فاتورتين في الدقيقة نفسها بالمبلغ نفسه) */
+const secondsTime = (iso: string) => readableTime(iso) && /T?\d{2}:\d{2}:\d{2}/.test(latinDigits(iso.trim()).slice(10));
 
 /** يقرأ حمولة QR الفاتورة · ونتيجته مسودةٌ تُراجع قبل الحفظ */
 export function decodeZatcaQr(payload: string): ZatcaQrResult {
+  // وما يرمي في الفكّ (حمولةٌ مصنوعة) سببه الصيغة، ولا يُسقط قراءة بقية رموز الصورة (L٥)
+  try { return decodeZatcaQrNow(payload); } catch { return { ok: false, error: 'format' }; }
+}
+
+function decodeZatcaQrNow(payload: string): ZatcaQrResult {
   const raw = String(payload ?? '').trim();
   if (!raw) return { ok: false, error: 'empty' };
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) return { ok: false, error: 'url' };
@@ -132,7 +153,8 @@ export function decodeZatcaQr(payload: string): ZatcaQrResult {
   return {
     ok: true,
     qr: {
-      sellerName: seller.trim(), vatNo: latinDigits(vatNo.trim()), issuedAt: issuedAt.trim(),
+      // والوقت بأرقامٍ عربية هندية يُقرأ كاللاتيني (المدقق الخارجي L٨: كانت مبالغه تُقرأ ووقته لا، فلا مفتاح ولا تاريخ)
+      sellerName: seller.trim(), vatNo: latinDigits(vatNo.trim()), issuedAt: latinDigits(issuedAt.trim()),
       totalHalalas: total, vatHalalas: vat, subtotalHalalas: total - vat,
       phase: [6, 7, 8, 9].some((t) => tags.has(t)) ? 2 : 1, warnings,
     },
@@ -162,6 +184,6 @@ export function pickZatcaQr(values: string[]): ZatcaQrResult {
  */
 export function zatcaQrKey(qr: ZatcaQr): string {
   // ووقتٌ لا يُقرأ بالثانية (تاريخٌ وحده أو نصٌّ آخر) لا يميّز فاتورتين في يومٍ واحد بالمبلغ نفسه، فلا مفتاح ولا رفض (المدقق الخارجي J١٣)
-  if (!readableTime(qr.issuedAt)) return '';
+  if (!secondsTime(qr.issuedAt)) return '';
   return [latinDigits(qr.vatNo), qr.issuedAt.trim().replace(' ', 'T'), qr.totalHalalas, qr.vatHalalas].join('|');
 }

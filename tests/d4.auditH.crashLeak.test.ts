@@ -29,7 +29,8 @@ import { CRASH_ENTITY, crashReports } from '@/domain/crashReport';
 test('H3 · اسم الملف المرفوع إلى المكتبة (وفيه اسم المستأجر ورقمه) يصل المالك في موضع تقرير العطل بلا حجب', async () => {
   // الموضع كما في الشاشة حرفاً
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'library.tsx'), 'utf8');
-  expect(src).toContain(`reportFailure({ title: 'تعذّر حفظ ' + (a.name ?? 'ملف'), e });`);
+  // وبعد L٧ تمرّر المكتبة موضعاً ثابتاً، والحجب يبقى حارساً لما يُمرَّر بعنوانه (كما يفعل الاختبار أدناه)
+  expect(src).toContain(`reportFailure({ title: 'تعذّر حفظ ' + (a.name ?? 'ملف'), where: LIBRARY_UPLOAD_WHERE, e });`);
 
   // جهاز عضوٍ بقسم المكتبة · القاعدة مفتوحة
   const db = memDb();

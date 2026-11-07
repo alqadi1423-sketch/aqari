@@ -426,6 +426,8 @@ export default function Purchases() {
         });
       };
       if (d.supplierId) { apply(d.supplier); return; }
+      // والمورد المؤرشف يُعاد من الموردين، فتُعبَّأ المبالغ وحدها ويُقال ذلك (المدقق الخارجي L٤)
+      if (d.warnings.includes('supplierArchived')) { apply(''); return; }
       dialog({
         title: t('purchaseQr.newSupplier'),
         body: t('purchaseQr.newSupplierBody', { name: d.supplier, vat: d.newSupplierVat ?? t('purchaseQr.noVat') }),
@@ -439,6 +441,9 @@ export default function Purchases() {
           { label: t('purchaseQr.keepSupplier'), variant: 'ghost', onPress: () => apply('') },
         ],
       });
+    } catch (e) {
+      // وما يرمي بعد القراءة (فكّ الرمز والمسودة) يُقال ولا يبقى وعداً مرفوضاً بلا رسالة (المدقق الخارجي L٥)
+      reportFailure({ title: t('purchaseQr.notRead'), where: t('purchaseQr.read', { lng: 'ar' }), db, e });
     } finally { setQrBusy(false); }
   };
   const startQr = () => dialog({
@@ -461,6 +466,8 @@ export default function Purchases() {
       unit_id: string | null; property_id: string | null; subtotal_halalas: number;
     }>(`SELECT * FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
+    // ولا يبقى من فاتورةٍ جديدة لم تُحفظ ملفٌ معلّق أو رمزٌ مقروء (المدقق الخارجي L٦: كان يُرفق صامتاً بالفاتورة المعدّلة)
+    setPendingFile(null); setQrKey(''); setQrFile(null);
     setEditingId(id);
     setSupplier(p.supplier_name); setDate(p.date); setDue(p.due); setCategory(p.category);
     setIncorpItem(p.incorp_item); setAmortize(!!Number(p.amortize));

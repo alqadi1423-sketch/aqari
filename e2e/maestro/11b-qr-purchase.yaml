@@ -54,22 +54,15 @@ appId: com.aqari.app
 - tapOn: "تم"
 - assertVisible: "E2E QR Supplier"
 - takeScreenshot: 11-filled
-# الصافي ١٠٠٠ والإجمالي ١١٥٠ تحت الطيّة
-- scrollUntilVisible:
-    element: "1000.00|1,000.00"
-    direction: DOWN
-- scrollUntilVisible:
-    element: "1150.00|1,150.00"
-    direction: DOWN
-- takeScreenshot: 11-amounts
-- scrollUntilVisible:
-    element: "تسجيل الفاتورة"
-    direction: DOWN
+# الصافي ١٠٠٠ ظاهرٌ أسفل النموذج (والإجمالي تحته في نافذةٍ لا يحرّكها تمرير المحاكي) · وزرّ الحفظ في ذيلها الثابت
+- assertVisible: "1000.00|1,000.00"
 - tapOn: "تسجيل الفاتورة"
 - tapOn:
     text: "متابعة|حفظ|تسجيل"
     optional: true
+# أُغلق النموذج بالحفظ، والفاتورة في القائمة باسم المورد
 - extendedWaitUntil:
-    visible: "E2E QR Supplier"
+    notVisible: "تسجيل فاتورة شراء / التزام"
     timeout: 20000
+- assertVisible: "E2E QR Supplier"
 - takeScreenshot: 11-saved

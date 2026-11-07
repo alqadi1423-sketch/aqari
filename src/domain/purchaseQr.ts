@@ -19,32 +19,36 @@ export interface PurchaseQrDraft {
   taxHalalas: number;
   totalHalalas: number;
   /** تنبيهات الرمز، و«supplierVat»: موردٌ بالاسم نفسه برقمٍ ضريبي آخر، فاقتُرح موردٌ باسمٍ يميّزه برقم البائع */
-  warnings: Array<ZatcaQr['warnings'][number] | 'supplierVat'>;
+  warnings: Array<ZatcaQr['warnings'][number] | 'supplierVat' | 'supplierArchived'>;
 }
 
-const normVat = (v: string | null | undefined) => latinDigits(String(v ?? '')).replace(/\s/g, '');
+// والرقم أرقامه وحدها: بشرطاتٍ أو مسافاتٍ أو علامة اتجاه (U+200F) كما يُلصق (المدقق الخارجي L٣)
+const normVat = (v: string | null | undefined) => latinDigits(String(v ?? '')).replace(/\D/g, '');
 
 export function purchaseDraftFromQr(db: DB, qr: ZatcaQr, now: () => string = today): PurchaseQrDraft {
   const vat = qr.warnings.includes('vatNo') ? '' : normVat(qr.vatNo);
   const seller = qr.sellerName.trim();
   // بالرقم الضريبي أولاً، ورقم البطاقة قد يكون بأرقامٍ عربية هندية (المدقق الخارجي J٥) · ثم بالاسم وحده إن لم يكن للبطاقة رقمٌ يخالف
   // رقم البائع (J١: كانت فاتورة بائعٍ برقمٍ آخر تُنسب صامتةً لموردٍ بالاسم نفسه فتُحفظ برقم البطاقة لا برقم البائع)
-  const live = db.all<{ id: string; name: string; vat: string | null }>(
-    `SELECT id, name, vat FROM suppliers WHERE deleted_at IS NULL ORDER BY created_at`);
+  const live = db.all<{ id: string; name: string; vat: string | null; archived: number }>(
+    `SELECT id, name, vat, archived FROM suppliers WHERE deleted_at IS NULL ORDER BY archived, created_at`);
   const byVat = vat ? live.find((s) => normVat(s.vat) === vat) : undefined;
   const byName = live.find((s) => s.name.trim() === seller);
   const nameClash = !byVat && !!byName && !!vat && !!normVat(byName.vat) && normVat(byName.vat) !== vat;
-  const known = byVat ?? (nameClash ? undefined : byName);
+  const match = byVat ?? (nameClash ? undefined : byName);
+  // والمورد المؤرشف لا يختاره نموذج الفاتورة (المدقق الخارجي L٤): يُنبَّه ليُعاد من الموردين، ولا يُقترح موردٌ مكرَّر باسمه
+  const archived = !!match && Number(match.archived) === 1;
+  const known = archived ? undefined : match;
   const at = qr.issuedAt.trim().replace(' ', 'T');
   const date = qr.warnings.includes('issuedAt') ? now() : hasZone(at) ? localDateOf(at) : at.slice(0, 10);
   return {
-    supplier: known?.name ?? (nameClash ? `${seller} · ${vat}` : seller),
+    supplier: known?.name ?? match?.name ?? (nameClash ? `${seller} · ${vat}` : seller),
     supplierId: known?.id ?? null,
-    newSupplierVat: known ? null : (vat || null),
+    newSupplierVat: known || archived ? null : (vat || null),
     date,
     subtotalHalalas: qr.subtotalHalalas,
     taxHalalas: qr.vatHalalas,
     totalHalalas: qr.totalHalalas,
-    warnings: [...qr.warnings, ...(nameClash ? ['supplierVat' as const] : [])],
+    warnings: [...qr.warnings, ...(nameClash ? ['supplierVat' as const] : []), ...(archived ? ['supplierArchived' as const] : [])],
   };
 }

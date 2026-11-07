@@ -64,7 +64,7 @@ function knownWords(): Set<string> {
   if (appWords) return appWords;
   const words = new Set<string>(['تعذّر', 'تعذر', 'فشل']); // i18n-exempt: مطلع عناوين حوار الفشل
   const walk = (v: unknown): void => {
-    if (typeof v === 'string') { for (const w of v.split(/[^\u0620-\u065F\u0670-\u06D3\u06D5\u06EE\u06EF\u06FA-\u06FF]+/)) if (w) words.add(w); }
+    if (typeof v === 'string') { for (const w of v.split(/[^\u0620-\u065F\u066E\u066F\u0670-\u06D3\u06D5\u06EE\u06EF\u06FA-\u06FF]+/)) if (w) words.add(w); }
     else if (v && typeof v === 'object') Object.values(v as Record<string, unknown>).forEach(walk);
   };
   walk(ar);
@@ -86,8 +86,11 @@ const whereLabel = (where: string): string => {
     .replace(/[\d٠-٩۰-۹]+/g, '#')
     .replace(/[^\s\u0600-\u06FF«»#…·:،.()\-]+/g, '…')
     // وحروف الكتابة العربية الممتدة (الفارسية والأردية: پ چ ژ ک گ ی ہ ھ …) من الكلمة نفسها (المدقق الخارجي J١٢: كانت تعبر وتقطعها)
-    .replace(/[\u0620-\u065F\u0670-\u06D3\u06D5\u06EE\u06EF\u06FA-\u06FF]+/g, (w) => (known.has(w) ? w : '…'))
+    .replace(/[\u0620-\u065F\u066E\u066F\u0670-\u06D3\u06D5\u06EE\u06EF\u06FA-\u06FF]+/g, (w) => (known.has(w) ? w : '…'))
     .replace(/…(?:[\s.\-]*…)+/g, '…')
+    // ولا يبقى بعد الكلمات الثلاث الأولى شيء: العنوان من الكود في أوله، وما بعده قد يكون اسماً كلماته من كلمات التطبيق نفسها
+    // (المدقق الخارجي L٧: «باسم الشهري» يعبر كاملاً) · والأثر في الكود يحمل الموضع
+    .replace(/^((?:\S+\s+){2}\S+)\s+\S[\s\S]*$/, '$1 …')
     .slice(0, WHERE_MAX);
 };
 
