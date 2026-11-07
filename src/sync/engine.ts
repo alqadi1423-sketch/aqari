@@ -705,6 +705,22 @@ function sourceReader(db: DB): SourceReader {
       || !!db.get(`SELECT 1 FROM journal_lines WHERE entry_id != ? AND id IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)])
       || !!db.get(`SELECT 1 FROM sync_inbox i, json_each(i.payload, '$.lines') j WHERE i.tbl = 'journal_entries' AND i.del = 0 AND i.pk != ?
            AND json_extract(j.value, '$.id') IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)]),
+    assetEntries: (assetId) => {
+      const here = db.all<{ id: string; src_type: string | null; src_id: string | null; reversed_by: string | null; date: string | null }>(
+        `SELECT id, src_type, src_id, reversed_by, date FROM journal_entries WHERE status = ? AND deleted_at IS NULL
+           AND id IN (SELECT entry_id FROM journal_lines WHERE asset_id = ?)`, [POSTED, assetId]).map((e) => ({ ...e, here: true, lines: linesHere(e.id) }));
+      const ids = new Set(here.map((e) => e.id));
+      const s = (v: unknown) => (v == null || v === '' ? null : String(v));
+      const inbox = db.all<{ pk: string; payload: string }>(
+        `SELECT i.pk, i.payload FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.status') = ?
+           AND EXISTS (SELECT 1 FROM json_each(i.payload, '$.lines') j WHERE json_extract(j.value, '$.asset_id') = ?)`, [POSTED, assetId])
+        .filter((x) => !ids.has(x.pk)).map((x) => {
+          const doc = JSON.parse(x.payload) as RemoteDoc;
+          const d = doc.d ?? {};
+          return { id: x.pk, here: false, src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), date: s(d.date), lines: (doc.lines ?? []) as SrcLine[] };
+        });
+      return [...here, ...inbox];
+    },
     pending: (srcType, srcId) => db.all<{ pk: string }>(
       `SELECT i.pk FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.src_type') = ?
          AND json_extract(i.payload, '$.d.src_id') = ? AND json_extract(i.payload, '$.d.status') = ?

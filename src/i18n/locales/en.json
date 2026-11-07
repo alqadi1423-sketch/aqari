@@ -800,7 +800,8 @@
     "taxCode": "An invoice line's tax code does not match its rate: standard-rated at zero",
     "invoiceTotals": "The invoice's net, tax or total does not match its lines by their codes and rates",
     "creditNote": "The credit note does not match what its invoice and the notes before it derive by tax code",
-    "cashOp": "The cash operation has more than one bank transaction under its entry number"
+    "cashOp": "The cash operation has more than one bank transaction under its entry number",
+    "assetCost": "The asset's cost or depreciation values in its row do not match what was posted for it in the ledger"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",

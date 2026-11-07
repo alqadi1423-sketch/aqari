@@ -28,7 +28,8 @@ import { remainingByCodeOf, creditNoteAmounts, type StoredInvoiceLine } from '..
 import { lineTaxCode, type TaxCode } from '../taxCode';
 import { mulQty } from '../money';
 import { lineCosts, splitQty } from '../assets/purchaseLines';
-import { ASSET_CATEGORIES, isAssetCategory } from '../assets/catalog';
+import { ASSET_CATEGORIES, isAssetCategory, ENDED, ACC_ACCUM, ACC_DEPRECIATION } from '../assets/catalog';
+import { expectedThrough, monthEnd, monthIndex, type DepreciableAsset } from '../assets/depreciation';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
 export interface SrcLine {
@@ -61,6 +62,8 @@ export interface SourceReader {
   taken(no: string, lineIds: string[], exceptId: string): boolean;
   /** معرّفات القيود المرحّلة بمصدرها في الوارد ولم تُطبَّق هنا بعد */
   pending(srcType: string, srcId: string): string[];
+  /** القيود المرحّلة التي في سطورها الأصل assetId: هنا (here)، وفي الوارد مرحّلةً ولم تُطبَّق هنا بعد */
+  assetEntries(assetId: string): Array<SrcEntry & { here: boolean }>;
 }
 
 /** حسابات مصروف فئات الشراء (purchaseExpenseAccount: الفئة المعروفة، وإلا 5300) */
@@ -89,7 +92,16 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   // فاتورة المبيعات وإشعارها الدائن (مصدره صفّ الإشعار نفسه) وتحصيلها
   invoice: ['1200', '4100', '2200'],
   invoice_pay: ['1100', '1200'],
+  // الإهلاك الشهري (runDepreciation) وإهلاك أصلٍ واحد حتى تاريخ عمليته (depreciateAssetTo): مصروف الإهلاك ومجمعه
+  depreciation: [ACC_DEPRECIATION, ACC_ACCUM],
+  asset_dep: [ACC_DEPRECIATION, ACC_ACCUM],
 };
+
+/**
+ * مصادر يرحّل منها التطبيق قيوداً عدة حيّة لمستندٍ واحد (المعرّف معرّف الأصل): إهلاك ما قبل كل نقلٍ أو استبعادٍ أو بيع، وكل نقل ·
+ * فلا يُنتظر لها عاكس قيدٍ سابق، ويُفحص تكرارها بالمطابقة نفسها (المجمع بعد ما رُحِّل قبلها)
+ */
+const MULTI = ['asset_dep'];
 
 /** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة)، والأصل (بنود الشراء الأصول وحدها) */
 interface DimSpec { contract: string | null; unit: string | null; props: Array<string | null>; asset?: string | null }
@@ -107,6 +119,11 @@ interface Derived {
    * لطول انتظاره ولا يدخل الدفتر) · وإلا فالصف محدَّثٌ بعده وما خالفه يُرفض
    */
   stale?: boolean;
+  /**
+   * في الوارد قيدٌ لم يُطبَّق بعد يغيّر ما اشتُقّ منه (مجمع الأصل أو تكلفته قبل القيد · وسطور مستندٍ من حفظين): ما خالف يُنتظر حتى
+   * يُطبَّق أو يُرفض، ثم يُفحص بالدفتر هنا وحده (والمزوَّر يُرفض لطول انتظاره ولا يدخل الدفتر)
+   */
+  pending?: boolean;
 }
 
 const str = (v: unknown) => (v == null || v === '' ? null : String(v));
@@ -277,9 +294,157 @@ function linesShort(lines: Array<StoredInvoiceLine & { sort: number }>, head: nu
   return net < Math.abs(head) || (net !== Math.abs(head) && twoSaves(lines));
 }
 
+interface AssetDoc {
+  id: string; category: string; unit_id: string | null; property_id: string | null; cost_halalas: number | null; salvage_halalas: number;
+  life_months: number; purchase_date: string | null; status: string; source: string | null; purchase_id: string | null;
+  purchase_line_id: string | null; end_date: string | null; end_entry_id: string | null; sale_halalas: number | null; deleted_at?: string | null;
+}
+interface AssetEvent { id: string; asset_id: string; kind: string; date: string | null; from_unit_id: string | null; to_unit_id: string | null; entry_id: string | null }
+
+/** الأصل كما يحسب جدولُه إهلاكه (depreciation.ts) */
+const depreciable = (a: AssetDoc): DepreciableAsset => ({
+  id: a.id, cost_halalas: a.cost_halalas == null ? null : num(a.cost_halalas), salvage_halalas: num(a.salvage_halalas),
+  life_months: num(a.life_months), purchase_date: a.purchase_date ?? null,
+});
+
+/** صافي حسابٍ لأصلٍ في قيد: مدينه ناقص دائنه */
+const assetNet = (x: SrcEntry, assetId: string, account: string) => x.lines
+  .filter((l) => str(l.asset_id) === assetId && String(l.account_code ?? '') === account)
+  .reduce((s, l) => s + num(l.debit_halalas) - num(l.credit_halalas), 0);
+
+/**
+ * موضع القيد المفحوص في ترتيب الترحيل على الجهاز الكاتب: الإهلاك الشهري لشهرٍ (month)، أو عمليةٌ على الأصل بتاريخها (op: النقل
+ * والاستبعاد والبيع وإهلاك ما قبلها)، أو إهلاك ما فات بتاريخ إثبات التكلفة (catchup)
+ */
+type When = { kind: 'month'; m: number } | { kind: 'op' | 'catchup'; d: string };
+
+/**
+ * هل رُحِّل x قبل القيد المفحوص على الجهاز الكاتب، فدخل في المجمع المرحَّل (postedAccum) الذي حُسب منه · وترتيب الوصول هنا غير
+ * ترتيب الترحيل هناك (القيود بمفاتيحها)، فيُعرف السابق من نوعه وتاريخه:
+ *  - الإهلاك الشهري يُرحَّل قبل كل عمليةٍ بتاريخٍ في شهره أو بعده (requireOpenDate: تاريخ العملية بعد آخر شهرٍ رُحِّل)، وبعدها لما بعده.
+ *  - وإهلاك العملية (asset_dep) بتاريخها: ما بعده بتاريخه رُحِّل بعده، وما رُحِّل بعده بتاريخٍ قبله صفرٌ لا قيد له.
+ *  - وإهلاك ما فات بتاريخ إثبات التكلفة يسبق كل إهلاكٍ للأصل بعد ذلك.
+ *  - والاستبعاد والبيع آخر ما يُرحَّل للأصل.
+ * وما سواها (التكلفة وعكسها، والنقل بصافٍ صفر، وعكس الإهلاك) سابق
+ */
+function before(x: SrcEntry, w: When): boolean {
+  const base = String(x.src_type ?? '').replace(/_rev$/, '');
+  if (base === 'asset_dispose' || base === 'asset_sell') return false;
+  if (base === 'depreciation') {
+    const m = monthIndex(String(x.src_id ?? '') + '-01');
+    return w.kind === 'month' ? m <= w.m : m < monthIndex(w.d);
+  }
+  if (base === 'asset_dep') {
+    const d = String(x.date ?? '').slice(0, 10);
+    return w.kind === 'month' ? monthIndex(d) <= w.m : w.kind === 'op' ? d <= w.d : d < w.d;
+  }
+  return true;
+}
+
+/**
+ * ما رُحِّل للأصل قبل القيد المفحوص: مجمعه (1490 دائناً) وتكلفته (حساب فئته مديناً) في الدفتر هنا، وهما ما حسبه الجهاز الكاتب
+ * (postedAccum وpostedCost) · pending: قيدٌ سابقٌ في الوارد لم يُطبَّق بعد يغيّر أحدهما
+ */
+function ledgerOf(r: SourceReader, assetId: string, category: string, exceptId: string, w: When): { accum: number; cost: number; pending: boolean } {
+  let accum = 0, cost = 0, pending = false;
+  for (const x of r.assetEntries(assetId)) {
+    if (x.id === exceptId || !before(x, w)) continue;
+    const a = -assetNet(x, assetId, ACC_ACCUM);
+    const c = assetNet(x, assetId, category);
+    if (x.here) { accum += a; cost += c; } else if (a || c) pending = true;
+  }
+  return { accum, cost, pending };
+}
+
+/**
+ * أساس إهلاك الأصل: تكلفته في صفّه هي ما رُحِّل له في الدفتر (صفّ الأصل يكتبه العضو، فتكلفةٌ مضاعفة فيه تضاعف إهلاكه)، وقيمه تصح
+ * كما يشترطها setAssetCost · '' أو 'await' (قيد تكلفته لم يُطبَّق هنا بعد: في الوارد، أو لم يصل والعضو يرفع على دفعات) أو السبب
+ */
+function basisIssue(a: AssetDoc, led: { cost: number; pending: boolean }): string {
+  if (a.cost_halalas == null) return led.cost ? (led.pending ? AWAIT : no('assetCost')) : '';
+  const cost = num(a.cost_halalas), salvage = num(a.salvage_halalas), life = num(a.life_months);
+  if (!(cost > 0) || salvage < 0 || salvage >= cost || !Number.isInteger(life) || life < 1 || life > 600) return no('assetCost');
+  return cost === led.cost ? '' : led.pending || !led.cost ? AWAIT : no('assetCost');
+}
+
+/** مجمع الأصل في سطور القيد نفسه: دائن 1490 ناقص مدينه */
+const accumIn = (lines: SrcLine[], assetId: string) => -assetNet({ id: '', src_type: null, src_id: null, lines }, assetId, ACC_ACCUM);
+
+/** وحدات الأصل: الحالية، وما نُقل منه وإليه (أحداث نقله) · فسطرٌ رُحِّل قبل نقله بوحدته يومها */
+const assetUnits = (r: SourceReader, a: AssetDoc): Array<string | null> => [...new Set([a.unit_id ?? null,
+  ...r.rows<AssetEvent>('asset_events', 'asset_id', a.id).filter((v) => v.kind === 'transfer').flatMap((v) => [v.from_unit_id ?? null, v.to_unit_id ?? null])])];
+
+/**
+ * أبعاد سطور الأصل (assetDims): الأصل، ووحدته وعقارها (الحالي أو ما نُقلت منه الوحدة، أو عقار صفّه)، والعقد الساري على الوحدة في
+ * التاريخ (contractAt) أو بلا عقد (جهازٌ لم يصله العقد بعد) · ولا عقد لسطور التحويل (withContract: false)
+ */
+function assetSpecs(db: DB, r: SourceReader, a: AssetDoc, date: string, units = assetUnits(r, a), withContract = true): DimSpec[] {
+  return units.flatMap((u) => {
+    const props = [...new Set([...unitDims(db, r, u).props, ...(u === (a.unit_id ?? null) ? [a.property_id ?? null] : [])])];
+    const contracts = withContract && u ? r.rows<{ id: string; start: string | null; end: string | null; deleted_at?: string | null }>('contracts', 'unit_id', u)
+      .filter((c) => !c.deleted_at && String(c.start ?? '') <= date && String(c.end ?? '') >= date).map((c) => c.id) : [];
+    return [null, ...contracts].map((c): DimSpec => ({ contract: c, unit: u, props, asset: a.id }));
+  });
+}
+
+/** سطرا الإهلاك (مدين المصروف ودائن المجمع) بمبلغه · لا سطر لصفر */
+const depPair = (amt: number, dims: DimSpec[]): Want[] => (amt > 0 ? [
+  { account: ACC_DEPRECIATION, debit: amt, credit: 0, dims }, { account: ACC_ACCUM, debit: 0, credit: amt, dims },
+] : []);
+
+/**
+ * إهلاك الأصل حتى تاريخ (runDepreciation وdepreciateAssetTo): المستحق من جدوله (expectedThrough) ناقصاً ما رُحِّل له قبل القيد ·
+ * 'await' لأصلٍ لم يصل أو أساسٍ في الوارد
+ */
+function depOf(db: DB, r: SourceReader, assetId: string, exceptId: string, w: When, through: string):
+  { a: AssetDoc; amt: number; specs: DimSpec[]; pending: boolean } | string {
+  const a = r.row<AssetDoc>('assets', assetId);
+  if (!a) return AWAIT;
+  const led = ledgerOf(r, assetId, a.category, exceptId, w);
+  const why = basisIssue(a, led);
+  if (why) return why;
+  return { a, amt: expectedThrough(depreciable(a), through) - led.accum, specs: assetSpecs(db, r, a, through), pending: led.pending };
+}
+
+/** المنتهي (المستبعد أو المبيع) لا يُهلك بعد تاريخ انتهائه */
+const endedBy = (a: AssetDoc, d: string) => ENDED.includes(a.status as never) && String(a.end_date ?? '').slice(0, 10) < d;
+
 /** سطور القيد المتوقعة من مستنده · 'await' لمستندٍ لم يصل · أو سبب الرفض */
-function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: string; no: string | null; total: number; lines: SrcLine[] }): Outcome {
+function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: string; no: string | null; date: string; total: number; lines: SrcLine[] }): Outcome {
   switch (e.src) {
+    case 'depreciation': {
+      // الإهلاك الشهري (runDepreciation): قيدٌ لشهره بتاريخ آخر يومٍ فيه، وسطرا كل أصلٍ بالمستحق من جدوله حتى آخر الشهر ناقصاً ما رُحِّل
+      // له قبله، وبأبعاده يومها · وما لم يكن فيه من الأصول (صفرٌ أو لم يصل جهازه بعد) لا يُطالب به · والمنتهي في الشهر أو قبله لا يُهلك
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(e.srcId)) return no('noEntry');
+      const m = monthIndex(e.srcId + '-01');
+      const end = monthEnd(m);
+      const lines: Want[] = [];
+      let pending = false;
+      const ids = [...new Set(nonZero(e.lines).map((l) => str(l.asset_id)))];
+      const bare = nonZero(e.lines).find((l) => !str(l.asset_id));
+      if (bare) return no('account', { account: String(bare.account_code) });
+      for (const id of ids as string[]) {
+        const x = depOf(db, r, id, e.id, { kind: 'month', m }, end);
+        if (typeof x === 'string') return x;
+        // ودون المستحق: قيدٌ قبله لم يصل بعد (العضو يرفع على دفعاتٍ صغيرة، والقيود المتزامنة بمفاتيحها) فيُنتظر ولا يُرفض
+        const got = accumIn(e.lines, id);
+        pending ||= x.pending || (got > 0 && got < x.amt);
+        lines.push(...depPair(ENDED.includes(x.a.status as never) && monthIndex(String(x.a.end_date ?? '')) <= m ? 0 : x.amt, x.specs));
+      }
+      return { lines, date: end, correctable: false, pending };
+    }
+    case 'asset_dep': {
+      // إهلاك أصلٍ حتى تاريخ عمليته قبل نقله أو استبعاده أو بيعه (depreciateAssetTo): بتاريخ حدث العملية على الأصل، وبالمستحق حتى
+      // تاريخه ناقصاً ما رُحِّل قبله · وحدثه لم يصل بعد فيُنتظر
+      const d = e.date.slice(0, 10);
+      const ops = r.rows<AssetEvent>('asset_events', 'asset_id', e.srcId)
+        .filter((v) => ['transfer', 'dispose', 'sell'].includes(v.kind) && String(v.date ?? '').slice(0, 10) === d);
+      if (!ops.length) return AWAIT;
+      const x = depOf(db, r, e.srcId, e.id, { kind: 'op', d }, d);
+      if (typeof x === 'string') return x;
+      const got = accumIn(e.lines, e.srcId);
+      return { lines: depPair(endedBy(x.a, d) ? 0 : x.amt, x.specs), date: d, correctable: false, pending: x.pending || (got > 0 && got < x.amt) };
+    }
     case 'cash_op': {
       // العملية النقدية (cashOps.ts): معرّف مصدرها عشوائي ولا صفّ يحمل مبلغها إلا حركة البنك اليدوية (الرسوم والوارد الآخر: recordManualBankTx)
       // المربوطة برقم قيدها، فتُشتق منها نوعاً ومبلغاً وتاريخاً · وبلا حركة: المصروف النثري وإيداع المالك ومسحوباته بأطرافها الثابتة
@@ -641,21 +806,23 @@ export function memberSourceIssue(db: DB, r: SourceReader,
   if (!DERIVED_SOURCES[src]) return '';
   const srcId = e.src_id ?? '';
   if (e.reversed_by) return reversedIssue(r, { id: e.id, src, srcId, no: e.no ?? null, lines: e.lines }, e.reversed_by);
-  if (live(r, src, srcId, e.id, () => 1) > 0) return AWAIT;
-  // وقيدٌ آخر من المصدر نفسه في الوارد يُطبَّق قبله: القديم الواصل معكوساً يسبق الجديد، وإلا وصل عاكس القديم والجديد وحده هنا فلا
-  // يطابقه فيُرفض، ويبقى القديم بلا عاكسٍ ينتظره (تعديل التسوية أو المطالبة في مزامنةٍ واحدة بترتيبٍ آخر)
-  if (r.pending(src, srcId).some((id) => id !== e.id)) return AWAIT;
-  const d = derive(db, r, { id: e.id, src, srcId, no: e.no ?? null, total: nonZero(e.lines).reduce((s, l) => s + num(l.credit_halalas), 0), lines: e.lines });
+  if (!MULTI.includes(src)) {
+    if (live(r, src, srcId, e.id, () => 1) > 0) return AWAIT;
+    // وقيدٌ آخر من المصدر نفسه في الوارد يُطبَّق قبله: القديم الواصل معكوساً يسبق الجديد، وإلا وصل عاكس القديم والجديد وحده هنا فلا
+    // يطابقه فيُرفض، ويبقى القديم بلا عاكسٍ ينتظره (تعديل التسوية أو المطالبة في مزامنةٍ واحدة بترتيبٍ آخر)
+    if (r.pending(src, srcId).some((id) => id !== e.id)) return AWAIT;
+  }
+  const d = derive(db, r, { id: e.id, src, srcId, no: e.no ?? null, date: e.date, total: nonZero(e.lines).reduce((s, l) => s + num(l.credit_halalas), 0), lines: e.lines });
   if (typeof d === 'string') return d;
   const forms = [d.lines, ...(d.alts ?? [])];
   const stale = () => !!d.stale && r.entries(src, srcId).some((x) => x.id !== e.id
     && forms.some((w) => matchIssue(x.lines, w) === '') && (d.date === null || String(x.date ?? '').slice(0, 10) === d.date.slice(0, 10)));
   const dateWhy = dateIssue(db, e.date, d);
-  if (dateWhy) return stale() ? AWAIT : dateWhy;
+  if (dateWhy) return d.pending || stale() ? AWAIT : dateWhy;
   // يكفي أن يطابق شكلاً واحداً مما يرحّله التطبيق من المستند · وإلا فسبب شكلٍ طابقت حساباته ومبالغه وخالف بُعده، ثم سبب الأول
   const whys = forms.map((w) => matchIssue(e.lines, w));
   if (whys.includes('')) return '';
-  if (stale()) return AWAIT;
+  if (d.pending || stale()) return AWAIT;
   const dims = dimsPrefix();
   return whys.find((w) => w.startsWith(dims)) ?? whys[0];
 }
