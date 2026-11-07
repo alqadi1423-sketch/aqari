@@ -6,7 +6,7 @@
 import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 50;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1794,4 +1794,31 @@ export const MIGRATION_49 = `
 ALTER TABLE sync_inbox ADD COLUMN waiting_since TEXT;
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49];
+/**
+ * الترحيلة ٥٠ · فهارس صندوق الوارد (التوجيه الرابع ٣ · ٢ · دراسة التوسع · المرحلة ٠ · «3,000 دفعة عضو في ≤ 3 ث وخطياً»): فحص جهاز
+ * المالك لكتابات الأعضاء يقرأ الصف بمفتاحه (tbl وpk) وأبناءه بمعرّف أبيه (json_extract من الحمولة) في الوارد، ولا فهرس لهما فكان كل
+ * بحثٍ مسحاً للصندوق كله فيكبر الفحص بمربع حجمه · والفهرس بالتعبير نفسه الذي يكتبه المحرّك (sync/engine.ts: rowsHereOrInbox وقارئ
+ * المصادر)، بالجدول أولاً · وفهرس قيد إلغاء الدفعة (cancel_entry_id) لفحص «قيدٌ لدفعةٍ واحدة» · فهارس وحدها: لا يتغيّر صفّ
+ */
+export const MIGRATION_50 = `
+CREATE INDEX IF NOT EXISTS ix_sync_inbox_tbl_pk ON sync_inbox(tbl, pk);
+CREATE INDEX IF NOT EXISTS ix_inbox_d_journal_entry_id ON sync_inbox(tbl, json_extract(payload, '$.d.journal_entry_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_payment_id ON sync_inbox(tbl, json_extract(payload, '$.d.payment_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_asset_id ON sync_inbox(tbl, json_extract(payload, '$.d.asset_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_entry_id ON sync_inbox(tbl, json_extract(payload, '$.d.entry_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_purchase_id ON sync_inbox(tbl, json_extract(payload, '$.d.purchase_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_journal_no ON sync_inbox(tbl, json_extract(payload, '$.d.journal_no'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_unit_id ON sync_inbox(tbl, json_extract(payload, '$.d.unit_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_invoice_id ON sync_inbox(tbl, json_extract(payload, '$.d.invoice_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_ref_invoice_id ON sync_inbox(tbl, json_extract(payload, '$.d.ref_invoice_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_contract_id ON sync_inbox(tbl, json_extract(payload, '$.d.contract_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_no ON sync_inbox(tbl, json_extract(payload, '$.d.no'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_reversed_by ON sync_inbox(tbl, json_extract(payload, '$.d.reversed_by'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_src_type ON sync_inbox(tbl, json_extract(payload, '$.d.src_type'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_status ON sync_inbox(tbl, json_extract(payload, '$.d.status'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_src_id ON sync_inbox(tbl, json_extract(payload, '$.d.src_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_method_label ON sync_inbox(tbl, json_extract(payload, '$.d.method_label'));
+CREATE INDEX IF NOT EXISTS ix_pay_cancel_entry ON contract_payments(cancel_entry_id);
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50];
