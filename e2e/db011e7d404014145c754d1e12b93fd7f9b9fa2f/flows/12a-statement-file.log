@@ -1,0 +1,3 @@
+/home/runner/work/aqari/aqari/e2e-out/aqari-e2e-statement.csv: 1 file pushed, 0 skipped. 1.5 MB/s (153 bytes in 0.000s)
+Broadcasting: Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///... flg=0x400000 }
+Broadcast completed: result=0
