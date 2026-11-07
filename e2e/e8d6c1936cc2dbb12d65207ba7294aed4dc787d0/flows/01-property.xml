@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="123.717" timestamp="2026-11-07T19:11:07">
+    <testcase id="01-property" name="01-property" classname="01-property" file="e2e/maestro/01-property.yaml" time="123.704" timestamp="2026-11-07T19:11:07" status="ERROR">
+      <failure>Assertion is false: "الرئيسية" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,9 @@
+19:19:55.117 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandStart: Define variables RUNNING
+19:19:55.120 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandFinished: Define variables COMPLETED
+19:19:55.121 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandStart: Apply configuration RUNNING
+19:19:55.121 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandFinished: Apply configuration COMPLETED
+19:19:55.122 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandStart: Tap on "العقود" RUNNING
+19:20:11.995 [ERROR] maestro.orchestra.Orchestra.executeCommands: [Command execution] CommandFailed: Element not found: Text matching regex: العقود
+19:20:12.205 [ INFO] maestro.Maestro.takeScreenshot: Taking screenshot
+19:20:12.207 [TRACE] maestro.utils.ScreenshotUtils.takeScreenshot: Taking screenshot to output sink
+19:20:12.478 [ INFO] maestro.cli.runner.CliConsoleListener.onCommandFinished: Tap on "العقود" FAILED

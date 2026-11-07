@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="18.024" timestamp="2026-11-07T19:19:54">
+    <testcase id="04c-alive" name="04c-alive" classname="04c-alive" file="e2e/maestro/04c-alive.yaml" time="18.014" timestamp="2026-11-07T19:19:54" status="ERROR">
+      <failure>Element not found: Text matching regex: العقود</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

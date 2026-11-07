@@ -1,0 +1,7 @@
+326:  Window #9 Window{320140f u0 com.aqari.app/com.aqari.app.MainActivity}:
+328:    mOwnerUid=10192 showForAllUsers=false package=com.aqari.app appop=NONE
+337:    mBaseLayer=21000 mSubLayer=0    mToken=ActivityRecord{8828541 u0 com.aqari.app/.MainActivity t14}
+338:    mActivityRecord=ActivityRecord{8828541 u0 com.aqari.app/.MainActivity t14}
+347:    WindowStateAnimator{f826875 com.aqari.app/com.aqari.app.MainActivity}:
+      fl=LAYOUT_IN_SCREEN LAYOUT_INSET_DECOR SPLIT_TOUCH HARDWARE_ACCELERATED DRAWS_SYSTEM_BAR_BACKGROUNDS
+      fl=NOT_FOCUSABLE NOT_TOUCHABLE LAYOUT_IN_SCREEN LAYOUT_INSET_DECOR WATCH_OUTSIDE_TOUCH SPLIT_TOUCH HARDWARE_ACCELERATED DRAWS_SYSTEM_BAR_BACKGROUNDS

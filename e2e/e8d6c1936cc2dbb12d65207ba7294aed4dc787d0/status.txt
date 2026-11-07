@@ -1,0 +1,12 @@
+00-smoke fail 145s
+01-property fail 132s
+02-arabic-input fail 130s
+03-offline fail 131s
+04a-persist fail 131s
+04b-memory pass 3s
+04c-alive fail 25s
+04d-kill pass 3s
+04e-restore fail 130s
+05a-secure fail 130s
+05b-secure fail 0s
+06a-permissions pass 1s
