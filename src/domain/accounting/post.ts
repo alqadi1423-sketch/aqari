@@ -76,6 +76,11 @@ export function postEntry(
     dims?: Dims;
     /** يبقى «قيد الإنشاء» ولا يُرقّى (قيد العضو اليدوي · المراجعة الخارجية ٧ «رابعاً ١ (أ)») */
     draft?: boolean;
+    /**
+     * أبعاد كل سطرٍ (العقار والوحدة والعقد والأصل) كما في سطره بالضبط، والفارغ يبقى فارغاً ولا يُملأ من المصدر (العاكس بأبعاد أصله ·
+     * مركز التكلفة كما كان)
+     */
+    exactDims?: boolean;
   }
 ): PostedEntry | null {
   const rows = args.lines.filter((l) => Math.abs(l.debit || 0) > 0 || Math.abs(l.credit || 0) > 0);
@@ -116,6 +121,12 @@ export function postEntry(
     const explicit = { ...(args.dims ?? {}), costCenterId: cc };
     for (const l of rows) {
       const d = lineDims(derived, explicit, l.dims);
+      if (args.exactDims) {
+        d.propertyId = l.dims?.propertyId ?? null;
+        d.unitId = l.dims?.unitId ?? null;
+        d.contractId = l.dims?.contractId ?? null;
+        d.assetId = l.dims?.assetId ?? null;
+      }
       db.run(
         `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas,
            property_id, unit_id, contract_id, cost_center_id, asset_id)
@@ -216,6 +227,10 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string, date?: 
       })),
       srcType: (e.src_type ?? 'manual') + '_rev',
       srcId: e.src_id ?? e.id,
+      // والفارغ من أبعاد الأصل يبقى فارغاً (المتحقق المستقل): قيد عمولة التقبيل يُرحَّل قبل صفّ صفقته فتُكتب سطوره بلا أبعاد، وكان
+      // العاكس يملؤها من الصفقة فيرفضه جهاز المالك (mirrorIssue يطابق الأبعاد) ويبقى إيراد التقبيل الملغى · كما يعكس
+      // reverseAllPostedEntries
+      exactDims: true,
     });
     if (posted) db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [posted.id, e.id]);
     return posted;

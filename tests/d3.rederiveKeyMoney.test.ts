@@ -4,8 +4,9 @@
  * الضريبة ومعه) · بيانات مصطنعة.
  */
 import { recordKeyMoneyDeal } from '@/domain/keymoney';
+import { entrySourceAction } from '@/domain/accounting/sourceCancel';
 import { addProperty, addUnit } from './helpers/fixtures';
-import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims } from './helpers/rederive';
+import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, net } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
 
 const SRC = 'key_money';
@@ -85,6 +86,27 @@ describe('إعادة اشتقاق قيد عمولة التقبيل من صفقت
     expect(reasonOf(s.owner, k)).toBe('');
     expect(has(s.owner, k)).toBe(true);
     expect(s.owner.get(`SELECT credit_halalas AS c FROM journal_lines WHERE entry_id = ? AND account_code = '2200'`, [k])).toEqual({ c: 30000 });
+    s.close();
+  });
+
+  test('إيجابي · إلغاء التقبيل من الجهاز الثاني يصل جهاز المالك ويُقبل عاكسه (بأبعاد أصله كما هي) فيرجع إيراده صفراً', async () => {
+    const s = await setup();
+    deal(s.dev, s.ua, 7);
+    await sync(s.dev, s.r);
+    const k = asMember(s.r, SRC);
+    await ownerPulls(s.owner, s.r);
+    expect(has(s.owner, k)).toBe(true);
+    const a = entrySourceAction(s.dev, k);
+    if (a?.kind !== 'op') throw new Error('op'); // i18n-exempt: رسالة اختبار
+    a.run('2026-11-02', 'إلغاء مصطنع');
+    await sync(s.dev, s.r);
+    const rev = asMember(s.r, SRC + '_rev');
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, rev)).toBe('');
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, rev)).toBe(true);
+    expect(s.owner.get(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [k])).toEqual({ r: rev });
+    expect(net(s.owner, '4300')).toBe(0);
     s.close();
   });
 });
