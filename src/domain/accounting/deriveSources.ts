@@ -20,7 +20,7 @@ import {
   contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
   reservationDepositLines, reservationForfeitLines, reservationRefundLines, keyMoneyLines,
   claimLines, claimCollectionLines, purchaseLedgerLines, purchasePaymentLines, PURCHASE_CATEGORY_ACCOUNT,
-  invoiceLedgerLines, creditNoteLedgerLines, invoicePaymentLines, vatRefundLines, vatRejectLines, cashOpLines, type EntryLine,
+  invoiceLedgerLines, creditNoteLedgerLines, invoicePaymentLines, vatRefundLines, vatRejectLines, cashOpLines, purchaseExpenseAccount, type EntryLine,
 } from './post';
 import { TS_DEDUCTIBLE } from '../purchases';
 import { invoiceTotals, normalizeInvoiceLines, KIND_CREDIT } from '../invoices';
@@ -104,6 +104,8 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   asset_transfer: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM],
   asset_dispose: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM, ACC_DISPOSAL_LOSS],
   asset_sell: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM, ACC_DISPOSAL_LOSS, ACC_CASH, ACC_SALE_GAIN],
+  // تحويل فاتورةٍ قديمة مسجّلة مصروفاً إلى أصول: مدين حسابات فئات أصولها ودائن مصروف فئتها
+  asset_convert: [...ASSET_CATEGORIES.map((c) => c.code), ...EXPENSE_ACCOUNTS],
 };
 
 /**
@@ -572,6 +574,37 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
         ],
         date: d, correctable: false, pending: led.pending || short,
       };
+    }
+    case 'asset_convert': {
+      // تحويل الفاتورة القديمة إلى أصول (convertPurchase): لكل بندٍ أصلٍ من بنودها مبلغه كما أُدخل (بلا نصيبٍ من الضريبة) مقسوماً على
+      // كميته (splitQty) على حساب فئته، وبُعده أصلٌ من أصول بنده بوحدته وعقاره بلا عقد، ودائن مصروف فئة الفاتورة بمجموعها بوحدتها
+      // وعقارها · ولا يتجاوز ما صُرف فيها، ولا يسبق تاريخها · والفاتورة ذات البنود من حفظها (أصولها من مصدر الشراء) لا تُحوَّل
+      const p = r.row<PurchaseRow>('purchases', e.srcId);
+      if (!p) return AWAIT;
+      if (p.deleted_at) return no('deleted');
+      if (e.date.slice(0, 10) < String(p.date ?? '').slice(0, 10)) return no('date');
+      const plines = r.rows<{ id: string; qty: number; amount_halalas: number; is_asset: number; asset_category: string | null; sort: number; deleted_at?: string | null }>(
+        'purchase_lines', 'purchase_id', e.srcId).filter((l) => !l.deleted_at).sort((a, b) => num(a.sort) - num(b.sort));
+      // بنودٌ لم تصل بعد
+      if (!plines.some((l) => num(l.is_asset))) return AWAIT;
+      const assets = r.rows<AssetDoc>('assets', 'purchase_id', e.srcId).filter((a) => !a.deleted_at);
+      if (assets.some((a) => a.source === 'purchase')) return no('noEntry');
+      const lines: Want[] = [];
+      let sum = 0;
+      for (const l of plines) {
+        if (!num(l.is_asset)) continue;
+        const mine = assets.filter((a) => a.purchase_line_id === l.id);
+        if (mine.length < num(l.qty) || num(l.qty) < 1) return AWAIT;
+        const specs = mine.flatMap((a) => assetSpecs(db, r, a, e.date, assetUnits(r, a), false));
+        for (const cost of splitQty(num(l.amount_halalas), num(l.qty))) {
+          lines.push({ account: String(l.asset_category ?? ''), debit: cost, credit: 0, dims: specs });
+          sum += cost;
+        }
+      }
+      if (sum > num(p.subtotal_halalas) + (p.tax_status === TS_DEDUCTIBLE ? 0 : num(p.tax_halalas))) return no('convertSum');
+      lines.push({ account: purchaseExpenseAccount(p.category), debit: 0, credit: sum, dims: [{ contract: null, unit: p.unit_id ?? null, props: [p.property_id ?? null] }] });
+      // بنودٌ من حفظين (تراجعٌ ثم تحويلٌ جديد وصل قبل حذف القديمة) تُنتظر
+      return { lines, date: null, correctable: false, pending: twoSaves(plines) };
     }
     case 'asset_catchup': {
       // إهلاك ما فات لأصول فاتورة الشراء (purchaseCatchUp بتاريخ حفظها، وconvertPurchase بتاريخ تحويلها): لكل أصلٍ قائمٍ بتكلفته من
