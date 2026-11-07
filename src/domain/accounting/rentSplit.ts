@@ -7,6 +7,7 @@
  * وردّ الفائض وتحويله.
  */
 import type { DB } from '../../db/adapter';
+import { rentShares } from '../ledgerCore';
 import { t } from '../../i18n';
 import type { EntryLine } from './post';
 
@@ -65,20 +66,10 @@ export function rentSplit(db: DB, contractId: string | null | undefined, amount:
   if (!contractId || !amount || !hasSplitColumns(db)) return { rent: amount, services: 0, parking: 0 };
   const c = db.get<{ v: number; s: number; p: number }>(
     `SELECT value_halalas AS v, services_halalas AS s, parking_halalas AS p FROM contracts WHERE id = ?`, [contractId]);
-  const v = Number(c?.v ?? 0);
-  const s = Number(c?.s ?? 0);
-  const p = Number(c?.p ?? 0);
-  if (!v || (!s && !p) || s < 0 || p < 0) return { rent: amount, services: 0, parking: 0 };
-  const total = v + s + p;
-  const share = (cum: number, x: number) => (cum >= 0 ? Math.floor((cum * x) / total) : -Math.floor((-cum * x) / total));
-  const before = paidRevenue(db, contractId) ?? 0;
-  const after = before + (side === 'credit' ? amount : -amount);
-  const dir = side === 'credit' ? 1 : -1;
-  const clamp = (x: number) => Math.min(Math.max(0, x), amount);
-  let services = clamp(dir * (share(after, s) - share(before, s)));
-  let parking = clamp(dir * (share(after, p) - share(before, p)));
-  if (services + parking > amount) parking = amount - services;
-  return { rent: amount - services - parking, services, parking };
+  const parts = { value: Number(c?.v ?? 0), services: Number(c?.s ?? 0), parking: Number(c?.p ?? 0) };
+  if (!parts.value || (!parts.services && !parts.parking) || parts.services < 0 || parts.parking < 0) return { rent: amount, services: 0, parking: 0 };
+  // الحساب نفسه من المنطق النقي (ledgerCore.rentShares · التوجيه الرابع ٤ · ٥) بمحصَّل العقد قبل المبلغ
+  return rentShares(parts, paidRevenue(db, contractId) ?? 0, amount, side);
 }
 
 /** إجمالي العقد بعبارة SQL: الإيجار والخدمات والمواقف · ما يدفعه المستأجر ومجموع أقساطه · a بادئة الجدول إن وُجدت */

@@ -1,4 +1,5 @@
 import type { DB } from '../../db/adapter';
+import { keyMoneyLinesOf, invoiceLinesOf, purchaseLinesOf, depositLinesOf } from '../ledgerCore';
 import { requireCash } from '../cashGuard';
 import { t } from '../../i18n';
 import { uid, rowId } from '../ids';
@@ -8,7 +9,7 @@ import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
 import { rentRevenueLines } from './rentSplit';
-import { splitVatInclusive, vatRegistered } from '../taxCode';
+import { vatRegistered } from '../taxCode';
 import { dimsFromSource, hasDimColumns, lineDims, ambientCostCenter, inheritedCostCenter, GENERAL_COST_CENTER, type Dims } from './dimensions';
 
 export interface EntryLine {
@@ -302,13 +303,8 @@ const HELD_BY_OTHERS = '1260';
  * عقده (التوجيه الثالث · ١ · إعادة الاشتقاق: قرار المالك 2026-10-15 «١» و2026-11-07)
  */
 export function contractDepositLines(deposit: number, holder?: string | null): EntryLine[] | null {
-  if (deposit <= 0) return null;
-  const h = holder || 'المكتب';
-  if (h === 'طرف آخر') return null;
-  return [
-    { account: h === 'منصة إيجار' ? HELD_BY_OTHERS : CASH, descr: 'تأمين مستلم', debit: deposit, credit: 0 },
-    { account: '2400', descr: 'التزام تأمين المستأجر', debit: 0, credit: deposit },
-  ];
+  // من المنطق النقي (ledgerCore · التوجيه الرابع ٤ · ٥)
+  return depositLinesOf(deposit, holder);
 }
 
 export const postContractDeposit = (
@@ -674,13 +670,8 @@ export const postKeyMoneyCommission = (
 
 /** سطور قيد عمولة التقبيل من مقبوضها وتسجيل المنشأة في الضريبة · null بلا عمولة · بها يعيد جهاز المالك اشتقاق قيد العضو من صفقته */
 export function keyMoneyLines(db: DB, commission: number): EntryLine[] | null {
-  if (!(commission > 0)) return null;
-  const { net, tax } = vatRegistered(db) ? splitVatInclusive(commission) : { net: commission, tax: 0 };
-  return [
-    { account: CASH, descr: 'عمولة مستلمة', debit: commission, credit: 0 },
-    { account: '4300', descr: 'إيراد عمولة تقبيل', debit: 0, credit: net },
-    ...(tax ? [{ account: '2200', descr: 'ضريبة مخرجات عمولة تقبيل', debit: 0, credit: tax }] : []), // i18n-exempt: بيان القيد المخزَّن
-  ];
+  // من المنطق النقي (ledgerCore · التوجيه الرابع ٤ · ٥) بتسجيل المنشأة في الضريبة
+  return keyMoneyLinesOf(commission, vatRegistered(db));
 }
 
 /* ─── قيود الفواتير والمشتريات (كما في النموذج حرفياً) ─── */
@@ -713,11 +704,7 @@ export const postInvoiceToLedger = (
   });
 
 /** سطور قيد فاتورة المبيعات من صافيها وضريبتها وإجماليها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
-export const invoiceLedgerLines = (v: { subtotal: number; tax: number; total: number }): EntryLine[] => [
-  { account: '1200', debit: v.total, credit: 0 },
-  ...(v.subtotal ? [{ account: '4100', debit: 0, credit: v.subtotal }] : []),
-  ...(v.tax ? [{ account: '2200', debit: 0, credit: v.tax }] : []),
-];
+export const invoiceLedgerLines = (v: { subtotal: number; tax: number; total: number }): EntryLine[] => invoiceLinesOf(v);
 
 /**
  * إشعار دائن على فاتورة مبيعات (قرار المالك على #30): عكس جزءٍ منها أو كلها بتاريخه · مدين 4100 بالصافي ومدين 2200
@@ -767,18 +754,8 @@ export function purchaseLedgerLines(
   p: { category: string; subtotal: number; tax: number; total: number; roundingDiff?: number; deductible?: boolean },
   assetLines: EntryLine[] = [],
 ): EntryLine[] {
-  const diff = p.roundingDiff ?? 0;
-  const assetSum = assetLines.reduce((s, l) => s + (l.debit || 0), 0);
-  // «خاضعة باسمنا» وحدها تفصل ضريبتها أصلاً قابلاً للاسترداد (1270) · الباقي بالتكلفة الكاملة
-  const dedTax = p.deductible ? p.tax : 0;
-  return [
-    { account: purchaseExpenseAccount(p.category), debit: p.subtotal + p.tax - dedTax - assetSum, credit: 0 },
-    ...assetLines,
-    ...(dedTax ? [{ account: '1270', descr: 'ضريبة مدخلات قابلة للاسترداد', debit: dedTax, credit: 0 }] : []),
-    ...(diff > 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: diff, credit: 0 }] : []),
-    { account: '2100', debit: 0, credit: p.total },
-    ...(diff < 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: 0, credit: -diff }] : []),
-  ];
+  // «خاضعة باسمنا» وحدها تفصل ضريبتها أصلاً قابلاً للاسترداد (1270) · الباقي بالتكلفة الكاملة · من المنطق النقي (ledgerCore)
+  return purchaseLinesOf({ ...p, expenseAccount: purchaseExpenseAccount(p.category) }, assetLines);
 }
 
 /** تحصيل فاتورة مبيعات (المراجعة ٤.٢): مدين 1100 / دائن 1200 بالإجمالي */

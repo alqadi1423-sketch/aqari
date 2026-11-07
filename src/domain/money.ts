@@ -1,6 +1,7 @@
 /**
  * المال كله أعداد صحيحة بالهللات. لا REAL في أي حقل مالي.
  */
+import { pct as corePct } from './ledgerCore';
 
 /**
  * ريالات (نص أو رقم من إدخال المستخدم) ← هللات، بتقريب نصفي بعيداً عن الصفر · النص يُحلَّل بمنازله نصّاً لا بعدد عشري
@@ -39,6 +40,7 @@ export function mulQty(qty: number, priceHalalas: number): number {
 }
 
 /** نسبة مئوية من مبلغ بالهللات */
-export function pctOf(halalas: number, pct: number): number {
-  return Math.round((halalas * pct) / 100);
+export function pctOf(halalas: number, percent: number): number {
+  // من المنطق النقي (ledgerCore · التوجيه الرابع ٤ · ٥)
+  return corePct(halalas, percent);
 }
