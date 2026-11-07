@@ -876,7 +876,10 @@
   "sync": {
     "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded",
     "olderIncoming": "{{t}} · {{k}} · this device's newer copy ({{seen}}) won over an older incoming one ({{theirs}})",
-    "bankTxEntryRejected": "Bank transaction of a rejected entry ({{no}}) · not applied without its entry"
+    "bankTxEntryRejected": "Bank transaction of a rejected entry ({{no}}) · not applied without its entry",
+    "bankTxNoEntry": "A bank transaction without an entry that is not a cash move between wallet and bank, or exceeds the source balance",
+    "bankTxOver": "Bank transactions of entry ({{no}}) exceed its cash amount or have the opposite sign",
+    "assetEventLocked": "An asset event is neither deleted nor edited"
   },
   "restore": {
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",

@@ -9,7 +9,7 @@
  */
 import type { DB } from '../db/adapter';
 import { redactForReport } from './redact';
-import { auditActor } from './audit';
+import { auditActor, auditWriter, AUDIT_WRITER_SQL } from './audit';
 import { APP_VERSION_LABEL } from '../version';
 
 /** نوع الصف في سجل العمليات · قيمةٌ مخزّنة تقرؤها القواعد وقائمة الأقسام */
@@ -103,14 +103,18 @@ export interface CrashReportView {
 /** تقارير الأعطال في آخر أيامٍ عددها days · الأحدث أولاً · لشاشة المالك */
 export function crashReports(db: DB, days = 30, now: Date = new Date()): CrashReportView[] {
   const since = new Date(now.getTime() - days * 86400000).toISOString().slice(0, 19);
-  return db.all<{ id: string; ts: string; user_name: string; entity_name: string; after_json: string | null }>(
-    `SELECT id, ts, user_name, entity_name, after_json FROM audit_log WHERE entity_type = ? AND ts >= ? ORDER BY ts DESC, id DESC LIMIT 200`,
+  // والكاتب بمعرّفه (row_by الذي تفرضه القاعدة) لا بالاسم المكتوب في الصف (المدقق الخارجي F٣) · كسجل العمليات
+  const owner = syncValue(db, 'org');
+  return db.all<{ id: string; ts: string; user_name: string; entity_name: string; after_json: string | null; writer_uid: string | null; writer_name: string | null }>(
+    `SELECT audit_log.id, audit_log.ts, audit_log.user_name, audit_log.entity_name, audit_log.after_json, rb.uid AS writer_uid, cp.name AS writer_name
+     FROM audit_log ${AUDIT_WRITER_SQL}
+     WHERE audit_log.entity_type = ? AND audit_log.ts >= ? ORDER BY audit_log.ts DESC, audit_log.id DESC LIMIT 200`,
     [CRASH_ENTITY, since],
   ).map((r) => {
     let b: Partial<CrashBody> = {};
     try { b = JSON.parse(r.after_json ?? '{}') as Partial<CrashBody>; } catch { b = {}; }
     return {
-      id: r.id, ts: r.ts, who: r.user_name, where: r.entity_name,
+      id: r.id, ts: r.ts, who: auditWriter(r, owner).name, where: r.entity_name,
       version: String(b.v ?? ''), platform: String(b.p ?? ''), kind: String(b.k ?? ''), stack: String(b.s ?? ''),
     };
   });

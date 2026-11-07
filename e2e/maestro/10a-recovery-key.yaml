@@ -58,7 +58,7 @@ appId: com.aqari.app
     text: "النسخ الاحتياطي"
     index: 1
 - extendedWaitUntil:
-    visible: "Share|مشاركة|Nearby|تصدير النسخة الاحتياطية"
+    visible: ".*Shar.*|.*مشاركة.*"
     timeout: 60000
 - takeScreenshot: 10a-share
 - back

@@ -51,8 +51,18 @@ export function arabicMessage(e: unknown): string {
  * التسجيل وحده بلا حوار: سجل العمليات وملف التفاصيل · لخطأٍ يُعرض في موضعه (بطاقة داخل شاشة
  * ملء الشاشة) حيث يتسابق حوارٌ ثانٍ مع نافذتها فيُخفى خلفها. يعيد نصّ التفاصيل واسم الملف لأزرار الموضع.
  */
-export async function recordFailure(args: Pick<FailureArgs, 'title' | 'where' | 'e' | 'db' | 'auditModule' | 'auditAction'>):
+/**
+ * القاعدة لتسجيل العطل وتقريره: الممرَّرة، وإلا المفتوحة على الجهاز (المدقق الخارجي F٥: أكثر مواضع الحوار لا تمرّر قاعدة، فلم يصل المالكَ
+ * تقريرٌ من التحصيل والعقود والمشتريات والفواتير) · ولا تُفتح قاعدةٌ هنا
+ */
+function failureDb(db?: DB): DB | undefined {
+  if (db) return db;
+  try { return (require('../db/expoAdapter') as typeof import('../db/expoAdapter')).openedAppDb() ?? undefined; } catch { return undefined; }
+}
+
+export async function recordFailure(args0: Pick<FailureArgs, 'title' | 'where' | 'e' | 'db' | 'auditModule' | 'auditAction'>):
   Promise<{ full: string; saved: string | null }> {
+  const args = { ...args0, db: failureDb(args0.db) };
   const where = args.where ?? args.title;
   if (args.db) {
     try {
@@ -70,7 +80,8 @@ export const copyFailureDetails = (full: string) => { Clipboard.setStringAsync(f
 export const shareFailureDetails = (full: string) => { Share.share({ message: full }).catch(() => {}); };
 
 export async function reportFailure(args: FailureArgs): Promise<void> {
-  const { title, e, db, before, env, retry } = args;
+  const { title, e, before, env, retry } = args;
+  const db = failureDb(args.db);
   const where = args.where ?? title;
   const full = errorReportText(where, e);
   const lead = args.lead ?? arabicMessage(e);

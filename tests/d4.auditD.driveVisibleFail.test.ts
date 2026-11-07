@@ -22,13 +22,13 @@ const mockDrive = {
 jest.mock('react-native', () => ({
   Platform: { OS: 'android' }, NativeModules: {},
   AppState: { currentState: 'active', addEventListener: () => ({ remove: () => {} }) },
-}), { virtual: true });
+}));
 jest.mock('expo-secure-store', () => ({
   getItemAsync: async (k: string) => kv.get(k) ?? null,
   setItemAsync: async (k: string, v: string) => { kv.set(k, v); },
   deleteItemAsync: async (k: string) => { kv.delete(k); },
-}), { virtual: true });
-jest.mock('expo-network', () => ({ getNetworkStateAsync: async () => ({ isConnected: true, isInternetReachable: true }), addNetworkStateListener: () => ({ remove: () => {} }) }), { virtual: true });
+}));
+jest.mock('expo-network', () => ({ getNetworkStateAsync: async () => ({ isConnected: true, isInternetReachable: true }), addNetworkStateListener: () => ({ remove: () => {} }) }));
 jest.mock('expo-file-system', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const nfs = require('node:fs');
@@ -41,7 +41,7 @@ jest.mock('expo-file-system', () => {
     write() {} delete() {} textSync() { return ''; }
   }
   return { File: F, Directory: F, Paths: { document: { uri: '/doc' }, cache: { uri: '/cache' } } };
-}, { virtual: true });
+});
 jest.mock('expo-file-system/legacy', () => ({
   FileSystemUploadType: { BINARY_CONTENT: 0 },
   getFreeDiskStorageAsync: async () => 1e12,
@@ -58,7 +58,7 @@ jest.mock('expo-file-system/legacy', () => ({
     },
   }),
   createDownloadResumable: () => ({ downloadAsync: async () => ({ status: 200 }), cancelAsync: async () => {} }),
-}), { virtual: true });
+}));
 jest.mock('@react-native-google-signin/google-signin', () => ({
   GoogleSignin: {
     configure: () => {},
@@ -69,19 +69,19 @@ jest.mock('@react-native-google-signin/google-signin', () => ({
     hasPlayServices: async () => true, signIn: async () => null, signOut: async () => {},
   },
   isSuccessResponse: () => false,
-}), { virtual: true });
+}));
 jest.mock('expo-crypto', () => ({
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   getRandomBytes: (n: number) => new Uint8Array(require('node:crypto').randomBytes(n)),
   digest: async () => new ArrayBuffer(32), CryptoDigestAlgorithm: {},
-}), { virtual: true });
-jest.mock('expo-document-picker', () => ({}), { virtual: true });
-jest.mock('expo-image-manipulator', () => ({}), { virtual: true });
-jest.mock('expo-local-authentication', () => ({ SecurityLevel: { NONE: 0 }, getEnrolledLevelAsync: async () => 0, authenticateAsync: async () => ({ success: false }) }), { virtual: true });
-jest.mock('expo-notifications', () => ({ cancelAllScheduledNotificationsAsync: async () => {}, setNotificationHandler: () => {} }), { virtual: true });
-jest.mock('expo-print', () => ({}), { virtual: true });
-jest.mock('expo-sharing', () => ({}), { virtual: true });
-jest.mock('expo-sqlite', () => ({}), { virtual: true });
+}));
+jest.mock('expo-document-picker', () => ({}));
+jest.mock('expo-image-manipulator', () => ({}));
+jest.mock('expo-local-authentication', () => ({ SecurityLevel: { NONE: 0 }, getEnrolledLevelAsync: async () => 0, authenticateAsync: async () => ({ success: false }) }));
+jest.mock('expo-notifications', () => ({ cancelAllScheduledNotificationsAsync: async () => {}, setNotificationHandler: () => {} }));
+jest.mock('expo-print', () => ({}));
+jest.mock('expo-sharing', () => ({}));
+jest.mock('expo-sqlite', () => ({}));
 jest.mock('@/services/notifications', () => ({ cancelAllNotifications: async () => {}, rescheduleAllNotifications: async () => {} }));
 jest.mock('@/services/appLockService', () => ({ whilePrompting: (f: () => unknown) => f() }));
 // وحدات الملفات على القرص الحقيقي

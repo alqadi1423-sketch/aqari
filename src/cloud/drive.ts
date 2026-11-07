@@ -130,7 +130,9 @@ export async function uploadBackupToDrive(
     try { await io.fetch(`${API}/files/${f.id}`, { method: 'DELETE', headers: auth(token) }); } catch { /* يبقى بلا قيمة */ }
     throw new DriveError(`بصمة «${name}» على Drive لا تطابق الملف المحلي · حُذف المرفوع ولم تُعتمد النسخة`);
   }
-  return { id: f.id, name: f.name ?? name, size, createdTime: f.createdTime ?? new Date().toISOString(), sha256: sha };
+  // وما رُفع به من وسمٍ يعود معه (المدقق الخارجي F٩: كان «فيها ملاحظات» لا يظهر بعد الرفع)
+  return { id: f.id, name: f.name ?? name, size, createdTime: f.createdTime ?? new Date().toISOString(), sha256: sha,
+    ...(opts.encrypted ? { encrypted: true } : {}), ...(opts.notes ? { notes: true } : {}) };
 }
 
 /** تنزيل نسخة إلى مسار محلي ومطابقة بصمتها · المطابقة شرط قبل أن يبدأ مسار الاستعادة */
@@ -181,15 +183,19 @@ async function deleteVisibleCopies(io: DriveIO, token: string): Promise<number> 
   const folders = (await json<{ files?: Array<{ id: string }> }>(fr, t('drive.findFolder'))).files ?? [];
   let n = 0;
   for (const f of folders) {
-    const q = new URLSearchParams({
-      q: `'${f.id}' in parents and trashed=false and appProperties has { key='app' and value='aqari' }`,
-      spaces: 'drive', fields: 'files(id)',
-    });
-    const files = (await json<{ files?: Array<{ id: string }> }>(await io.fetch(`${API}/files?${q.toString()}`, { headers: auth(token) }), t('drive.findFolder'))).files ?? [];
-    for (const x of files) {
-      const res = await io.fetch(`${API}/files/${x.id}`, { method: 'DELETE', headers: auth(token) });
-      if (res.status !== 204 && res.status !== 404) throw deleteError(res.status);
-      n++;
+    // صفحةً بعد صفحة حتى لا يبقى منها شيء (المدقق الخارجي F٨: كانت صفحةٌ واحدة، مئة ملفٍ افتراضاً)
+    for (let round = 0; round < 1000; round++) {
+      const q = new URLSearchParams({
+        q: `'${f.id}' in parents and trashed=false and appProperties has { key='app' and value='aqari' }`,
+        spaces: 'drive', fields: 'files(id)', pageSize: '1000',
+      });
+      const files = (await json<{ files?: Array<{ id: string }> }>(await io.fetch(`${API}/files?${q.toString()}`, { headers: auth(token) }), t('drive.findFolder'))).files ?? [];
+      if (!files.length) break;
+      for (const x of files) {
+        const res = await io.fetch(`${API}/files/${x.id}`, { method: 'DELETE', headers: auth(token) });
+        if (res.status !== 204 && res.status !== 404) throw deleteError(res.status);
+        n++;
+      }
     }
   }
   return n;

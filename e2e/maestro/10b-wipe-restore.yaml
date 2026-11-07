@@ -25,6 +25,8 @@ appId: com.aqari.app
     notVisible: "تنفيذ المسح"
     timeout: 60000
 - takeScreenshot: 10b-wiped
+# الإعدادات شاشةٌ فوق التبويبات
+- tapOn: "رجوع"
 - tapOn: "العقارات"
 - assertNotVisible: "E2E Backup"
 - tapOn: "المزيد"
@@ -50,6 +52,9 @@ appId: com.aqari.app
     timeout: 60000
 - tapOn:
     text: "حسناً"
+    optional: true
+- tapOn:
+    text: "رجوع"
     optional: true
 - tapOn: "العقارات"
 - extendedWaitUntil:

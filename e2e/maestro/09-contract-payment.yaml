@@ -81,7 +81,10 @@ appId: com.aqari.app
 - extendedWaitUntil:
     visible: "E2E Tenant"
     timeout: 20000
-- tapOn: "E2E Tenant"
+# جسم البطاقة يفتح التحصيل (اسم المستأجر يفتح قائمة الاتصال)
+- tapOn:
+    text: "المتبقي"
+    index: 0
 - extendedWaitUntil:
     visible: "تأكيد التحصيل"
     timeout: 15000

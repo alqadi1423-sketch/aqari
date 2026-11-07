@@ -247,7 +247,10 @@ function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, subtota
     if (!num(l.is_asset)) continue;
     const mine = assets.filter((a) => a.purchase_line_id === l.id);
     if (mine.length < num(l.qty)) return AWAIT;
-    const specs = mine.map((a): DimSpec => ({ contract: null, unit: a.unit_id ?? dims.unit, props: a.property_id ? [a.property_id] : dims.props, asset: a.id }));
+    // وبوحدة الأصل يومها: وحدة صفّه أو وحدةٌ نُقل منها بعد (originUnits · المدقق الخارجي هـ٦)
+    const specs = mine.flatMap((a): DimSpec[] => originUnits(r, a.id, a.unit_id ?? null).map((u) => (u === (a.unit_id ?? null)
+      ? { contract: null, unit: a.unit_id ?? dims.unit, props: a.property_id ? [a.property_id] : dims.props, asset: a.id }
+      : { contract: null, unit: u, props: unitDims(db, r, u).props, asset: a.id })));
     for (const cost of splitQty(costs[i], num(l.qty))) {
       form.lines.push({ account: String(l.asset_category ?? ''), debit: cost, credit: 0 });
       form.specs.push(specs);
@@ -429,6 +432,17 @@ const assetUnits = (r: SourceReader, a: AssetDoc): Array<string | null> => [...n
  * أبعاد سطور الأصل (assetDims): الأصل، ووحدته وعقارها (الحالي أو ما نُقلت منه الوحدة، أو عقار صفّه)، والعقد الساري على الوحدة في
  * التاريخ (contractAt) أو بلا عقد (جهازٌ لم يصله العقد بعد) · ولا عقد لسطور التحويل (withContract: false)
  */
+/**
+ * وحدات الأصل قبل نقله: وحدة صفّه، والوحدات التي خرج منها في أحداث نقلٍ لها قيد (المدقق الخارجي هـ٦: تكلفة الأصل تُثبت بوحدته يومها،
+ * وصفّه بعد نقله يسمّي الجديدة · فإثبات التكلفة أو فاتورة البند ثم النقل قبل أن يسحب المالك كان يُرفض ثم كل ما بعده) · والنقل بعدها
+ * يُفحص بحمل التكلفة هنا فلا تُقبل وحدةٌ لم تكن تكلفته فيها
+ */
+function originUnits(r: SourceReader, assetId: string, current: string | null): Array<string | null> {
+  const from = r.rows<AssetEvent>('asset_events', 'asset_id', assetId)
+    .filter((v) => v.kind === 'transfer' && !!v.entry_id && (v.from_unit_id ?? null) !== (v.to_unit_id ?? null)).map((v) => v.from_unit_id ?? null);
+  return [...new Set([current, ...from])];
+}
+
 function assetSpecs(db: DB, r: SourceReader, a: AssetDoc, date: string, units = assetUnits(r, a), withContract = true): DimSpec[] {
   return units.flatMap((u) => {
     const props = [...new Set([...unitDims(db, r, u).props, ...(u === (a.unit_id ?? null) ? [a.property_id ?? null] : [])])];
@@ -444,7 +458,7 @@ function assetSpecs(db: DB, r: SourceReader, a: AssetDoc, date: string, units = 
  * (آخر ما يُرحَّل للأصل)، وبالنقل الذي يعدّه keep سابقاً للمفحوص · at: الوحدات بصافٍ موجب · seen: كل وحدةٍ كانت فيها تكلفته هنا ·
  * pending: قيدٌ في الوارد يمسّ حساب فئته (نقلٌ أو تكلفةٌ لم تُطبَّق بعد)
  */
-interface Place { net: Map<string | null, number>; at: Array<string | null>; seen: Set<string | null>; pending: boolean }
+interface Place { net: Map<string | null, number>; at: Array<string | null>; seen: Set<string | null>; pending: boolean; trusted?: number }
 function placeOf(r: SourceReader, a: AssetDoc, exceptId: string, keep: (x: SrcEntry) => boolean = () => true, ahead = false,
   /** سطور قيدٍ يُفحص تُطبَّق قبل محاكاة الوارد (النقل المفحوص ثم ما بعده) */ seed: SrcLine[] = []): Place {
   const net = new Map<string | null, number>();
@@ -469,7 +483,8 @@ function placeOf(r: SourceReader, a: AssetDoc, exceptId: string, keep: (x: SrcEn
       if (x.src_type === 'asset_transfer' && !evidencedTransfer(r, a, x.id, ls)) continue;
       // وعكس النقل في الوارد لا يُحسب إلا مرآةً لنقلٍ مطبَّقٍ هنا (المدقق الخارجي ج٦: كان يُحسب بلا شاهد)
       if (x.src_type === 'asset_transfer_rev' && !r.claimants(x.id).some((o) => { const t = r.entry(o); return !!t?.here && t.src_type === 'asset_transfer'; })) continue;
-      if (base === 'asset_transfer') { moves.push({ x, ls }); continue; }
+      // ونقلُ هذا الأصل نفسه (المدقق الخارجي هـ٤: نقلٌ مصدره أصلٌ آخر وسطوره لهذا كان يُحسب ثم يُرفض)
+      if (base === 'asset_transfer') { if (x.src_type !== 'asset_transfer' || x.src_id === a.id) moves.push({ x, ls }); continue; }
     }
     for (const l of ls) seen.add(str(l.unit_id));
     if (base === 'asset_dispose' || base === 'asset_sell' || (base === 'asset_transfer' && !keep(x))) continue;
@@ -507,8 +522,9 @@ function placeOf(r: SourceReader, a: AssetDoc, exceptId: string, keep: (x: SrcEn
       for (const l of m.ls) seen.add(str(l.unit_id));
       if (keep(m.x)) add(net, m.ls);
     }
+    return { net, at: [...net].filter(([, v]) => v > 0).map(([u]) => u), seen, pending, trusted };
   }
-  return { net, at: [...net].filter(([, v]) => v > 0).map(([u]) => u), seen, pending };
+  return { net, at: [...net].filter(([, v]) => v > 0).map(([u]) => u), seen, pending, trusted: 0 };
 }
 /** قيد نقلٍ يشهد له حدثه: حدث نقلٍ واحد للأصل يسمّيه، يُخرج التكلفة من وحدة حدثه ويُدخلها وحدته الأخرى كما في سطوره */
 function evidencedTransfer(r: SourceReader, a: AssetDoc, entryId: string, ls: SrcLine[]): boolean {
@@ -546,7 +562,10 @@ function depUnits(r: SourceReader, a: AssetDoc, exceptId: string, w: When): { un
     .map((v) => v.from_unit_id ?? null).filter((u) => now.seen.has(u)));
   const unitsOf = (ahead: boolean) => {
     const cur = ahead ? placeOf(r, a, exceptId, () => true, true) : now;
-    const then = w.kind === 'month' ? placeOf(r, a, exceptId, (x) => monthIndex(String(x.date ?? '')) <= w.m, ahead).at : opFrom(ahead);
+    // وإهلاك يوم العملية: الوحدة التي خرج منها يومها، أو موضعه بالنقل المؤرَّخ يومها أو قبله (المدقق الخارجي هـ٧: تغيير الغرفة ثم النقل
+    // في سحبٍ واحد كان إهلاك يوم الغرفة يُقارن بموضعه بعد النقل وحده، فينتظر كلٌّ منهما الآخر)
+    const then = w.kind === 'month' ? placeOf(r, a, exceptId, (x) => monthIndex(String(x.date ?? '')) <= w.m, ahead).at
+      : [...opFrom(ahead), ...placeOf(r, a, exceptId, (x) => String(x.date ?? '').slice(0, 10) <= w.d, ahead).at];
     return new Set([...then, ...cur.at]);
   };
   const here = unitsOf(false);
@@ -685,10 +704,11 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (ended) return ended;
       const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'catchup', d: today });
       if (led.cost) return led.pending ? AWAIT : no('assetCost');
-      // والتكلفة تُثبت بوحدة صفّه: لا موضع لها في الدفتر قبل هذا القيد
-      const cu = catchUpOf(db, r, a, e.id, today, e.lines, [a.unit_id ?? null], true);
+      // والتكلفة تُثبت بوحدته يومها: وحدة صفّه، أو وحدةٌ نُقل منها بعد (originUnits) · لا موضع لها في الدفتر قبل هذا القيد
+      const units = originUnits(r, a.id, a.unit_id ?? null);
+      const cu = catchUpOf(db, r, a, e.id, today, e.lines, units, true);
       if (typeof cu === 'string') return cu;
-      const dims = assetSpecs(db, r, a, today, [a.unit_id ?? null]);
+      const dims = assetSpecs(db, r, a, today, units);
       const cost = num(a.cost_halalas);
       return {
         lines: [{ account: a.category, debit: cost, credit: 0, dims }, { account: ACC_CAPITAL, debit: 0, credit: cost, dims }, ...cu.lines],
@@ -728,7 +748,9 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
         // كان الأول ينتظر الثاني لأن موضعه بعده وحده غير موضع الاستبعاد، والثاني ينتظر الأول، فيتوقف جهاز المالك بلا مخرج)
         // ومتى طُبِّق قيد الانتهاء هنا فالنقل بعده بنفسه لا بما في الوارد (المدقق الخارجي ج٢: نقلٌ ومعه نقلٌ «مشهود» يُرفض بعده كان
         // يُخرج تكلفة المستبعَد إلى وحدةٍ أخرى) · والاستبعاد ينتظر ما في الوارد من نقل، فالسلسلة المشروعة تُطبَّق قبله
-        if (!endsThere(place) && !(place.pending && !end.here && endsAt(placeOf(r, a, e.id, () => true, true, mine).at))) {
+        // (وبعد تطبيق قيد الانتهاء: نقلٌ بتاريخه أو قبله وحده، فنقلٌ قبل الاستبعاد تأخر وصوله يُقبل بسلسلته · المدقق الخارجي هـ٣)
+        const aheadOk = place.pending && (!end.here || d <= String(a.end_date ?? '').slice(0, 10));
+        if (!endsThere(place) && !(aheadOk && endsAt(placeOf(r, a, e.id, () => true, true, mine).at))) {
           return place.pending || transferOut(r, a, e.id) ? AWAIT : no('assetPlace');
         }
       }
@@ -781,8 +803,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const place = placeOf(r, a, e.id);
       // ونقلٌ في الوارد أو حدث نقلٍ بلا قيدٍ هنا يُنتظر قبل الانتهاء ولو طابق موضعه الآن (المدقق الخارجي ج٢): فلا يُطبَّق الانتهاء قبل
       // سلسلة نقلٍ مشروعة، وما بعده من نقلٍ يُفحص بنفسه
-      if (r.assetEntries(a.id).some((x) => !x.here && x.id !== e.id && String(x.src_type ?? '').replace(/_rev$/, '') === 'asset_transfer')
-        || transferOut(r, a, e.id)) return AWAIT;
+      // (نقلٌ مصدَّق: مشهودٌ ممكن ينتهي إلى وحدة صفّ الأصل · لا قيدٌ معلَّق بلا حدث ولا حدثٌ بلا قيد يحبسه · المدقق الخارجي هـ٣)
+      if ((placeOf(r, a, e.id, () => true, true).trusted ?? 0) > 0) return AWAIT;
       const dims = assetSpecs(db, r, a, d, holding(place, led.cost));
       const moving = place.pending || transferOut(r, a, e.id);
       const nbv = led.cost - led.accum;
@@ -945,9 +967,9 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const k = r.row<{ unit_id: string | null; contract_id: string | null; date: string | null; commission_halalas: number;
         journal_entry_id: string | null; deleted_at?: string | null }>('key_money_deals', e.srcId);
       if (!k) return AWAIT;
-      // والصفقة في السلة عُكس قيدها حين حُذفت، فلا قيد حيّاً جديداً لها (المدقق الخارجي ج٤: كانت نسخة الاستعادة المزوَّرة تُقبل لها) ·
-      // وقيدها القديم الواصل معكوساً يمرّ بمسار العكس قبل هذا
-      if (k.deleted_at) return no('deleted');
+      // والصفقة في السلة عُكس قيدها حين حُذفت، فلا يُقبل لها قيدٌ حيّ جديد (المدقق الخارجي ج٤) · بل ينتظر: نسخة الاستعادة قد تصل قبل
+      // صفّها المستعاد لأن العضو يرفع على دفعات (هـ١)، ويُرفض لطول انتظاره إن بقيت في السلة · وقيدها القديم الواصل معكوساً يمرّ بمسار العكس
+      if (k.deleted_at) return AWAIT;
       if (k.journal_entry_id && k.journal_entry_id !== e.id) {
         // استعادةٌ من السلة بإصدارٍ قبل إصلاح ك١ (المدقق الخارجي): الصفّ يسمّي القيد المعكوس، وهذه نسخته الحيّة الوحيدة · وغيرها كما
         // في المستندات الأخرى: صفٌّ قديم ينتظر محدَّثه، أو مستندٌ لا يرحّل هذا القيد
@@ -964,7 +986,14 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const lines = want(keyMoneyLines(db, num(k.commission_halalas)), () => [own]);
       // ونسخة الاستعادة من السلة بتاريخ عكس قيدها السابق (repostDate)
       // وعاكسٌ في الوارد لم يُطبَّق بعد يُحسب تاريخه (المدقق الخارجي ج٥: الصفقة وإلغاؤها واستعادتها في سحبٍ واحد)
-      const pendingRev = r.pending(e.src + '_rev', e.srcId).map((id) => String(r.entry(id)?.date ?? '')).filter(Boolean);
+      // ومرآةٌ لأصلٍ من الصفقة يسمّيها (المدقق الخارجي هـ٢: عاكسٌ مزوَّر معلَّق بتاريخٍ يختاره العضو كان يُقبل به القيد في سنةٍ أخرى)
+      const pendingRev = r.pending(e.src + '_rev', e.srcId).filter((id) => {
+        const rev = r.entry(id);
+        return !!rev && r.claimants(id).some((o) => {
+          const x = r.entry(o);
+          return !!x && x.src_type === e.src && x.src_id === e.srcId && sameMirror(x.lines, rev.lines);
+        });
+      }).map((id) => String(r.entry(id)?.date ?? '')).filter(Boolean);
       return lines ? { lines, date: k.date ?? '', also: [...revDates(r, e.src, e.srcId), ...pendingRev], correctable: false } : no('noEntry');
     }
     case 'claim':

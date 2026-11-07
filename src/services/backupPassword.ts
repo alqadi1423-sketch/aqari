@@ -5,7 +5,7 @@
  *
  * **لكل حسابٍ سرّه** (المدقق الخارجي D١): الجهاز يحمل أكثر من حساب (accountSlots.ts: «البيانات ملك الحساب لا الجهاز»)، وكان السرّ
  * واحداً للجهاز فتُختم نسخ الحساب الداخل بمفتاح غيره الذي لم يره · فالسرّ وعلامته باسم الحساب، وما بلا حسابٍ باسم «_local» · والسرّ
- * القديم الواحد للجهاز (قبل هذا) يأخذه أول حسابٍ يطلبه بعد التحديث ثم يُمحى اسمه القديم.
+ * القديم الواحد للجهاز (قبل هذا) لا يأخذه حساب: يُجرَّب سرّاً سابقاً عند الاستعادة لكل حساب ولا يُختم به جديد (F٦).
  * **والسرّ السابق يبقى** (D٢): إنشاء المفتاح أو استبداله يحفظ ما قبله (كلمة المرور القديمة أو المفتاح السابق) سرّاً سابقاً يُجرَّب عند
  * الاستعادة بلا سؤال، فالنسخ القديمة تُفتح كما كانت · ولا يُختم به جديد.
  * لا يُرفع السرّ ولا يُزامَن ولا يُكتب في نسخة، ونسيانه لا يُعوَّض: لا مفتاح خلفي · ومعه علامةٌ في ملفات التطبيق تقول إنه وُضع (ونوعه)،
@@ -23,8 +23,8 @@ const LEGACY_KEY = 'aqari_backup_password';
 const LEGACY_FLAG = 'backup-password.flag';
 /** محتوى العلامة: «key» لمفتاح الاسترداد، وغيره لكلمة مرورٍ قبله */
 const KIND_KEY = 'key';
-/** ما يُحفظ من الأسرار السابقة */
-const KEEP_PREVIOUS = 5;
+/** ما يُحفظ من الأسرار السابقة لكل حساب (المدقق الخارجي F٧: كان خمسة فتُنسى الأقدم) · والسرّ القديم للجهاز خارج العدّ لا يُنسى */
+const KEEP_PREVIOUS = 20;
 
 const slotOf = (account: string | null | undefined): string =>
   account ? account.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) : '_local';
@@ -33,23 +33,11 @@ const previousKeyOf = (slot: string) => 'aqari_backup_secret_' + slot + '_prev';
 const flagFile = (slot: string) => new File(Paths.document, 'backup-secret-' + slot + '.flag');
 const legacyFlag = () => new File(Paths.document, LEGACY_FLAG);
 
-const exists = (f: File): boolean => { try { return f.exists; } catch { return false; } };
 
-/** السرّ القديم الواحد للجهاز يصير سرّ هذا الحساب مرةً · قبل أي قراءة */
-async function claimLegacy(slot: string): Promise<void> {
-  const mine = flagFile(slot);
-  if (exists(mine)) return;
-  let legacy: string | null = null;
-  try { legacy = (await SecureStore.getItemAsync(LEGACY_KEY)) || null; } catch { legacy = null; }
-  const lf = legacyFlag();
-  const flagged = exists(lf);
-  if (!legacy && !flagged) return;
-  if (legacy) await SecureStore.setItemAsync(keyOf(slot), legacy);
-  let kind = '1';
-  try { if (flagged) kind = lf.textSync().trim() || '1'; } catch { kind = '1'; }
-  mine.write(kind);
-  try { if (legacy) await SecureStore.deleteItemAsync(LEGACY_KEY); } catch { /* يُمحى في المرة التالية */ }
-  try { if (flagged) lf.delete(); } catch { /* يُمحى في المرة التالية */ }
+/** السرّ القديم الواحد للجهاز (قبل أن يصير لكل حساب) · لا يُعرف حسابه، فلا يأخذه أحد: يُجرَّب سرّاً سابقاً عند الاستعادة لكل حساب، ولا
+ * يُختم به جديد (المدقق الخارجي F٦: كان يأخذه الحساب الداخل ساعة التحديث ولو لم يضعه) */
+async function legacySecret(): Promise<string | null> {
+  try { return (await SecureStore.getItemAsync(LEGACY_KEY)) || null; } catch { return null; }
 }
 
 function storeOf(slot: string): PasswordStore {
@@ -75,10 +63,10 @@ async function readPrevious(slot: string): Promise<string[]> {
 /** أسرار الحساب لتجربتها أولاً عند استعادة نسخةٍ مشفّرة: الحالي ثم السابقة · ولا يُختم بغير الحالي */
 export async function getBackupPasswords(account: string | null): Promise<string[]> {
   const slot = slotOf(account);
-  try { await claimLegacy(slot); } catch { /* يُقرأ ما هو قائم */ }
   let cur: string | null = null;
   try { cur = (await SecureStore.getItemAsync(keyOf(slot))) || null; } catch { cur = null; }
-  return [...new Set([...(cur ? [cur] : []), ...(await readPrevious(slot))])];
+  const legacy = await legacySecret();
+  return [...new Set([...(cur ? [cur] : []), ...(await readPrevious(slot)), ...(legacy ? [legacy] : [])])];
 }
 
 /** مفتاح استرداد محفوظ، أو كلمة مرورٍ قديمة، أو لا شيء، أو وُضع وتعذّرت قراءته */
@@ -86,17 +74,16 @@ export type SecretKind = 'key' | 'password' | 'off' | 'lost';
 
 export async function backupSecretKind(account: string | null): Promise<SecretKind> {
   const slot = slotOf(account);
-  try { await claimLegacy(slot); } catch { /* يُقرأ ما هو قائم */ }
   const st = await passwordState(storeOf(slot));
+  // بلا سرٍّ للحساب وعلى الجهاز كلمة مرورٍ قديمة: «كلمة مرور قديمة · أنشئ المفتاح» (تفتح النسخ القديمة ولا تُختم بها نسخةٌ جديدة)
+  if (st === 'off') return (await legacySecret()) ? 'password' : 'off';
   if (st !== 'on') return st;
   try { const f = flagFile(slot); return f.exists && f.textSync().trim() === KIND_KEY ? 'key' : 'password'; } catch { return 'password'; }
 }
 
 /** للتصدير والرفع: سرّ الحساب دائماً · ترمي إن لم يُنشأ مفتاحه (RecoveryKeyRequiredError) أو تعذّرت قراءته */
 export async function backupSecretForSealing(account: string | null): Promise<string> {
-  const slot = slotOf(account);
-  try { await claimLegacy(slot); } catch { /* يُقرأ ما هو قائم */ }
-  return secretForSealing(storeOf(slot));
+  return secretForSealing(storeOf(slotOf(account)));
 }
 
 /** مفتاحٌ جديد من مولّد النظام · يُعرض ولا يُحفظ حتى يؤكَّد بـ saveRecoveryKey */
@@ -106,7 +93,6 @@ export const newRecoveryKey = (): string => generateRecoveryKey((n) => getRandom
 export async function saveRecoveryKey(key: string, account: string | null): Promise<void> {
   if (!isValidRecoveryKey(key)) throw new Error(t('backup.key.invalid'));
   const slot = slotOf(account);
-  try { await claimLegacy(slot); } catch { /* يُكتب الجديد */ }
   let cur: string | null = null;
   try { cur = (await SecureStore.getItemAsync(keyOf(slot))) || null; } catch { cur = null; }
   const next = sealingSecretOf(key);

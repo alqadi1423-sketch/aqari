@@ -33,6 +33,8 @@ import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
 import { TS_DEDUCTIBLE } from '../domain/purchases';
+import { walletCashBalance, bankBalance } from '../domain/accounting/ledger';
+import { CASH_DEPOSIT_SOURCE, CASH_WITHDRAW_SOURCE } from '../domain/cashOps';
 import { CRASH_ENTITY } from '../domain/crashReport';
 import { memberSourceIssue, deductibleIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
@@ -317,6 +319,15 @@ const MAX_ATTEMPTS = 20;
 const WAIT_LIMIT_MS = 30 * 24 * 3600 * 1000;
 /** سبب رفض الانتظار الطويل · ويُعاد واردُه حين يصل أبوه */
 const WAIT_REJECT = 'سجل أب غير موجود بعد محاولات متكررة';
+
+/**
+ * سطور مستند القيد كائناتٌ وحدها (المدقق الخارجي هـ٨: عنصرٌ null في سطور قيد عضوٍ كان يرمي خارج الحماية فتسقط دورة التطبيق كلها على كل
+ * جهاز) · ومستندٌ سطوره ليست قائمة كائنات يُرفض وحده في applyOne
+ */
+const docLines = (doc: RemoteDoc | null | undefined): Array<Record<string, unknown>> =>
+  (Array.isArray(doc?.lines) ? doc!.lines : []).filter((l): l is NonNullable<typeof l> => !!l && typeof l === 'object' && !Array.isArray(l)) as never;
+const linesMalformed = (doc: RemoteDoc): boolean =>
+  doc.lines != null && (!Array.isArray(doc.lines) || doc.lines.some((l) => !l || typeof l !== 'object' || Array.isArray(l)));
 
 function stable(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
@@ -732,7 +743,7 @@ function sourceReader(db: DB): SourceReader {
       if (!d || d.status !== POSTED) return null;
       const s = (v: unknown) => (v == null || v === '' ? null : String(v));
       return { id, here: false, key: s(d.id), src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), no: s(d.no),
-        status: s(d.status), date: s(d.date), created_at: s(d.created_at), deleted_at: s(d.deleted_at), lines: (doc!.lines ?? []) as SrcLine[] };
+        status: s(d.status), date: s(d.date), created_at: s(d.created_at), deleted_at: s(d.deleted_at), lines: docLines(doc) as unknown as SrcLine[] };
     },
     claimants: (revId) => {
       // عبارتان مفهرستان لا «UNION» (B1: الدمج المرتَّب كان يختار فهرس (tbl, pk) فيمسح قيود الوارد كلها، والدفتر بلا فهرسٍ للعاكس)
@@ -764,7 +775,7 @@ function sourceReader(db: DB): SourceReader {
         .filter((x) => !ids.has(x.pk)).map((x) => {
           const doc = JSON.parse(x.payload) as RemoteDoc;
           const d = doc.d ?? {};
-          return { id: x.pk, here: false, src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), date: s(d.date), lines: (doc.lines ?? []) as SrcLine[] };
+          return { id: x.pk, here: false, src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), date: s(d.date), lines: docLines(doc) as unknown as SrcLine[] };
         });
       return [...here, ...inbox];
     },
@@ -804,7 +815,28 @@ function memberSourceCheck(db: DB, doc: RemoteDoc): void {
 function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown>): void {
   if (getSyncState(db, 'membership') || !byMember(db, doc, true) || row.deleted_at) return;
   const no = String(row.journal_no ?? '');
-  if (!no || db.get(`SELECT 1 FROM journal_entries WHERE no = ?`, [no])) return;
+  const amount = Number(row.amount_halalas) || 0;
+  const same = db.get<{ a: number; n: string | null; s: string | null }>(
+    `SELECT amount_halalas AS a, journal_no AS n, source AS s FROM bank_tx WHERE id = ?`, [doc.k]);
+  // تعديلٌ لا يمسّ المبلغ ولا القيد ولا المصدر (البيان أو المطابقة) يمرّ
+  if (same && Number(same.a) === amount && String(same.n ?? '') === no && String(same.s ?? '') === String(row.source ?? '')) return;
+  if (!no) {
+    // بلا قيد: نقل نقدٍ بين المحفظة والبنك وحده، في حدود المنقول منه (المدقق الخارجي هـ٩: كانت تُطبَّق بلا فحص فيرتفع رصيد البنك)
+    const src = String(row.source ?? '');
+    const ok = src === CASH_DEPOSIT_SOURCE ? amount > 0 && walletCashBalance(db) >= amount
+      : src === CASH_WITHDRAW_SOURCE ? amount < 0 && bankBalance(db, String(row.bank_id ?? '')) >= -amount : false;
+    if (!ok) throw new Error(tr('sync.bankTxNoEntry', { lng: 'ar' }));
+    return;
+  }
+  const entry = db.get<{ id: string }>(`SELECT id FROM journal_entries WHERE no = ?`, [no]);
+  if (entry) {
+    // وحركات القيد في حدود نقده (1100) وبإشارته (هـ٩: حركةٌ ثانية برقم قيدٍ له حركته كانت تُطبَّق)
+    const cash = Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(debit_halalas - credit_halalas), 0) AS n FROM journal_lines WHERE entry_id = ? AND account_code = '1100'`, [entry.id])?.n ?? 0);
+    const others = Number(db.get<{ s: number }>(`SELECT COALESCE(SUM(amount_halalas), 0) AS s FROM bank_tx WHERE journal_no = ? AND id != ? AND deleted_at IS NULL`, [no, doc.k])?.s ?? 0);
+    const sum = others + amount;
+    if (sum !== 0 && (Math.sign(sum) !== Math.sign(cash) || Math.abs(sum) > Math.abs(cash))) throw new Error(tr('sync.bankTxOver', { no, lng: 'ar' }));
+    return;
+  }
   // ورفضُ قيدها لطول انتظاره (WAIT_REJECT) مؤقتٌ يُعاد على التجربة، فتنتظر معه ولا تُرفض (المدقق الخارجي ج٣: كانت تُرفض نهائياً
   // ثم يعود القيد ويُطبَّق وحركته مرفوضة)
   if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.no') = ? AND reason != ?
@@ -1274,6 +1306,10 @@ function applyOne(
       reject(db, doc, 'مفتاح الصف لا يطابق مفتاح المستند'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض كأسبابه الأخرى
       return 'rejected';
     }
+    if (doc.t === 'journal_entries' && linesMalformed(doc)) {
+      reject(db, doc, 'سطور القيد ليست سطوراً'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض
+      return 'rejected';
+    }
     // سطور القيد الواردة لقيدها وحده: سطرٌ يحمل قيداً آخر يُدرَج في ذلك القيد (التحقق المستقل، نظير #20 للسطور)
     if (doc.t === 'journal_entries' && (doc.lines ?? []).some((l) => l.entry_id != null && String(l.entry_id) !== doc.k)) {
       reject(db, doc, 'سطرٌ لقيدٍ آخر في مستند القيد'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض
@@ -1340,6 +1376,20 @@ function applyOne(
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', // i18n-exempt: وحدة السجل ونوعه المخزّنان
         tr('sync.olderIncoming', { t: doc.t, k: doc.k, seen, theirs: theirs0, lng: 'ar' }));
       return 'conflict-local';
+    }
+  }
+
+  // وأحداث الأصل لا يحذفها التطبيق ولا يعدّلها (المدقق الخارجي هـ٥: عضوٌ يحذف حدث النقل ويعكس قيده في دفعةٍ واحدة كان يتخطى حارس العكس
+  // فيُقبل بعده إهلاكٌ بالوحدة القديمة) · فحذف العضو أو تعديله لحدثٍ قائم يُرفض على جهاز المالك
+  if (doc.t === 'asset_events' && !getSyncState(db, 'membership') && (doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, true))) {
+    const cur = db.get<Record<string, unknown>>(`SELECT asset_id, kind, date, entry_id, from_unit_id, to_unit_id FROM asset_events WHERE id = ?`, [doc.k]);
+    const changed = cur && !doc.del && ['asset_id', 'kind', 'date', 'entry_id', 'from_unit_id', 'to_unit_id']
+      .some((c) => String(cur[c] ?? '') !== String((doc.d as Record<string, unknown> | undefined)?.[c] ?? ''));
+    if (cur && (doc.del || changed)) {
+      // ونسخة المالك تُعاد إلى السحابة فلا تبقى محذوفةً أو معدَّلةً فيها
+      enqueue(db, doc.t, doc.k, 'upsert');
+      reject(db, doc, tr('sync.assetEventLocked', { lng: 'ar' }));
+      return 'rejected';
     }
   }
 
@@ -1446,7 +1496,7 @@ function awaitedRefs(doc: RemoteDoc, fkOf: (t: string) => FkRow[]): Array<{ tabl
     }
   };
   add(doc.t, doc.d!);
-  if (doc.t === 'journal_entries') for (const l of doc.lines ?? []) add('journal_lines', l);
+  if (doc.t === 'journal_entries') for (const l of docLines(doc)) add('journal_lines', l as never);
   return out;
 }
 

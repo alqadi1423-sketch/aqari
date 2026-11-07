@@ -340,10 +340,16 @@ export async function createBackup(
         if (tolerant) { missing.push(`${b.sha256}.${b.ext}`); continue; }
         throw new BackupVerificationError(`الملف «${label()}» مفقود من القرص · يُرفض إنشاء النسخة`);
       }
-      const bytes = env.fs.read(p);
+      // وفي النسخة كما هي (ما قبل الترقية ونسخة الأمان) ملفٌ تعذّرت قراءته أو بصمته يُسمّى مفقوداً ولا يمنعها (المدقق الخارجي F١٠)
+      let bytes: Uint8Array;
       let actual: string;
-      try { actual = await hasher(bytes); }
-      catch { throw new BackupVerificationError(`تعذّر حساب بصمة الملف «${label()}» · يُرفض إنشاء النسخة`); }
+      try {
+        bytes = env.fs.read(p);
+        actual = await hasher(bytes);
+      } catch {
+        if (tolerant) { missing.push(`${b.sha256}.${b.ext}`); continue; }
+        throw new BackupVerificationError(`تعذّر حساب بصمة الملف «${label()}» · يُرفض إنشاء النسخة`);
+      }
       if (actual !== b.sha256) {
         if (tolerant) { missing.push(`${b.sha256}.${b.ext}`); continue; }
         throw new BackupVerificationError(`بصمة الملف «${label()}» لا تطابق المسجَّلة له · الملف تالف · يُرفض إنشاء النسخة`);

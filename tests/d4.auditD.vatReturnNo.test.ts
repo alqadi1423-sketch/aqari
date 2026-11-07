@@ -12,12 +12,12 @@ const mockOut = { html: [] as string[], files: [] as Array<{ name: string; bytes
 jest.mock('expo-print', () => ({
   printToFileAsync: async ({ html }: { html: string }) => { mockOut.html.push(html); return { uri: 'file:///tmp/x.pdf' }; },
   printAsync: async () => undefined,
-}), { virtual: true });
-jest.mock('expo-sharing', () => ({ isAvailableAsync: async () => false, shareAsync: async () => undefined }), { virtual: true });
+}));
+jest.mock('expo-sharing', () => ({ isAvailableAsync: async () => false, shareAsync: async () => undefined }));
 jest.mock('expo-file-system', () => {
   class F { uri: string; constructor(u: string) { this.uri = u; } get exists() { return false; } delete() {} moveSync() {} create() {} write() {} bytesSync() { return new Uint8Array(); } }
   return { File: F, Directory: F, Paths: { cache: { uri: 'file:///cache/' } } };
-}, { virtual: true });
+});
 jest.mock('@/ui/AppDialog', () => ({ showDialog: () => undefined }));
 jest.mock('@/ui/failureDialog', () => ({ reportFailure: () => undefined }));
 jest.mock('@/services/appLockService', () => ({ whilePrompting: (f: () => unknown) => f() }));

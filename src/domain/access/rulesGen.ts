@@ -387,15 +387,16 @@ ${guardFns(schema)}
           // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53)
           // i18n-exempt: حالة الفاتورة المخزّنة في نص القواعد
           && (bt == 'invoices' && r.d != null ? (r.d.get('status', '') == 'مسودة' ? true : lvlOf(m, 'invoices') >= 3) : true)
-          // العضو لا ينتحل المالك في سجل العمليات (مراجعة التثبيت #54)
-          && (bt != 'audit_log' || (r.d != null && r.d.get('user_name', '') != '${OWNER_ACTOR}')))));
+          // العضو لا ينتحل المالك في سجل العمليات (مراجعة التثبيت #54) · وتقرير العطل بمساره وحده (المدقق الخارجي F٢: كان يُكتب بعملية قسمٍ
+          // فيتخطى حدّه وشكل معرّفه)
+          && (bt != 'audit_log' || (r.d != null && r.d.get('user_name', '') != '${OWNER_ACTOR}' && r.d.get('entity_type', '') != '${CRASH_ENTITY}')))));
     }
     // تعديل العضو بياناته يُسجَّل في سجل العمليات باسمه ولو لم يُجز له قسمٌ إدخالاً (توجيه المالك ٢٠٢٦-١٠-٠٥) · وما سواه لا يُكتب
     // بهذه العملية (مستواها صفر)
     // ورموز رؤيته رموزٌ عامة («قسم|*» أو «قسم|@») وحقوله حقول سجل العمليات بحدودها (المراجعة الشاملة · البند ٢٨): كان يكتب رموزاً
     // ونصوصاً بلا حد
     function memberSelfAudit(r) {
-      return r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)
+      return r.get('del', false) != true && r.t == 'audit_log' && r.d != null && r.d.entity_type == '${SELF_AUDIT_ENTITY}' && r.pids == ['*'] && keyOk(r)
         && gPropOk(r.get('g', []), '*') && selfAuditSized(r.d)
         && r.d.get('module', '') == '${SELF_AUDIT_MODULE}' && r.d.get('user_name', '') != '${OWNER_ACTOR}'
         && r.get('by', '') == request.auth.uid;
@@ -422,7 +423,9 @@ ${guardFns(schema)}
     function memberCrashReport(r) {
       let d = r.d;
       let id = d.get('id', '');
-      return r.pids == ['*'] && r.get('g', []) == [] && keyOk(r) && r.get('by', '') == request.auth.uid
+      // ومستند حذفٍ لا يُكتب بهذا المسار (F١: مفتاحه حرٌّ فكان يتخطى حدّ اليوم)
+      return r.get('del', false) != true && r.pids == ['*'] && r.get('g', []) == [] && keyOk(r) && r.get('by', '') == request.auth.uid
+        && r.k == id
         && id is string && id.matches('crash-' + request.auth.uid + '-[0-9]{8}-([0-9]|1[0-9])') && crashDayOk(id.split('-'))
         && d.keys().hasOnly(['id', 'ts', 'user_name', 'module', 'action_type', 'entity_type', 'entity_name', 'before_json', 'after_json'])
         && d.get('module', '') == '${CRASH_MODULE}' && d.get('action_type', '') == 'update'

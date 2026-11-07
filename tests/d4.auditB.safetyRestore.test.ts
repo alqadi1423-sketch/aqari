@@ -15,9 +15,9 @@ import type { BackupEnv } from '@/domain/backup/types';
 import type { DB } from '@/db/adapter';
 
 const mockRoot = { dir: '' };
-jest.mock('expo-sharing', () => ({}), { virtual: true });
-jest.mock('expo-document-picker', () => ({}), { virtual: true });
-jest.mock('expo-file-system', () => ({ File: class {}, Paths: {} }), { virtual: true });
+jest.mock('expo-sharing', () => ({}));
+jest.mock('expo-document-picker', () => ({}));
+jest.mock('expo-file-system', () => ({ File: class {}, Paths: {} }));
 jest.mock('@/db/expoAdapter', () => ({ openExpoDb: () => null }));
 jest.mock('@/files/expoFs', () => {
   const n = jest.requireActual('@/files/nodeFs');

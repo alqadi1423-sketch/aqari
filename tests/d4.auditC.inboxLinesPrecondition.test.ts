@@ -14,10 +14,11 @@ test('v51: القيد بسطورٍ نصية ينتظر في الصندوق', asy
     lines: ['x'] as never } as RemoteDoc);
   let err = '';
   try { await sync(s.owner, s.r); await sync(s.owner, s.r); } catch (e) { err = String(e); }
-  const row = s.owner.get<{ e: string | null }>(`SELECT last_error AS e FROM sync_inbox WHERE pk = ?`, [k]);
+  // بعد إصلاح هـ٨: مستندٌ سطوره ليست كائنات يُرفض وحده بسببه، ولا يبقى في الصندوق ولا يوقف شيئاً
+  const rej = s.owner.get<{ r: string }>(`SELECT reason AS r FROM sync_rejects WHERE pk = ?`, [k]);
   // eslint-disable-next-line no-console
-  console.log(JSON.stringify({ err, row }));
+  console.log(JSON.stringify({ err, rej }));
   expect(err).toBe('');
-  expect(row).toBeDefined();
+  expect(rej?.r).toMatch(/ليست سطوراً/);
   s.close();
 });
