@@ -28,7 +28,9 @@ import { remainingByCodeOf, creditNoteAmounts, type StoredInvoiceLine } from '..
 import { lineTaxCode, type TaxCode } from '../taxCode';
 import { mulQty } from '../money';
 import { lineCosts, splitQty } from '../assets/purchaseLines';
-import { ASSET_CATEGORIES, isAssetCategory, ENDED, ACC_ACCUM, ACC_DEPRECIATION, ACC_RETAINED, ACC_CAPITAL } from '../assets/catalog';
+import {
+  ASSET_CATEGORIES, isAssetCategory, ENDED, ACC_ACCUM, ACC_DEPRECIATION, ACC_RETAINED, ACC_CAPITAL, ACC_CASH, ACC_DISPOSAL_LOSS, ACC_SALE_GAIN,
+} from '../assets/catalog';
 import { catchUpAmounts, expectedThrough, monthEnd, monthIndex, type DepreciableAsset } from '../assets/depreciation';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
@@ -98,13 +100,17 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   // إثبات تكلفة أصلٍ بلا فاتورة (دائن رأس المال) ومعه إهلاك ما فات، وإهلاك ما فات لأصول فاتورةٍ بتاريخٍ مضى أو محوّلة
   asset_cost: [...ASSET_CATEGORIES.map((c) => c.code), ACC_CAPITAL, ACC_DEPRECIATION, ACC_RETAINED, ACC_ACCUM],
   asset_catchup: [ACC_DEPRECIATION, ACC_RETAINED, ACC_ACCUM],
+  // نقل الأصل بين وحدتين (تكلفته ومجمعه)، واستبعاده (خسارته)، وبيعه نقداً أو ببنك (ربحه أو خسارته)
+  asset_transfer: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM],
+  asset_dispose: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM, ACC_DISPOSAL_LOSS],
+  asset_sell: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM, ACC_DISPOSAL_LOSS, ACC_CASH, ACC_SALE_GAIN],
 };
 
 /**
  * مصادر يرحّل منها التطبيق قيوداً عدة حيّة لمستندٍ واحد (المعرّف معرّف الأصل): إهلاك ما قبل كل نقلٍ أو استبعادٍ أو بيع، وكل نقل ·
- * فلا يُنتظر لها عاكس قيدٍ سابق، ويُفحص تكرارها بالمطابقة نفسها (المجمع بعد ما رُحِّل قبلها)
+ * فلا يُنتظر لها عاكس قيدٍ سابق، ويُفحص تكرارها بالمطابقة نفسها (المجمع بعد ما رُحِّل قبلها، والنقل بحدثه المسمّي قيده)
  */
-const MULTI = ['asset_dep'];
+const MULTI = ['asset_dep', 'asset_transfer'];
 
 /** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة)، والأصل (بنود الشراء الأصول وحدها) */
 interface DimSpec { contract: string | null; unit: string | null; props: Array<string | null>; asset?: string | null }
@@ -370,6 +376,20 @@ function basisIssue(a: AssetDoc, led: { cost: number; pending: boolean }): strin
   return cost === led.cost ? '' : led.pending || !led.cost ? AWAIT : no('assetCost');
 }
 
+/**
+ * تكلفةٌ أو مجمعٌ في قيد عمليةٍ على الأصل فوق ما رُحِّل له هنا، ولا يتجاوز تكلفته في صفّه ولا المستحق من جدوله حتى تاريخها: قيدٌ
+ * قبلها لم يصل بعد (العضو يرفع على دفعاتٍ صغيرة، والقيود المتزامنة بمفاتيحها) فيُنتظر · وما تجاوزهما يُرفض ولا يُنتظر (المضاعف)
+ */
+function opShort(a: AssetDoc, d: string, led: { cost: number; accum: number }, got: { cost: number; accum: number }): boolean {
+  const capCost = num(a.cost_halalas);
+  const capAccum = expectedThrough(depreciable(a), d);
+  return (got.cost > led.cost && got.cost <= capCost && got.accum <= Math.max(capAccum, led.accum))
+    || (got.accum > led.accum && got.accum <= capAccum && got.cost <= Math.max(capCost, led.cost));
+}
+
+/** مجموع جانبٍ من حسابٍ لأصلٍ في سطور القيد نفسه */
+const sideOf = (lines: SrcLine[], assetId: string, account: string, side: 'debit_halalas' | 'credit_halalas') => lines
+  .filter((l) => str(l.asset_id) === assetId && String(l.account_code ?? '') === account).reduce((s, l) => s + num(l[side]), 0);
 /** مجمع الأصل في سطور القيد نفسه: دائن 1490 ناقص مدينه */
 const accumIn = (lines: SrcLine[], assetId: string) => -assetNet({ id: '', src_type: null, src_id: null, lines }, assetId, ACC_ACCUM);
 
@@ -493,6 +513,64 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       return {
         lines: [{ account: a.category, debit: cost, credit: 0, dims }, { account: ACC_CAPITAL, debit: 0, credit: cost, dims }, ...cu.lines],
         date: today, correctable: false, pending: cu.pending,
+      };
+    }
+    case 'asset_transfer': {
+      // نقل الأصل بين وحدتين بتاريخ (transferAsset): بحدث نقله المسمّي هذا القيد، تكلفته ومجمعه المرحّلان قبله (postedCost
+      // وpostedAccum بعد إهلاك ما قبل النقل) يخرجان من أبعاد الوحدة القديمة ويدخلان أبعاد الجديدة
+      const evs = r.rows<AssetEvent>('asset_events', 'entry_id', e.id);
+      if (!evs.length) return AWAIT;
+      const ev = evs[0];
+      if (evs.length > 1 || ev.kind !== 'transfer' || ev.asset_id !== e.srcId || (ev.from_unit_id ?? null) === (ev.to_unit_id ?? null)) return no('noEntry');
+      const a = r.row<AssetDoc>('assets', e.srcId);
+      if (!a) return AWAIT;
+      const d = String(ev.date ?? '').slice(0, 10);
+      const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'op', d });
+      const from = assetSpecs(db, r, a, d, [ev.from_unit_id ?? null]);
+      const to = assetSpecs(db, r, a, d, [ev.to_unit_id ?? null]);
+      // ومجمعٌ أو تكلفةٌ في القيد فوق ما رُحِّل هنا في حدود الأصل: قيدٌ قبله لم يصل بعد فيُنتظر
+      const short = opShort(a, d, led, { cost: sideOf(e.lines, a.id, a.category, 'debit_halalas'), accum: sideOf(e.lines, a.id, ACC_ACCUM, 'credit_halalas') });
+      return {
+        lines: [
+          { account: a.category, debit: led.cost, credit: 0, dims: to }, { account: a.category, debit: 0, credit: led.cost, dims: from },
+          { account: ACC_ACCUM, debit: led.accum, credit: 0, dims: from }, { account: ACC_ACCUM, debit: 0, credit: led.accum, dims: to },
+        ],
+        date: d, correctable: false, pending: led.pending || short,
+      };
+    }
+    case 'asset_dispose':
+    case 'asset_sell': {
+      // استبعاد الأصل أو بيعه (disposeAsset وsellAsset): بتاريخ انتهائه في صفّه الذي يسمّي هذا القيد، تكلفته ومجمعه المرحّلان قبله
+      // (بعد إهلاك ما قبله) يُقفلان، والقيمة الدفترية خسارة استبعاد، أو يقابلها مبلغ البيع نقداً والفرق ربحٌ أو خسارة · وبأبعاده يومها
+      const a = r.row<AssetDoc>('assets', e.srcId);
+      if (!a) return AWAIT;
+      const status = e.src === 'asset_dispose' ? 'disposed' : 'sold';
+      // صفّه المنتهي لم يصل بعد
+      if (!ENDED.includes(a.status as never)) return AWAIT;
+      if (a.status !== status || a.end_entry_id !== e.id || !a.end_date) return no('noEntry');
+      const d = String(a.end_date).slice(0, 10);
+      const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'op', d });
+      const dims = assetSpecs(db, r, a, d, [a.unit_id ?? null]);
+      const nbv = led.cost - led.accum;
+      const short = opShort(a, d, led, { cost: sideOf(e.lines, a.id, a.category, 'credit_halalas'), accum: sideOf(e.lines, a.id, ACC_ACCUM, 'debit_halalas') });
+      const close: Want[] = [
+        { account: ACC_ACCUM, debit: led.accum, credit: 0, dims }, { account: a.category, debit: 0, credit: led.cost, dims },
+      ];
+      if (e.src === 'asset_dispose') {
+        return { lines: [...close, { account: ACC_DISPOSAL_LOSS, debit: nbv, credit: 0, dims }], date: d, correctable: false, pending: led.pending || short };
+      }
+      const amount = num(a.sale_halalas);
+      if (amount < 0) return no('noEntry');
+      // والبيع ببنك حركته برقم قيده بمبلغه
+      const txs = e.no ? r.rows<{ amount_halalas: number; deleted_at?: string | null }>('bank_tx', 'journal_no', e.no).filter((x) => !x.deleted_at) : [];
+      if (txs.length > 1 || (txs.length && num(txs[0].amount_halalas) !== amount)) return no('assetSale');
+      const diff = amount - nbv;
+      return {
+        lines: [
+          ...close, { account: ACC_CASH, debit: amount, credit: 0, dims },
+          { account: ACC_DISPOSAL_LOSS, debit: diff < 0 ? -diff : 0, credit: 0, dims }, { account: ACC_SALE_GAIN, debit: 0, credit: diff > 0 ? diff : 0, dims },
+        ],
+        date: d, correctable: false, pending: led.pending || short,
       };
     }
     case 'asset_catchup': {
