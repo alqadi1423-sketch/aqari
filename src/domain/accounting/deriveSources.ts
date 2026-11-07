@@ -1279,7 +1279,10 @@ function sameMirror(orig: SrcLine[], rev: SrcLine[]): boolean {
 function reversedIssue(r: SourceReader, e: { id: string; src: string; srcId: string; no: string | null; lines: SrcLine[] }, revId: string): string {
   const rev = r.entry(revId);
   if (!rev) return AWAIT;
-  if (rev.here || r.claimants(revId).some((id) => id !== e.id)) return no('revTaken');
+  // وعاكسٌ طُبِّق هنا لا يسمّيه أصلٌ غير هذا (ولا تخمين) فهذا أصله (المدقق الخارجي K١: نسخةٌ محدَّثة للأصل تسمّي عاكسها بعد تطبيقه
+  // كانت تُرفض «عاكسه طُبِّق قبله») · وما سمّاه أصلٌ آخر محجوزٌ له
+  const claim = r.claimants(revId);
+  if (claim.some((id) => id !== e.id) || (rev.here && claim.length > 0 && !claim.includes(e.id))) return no('revTaken');
   if (rev.key !== revId || rev.status !== POSTED || rev.deleted_at || rev.src_type !== e.src + '_rev' || rev.src_id !== e.srcId) return no('mirror');
   if (!sameMirror(e.lines, rev.lines)) return no('mirror');
   const originals = r.entries(e.src, e.srcId);

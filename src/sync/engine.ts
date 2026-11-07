@@ -504,9 +504,18 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   if (!originals.length) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
   // وأصلٌ من المصدر نفسه في الوارد لم يُطبَّق بعد وهذا مرآته: يُنتظر ولا يُرفض العاكس (المدقق الخارجي I · L٧: إلغاء التقبيل واستعادته
   // ثم إلغاؤه ثانية، والعاكس الثاني يسبق نسخة الاستعادة بجزءٍ من الثانية، كان يُرفض نهائياً «عواكس أكثر من أصولها»)
-  const awaitPending = () => { if (pendingOriginalOf(db, doc, base, srcId)) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' })); };
+  // والعاكس من عضوٍ بلا أصلٍ حرٍّ له هنا ينتظر ولا يُرفض: أصله قد يصل في دفعةٍ بعده (المدقق الخارجي K١ب: العضو يرفع على دفعات، فإن طبّق
+  // المالك بينهما رُفض العاكس نهائياً) · والمزوَّر يُرفض بطول انتظاره ولا أثر له قبل ذلك
+  const awaitPending = (extra: boolean) => {
+    if (pendingOriginalOf(db, doc, base, srcId) || (extra && byMember(db, doc, true))) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
+  };
+  // وأصلٌ في الوارد يسمّي هذا العاكس يُنتظر قبل أي تخمين، فلا يُقرن العاكس بغيره (K١)
+  if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.reversed_by') = ?
+       AND pk NOT IN (SELECT id FROM journal_entries)`, [doc.k])) {
+    throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
+  }
   const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
-  if (!issues.includes('')) { awaitPending(); throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' })); }
+  if (!issues.includes('')) { awaitPending(false); throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' })); }
   // ولا يعكس عضوٌ قيد دفعةٍ سُدّدت من عربون الحجز (المراجعة الشاملة · البند ٢٧ · المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها،
   // و«الدفتر» يجيز له كل عكس) · وعكس المالك يُقبل كما كتبه، ورصيده العالق يُحمّر فحص عربون الحجوزات
   if (base === 'reservation_convert' && byMember(db, doc, true)
@@ -524,13 +533,13 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
     throw new Error(tr('mirror.revRejected', { why: tr('mirror.transferLive', { lng: 'ar' }), lng: 'ar' }));
   }
   if (!freeOriginals(db, doc.k, src, srcId, originals.map((o) => o.id)).length) {
-    awaitPending();
+    awaitPending(true);
     throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
   }
   guessLink(db, doc.k);
   const revs = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]).length; // i18n-exempt: حالة القيد المخزّنة
-  if (revs > originals.length) { awaitPending(); throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' })); }
+  if (revs > originals.length) { awaitPending(true); throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' })); }
 }
 
 /** أصلٌ مرحّل من المصدر في الوارد لم يُطبَّق بعد، يسمّي هذا العاكس أو سطوره مرآة سطوره (صافي كل حسابٍ بعكس إشارته) */
@@ -561,10 +570,17 @@ function pendingOriginalOf(db: DB, rev: RemoteDoc, base: string, srcId: string):
 function freeOriginals(db: DB, revId: string, src: string, srcId: string, originals: string[]): string[] {
   const others = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل' AND id != ?`, [src, srcId, revId]); // i18n-exempt: حالة القيد المخزّنة
+  const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
   return originals.filter((o) => {
     if (mirrorIssue(db, o, revId) !== '') return false;
     const by = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [o])!.r;
     if (by && by !== revId) return false;
+    // ولا أصلٌ ربطُه المعلَّق أو نسخته الواردة تسمّي عاكساً آخر (المدقق الخارجي K١: كان يُخمَّن للعاكس أصلٌ خطأ فيُرفض الحقيقي بعده
+    // «عاكسه طُبِّق قبله»)
+    if (pending[o] && pending[o] !== revId) return false;
+    const named = db.get<{ r: string | null }>(
+      `SELECT json_extract(payload, '$.d.reversed_by') AS r FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [o])?.r;
+    if (named && named !== revId) return false;
     return !others.some((r2) => mirrorIssue(db, o, r2.id) === ''
       && !db.get(`SELECT 1 FROM journal_entries WHERE reversed_by = ? AND id != ?`, [r2.id, o]));
   });
@@ -901,7 +917,9 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> 
       }
       // والوارد إلى البنك من نقد القيد يُنقص المحفظة: لا ينزل بها تحت الصفر (المدقق الخارجي I٢: حركةٌ جديدة برقم قيدٍ صُرف نقده كانت
       // تُدخل البنك نقداً لا وجود له) · والتطبيق يكتب حركة القيد معه، فنقده في المحفظة حين تصل
-      if (nowLive.amount > 0 && walletCashBalance(db) - nowLive.amount < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+      if (nowLive.amount > 0 && walletCashBalance(db) - nowLive.amount < 0 && !jointlyCovered(db, doc.k, new Map([[nowLive.bank, nowLive.amount]]))) {
+        throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+      }
       return;
     }
     // ورفضُ قيدها لطول انتظاره (WAIT_REJECT) مؤقتٌ يُعاد على التجربة، فتنتظر معه ولا تُرفض (المدقق الخارجي ج٣: كانت تُرفض نهائياً
@@ -929,22 +947,48 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> 
     // والبنك لا ينزل تحت الصفر بنقلٍ بلا قيد، كما في التطبيق (السحب والتحويل وحذف الإيداع واستعادة السحب) · فسحبٌ من بنكٍ فارغ لا يُدخل
     // المحفظة نقداً لا وجود له (G٥ وG٦) · وحدٌّ معروف: سحب عضوٍ بلا اتصال من بنكٍ سدّد منه غيره في الوقت نفسه ينتظر ثم يُرفض (L٦)،
     // فالجهاز لا يعرف ما رآه العضو · يُعالج بشاشة التعارضات في القسم ٥
-    if (d < 0 && bankBalance(db, bank) + d < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+    if (d < 0 && bankBalance(db, bank) + d < 0 && !jointlyCovered(db, doc.k, delta)) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
   }
   // ووارد التحويل بين بنكين نصفُ نقلٍ صادره هنا: لا يمسّ المحفظة (L٥: كان يُفحص وحده أمامها فينتظر إن كانت سالبة)
   if (nowLive?.source === TRANSFER_IN_SOURCE && !wasLive && transferPaired(db, doc.k, row!)) return;
-  if (wallet < 0 && walletCashBalance(db) + wallet < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+  if (wallet < 0 && walletCashBalance(db) + wallet < 0 && !jointlyCovered(db, doc.k, delta)) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+}
+
+/**
+ * حركات بنكٍ تنتظر كلٌّ منها الأخرى (المدقق الخارجي K٢: واردٌ بنكي بقيد، ثم سحب بعضه نقداً، ثم صرفه نثرياً · القيود تُطبَّق قبل الحركات،
+ * فالوارد ينتظر المحفظة والسحب ينتظر البنك أبداً) · فالنقص يُقاس بأثر هذه الحركة مع كل حركات البنك المنتظرة في الوارد معاً: إن لم
+ * ينزل بها بنكٌ ولا المحفظة تحت الصفر في آخرها قُبلت، والباقية تُقبل بعدها بالفحص نفسه · والمزوَّر لا يصنع مالاً: آخرها كلها غير سالب
+ */
+function jointlyCovered(db: DB, selfId: string, selfDelta: Map<string, number>): boolean {
+  const delta = new Map(selfDelta);
+  for (const p of db.all<{ pk: string; payload: string }>(`SELECT pk, payload FROM sync_inbox WHERE tbl = 'bank_tx' AND pk != ?`, [selfId])) {
+    let d: RemoteDoc;
+    try { d = JSON.parse(p.payload) as RemoteDoc; } catch { continue; }
+    const cur = db.get<{ b: string; a: number; del: string | null }>(`SELECT bank_id AS b, amount_halalas AS a, deleted_at AS del FROM bank_tx WHERE id = ?`, [p.pk]);
+    if (cur && cur.del == null) delta.set(String(cur.b), (delta.get(String(cur.b)) ?? 0) - (Number(cur.a) || 0));
+    const r = d.del ? null : (d.d as Record<string, unknown> | undefined);
+    if (r && r.deleted_at == null) delta.set(String(r.bank_id ?? ''), (delta.get(String(r.bank_id ?? '')) ?? 0) + (Number(r.amount_halalas) || 0));
+  }
+  let wallet = 0;
+  for (const [bank, v] of delta) {
+    wallet -= v;
+    if (v < 0 && bankBalance(db, bank) + v < 0) return false;
+  }
+  return walletCashBalance(db) + wallet >= 0;
 }
 
 /** صادرٌ مطبَّق للتحويل نفسه (التاريخ والبيان والمبلغ، ببنكٍ آخر) لم يُقابَل بواردٍ قبل هذا */
 function transferPaired(db: DB, id: string, row: Record<string, unknown>): boolean {
   const amount = Number(row.amount_halalas) || 0;
-  const args = [String(row.date ?? ''), String(row.descr ?? ''), String(row.bank_id ?? '')];
-  const outs = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_tx WHERE source = ? AND amount_halalas = ? AND date = ? AND descr = ? AND bank_id != ?
+  const args = [String(row.date ?? ''), String(row.descr ?? '')];
+  // صادرٌ ببنكٍ آخر لهذا الوارد · والعدّ في البنوك كلها: الصادر الواحد يقابل وارداً واحداً لا وارداً في كل بنكٍ آخر (المدقق الخارجي K٣)
+  const outs = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_tx WHERE source = ? AND amount_halalas = ? AND date = ? AND descr = ?
      AND deleted_at IS NULL AND journal_no = ''`, [TRANSFER_OUT_SOURCE, -amount, ...args])?.n ?? 0);
-  const ins = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_tx WHERE source = ? AND amount_halalas = ? AND date = ? AND descr = ? AND bank_id = ?
+  const outOther = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_tx WHERE source = ? AND amount_halalas = ? AND date = ? AND descr = ? AND bank_id != ?
+     AND deleted_at IS NULL AND journal_no = ''`, [TRANSFER_OUT_SOURCE, -amount, ...args, String(row.bank_id ?? '')])?.n ?? 0);
+  const ins = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_tx WHERE source = ? AND amount_halalas = ? AND date = ? AND descr = ?
      AND deleted_at IS NULL AND journal_no = '' AND id != ?`, [TRANSFER_IN_SOURCE, amount, ...args, id])?.n ?? 0);
-  return outs > ins;
+  return outOther > 0 && outs > ins;
 }
 
 /**
@@ -1495,13 +1539,21 @@ function applyOne(
 
   // والرصيد الافتتاحي للبنك يضعه المالك وحده (المدقق الخارجي I١ · القاعدة ٩٩): مالٌ بلا قيد، فعضوٌ يرفعه ثم يسحبه نقداً كان يُدخل
   // المحفظة ما لا وجود له · فتعديل العضو له يُرفض ونسخة المالك تُعاد إلى السحابة، وبنكه الجديد بافتتاحيٍّ صفر
-  if (doc.t === 'banks' && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, true)) {
+  // والعضو كاتب هذه النسخة بمسار قسمه (op) لا منشئ الصف: تعديل المالك لبنكٍ أنشأه عضو يحمل «by» العضو (المدقق الخارجي K٤: كان جهاز المالك
+  // الثاني يرفض افتتاحي المالك نفسه فيتأرجح في السحابة)
+  let bankOpeningZeroed = false;
+  if (doc.t === 'banks' && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)) {
     const cur = db.get<{ o: number; d: string | null }>(`SELECT opening_halalas AS o, opening_date AS d FROM banks WHERE id = ?`, [doc.k]);
     const o = Number((doc.d as Record<string, unknown> | undefined)?.opening_halalas) || 0;
-    if (cur ? o !== (Number(cur.o) || 0) : o !== 0) {
-      if (cur) enqueue(db, doc.t, doc.k, 'upsert');
+    if (cur && o !== (Number(cur.o) || 0)) {
+      enqueue(db, doc.t, doc.k, 'upsert');
       reject(db, doc, tr('sync.bankOpeningOwner', { lng: 'ar' }));
       return 'rejected';
+    }
+    // وبنك العضو الجديد يُطبَّق بافتتاحيٍّ صفر وتُعاد نسخته كذلك، فلا تعلق حركاته (K٥: بنكٌ أُنشئ برصيدٍ قبل الترقية كان يُرفض كله)
+    if (!cur && o !== 0) {
+      doc.d = { ...(doc.d as Record<string, unknown>), opening_halalas: 0 };
+      bankOpeningZeroed = true;
     }
   }
 
@@ -1585,6 +1637,7 @@ function applyOne(
       }
     });
     noteRowTime(db, doc.t, doc.k, theirs0);
+    if (bankOpeningZeroed) enqueue(db, doc.t, doc.k, 'upsert');
     return conflict ?? 'applied';
   } catch (e) {
     const msg = errText(e);
