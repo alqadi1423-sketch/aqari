@@ -101,8 +101,26 @@ export function isOrphanEntry(db: DB, entryId: string): boolean {
   return !!db.get(`SELECT 1 FROM journal_entries e WHERE e.id = ? AND e.src_type IS NOT NULL AND ${orphanSql(db)}`, [entryId]);
 }
 
-export function markForReview(db: DB, entry: { id: string; no: string }, reason: string): void {
-  logAudit(db, 'النسخ الاحتياطي', 'create', KEPT_REVIEW_ENTITY, entry.no, undefined, { id: entry.id, no: entry.no, reason });
+/**
+ * creditGap (التوجيه الثالث · العطل ٨): ما في القيد المضموم من صافي 2410 (دائن موجب) لا يُنسب إلى مستأجرٍ في النسخة فلم يُحمل
+ * إلى رصيدٍ دائن (keepPosted.ts) · مبلغه بالضبط، فيخرج وحده من مطابقة 2410 بسجلات المستأجرين حتى يُعكس القيد
+ */
+export function markForReview(db: DB, entry: { id: string; no: string }, reason: string, opts?: { creditGap?: number }): void {
+  logAudit(db, 'النسخ الاحتياطي', 'create', KEPT_REVIEW_ENTITY, entry.no, undefined,
+    { id: entry.id, no: entry.no, reason, ...(opts?.creditGap ? { creditGap: opts.creditGap } : {}) });
+}
+
+/**
+ * مجموع ما لم يُحمل إلى رصيد مستأجر من القيود المضمومة المعلَّمة (creditGap) ما دام القيد قائماً لم يُعكس · وعلامة القيد الواحد
+ * مرةً (استعادتان تعلّمان القيد نفسه) · و«تمّت مراجعته» لا يعيده إلى المطابقة: مستأجره ليس في القاعدة بعد
+ */
+export function markedCreditGap(db: DB): number {
+  return Number(db.get<{ s: number }>(
+    `WITH g AS (SELECT json_extract(after_json, '$.id') AS id, MAX(CAST(json_extract(after_json, '$.creditGap') AS INTEGER)) AS gap
+                FROM audit_log WHERE entity_type = ? AND json_extract(after_json, '$.creditGap') IS NOT NULL GROUP BY 1)
+     SELECT COALESCE(SUM(g.gap), 0) AS s FROM g JOIN journal_entries e ON e.id = g.id
+     WHERE e.status = ? AND e.deleted_at IS NULL AND e.reversed_by IS NULL`,
+    [KEPT_REVIEW_ENTITY, 'مرحّل'])?.s ?? 0); // i18n-exempt: حالة القيد المخزّنة
 }
 
 /** تعليم ما غاب مستنده · بعد اكتمال تطبيق الوارد · يعيد عدد ما عُلِّم */
