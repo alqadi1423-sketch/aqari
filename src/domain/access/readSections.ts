@@ -136,7 +136,7 @@ const JOURNAL_SOURCE: Partial<Record<SectionKey, string>> = {
  * صفوف سجل العمليات التي لا يقرؤها إلا المالك: مراجعته محادثةً بسببها (قرار المالك 2026-10-08T05:31Z: «صف
  * المراجعة في سجل العمليات يُحجب كله عن غير المالك») · مطابقة لـ REVIEW_ENTITY في src/chat/types.ts
  */
-export const OWNER_ONLY_AUDIT = new Set(['مراجعة محادثة']); // i18n-exempt: قيمة مخزّنة
+export const OWNER_ONLY_AUDIT = new Set(['مراجعة محادثة', 'تقرير عطل']); // i18n-exempt: قيمة مخزّنة · والثاني CRASH_ENTITY (التوجيه الرابع ٤ · ٤)
 
 export function readSectionsOf(table: string, row: Record<string, unknown> | null): SectionKey[] {
   if (table === 'audit_log' && OWNER_ONLY_AUDIT.has(String(row?.entity_type ?? ''))) return [];

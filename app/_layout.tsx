@@ -41,7 +41,10 @@ if (EU && !__DEV__) {
   EU.setGlobalHandler((e, fatal) => {
     try {
       const { reportFailure } = require('../src/ui/failureDialog') as typeof import('../src/ui/failureDialog');
-      reportFailure({ title: 'حدث خطأ غير متوقع', where: 'خطأ عام', e }).catch(() => prev?.(e, fatal));
+      // والقاعدة إن كانت مفتوحة (لا تُفتح هنا): يُسجَّل العطل ويصل تقريره المالك (التوجيه الرابع ٤ · ٤) · وإلا يُعرض بلا تسجيل
+      let db: import('../src/db/adapter').DB | undefined;
+      try { db = (require('../src/db/expoAdapter') as typeof import('../src/db/expoAdapter')).openedAppDb() ?? undefined; } catch { db = undefined; }
+      reportFailure({ title: 'حدث خطأ غير متوقع', where: 'خطأ عام', e, db }).catch(() => prev?.(e, fatal));
     } catch {
       prev?.(e, fatal);
     }

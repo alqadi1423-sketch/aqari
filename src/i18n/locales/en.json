@@ -898,5 +898,12 @@
     "missingMore": "and {{count}} more",
     "missingNote": "The records themselves are saved, and a missing file stays missing after the upgrade just as before it. If you have it elsewhere, attach it again after the upgrade.",
     "continue": "Continue the upgrade"
+  },
+  "crash": {
+    "row": "Crash reports (30 days)",
+    "title": "Crash reports",
+    "close": "Close",
+    "copy": "Copy details",
+    "share": "Send"
   }
 }

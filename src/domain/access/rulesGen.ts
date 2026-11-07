@@ -10,6 +10,7 @@ import { SECTION_KEYS, type SectionKey } from './sections';
 import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR, SELF_AUDIT_ACTIONS, SELF_AUDIT_AHEAD_DAYS, LEGACY_NEUTRAL } from './opWrites';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, READ_TABLE, readSectionsOf } from './readSections';
 import { SYNC_TABLES } from '../../db/syncTables';
+import { CRASH_ENTITY, CRASH_MODULE, CRASH_DAILY_LIMIT } from '../crashReport';
 import { BLOCK_SIZE, FIRST_GAP } from '../numbering';
 
 /** ما تحتاجه القواعد من المخطط: أعمدة المبالغ في كل جدول مُزامَن (يبنيه الاختبار من قاعدةٍ مُهاجَرة) */
@@ -373,7 +374,8 @@ ${guardFns(schema)}
       // الاسم الأصلي مرةً (كل استدعاءٍ نحو تسعة تعابير في حدّ الألف · معايرة المحاكي 2026-10-10)
       let bt = r.t.split('~')[0];
       // شرطٌ ثلاثي لا «أو»: في طلب commit تُستدعى الدالة بعد «أو» و«و» ولو حُسمت النتيجة، والثلاثي لا يستدعي دالة فرعه المتروك (تجربة المحاكي 2026-10-10 · حدّ الألف تعبير)
-      return isMember(org) && r.op is string && (r.op == '${SELF_OP}' ? memberSelfAudit(r) : (
+      return isMember(org) && r.op is string && (r.op == '${SELF_OP}'
+        ? (r.t == 'audit_log' && r.get('d', null) != null && r.d.get('entity_type', '') == '${CRASH_ENTITY}' ? memberCrashReport(r) : memberSelfAudit(r)) : (
         // الحراسات أولاً: المزوَّر يُرفض بها رخيصاً قبل أن يبلغ الطلب حدّ ألف تعبير (المراجعة #17 و#18 و#20 و#21)
         // ورموز رؤية الصف الجديد في حدود عقاره أولها (المراجعات الخارجية «ثالثاً أ ٢» · والمتحقق المستقل: عقاراتٌ مكررة أو معها
         // «*» كانت تتخطى الفحص، والرفض كان بنفاد الحد لا بالمنطق) · فالصف غير المستأجر بعقارٍ واحد ورموزه له
@@ -411,6 +413,30 @@ ${guardFns(schema)}
         && d.get('entity_name', '') is string && d.get('entity_name', '').size() <= 300
         && (d.get('before_json', null) == null || (d.before_json is string && d.before_json.size() <= 4000))
         && (d.get('after_json', null) == null || (d.after_json is string && d.after_json.size() <= 4000));
+    }
+
+    // تقرير عطل العضو للمالك وحده (التوجيه الرابع ٤ · ٤ · قرار المالك 2026-11-07 «نعم توصلني» · src/domain/crashReport.ts): معرّفه
+    // «crash-<حسابه>-<يومه>-<رتبته>» برتبةٍ دون ${CRASH_DAILY_LIMIT}، والإنشاء وحده (سجل العمليات لا يُعدَّل)، فلا يتجاوز ${CRASH_DAILY_LIMIT} في اليوم لكل حساب ·
+    // ويومه بين ثمانية أيامٍ مضت وغدٍ بتوقيت الخادم (رفعٌ متأخرٌ بلا اتصال) · وحقوله حقول السجل بحدودها، وحمولته دون ٤٠٠٠، وبلا رموز
+    // رؤيةٍ لقسمٍ ولا عقار (المالك يقرأ كل شيء)
+    function memberCrashReport(r) {
+      let d = r.d;
+      let id = d.get('id', '');
+      return r.pids == ['*'] && r.get('g', []) == [] && keyOk(r) && r.get('by', '') == request.auth.uid
+        && id is string && id.matches('crash-' + request.auth.uid + '-[0-9]{8}-([0-9]|1[0-9])') && crashDayOk(id.split('-'))
+        && d.keys().hasOnly(['id', 'ts', 'user_name', 'module', 'action_type', 'entity_type', 'entity_name', 'before_json', 'after_json'])
+        && d.get('module', '') == '${CRASH_MODULE}' && d.get('action_type', '') == 'update'
+        && d.get('user_name', '') is string && d.get('user_name', '').size() <= 200 && d.get('user_name', '') != '${OWNER_ACTOR}'
+        && d.get('entity_name', '') is string && d.get('entity_name', '').size() <= 120
+        && d.get('before_json', null) == null
+        && d.get('after_json', null) is string && d.after_json.size() <= 4000
+        && d.get('ts', null) is string && d.ts.size() <= 24
+        && d.ts.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]{1,3})?Z?');
+    }
+    function crashDayOk(p) {
+      let day = p[p.size() - 2];
+      let t = timestamp.date(int(day[0:4]), int(day[4:6]), int(day[6:8]));
+      return t > request.time - duration.value(8, 'd') && t < request.time + duration.value(1, 'd');
     }
 
     function selfAuditNotAhead(p) {

@@ -10,7 +10,8 @@
  * ويعمل من داخل React وخارجها (الخدمات والمعالج العام) لأنه يمرّ بالجسر الأمري للحوار.
  */
 import { failureAuditDetail } from '../domain/redact';
-import { Share } from 'react-native';
+import { Share, Platform } from 'react-native';
+import { recordCrashReport } from '../domain/crashReport';
 import * as Clipboard from 'expo-clipboard';
 import { showDialog, type DialogAction } from './AppDialog';
 import { showToast } from './Toast';
@@ -58,6 +59,8 @@ export async function recordFailure(args: Pick<FailureArgs, 'title' | 'where' | 
       logAudit(args.db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', 'فشل ' + where,
         failureAuditDetail(args.e));
     } catch { /* السجل لا يعطّل */ }
+    // وتقريره للمالك (التوجيه الرابع ٤ · ٤): محجوبٌ بحدّ يومه، ولا يرمي
+    recordCrashReport(args.db, { where, e: args.e, platform: Platform.OS });
   }
   return { full: errorReportText(where, args.e), saved: (await saveErrorReport(where, args.e)) || null };
 }
@@ -83,6 +86,9 @@ export async function reportFailure(args: FailureArgs): Promise<void> {
       logAudit(db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', 'فشل ' + where,
         failureAuditDetail(e));
     } catch { /* السجل لا يعطّل */ }
+    // وتقريره للمالك (التوجيه الرابع ٤ · ٤ · قرار المالك 2026-11-07 «نعم توصلني»): محجوبٌ بحدّ يومه، ولا يرمي · والقاعدة المرفوضة
+    // أعلاه ليست عطلاً فلا تقرير لها
+    recordCrashReport(db, { where, e, platform: Platform.OS });
   }
 
   let stateLine = '';

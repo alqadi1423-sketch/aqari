@@ -115,6 +115,11 @@ export function clearUpgrade(): void {
  * قاعدةٌ أقدم من التطبيق فيها بيانات لا تُهاجَر هنا قبل أن تأذن البوابة (src/ui/UpgradeGate.tsx)
  * بعد نسخة كاملة · فيرمي الطلب المبكر بدل أن يرقّيها بلا نسخة.
  */
+/** القاعدة إن كانت مفتوحةً وحدها · لا تفتح ولا تُرقّي (لمسار الخطأ العام: تقرير العطل لا يفتح قاعدةً في منتصف عطل) */
+export function openedAppDb(): AppDB | null {
+  return _appDb ?? null;
+}
+
 export function appDb(): AppDB {
   if (!_appDb) {
     const d = rawAppDb();

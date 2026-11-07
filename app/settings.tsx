@@ -39,7 +39,8 @@ import { storageBreakdown, sweepCache, reclaimStorage } from '../src/services/st
 import { libSizeLabel } from '../src/domain/library';
 import { useLongTask } from '../src/ui/LongTask';
 import { isCancelled } from '../src/domain/progress';
-import { reportFailure, arabicMessage } from '../src/ui/failureDialog';
+import { reportFailure, arabicMessage, copyFailureDetails, shareFailureDetails } from '../src/ui/failureDialog';
+import { crashReports, type CrashReportView } from '../src/domain/crashReport';
 import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
   pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted,
@@ -231,6 +232,7 @@ export default function Settings() {
   useEffect(() => subscribeCloud(() => setCloud(cloudState())), []);
   const [driveList, setDriveList] = useState<DriveBackup[] | null>(null);
   const [deviceList, setDeviceList] = useState<ReturnType<typeof listDeviceBackups> | null>(null);
+  const [crashList, setCrashList] = useState<CrashReportView[] | null>(null);
 
   const data = useMemo(() => {
     const exp = exportStatus(db);
@@ -895,6 +897,19 @@ export default function Settings() {
             <T size={TYPE.body} bold>{v}</T>
           </Row>
         ))}
+        {/* تقارير أعطال الأجهزة للمالك وحده (التوجيه الرابع ٤ · ٤ · قرار المالك 2026-11-07 «نعم توصلني») */}
+        {admin ? (() => {
+          let n = 0;
+          try { n = crashReports(db).length; } catch { n = 0; }
+          return (
+            <Pressable onPress={() => { if (n) { setSyncOpen(false); setCrashList(crashReports(db)); } }} accessibilityRole="button">
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
+                <T size={TYPE.body}>{t('crash.row')}</T>
+                <T size={TYPE.body} bold color={n ? C.rose : undefined}>{String(n)}</T>
+              </Row>
+            </Pressable>
+          );
+        })() : null}
         {cloud.lastError ? <Note tone="danger">{cloud.lastError}</Note> : null}
         {cloud.online && !cloud.syncing ? (
           <View style={{ marginTop: 10 }}><BtnPrimary icon="reload" title="زامِن الآن" onPress={() => { syncNow(); setSyncOpen(false); }} /></View>
@@ -1000,6 +1015,33 @@ export default function Settings() {
           const b = (driveList ?? []).find((x) => x.id === id);
           setDriveList(null);
           if (b) runRestore((opts) => prepareRestoreFromDrive(db, b, setProgress, opts));
+        }}
+      />
+
+      {/* تقارير الأعطال: الأحدث أولاً، وكلٌّ بتفصيله المحجوب ونسخه وإرساله (التوجيه الرابع ٤ · ٤) */}
+      <PickerSheet
+        visible={!!crashList}
+        onClose={() => setCrashList(null)}
+        title={t('crash.title')}
+        options={(crashList ?? []).map((c) => ({
+          value: c.id,
+          label: dfmt(localDateOf(c.ts)) + ' · ' + localTimeOf(c.ts) + ' · ' + c.who,
+          sub: c.where + ' · ' + c.version,
+        }))}
+        value={''}
+        onPick={(id) => {
+          const c = (crashList ?? []).find((x) => x.id === id);
+          setCrashList(null);
+          if (!c) return;
+          const full = [t('crash.title') + ' · ' + c.who, c.ts, c.where, c.version + ' · ' + c.platform + ' · ' + c.kind, '────────', c.stack].join('\n');
+          dialog({
+            title: c.where, body: c.version + ' · ' + c.kind + '\n\n' + c.stack.slice(0, 1200),
+            actions: [
+              { label: t('crash.close'), variant: 'ghost' },
+              { label: t('crash.copy'), variant: 'ghost', onPress: () => copyFailureDetails(full) },
+              { label: t('crash.share'), variant: 'primary', onPress: () => shareFailureDetails(full) },
+            ],
+          });
         }}
       />
 

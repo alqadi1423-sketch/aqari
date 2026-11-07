@@ -33,6 +33,7 @@ import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
 import { TS_DEDUCTIBLE } from '../domain/purchases';
+import { CRASH_ENTITY } from '../domain/crashReport';
 import { memberSourceIssue, deductibleIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
@@ -1975,7 +1976,8 @@ export async function syncOnce(
         const r = batch[i];
         // العضو: المرفوض لصلاحيته لا تفيده الإعادة · يخرج من الطابور ويُسجَّل
         const memberDenied = remote.memberMode && res.code === 'PERMISSION_DENIED';
-        if (memberDenied) {
+        // وتقرير العطل المرفوض (حدّ يومه، أو قواعدُ لم تُنشر بعد) يخرج من الطابور بلا سطرٍ في المرفوض: تشخيصٌ لا عملٌ للمستخدم
+        if (memberDenied && !(docs[i].t === 'audit_log' && docs[i].d?.entity_type === CRASH_ENTITY)) {
           db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
             [docs[i].id, r.tbl, r.pk, 'خارج صلاحيتك · بقي على هذا الجهاز ولم يُرفع', JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
         }
