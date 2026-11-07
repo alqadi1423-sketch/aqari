@@ -9,11 +9,13 @@ const ROOT = path.join(__dirname, '..');
 const wf = fs.readFileSync(path.join(ROOT, '.github/workflows/android-e2e.yml'), 'utf8');
 
 describe('سير عمل الجوال الافتراضي', () => {
-  test('بلا أسرار ولا مفتاح المالك، والتوقيع بمفتاحٍ مؤقت يُحذف', () => {
+  test('بلا أسرار ولا مفتاح المالك، والتوقيع بمفتاح اختبارٍ مؤقت يُحذف', () => {
     expect(wf).not.toMatch(/secrets\./);
-    expect(wf).not.toMatch(/AQARI_UPLOAD_/);
+    // متغيرات الإصدار تحمل مفتاح الاختبار المولَّد هنا وحده، لا مفتاح المالك
+    expect(wf).toMatch(/AQARI_UPLOAD_STORE_FILE=\$ks/);
+    expect(wf).not.toMatch(/D:\/keys/);
     expect(wf).toMatch(/keytool -genkeypair/);
-    expect(wf).toMatch(/rm -f "\$ks"/);
+    expect(wf).toMatch(/rm -f "\$RUNNER_TEMP\/e2e\.keystore"/);
   });
 
   test('الكتابة في ci-results في عملٍ مستقل، وعمل البناء بصلاحية القراءة وحدها', () => {

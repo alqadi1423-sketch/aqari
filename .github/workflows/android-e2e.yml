@@ -1,5 +1,5 @@
 # الجوال الافتراضي (التوجيه الرابع ٤ · ١ · قرار المالك 2026-11-07 «اختبار آلي على جوال أندرويد افتراضي في جيت هب»):
-# تُبنى حزمة الإصدار نفسها (الشيفرة مضمّنة، بلا Metro) لمعالج x86_64، وتُوقَّع بمفتاح اختبارٍ يُولَّد في التشغيل ويُحذف معه
+# تُبنى حزمة الإصدار نفسها (الشيفرة مضمّنة، بلا Metro) لمعالج x86_64، موقّعةً بمفتاح اختبارٍ يُولَّد في التشغيل ويُحذف معه
 # (لا مفتاح المالك ولا أي سر)، ثم تُشغَّل تدفقات Maestro في e2e/maestro على محاكي أندرويد · بلا ربطٍ بقوقل: التطبيق محلي كاملاً.
 # والخلاصة ولقطات الشاشة تُكتب في فرع ci-results (مجلد e2e/<الالتزام>) في عملٍ مستقل بصلاحية الكتابة وحدها، كخط الاختبارات.
 name: الجوال الافتراضي
@@ -53,25 +53,30 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ hashFiles('android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties', 'package-lock.json') }}
 
+      # مفتاح اختبارٍ يُولَّد هنا ويُمرَّر بمتغيرات الإصدار نفسها (build.gradle يرفض الإصدار بلا مفتاح)، ويُحذف بعد البناء
+      - name: مفتاح اختبارٍ مؤقت
+        run: |
+          ks="$RUNNER_TEMP/e2e.keystore"
+          keytool -genkeypair -keystore "$ks" -storepass e2e-only -keypass e2e-only -alias aqari-upload -keyalg RSA -keysize 2048 \
+            -validity 2 -dname "CN=aqari-e2e" >/dev/null
+          {
+            echo "AQARI_UPLOAD_STORE_FILE=$ks"
+            echo "AQARI_UPLOAD_STORE_PASSWORD=e2e-only"
+            echo "AQARI_UPLOAD_KEY_PASSWORD=e2e-only"
+          } >> "$GITHUB_ENV"
+
       - name: بناء حزمة الاختبار (x86_64)
         working-directory: android
         run: |
           bash ./gradlew :app:assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 \
             "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
           ls -l app/build/outputs/apk/release/
+          apk="$(ls "$PWD"/app/build/outputs/apk/release/*.apk | head -1)"
+          echo "E2E_APK=$apk" >> "$GITHUB_ENV"
 
-      - name: توقيع بمفتاح اختبارٍ مؤقت
-        run: |
-          set -e
-          ks="$RUNNER_TEMP/e2e.keystore"
-          keytool -genkeypair -keystore "$ks" -storepass e2e-only -keypass e2e-only -alias e2e -keyalg RSA -keysize 2048 \
-            -validity 2 -dname "CN=aqari-e2e" >/dev/null
-          bt="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
-          in="$(ls android/app/build/outputs/apk/release/*.apk | head -1)"
-          "$bt/zipalign" -f 4 "$in" "$RUNNER_TEMP/aligned.apk"
-          "$bt/apksigner" sign --ks "$ks" --ks-pass pass:e2e-only --key-pass pass:e2e-only --out "$RUNNER_TEMP/aqari-e2e.apk" "$RUNNER_TEMP/aligned.apk"
-          rm -f "$ks"
-          echo "E2E_APK=$RUNNER_TEMP/aqari-e2e.apk" >> "$GITHUB_ENV"
+      - name: حذف مفتاح الاختبار
+        if: always()
+        run: rm -f "$RUNNER_TEMP/e2e.keystore"
 
       - name: تفعيل KVM
         run: |
