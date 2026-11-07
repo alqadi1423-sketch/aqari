@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="86.422" timestamp="2026-11-07T18:13:37">
+    <testcase id="11b-qr-purchase" name="11b-qr-purchase" classname="11b-qr-purchase" file="e2e/maestro/11b-qr-purchase.yaml" time="86.403" timestamp="2026-11-07T18:13:37" status="ERROR">
+      <failure>Assertion is false: "1150.00|1,150.00" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
