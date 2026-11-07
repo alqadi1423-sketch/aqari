@@ -28,13 +28,30 @@ const dec = new TextDecoder();
  * وإن لم يُعرف له اسم فأوّل البصمة وامتداده.
  */
 function attachmentLabel(db: DB | null, sha: string, ext?: string): string {
-  try {
-    const r = db?.get<{ n: string | null }>(
-      `SELECT COALESCE(NULLIF(display_name, ''), original_name) AS n FROM attachments
-       WHERE sha256 = ? ORDER BY deleted_at IS NOT NULL, created_at LIMIT 1`, [sha]);
-    if (r?.n) return r.n;
-  } catch { /* القاعدة غير متاحة · يُكتفى بالبصمة */ }
+  // نسخة ما قبل الترقية تقرأ قاعدةً أقدم قد لا تعرف الاسم الظاهر ولا الحذف المؤقت · فيُجرَّب الأحدث ثم الأقدم
+  for (const sql of [
+    `SELECT COALESCE(NULLIF(display_name, ''), original_name) AS n FROM attachments
+     WHERE sha256 = ? ORDER BY deleted_at IS NOT NULL, created_at LIMIT 1`,
+    `SELECT original_name AS n FROM attachments WHERE sha256 = ? ORDER BY created_at LIMIT 1`,
+  ]) {
+    try {
+      const r = db?.get<{ n: string | null }>(sql, [sha]);
+      if (r?.n) return r.n;
+      if (r) break;
+    } catch { /* عمودٌ لا تعرفه هذه البنية، أو القاعدة غير متاحة · التالي ثم البصمة */ }
+  }
   return sha.slice(0, 12) + (ext ? '.' + ext : '');
+}
+
+/**
+ * أسماء الملفات التي لم تدخل نسخة ما قبل الترقية (القرارات المعلّقة البند ٣ · الخيار أ): بالاسم الذي يعرفه المستخدم، أو بأول البصمة إن
+ * لم يكن له اسم · ليُخبَر بها قبل أن تجري الترقية
+ */
+export function missingFileLabels(db: DB | null, missing: readonly string[]): string[] {
+  return missing.map((f) => {
+    const dot = f.indexOf('.');
+    return dot < 0 ? attachmentLabel(db, f) : attachmentLabel(db, f.slice(0, dot), f.slice(dot + 1));
+  });
 }
 
 /** ضعفُ ما تشغله البيانات · القاعدة تُنسخ ثم تُضغط ثم يُفكّ بعضها، فالثلاثة هي الحدّ الآمن */

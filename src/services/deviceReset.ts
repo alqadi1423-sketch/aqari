@@ -11,7 +11,7 @@ import { joinPath } from '../files/fsAdapter';
 import { appDataRoot, expoFs } from '../files/expoFs';
 import { migrate } from '../db/migrations';
 import { seed, ensureDeviceId } from '../db/seed';
-import { clearBackupPassword } from './backupPassword';
+import { clearBackupSecretForReset } from './backupPassword';
 import { disableLock } from './appLockService';
 import { cancelAllNotifications } from './notifications';
 
@@ -30,6 +30,6 @@ export async function resetDeviceData(db: AppDB): Promise<void> {
   migrate(db);
   seed(db);
   ensureDeviceId(db);
-  try { await clearBackupPassword(); } catch { /* لا كلمة */ }
+  try { await clearBackupSecretForReset(); } catch { /* لا سرّ */ }
   try { await disableLock(); } catch { /* لا قفل */ }
 }

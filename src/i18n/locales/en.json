@@ -712,8 +712,41 @@
   "backup": {
     "cipherChunkSize": "The encryption component returned a chunk of unexpected size · the backup was not encrypted",
     "passwordLost": "A backup password was set on this device but cannot be read, so no backup is exported or uploaded unencrypted. Set the password again, or remove it if you want unencrypted backups.",
+    "keyRequired": "No backup leaves the device unencrypted · create the recovery key under “Backup” first, and keep it somewhere safe.",
     "passwordLostShort": "Unreadable",
-    "archiveTooLarge": "The archive's total size exceeds what the device can hold"
+    "archiveTooLarge": "The archive's total size exceeds what the device can hold",
+    "key": {
+      "invalid": "Invalid key · check how it was typed (five groups of five characters)",
+      "title": "Recovery key",
+      "state.key": "Saved on this device",
+      "state.password": "Old password · create the key",
+      "state.off": "Not created",
+      "create": "Create the recovery key",
+      "replace": "New key",
+      "replaceBody": "Upcoming backups are encrypted with the new key; earlier backups still open only with their old key, so keep it.",
+      "replaceConfirm": "Create",
+      "warn": "This key is shown once. Without it your backups can never be opened, not by us or anyone. Write it down or copy it somewhere safe outside the phone.",
+      "copy": "Copy the key",
+      "copied": "Key copied",
+      "confirmLabel": "Type the last five characters of the key",
+      "saved": "I saved it",
+      "savedToast": "Key saved · upcoming backups are encrypted with it",
+      "onDevice": "The key is saved on this device and is not shown again.",
+      "driveNote": "The backup is encrypted with the recovery key before upload, and a copy goes to the “Aqari · Backups” folder in Drive.",
+      "askLabel": "Recovery key or password",
+      "askNote": "This backup is encrypted · type the recovery key or the password it was encrypted with.",
+      "askOther": "This backup is encrypted with a key other than the one saved on this device · type its key.",
+      "askWrong": "Wrong key or password · try again."
+    },
+    "device": {
+      "title": "Backups on this device",
+      "gone": "The selected backup is no longer on this device · open the list again",
+      "kind": {
+        "pre-restore": "Safety backup before a restore",
+        "pre-wipe": "Safety backup before a wipe",
+        "pre-upgrade": "Backup before an app upgrade"
+      }
+    }
   },
   "wipe": {
     "deletingFiles": "Deleting files from the server · {{n}} of {{total}}",
@@ -850,5 +883,17 @@
     "screenshots": "Block screenshots",
     "on": "On",
     "off": "Off"
+  },
+  "drive": {
+    "findFolder": "finding the visible backups folder",
+    "makeFolder": "creating the visible backups folder",
+    "makeFolderFailed": "Could not create the visible backups folder"
+  },
+  "upgrade": {
+    "missingTitle": "Backup saved except for missing files",
+    "missingBody": "A full backup of your data was saved before the upgrade, except {{count}} attached file(s) that were not found on the phone or were damaged, so they are not in it:",
+    "missingMore": "and {{count}} more",
+    "missingNote": "The records themselves are saved, and a missing file stays missing after the upgrade just as before it. If you have it elsewhere, attach it again after the upgrade.",
+    "continue": "Continue the upgrade"
   }
 }

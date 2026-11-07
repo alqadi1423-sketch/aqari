@@ -14,7 +14,7 @@ import * as LegacyFS from 'expo-file-system/legacy';
 import { File } from 'expo-file-system';
 import { GoogleSignin, isSuccessResponse } from '@react-native-google-signin/google-signin';
 import type { AppDB } from '../db/expoAdapter';
-import { cloudConfig, filesCloudConfig, DRIVE_SCOPE } from '../cloud/config';
+import { cloudConfig, filesCloudConfig, DRIVE_SCOPE, DRIVE_FILE_SCOPE } from '../cloud/config';
 import { type StorageIO } from '../cloud/storage';
 import { pumpUploads, ensureLocal, fileState, cacheUsage, clearCache, reconcileOwnerFiles, type FilesRemote } from '../files/cloudFiles';
 import { liveBlobs } from '../files/store';
@@ -24,7 +24,7 @@ import { signInWithGoogleIdToken, refreshIdToken, deleteFirebaseAccount } from '
 import { createSession, type Session, type SessionUser, type AccountProof } from '../cloud/session';
 import { whilePrompting } from './appLockService';
 import { FirestoreRemote } from '../cloud/firestore';
-import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, deleteAllAppDataFiles, type DriveBackup, type DriveIO } from '../cloud/drive';
+import { listDriveBackups, uploadBackupToDrive, uploadVisibleCopy, downloadBackupFromDrive, deleteAllAppDataFiles, DriveError, type DriveBackup, type DriveIO } from '../cloud/drive';
 import { resetDeviceData } from './deviceReset';
 import { profileForAudit } from '../domain/access/profile';
 import { cancelAllNotifications } from './notifications';
@@ -42,7 +42,7 @@ import type { BackupEnv } from '../domain/backup/types';
 import { planKeepPosted, applyKeepPosted, type KeepPlan } from '../domain/backup/keepPosted';
 import { toLocalISODate } from '../domain/dates';
 import { appBackupEnv } from './backupService';
-import { backupPasswordForSealing } from './backupPassword';
+import { backupSecretForSealing } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
 import { SYNC_TABLES } from '../db/syncTables';
 import { memberTokens, fullReadTables } from '../sync/acl';
@@ -83,7 +83,7 @@ function getSession(): Session | null {
   const cfg = cloudConfig();
   if (!cfg) return null;
   if (session) return session;
-  GoogleSignin.configure({ webClientId: cfg.webClientId, scopes: [DRIVE_SCOPE], offlineAccess: false });
+  GoogleSignin.configure({ webClientId: cfg.webClientId, scopes: [DRIVE_SCOPE, DRIVE_FILE_SCOPE], offlineAccess: false });
   const authOpts = { apiKey: cfg.apiKey };
   session = createSession({
     google: {
@@ -1083,12 +1083,23 @@ export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?:
   // الملفات في الخادم: نسخة Drive للبيانات وقائمة الملفات وبصماتها، ومعها ما لم يُرفع بعد · فتصير صغيرة وسريعة
   const manifest = await createBackup(env, out, onProgress, { signal, dataOnly: filesCloudOn() });
   try {
-    // نسخة Drive تُشفَّر أيضاً إن وُضعت كلمة مرور النسخ · ووُضعت وتعذّرت قراءتها: لا رفع (ثالثاً أ ٩)
-    const pw = await backupPasswordForSealing();
-    if (pw) await sealBackupFile(env, out, pw, onProgress);
+    // نسخة Drive مشفّرة دائماً بمفتاح الاسترداد (التوجيه الرابع ٤ · ٣) · وبلا مفتاحٍ أو تعذّرت قراءته: لا رفع
+    const secret = await backupSecretForSealing();
+    await sealBackupFile(env, out, secret, onProgress);
     throwIfCancelled(signal);
     const token = await driveToken();
-    return await uploadBackupToDrive(driveIO, token, out, name, { encrypted: !!pw, notes: !!manifest.notes?.length, onProgress, signal });
+    const meta = { encrypted: true, notes: !!manifest.notes?.length, onProgress, signal };
+    const b = await uploadBackupToDrive(driveIO, token, out, name, meta);
+    // ونسخةٌ في المجلد الظاهر (التوجيه الرابع ٤ · ٣) · حسابٌ دخل قبل نطاقه يُسأل عنه مرةً ثم يُعاد الرفع
+    throwIfCancelled(signal);
+    try {
+      await uploadVisibleCopy(driveIO, token, out, name, meta);
+    } catch (e) {
+      if (!(e instanceof DriveError) || e.status !== 403) throw e;
+      await whilePrompting(() => GoogleSignin.addScopes({ scopes: [DRIVE_FILE_SCOPE] }));
+      await uploadVisibleCopy(driveIO, await driveToken(), out, name, meta);
+    }
+    return b;
   } finally {
     try { env.fs.remove(out); } catch { /* يكنسه الإقلاع */ }
   }

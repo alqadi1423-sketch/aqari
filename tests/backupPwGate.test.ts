@@ -42,7 +42,10 @@ test('التصدير والرفع إلى Drive يأخذان الكلمة من ا
   expect(read('src/services/backupPassword.ts')).toContain('flagged: () => { try { return flagFile().exists; } catch { return true; } }');
   for (const f of ['src/services/backupService.ts', 'src/services/cloud.ts']) {
     const s = read(f);
-    expect(s).toMatch(/backupPasswordForSealing\(\)/);
+    // التوجيه الرابع ٤ · ٣: البوابة نفسها بسرٍّ إجباري (backupSecretForSealing)، والختم بلا شرط فلا نسخة تخرج بلا تشفير
+    expect(s).toMatch(/backupSecretForSealing\(\)/);
+    expect(s).toMatch(/await sealBackupFile\(env, \w+, secret, onProgress\)/);
+    expect(s).not.toMatch(/if \(pw\) await sealBackupFile/);
     expect(s).not.toMatch(/getBackupPassword\(\)/);
   }
 });

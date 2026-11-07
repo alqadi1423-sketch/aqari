@@ -20,8 +20,13 @@ export function cloudConfig(): CloudConfig | null {
   return { apiKey, projectId, webClientId };
 }
 
-/** نطاق Drive الوحيد: مجلد التطبيق المخفي · لا وصول لأي ملف آخر في Drive المستخدم */
+/** نطاق Drive: مجلد التطبيق المخفي · لا وصول لأي ملف آخر في Drive المستخدم */
 export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+/**
+ * ومجلد النسخ الظاهر (التوجيه الرابع ٤ · ٣ · قرار المالك 2026-11-07 «نسخة في مجلد ظاهر على Drive»): drive.file يرى ما أنشأه التطبيق وحده،
+ * فلا يقرأ شيئاً آخر من ملفات المستخدم
+ */
+export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 /**
  * تخزين الملفات في Firebase Storage (النموذج المختلط · قرار المالك ٢٠٢٦-١٠-٠٧) · مطفأ حتى تُنشأ الحاوية

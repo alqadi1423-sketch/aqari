@@ -9,13 +9,14 @@ import { openExpoDb } from '../db/expoAdapter';
 import { expoFs, expoHasher, appDataRoot } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { createBackup, ensureFreeSpace, safetyBackupsDir } from '../domain/backup/create';
+import { deviceBackupPath, deviceBackups, type DeviceBackup } from '../domain/backup/deviceBackups';
 import { prepareRestore, commitRestore, abortRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
 import type { BackupEnv, BackupManifest } from '../domain/backup/types';
 import { setSetting } from '../repos/settings';
 import { toLocalISODate } from '../domain/dates';
 import { openNodeDbCompat } from './openTempDb';
 import { deviceCipher } from './cipher';
-import { backupPasswordForSealing } from './backupPassword';
+import { backupSecretForSealing } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
 import type { CancelSignal, ProgressFn } from '../domain/progress';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
@@ -57,9 +58,9 @@ export async function createAndShareBackup(
   const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
   const outPath = joinPath(env.tmpDir, name);
   const manifest = await createBackup(env, outPath, onProgress, { signal });
-  // بكلمة مرور النسخ إن وُضعت · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق · ووُضعت وتعذّرت قراءتها: لا تصدير (ثالثاً أ ٩)
-  const pw = await backupPasswordForSealing();
-  if (pw) await sealBackupFile(env, outPath, pw, onProgress);
+  // مشفّرة دائماً بمفتاح الاسترداد (التوجيه الرابع ٤ · ٣) · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق · وبلا مفتاحٍ أو تعذّرت قراءته: لا تصدير
+  const secret = await backupSecretForSealing();
+  await sealBackupFile(env, outPath, secret, onProgress);
   setSetting(db, 'lastBackupAt', new Date().toISOString());
   onProgress?.('جاري فتح نافذة المشاركة');
   // فشل المشاركة بعد نجاح النسخة لا يُحسب فشلاً للنسخة نفسها
@@ -77,24 +78,23 @@ export async function createAndShareBackup(
  * لا يمسّ البيانات الحية · يعيد الخطة والملخص أو null عند الإلغاء.
  */
 /**
- * نسخة الأمان الأحدث على الجهاز (قبل آخر مسح أو استعادة) · تُستعاد من «البيانات والمساحة» بالمسار المعتاد نفسه.
+ * نسخة من نسخ هذا الجهاز (قبل آخر مسح أو استعادة، أو قبل ترقية) · تُستعاد من «البيانات والمساحة» بالمسار المعتاد نفسه.
  * تُنسخ أولاً إلى المؤقت لأن الاستعادة تصنع نسخة أمان جديدة تحذف ما قبلها.
  */
 export async function prepareRestoreFromSafety(
   db: AppDB,
   onProgress?: ProgressFn,
-  opts?: PrepareOptions
+  opts?: PrepareOptions,
+  name?: string,
 ): Promise<{ env: BackupEnv; plan: RestorePlan; archiveTmp: string } | null> {
   const env = appBackupEnv(db);
-  const dir = safetyBackupsDir(env);
-  const names = (env.fs.exists(dir) ? env.fs.list(dir) : [])
-    .filter((n) => n.endsWith('.aqbk') && (n.startsWith('pre-wipe-') || n.startsWith('pre-restore-'))).sort();
-  const latest = names[names.length - 1];
-  if (!latest) return null;
+  // نسخة الأمان ونسخ ما قبل الترقية (القرارات المعلّقة البند ١٧) · المختارة باسمها من القائمة، وبلا اسمٍ الأحدث
+  const src = deviceBackupPath(env, name);
+  if (!src) return null;
   await ensureFreeSpace(env);
   env.fs.mkdirp(env.tmpDir);
   const archiveTmp = joinPath(env.tmpDir, 'restore-input.aqbk');
-  env.fs.write(archiveTmp, env.fs.read(joinPath(dir, latest)));
+  env.fs.write(archiveTmp, env.fs.read(src));
   const plan = await prepareRestore(env, archiveTmp, onProgress, opts);
   return { env, plan, archiveTmp };
 }
@@ -145,4 +145,15 @@ export async function commitPreparedRestore(
 export function abortPreparedRestore(env: BackupEnv, plan: RestorePlan, archiveTmp: string): void {
   abortRestore(env, plan.stagingDir);
   try { env.fs.remove(archiveTmp); } catch { /* يكنسه الإقلاع */ }
+}
+
+/** نسخ هذا الجهاز لزر «استعادة» في «البيانات والمساحة» · الأحدث أولاً (القرارات المعلّقة البند ١٧) */
+export function listDeviceBackups(db: AppDB): Array<DeviceBackup & { size: number }> {
+  const env = appBackupEnv(db);
+  const dir = safetyBackupsDir(env);
+  return deviceBackups(env).map((b) => {
+    let size = 0;
+    try { size = env.fs.size(joinPath(dir, b.name)); } catch { size = 0; }
+    return { ...b, size };
+  });
 }
