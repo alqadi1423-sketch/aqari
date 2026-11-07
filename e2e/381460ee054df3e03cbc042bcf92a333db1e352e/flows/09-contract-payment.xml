@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="120.441" timestamp="2026-11-07T15:52:23">
+    <testcase id="09-contract-payment" name="09-contract-payment" classname="09-contract-payment" file="e2e/maestro/09-contract-payment.yaml" time="120.408" timestamp="2026-11-07T15:52:23" status="ERROR">
+      <failure>Assertion is false: "E2E Tenant" is visible</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
