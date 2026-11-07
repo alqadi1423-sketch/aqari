@@ -6,7 +6,7 @@
 import { confirmContract, saveDepositSettlement } from '@/domain/contracts/service';
 import { saveClaim, collectClaim, deleteClaim } from '@/domain/claims';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
-import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, MEMBER, forge, net, srcAsMember } from './helpers/rederive';
+import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, MEMBER, forge, net, srcAsMember, holdBack } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
 
 async function setup() {
@@ -145,6 +145,46 @@ describe('إعادة اشتقاق قيدي المطالبة وتحصيلها م�
     expect(reasonOf(s.owner, k)).toBe('');
     expect(has(s.owner, k)).toBe(true);
     expect(s.owner.get(`SELECT SUM(debit_halalas) AS n FROM journal_lines WHERE entry_id = ?`, [k])).toEqual({ n: 30000 });
+    s.close();
+  });
+
+  test('إيجابي · تعديل المطالبة وصل عاكسه وقيده الجديد قبل صفّها المحدَّث: يُنتظر ثم يُقبل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const id = claim(s.dev, s.a);
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^claim$/);
+    await ownerPulls(s.owner, s.r);
+    claim(s.dev, s.a, 95000, id);
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^claim(_rev)?$/);
+    expect(ids.length).toBe(3);
+    const late = holdBack(s.r, (d) => d.t === 'claims' && d.k === id);
+    expect(late.count).toBe(1);
+    await ownerPulls(s.owner, s.r);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    for (const k of ids) {
+      expect(reasonOf(s.owner, k)).toBe('');
+      expect(has(s.owner, k)).toBe(true);
+    }
+    expect(net(s.owner, '1250')).toBe(95000);
+    s.close();
+  });
+
+  test('سلبي · بعد تعديل المطالبة (صفّها المحدَّث حاضر) قيدٌ جديد بضعف مبلغها: يُرفض ولا يدخل الدفتر', async () => {
+    const s = await setup();
+    const id = claim(s.dev, s.a);
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^claim$/);
+    await ownerPulls(s.owner, s.r);
+    claim(s.dev, s.a, 95000, id);
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^claim_rev$/);
+    const k = asMember(s.r, 'claim', doubled);
+    await ownerPulls(s.owner, s.r);
+    expect(has(s.owner, k)).toBe(false);
+    expect(reasonOf(s.owner, k)).toMatch(/claim/);
+    expect(net(s.owner, '1250')).toBe(0);
     s.close();
   });
 });

@@ -7,7 +7,7 @@
 import { savePurchase, payPurchase, deletePurchase, restorePurchase, type PurchaseInput } from '@/domain/purchases';
 import { ownerCashIn } from '@/domain/cashOps';
 import { addProperty, addUnit } from './helpers/fixtures';
-import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack } from './helpers/rederive';
+import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack, lastEntry } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
 
 const DEDUCTIBLE = 'فاتورة ضريبية · قابلة للخصم'; // i18n-exempt: حالة مخزّنة
@@ -194,6 +194,59 @@ describe('إعادة اشتقاق قيدي فاتورة الشراء وسداد�
       expect(has(s.owner, k)).toBe(true);
     }
     expect(net(s.owner, '1410')).toBe(2 * 300001);
+    s.close();
+  });
+
+  test('إيجابي · تعديل فاتورةٍ وصل عاكسه وقيده الجديد قبل صفّها المحدَّث يُنتظر ثم يُقبل، والذمة بقيمها الأخيرة (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const id = buy(s.dev, s.ua);
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^purchase$/);
+    await ownerPulls(s.owner, s.r);
+    buy(s.dev, s.ub, { subtotalHalalas: 200000, taxHalalas: 30000, totalHalalas: 230000 }, id);
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^purchase(_rev)?$/);
+    expect(ids.length).toBe(3);
+    const k = lastEntry(s.r, 'purchase').k;
+    // الصف المحدَّث في دفعةٍ لاحقة: المالك يرى الصف القديم بقيده القديم
+    const late = holdBack(s.r, (d) => d.t === 'purchases' && d.k === id);
+    expect(late.count).toBe(1);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(false);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    for (const x of ids) {
+      expect(reasonOf(s.owner, x)).toBe('');
+      expect(has(s.owner, x)).toBe(true);
+    }
+    expect(net(s.owner, '2100')).toBe(-230000);
+    s.close();
+  });
+
+  test('إيجابي · إعادة سداد فاتورةٍ مسدَّدة بتاريخٍ آخر وصل قيدها قبل صفّها المحدَّث يُنتظر ثم يُقبل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const id = buy(s.dev, s.ua);
+    payPurchase(s.dev, id, 'cash', null, '2026-10-20');
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^purchase(_pay)?$/);
+    await ownerPulls(s.owner, s.r);
+    payPurchase(s.dev, id, 'cash', null, '2026-10-22');
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^purchase_pay(_rev)?$/);
+    expect(ids.length).toBe(3);
+    const k = lastEntry(s.r, 'purchase_pay').k;
+    const late = holdBack(s.r, (d) => d.t === 'purchases' && d.k === id);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(false);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    for (const x of ids) {
+      expect(reasonOf(s.owner, x)).toBe('');
+      expect(has(s.owner, x)).toBe(true);
+    }
+    expect(net(s.owner, '2100')).toBe(0);
     s.close();
   });
 });

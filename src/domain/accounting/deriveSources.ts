@@ -100,7 +100,16 @@ interface Want { account: string; debit: number; credit: number; dims: DimSpec[]
  * السطور المشتقة وتاريخها · alts: أشكالٌ أخرى يرحّلها التطبيق من المستند نفسه (يكفي أن يطابق أحدها) · date: null لمستندٍ لا يخزّن
  * تاريخ قيده · also: تواريخ أخرى مقبولة (نسخة الاستعادة من السلة بتاريخ عكس قيدها السابق: repostDate)
  */
-interface Derived { lines: Want[]; alts?: Want[][]; date: string | null; also?: string[]; correctable: boolean }
+interface Derived {
+  lines: Want[]; alts?: Want[][]; date: string | null; also?: string[]; correctable: boolean;
+  /**
+   * صفٌّ لا يسمّي قيده وقد يكون أقدم من القيد (المتحقق المستقل): التعديل، أو الإلغاء ثم الترحيل الجديد، يعكس القيد السابق ويكتب الصف
+   * من جديد، والقيود قبل مستنداتها في ترتيب الرفع والعضو يرفع على دفعات، فقد يصل القيد قبل صفّه المحدَّث · فإن طابق ما يشتقه الصف
+   * قيداً سابقاً من مصدره عُكس هنا (سطوراً وتاريخاً)، فالصف هو الذي رُحِّل منه ذلك القيد، وما خالفه يُنتظر ولا يُرفض (والمزوَّر يُرفض
+   * لطول انتظاره ولا يدخل الدفتر) · وإلا فالصف محدَّثٌ بعده وما خالفه يُرفض
+   */
+  stale?: boolean;
+}
 
 const str = (v: unknown) => (v == null || v === '' ? null : String(v));
 const num = (v: unknown) => Number(v) || 0;
@@ -136,6 +145,18 @@ const want = (lines: EntryLine[] | null, dims: (l: EntryLine, i: number) => DimS
   lines ? lines.map((l, i) => ({ account: l.account, debit: l.debit || 0, credit: l.credit || 0, dims: dims(l, i) })) : null;
 
 const no = (key: string, opts: Record<string, unknown> = {}) => t('deriveSrc.' + key, { ...opts, lng: 'ar' });
+
+/**
+ * المستند يسمّي قيداً غير هذا (journal_entry_id أو payment_journal_entry_id) · '' إن سمّاه أو لم يسمِّ شيئاً · 'await' إن كان المسمّى
+ * قائماً هنا من مصدره (ولا قيد حيّاً قبل هذا، فقد عُكس): الصف قديم، وصفّه المحدَّث الذي يسمّي هذا القيد لم يصل بعد (المتحقق المستقل:
+ * تعديل فاتورة الشراء، وإعادة سدادها أو تحصيل فاتورة المبيعات بتاريخٍ آخر، كان قيدها الجديد يُرفض رفضاً نهائياً) · وإلا فالمستند
+ * لا يرحّل قيداً بهذا المصدر
+ */
+function namedOther(r: SourceReader, src: string, srcId: string, named: string | null, id: string): string {
+  if (!named || named === id) return '';
+  const x = r.entry(named);
+  return x?.here && x.src_type === src && x.src_id === srcId ? AWAIT : no('noEntry');
+}
 
 /** المصدر الحيّ الذي لم يُعكس: قيوده المرحّلة هنا ناقصاً عواكسها · بمجموع مبالغها أو عددها */
 function live(r: SourceReader, src: string, srcId: string, exceptId: string, by: (e: SrcEntry) => number): number {
@@ -350,8 +371,9 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const dims = cl.contract_id ? contractDims(db, r, cl.contract_id) : unitDims(db, r, null);
       if (!dims) return AWAIT;
       if (e.src === 'claim') {
+        // تعديل المطالبة يعكس قيدها ويرحّل الجديد بقيمها الجديدة: صفّها قد يكون قديماً
         const lines = want(claimLines(num(cl.amount_halalas)), () => [dims]);
-        return lines ? { lines, date: cl.date ?? '', correctable: true } : no('noEntry');
+        return lines ? { lines, date: cl.date ?? '', correctable: true, stale: true } : no('noEntry');
       }
       // تحصيلٌ لم يصل وسمه بعد يُنتظر
       if (!cl.collected_at) return AWAIT;
@@ -418,17 +440,18 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (p.tax_status !== TS_DEDUCTIBLE) return no('noEntry');
       const status = String(p.refund_status ?? '');
       const tax = num(p.tax_halalas);
+      // وإلغاء الاسترداد ثم الرفض أو الاسترداد ثانيةً: حالة الصف قد تكون قديمة (stale)
       const REFUNDED = 'مسترَد'; // i18n-exempt: حالة الاسترداد المخزّنة
       const REJECTED = 'مرفوض'; // i18n-exempt: حالة الاسترداد المخزّنة
       if (status.startsWith(REFUNDED)) {
         if (!p.refund_date) return AWAIT;
         const lines = tax > 0 ? want(vatRefundLines(p.no ?? '', tax), () => [NONE]) : null;
-        return lines ? { lines, date: p.refund_date, correctable: false } : no('noEntry');
+        return lines ? { lines, date: p.refund_date, correctable: false, stale: true } : no('noEntry');
       }
       // ولا يُخزَّن تاريخ الرفض فلا يُطابق تاريخه (وفترته المقدَّمة يفحصها memberSourceCheck)
       if (status === REJECTED) {
         const lines = tax > 0 ? want(vatRejectLines(p.category, p.no ?? '', tax), () => [NONE]) : null;
-        return lines ? { lines, date: null, correctable: false } : no('noEntry');
+        return lines ? { lines, date: null, correctable: false, stale: true } : no('noEntry');
       }
       // مآلٌ لم يصل وسمه بعد يُنتظر
       return AWAIT;
@@ -448,13 +471,15 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const tax = num(p.tax_halalas);
       const total = num(p.total_halalas);
       if (e.src === 'purchase_pay') {
-        if (p.payment_journal_entry_id && p.payment_journal_entry_id !== e.id) return no('noEntry');
+        const other = namedOther(r, e.src, e.srcId, p.payment_journal_entry_id, e.id);
+        if (other) return other;
         // سدادٌ لم يصل وسمه بعد يُنتظر
         if (!num(p.paid) || !p.paid_date) return AWAIT;
         const lines = want(purchasePaymentLines(total), () => [dims]);
         return lines ? { lines, date: p.paid_date, also, correctable: false } : no('noEntry');
       }
-      if (p.journal_entry_id && p.journal_entry_id !== e.id) return no('noEntry');
+      const other = namedOther(r, e.src, e.srcId, p.journal_entry_id, e.id);
+      if (other) return other;
       const deductible = p.tax_status === TS_DEDUCTIBLE;
       const forms = purchaseAssetForms(db, r, e.srcId, subtotal, tax, deductible, dims, nonZero(e.lines).some((l) => isAssetCategory(String(l.account_code))));
       if (forms === AWAIT) return AWAIT;
@@ -596,11 +621,15 @@ export function memberSourceIssue(db: DB, r: SourceReader,
   if (r.pending(src, srcId).some((id) => id !== e.id)) return AWAIT;
   const d = derive(db, r, { id: e.id, src, srcId, no: e.no ?? null, total: nonZero(e.lines).reduce((s, l) => s + num(l.credit_halalas), 0), lines: e.lines });
   if (typeof d === 'string') return d;
+  const forms = [d.lines, ...(d.alts ?? [])];
+  const stale = () => !!d.stale && r.entries(src, srcId).some((x) => x.id !== e.id
+    && forms.some((w) => matchIssue(x.lines, w) === '') && (d.date === null || String(x.date ?? '').slice(0, 10) === d.date.slice(0, 10)));
   const dateWhy = dateIssue(db, e.date, d);
-  if (dateWhy) return dateWhy;
+  if (dateWhy) return stale() ? AWAIT : dateWhy;
   // يكفي أن يطابق شكلاً واحداً مما يرحّله التطبيق من المستند · وإلا فسبب شكلٍ طابقت حساباته ومبالغه وخالف بُعده، ثم سبب الأول
-  const whys = [d.lines, ...(d.alts ?? [])].map((w) => matchIssue(e.lines, w));
+  const whys = forms.map((w) => matchIssue(e.lines, w));
   if (whys.includes('')) return '';
+  if (stale()) return AWAIT;
   const dims = dimsPrefix();
   return whys.find((w) => w.startsWith(dims)) ?? whys[0];
 }

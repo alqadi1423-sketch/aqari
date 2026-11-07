@@ -6,7 +6,7 @@
 import { savePurchase, markVatRefunded, markVatRejected, type PurchaseInput } from '@/domain/purchases';
 import { entrySourceAction } from '@/domain/accounting/sourceCancel';
 import { addProperty, addUnit } from './helpers/fixtures';
-import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, forge, lastEntry } from './helpers/rederive';
+import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, forge, lastEntry, holdBack } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
 
 const DEDUCTIBLE = 'فاتورة ضريبية · قابلة للخصم'; // i18n-exempt: حالة مخزّنة
@@ -111,6 +111,57 @@ describe('إعادة اشتقاق قيد استرداد ضريبة المدخل�
     }
     expect(net(s.owner, '1270')).toBe(0);
     expect(net(s.owner, '5300')).toBe(2 * 115000);
+    s.close();
+  });
+
+  test('إيجابي · إلغاء الاسترداد ثم الرفض، ووصل قيداهما قبل صفّ الفاتورة المحدَّث: يُنتظر ثم يُقبل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const { a } = await bought(s);
+    markVatRefunded(s.dev, a, '2026-10-20');
+    await sync(s.dev, s.r);
+    const k0 = asMember(s.r, 'vat_refund');
+    await ownerPulls(s.owner, s.r);
+    expect(has(s.owner, k0)).toBe(true);
+    const op = entrySourceAction(s.dev, k0);
+    if (op?.kind !== 'op') throw new Error('op'); // i18n-exempt: رسالة اختبار
+    op.run('2026-10-26', 'إلغاء مصطنع');
+    markVatRejected(s.dev, a, '2026-10-27');
+    await sync(s.dev, s.r);
+    const all = srcAsMember(s.r, /^vat_refund(_rev)?$/);
+    const k = lastEntry(s.r, 'vat_refund').k;
+    // صف الفاتورة المحدَّث في دفعةٍ لاحقة: المالك يراها «مسترَدة» بتاريخ استردادها القديم
+    const late = holdBack(s.r, (d) => d.t === 'purchases' && d.k === a);
+    expect(late.count).toBe(1);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(false);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    for (const id of all) {
+      expect(reasonOf(s.owner, id)).toBe('');
+      expect(has(s.owner, id)).toBe(true);
+    }
+    expect(net(s.owner, '1270')).toBe(15000);
+    s.close();
+  });
+
+  test('سلبي · الرفض بضعف الضريبة بعد إلغاء الاسترداد (صفّ الفاتورة المحدَّث حاضر): يُرفض ولا يدخل الدفتر', async () => {
+    const s = await setup();
+    const { a } = await bought(s);
+    markVatRefunded(s.dev, a, '2026-10-20');
+    await sync(s.dev, s.r);
+    const k0 = asMember(s.r, 'vat_refund');
+    await ownerPulls(s.owner, s.r);
+    const op = entrySourceAction(s.dev, k0);
+    if (op?.kind !== 'op') throw new Error('op'); // i18n-exempt: رسالة اختبار
+    op.run('2026-10-26', 'إلغاء مصطنع');
+    markVatRejected(s.dev, a, '2026-10-27');
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^vat_refund_rev$/);
+    const k = asMember(s.r, 'vat_refund', doubled);
+    await ownerPulls(s.owner, s.r);
+    expect(has(s.owner, k)).toBe(false);
+    expect(reasonOf(s.owner, k)).toMatch(/vat_refund/);
     s.close();
   });
 });
