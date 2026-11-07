@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="0" time="22.01" timestamp="2026-11-07T23:50:06">
+    <testcase id="05a-secure" name="05a-secure" classname="05a-secure" file="e2e/maestro/05a-secure.yaml" time="21.998" timestamp="2026-11-07T23:50:06" status="SUCCESS"/>
+  </testsuite>
+</testsuites>
