@@ -432,6 +432,51 @@ function assetSpecs(db: DB, r: SourceReader, a: AssetDoc, date: string, units = 
   });
 }
 
+/**
+ * موضع تكلفة الأصل في الدفتر هنا (المتحقق المستقل: كانت أبعاد قيوده من صفّه وأحداثه، والعضو يكتبهما، فاستبعادٌ أو نقلٌ من وحدةٍ لم
+ * تكن تكلفته فيها يُنشئ فيها رصيداً سالباً، ولو في عقارٍ آخر): صافي حساب فئته لكل وحدة من القيود هنا غير المفحوص، بلا الاستبعاد والبيع
+ * (آخر ما يُرحَّل للأصل)، وبالنقل الذي يعدّه keep سابقاً للمفحوص · at: الوحدات بصافٍ موجب · seen: كل وحدةٍ كانت فيها تكلفته هنا ·
+ * pending: قيدٌ في الوارد يمسّ حساب فئته (نقلٌ أو تكلفةٌ لم تُطبَّق بعد)
+ */
+interface Place { net: Map<string | null, number>; at: Array<string | null>; seen: Set<string | null>; pending: boolean }
+function placeOf(r: SourceReader, a: AssetDoc, exceptId: string, keep: (x: SrcEntry) => boolean = () => true): Place {
+  const net = new Map<string | null, number>();
+  const seen = new Set<string | null>();
+  let pending = false;
+  for (const x of r.assetEntries(a.id)) {
+    if (x.id === exceptId) continue;
+    const ls = nonZero(x.lines).filter((l) => str(l.asset_id) === a.id && String(l.account_code ?? '') === a.category);
+    if (!ls.length) continue;
+    const base = String(x.src_type ?? '').replace(/_rev$/, '');
+    // والاستبعاد والبيع في الوارد لا يغيّران موضعها قبلهما
+    if (!x.here) { pending ||= base !== 'asset_dispose' && base !== 'asset_sell'; continue; }
+    for (const l of ls) seen.add(str(l.unit_id));
+    if (base === 'asset_dispose' || base === 'asset_sell' || (base === 'asset_transfer' && !keep(x))) continue;
+    for (const l of ls) net.set(str(l.unit_id), (net.get(str(l.unit_id)) ?? 0) + num(l.debit_halalas) - num(l.credit_halalas));
+  }
+  return { net, at: [...net].filter(([, v]) => v > 0).map(([u]) => u), seen, pending };
+}
+/** وحدةٌ تكلفة الأصل فيها كلها في الموضع */
+const holding = (p: Place, cost: number) => [...p.net].filter(([, v]) => cost > 0 && v === cost).map(([u]) => u);
+/** حدث نقلٍ للأصل لم يُطبَّق قيده هنا بعد (إلى unit إن سُمّيت) · فقيدٌ بعده ينتظره */
+const transferOut = (r: SourceReader, a: AssetDoc, exceptId: string, unit?: string | null) => r.rows<AssetEvent>('asset_events', 'asset_id', a.id)
+  .some((v) => v.kind === 'transfer' && !!v.entry_id && v.entry_id !== exceptId && (unit === undefined || (v.to_unit_id ?? null) === unit)
+    && !r.entry(v.entry_id)?.here);
+
+/**
+ * وحدات قيد إهلاكٍ للأصل من موضع تكلفته: الشهري لشهرٍ بعد النقل الذي في شهره أو قبله (runDepreciation قبل عمليةٍ بتاريخٍ بعد شهره)،
+ * وإهلاك ما قبل العملية بالوحدة التي نُقل منها في يومها (depreciateAssetTo قبل النقل)، وكلاهما أو بموضعه الآن (نقلٌ بتاريخٍ مقبل
+ * يسبق إهلاك شهرٍ قبله) · ولا وحدة لم تكن تكلفته فيها هنا
+ */
+function depUnits(r: SourceReader, a: AssetDoc, exceptId: string, w: When): { units: Array<string | null>; pending: boolean } {
+  const now = placeOf(r, a, exceptId);
+  const then = w.kind === 'month'
+    ? placeOf(r, a, exceptId, (x) => monthIndex(String(x.date ?? '')) <= w.m).at
+    : r.rows<AssetEvent>('asset_events', 'asset_id', a.id).filter((v) => v.kind === 'transfer' && String(v.date ?? '').slice(0, 10) === w.d)
+      .map((v) => v.from_unit_id ?? null).filter((u) => now.seen.has(u));
+  return { units: [...new Set([...then, ...now.at])], pending: now.pending };
+}
+
 /** سطرا الإهلاك (مدين المصروف ودائن المجمع) بمبلغه · لا سطر لصفر */
 const depPair = (amt: number, dims: DimSpec[]): Want[] => (amt > 0 ? [
   { account: ACC_DEPRECIATION, debit: amt, credit: 0, dims }, { account: ACC_ACCUM, debit: 0, credit: amt, dims },
@@ -448,14 +493,15 @@ function depOf(db: DB, r: SourceReader, assetId: string, exceptId: string, w: Wh
   const led = ledgerOf(r, assetId, a.category, exceptId, w);
   const why = basisIssue(r, a, led);
   if (why) return why;
-  return { a, amt: expectedThrough(depreciable(a), through) - led.accum, specs: assetSpecs(db, r, a, through), pending: led.pending };
+  const at = depUnits(r, a, exceptId, w);
+  return { a, amt: expectedThrough(depreciable(a), through) - led.accum, specs: assetSpecs(db, r, a, through, at.units), pending: led.pending || at.pending };
 }
 
 /**
  * إهلاك ما فات للأصل بتاريخ إثبات تكلفته (catchUpLines): مبالغه من catchUpAmounts بعد ما رُحِّل له قبله · السنة الجارية على مصروف
  * الإهلاك وما قبلها على الأرباح المحتجزة، ودائن المجمع بمجموعهما · pending: قيدٌ سابقٌ في الوارد، أو مجمعٌ في القيد دون المستحق
  */
-function catchUpOf(db: DB, r: SourceReader, a: AssetDoc, exceptId: string, today: string, lines: SrcLine[], costHere = false):
+function catchUpOf(db: DB, r: SourceReader, a: AssetDoc, exceptId: string, today: string, lines: SrcLine[], units: Array<string | null>, costHere = false):
   { lines: Want[]; pending: boolean } | string {
   const led = ledgerOf(r, a.id, a.category, exceptId, { kind: 'catchup', d: today });
   // وتكلفةٌ يثبتها القيد نفسه (asset_cost) أساسها فيه
@@ -463,7 +509,7 @@ function catchUpOf(db: DB, r: SourceReader, a: AssetDoc, exceptId: string, today
   if (why) return why;
   const c = catchUpAmounts(depreciable(a), today, led.accum);
   if (c.total <= 0) return { lines: [], pending: led.pending };
-  const dims = assetSpecs(db, r, a, today);
+  const dims = assetSpecs(db, r, a, today, units);
   const got = accumIn(lines, a.id);
   return {
     lines: [
@@ -554,9 +600,10 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (ended) return ended;
       const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'catchup', d: today });
       if (led.cost) return led.pending ? AWAIT : no('assetCost');
-      const cu = catchUpOf(db, r, a, e.id, today, e.lines, true);
+      // والتكلفة تُثبت بوحدة صفّه: لا موضع لها في الدفتر قبل هذا القيد
+      const cu = catchUpOf(db, r, a, e.id, today, e.lines, [a.unit_id ?? null], true);
       if (typeof cu === 'string') return cu;
-      const dims = assetSpecs(db, r, a, today);
+      const dims = assetSpecs(db, r, a, today, [a.unit_id ?? null]);
       const cost = num(a.cost_halalas);
       return {
         lines: [{ account: a.category, debit: cost, credit: 0, dims }, { account: ACC_CAPITAL, debit: 0, credit: cost, dims }, ...cu.lines],
@@ -574,7 +621,25 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!a) return AWAIT;
       const d = String(ev.date ?? '').slice(0, 10);
       const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'op', d });
-      const from = assetSpecs(db, r, a, d, [ev.from_unit_id ?? null]);
+      // ينقل من وحدةٍ تكلفته فيها كلها هنا، لا من وحدةٍ يسمّيها حدثه وحده · وإلا فنقلٌ إليها لم يُطبَّق بعد يُنتظر
+      const fromU = ev.from_unit_id ?? null;
+      const place = placeOf(r, a, e.id);
+      if (!holding(place, led.cost).includes(fromU)) {
+        return place.pending || led.pending || transferOut(r, a, e.id, fromU) ? AWAIT : no('assetPlace');
+      }
+      // والأصل المنتهي: قيد انتهائه آخر ما يُرحَّل له، فموضعه بعد كل نقلٍ موضع قيد انتهائه (نقلٌ بعد الاستبعاد يُرفض)
+      const end = ENDED.includes(a.status as never) && a.end_entry_id ? r.entry(a.end_entry_id) : null;
+      if (end) {
+        const after = new Map(place.net);
+        for (const l of nonZero(e.lines).filter((x) => str(x.asset_id) === a.id && String(x.account_code ?? '') === a.category)) {
+          after.set(str(l.unit_id), (after.get(str(l.unit_id)) ?? 0) + num(l.debit_halalas) - num(l.credit_halalas));
+        }
+        const last = [...new Set(nonZero(end.lines).filter((x) => str(x.asset_id) === a.id && String(x.account_code ?? '') === a.category)
+          .map((x) => str(x.unit_id)))];
+        const at = [...after].filter(([, v]) => v > 0).map(([u]) => u);
+        if (at.length !== 1 || last.length !== 1 || at[0] !== last[0]) return place.pending || transferOut(r, a, e.id) ? AWAIT : no('assetPlace');
+      }
+      const from = assetSpecs(db, r, a, d, [fromU]);
       const to = assetSpecs(db, r, a, d, [ev.to_unit_id ?? null]);
       // ومجمعٌ أو تكلفةٌ في القيد فوق ما رُحِّل هنا في حدود الأصل: قيدٌ قبله لم يصل بعد فيُنتظر
       const short = opShort(a, d, led, { cost: sideOf(e.lines, a.id, a.category, 'debit_halalas'), accum: sideOf(e.lines, a.id, ACC_ACCUM, 'credit_halalas') });
@@ -605,14 +670,17 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (a.status !== status || a.end_entry_id !== e.id || !a.end_date) return no('noEntry');
       const d = String(a.end_date).slice(0, 10);
       const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'end', d });
-      const dims = assetSpecs(db, r, a, d, [a.unit_id ?? null]);
+      // بوحدةٍ تكلفته فيها كلها هنا بعد كل نقل (لا بوحدة صفّه وحدها) · ونقلٌ لم يُطبَّق بعد يُنتظر
+      const place = placeOf(r, a, e.id);
+      const dims = assetSpecs(db, r, a, d, holding(place, led.cost));
+      const moving = place.pending || transferOut(r, a, e.id);
       const nbv = led.cost - led.accum;
       const short = opShort(a, d, led, { cost: sideOf(e.lines, a.id, a.category, 'credit_halalas'), accum: sideOf(e.lines, a.id, ACC_ACCUM, 'debit_halalas') });
       const close: Want[] = [
         { account: ACC_ACCUM, debit: led.accum, credit: 0, dims }, { account: a.category, debit: 0, credit: led.cost, dims },
       ];
       if (e.src === 'asset_dispose') {
-        return { lines: [...close, { account: ACC_DISPOSAL_LOSS, debit: nbv, credit: 0, dims }], date: d, correctable: false, pending: led.pending || short };
+        return { lines: [...close, { account: ACC_DISPOSAL_LOSS, debit: nbv, credit: 0, dims }], date: d, correctable: false, pending: led.pending || short || moving };
       }
       const amount = num(a.sale_halalas);
       if (amount < 0) return no('noEntry');
@@ -625,7 +693,7 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
           ...close, { account: ACC_CASH, debit: amount, credit: 0, dims },
           { account: ACC_DISPOSAL_LOSS, debit: diff < 0 ? -diff : 0, credit: 0, dims }, { account: ACC_SALE_GAIN, debit: 0, credit: diff > 0 ? diff : 0, dims },
         ],
-        date: d, correctable: false, pending: led.pending || short,
+        date: d, correctable: false, pending: led.pending || short || moving,
       };
     }
     case 'asset_convert': {
@@ -676,10 +744,12 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const lines: Want[] = [];
       let pending = false;
       for (const a of assets) {
-        const cu = catchUpOf(db, r, a, e.id, today, e.lines);
+        // بوحدةٍ كانت فيها تكلفته هنا (قيد الفاتورة أو التحويل)
+        const place = placeOf(r, a, e.id);
+        const cu = catchUpOf(db, r, a, e.id, today, e.lines, [...place.seen]);
         if (typeof cu === 'string') return cu;
         lines.push(...cu.lines);
-        pending ||= cu.pending;
+        pending ||= cu.pending || place.pending;
       }
       return { lines, date: null, correctable: false, pending };
     }

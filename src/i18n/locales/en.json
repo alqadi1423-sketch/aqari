@@ -805,7 +805,8 @@
     "assetSale": "The bank transaction under the asset sale's entry number does not match its sale amount",
     "convertSum": "What was converted to assets exceeds what the invoice expensed",
     "assetBasis": "A member cannot change an asset's depreciation basis (cost, life, salvage, purchase date and category) after its cost is posted",
-    "future": "A month that has not ended yet on the owner's device: its depreciation is not posted before it ends"
+    "future": "A month that has not ended yet on the owner's device: its depreciation is not posted before it ends",
+    "assetPlace": "The asset's unit in the entry is not the unit where its cost sits in the ledger"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",

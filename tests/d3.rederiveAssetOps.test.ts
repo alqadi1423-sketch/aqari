@@ -157,6 +157,44 @@ const transferOn = (r: MemoryRemote, a: string, date: string) => [...r.docs.valu
 const ALL = /^(depreciation|asset_dep|asset_transfer|asset_dispose|asset_sell)$/;
 
 describe('إعادة اشتقاق قيود نقل الأصل واستبعاده (تتمة · المتحقق المستقل)', () => {
+  test('سلبي · نقلٌ ثانٍ مزوَّرٌ حدثه وسطوره من وحدةٍ في عقارٍ آخر لم تكن تكلفته فيها: يُرفض ولا يُنشئ رصيداً سالباً', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    transferAsset(s.dev, a, { unitId: s.ub, date: '2026-04-16', today: '2026-04-20' });
+    await sync(s.dev, s.r);
+    transferAsset(s.dev, a, { unitId: s.ua, date: '2026-05-10', today: '2026-05-12' });
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, DEP);
+    const first = transferOn(s.r, a, '2026-04-16');
+    s.r.inject({ ...first, by: MEMBER });
+    const second = transferOn(s.r, a, '2026-05-10');
+    s.r.inject({ ...second, by: MEMBER, lines: second.lines!.map((l) => (l.unit_id === s.ub ? { ...l, unit_id: s.uc, property_id: s.pb, contract_id: null } : l)) });
+    const ev = [...s.r.docs.values()].find((d) => d.t === 'asset_events' && d.d?.entry_id === second.k)!;
+    s.r.inject({ ...ev, by: MEMBER, op: 'assets', d: { ...ev.d, from_unit_id: s.uc } } as RemoteDoc);
+    await pulls(s.owner, s.r);
+    expect(has(s.owner, first.k)).toBe(true);
+    expect(has(s.owner, second.k)).toBe(false);
+    expect(reasonOf(s.owner, second.k)).toMatch(/بُعد|وحدة/);
+    expect(net(s.owner, '1410', 'l.unit_id = ?', [s.uc])).toBe(0);
+    expect(net(s.owner, '1410', 'l.unit_id = ?', [s.ub])).toBe(84000);
+    s.close();
+  });
+
+  test('سلبي · وحدة الأصل تُغيَّر في صفّه بلا نقل ثم يُستبعد فيها: الاستبعاد وإهلاكه يُرفضان', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    s.dev.run(`UPDATE assets SET unit_id = ?, property_id = ? WHERE id = ?`, [s.uc, s.pb, a]);
+    disposeAsset(s.dev, a, { date: '2026-04-16', reason: 'تلف مصطنع', today: '2026-04-20' });
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, ALL);
+    expect(ids.length).toBe(4);
+    await pulls(s.owner, s.r);
+    expect(ids.filter((k) => has(s.owner, k))).toEqual([]);
+    expect(net(s.owner, '1410', 'l.unit_id = ?', [s.uc])).toBe(0);
+    expect(net(s.owner, '1410', 'l.unit_id = ?', [s.ua])).toBe(84000);
+    s.close();
+  });
+
   test('إيجابي · نقلٌ ثانٍ بتاريخٍ قبل الأول (التاريخ حقلٌ حر بعد آخر شهرٍ رُحِّل): يُقبل كما كتبه التطبيق', async () => {
     const s = await setup();
     const a = await costed(s);
@@ -211,5 +249,4 @@ describe('إعادة اشتقاق قيود نقل الأصل واستبعاده 
     expect(net(s.owner, '1490')).toBe(0);
     s.close();
   });
-
 });

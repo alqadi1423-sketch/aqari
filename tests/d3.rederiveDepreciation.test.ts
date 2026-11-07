@@ -48,6 +48,13 @@ const rowAsMember = (r: MemoryRemote, a: string) => {
   const d = r.docs.get('assets__' + a)!;
   r.inject({ ...d, by: MEMBER, op: 'assets' } as RemoteDoc);
 };
+/** قيدٌ بمصدره ومعرّف مصدره في الحساب */
+const entryOf = (r: MemoryRemote, src: string, srcId: string, date?: string) => [...r.docs.values()].find((d) => d.t === 'journal_entries'
+  && d.d?.src_type === src && d.d?.src_id === srcId && (!date || d.d?.date === date))!;
+/** سطورٌ بوحدةٍ وعقارٍ آخرين */
+const atUnit = (unit: string, prop: string) => (d: RemoteDoc): RemoteDoc => ({
+  ...d, by: MEMBER, lines: d.lines!.map((l) => ({ ...l, unit_id: unit, property_id: prop, contract_id: null })),
+});
 const accum = (db: DB) => -net(db, '1490') || 0;
 
 describe('إعادة اشتقاق قيدي الإهلاك من جدول الأصل', () => {
@@ -220,4 +227,41 @@ describe('إعادة اشتقاق الإهلاك (تتمة · المتحقق ا�
     void a;
   });
 
+  test('سلبي · إهلاك أبريل الشهري، أو إهلاك ما قبل الاستبعاد، بوحدته القديمة بعد نقله منها: يُرفض', async () => {
+    // كلٌّ منهما وحده (ما بعد المرفوض ينتظره فلا يدخل الدفتر)
+    for (const pick of [(r: MemoryRemote) => entryOf(r, 'depreciation', '2026-04'), (r: MemoryRemote, a: string) => entryOf(r, 'asset_dep', a, '2026-05-10')]) {
+      const s = await setup();
+      const a = await costed(s);
+      moveApril(s, a);
+      await sync(s.dev, s.r);
+      runDepreciation(s.dev, '2026-05-02');
+      disposeAsset(s.dev, a, { date: '2026-05-10', reason: 'تلف مصطنع', today: '2026-05-12' });
+      await sync(s.dev, s.r);
+      srcAsMember(s.r, /^(depreciation|asset_dep|asset_transfer)$/);
+      const bad = pick(s.r, a);
+      s.r.inject(atUnit(s.ua, s.pa)(bad));
+      await pulls(s.owner, s.r);
+      expect(has(s.owner, bad.k)).toBe(false);
+      expect(reasonOf(s.owner, bad.k)).toMatch(/بُعد/);
+      expect(net(s.owner, '5600', 'l.unit_id = ? AND e.date > ?', [s.ua, '2026-04-16'])).toBe(0);
+      s.close();
+    }
+  });
+
+  test('سلبي · وحدة الأصل تُغيَّر في صفّه بلا نقل ثم يُهلك فيها: إهلاكه بوحدةٍ لم تكن تكلفته فيها يُرفض', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    s.dev.run(`UPDATE assets SET unit_id = ?, property_id = ? WHERE id = ?`, [s.uc, s.pb, a]);
+    runDepreciation(s.dev, '2026-04-02');
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^depreciation$/);
+    expect(ids.length).toBe(2);
+    await pulls(s.owner, s.r);
+    // فبراير يُرفض ببُعده، ومارس بعده ينتظره فلا يدخل الدفتر
+    const feb = ids.find((k) => s.r.docs.get('journal_entries__' + k)!.d!.src_id === '2026-02')!;
+    expect(reasonOf(s.owner, feb)).toMatch(/بُعد/);
+    expect(ids.filter((k) => has(s.owner, k))).toEqual([]);
+    expect(net(s.owner, '5600', 'l.unit_id = ?', [s.uc])).toBe(0);
+    s.close();
+  });
 });
