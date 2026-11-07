@@ -53,6 +53,7 @@ const BALANCE_OPTIONS = [{ value: '', label: 'كل الأرصدة' },
 export default function Banks() {
   const { db, version, bump } = useApp();
   const perm = usePerm('banks');
+  const bankAccess = useAccess();
   const toast = useToast();
   const dialog = useDialog();
   const fsheet = useFilterSheet();
@@ -237,8 +238,9 @@ export default function Banks() {
         <Field label="اسم الحساب" value={name} onChange={setName} />
         <Field label="رقم الآيبان" value={iban} onChange={setIban} ltr />
         <Row>
-          <View style={{ flex: 1 }}><Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr /></View>
-          <View style={{ flex: 1 }}><DateField label="تاريخ الافتتاح" value={openingDate} onChange={setOpeningDate} /></View>
+          {/* الرصيد الافتتاحي يضعه المالك وحده (القاعدة ٩٩ · المدقق الخارجي I١): جهاز المالك يرفض تعديل العضو له */}
+          <View style={{ flex: 1 }}><Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr disabled={!bankAccess.owner} /></View>
+          {bankAccess.owner ? <View style={{ flex: 1 }}><DateField label="تاريخ الافتتاح" value={openingDate} onChange={setOpeningDate} /></View> : null}
         </Row>
       </Sheet>
 

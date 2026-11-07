@@ -1,0 +1,36 @@
+/**
+ * مدقق خارجي (I) · الجولة الخامسة · عُدّة مشتركة لاختبارات auditI · بيانات مصطنعة.
+ */
+import { bankBalance, walletCashBalance } from '@/domain/accounting/ledger';
+import { MEMBER } from './rederive';
+import type { MemoryRemote } from './memoryRemote';
+import type { RemoteDoc } from '@/sync/types';
+import type { DB } from '@/db/adapter';
+
+/** لقطة أوقات المستندات في السحابة · ما تغيّر بعدها كتبه الجهاز الثاني */
+export const snap = (r: MemoryRemote) => new Map([...r.docs.values()].map((d) => [d.id, d.ts] as const));
+
+const OP: Record<string, string> = {
+  bank_tx: 'banks', banks: 'banks', key_money_deals: 'reservations', purchases: 'purchases', purchase_lines: 'purchases',
+  invoices: 'invoices', invoice_lines: 'invoices', assets: 'assets', asset_events: 'assets', suppliers: 'purchases',
+};
+/** ما رفعه الجهاز الثاني بعد اللقطة يُعاد بكاتبه العضو (وقسم عمليته) */
+export function newAsMember(r: MemoryRemote, since: Map<string, string>): RemoteDoc[] {
+  const out: RemoteDoc[] = [];
+  for (const d of [...r.docs.values()]) {
+    if (since.get(d.id) === d.ts || d.by === MEMBER) continue;
+    const { ts: _t, ...doc } = d as RemoteDoc & { ts: string };
+    const op = d.t === 'journal_entries' ? 'banks' : OP[d.t] ?? 'banks';
+    const m = { ...doc, by: MEMBER, op } as RemoteDoc;
+    r.inject(m);
+    out.push(m);
+  }
+  return out;
+}
+
+export const bal = (db: DB, banks: string[]) => [...banks.map((b) => bankBalance(db, b)), walletCashBalance(db)];
+export const cash1100 = (db: DB) => Number(db.get<{ n: number }>(
+  `SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+   WHERE e.status = 'مرحّل' AND l.account_code = '1100'`)!.n);
+export const rejects = (db: DB) => db.all<{ tbl: string; pk: string; reason: string }>(`SELECT tbl, pk, reason FROM sync_rejects`);
+export const waiting = (db: DB) => db.all<{ tbl: string; pk: string; last_error: string | null }>(`SELECT tbl, pk, last_error FROM sync_inbox`);

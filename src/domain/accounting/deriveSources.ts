@@ -478,7 +478,8 @@ function originUnits(r: SourceReader, assetId: string, current: string | null, c
     .filter((v) => {
       if (v.kind !== 'transfer' || !v.entry_id || (v.from_unit_id ?? null) === (v.to_unit_id ?? null)) return false;
       const e = r.entry(v.entry_id);
-      if (!e || e.deleted_at) return false;
+      // وقيد النقل نفسه: مصدره نقل هذا الأصل (المدقق الخارجي I · O١ب: قيدٌ مزوَّر بمصدر أصلٍ آخر سطوره بوحدتي الحدث كان يكفي شاهداً)
+      if (!e || e.deleted_at || e.src_type !== 'asset_transfer' || e.src_id !== assetId) return false;
       const ls = nonZero(e.lines).filter((l) => str(l.asset_id) === assetId && String(l.account_code ?? '') === category);
       return ls.length > 0 && ls.every((l) => str(l.unit_id) === (num(l.credit_halalas) > 0 ? (v.from_unit_id ?? null) : (v.to_unit_id ?? null)));
     })

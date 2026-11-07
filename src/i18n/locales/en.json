@@ -883,7 +883,9 @@
     "bankTxOver": "Bank transactions of entry ({{no}}) exceed its cash amount or have the opposite sign",
     "assetEventLocked": "An asset event is neither deleted nor edited",
     "bankTxEntryLocked": "The bank transaction of entry ({{no}}) cannot be deleted, moved or re-amounted · it is cancelled by cancelling its operation",
-    "bankTxShort": "The bank or wallet balance does not cover this transaction yet"
+    "bankTxShort": "The bank or wallet balance does not cover this transaction yet",
+    "bankTxEdited": "A bank transaction without an entry cannot change its bank, amount or source · delete it and record it again",
+    "bankOpeningOwner": "Only the owner sets a bank’s opening balance · it stays as it was"
   },
   "restore": {
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",
