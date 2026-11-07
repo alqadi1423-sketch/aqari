@@ -64,6 +64,13 @@ export function peekJournalNo(db: DB): string {
  * مسار الترحيل الواحد: يُدرج القيد «قيد الإنشاء»، يضيف سطوره،
  * ثم يرقّيه «مرحّل» · والمحفّز في القاعدة يرفض غير المتوازن.
  */
+/** سطر كشف البنك الذي تُرحَّل منه القيود داخل fn (اعتماد التحصيل من الكشف · الهجرة ٥٩) */
+const stmtLineStack: Array<string | null> = [];
+export function withStatementLine<T>(lineId: string, fn: () => T): T {
+  stmtLineStack.push(lineId);
+  try { return fn(); } finally { stmtLineStack.pop(); }
+}
+
 export function postEntry(
   db: DB,
   args: {
@@ -105,6 +112,10 @@ export function postEntry(
        VALUES (?,?,?,?,'قيد الإنشاء',?,?,?,?)`,
       [id, no, args.date, args.memo, args.auto === false ? 0 : 1, args.srcType ?? null, args.srcId ?? null, now]
     );
+    // وسطر الكشف الذي يُسجَّل منه التحصيل (الهجرة ٥٩)
+    if (stmtLineStack.length && stmtLineStack[stmtLineStack.length - 1]) {
+      db.run(`UPDATE journal_entries SET stmt_line_id = ? WHERE id = ?`, [stmtLineStack[stmtLineStack.length - 1], id]);
+    }
     // أبعاد كل سطر: من مصدر القيد، والصريح يغلب، ومركز التكلفة من العملية الجارية (قرار المالك ٢٠٢٦-١٠-٠٤) ·
     // وقاعدةٌ قبل الهجرة ٢٨ (نسخة تُصحَّح قبل ترقيتها) تُرحَّل سطورها بلا أبعاد كما كانت
     if (!hasDimColumns(db)) {

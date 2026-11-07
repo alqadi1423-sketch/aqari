@@ -8,7 +8,7 @@ import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { t } from '../../i18n';
 import { RuleViolation } from '../contracts/service';
-import { statementLineKeys, fnv64 } from './dedupe';
+import { statementLineKeys, fnv64, lineKeyBase, sameLineKey, SAME_KEY_SQL } from './dedupe';
 import { foldText } from './normalize';
 import type { ColumnMapping, StatementResult } from './read';
 
@@ -34,38 +34,29 @@ export function saveStatement(db: DB, bankId: string, r: Ok, file: { name: strin
     if (!same) throw new RuleViolation(t('bankStatement.otherAccount', { account: r.account ?? '' }));
   }
   const keys = statementLineKeys(bankId, r.lines);
-  const have = new Set(db.all<{ k: string }>(`SELECT line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.k));
-  const fresh = r.lines.map((l, i) => ({ l, key: keys[i] })).filter((x) => !have.has(x.key));
+  // والموجود حيّاً بالقاعدة نفسها وأحدهما بلا رصيد، أو برصيده نفسه، هو السطر نفسه (sameLineKey)
+  const have = new Map<string, string[]>();
+  for (const x of db.all<{ k: string }>(`SELECT line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL`, [bankId])) {
+    const a0 = have.get(lineKeyBase(x.k)); if (a0) a0.push(x.k); else have.set(lineKeyBase(x.k), [x.k]);
+  }
+  const fresh = r.lines.map((l, i) => ({ l, key: keys[i] })).filter((x) => !(have.get(lineKeyBase(x.key)) ?? []).some((k) => sameLineKey(k, x.key)));
   // وبصمات سطوره كلها معه (الهجرة ٥٨): حذف كشفٍ آخر فيه سطرٌ منها ينقله إلى هذا، على هذا الجهاز أو حين يصل إلى غيره
   if (!fresh.length) throw new StatementDuplicate(t('bankStatement.nothingNew'));
   // ومعرّفا الكشف والسطر حتميان من البنك وبصمة الملف وبصمة السطر (المدقق الخارجي Y٣): الملف نفسه يُقرأ على جهازين بلا اتصال فيلتقي
-  // كشفاً واحداً وسطوراً واحدة، فاعتماد الإيداع نفسه عليهما بذرته واحدة (W١) · وصفٌّ محذوفٌ بالمعرّف نفسه يُحيى ولا يُكرَّر
-  const id = file.hash ? 'st' + fnv64(bankId + '|' + file.hash) : uid();
-  const lineId = (key: string) => 'sl' + fnv64(bankId + '|' + key);
+  // كشفاً واحداً وسطوراً واحدة، فاعتماد الإيداع نفسه عليهما بذرته واحدة (W١) · وما سبق بالمعرّف نفسه (حُذف ثم أُعيد) يأخذ معرّفاً جديداً
+  // فيُنشأ ولا يُعدَّل: إعادة القراءة إدخالٌ يجيزه «البنوك ٢» (المدقق الخارجي Z١-٥)
+  const fixedId = (table: string, id0: string) => (db.get(`SELECT 1 FROM "${table}" WHERE id = ?`, [id0]) ? uid() : id0);
+  const id = fixedId('bank_statements', file.hash ? 'st' + fnv64(bankId + '|' + file.hash) : uid());
   const now = new Date().toISOString();
   db.transaction(() => {
-    db.run(`DELETE FROM bank_statements WHERE id = ? AND deleted_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM bank_statement_lines WHERE statement_id = ?)`, [id, id]);
-    if (db.get(`SELECT 1 FROM bank_statements WHERE id = ?`, [id])) {
-      db.run(`UPDATE bank_statements SET deleted_at = NULL, period_from = ?, period_to = ?, opening_halalas = ?, closing_halalas = ?, file_name = ?, line_count = ?,
-        mapping = ?, verified = ?, shared_keys = ?, created_at = ? WHERE id = ?`, [r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
-        file.name, fresh.length, r.warnings.includes('photo') ? '' : JSON.stringify(r.mapping), r.warnings.includes('unverified') ? 0 : 1, JSON.stringify(keys), now, id]);
-    } else {
     // وربط الصورة مصنوعٌ لا من الكشف فلا يُحفظ ربطاً للبنك · والكشف غير المتحقَّق بتأكيده (الهجرة ٥٧)
     db.run(`INSERT INTO bank_statements (id, bank_id, period_from, period_to, opening_halalas, closing_halalas, file_name, file_hash, line_count, mapping, verified, shared_keys, created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id, bankId, r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
       file.name, file.hash, fresh.length, r.warnings.includes('photo') ? '' : JSON.stringify(r.mapping), r.warnings.includes('unverified') ? 0 : 1,
       JSON.stringify(keys), now]);
-    }
     for (const { l, key } of fresh) {
-      const lid = lineId(key);
-      if (db.get(`SELECT 1 FROM bank_statement_lines WHERE id = ?`, [lid])) {
-        db.run(`UPDATE bank_statement_lines SET statement_id = ?, deleted_at = NULL, status = 'open', bank_tx_id = NULL, matched_at = NULL, note = '',
-          date = ?, value_date = ?, descr = ?, ref = ?, amount_halalas = ?, balance_halalas = ? WHERE id = ?`,
-          [id, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, lid]);
-      } else {
-        db.run(`INSERT INTO bank_statement_lines (id, statement_id, bank_id, line_key, date, value_date, descr, ref, amount_halalas, balance_halalas, created_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [lid, id, bankId, key, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, now]);
-      }
+      db.run(`INSERT INTO bank_statement_lines (id, statement_id, bank_id, line_key, date, value_date, descr, ref, amount_halalas, balance_halalas, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [fixedId('bank_statement_lines', 'sl' + fnv64(bankId + '|' + key)), id, bankId, key, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, now]);
     }
     audit(db, 'create', file.name || id);
   });
@@ -99,10 +90,12 @@ export function matchSuggestions(db: DB, bankId: string): Suggestion[] {
   const lines = db.all<{ id: string; date: string; descr: string; ref: string | null; amount: number }>(
     `SELECT id, date, descr, ref, amount_halalas AS amount FROM bank_statement_lines
      WHERE bank_id = ? AND status = 'open' AND deleted_at IS NULL ORDER BY date, rowid`, [bankId]);
+  // وحركة قيدٍ معكوس (تحصيلٌ أُلغي) لا تُقترح: الإيداع يعود إلى اقتراحات التحصيل (المدقق الخارجي Z٢-٩)
   const txs = db.all<{ id: string; date: string; descr: string; amount: number; no: string; source: string }>(
     `SELECT t.id, t.date, t.descr, t.amount_halalas AS amount, t.journal_no AS no, t.source FROM bank_tx t
      WHERE t.bank_id = ? AND t.deleted_at IS NULL
-       AND NOT EXISTS (SELECT 1 FROM bank_statement_lines l WHERE l.bank_tx_id = t.id AND l.status = 'matched' AND l.deleted_at IS NULL)`, [bankId]);
+       AND NOT EXISTS (SELECT 1 FROM bank_statement_lines l WHERE l.bank_tx_id = t.id AND l.status = 'matched' AND l.deleted_at IS NULL)
+       AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE t.journal_no != '' AND e.no = t.journal_no AND e.reversed_by IS NOT NULL)`, [bankId]);
   // فهرسٌ بالمبلغ مرتبٌ باليوم، ويوم كل سطرٍ وحركةٍ ورموزهما تُحسب مرةً واحدة (المدقق الخارجي V١٠: كان تربيعياً بالتاريخ في أعمق الحلقة)
   type X = (typeof txs)[number] & { day: number; digits: Set<string>; words: Set<string> };
   const byAmount = new Map<number, X[]>();
@@ -301,8 +294,8 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
 export function statementSharing(db: DB, bankId: string, lineKey: string, exceptStatementId: string): string | null {
   return db.get<{ id: string }>(
     `SELECT s.id FROM bank_statements s, json_each(s.shared_keys) k
-     WHERE s.bank_id = ? AND s.id != ? AND s.deleted_at IS NULL AND k.value = ? ORDER BY s.created_at, s.id LIMIT 1`,
-    [bankId, exceptStatementId, lineKey])?.id ?? null;
+     WHERE s.bank_id = ? AND s.id != ? AND s.deleted_at IS NULL AND ${SAME_KEY_SQL('k.value')} ORDER BY s.created_at, s.id LIMIT 1`,
+    [bankId, exceptStatementId, lineKey, lineKeyBase(lineKey), lineKey])?.id ?? null;
 }
 
 /**

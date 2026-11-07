@@ -24,9 +24,21 @@ export function statementLineKeys(bankId: string, lines: Array<Pick<StatementLin
     const base = [bankId, l.date, l.amount].join('|');
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
-    return fnv64(base + '#' + n);
+    // والرصيد المطبوع لاحقةٌ تفرّق حركتين باليوم والمبلغ نفسيهما في كشفين (صفحتا صورة · المدقق الخارجي Z١-٢)، ولا تمنع مطابقة صيغةٍ بلا
+    // رصيد (sameLineKey)
+    return fnv64(base + '#' + n) + (l.balance == null ? '' : '@' + l.balance);
   });
 }
+
+/** بصمة السطر بلا لاحقة الرصيد */
+export const lineKeyBase = (key: string): string => key.split('@')[0];
+/** السطر نفسه: البصمة نفسها، أو القاعدة نفسها وأحدهما بلا رصيد */
+export function sameLineKey(a: string, b: string): boolean {
+  return a === b || (lineKeyBase(a) === lineKeyBase(b) && (!a.includes('@') || !b.includes('@')));
+}
+/** شرط SQL للبصمة نفسها بمعيار sameLineKey · col عمود البصمة، والمعاملان البصمة ثم قاعدتها */
+export const SAME_KEY_SQL = (col: string) =>
+  `(${col} = ? OR ((CASE WHEN instr(${col}, '@') > 0 THEN substr(${col}, 1, instr(${col}, '@') - 1) ELSE ${col} END) = ? AND (instr(${col}, '@') = 0 OR instr(?, '@') = 0)))`;
 
 /** بصمة بايتات الملف (منع قراءة الملف نفسه مرتين) */
 export function bytesHash(bytes: Uint8Array): string {

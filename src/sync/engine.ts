@@ -15,6 +15,7 @@
  *    الحفظ فلا يبقى من الصف أثر، ويُحفظ في sync_rejects ويُسجَّل، ولا يكسر بقية الدفعة.
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
+import { SAME_KEY_SQL, lineKeyBase } from '../domain/bankStatement/dedupe';
 import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
@@ -672,6 +673,8 @@ function noteJournalNoAlias(db: DB, remoteNo: string, localNo: string): void {
 /** سبب رفض القيد المرحّل الذي نسخته في السحابة نهائية */
 const FINAL_IN_CLOUD = 'نهائي في السحابة · نسخة هذا الجهاز تختلف عنها ولم تُرفع'; // i18n-exempt: سبب الرفض المخزَّن
 const PAID_INVOICE = 'مدفوعة'; // i18n-exempt: حالة الفاتورة المخزّنة
+const COLLECTED_CLAIM = 'محصَّلة'; // i18n-exempt: حالة المطالبة المخزّنة
+const POSTED_ENTRY = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
 /** سطور القيد الوارد سطور القيد هنا نفسها (الحساب والمدين والدائن) */
 function sameEntryLines(db: DB, doc: RemoteDoc): boolean {
   const key = (a: unknown, d: unknown, c: unknown) => `${String(a)}|${Number(d) || 0}|${Number(c) || 0}`;
@@ -948,16 +951,38 @@ function statementLineFix(db: DB, row: Record<string, unknown>): boolean {
     : db.get<{ del: string | null }>(`SELECT deleted_at AS del FROM bank_statements WHERE id = ?`, [String(row.statement_id)]);
   if (row.deleted_at != null || stmt?.del != null) {
     const to = sharingStatement(db, String(row.bank_id ?? ''), String(row.line_key ?? ''), String(row.statement_id ?? ''));
-    if (to) {
+    // ولا يُحيا وللبصمة سطرٌ حيٌّ آخر (المدقق الخارجي X١: قراءة الكشف ثانيةً بمعرّفاتٍ جديدة)
+    const twin = to && db.get(`SELECT 1 FROM bank_statement_lines WHERE bank_id = ? AND id != ? AND deleted_at IS NULL AND ${SAME_KEY_SQL('line_key')}`,
+      [String(row.bank_id ?? ''), String(row.id), String(row.line_key ?? ''), lineKeyBase(String(row.line_key ?? '')), String(row.line_key ?? '')]);
+    if (to && twin) {
+      if (row.deleted_at == null) { row.deleted_at = stmt?.del ?? new Date().toISOString(); changed = true; }
+    } else if (to) {
       row.deleted_at = null; row.statement_id = to; changed = true;
       // والحذف تبعاً لكشفه لا يمحو مطابقةً حيّةً هنا للسطر نفسه (المدقق الخارجي Y٧: حذف المالك الأحدث كان يغلب اعتماد العضو)
       const here = db.get<{ status: string; tx: string | null; at: string | null; note: string; del: string | null }>(
         `SELECT status, bank_tx_id AS tx, matched_at AS at, note, deleted_at AS del FROM bank_statement_lines WHERE id = ?`, [String(row.id)]);
-      if (here && here.del == null && here.status !== 'open' && row.status === 'open') {
+      // (تعديلٌ هنا لم يُرفع وحده: نسخةٌ قديمة من السحابة ألغى المالك مطابقتها بعدها لا تعود · Z١-٣)
+      if (here && here.del == null && here.status !== 'open' && row.status === 'open'
+        && db.get(`SELECT 1 FROM sync_outbox WHERE tbl = 'bank_statement_lines' AND pk = ?`, [String(row.id)])) {
         row.status = here.status; row.bank_tx_id = here.tx; row.matched_at = here.at; row.note = here.note;
         ownMatch.add(String(row.id));
       }
     } else if (row.deleted_at == null) { row.deleted_at = stmt!.del; changed = true; }
+  }
+  // وسطران حيّان بالبصمة نفسها (حُذف كشفٌ وأُعيدت قراءته بمعرّفاتٍ جديدة على جهاز، وأُحيي سطره القديم في كشفٍ متداخل على آخر · X١):
+  // يبقى المطابَق أو المستبعَد، ثم الأقدم إنشاءً، ثم الأصغر معرّفاً، ويُحذف الآخر على كل جهاز
+  if (row.deleted_at == null) {
+    const key = String(row.line_key ?? '');
+    const twins = db.all<{ id: string; status: string; c: string }>(
+      `SELECT id, status, created_at AS c FROM bank_statement_lines WHERE bank_id = ? AND id != ? AND deleted_at IS NULL AND ${SAME_KEY_SQL('line_key')}`,
+      [String(row.bank_id ?? ''), String(row.id), key, lineKeyBase(key), key]);
+    const rank = (x: { id: string; status: string; c: string }) => [x.status === 'open' ? 1 : 0, x.c, x.id].join('|');
+    const me = { id: String(row.id), status: String(row.status ?? 'open'), c: String(row.created_at ?? '') };
+    for (const t0 of twins) {
+      if (rank(t0) < rank(me)) { row.deleted_at = new Date().toISOString(); changed = true; break; }
+      db.run(`UPDATE bank_statement_lines SET deleted_at = ?, status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [new Date().toISOString(), t0.id]);
+      enqueueStmtFix(db, t0.id);
+    }
   }
   const demote = () => { row.status = 'open'; row.bank_tx_id = null; row.matched_at = null; return true; };
   if (row.deleted_at != null && (row.status !== 'open' || row.bank_tx_id != null)) return demote();
@@ -966,8 +991,16 @@ function statementLineFix(db: DB, row: Record<string, unknown>): boolean {
   const txId = row.bank_tx_id == null ? '' : String(row.bank_tx_id);
   if (row.deleted_at != null || !txId) return demote();
   const tx = db.get<{ b: string; a: number; del: string | null }>(`SELECT bank_id AS b, amount_halalas AS a, deleted_at AS del FROM bank_tx WHERE id = ?`, [txId]);
-  // حركةٌ لم تصل بعد: المفتاح الأجنبي يُرجئ السطر حتى تصل
-  if (!tx) return changed;
+  // والسطر لحركةٍ ليست هنا وللسطر تحصيلٌ حيٌّ بقيده هنا: يُطابَق بحركة ذلك التحصيل (الإيداع الواحد اعتمده جهازان لهدفين فقُبل أحدهما ·
+  // Z٢-١) · وحركةٌ رُفضت لا يُطابَق بها · وما لم يصل بعد يُرجئه المفتاح الأجنبي
+  if (!tx) {
+    const alt = db.get<{ id: string }>(
+      `SELECT t.id FROM journal_entries e JOIN bank_tx t ON t.journal_no = e.no AND t.bank_id = ? AND t.amount_halalas = ? AND t.deleted_at IS NULL
+       WHERE e.stmt_line_id = ? AND e.reversed_by IS NULL AND e.status = ? LIMIT 1`, [String(row.bank_id), Number(row.amount_halalas), String(row.id), POSTED_ENTRY]);
+    if (alt) { row.bank_tx_id = alt.id; return true; }
+    if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'bank_tx' AND pk = ?`, [txId])) return demote();
+    return changed;
+  }
   if (tx.del != null || String(tx.b) !== String(row.bank_id) || Number(tx.a) !== Number(row.amount_halalas)) return demote();
   const rivals = db.all<{ id: string }>(
     `SELECT id FROM bank_statement_lines WHERE bank_tx_id = ? AND status = 'matched' AND deleted_at IS NULL AND id != ? ORDER BY id`, [txId, String(row.id)]);
@@ -982,14 +1015,25 @@ function statementLineFix(db: DB, row: Record<string, unknown>): boolean {
 
 /** سطور الكشف التي صحّحها جهاز المالك ولم تُرفع بعد: تصحيحٌ يغلبه أي تعديلٍ حقيقي وارد (Y٧) */
 const STMT_FIXES = 'stmt_line_fixes';
-function stmtFixes(db: DB): Set<string> {
-  try { return new Set(JSON.parse(getSyncState(db, STMT_FIXES) ?? '[]') as string[]); } catch { return new Set(); }
+// والعلامة بوقت صفّ الطابور الذي كتبه التصحيح: تعديلٌ لاحق هنا وقته غيره فلا يُعدّ تصحيحاً، والعلامة بلا صفٍّ في الطابور تُحذف
+// (Z١-٦ وZ٢-٧: علامةٌ باقية كانت تجعل اعتماداً حقيقياً للمالك «تصحيحاً» يغلبه وارد أقدم)
+function stmtFixes(db: DB): Map<string, string> {
+  let raw: Record<string, string> = {};
+  try { raw = JSON.parse(getSyncState(db, STMT_FIXES) ?? '{}') as Record<string, string>; } catch { raw = {}; }
+  if (Array.isArray(raw)) raw = {};
+  return new Map(Object.entries(raw));
+}
+function saveStmtFixes(db: DB, m: Map<string, string>): void {
+  for (const k of [...m.keys()]) if (!db.get(`SELECT 1 FROM sync_outbox WHERE tbl = 'bank_statement_lines' AND pk = ? AND changed_at = ?`, [k, m.get(k)!])) m.delete(k);
+  setSyncState(db, STMT_FIXES, m.size ? JSON.stringify(Object.fromEntries(m)) : null);
 }
 function markStmtFix(db: DB, id: string, on: boolean): void {
-  const s = stmtFixes(db);
-  if (on === s.has(id)) return;
-  if (on) s.add(id); else s.delete(id);
-  setSyncState(db, STMT_FIXES, s.size ? JSON.stringify([...s]) : null);
+  const m = stmtFixes(db);
+  if (on) {
+    const at = db.get<{ c: string }>(`SELECT changed_at AS c FROM sync_outbox WHERE tbl = 'bank_statement_lines' AND pk = ?`, [id])?.c;
+    if (at) m.set(id, at);
+  } else m.delete(id);
+  saveStmtFixes(db, m);
 }
 /** تصحيح سطر كشفٍ يرفعه جهاز المالك وحده، معلَّماً تصحيحاً */
 function enqueueStmtFix(db: DB, id: string, at?: string): void {
@@ -1002,8 +1046,8 @@ function enqueueStmtFix(db: DB, id: string, at?: string): void {
 function sharingStatement(db: DB, bankId: string, lineKey: string, exceptStatementId: string): string | null {
   return db.get<{ id: string }>(
     `SELECT s.id FROM bank_statements s, json_each(s.shared_keys) k
-     WHERE s.bank_id = ? AND s.id != ? AND s.deleted_at IS NULL AND k.value = ? ORDER BY s.created_at, s.id LIMIT 1`,
-    [bankId, exceptStatementId, lineKey])?.id ?? null;
+     WHERE s.bank_id = ? AND s.id != ? AND s.deleted_at IS NULL AND ${SAME_KEY_SQL('k.value')} ORDER BY s.created_at, s.id LIMIT 1`,
+    [bankId, exceptStatementId, lineKey, lineKeyBase(lineKey), lineKey])?.id ?? null;
 }
 
 /**
@@ -1018,8 +1062,8 @@ function statementCascade(db: DB, statementId: string, row: Record<string, unkno
     let keys: string[] = [];
     try { keys = JSON.parse(String(row.shared_keys ?? '[]')); } catch { keys = []; }
     for (const k of keys) {
-      if (db.get(`SELECT 1 FROM bank_statement_lines WHERE bank_id = ? AND line_key = ? AND deleted_at IS NULL`, [bankId, k])) continue;
-      const dead = db.get<{ id: string }>(`SELECT id FROM bank_statement_lines WHERE bank_id = ? AND line_key = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, id LIMIT 1`, [bankId, k]);
+      if (db.get(`SELECT 1 FROM bank_statement_lines WHERE bank_id = ? AND ${SAME_KEY_SQL('line_key')} AND deleted_at IS NULL`, [bankId, k, lineKeyBase(k), k])) continue;
+      const dead = db.get<{ id: string }>(`SELECT id FROM bank_statement_lines WHERE bank_id = ? AND ${SAME_KEY_SQL('line_key')} AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, id LIMIT 1`, [bankId, k, lineKeyBase(k), k]);
       if (!dead) continue;
       db.run(`UPDATE bank_statement_lines SET deleted_at = NULL, statement_id = ? WHERE id = ?`, [statementId, dead.id]);
       fix(dead.id);
@@ -1714,13 +1758,79 @@ function applyOne(
 
   // والإلغاء لا رجعة فيه (المدقق الخارجي Y١): نسخةٌ تُحيي دفعةً ملغاة هنا (اعتمادٌ على جهازٍ آخر بالمعرّفات نفسها بعد الإلغاء) لا تُطبَّق،
   // ويرفع جهاز المالك نسخته · والفاتورة «مدفوعة» بقيد تحصيلٍ معكوسٍ هنا كذلك (Y٢)
-  if (!doc.del && doc.d && (
-    (doc.t === 'contract_payments' && doc.d.cancelled_at == null
-      && db.get(`SELECT 1 FROM contract_payments WHERE id = ? AND cancelled_at IS NOT NULL`, [doc.k]))
-    || (doc.t === 'invoices' && doc.d.status === PAID_INVOICE && doc.d.payment_journal_entry_id
-      && db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NOT NULL`, [String(doc.d.payment_journal_entry_id)])))) {
+  // والتحصيل نهائيٌّ كذلك: مطالبةٌ محصَّلة هنا بقيدٍ حيّ لا تعود مفتوحةً ولا تُحذف ولا يتغيّر مبلغها، وفاتورةٌ مدفوعة هنا بقيدٍ حيّ لا تعود
+  // مستحقة إلا بعكس قيدها (Z٢-٣ وZ٢-٤: نسخة عضوٍ بلا اتصال كانت تغلب التحصيل) · وصفّ الكشف أو سطره المنشأ ثانيةً بالمعرّف نفسه (قراءة
+  // الكشف على جهازٍ آخر) لا يغلب الأقدم إنشاءً وما عُدّل فيه (Z١-٤: كان يمحو اعتماداً واستبعاداً)
+  const keepLocal = (): boolean => {
+    const d = (doc.d ?? {}) as Record<string, unknown>;
+    if (doc.t === 'contract_payments' && !doc.del && d.cancelled_at == null) {
+      return !!db.get(`SELECT 1 FROM contract_payments WHERE id = ? AND cancelled_at IS NOT NULL`, [doc.k]);
+    }
+    if (doc.t === 'invoices' && !doc.del && d.status === PAID_INVOICE && d.payment_journal_entry_id) {
+      return !!db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NOT NULL`, [String(d.payment_journal_entry_id)]);
+    }
+    if (doc.t === 'invoices' && (doc.del || d.status !== PAID_INVOICE)) {
+      return !!db.get(`SELECT 1 FROM invoices v JOIN journal_entries e ON e.id = v.payment_journal_entry_id
+        WHERE v.id = ? AND v.status = ? AND e.reversed_by IS NULL`, [doc.k, PAID_INVOICE]);
+    }
+    if (doc.t === 'claims') {
+      const cur = db.get<{ a: number; del: string | null }>(`SELECT amount_halalas AS a, deleted_at AS del FROM claims WHERE id = ? AND status = ?
+        AND EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'claim_collect' AND e.src_id = claims.id AND e.reversed_by IS NULL)`, [doc.k, COLLECTED_CLAIM]);
+      return !!cur && (doc.del || d.status !== COLLECTED_CLAIM || d.deleted_at != null || Number(d.amount_halalas) !== Number(cur.a));
+    }
+    if ((doc.t === 'bank_statement_lines' || doc.t === 'bank_statements') && !doc.del && d.created_at) {
+      const cur = db.get<{ c: string }>(`SELECT created_at AS c FROM "${doc.t}" WHERE id = ?`, [doc.k]);
+      return !!cur && String(d.created_at) > String(cur.c);
+    }
+    return false;
+  };
+  if (keepLocal()) {
     if (!getSyncState(db, 'membership')) enqueue(db, doc.t, doc.k, 'upsert');
     return 'conflict-local';
+  }
+  // ودفعةٌ تصل حيّةً وقيدها معكوسٌ هنا ملغاةٌ بعاكسه (Z١-١ وZ٢-٢: عضوٌ اعتمد الإيداع نفسه بعد إلغاء عضوٍ آخر فغلبت نسخته في السحابة) ·
+  // تُصلح هنا ويرفعها جهاز المالك
+  let repaired = false;
+  if (doc.t === 'contract_payments' && !doc.del && doc.d && doc.d.cancelled_at == null && doc.d.journal_entry_id) {
+    const rev = db.get<{ id: string; date: string }>(`SELECT r.id, r.date FROM journal_entries e JOIN journal_entries r ON r.id = e.reversed_by WHERE e.id = ?`,
+      [String(doc.d.journal_entry_id)]);
+    if (rev) { doc.d = { ...doc.d, cancelled_at: rev.date, cancel_entry_id: rev.id }; repaired = true; }
+  }
+  // وعكس قيد مطالبةٍ محصَّلةٍ هنا أو قيدٌ ثانٍ لها من عضو (حذفها أو تعديل مبلغها على جهازٍ لم يعرف التحصيل · Z٢-٣) مرفوض: الذمة تبقى كما حُصّلت
+  if (doc.t === 'journal_entries' && !doc.del && doc.d && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && (doc.d.src_type === 'claim_rev' || doc.d.src_type === 'claim') && !db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [doc.k])
+    && db.get(`SELECT 1 FROM claims c WHERE c.id = ? AND c.status = ? AND EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'claim_collect'
+         AND e.src_id = c.id AND e.reversed_by IS NULL)`, [String(doc.d.src_id ?? ''), COLLECTED_CLAIM])
+    && (doc.d.src_type === 'claim_rev'
+      || db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'claim' AND src_id = ? AND reversed_by IS NULL`, [String(doc.d.src_id ?? '')]))) {
+    reject(db, doc, tr('sync.collectedTwice', { lng: 'ar' }));
+    return 'rejected';
+  }
+  // ومطالبةٌ يصل صفّها «محصَّلة» من عضوٍ بلا قيد تحصيلٍ حيٍّ لها هنا: تنتظر قيدها إن كان في الوارد، وإلا (رُفض تحصيلاً ثانياً لإيداعٍ
+  // واحد · Z٢-١) تبقى كما هي هنا ويُرفع صفّها
+  if (doc.t === 'claims' && !doc.del && doc.d?.status === COLLECTED_CLAIM && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && !db.get(`SELECT 1 FROM claims WHERE id = ? AND status = ?`, [doc.k, COLLECTED_CLAIM])
+    && !db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'claim_collect' AND src_id = ? AND reversed_by IS NULL AND status = ?`, [doc.k, POSTED_ENTRY])) {
+    if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.src_type') = 'claim_collect'
+         AND json_extract(payload, '$.d.src_id') = ?`, [doc.k])) return 'retry';
+    if (db.get(`SELECT 1 FROM claims WHERE id = ?`, [doc.k])) enqueue(db, doc.t, doc.k, 'upsert');
+    reject(db, doc, tr('sync.collectedTwice', { lng: 'ar' }));
+    return 'rejected';
+  }
+  // والإيداع الواحد يسند تحصيلاً واحداً: قيدٌ حيٌّ من عضوٍ لسطر كشفٍ له هنا قيدٌ حيٌّ آخر مرفوض (Z٢-١: جهازان اعتمداه لهدفين مختلفين)
+  if (doc.t === 'journal_entries' && !doc.del && doc.d?.stmt_line_id && doc.d.reversed_by == null && !getSyncState(db, 'membership')
+    && byMember(db, doc, true) && !db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [doc.k])
+    && db.get(`SELECT 1 FROM journal_entries WHERE stmt_line_id = ? AND id != ? AND reversed_by IS NULL AND status = ?`, [String(doc.d.stmt_line_id), doc.k, POSTED_ENTRY])) {
+    reject(db, doc, tr('sync.collectedTwice', { lng: 'ar' }));
+    return 'rejected';
+  }
+  // والتحصيل الثاني الحيّ للمطالبة نفسها أو الفاتورة نفسها من عضوٍ مرفوض (Z٢-٦: تحصيلان بطريقتين على جهازين كانا ينتظر كلٌّ منهما الآخر)
+  if (doc.t === 'journal_entries' && !doc.del && doc.d && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && (doc.d.src_type === 'claim_collect' || doc.d.src_type === 'invoice_pay') && doc.d.reversed_by == null
+    && db.get(`SELECT 1 FROM journal_entries WHERE src_type = ? AND src_id = ? AND id != ? AND reversed_by IS NULL AND status = ?`,
+      [String(doc.d.src_type), String(doc.d.src_id ?? ''), doc.k, POSTED_ENTRY])) {
+    reject(db, doc, tr('sync.collectedTwice', { lng: 'ar' }));
+    return 'rejected';
   }
 
   const cols = (name: string) => {
@@ -1753,8 +1863,14 @@ function applyOne(
     // باللحظة لا بالنص (المراجعة الشاملة · البند ١٦): «…00.995Z» أحدث من «…00.99Z» ونصّه أصغر
     const order = isoCmp(mine, theirs);
     // وتصحيح سطر الكشف الذي رفعه جهاز المالك (إحياءٌ أو حذفٌ تبعاً لكشفه) يغلبه أي تعديلٍ حقيقي وارد ولو تساوى الوقت (المدقق الخارجي Y٧)
-    const correction = doc.t === 'bank_statement_lines' && stmtFixes(db).has(doc.k);
-    const localWins = !joining && !correction && (order > 0 || (order === 0 && deviceId > doc.dev));
+    const correction = doc.t === 'bank_statement_lines' && stmtFixes(db).get(doc.k) === pending.changed_at;
+    // والأقدم إنشاءً من صفّ الكشف أو سطره يغلب ما أُنشئ ثانيةً هنا بالمعرّف نفسه (Z١-٤)
+    const recreated = (doc.t === 'bank_statement_lines' || doc.t === 'bank_statements') && !doc.del && doc.d?.created_at != null
+      && String(doc.d.created_at) < String(db.get<{ c: string }>(`SELECT created_at AS c FROM "${doc.t}" WHERE id = ?`, [doc.k])?.c ?? '');
+    // والعكس نهائي: القيد الوارد معكوساً يغلب نسخته هنا بلا عاكس (Z١-١: جهازٌ اعتمد الإيداع نفسه بعد إلغاء غيره كان يبقى قيده بلا عاكسه)
+    const reversed = doc.t === 'journal_entries' && !doc.del && doc.d?.reversed_by != null
+      && !db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [doc.k])?.r;
+    const localWins = !joining && !correction && !recreated && !reversed && (order > 0 || (order === 0 && deviceId > doc.dev));
     if (localWins) {
       // والافتتاحي للمالك وحده (openingKept): جهاز العضو يأخذه من الوارد ولو غلب تعديله، فتحمله نسخته المرفوعة كما في السحابة
       // (المدقق الخارجي Q٢: كان يبقى بالافتتاحي القديم فتُرفض كل تسميةٍ منه ويخطئ رصيد البنك عنده)
@@ -1911,7 +2027,7 @@ function applyOne(
         if (issues.length) throw new Error('الوارد مرفوض · ' + issues.join(' · '));
       }
       if (pending) db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
-      if (keepOpening) enqueue(db, doc.t, doc.k, 'upsert');
+      if (keepOpening || (repaired && !getSyncState(db, 'membership'))) enqueue(db, doc.t, doc.k, 'upsert');
       if (relink && relinkOwn) enqueue(db, doc.t, doc.k, 'upsert');
       else if (relink) enqueueStmtFix(db, doc.k);
       if (conflict) {
@@ -2508,7 +2624,10 @@ export async function syncOnce(
         // رفض القيد المرحّل لأن نسخته في السحابة نهائية يُسجَّل للمالك فلا يتباين جهازه صامتاً (المراجعة الخارجية ٧ · النتيجة ٢١) ·
         // وسطر السجل المرفوض لا يُسجَّل (يقع في مسارات سليمة · المتحقق المستقل، الجولة ٣٠ على ٤٠٠ بذرة)
         const finalDenied = !memberDenied && immutableDenied(docs[i], res.code);
-        if (finalDenied && r.tbl === 'journal_entries') {
+        // والقيد الذي عرف الجهاز رقمه في السحابة (القيد نفسه هناك برقمٍ آخر) ليس مرفوضاً: نسخة السحابة تصله (Z٢-٨)
+        const knownInCloud = r.tbl === 'journal_entries' && typeof docs[i].d?.no === 'string'
+          && Object.keys(noAliases(db)).includes(String(docs[i].d!.no));
+        if (finalDenied && r.tbl === 'journal_entries' && !knownInCloud) {
           db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
             // i18n-exempt: سبب الرفض المخزَّن
             [docs[i].id, r.tbl, r.pk, FINAL_IN_CLOUD, JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);

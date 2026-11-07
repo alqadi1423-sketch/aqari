@@ -1323,7 +1323,9 @@ export function memberSourceIssue(db: DB, r: SourceReader,
     if (live(r, src, srcId, e.id, () => 1) > 0) return AWAIT;
     // وقيدٌ آخر من المصدر نفسه في الوارد يُطبَّق قبله: القديم الواصل معكوساً يسبق الجديد، وإلا وصل عاكس القديم والجديد وحده هنا فلا
     // يطابقه فيُرفض، ويبقى القديم بلا عاكسٍ ينتظره (تعديل التسوية أو المطالبة في مزامنةٍ واحدة بترتيبٍ آخر)
-    if (r.pending(src, srcId).some((id) => id !== e.id)) return AWAIT;
+    // وبين قيدين حيّين من المصدر نفسه في الوارد معاً (تحصيلا المطالبة نفسها على جهازين · المدقق الخارجي Z٢-٦) ينتظر الأكبر معرّفاً وحده
+    // فيُطبَّق الأصغر ويُرفض الآخر تحصيلاً ثانياً، ولا ينتظر كلٌّ منهما الآخر
+    if (r.pending(src, srcId).some((id) => id !== e.id && (!!r.entry(id)?.reversed_by || id < e.id))) return AWAIT;
   }
   const d = derive(db, r, { id: e.id, src, srcId, no: e.no ?? null, date: e.date, total: nonZero(e.lines).reduce((s, l) => s + num(l.credit_halalas), 0), lines: e.lines });
   if (typeof d === 'string') return d;

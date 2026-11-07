@@ -9,6 +9,7 @@ import type { DB } from '../../db/adapter';
 import { t } from '../../i18n';
 import { logAudit } from '../audit';
 import { deterministicId, withDeterministicIds } from '../ids';
+import { withStatementLine } from '../accounting/post';
 import { periodLabel } from '../dates';
 import { isFiledDate } from '../vatFilings';
 import { RuleViolation, recordRentPayment, recordBulkRentPayment } from '../contracts/service';
@@ -216,6 +217,7 @@ export function collectPermission(x: CollectTarget): { section: 'collect' | 'cla
   return x.kind === 'installments' ? { section: 'collect', level: 2 } : { section: x.kind === 'claim' ? 'claims' : 'invoices', level: 3 };
 }
 
+
 const targetKey = (x: CollectTarget) => (x.kind === 'installments' ? 'i:' + x.contractId + ':' + x.installmentIds.join(',') : x.kind === 'claim' ? 'c:' + x.claimId : 'v:' + x.invoiceId);
 
 /**
@@ -225,6 +227,8 @@ const targetKey = (x: CollectTarget) => (x.kind === 'installments' ? 'i:' + x.co
  * فتحه، فلا يصطدم بقيد ذلك الإلغاء
  */
 export function approveCollection(db: DB, lineId: string, target: CollectTarget): { txId: string } {
+  // والقيد يحمل سطره (withStatementLine · الهجرة ٥٩): جهازان يعتمدان الإيداع نفسه لهدفين مختلفين يُقبل أولهما على جهاز المالك ويُرفض
+  // الثاني، فلا يُسجَّل الإيداع الواحد تحصيلين في دفاتره (المدقق الخارجي Z٢-١)
   const base = 'stmt:' + lineId + ':' + targetKey(target);
   let attempt = 0;
   // والمعرّف محجوزٌ إن عرفه الجهاز قيداً أو وارداً ينتظر أو مرفوضاً (المدقق الخارجي Y٤: قيدٌ مزوَّر بمعرّف الاعتماد الأول كان يمنع رفع قيد المالك)
@@ -232,7 +236,7 @@ export function approveCollection(db: DB, lineId: string, target: CollectTarget)
     || !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ?`, [id])
     || !!db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ?`, [id]);
   while (taken(deterministicId(base + ':' + attempt, 1))) attempt++;
-  return withDeterministicIds(base + ':' + attempt, () => approveCollectionNow(db, lineId, target));
+  return withDeterministicIds(base + ':' + attempt, () => withStatementLine(lineId, () => approveCollectionNow(db, lineId, target)));
 }
 
 function approveCollectionNow(db: DB, lineId: string, target: CollectTarget): { txId: string } {
@@ -270,6 +274,10 @@ function approveCollectionNow(db: DB, lineId: string, target: CollectTarget): { 
       if (!c || Number(c.amount) !== amount) throw new RuleViolation(t('bankStatement.collect.amountDiffers'));
       txId = collectClaim(db, target.claimId, l.date, bankId);
     } else {
+      // وفاتورةٌ حُصّلت (من جهازٍ آخر بعد عرض الاقتراح) لا يُعكس تحصيلها ليُعاد من الكشف (Z٢-٥)
+      if (db.get(`SELECT 1 FROM invoices WHERE id = ? AND (payment_journal_entry_id IS NOT NULL OR status = 'مدفوعة')`, [target.invoiceId])) { // i18n-exempt: حالة الفاتورة المخزّنة
+        throw new RuleViolation(t('bankStatement.collect.amountDiffers'));
+      }
       if (invoiceRemaining(db, target.invoiceId) !== amount) throw new RuleViolation(t('bankStatement.collect.amountDiffers'));
       payInvoice(db, target.invoiceId, { method: 'bank', bankId, date: l.date });
       entryNo = db.get<{ no: string }>(

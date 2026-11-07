@@ -13,7 +13,7 @@
 import type { DB } from '../../db/adapter';
 import { allIn } from '../../db/inList';
 import { cashShortfall, CashShortfallError } from '../cashGuard';
-import { uid } from '../ids';
+import { rowId, withDeterministicIds } from '../ids';
 import { today, dfmt } from '../dates';
 import { logAudit } from '../audit';
 import { reverseEntryById } from '../accounting/post';
@@ -187,7 +187,15 @@ export function receiptBlocked(db: DB, paymentId: string): string | null {
 }
 
 /** التنفيذ · ذرّي كله أو لا شيء · يعيد معاينة ما جرى */
+/**
+ * إلغاء الدفعة بمعرّفاتٍ حتمية من معرّفها (المدقق الخارجي Z٢-٢): جهازان يلغيان الدفعة نفسها (دفعة تحصيلٍ من الكشف التقت عليهما) يكتبان
+ * العاكس نفسه وحركته، فلا عاكسان لقيدٍ واحد
+ */
 export function cancelPayment(db: DB, paymentId: string, input: { date?: string; reason: string }): CancelPaymentPlan {
+  return withDeterministicIds('cancel:' + paymentId, () => cancelPaymentNow(db, paymentId, input));
+}
+
+function cancelPaymentNow(db: DB, paymentId: string, input: { date?: string; reason: string }): CancelPaymentPlan {
   const date = input.date || defaultCancelDate(db, paymentId);
   const reason = input.reason.trim();
   if (!reason) throw new RuleViolation('اكتب سبب إلغاء الدفعة');
@@ -214,7 +222,7 @@ export function cancelPayment(db: DB, paymentId: string, input: { date?: string;
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,
-        [uid(), b.bankId, date, 'إلغاء دفعة إيجار · ' + plan.tenant, -b.amount, cancelNo, 'إلغاء دفعة إيجار', new Date().toISOString()]);
+        [rowId(), b.bankId, date, 'إلغاء دفعة إيجار · ' + plan.tenant, -b.amount, cancelNo, 'إلغاء دفعة إيجار', new Date().toISOString()]);
     }
     // الفائض يُطرح من الرصيد، والمستعمَل منه (دفعة من الرصيد الدائن · قيمته سالبة) يعود إليه (مراجعة التثبيت #63)
     if (plan.creditReversal !== 0) {
