@@ -20,6 +20,7 @@ import { sealBackupFile } from '../domain/backup/seal';
 import type { CancelSignal, ProgressFn } from '../domain/progress';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from './appLockService';
+import { APP_VERSION_LABEL } from '../version';
 
 export function appBackupEnv(db: AppDB): BackupEnv {
   const root = appDataRoot();
@@ -31,7 +32,7 @@ export function appBackupEnv(db: AppDB): BackupEnv {
     hasher: expoHasher,
     attachmentsDir: joinPath(root, 'attachments'),
     tmpDir: joinPath(root, 'tmp'),
-    appVersion: '1.0.0',
+    appVersion: APP_VERSION_LABEL,
     openDb: (path) => openTempSqlite(path),
     // الإغلاق الذي يفشل يُرمى فتتوقف الاستعادة قبل أن تمسّ الملفات (المراجعة الشاملة · البند ٢٠) · ومسار التراجع يبتلعه بنفسه ·
     // وما أغلقته هذه البيئة من قبل لا يُغلق مرتين

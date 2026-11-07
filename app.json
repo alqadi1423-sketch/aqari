@@ -2,7 +2,7 @@
   "expo": {
     "name": "عقاري",
     "slug": "aqari",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "orientation": "portrait",
     "scheme": "aqari",
     "userInterfaceStyle": "light",
@@ -17,6 +17,7 @@
       }
     },
     "android": {
+      "versionCode": 2,
       "package": "com.aqari.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",

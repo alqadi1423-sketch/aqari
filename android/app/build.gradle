@@ -110,8 +110,9 @@ android {
         manifestPlaceholders = [appLabel: (findProperty('aqariAppLabel') ?: '@string/app_name')]
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0.0"
+        // الإصدار من src/version.ts وapp.json (تطابقها tests/d4.version.test.ts) · ورقم البناء يزيد مع كل حزمة
+        versionCode 2
+        versionName "1.1.0"
 
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }

@@ -11,6 +11,7 @@ import { appDataRoot, expoFs } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { redactForReport } from '../domain/redact';
 import { toLocalISODate } from '../domain/dates';
+import { APP_VERSION_LABEL } from '../version';
 
 export { redactForReport };
 
@@ -32,6 +33,8 @@ export function errorReportText(where: string, e: unknown, at: Date = new Date()
     'تقرير خطأ · عقاري',
     'الموضع: ' + where,
     'الوقت: ' + at.toISOString(),
+    // رقم الإصدار في كل تقرير عطل (التوجيه الرابع ٤ · ٢) · i18n-exempt: عنوان تقرير العطل بالعربية كأخواته
+    'الإصدار: ' + APP_VERSION_LABEL,
     'المنصّة: ' + Platform.OS,
     'النوع: ' + (e instanceof Error ? e.name : typeof e),
     '────────────────',

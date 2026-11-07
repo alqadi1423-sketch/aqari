@@ -73,8 +73,8 @@ import { PasswordRequiredError } from '../src/domain/backup/encryption';
 import { pinWidget } from '../src/services/intents';
 import type { DriveBackup } from '../src/cloud/drive';
 import { dfmt, toLocalISODate, today } from '../src/domain/dates';
+import { APP_VERSION, APP_VERSION_LABEL } from '../src/version';
 
-const APP_VERSION = '1.0.0';
 
 /** خيارات مهل التنبيه · القيمة بالأيام */
 const PAYMENT_LEADS = [[1, 'بيوم'], [3, 'بثلاثة أيام'], [7, 'بأسبوع'], [14, 'بأسبوعين']] as const;
@@ -834,7 +834,7 @@ export default function Settings() {
       <Card>
         <CardTitle>عن التطبيق</CardTitle>
         <Fold icon="home" title="عقاري · أحد حلول منصة رِكز" value={'الإصدار ' + APP_VERSION}>
-          {([['الإصدار', APP_VERSION], ['إصدار قاعدة البيانات', String(SCHEMA_VERSION)]] as Array<[string, string]>).map(([k, v]) => (
+          {([['الإصدار', APP_VERSION_LABEL], ['إصدار قاعدة البيانات', String(SCHEMA_VERSION)]] as Array<[string, string]>).map(([k, v]) => (
             <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
               <T size={TYPE.body}>{k}</T>
               <Num size={TYPE.body} bold>{v}</Num>
