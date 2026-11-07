@@ -247,17 +247,34 @@ function creditNoteIssue(r: SourceReader, id: string, v: InvoiceRow, lines: Stor
     tax: num(ref.tax_halalas) + prior.reduce((s, n) => s + num(n.tax_halalas), 0),
   };
   if (sub <= 0 || sub > left.sub) return no('creditNote');
-  const byCode = remainingByCodeOf(invoiceLinesOf(r, v.ref_invoice_id), prior.map((n) => ({ tax: num(n.tax_halalas), lines: invoiceLinesOf(r, n.id) })));
+  // يُقسم على رموز سطور فاتورته والإشعارات قبله: سطورٌ لم تصل كلها بعد (المتحقق المستقل: فاتورةٌ وإشعارٌ عليها من الجلسة نفسها، ووصل
+  // قيد الإشعار قبل سطر الفاتورة المعفى، كان يُرفض نهائياً) تُنتظر · وفاتورةٌ أو إشعارٌ بلا سطورٍ هنا قد يكون قديماً قبلها (سطرٌ واحد
+  // بضريبتها: creditNoteAmounts) أو لم تصل سطوره، فما خالف يُنتظر ولا يُرفض
+  const refLines = invoiceLinesOf(r, v.ref_invoice_id);
+  const priorLines = prior.map((n) => ({ n, lines: invoiceLinesOf(r, n.id) }));
+  if (linesShort(refLines, num(ref.subtotal_halalas)) || priorLines.some((x) => linesShort(x.lines, -num(x.n.subtotal_halalas)))) return AWAIT;
+  const lineless = !refLines.length || priorLines.some((x) => !x.lines.length);
+  const byCode = remainingByCodeOf(refLines, priorLines.map((x) => ({ tax: num(x.n.tax_halalas), lines: x.lines })));
   const x = creditNoteAmounts({ subtotal: num(ref.subtotal_halalas), tax: num(ref.tax_halalas) }, byCode, left, sub);
   const total = sub + x.tax;
-  if (num(v.tax_halalas) !== -x.tax || num(v.total_halalas) !== -total) return no('creditNote');
+  if (num(v.tax_halalas) !== -x.tax || num(v.total_halalas) !== -total) return lineless ? AWAIT : no('creditNote');
   if (total > num(ref.total_halalas) + prior.reduce((s, n) => s + num(n.total_halalas), 0)) return no('creditNote');
   // سطورٌ صافيها دون صافي رأسه لم تصل كلها بعد فيُنتظر
   if (-lines.reduce((s, l) => s + mulQty(num(l.qty), num(l.price_halalas)), 0) < sub) return AWAIT;
   const key = (code: TaxCode, pct: number, price: number) => code + '|' + pct + '|' + price;
   const got = lines.map((l) => key(lineTaxCode(l.tax_code, num(l.tax_pct)), num(l.tax_pct), mulQty(num(l.qty), num(l.price_halalas)))).sort();
   const exp = x.lines.map((l) => key(l.code, l.pct, l.price)).sort();
-  return got.join() === exp.join() ? '' : no('creditNote');
+  return got.join() === exp.join() ? '' : lineless ? AWAIT : no('creditNote');
+}
+
+/**
+ * سطور فاتورةٍ أو إشعارٍ لم تكتمل بعد: صافيها (بلا إشارة) دون صافي رأسها، أو خالفه وهي من حفظين (twoSaves) · وبلا سطورٍ لا يُحكم
+ * (فاتورةٌ قديمة قبل السطور)
+ */
+function linesShort(lines: Array<StoredInvoiceLine & { sort: number }>, head: number): boolean {
+  if (!lines.length) return false;
+  const net = Math.abs(lines.reduce((s, l) => s + mulQty(num(l.qty), num(l.price_halalas)), 0));
+  return net < Math.abs(head) || (net !== Math.abs(head) && twoSaves(lines));
 }
 
 /** سطور القيد المتوقعة من مستنده · 'await' لمستندٍ لم يصل · أو سبب الرفض */

@@ -279,4 +279,47 @@ describe('إعادة اشتقاق قيود فاتورة المبيعات وإش�
     expect(net(s.owner, '1200')).toBe(57500);
     s.close();
   });
+
+  test('إيجابي · فاتورةٌ مختلطة وإشعارٌ عليها في جلسةٍ واحدة، ووصل قيد الإشعار قبل سطر الفاتورة المعفى: يُنتظر ثم يُقبل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const id = mixed(s.dev, s.ua);
+    const cn = credit(s.dev, id, 50000);
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^invoice$/);
+    expect(ids.length).toBe(2);
+    const k = ids.find((x) => s.r.docs.get('journal_entries__' + x)?.d?.src_id === cn)!;
+    const late = holdBack(s.r, (d) => d.t === 'invoice_lines' && d.d?.invoice_id === id && d.d?.tax_code === 'E');
+    expect(late.count).toBe(1);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(false);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    for (const x of ids) {
+      expect(reasonOf(s.owner, x)).toBe('');
+      expect(has(s.owner, x)).toBe(true);
+    }
+    s.close();
+  });
+
+  test('إيجابي · قيد إشعارٍ من جلسة فاتورته وصل قبل سطورها كلها: يُنتظر ثم يُقبل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const id = mixed(s.dev, s.ua);
+    const cn = credit(s.dev, id, 50000);
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^invoice$/);
+    const k = ids.find((x) => s.r.docs.get('journal_entries__' + x)?.d?.src_id === cn)!;
+    const late = holdBack(s.r, (d) => d.t === 'invoice_lines' && d.d?.invoice_id === id);
+    expect(late.count).toBe(3);
+    await ownerPulls(s.owner, s.r);
+    expect(reasonOf(s.owner, k)).toBe('');
+    expect(has(s.owner, k)).toBe(false);
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    for (const x of ids) {
+      expect(reasonOf(s.owner, x)).toBe('');
+      expect(has(s.owner, x)).toBe(true);
+    }
+    s.close();
+  });
 });
