@@ -890,7 +890,9 @@
   "restore": {
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",
     "notInTrash": "Not in the trash · already restored",
-    "filedPeriod": "Its reversal falls in a period whose return was filed, so it cannot be restored into it · record it again with a date in an open period"
+    "filedPeriod": "Its reversal falls in a period whose return was filed, so it cannot be restored into it · record it again with a date in an open period",
+    "allDone": "All items were restored",
+    "partial": "Restored {{n}} of {{total}} · {{left}} remain in the trash: restore each alone to see why"
   },
   "bank": {
     "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"
@@ -948,7 +950,7 @@
       "vatOverTotal": "The VAT in the code exceeds the total · check the invoice",
       "rate": "The VAT in the code is not 15% of the net · the invoice may include exempt or zero-rated items",
       "supplierVat": "A supplier with the same name is registered under another VAT number · a supplier named with the seller VAT number is proposed, so review the supplier before saving",
-      "supplierArchived": "The supplier is archived · restore it from Suppliers and pick it; only the amounts were filled"
+      "supplierArchived": "The supplier “{{name}}” is archived · restore it from Suppliers and pick it; only the amounts were filled"
     },
     "newSupplier": "Unregistered supplier",
     "newSupplierBody": "“{{name}}” with VAT number {{vat}} is not in your suppliers · add it and record the invoice under it?",

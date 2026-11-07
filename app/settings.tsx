@@ -1367,8 +1367,10 @@ export default function Settings() {
                       { label: 'تراجع', variant: 'ghost' },
                       { label: 'استعادة الكل', variant: 'primary', onPress: async () => {
                         try {
-                          await restoreAllFromTrash(db, (d2, t2) => setProgress('جاري الاستعادة · ' + d2 + ' من ' + t2));
-                          toast('تمت استعادة جميع العناصر بنجاح');
+                          const total = data.trash.length;
+                          const back = await restoreAllFromTrash(db, (d2, t2) => setProgress('جاري الاستعادة · ' + d2 + ' من ' + t2));
+                          // وما بقي في السلة يُقال عدده، وسببه يظهر حين يُستعاد وحده (المدقق الخارجي N٤: كانت «جميع العناصر بنجاح» وبعضها باقٍ)
+                          toast(back >= total ? t('restore.allDone') : t('restore.partial', { n: back, total, left: total - back }));
                         } catch (e2) {
                           reportFailure({ title: 'تعذّرت الاستعادة', e: e2 });
                         }

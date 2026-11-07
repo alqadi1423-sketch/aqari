@@ -24,6 +24,15 @@ export interface PurchaseQrDraft {
 
 // والرقم أرقامه وحدها: بشرطاتٍ أو مسافاتٍ أو علامة اتجاه (U+200F) كما يُلصق (المدقق الخارجي L٣)
 const normVat = (v: string | null | undefined) => latinDigits(String(v ?? '')).replace(/\D/g, '');
+/**
+ * بطاقةٌ تحمل الرقم: أرقامها كلها، أو مقطعٌ منها بين فواصل غير الشرطة والمسافة (المدقق الخارجي N١: «300000000000003 / س.ت 1010101010»
+ * فيها الرقم الضريبي ورقم السجل التجاري، فكانت تُعدّ رقماً آخر)
+ */
+const cardHasVat = (card: string | null | undefined, vat: string): boolean => {
+  if (!vat) return false;
+  const text = latinDigits(String(card ?? ''));
+  return normVat(text) === vat || text.split(/[^\d\s\-.\u200E\u200F]+/).some((seg) => normVat(seg) === vat);
+};
 
 export function purchaseDraftFromQr(db: DB, qr: ZatcaQr, now: () => string = today): PurchaseQrDraft {
   const vat = qr.warnings.includes('vatNo') ? '' : normVat(qr.vatNo);
@@ -32,9 +41,9 @@ export function purchaseDraftFromQr(db: DB, qr: ZatcaQr, now: () => string = tod
   // رقم البائع (J١: كانت فاتورة بائعٍ برقمٍ آخر تُنسب صامتةً لموردٍ بالاسم نفسه فتُحفظ برقم البطاقة لا برقم البائع)
   const live = db.all<{ id: string; name: string; vat: string | null; archived: number }>(
     `SELECT id, name, vat, archived FROM suppliers WHERE deleted_at IS NULL ORDER BY archived, created_at`);
-  const byVat = vat ? live.find((s) => normVat(s.vat) === vat) : undefined;
+  const byVat = vat ? live.find((s) => cardHasVat(s.vat, vat)) : undefined;
   const byName = live.find((s) => s.name.trim() === seller);
-  const nameClash = !byVat && !!byName && !!vat && !!normVat(byName.vat) && normVat(byName.vat) !== vat;
+  const nameClash = !byVat && !!byName && !!vat && !!normVat(byName.vat) && !cardHasVat(byName.vat, vat);
   const match = byVat ?? (nameClash ? undefined : byName);
   // والمورد المؤرشف لا يختاره نموذج الفاتورة (المدقق الخارجي L٤): يُنبَّه ليُعاد من الموردين، ولا يُقترح موردٌ مكرَّر باسمه
   const archived = !!match && Number(match.archived) === 1;

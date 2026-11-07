@@ -3,6 +3,7 @@
  * التسجيل: مصروف الفئة + ضريبة / ذمم دائنة. السداد: 2100 / 1100 + حركة بنكية.
  */
 import type { DB } from '../db/adapter';
+import { RuleViolation } from './contracts/service';
 import { requireCash, entryCashEffect } from './cashGuard';
 import { uid } from './ids';
 import { today } from './dates';
@@ -60,7 +61,8 @@ export function purchaseByQrKey(db: DB, key: string, exceptId = ''): { id: strin
 
 function rejectDuplicateQr(db: DB, key: string, exceptId = ''): void {
   const dup = purchaseByQrKey(db, key, exceptId);
-  if (dup) throw new Error(t('purchaseQr.duplicate', { no: dup.no, date: dup.date }));
+  // رفضٌ مقصود لا عطل: تعرضه الواجهة رسالةً ولا تكتبه تقرير عطل (المدقق الخارجي N٤)
+  if (dup) throw new RuleViolation(t('purchaseQr.duplicate', { no: dup.no, date: dup.date }));
 }
 
 // بلغة الهيئة: «قابلة للخصم» المصطلح الرسمي · الاسم وحده يكفي بلا شرح

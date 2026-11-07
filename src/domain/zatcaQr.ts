@@ -139,8 +139,11 @@ function decodeZatcaQrNow(payload: string): ZatcaQrResult {
     i += 2 + len;
   }
   const text = (tag: number): string | null => { const v = tags.get(tag); return v ? utf8(v) : null; };
-  const [seller, vatNo, issuedAt, totalS, vatS] = [1, 2, 3, 4, 5].map(text);
-  if (seller == null || vatNo == null || issuedAt == null || totalS == null || vatS == null) return { ok: false, error: 'missing' };
+  const [seller, vatRaw, issuedAt, totalS, vatS] = [1, 2, 3, 4, 5].map(text);
+  // واسم البائع الفارغ ناقصٌ كغيابه (المدقق الخارجي N٣: كان يُقترح موردٌ بلا اسم)
+  if (seller == null || !seller.trim() || vatRaw == null || issuedAt == null || totalS == null || vatS == null) return { ok: false, error: 'missing' };
+  // وعلامات الاتجاه والمسافات حول رقم البائع لا تُعدّ منه (N٢: كانت تجعله «ليس بصيغة الهيئة» فلا تُعرف بطاقته)
+  const vatNo = vatRaw.replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069\s]/g, '');
   const total = halalasOf(totalS);
   const vat = halalasOf(vatS);
   if (total == null || vat == null) return { ok: false, error: 'format' };

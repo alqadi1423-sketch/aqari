@@ -12,6 +12,8 @@ import { redactForReport } from './redact';
 import { auditActor, auditWriter, AUDIT_WRITER_SQL } from './audit';
 import { APP_VERSION_LABEL } from '../version';
 import ar from '../i18n/locales/ar.json';
+import en from '../i18n/locales/en.json';
+import titlesList from './failureTitles.json';
 
 /** نوع الصف في سجل العمليات · قيمةٌ مخزّنة تقرؤها القواعد وقائمة الأقسام */
 export const CRASH_ENTITY = 'تقرير عطل'; // i18n-exempt: قيمة مخزّنة
@@ -79,18 +81,45 @@ function knownWords(): Set<string> {
 export const FAILURE_ENTITY_PREFIX = 'فشل '; // i18n-exempt: نوع سطر الفشل المخزَّن
 /** موضع الفشل محجوباً كموضع تقرير العطل · لسطر الفشل في سجل العمليات، ويقرؤه أعضاء المنشأة (H٣) */
 export const failureWhere = (where: string): string => whereLabel(where);
+/**
+ * عناوين الفشل المكتوبة في الكود (failureTitles.json يولّده tests/failureTitles.test.ts) ونصوص ملفَي الترجمة: الموضع المطابق لأحدها
+ * حرفاً بحرف نصٌّ من الكود لا بيانات فيه، فيبقى كما هو مقروءاً ومميِّزاً (المدقق الخارجي N١٠: كانت «تعذّر الحذف» و«تعذّر الحذف
+ * النهائي» تصيران «تعذّر …» واحداً، وعناوين الإنجليزية «…» وحده)
+ */
+let codeTitles: Set<string> | null = null;
+function knownTitles(): Set<string> {
+  if (codeTitles) return codeTitles;
+  const set = new Set<string>(titlesList as string[]);
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') { if (!/\{\{/.test(v)) set.add(v); }
+    else if (v && typeof v === 'object') Object.values(v as Record<string, unknown>).forEach(walk);
+  };
+  walk(ar);
+  walk(en);
+  return (codeTitles = set);
+}
+
+const WORD = /[\u0620-\u065F\u066E\u066F\u0670-\u06D3\u06D5\u06EE\u06EF\u06FA-\u06FFA-Za-z]+/g;
+
 const whereLabel = (where: string): string => {
+  const raw = String(where ?? '').trim();
+  if (knownTitles().has(raw)) return raw.slice(0, WHERE_MAX);
+  // وما سواها: لا يبقى بعد الكلمات الثلاث الأولى شيء، والكلمة ما بين أي فاصلين (مسافة أو شرطة سفلية أو شرطة أو نقطة · المدقق الخارجي
+  // L٧ وN٩: «باسم الشهري» و«باسم_الشهري» كانا يعبران) · العنوان من الكود في أوله، وما بعده قد يكون اسماً
+  let n = 0;
+  let cut = raw.length;
+  for (const m of raw.matchAll(WORD)) {
+    if (++n === 4) { cut = m.index!; break; }
+  }
+  const head = raw.slice(0, cut).trimEnd() + (cut < raw.length ? ' …' : '');
   const known = knownWords();
-  return String(where ?? '')
+  return head
     .replace(/«[^»]*»/g, '«…»')
     .replace(/[\d٠-٩۰-۹]+/g, '#')
     .replace(/[^\s\u0600-\u06FF«»#…·:،.()\-]+/g, '…')
     // وحروف الكتابة العربية الممتدة (الفارسية والأردية: پ چ ژ ک گ ی ہ ھ …) من الكلمة نفسها (المدقق الخارجي J١٢: كانت تعبر وتقطعها)
     .replace(/[\u0620-\u065F\u066E\u066F\u0670-\u06D3\u06D5\u06EE\u06EF\u06FA-\u06FF]+/g, (w) => (known.has(w) ? w : '…'))
-    .replace(/…(?:[\s.\-]*…)+/g, '…')
-    // ولا يبقى بعد الكلمات الثلاث الأولى شيء: العنوان من الكود في أوله، وما بعده قد يكون اسماً كلماته من كلمات التطبيق نفسها
-    // (المدقق الخارجي L٧: «باسم الشهري» يعبر كاملاً) · والأثر في الكود يحمل الموضع
-    .replace(/^((?:\S+\s+){2}\S+)\s+\S[\s\S]*$/, '$1 …')
+    .replace(/…(?:[\s.\-_]*…)+/g, '…')
     .slice(0, WHERE_MAX);
 };
 

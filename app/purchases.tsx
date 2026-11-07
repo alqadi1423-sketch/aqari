@@ -1,5 +1,5 @@
 /** فواتير الشراء · التسجيل بالفئات وبنود التأسيس والعدادات، والسداد والتراجع */
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { CashShortNote } from '../src/ui/CashGate';
 import { cashShortfall } from '../src/domain/cashGuard';
 import { useLocalSearchParams } from 'expo-router';
@@ -367,9 +367,9 @@ export default function Purchases() {
   // بنود الفاتورة (الهجرة ٢٩) · اختيارية
   const [lines, setLines] = useState<LineDraft[]>([]);
   const openNew = () => {
-    if (!suppliers.length) { toast('أضف مورداً أولاً'); return; }
+    // وبلا موردين يُفتح النموذج أيضاً: «قراءة QR الفاتورة» تضيف المورد من رمزه (المدقق الخارجي N٨ · «رمز QR أولاً»)، والحفظ يطلب مورداً
     setEditingId(null);
-    setSupplier(suppliers[0].name); setDate(today()); setDue(''); setCategory(''); setIncorpItem('');
+    setSupplier(suppliers[0]?.name ?? ''); setDate(today()); setDue(''); setCategory(''); setIncorpItem('');
     setAmortize(false); setAmortizeMonths(''); setPropertyId(''); setUnitSel('');
     setMeterId(''); setMeterReading(''); setSubtotal(''); setTaxStr(''); setTotalStr('');
     setTouched({ base: false, tax: false, total: false });
@@ -377,6 +377,7 @@ export default function Purchases() {
     setPendingFile(null);
     setQrKey('');
     setQrFile(null);
+    qrSeq.current++;
     setLines([]);
     setFormOpen(true);
   };
@@ -386,16 +387,21 @@ export default function Purchases() {
   // مفتاح رمز الفاتورة المقروءة (الهجرة ٥٤): يُحفظ معها فلا تُسجَّل مرتين
   const [qrKey, setQrKey] = useState('');
   const [qrFile, setQrFile] = useState<PickedFile | null>(null);
+  const qrSeq = useRef(0);
   const fillFromQr = async (img: PickedFile, kind: 'image' | 'file' = 'image') => {
+    // وقراءةٌ بدأت لفاتورةٍ جديدة لا تكتب في نموذجٍ تغيّر أثناءها (تعديل فاتورةٍ أخرى أو إغلاق · المدقق الخارجي N٦)
+    const seq = ++qrSeq.current;
     setQrBusy(true);
     try {
       let values: string[];
       try { values = kind === 'image' ? await readQrFromImage(img.uri) : await readQrFromInvoiceFile(img); }
       catch (e) {
+        if (seq !== qrSeq.current) return;
         const m = (e as Error).message;
         toast(t(m === 'qr-unavailable' ? 'purchaseQr.unavailable' : m === 'qr-credit' ? 'purchaseQr.creditNote' : 'purchaseQr.readFailed'));
         return;
       }
+      if (seq !== qrSeq.current) return;
       const r = pickZatcaQr(values);
       if (!r.ok) {
         dialog({ title: t('purchaseQr.notRead'), body: t('purchaseQr.err.' + r.error), actions: [{ label: t('common.ok'), variant: 'primary' }] });
@@ -410,8 +416,10 @@ export default function Purchases() {
       }
       const d = purchaseDraftFromQr(db, r.qr);
       const apply = (name: string) => {
+        if (seq !== qrSeq.current) return;
         setQrKey(key);
-        if (name) setSupplier(name);
+        // والعدّاد لموردٍ قبله لا يبقى مختاراً كما في الاختيار اليدوي (المدقق الخارجي N٥: كانت تُسجَّل قراءةٌ لغير صاحبه)
+        if (name) { setSupplier(name); setMeterId(''); }
         setDate(d.date);
         setSubtotal(fmt(d.subtotalHalalas).replace(/,/g, ''));
         setTaxStr(fmt(d.taxHalalas).replace(/,/g, ''));
@@ -421,12 +429,13 @@ export default function Purchases() {
         if (!pendingFile || pendingFile === qrFile) { setPendingFile(img); setQrFile(img); }
         dialog({
           title: t('purchaseQr.filled'),
-          body: [t('purchaseQr.review'), ...d.warnings.map((w) => '• ' + t('purchaseQr.warn.' + w))].join('\n'),
+          body: [t('purchaseQr.review'), ...d.warnings.map((w) => '• ' + t('purchaseQr.warn.' + w, { name: d.supplier }))].join('\n'),
           actions: [{ label: t('common.ok'), variant: 'primary' }],
         });
       };
       if (d.supplierId) { apply(d.supplier); return; }
       // والمورد المؤرشف يُعاد من الموردين، فتُعبَّأ المبالغ وحدها ويُقال ذلك (المدقق الخارجي L٤)
+      // (والتنبيه يسمّيه: d.supplier · N٧)
       if (d.warnings.includes('supplierArchived')) { apply(''); return; }
       dialog({
         title: t('purchaseQr.newSupplier'),
@@ -467,7 +476,7 @@ export default function Purchases() {
     }>(`SELECT * FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
     // ولا يبقى من فاتورةٍ جديدة لم تُحفظ ملفٌ معلّق أو رمزٌ مقروء (المدقق الخارجي L٦: كان يُرفق صامتاً بالفاتورة المعدّلة)
-    setPendingFile(null); setQrKey(''); setQrFile(null);
+    setPendingFile(null); setQrKey(''); setQrFile(null); qrSeq.current++;
     setEditingId(id);
     setSupplier(p.supplier_name); setDate(p.date); setDue(p.due); setCategory(p.category);
     setIncorpItem(p.incorp_item); setAmortize(!!Number(p.amortize));
@@ -649,6 +658,7 @@ export default function Purchases() {
   const [imbalance, setImbalance] = useState<{ bh: number; xh: number; gh: number } | null>(null);
 
   const save = () => {
+    if (!supplier.trim()) { toast('أضف مورداً أولاً'); return; }
     if (taxStatus === TS_DEDUCTIBLE) {
       if (!(selectedSupplier?.vat ?? '').trim()) {
         dialog({
@@ -687,7 +697,7 @@ export default function Purchases() {
   return (
     <Screen title="فواتير الشراء" icon="wrench" scroll={false}
       /* لا مورد فلا فاتورة شراء تُسجَّل · الزر لا يُعرض بدل أن يُعرض ويرفض */
-      actions={suppliers.length && perm.add ? <BtnPrimary small title="+ تسجيل فاتورة شراء" onPress={openNew} /> : undefined}>
+      actions={perm.add ? <BtnPrimary small title="+ تسجيل فاتورة شراء" onPress={openNew} /> : undefined}>
       {!ready ? <Skeleton /> : (
         <FlatList
           data={rows}
