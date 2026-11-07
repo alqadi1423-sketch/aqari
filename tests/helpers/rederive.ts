@@ -84,3 +84,9 @@ export function srcAsMember(r: MemoryRemote, re: RegExp): string[] {
   }
   return ids;
 }
+/** مستنداتٌ يتأخر وصولها (رفع العضو على دفعات، أو سحب المالك بين دفعتين): تُرفع من الحساب وتعود بـ release */
+export function holdBack(r: MemoryRemote, pick: (d: RemoteDoc) => boolean) {
+  const held = [...r.docs.values()].filter(pick);
+  for (const d of held) r.docs.delete(d.id);
+  return { count: held.length, release: () => { for (const d of held) r.inject(d); } };
+}

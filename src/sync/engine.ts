@@ -675,6 +675,7 @@ function sourceReader(db: DB): SourceReader {
       }
       return [...out.values()];
     },
+    fresh: (table, key) => !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 0`, [table, key]),
     entries: (srcType, srcId) => db.all<{ id: string; src_type: string | null; src_id: string | null; reversed_by: string | null; date: string | null }>(
       `SELECT id, src_type, src_id, reversed_by, date FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = ?`, [srcType, srcId, POSTED])
       .map((e) => ({ ...e, lines: linesHere(e.id) })),

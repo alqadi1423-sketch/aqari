@@ -7,7 +7,7 @@
 import { savePurchase, payPurchase, deletePurchase, restorePurchase, type PurchaseInput } from '@/domain/purchases';
 import { ownerCashIn } from '@/domain/cashOps';
 import { addProperty, addUnit } from './helpers/fixtures';
-import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember } from './helpers/rederive';
+import { pair, sync, ownerPulls, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
 
 const DEDUCTIBLE = 'فاتورة ضريبية · قابلة للخصم'; // i18n-exempt: حالة مخزّنة
@@ -169,6 +169,31 @@ describe('إعادة اشتقاق قيدي فاتورة الشراء وسداد�
     await ownerPulls(s.owner, s.r);
     expect(reasonOf(s.owner, k)).toBe('');
     expect(has(s.owner, k)).toBe(true);
+    s.close();
+  });
+
+  test('إيجابي · قيد فاتورةٍ وصل قبل بند أصلها وحده، أو قبل بنودها كلها، يُنتظر ثم يُقبل حين تصل (المتحقق المستقل)', async () => {
+    const s = await setup();
+    const a = buy(s.dev, s.ua, withAsset(s.ua));
+    const b = buy(s.dev, s.ua, withAsset(s.ua));
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^purchase$/);
+    expect(ids.length).toBe(2);
+    // فاتورةٌ وصل بندها العادي دون بند أصلها، وأخرى لم يصل من بنودها شيء
+    const late = holdBack(s.r, (d) => d.t === 'purchase_lines' && (d.d?.purchase_id === b || (d.d?.purchase_id === a && !!Number(d.d?.is_asset))));
+    expect(late.count).toBe(3);
+    await ownerPulls(s.owner, s.r);
+    for (const k of ids) {
+      expect(reasonOf(s.owner, k)).toBe('');
+      expect(has(s.owner, k)).toBe(false);
+    }
+    late.release();
+    await ownerPulls(s.owner, s.r);
+    for (const k of ids) {
+      expect(reasonOf(s.owner, k)).toBe('');
+      expect(has(s.owner, k)).toBe(true);
+    }
+    expect(net(s.owner, '1410')).toBe(2 * 300001);
     s.close();
   });
 });

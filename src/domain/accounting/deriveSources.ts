@@ -28,7 +28,7 @@ import { remainingByCodeOf, creditNoteAmounts, type StoredInvoiceLine } from '..
 import { lineTaxCode, type TaxCode } from '../taxCode';
 import { mulQty } from '../money';
 import { lineCosts, splitQty } from '../assets/purchaseLines';
-import { ASSET_CATEGORIES } from '../assets/catalog';
+import { ASSET_CATEGORIES, isAssetCategory } from '../assets/catalog';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
 export interface SrcLine {
@@ -48,6 +48,8 @@ export interface SourceReader {
   row<T>(table: string, key: string): T | null;
   /** صفوف جدولٍ بعمودٍ وقيمته: هنا، وأحدث نسخها في الوارد تغلبها، والمحذوف فيه يُسقطها (سطور المستند وأصوله وإشعاراته) */
   rows<T>(table: string, col: string, value: string): T[];
+  /** للصف نسخةٌ في الوارد لم تُطبَّق هنا بعد (سطرٌ وصل في هذا السحب، لا قائمٌ من قبل) */
+  fresh(table: string, key: string): boolean;
   /**
    * القيود المرحّلة بمصدرها هنا وحده: ما في الوارد لم يُفحص بعد (عاكسٌ مزوّر فيه كان يُحتسب) · وما يُنتظر منه يُنتظر به، فيُعاد
    * القيد في المرور التالي بعد تطبيقه
@@ -148,6 +150,16 @@ interface PurchaseRow {
   payment_journal_entry_id: string | null; paid: number; paid_date: string | null;
 }
 
+/**
+ * سطور مستندٍ بعضها قائمٌ هنا وبعضها وصل في هذا السحب (المتحقق المستقل): تعديل السطور يحذف القديمة ويُدرج جديدةً بمعرّفاتٍ أخرى،
+ * والحذف والإدراج في رتبةٍ واحدة يُرتَّبان بالمفتاح فيقعان في دفعاتٍ مختلفة، فقد تصل الجديدة قبل حذف القديمة · فما خالف رأسه
+ * منها يُنتظر ولا يُرفض
+ */
+function mixed(r: SourceReader, table: string, rows: Array<{ id?: unknown }>): boolean {
+  const fresh = rows.map((x) => r.fresh(table, String(x.id ?? '')));
+  return fresh.some(Boolean) && fresh.some((x) => !x);
+}
+
 /** سطور أصول بنود الفاتورة في قيد تسجيلها وأبعاد كل سطر · وشكلٌ بلا أصول */
 interface AssetForm { lines: EntryLine[]; specs: DimSpec[][] }
 
@@ -157,17 +169,22 @@ interface AssetForm { lines: EntryLine[]; specs: DimSpec[][] }
  * وعقارها) · وبنودٌ كتبها «تحويل المصروف إلى أصول» (أصولها من مصدر convert) لم تكن في قيد التسجيل، فلا أصول فيه · والبنود التي
  * أثبتت تكلفة أصولٍ قائمة وحدها (لا مصدر يميّز وقت كتابتها) تُقبل بالشكلين · 'await' لأصلٍ لم يصل
  */
-function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, subtotal: number, tax: number, deductible: boolean, dims: DimSpec): AssetForm[] | typeof AWAIT {
+function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, subtotal: number, tax: number, deductible: boolean, dims: DimSpec,
+  assetAccount: boolean): AssetForm[] | typeof AWAIT {
   const none: AssetForm = { lines: [], specs: [] };
   const lines = r.rows<{ id: string; qty: number; amount_halalas: number; is_asset: number; asset_category: string | null; sort: number; deleted_at?: string | null }>(
     'purchase_lines', 'purchase_id', purchaseId).filter((l) => !l.deleted_at).sort((a, b) => num(a.sort) - num(b.sort));
-  if (!lines.some((l) => num(l.is_asset))) return [none];
+  // لا بند هنا: الفاتورة بلا بنود لا ترحّل حساب أصل، فقيدٌ بحساب أصلٍ بنودُه لم تصل بعد (المتحقق المستقل: كان يُرفض بالمصروف)
+  if (!lines.length) return assetAccount ? AWAIT : [none];
   const assets = r.rows<{ id: string; purchase_line_id: string | null; unit_id: string | null; property_id: string | null; source: string | null; deleted_at?: string | null }>(
     'assets', 'purchase_id', purchaseId).filter((a) => !a.deleted_at);
   if (assets.some((a) => a.source === 'convert')) return [none];
   // بنود الحفظ مجموعها أساس الفاتورة (validateLines) · ودونه بنودٌ لم تصل بعد: العضو يرفع على دفعاتٍ صغيرة بترتيب الجداول، فقد يصل
-  // القيد ورأس الفاتورة قبل بقية بنودها
-  if (lines.reduce((s, l) => s + num(l.amount_halalas), 0) < subtotal) return AWAIT;
+  // القيد ورأس الفاتورة قبل بقية بنودها · ويُفحص قبل البحث عن بند أصل (المتحقق المستقل: بند الأصل وحده إن تأخر بدت الفاتورة بلا أصول
+  // فرُفض قيدها) · وفوقه وبعضها هنا وبعضها في الوارد: بنودٌ جديدة وصلت قبل حذف القديمة
+  const sum = lines.reduce((s, l) => s + num(l.amount_halalas), 0);
+  if (sum < subtotal || (sum !== subtotal && mixed(r, 'purchase_lines', lines))) return AWAIT;
+  if (!lines.some((l) => num(l.is_asset))) return [none];
   const costs = lineCosts(lines.map((l) => ({ descr: '', qty: num(l.qty), amountHalalas: num(l.amount_halalas), isAsset: !!num(l.is_asset) })), tax, deductible);
   const form: AssetForm = { lines: [], specs: [] };
   for (const [i, l] of lines.entries()) {
@@ -439,7 +456,7 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       }
       if (p.journal_entry_id && p.journal_entry_id !== e.id) return no('noEntry');
       const deductible = p.tax_status === TS_DEDUCTIBLE;
-      const forms = purchaseAssetForms(db, r, e.srcId, subtotal, tax, deductible, dims);
+      const forms = purchaseAssetForms(db, r, e.srcId, subtotal, tax, deductible, dims, nonZero(e.lines).some((l) => isAssetCategory(String(l.account_code))));
       if (forms === AWAIT) return AWAIT;
       const built = forms.map((f) => want(purchaseLedgerLines(
         { category: p.category ?? '', subtotal, tax, total, roundingDiff: total - subtotal - tax, deductible }, f.lines),
