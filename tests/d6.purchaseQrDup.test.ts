@@ -32,7 +32,7 @@ describe('الفاتورة المكررة تُرفض', () => {
     const db = memDb();
     const id = savePurchase(db, base({ qrKey: key }));
     const no = db.get<{ no: string }>(`SELECT no FROM purchases WHERE id = ?`, [id])!.no;
-    expect(purchaseByQrKey(db, key)).toEqual({ id, no, date: '2026-11-01' });
+    expect(purchaseByQrKey(db, key)).toEqual({ id, no, date: '2026-11-01', exact: true });
     expect(() => savePurchase(db, base({ qrKey: key }))).toThrow(no);
     expect(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM purchases`)!.n).toBe(1);
   });

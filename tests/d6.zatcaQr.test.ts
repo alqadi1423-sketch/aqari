@@ -128,7 +128,8 @@ describe('الربط بشاشة المشتريات (لا تعمل الواجهة
     expect(src).toMatch(/readQrFromImage\(/);
     expect(src).toMatch(/pickZatcaQr\(/);
     expect(src).toMatch(/purchaseDraftFromQr\(/);
-    expect(src).toMatch(/setPendingFile\(img\)/);
+    // (تحديثٌ وظيفي بمرجع صورة الرمز · المدقق الخارجي R١٠)
+    expect(src).toMatch(/setPendingFile\(\(cur\) => \(!cur \|\| cur === qrFileRef\.current \? \(setQrFile\(img\), img\) : cur\)\)/);
   });
   test('الخدمة تقرأ بوحدة ML Kit للرموز وتفشل برسالةٍ مفهومة إن غابت', () => {
     expect(svc).toMatch(/import\('@react-native-ml-kit\/barcode-scanning'\)/);

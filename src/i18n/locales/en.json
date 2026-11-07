@@ -610,7 +610,8 @@
     "filedLocked": "This purchase is in a filed VAT return, so it is not edited or deleted · correct it with an entry in an open period from the ledger",
     "filedPeriod": "This date's period has a filed return, so no purchase is recorded in it · use a date in an open period",
     "paidLocked": "This purchase is paid, so it is not edited while its payment stands · undo the payment first so its entry is reversed, then edit it and pay it again",
-    "inTrash": "This purchase is in the trash, so it is not edited · restore it from the trash first, then edit it"
+    "inTrash": "This purchase is in the trash, so it is not edited · restore it from the trash first, then edit it",
+    "negativeAmounts": "A purchase invoice can't have negative amounts, and the tax can't exceed the total · check the net and the tax"
   },
   "bankTx": {
     "descrRequired": "Enter a description",
@@ -963,7 +964,10 @@
     "keepSupplier": "Amounts only",
     "duplicate": "This invoice is already recorded as {{no}} on {{date}} · it cannot be recorded twice",
     "file": "E-invoice file (PDF or XML)",
-    "creditNote": "The file is a credit note from the supplier, not a purchase invoice · record it as a reduction of its invoice"
+    "creditNote": "The file is a credit note from the supplier, not a purchase invoice · record it as a reduction of its invoice",
+    "maybeDuplicate": "May already be recorded",
+    "maybeDuplicateBody": "Purchase invoice {{no}} dated {{date}} has the same supplier, total and tax, and was recorded without a code · is this a different invoice?",
+    "anotherInvoice": "It's a different invoice"
   },
   "bankStatement": {
     "auditModule": "Bank statement",

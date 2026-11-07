@@ -24,7 +24,7 @@ import { Icon } from '../src/ui/icons';
 import {
   savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax, priorPaymentCashOut,
   TAX_STATUSES, taxStatusesFor, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
-  type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled, purchaseEditBlock, purchaseByQrKey,
+  type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled, purchaseEditBlock, purchaseByQrKey, purchaseLookalike,
 } from '../src/domain/purchases';
 import { today as todayFn } from '../src/domain/dates';
 import { metersForPurchase } from '../src/domain/meters';
@@ -386,7 +386,9 @@ export default function Purchases() {
   const [qrBusy, setQrBusy] = useState(false);
   // مفتاح رمز الفاتورة المقروءة (الهجرة ٥٤): يُحفظ معها فلا تُسجَّل مرتين
   const [qrKey, setQrKey] = useState('');
-  const [qrFile, setQrFile] = useState<PickedFile | null>(null);
+  // صورة الرمز المرفقة أصلاً · مرجعٌ لا حالة: يُقرأ بعد انتظار القراءة فلا يُقارَن بلقطةٍ قديمة (المدقق الخارجي R١٠)
+  const qrFileRef = useRef<PickedFile | null>(null);
+  const setQrFile = (f: PickedFile | null) => { qrFileRef.current = f; };
   const qrSeq = useRef(0);
   const fillFromQr = async (img: PickedFile, kind: 'image' | 'file' = 'image') => {
     // وقراءةٌ بدأت لفاتورةٍ جديدة لا تكتب في نموذجٍ تغيّر أثناءها (تعديل فاتورةٍ أخرى أو إغلاق · المدقق الخارجي N٦)
@@ -410,7 +412,7 @@ export default function Purchases() {
       // «والمكررة تُرفض»: فاتورةٌ مسجّلة من رمزها لا تُعبَّأ من جديد
       const key = zatcaQrKey(r.qr);
       const dup = purchaseByQrKey(db, key);
-      if (dup) {
+      if (dup?.exact) {
         dialog({ title: t('purchaseQr.notRead'), body: t('purchaseQr.duplicate', { no: dup.no, date: dup.date }), actions: [{ label: t('common.ok'), variant: 'primary' }] });
         return;
       }
@@ -419,7 +421,8 @@ export default function Purchases() {
         if (seq !== qrSeq.current) return;
         setQrKey(key);
         // والعدّاد لموردٍ قبله لا يبقى مختاراً كما في الاختيار اليدوي (المدقق الخارجي N٥: كانت تُسجَّل قراءةٌ لغير صاحبه)
-        if (name) { setSupplier(name); setMeterId(''); }
+        // و«المبالغ وحدها» والمؤرشف يُفرغان المورد فيختاره المستخدم، لا يبقى موردٌ لم يقله الرمز ولا هو (المدقق الخارجي R٩)
+        if (name) { setSupplier(name); setMeterId(''); } else { setSupplier(''); setMeterId(''); }
         // وفئته الافتراضية كاختياره يدوياً إن لم تُختر فئة (المدقق الخارجي P٧: كان المصروف يُرحَّل على حسابٍ غير حسابه)
         const cat = name ? db.get<{ c: string | null }>(
           `SELECT default_category AS c FROM suppliers WHERE name = ? AND archived = 0 AND deleted_at IS NULL`, [name])?.c : null;
@@ -430,13 +433,15 @@ export default function Purchases() {
         setTotalStr(fmt(d.totalHalalas).replace(/,/g, ''));
         setTouched({ base: true, tax: true, total: true });
         // والصورة أصلُ هذه الفاتورة: تحلّ محل صورة رمزٍ قُرئ قبلها في النموذج نفسه، لا محل ملفٍ أرفقه المستخدم (المدقق الخارجي J١٠)
-        if (!pendingFile || pendingFile === qrFile) { setPendingFile(img); setQrFile(img); }
+        // (من المرفق الحالي لا من لقطة ما قبل القراءة: ملفٌ أرفقه المستخدم أثناءها يبقى · R١٠)
+        setPendingFile((cur) => (!cur || cur === qrFileRef.current ? (setQrFile(img), img) : cur));
         dialog({
           title: t('purchaseQr.filled'),
           body: [t('purchaseQr.review'), ...d.warnings.map((w) => '• ' + t('purchaseQr.warn.' + w, { name: d.supplier }))].join('\n'),
           actions: [{ label: t('common.ok'), variant: 'primary' }],
         });
       };
+      const choose = () => {
       if (d.supplierId) { apply(d.supplier); return; }
       // والمورد المؤرشف يُعاد من الموردين، فتُعبَّأ المبالغ وحدها ويُقال ذلك (المدقق الخارجي L٤)
       // (والتنبيه يسمّيه: d.supplier · N٧)
@@ -455,6 +460,20 @@ export default function Purchases() {
           { label: t('purchaseQr.keepSupplier'), variant: 'ghost', onPress: () => apply('') },
         ],
       });
+      };
+      // وفاتورةٌ بلا مفتاح تشبهها (سُجّلت يدوياً أو قبل الهجرة ٥٤): يُسأل المستخدم قبل التعبئة ولا تُسجَّل مرتين بلا كلمة (المدقق الخارجي R٣)
+      const like = dup ?? purchaseLookalike(db, { vat: r.qr.vatNo, seller: r.qr.sellerName, date: d.date, total: d.totalHalalas, tax: d.taxHalalas });
+      if (like) {
+        dialog({
+          title: t('purchaseQr.maybeDuplicate'), body: t('purchaseQr.maybeDuplicateBody', { no: like.no, date: like.date }),
+          actions: [
+            { label: t('purchaseQr.anotherInvoice'), variant: 'primary', onPress: () => { if (seq === qrSeq.current) choose(); } },
+            { label: t('common.cancel'), variant: 'ghost' },
+          ],
+        });
+        return;
+      }
+      choose();
     } catch (e) {
       // وما يرمي بعد القراءة (فكّ الرمز والمسودة) يُقال ولا يبقى وعداً مرفوضاً بلا رسالة (المدقق الخارجي L٥)
       reportFailure({ title: t('purchaseQr.notRead'), where: t('purchaseQr.read', { lng: 'ar' }), db, e });

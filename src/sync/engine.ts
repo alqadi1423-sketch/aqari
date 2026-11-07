@@ -18,7 +18,7 @@
 import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
-import { nextPurchaseNo } from '../domain/purchases';
+import { nextPurchaseNo, PAY_LABEL } from '../domain/purchases';
 import { postedAccum } from '../domain/assets/depreciation';
 import { t as tr } from '../i18n';
 import type { DB, SqlValue } from '../db/adapter';
@@ -965,10 +965,15 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> 
       if (head?.s === 'cash_op' && !db.get(`SELECT 1 FROM journal_lines WHERE entry_id = ? AND account_code IN ('4300', '5400')`, [entry.id])) {
         throw new Error(tr('sync.bankTxOver', { no: nowLive.no, lng: 'ar' }));
       }
-      // ولا تُنزل حركة القيد السالبة بنكها تحت الصفر، كالرسوم والسحب والتحويل والسداد في التطبيق (المدقق الخارجي O٢: حركةٌ برقم مصروفٍ نثري
-      // أو سدادِ فاتورةٍ نقداً من بنكٍ فارغ كانت تُدخل المحفظة نقداً لا وجود له، فيُودَع في بنكٍ آخر) · فتنتظر ما يكفيها كالحركة بلا قيد،
-      // والمزوَّر لا يكفيه رصيدٌ فيُرفض بطول انتظاره · ومع رصيدٍ يكفي أثرها نقل نقدٍ من البنك إلى المحفظة بلا قيد كالسحب (حدٌّ موثَّق)
-      if (!wasLive && nowLive.amount < 0 && bankBalance(db, nowLive.bank) + nowLive.amount < 0) {
+      // وحركة القيد السالبة لا تُنزل بنكها تحت الصفر إن كانت ربطاً متأخراً بقيدٍ صُرف نقده (المدقق الخارجي O٢: حركةٌ برقم مصروفٍ نثري أو
+      // سدادٍ نقداً من بنكٍ فارغ كانت تُدخل المحفظة نقداً لا وجود له) · والربط المتأخر: حركةٌ كُتبت بعد قيدها بأكثر من ساعة، أو لقيدٍ معكوسٍ
+      // هنا، أو لعمليةٍ نقدية (والتطبيق يفحص كفاية الرسوم) · فتنتظر ما يكفيها، والمزوَّر لا يكفيه رصيدٌ فيُرفض بطول انتظاره · وما كُتب مع
+      // قيده لا يُفحص: البنك يصير سالباً بشيكٍ مرتجع، أو بسدادٍ متزامنٍ مع سحب، أو باستعادة فاتورةٍ مسدَّدة (المدقق الخارجي Q٣: كان فحصه
+      // يُطبّق القيد ويمسك حركته فيختلف الجهازان) · ومع رصيدٍ يكفي أثر المزوَّر نقلُ نقدٍ من البنك إلى المحفظة بلا قيد كالسحب (حدٌّ موثَّق)
+      // وسداد فاتورة الشراء بطريقة سدادها في الفاتورة: لا حركة بنكٍ لسدادٍ نقداً (O٢)
+      if (head?.s === 'purchase_pay') purchasePaidByBank(db, entry.id, nowLive.no);
+      if (!wasLive && nowLive.amount < 0 && bankBalance(db, nowLive.bank) + nowLive.amount < 0
+        && (head?.s === 'cash_op' || lateLink(db, entry.id, doc))) {
         throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
       }
       return;
@@ -1006,6 +1011,31 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> 
   if (wallet < 0 && walletCashBalance(db) + wallet < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
 }
 
+
+/**
+ * فاتورة شراءٍ هذا القيدُ سدادُها القائم بطريقةٍ غير النقد · والفاتورة بمصدر القيد هنا أو في الوارد، وإلا انتظرت الحركة · وقيدُ سدادٍ
+ * سابقٍ (عُكس أو بُدّل) يحكم عليه فحص الربط المتأخر لا طريقة السداد القائمة
+ */
+function purchasePaidByBank(db: DB, entryId: string, no: string): void {
+  const pid = db.get<{ s: string | null }>(`SELECT src_id AS s FROM journal_entries WHERE id = ?`, [entryId])?.s ?? '';
+  const here = db.get<{ e: string | null; m: string | null }>(`SELECT payment_journal_entry_id AS e, payment_method AS m FROM purchases WHERE id = ?`, [pid]);
+  const p = here ?? db.get<{ e: string | null; m: string | null }>(
+    `SELECT json_extract(payload, '$.d.payment_journal_entry_id') AS e, json_extract(payload, '$.d.payment_method') AS m
+     FROM sync_inbox WHERE tbl = 'purchases' AND del = 0 AND pk = ?`, [pid]);
+  if (!p) throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
+  if (p.e === entryId && (!p.m || p.m === PAY_LABEL.cash)) throw new Error(tr('sync.bankTxOver', { no, lng: 'ar' }));
+}
+
+/** ساعةٌ بين كتابة القيد وحركته في السحابة: ما كُتب معه يُرفع في الدورة نفسها ولو على دفعات */
+const LATE_LINK_MS = 60 * 60 * 1000;
+
+/** حركة قيدٍ كُتبت بعد قيدها بأكثر من ساعة (بوقت الخادم)، أو لقيدٍ معكوسٍ هنا، أو لقيدٍ لم يُعرف وقته في السحابة */
+function lateLink(db: DB, entryId: string, doc: RemoteDoc): boolean {
+  if (db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NOT NULL`, [entryId])) return true;
+  const at = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = 'journal_entries' AND pk = ?`, [entryId])?.u;
+  if (!at) return true;
+  return Date.parse(incomingAt(doc)) - Date.parse(at) > LATE_LINK_MS;
+}
 
 /** صادرٌ مطبَّق للتحويل نفسه (التاريخ والبيان والمبلغ، ببنكٍ آخر) لم يُقابَل بواردٍ قبل هذا */
 function transferPaired(db: DB, id: string, row: Record<string, unknown>): boolean {
@@ -1236,11 +1266,16 @@ const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? ge
  * فيتفق الجهازان · نموذج ما قبل e8d6c19 كان يجيز للعضو افتتاحياً (المدقق الخارجي K٥، ثم O٥: القاعدة صارت ترفضه فكانت حركاته تعلق)
  */
 export function prepareMemberUpload(db: DB): void {
-  db.run(`UPDATE banks SET opening_halalas = 0 WHERE opening_halalas != 0
-    AND id IN (SELECT pk FROM sync_outbox WHERE tbl = 'banks') AND id NOT IN (SELECT pk FROM sync_rowtime WHERE tbl = 'banks')`);
-  db.run(`UPDATE accounts SET opening_halalas = 0 WHERE opening_halalas != 0
-    AND code IN (SELECT pk FROM sync_outbox WHERE tbl = 'accounts') AND code NOT IN (SELECT pk FROM sync_rowtime WHERE tbl = 'accounts')`);
+  // (ولا كاتب له: صفوف ما قبل الهجرة ٤٣ بلا وقتٍ ولها كاتبها من الهجرة ٤٢ أو من الوارد · المدقق الخارجي Q٤)
+  for (const [tbl, key] of [['banks', 'id'], ['accounts', 'code']] as const) {
+    db.run(`UPDATE ${tbl} SET opening_halalas = 0 WHERE opening_halalas != 0
+      AND ${key} IN (SELECT pk FROM sync_outbox WHERE tbl = '${tbl}') AND ${key} NOT IN (SELECT pk FROM sync_rowtime WHERE tbl = '${tbl}')
+      AND ${key} NOT IN (SELECT pk FROM row_by WHERE tbl = '${tbl}')`);
+  }
 }
+
+/** الجدولان اللذان افتتاحيّهما للمالك وحده (openingKept) */
+const OPENING_TABLES = new Set(['banks', 'accounts']);
 
 /** حسابٌ عليه سطر قيدٍ هنا أو في قيدٍ وارد لم يُطبَّق بعد (الهاتف البديل يسحب الدليل والقيود في دورةٍ واحدة) */
 function accountUsed(db: DB, code: string): boolean {
@@ -1536,6 +1571,7 @@ function applyOne(
   // التعارض على مستوى الصف · الأحدث تغييراً يغلب
   const pending = db.get<OutRow>(`SELECT tbl, pk, op, changed_at FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
   let conflict: 'conflict-remote' | null = null;
+  let keepOpening = false;
   if (pending) {
     const localDoc = buildDoc(db, doc.t, doc.k, pending.op, pending.changed_at, deviceId);
     if (sameContent(localDoc, doc)) {
@@ -1550,10 +1586,22 @@ function applyOne(
     const order = isoCmp(mine, theirs);
     const localWins = !joining && (order > 0 || (order === 0 && deviceId > doc.dev));
     if (localWins) {
+      // والافتتاحي للمالك وحده (openingKept): جهاز العضو يأخذه من الوارد ولو غلب تعديله، فتحمله نسخته المرفوعة كما في السحابة
+      // (المدقق الخارجي Q٢: كان يبقى بالافتتاحي القديم فتُرفض كل تسميةٍ منه ويخطئ رصيد البنك عنده)
+      if (getSyncState(db, 'membership') && OPENING_TABLES.has(doc.t) && doc.d && !doc.del) {
+        db.run(`UPDATE "${doc.t}" SET opening_halalas = ? WHERE ${doc.t === 'accounts' ? 'code' : 'id'} = ?`, [Number(doc.d.opening_halalas) || 0, doc.k]);
+      }
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', `${doc.t} · ${doc.k} · غلب تعديل هذا الجهاز (${mine}) على الوارد (${doc.u})`);
       return 'conflict-local';
     }
     conflict = 'conflict-remote';
+    // وجهاز المالك: تعديل افتتاحيّه المعلَّق يبقى ولو غلب الوارد من عضوٍ بقية الصف، ويُعاد إلى السحابة (المدقق الخارجي Q١: كان يضيع
+    // تعديل المالك من جهازه ومن السحابة إن سمّى عضوٌ الصفّ بعده وقتاً)
+    // (لا في الانضمام: المعلَّق حينها الدليل المزروع لا تعديل المالك)
+    if (!joining && OPENING_TABLES.has(doc.t) && doc.d && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)) {
+      const mineOpening = db.get<{ o: number }>(`SELECT opening_halalas AS o FROM "${doc.t}" WHERE ${doc.t === 'accounts' ? 'code' : 'id'} = ?`, [doc.k]);
+      if (mineOpening) { doc.d = { ...doc.d, opening_halalas: Number(mineOpening.o) || 0 }; keepOpening = true; }
+    }
   }
   // الوقت الوارد لا يتجاوز وقت كتابته في الخادم (#56)
   const theirs0 = incomingAt(doc);
@@ -1603,7 +1651,10 @@ function applyOne(
       : (Number(d.is_system) || 0) !== 0;
     if (forged) {
       if (cur) {
-        db.run(`UPDATE accounts SET opening_halalas = ? WHERE code = ?`, [Number(d.opening_halalas) || 0, doc.k]);
+        // إلا أن يكون للصف تعديلٌ معلَّق هنا: افتتاحيّه أحدث (المدقق الخارجي Q١ب)
+        if (!db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])) {
+          db.run(`UPDATE accounts SET opening_halalas = ? WHERE code = ?`, [Number(d.opening_halalas) || 0, doc.k]);
+        }
         enqueue(db, doc.t, doc.k, 'upsert');
       }
       reject(db, doc, tr('sync.accountLocked', { lng: 'ar' }));
@@ -1684,6 +1735,7 @@ function applyOne(
         if (issues.length) throw new Error('الوارد مرفوض · ' + issues.join(' · '));
       }
       if (pending) db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
+      if (keepOpening) enqueue(db, doc.t, doc.k, 'upsert');
       if (conflict) {
         logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', joining
           ? `${doc.t} · ${doc.k} · غلب ما في الحساب على نسخة هذا الجهاز عند انضمامه`

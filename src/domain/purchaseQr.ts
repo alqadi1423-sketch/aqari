@@ -5,8 +5,8 @@
  * فيبقى الافتراض حتى يختار المستخدم · مسودةٌ تُراجع ولا تُحفظ بنفسها.
  */
 import type { DB } from '../db/adapter';
-import { localDateOf, today } from './dates';
-import { hasZone, latinDigits, stripInvisible, type ZatcaQr } from './zatcaQr';
+import { today } from './dates';
+import { hasZone, latinDigits, leadingDay, riyadhDateOf, stripInvisible, type ZatcaQr } from './zatcaQr';
 
 export interface PurchaseQrDraft {
   supplier: string;
@@ -29,7 +29,7 @@ const normVat = (v: string | null | undefined) => latinDigits(String(v ?? '')).r
  * مجموعاتُ أرقامٍ متتالية هي الرقم كله · فالرقم المكتوب مجموعاتٍ («300 0000 …») يُعرف، ومعه السجل التجاري بشرطةٍ أو مسافة
  * («V - CR» و«V CR» · P٢) يُعرف أيضاً، ولا يُعدّ جزءٌ من رقمٍ أطول رقماً
  */
-const cardHasVat = (card: string | null | undefined, vat: string): boolean => {
+export const cardHasVat = (card: string | null | undefined, vat: string): boolean => {
   if (!vat) return false;
   for (const seg of stripInvisible(latinDigits(String(card ?? ''))).split(/[^\d\s\-.]+/)) {
     const groups = seg.split(/\D+/).filter(Boolean);
@@ -40,8 +40,10 @@ const cardHasVat = (card: string | null | undefined, vat: string): boolean => {
   }
   return false;
 };
-// والاسم بلا ما لا يُرى وبمسافاتٍ موحّدة (P٤ب: «RLM + الاسم» كان يُعدّ اسماً آخر فتُضاف بطاقةٌ ثانية تبدو نفسها)
-const normName = (v: string | null | undefined) => stripInvisible(String(v ?? '')).replace(/\s+/g, ' ').trim();
+// والاسم بلا ما لا يُرى وبمسافاتٍ موحّدة (P٤ب: «RLM + الاسم» كان يُعدّ اسماً آخر فتُضاف بطاقةٌ ثانية تبدو نفسها) · وبيونيكود موحَّد
+// (NFKC: المفكَّك وأشكال العرض العربية حروفها نفسها · المدقق الخارجي R٥)
+const nfkc = (v: string) => { try { return v.normalize('NFKC'); } catch { return v; } };
+export const normName = (v: string | null | undefined) => nfkc(stripInvisible(String(v ?? ''))).replace(/\s+/g, ' ').trim();
 
 export function purchaseDraftFromQr(db: DB, qr: ZatcaQr, now: () => string = today): PurchaseQrDraft {
   const vat = qr.warnings.includes('vatNo') ? '' : normVat(qr.vatNo);
@@ -52,8 +54,9 @@ export function purchaseDraftFromQr(db: DB, qr: ZatcaQr, now: () => string = tod
     `SELECT id, name, vat, archived FROM suppliers WHERE deleted_at IS NULL ORDER BY archived, created_at`);
   // وبين البطاقات التي تحمل الرقم: غير المؤرشفة أولاً، ثم ما رقمها هو الرقم وحده، ثم ما اسمها اسم البائع (المدقق الخارجي P١: بطاقةٌ
   // أقدم «فيها» الرقم بين أرقامٍ أخرى كانت تسبق بطاقةً رقمها هو الرقم واسمها اسمه، فتُنسب الفاتورة صامتةً لموردٍ آخر)
+  // (والمؤرشف يُفاضَل به بعد المطابقة لا قبلها: بطاقةٌ مؤرشفة رقمها رقم البائع واسمها اسمه تُنبَّه ولا تغلبها بطاقةٌ أخرى · R٨)
   const rank = (s: (typeof live)[number]) =>
-    (Number(s.archived) === 1 ? 4 : 0) + (normVat(s.vat) === vat ? 0 : 2) + (normName(s.name) === seller ? 0 : 1);
+    (normVat(s.vat) === vat ? 0 : 4) + (normName(s.name) === seller ? 0 : 2) + (Number(s.archived) === 1 ? 1 : 0);
   const byVat = vat ? live.filter((s) => cardHasVat(s.vat, vat)).reduce<(typeof live)[number] | undefined>(
     (best, s) => (!best || rank(s) < rank(best) ? s : best), undefined) : undefined;
   const byName = live.find((s) => normName(s.name) === seller);
@@ -63,7 +66,8 @@ export function purchaseDraftFromQr(db: DB, qr: ZatcaQr, now: () => string = tod
   const archived = !!match && Number(match.archived) === 1;
   const known = archived ? undefined : match;
   const at = stripInvisible(qr.issuedAt).trim().replace(' ', 'T');
-  const date = qr.warnings.includes('issuedAt') ? now() : hasZone(at) ? localDateOf(at) : at.slice(0, 10);
+  // ووقتٌ لا يُقرأ ويومه صحيح في أوله يُؤخذ يومه (R٧) · وذو المنطقة بتوقيت المملكة (R٦)
+  const date = qr.warnings.includes('issuedAt') ? (leadingDay(at) ?? now()) : hasZone(at) ? (riyadhDateOf(at) ?? at.slice(0, 10)) : at.slice(0, 10);
   return {
     supplier: known?.name ?? match?.name ?? (nameClash ? `${seller} · ${vat}` : seller),
     supplierId: known?.id ?? null,
