@@ -6,7 +6,7 @@
  */
 import { createPendingAsset, setAssetCost, transferAsset, disposeAsset } from '@/domain/assets/service';
 import { addProperty, addUnit } from './helpers/fixtures';
-import { pair, sync, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack, lastEntry } from './helpers/rederive';
+import { pair, sync, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
 import type { MemoryRemote } from './helpers/memoryRemote';
 
@@ -49,8 +49,10 @@ describe('إعادة اشتقاق قيدي الإهلاك من جدول الأص
     moveApril(s, a);
     await sync(s.dev, s.r);
     srcAsMember(s.r, DEP);
-    const k = asMember(s.r, 'depreciation', doubled);
-    expect(lastEntry(s.r, 'depreciation').d!.src_id).toBe('2026-03');
+    // إهلاك مارس بعينه (فبراير ومارس يُرفعان في اللحظة نفسها فلا يُعرف آخرهما)
+    const mar = [...s.r.docs.values()].find((d) => d.t === 'journal_entries' && d.d?.src_type === 'depreciation' && d.d?.src_id === '2026-03')!;
+    s.r.inject({ ...mar, lines: doubled(mar.lines!) });
+    const k = mar.k;
     await pulls(s.owner, s.r);
     expect(has(s.owner, k)).toBe(false);
     expect(reasonOf(s.owner, k)).toMatch(/depreciation/);
