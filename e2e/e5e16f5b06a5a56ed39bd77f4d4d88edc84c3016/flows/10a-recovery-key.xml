@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="0" time="75.323" timestamp="2026-11-07T21:03:59">
+    <testcase id="10a-recovery-key" name="10a-recovery-key" classname="10a-recovery-key" file="e2e/maestro/10a-recovery-key.yaml" time="75.305" timestamp="2026-11-07T21:03:59" status="SUCCESS"/>
+  </testsuite>
+</testsuites>
