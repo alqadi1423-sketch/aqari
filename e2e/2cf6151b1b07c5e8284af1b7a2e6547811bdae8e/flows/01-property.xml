@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="45.324" timestamp="2026-11-07T20:04:40">
+    <testcase id="01-property" name="01-property" classname="01-property" file="e2e/maestro/01-property.yaml" time="45.312" timestamp="2026-11-07T20:04:40" status="ERROR">
+      <failure>Element not found: Id matching regex: field-عدد الوحدات</failure>
+    </testcase>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="0" time="20.614" timestamp="2026-11-07T20:08:36">
+    <testcase id="06b-permissions" name="06b-permissions" classname="06b-permissions" file="e2e/maestro/06b-permissions.yaml" time="20.604" timestamp="2026-11-07T20:08:36" status="SUCCESS"/>
+  </testsuite>
+</testsuites>

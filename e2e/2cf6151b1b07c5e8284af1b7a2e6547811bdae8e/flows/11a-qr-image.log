@@ -1,0 +1,4 @@
+/home/runner/work/aqari/aqari/e2e-out/qr-invoice.png AQ9FMkUgUVIgU3VwcGxpZXICDzMwMDAwMDAwMDAwMDAwMwMUMjAyNi0xMS0wMVQwOTowMDowMFoEBzExNTAuMDAFBjE1MC4wMA==
+/home/runner/work/aqari/aqari/e2e-out/qr-invoice.png: 1 file pushed, 0 skipped. 145.6 MB/s (8719 bytes in 0.000s)
+Broadcasting: Intent { act=android.intent.action.MEDIA_SCANNER_SCAN_FILE dat=file:///... flg=0x400000 }
+Broadcast completed: result=0
