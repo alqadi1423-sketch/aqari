@@ -19,6 +19,7 @@ import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
 import { nextPurchaseNo } from '../domain/purchases';
+import { postedAccum } from '../domain/assets/depreciation';
 import { t as tr } from '../i18n';
 import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
@@ -661,6 +662,15 @@ function sourceReader(db: DB): SourceReader {
     date: string | null; created_at: string | null; deleted_at: string | null };
   return {
     row: <T>(table: string, key: string) => latestRowByKey<T>(db, table, key),
+    asset: <T>(id: string) => {
+      const here = db.get<T>(`SELECT * FROM assets WHERE id = ?`, [id]) ?? null;
+      const p = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'assets' AND pk = ? AND del = 0`, [id]);
+      if (!p) return here;
+      const doc = JSON.parse(p.payload) as RemoteDoc;
+      if (!doc.d) return here;
+      // صفٌّ واردٌ لا يُطبَّق بأساس إهلاكه (assetBasisIssue) لا يُشتق منه: يُشتق مما هنا
+      return here && assetBasisIssue(db, doc, stripDerived('assets', doc.d)) !== '' ? here : (doc.d as T);
+    },
     rows: <T>(table: string, col: string, value: string) => {
       // الصفوف هنا بعمودها، وما في الوارد أحدث منها ويغلبها بمفتاحه، والمحذوف في الوارد يُسقطها
       const pk = syncTable(table)?.pkCols[0] ?? 'id';
@@ -912,6 +922,43 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
     (Number(pay.net_halalas) || 0) - credit - prior);
   if (why === 'await') return; // قسطٌ لم يصل: المفتاح الأجنبي يُنتظر به
   if (why) throw no(why);
+}
+
+/**
+ * أساس إهلاك الأصل على جهاز المالك (التوجيه الثالث · ١ · المتحقق المستقل): تكلفته وعمره ومتبقيته وتاريخ شرائه وفئته لا يغيّرها عضو
+ * بعد إثبات تكلفته هنا، كما يمنعها updateAssetInfo (lifeLocked) · فالإهلاك يُشتق من الصف، وعمرٌ مقصَّر فيه يُهلك التكلفة كلها في
+ * شهرين · ويُقبل ما يكتبه التطبيق وحده:
+ *  - تعديل فاتورة الشراء أو حذفها يعيد القطعة المربوطة بها «بانتظار تكلفة» (clearPurchaseAssets): التكلفة وربط الفاتورة يُفرَّغان
+ *    وبقية الأساس كما هو.
+ *  - وربطها ثانيةً ببندٍ جديد من فاتورتها (writePurchaseLines: linkAssetId) ولا إهلاك لها في الدفتر هنا ولا حركة (requirePurchaseAssetsFree):
+ *    فئتها فئة البند، وتاريخ شرائها تاريخ الفاتورة، وعمرها ومتبقيتها كما هما.
+ */
+const ASSET_BASIS = ['cost_halalas', 'salvage_halalas', 'life_months', 'purchase_date', 'category'];
+/** سبب رفض صفّ الأصل الوارد بأساس إهلاكه · '' إن قُبل · 'await' إن لم يصل بنده أو فاتورته */
+function assetBasisIssue(db: DB, doc: RemoteDoc, row: RowData): string {
+  if (doc.t !== 'assets' || getSyncState(db, 'membership') || !byMember(db, doc, false)) return '';
+  const cur = db.get<Record<string, unknown>>(`SELECT * FROM assets WHERE id = ?`, [doc.k]);
+  if (!cur || cur.cost_halalas == null) return '';
+  const differs = (c: string) => c in row && String(cur[c] ?? '') !== String(row[c] ?? '');
+  if (!ASSET_BASIS.some(differs)) return '';
+  const locked = tr('deriveSrc.assetBasis', { lng: 'ar' });
+  const same = ['salvage_halalas', 'life_months'].every((c) => !differs(c));
+  if (row.cost_halalas == null) {
+    return cur.purchase_id == null || row.purchase_id != null || !same || differs('category') || differs('purchase_date') ? locked : '';
+  }
+  const lineId = row.purchase_line_id == null ? null : String(row.purchase_line_id);
+  if (!lineId || lineId === String(cur.purchase_line_id ?? '') || row.purchase_id == null || !same) return locked;
+  const line = latestRow<{ purchase_id: string | null; asset_category: string | null }>(db, 'purchase_lines', lineId);
+  const p = latestRow<{ date: string | null }>(db, 'purchases', String(row.purchase_id));
+  if (!line || !p) return 'await';
+  if (line.purchase_id !== row.purchase_id || String(line.asset_category ?? '') !== String(row.category ?? '')
+    || String(p.date ?? '').slice(0, 10) !== String(row.purchase_date ?? '').slice(0, 10)) return locked;
+  return postedAccum(db, doc.k) !== 0 || db.get(`SELECT 1 FROM asset_events WHERE asset_id = ? AND kind NOT IN ('cost', 'convert')`, [doc.k]) ? locked : '';
+}
+function assetBasisCheck(db: DB, doc: RemoteDoc, row: RowData): void {
+  const why = assetBasisIssue(db, doc, row);
+  if (why === 'await') throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
+  if (why) throw new Error(why);
 }
 
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
@@ -1272,6 +1319,7 @@ function applyOne(
         const row = stripDerived(doc.t, doc.d!);
         if (doc.t === 'purchases') renumberJoiningCollision(db, 'purchases', doc.k, row.no);
         collectionRowCheck(db, doc, row);
+        assetBasisCheck(db, doc, row);
         // حركة البنك برقم قيدها على هذا الجهاز (noteJournalNoAlias)
         if (doc.t === 'bank_tx' && typeof row.journal_no === 'string') {
           const alias = noAliases(db)[row.journal_no];

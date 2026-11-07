@@ -49,6 +49,11 @@ export interface RevEntry extends SrcEntry {
 /** قارئ المستندات على جهاز المالك (sync/engine.ts): أحدث نسخةٍ للصف (الوارد المنتظر ثم القائم)، والقيود المرحّلة بمصدرها */
 export interface SourceReader {
   row<T>(table: string, key: string): T | null;
+  /**
+   * صفّ الأصل كما سيُطبَّق: أحدث نسخه في الوارد، إلا نسخةً تغيّر أساس إهلاكه بعد إثبات تكلفته هنا فتُرفض حين يأتي دورها (المتحقق
+   * المستقل: كان الإهلاك يُشتق من عمرٍ مقصَّر في الصف الوارد قبل رفضه) · فيُشتق مما هنا
+   */
+  asset<T>(id: string): T | null;
   /** صفوف جدولٍ بعمودٍ وقيمته: هنا، وأحدث نسخها في الوارد تغلبها، والمحذوف فيه يُسقطها (سطور المستند وأصوله وإشعاراته) */
   rows<T>(table: string, col: string, value: string): T[];
   /**
@@ -371,10 +376,22 @@ function ledgerOf(r: SourceReader, assetId: string, category: string, exceptId: 
  * أساس إهلاك الأصل: تكلفته في صفّه هي ما رُحِّل له في الدفتر (صفّ الأصل يكتبه العضو، فتكلفةٌ مضاعفة فيه تضاعف إهلاكه)، وقيمه تصح
  * كما يشترطها setAssetCost · '' أو 'await' (قيد تكلفته لم يُطبَّق هنا بعد: في الوارد، أو لم يصل والعضو يرفع على دفعات) أو السبب
  */
-function basisIssue(a: AssetDoc, led: { cost: number; pending: boolean }): string {
+function basisIssue(r: SourceReader, a: AssetDoc, led: { cost: number; pending: boolean }): string {
   if (a.cost_halalas == null) return led.cost ? (led.pending ? AWAIT : no('assetCost')) : '';
   const cost = num(a.cost_halalas), salvage = num(a.salvage_halalas), life = num(a.life_months);
   if (!(cost > 0) || salvage < 0 || salvage >= cost || !Number.isInteger(life) || life < 1 || life > 600) return no('assetCost');
+  // وأصل الفاتورة (writePurchaseLines، المتحقق المستقل): تاريخ شرائه تاريخ فاتورته وفئته فئة بنده، والذي أنشأه البند (لا القطعة
+  // المربوطة به) عمره عمر البند ولا متبقية له · وما لم يصل من بنده أو فاتورته يُنتظر
+  if (a.purchase_line_id) {
+    const line = r.row<{ purchase_id: string | null; asset_category: string | null; life_months: number | null }>('purchase_lines', a.purchase_line_id);
+    const p = r.row<PurchaseRow>('purchases', String(a.purchase_id ?? ''));
+    if (!line || !p) return AWAIT;
+    if (line.purchase_id !== a.purchase_id || String(line.asset_category ?? '') !== a.category
+      || String(a.purchase_date ?? '').slice(0, 10) !== String(p.date ?? '').slice(0, 10)) return no('assetCost');
+    if ((a.source === 'purchase' || a.source === 'convert') && (salvage !== 0 || (line.life_months != null && num(line.life_months) !== life))) {
+      return no('assetCost');
+    }
+  }
   return cost === led.cost ? '' : led.pending || !led.cost ? AWAIT : no('assetCost');
 }
 
@@ -423,10 +440,10 @@ const depPair = (amt: number, dims: DimSpec[]): Want[] => (amt > 0 ? [
  */
 function depOf(db: DB, r: SourceReader, assetId: string, exceptId: string, w: When, through: string):
   { a: AssetDoc; amt: number; specs: DimSpec[]; pending: boolean } | string {
-  const a = r.row<AssetDoc>('assets', assetId);
+  const a = r.asset<AssetDoc>(assetId);
   if (!a) return AWAIT;
   const led = ledgerOf(r, assetId, a.category, exceptId, w);
-  const why = basisIssue(a, led);
+  const why = basisIssue(r, a, led);
   if (why) return why;
   return { a, amt: expectedThrough(depreciable(a), through) - led.accum, specs: assetSpecs(db, r, a, through), pending: led.pending };
 }
@@ -439,7 +456,7 @@ function catchUpOf(db: DB, r: SourceReader, a: AssetDoc, exceptId: string, today
   { lines: Want[]; pending: boolean } | string {
   const led = ledgerOf(r, a.id, a.category, exceptId, { kind: 'catchup', d: today });
   // وتكلفةٌ يثبتها القيد نفسه (asset_cost) أساسها فيه
-  const why = basisIssue(a, costHere ? { ...led, cost: led.cost + num(a.cost_halalas) } : led);
+  const why = basisIssue(r, a, costHere ? { ...led, cost: led.cost + num(a.cost_halalas) } : led);
   if (why) return why;
   const c = catchUpAmounts(depreciable(a), today, led.accum);
   if (c.total <= 0) return { lines: [], pending: led.pending };
@@ -497,7 +514,7 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       // إثبات تكلفة قطعةٍ بلا فاتورة (setAssetCost): مدين حساب فئتها ودائن رأس المال بتكلفتها في صفّها، ومعه إهلاك ما فات منذ شرائها
       // حتى آخر شهرٍ انتهى قبل تاريخه، بتاريخ حدث إثباتها المسمّي هذا القيد · والقطعة بانتظار تكلفةٍ قبله: لا فاتورة لها، ولا تكلفة
       // لها في الدفتر قبله
-      const a = r.row<AssetDoc>('assets', e.srcId);
+      const a = r.asset<AssetDoc>(e.srcId);
       if (!a) return AWAIT;
       if (a.purchase_id || a.source === 'purchase' || a.source === 'convert') return no('noEntry');
       // تكلفةٌ لم يصل صفّها المحدَّث بعد
@@ -524,7 +541,7 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!evs.length) return AWAIT;
       const ev = evs[0];
       if (evs.length > 1 || ev.kind !== 'transfer' || ev.asset_id !== e.srcId || (ev.from_unit_id ?? null) === (ev.to_unit_id ?? null)) return no('noEntry');
-      const a = r.row<AssetDoc>('assets', e.srcId);
+      const a = r.asset<AssetDoc>(e.srcId);
       if (!a) return AWAIT;
       const d = String(ev.date ?? '').slice(0, 10);
       const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'op', d });
@@ -544,7 +561,7 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
     case 'asset_sell': {
       // استبعاد الأصل أو بيعه (disposeAsset وsellAsset): بتاريخ انتهائه في صفّه الذي يسمّي هذا القيد، تكلفته ومجمعه المرحّلان قبله
       // (بعد إهلاك ما قبله) يُقفلان، والقيمة الدفترية خسارة استبعاد، أو يقابلها مبلغ البيع نقداً والفرق ربحٌ أو خسارة · وبأبعاده يومها
-      const a = r.row<AssetDoc>('assets', e.srcId);
+      const a = r.asset<AssetDoc>(e.srcId);
       if (!a) return AWAIT;
       const status = e.src === 'asset_dispose' ? 'disposed' : 'sold';
       // صفّه المنتهي لم يصل بعد
@@ -614,7 +631,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (p.deleted_at) return no('deleted');
       const today = e.date.slice(0, 10);
       if (today < String(p.date ?? '').slice(0, 10)) return no('date');
-      const assets = r.rows<AssetDoc>('assets', 'purchase_id', e.srcId).filter((a) => !a.deleted_at && a.cost_halalas != null);
+      const assets = r.rows<AssetDoc>('assets', 'purchase_id', e.srcId).map((a) => r.asset<AssetDoc>(a.id) ?? a)
+        .filter((a) => !a.deleted_at && a.cost_halalas != null);
       // أصولٌ لم يصل صفّها بعد
       if (!assets.length) return AWAIT;
       const lines: Want[] = [];

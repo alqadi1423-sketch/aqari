@@ -4,10 +4,11 @@
  * الأصل، أو من صفّ أصلٍ ضوعفت تكلفته فيه، يُرفض على جهاز المالك ولا يدخل الدفتر · وما يكتبه التطبيق يُقبل، ولو وصل بترتيبٍ غير ترتيب
  * ترحيله · بيانات مصطنعة.
  */
-import { createPendingAsset, setAssetCost, transferAsset, disposeAsset } from '@/domain/assets/service';
+import { createPendingAsset, setAssetCost, transferAsset, disposeAsset, updateAssetInfo } from '@/domain/assets/service';
 import { addProperty, addUnit } from './helpers/fixtures';
-import { pair, sync, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack } from './helpers/rederive';
+import { MEMBER, pair, sync, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
+import type { RemoteDoc } from '@/sync/types';
 import type { MemoryRemote } from './helpers/memoryRemote';
 
 async function setup() {
@@ -40,6 +41,11 @@ async function costed(s: S, cost = 84000) {
 /** النقل في أبريل: إهلاك فبراير ومارس الشهري، ثم إهلاك 16 يوماً من أبريل حتى تاريخه (533 هللة) */
 const moveApril = (s: S, a: string) => transferAsset(s.dev, a, { unitId: s.ub, date: '2026-04-16', today: '2026-04-20' });
 const DEP = /^(depreciation|asset_dep)$/;
+/** صفّ الأصل في الحساب بكاتبه العضو (قسم الأصول) */
+const rowAsMember = (r: MemoryRemote, a: string) => {
+  const d = r.docs.get('assets__' + a)!;
+  r.inject({ ...d, by: MEMBER, op: 'assets' } as RemoteDoc);
+};
 const accum = (db: DB) => -net(db, '1490') || 0;
 
 describe('إعادة اشتقاق قيدي الإهلاك من جدول الأصل', () => {
@@ -149,4 +155,47 @@ describe('إعادة اشتقاق قيدي الإهلاك من جدول الأص
     expect(accum(s.owner)).toBe(2533);
     s.close();
   });
+});
+
+describe('إعادة اشتقاق الإهلاك (تتمة · المتحقق المستقل)', () => {
+  test('سلبي · عمر الأصل يُقصَّر في صفّه بعد إثبات تكلفته فيُسرَّع إهلاكه: يُرفض الصف ولا يدخل إهلاكه', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    s.dev.run(`UPDATE assets SET life_months = 2 WHERE id = ?`, [a]);
+    moveApril(s, a);
+    await sync(s.dev, s.r);
+    rowAsMember(s.r, a);
+    const ids = srcAsMember(s.r, /^(depreciation|asset_dep|asset_transfer)$/);
+    await pulls(s.owner, s.r);
+    expect(reasonOf(s.owner, a)).toMatch(/أساس إهلاك|depreciation basis/);
+    expect(s.owner.get<{ n: number }>(`SELECT life_months AS n FROM assets WHERE id = ?`, [a])!.n).toBe(84);
+    expect(ids.filter((k) => has(s.owner, k))).toEqual([]);
+    expect(net(s.owner, '5600')).toBe(0);
+    s.close();
+  });
+
+  test('سلبي · المتبقية وتاريخ الشراء يُغيَّران في صفّه بعد إثبات تكلفته: يُرفض الصف', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    s.dev.run(`UPDATE assets SET salvage_halalas = 80000, purchase_date = '2020-01-05' WHERE id = ?`, [a]);
+    await sync(s.dev, s.r);
+    rowAsMember(s.r, a);
+    await pulls(s.owner, s.r);
+    expect(reasonOf(s.owner, a)).toMatch(/أساس إهلاك|depreciation basis/);
+    expect(s.owner.get<{ d: string }>(`SELECT purchase_date AS d FROM assets WHERE id = ?`, [a])!.d).toBe('2026-01-05');
+    s.close();
+  });
+
+  test('إيجابي · وصف الأصل يُعدَّل من عضو بعد إثبات تكلفته: يُقبل', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    updateAssetInfo(s.dev, a, { name: 'مكيف إهلاك مصطنع معدَّل', notes: 'ملاحظة مصطنعة' });
+    await sync(s.dev, s.r);
+    rowAsMember(s.r, a);
+    await pulls(s.owner, s.r);
+    expect(reasonOf(s.owner, a)).toBe('');
+    expect(s.owner.get<{ n: string }>(`SELECT name AS n FROM assets WHERE id = ?`, [a])!.n).toBe('مكيف إهلاك مصطنع معدَّل');
+    s.close();
+  });
+
 });
