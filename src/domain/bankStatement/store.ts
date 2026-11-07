@@ -8,7 +8,7 @@ import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { t } from '../../i18n';
 import { RuleViolation } from '../contracts/service';
-import { statementLineKeys } from './dedupe';
+import { statementLineKeys, fnv64 } from './dedupe';
 import { foldText } from './normalize';
 import type { ColumnMapping, StatementResult } from './read';
 
@@ -36,20 +36,36 @@ export function saveStatement(db: DB, bankId: string, r: Ok, file: { name: strin
   const keys = statementLineKeys(bankId, r.lines);
   const have = new Set(db.all<{ k: string }>(`SELECT line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.k));
   const fresh = r.lines.map((l, i) => ({ l, key: keys[i] })).filter((x) => !have.has(x.key));
-  // وما تخطّاه لأنه في كشفٍ قبله يُذكر معه (الهجرة ٥٨): حذف ذاك ينقله إلى هذا
-  const shared = keys.filter((k) => have.has(k));
+  // وبصمات سطوره كلها معه (الهجرة ٥٨): حذف كشفٍ آخر فيه سطرٌ منها ينقله إلى هذا، على هذا الجهاز أو حين يصل إلى غيره
   if (!fresh.length) throw new StatementDuplicate(t('bankStatement.nothingNew'));
-  const id = uid();
+  // ومعرّفا الكشف والسطر حتميان من البنك وبصمة الملف وبصمة السطر (المدقق الخارجي Y٣): الملف نفسه يُقرأ على جهازين بلا اتصال فيلتقي
+  // كشفاً واحداً وسطوراً واحدة، فاعتماد الإيداع نفسه عليهما بذرته واحدة (W١) · وصفٌّ محذوفٌ بالمعرّف نفسه يُحيى ولا يُكرَّر
+  const id = file.hash ? 'st' + fnv64(bankId + '|' + file.hash) : uid();
+  const lineId = (key: string) => 'sl' + fnv64(bankId + '|' + key);
   const now = new Date().toISOString();
   db.transaction(() => {
+    db.run(`DELETE FROM bank_statements WHERE id = ? AND deleted_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM bank_statement_lines WHERE statement_id = ?)`, [id, id]);
+    if (db.get(`SELECT 1 FROM bank_statements WHERE id = ?`, [id])) {
+      db.run(`UPDATE bank_statements SET deleted_at = NULL, period_from = ?, period_to = ?, opening_halalas = ?, closing_halalas = ?, file_name = ?, line_count = ?,
+        mapping = ?, verified = ?, shared_keys = ?, created_at = ? WHERE id = ?`, [r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
+        file.name, fresh.length, r.warnings.includes('photo') ? '' : JSON.stringify(r.mapping), r.warnings.includes('unverified') ? 0 : 1, JSON.stringify(keys), now, id]);
+    } else {
     // وربط الصورة مصنوعٌ لا من الكشف فلا يُحفظ ربطاً للبنك · والكشف غير المتحقَّق بتأكيده (الهجرة ٥٧)
     db.run(`INSERT INTO bank_statements (id, bank_id, period_from, period_to, opening_halalas, closing_halalas, file_name, file_hash, line_count, mapping, verified, shared_keys, created_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id, bankId, r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
       file.name, file.hash, fresh.length, r.warnings.includes('photo') ? '' : JSON.stringify(r.mapping), r.warnings.includes('unverified') ? 0 : 1,
-      JSON.stringify(shared), now]);
+      JSON.stringify(keys), now]);
+    }
     for (const { l, key } of fresh) {
-      db.run(`INSERT INTO bank_statement_lines (id, statement_id, bank_id, line_key, date, value_date, descr, ref, amount_halalas, balance_halalas, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [uid(), id, bankId, key, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, now]);
+      const lid = lineId(key);
+      if (db.get(`SELECT 1 FROM bank_statement_lines WHERE id = ?`, [lid])) {
+        db.run(`UPDATE bank_statement_lines SET statement_id = ?, deleted_at = NULL, status = 'open', bank_tx_id = NULL, matched_at = NULL, note = '',
+          date = ?, value_date = ?, descr = ?, ref = ?, amount_halalas = ?, balance_halalas = ? WHERE id = ?`,
+          [id, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, lid]);
+      } else {
+        db.run(`INSERT INTO bank_statement_lines (id, statement_id, bank_id, line_key, date, value_date, descr, ref, amount_halalas, balance_halalas, created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [lid, id, bankId, key, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, now]);
+      }
     }
     audit(db, 'create', file.name || id);
   });
@@ -93,7 +109,8 @@ export function matchSuggestions(db: DB, bankId: string): Suggestion[] {
   for (const x of txs) {
     const v: X = { ...x, day: dayNo(String(x.date)), digits: digitsOf(String(x.descr) + ' ' + String(x.no) + ' ' + String(x.source)), words: wordsOf(String(x.descr) + ' ' + String(x.source)) };
     const k = Number(x.amount);
-    byAmount.set(k, [...(byAmount.get(k) ?? []), v]);
+    const a = byAmount.get(k);
+    if (a) a.push(v); else byAmount.set(k, [v]);
   }
   for (const list of byAmount.values()) list.sort((p, q) => p.day - q.day);
   const firstFrom = (list: X[], day: number) => { let lo = 0; let hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].day < day) lo = m + 1; else hi = m; } return lo; };
@@ -119,7 +136,10 @@ export function matchSuggestions(db: DB, bankId: string): Suggestion[] {
   }
   const perLine = new Map<string, Pair[]>();
   const perTx = new Map<string, Pair[]>();
-  for (const p of pairs) { perLine.set(p.l.id, [...(perLine.get(p.l.id) ?? []), p]); perTx.set(p.x.id, [...(perTx.get(p.x.id) ?? []), p]); }
+  for (const p of pairs) {
+    const a = perLine.get(p.l.id); if (a) a.push(p); else perLine.set(p.l.id, [p]);
+    const b = perTx.get(p.x.id); if (b) b.push(p); else perTx.set(p.x.id, [p]);
+  }
   const desc = (p: Pair, q: Pair) => q.score - p.score || p.gap - q.gap;
   for (const g of perLine.values()) g.sort(desc);
   for (const g of perTx.values()) g.sort(desc);

@@ -214,9 +214,13 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     // وصفُّ ملخصٍ بتاريخه (الافتتاحي أو الختامي) ليس حركة (U٧)
     // وصفٌّ مؤرَّخ بلا مبلغ حركة: ملخصٌ إن حمل كلمته، وإلا ليس حركة (ختم الطباعة في التذييل · المدقق الخارجي V١٣) · والصف الذي فيه مبلغ
     // مدينٍ أو دائن حركةٌ أياً كانت كلمات بيانه («ACCOUNT OPENING DEPOSIT» · V٢)
-    const moved = [debitCol, creditCol, amountCol].some((c) => c >= 0 && cellText(r[c] ?? '') !== '');
+    // (والصفر «0.00» في خانةٍ فارغة ليس مبلغ حركة · X٦ · وما لا يُقرأ مبلغاً يبقى ليرفضه فحص U٥)
+    const moved = [debitCol, creditCol, amountCol].some((c) => c >= 0 && cellText(r[c] ?? '') !== '' && parseStatementAmount(r[c] ?? '') !== 0);
     if (date && !moved) {
-      if (r.some((c) => { const k = summaryOf(c); return k === 'opening' || k === 'closing' || k === 'totalDebit' || k === 'totalCredit'; })) noteSummary(r);
+      const k = r.map((c) => summaryOf(c)).find((x) => x === 'opening' || x === 'closing' || x === 'totalDebit' || x === 'totalCredit');
+      // والافتتاحي والختامي المؤرَّخان قيمتهما في عمود الرصيد (والأصفار في المدين والدائن خاناتٌ فارغة · X٦)
+      const bal = balanceCol >= 0 ? parseStatementAmount(r[balanceCol] ?? '') : null;
+      if ((k === 'opening' || k === 'closing') && bal != null) { if (!(k === 'opening' && summary.opening != null)) summary[k] = bal; } else if (k) noteSummary(r);
       continue;
     }
     if (!date) {
@@ -346,13 +350,16 @@ function accountOf(head: string[][]): string | null {
     const iban = /SA\d{2}[0-9A-Z]{20}/i.exec(joined);
     if (iban) return iban[0].toUpperCase();
   }
-  // ورقم الحساب في خلية كلمته بعدها، أو في الخلية التالية وحدها (المدقق الخارجي V٧: ضمّ ما بعده من تواريخ كان يصنع رقماً آخر)
+  // ورقم الحساب بكلمته («رقم الحساب» أو «Account No/Number» لا «Account» وحدها) في خليتها بعدها أو في الخلية التالية وحدها، والتاريخ
+  // ليس رقماً (المدقق الخارجي V٧ وX٤: «Account Statement 01-10-2026 …» و«Account Opening Date» كانا يصنعان رقماً آخر)
+  const KEY = /رقم الحساب|account\s*(no\.?|number|#)|a\/c\s*(no\.?|number)/i;
+  const noDates = (t: string) => t.replace(FULL_DATE, ' ');
   for (const r of head) {
-    const i = r.findIndex((c) => /رقم الحساب|account (no|number)|account/i.test(c));
+    const i = r.findIndex((c) => KEY.test(c));
     if (i < 0) continue;
-    const own = (r[i].replace(/.*(رقم الحساب|account (no|number)|account)/i, '').match(/\d[\d\s-]{6,}\d/) ?? [''])[0].replace(/\D/g, '');
+    const own = (noDates(r[i].replace(new RegExp('.*(' + KEY.source + ')', 'i'), '')).match(/\d[\d\s-]{6,}\d/) ?? [''])[0].replace(/\D/g, '');
     if (own.length >= 8) return own;
-    const next = (r[i + 1] ?? '').replace(/[\s-]/g, '');
+    const next = noDates(r[i + 1] ?? '').replace(/[\s-]/g, '');
     if (/^\d{8,}$/.test(next)) return next;
   }
   return null;

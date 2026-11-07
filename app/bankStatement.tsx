@@ -371,7 +371,8 @@ export default function BankStatementScreen() {
           if (!ask) return;
           const opts: ReadOpts = {
             mapping: ask.mapping ?? (ask.src.photo ? undefined : statementMapping(db, bankId) ?? undefined),
-            opening: toHalalas(ask.opening), closing: toHalalas(ask.closing),
+            // والفارغ «لم يُكتب» لا صفر (المدقق الخارجي X٨): كشفٌ يشهد لختاميه آخر رصيدٍ مطبوع لا يحتاج ختامياً
+            opening: ask.opening.trim() ? toHalalas(ask.opening) : undefined, closing: ask.closing.trim() ? toHalalas(ask.closing) : undefined,
           };
           const { src, confirmed } = ask;
           setAsk(null);

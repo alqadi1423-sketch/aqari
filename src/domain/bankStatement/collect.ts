@@ -96,27 +96,41 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
 
   // فهارس بالمبلغ مرتبةٌ باليوم، ويوم كل سطرٍ وقسطٍ ورموز كل اسمٍ ومرجع تُحسب مرةً واحدة، والتسمية للمعروض وحده (المدقق الخارجي V١٠: كان
   // تربيعياً يمرّ على كل قسطٍ لكل عقدٍ لكل إيداع)
-  type Tpl = { day: number; s: number; several: boolean; contractId: string; run: typeof insts; tenant: string[]; refs: string[] };
+  // والهدف ومفتاحه وتسميته تُبنى مرةً للقالب لا لكل مرشح (X٧)
+  type Tpl = { day: number; s: number; several: boolean; contractId: string; run: typeof insts; tenant: string[]; refs: string[]; target: CollectTarget; key: string; label: () => string };
+  // (والمجموعات تُبنى بالإضافة لا بنسخ المصفوفة · X٧)
+  const push = <K, V>(m: Map<K, V[]>, k: K, v: V) => { const a = m.get(k); if (a) a.push(v); else m.set(k, [v]); };
   const byContract = new Map<string, typeof insts>();
-  for (const i of insts) byContract.set(i.contract_id, [...(byContract.get(i.contract_id) ?? []), i]);
-  const tplByAmount = new Map<number, Tpl[]>();
-  const addTpl = (amount: number, t0: Tpl) => tplByAmount.set(amount, [...(tplByAmount.get(amount) ?? []), t0]);
+  for (const i of insts) push(byContract, i.contract_id, i);
+  // أقدم القائم والمتتالية منه بنافذة ٤٥ يوماً، وما بعده بنافذة أسبوعٍ وحدها (المدقق الخارجي X٧: كانت النافذة الواسعة تمرّ على كل قسط)
+  const oldestBy = new Map<number, Tpl[]>();
+  const laterBy = new Map<number, Tpl[]>();
+  const addTpl = (amount: number, t0: Tpl) => push(t0.s === 0 ? oldestBy : laterBy, amount, t0);
   for (const [contractId, list] of byContract) {
     const tenant = nameTokens(list[0].tenant);
     const refs = [list[0].no, list[0].ejar].map(compact).filter((c) => c.length >= 5 && /\d/.test(c));
     // قسطٌ واحد بمتبقّيه، أو أقساطٌ متتالية من أقدم القائم بمجموع متبقّيها (ج.٢: تحويلٌ واحد لعدة أقساط)
-    list.forEach((x, s0) => addTpl(x.left, { day: dayNo(x.due), s: s0, several: false, contractId, run: [x], tenant, refs }));
+    const tpl = (run: typeof insts, s0: number): Tpl => ({
+      day: dayNo(run[0].due), s: s0, several: run.length > 1, contractId, run, tenant, refs,
+      target: { kind: 'installments', contractId, installmentIds: run.map((x) => x.id) }, key: 'i:' + run.map((x) => x.id).join(','),
+      label: () => t('bankStatement.collect.installments', { tenant: run[0].tenant, no: run[0].no || '—', period: run.map((x) => periodLabel(x.due)).join(', ') }),
+    });
+    list.forEach((x, s0) => addTpl(x.left, tpl([x], s0)));
     let sum = list[0].left;
     for (let e = 1; e < Math.min(list.length, MAX_RUN); e++) {
       sum += list[e].left;
-      addTpl(sum, { day: dayNo(list[0].due), s: 0, several: true, contractId, run: list.slice(0, e + 1), tenant, refs });
+      addTpl(sum, tpl(list.slice(0, e + 1), 0));
     }
   }
-  for (const l of tplByAmount.values()) l.sort((p, q) => p.day - q.day);
+  for (const m of [oldestBy, laterBy]) for (const l of m.values()) l.sort((p, q) => p.day - q.day);
+  // والمتتالية تبدأ بأقدم القائم: لا يُترك قسطٌ أقدم بلا سداد · والقسط الواحد أقدم القائم أو ما يستحق في أسبوع السطر
+  const WINDOWS: Array<[Map<number, Tpl[]>, number]> = [[oldestBy, 45], [laterBy, 7]];
+  // أسباب المرشح بحسب أعلامه (عدة أقساط، والاسم، والمرجع) مصفوفاتٌ مشتركة تُنسخ للمعروض وحده
+  const REASONS = Array.from({ length: 8 }, (_, b) => ['amount', 'date', ...(b & 1 ? ['several'] : []), ...(b & 2 ? ['name'] : []), ...(b & 4 ? ['ref'] : [])]);
   const claimsBy = new Map<number, Array<(typeof claims)[number] & { day: number; who: string[]; refs: string[] }>>();
-  for (const c of claims) claimsBy.set(Number(c.amount), [...(claimsBy.get(Number(c.amount)) ?? []), { ...c, day: dayNo(c.date), who: nameTokens(c.tenant ?? ''), refs: [compact(c.no ?? '')].filter((x) => x.length >= 5 && /\d/.test(x)) }]);
+  for (const c of claims) push(claimsBy, Number(c.amount), { ...c, day: dayNo(c.date), who: nameTokens(c.tenant ?? ''), refs: [compact(c.no ?? '')].filter((x) => x.length >= 5 && /\d/.test(x)) });
   const invBy = new Map<number, Array<(typeof invoices)[number] & { day: number; dueDay: number; who: string[]; refs: string[] }>>();
-  for (const v of invoices) invBy.set(v.left, [...(invBy.get(v.left) ?? []), { ...v, day: dayNo(v.issue), dueDay: dayNo(v.due || v.issue), who: nameTokens(v.customer), refs: [compact(v.no)].filter((x) => x.length >= 5 && /\d/.test(x)) }]);
+  for (const v of invoices) push(invBy, v.left, { ...v, day: dayNo(v.issue), dueDay: dayNo(v.due || v.issue), who: nameTokens(v.customer), refs: [compact(v.no)].filter((x) => x.length >= 5 && /\d/.test(x)) });
   const firstFrom = (list: Tpl[], day: number) => { let lo = 0; let hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].day < day) lo = m + 1; else hi = m; } return lo; };
   const named = (d: Set<string>, n: string[]) => n.length > 0 && (d.has(n[0]) || n.filter((w) => d.has(w)).length >= 2);
   const reffed = (text: string, refs: string[]) => refs.some((r) => text.includes(r));
@@ -128,23 +142,17 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
     const ld = dayNo(l.date);
     const words = new Set(nameTokens(l.descr + ' ' + (l.ref ?? '')));
     const text = compact(l.descr + ' ' + (l.ref ?? ''));
-    const list = tplByAmount.get(amount) ?? [];
-    for (let i = firstFrom(list, ld - 45); i < list.length && list[i].day <= ld + 45; i++) {
-      const tp = list[i];
-      const n = Math.abs(ld - tp.day);
-      // والمتتالية تبدأ بأقدم القائم: لا يُترك قسطٌ أقدم بلا سداد · والقسط الواحد أقدم القائم أو ما يستحق في أسبوع السطر
-      if (!tp.several && tp.s !== 0 && n > 7) continue;
-      const reasons = ['amount', 'date'];
-      let score = (tp.several ? 45 : 50) + dateScore(n);
-      if (tp.several) reasons.push('several');
-      if (named(words, tp.tenant)) { score += 20; reasons.push('name'); }
-      if (reffed(text, tp.refs)) { score += 15; reasons.push('ref'); }
-      const first = tp.run[0];
-      cands.push({
-        lineId: l.id, target: { kind: 'installments', contractId: tp.contractId, installmentIds: tp.run.map((x) => x.id) }, key: 'i:' + tp.run.map((x) => x.id).join(','),
-        label: () => t('bankStatement.collect.installments', { tenant: first.tenant, no: first.no || '—', period: tp.run.map((x) => periodLabel(x.due)).join(', ') }),
-        score, reasons,
-      });
+    const mine: Cand2[] = [];
+    for (const [m, w] of WINDOWS) {
+      const list = m.get(amount);
+      if (!list) continue;
+      for (let i = firstFrom(list, ld - w); i < list.length && list[i].day <= ld + w; i++) {
+        const tp = list[i];
+        const nm = tp.tenant.length > 0 && named(words, tp.tenant);
+        const rf = tp.refs.length > 0 && reffed(text, tp.refs);
+        const score = (tp.several ? 45 : 50) + dateScore(Math.abs(ld - tp.day)) + (nm ? 20 : 0) + (rf ? 15 : 0);
+        mine.push({ lineId: l.id, target: tp.target, key: tp.key, label: tp.label, score, reasons: REASONS[(tp.several ? 1 : 0) | (nm ? 2 : 0) | (rf ? 4 : 0)] });
+      }
     }
     for (const c of claimsBy.get(amount) ?? []) {
       if (ld < c.day - 3) continue;
@@ -152,7 +160,7 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
       let score = 50 + (Math.abs(ld - c.day) <= 60 ? 10 : 0);
       if (named(words, c.who)) { score += 20; reasons.push('name'); }
       if (reffed(text, c.refs)) { score += 15; reasons.push('ref'); }
-      cands.push({ lineId: l.id, target: { kind: 'claim', claimId: c.id }, key: 'c:' + c.id,
+      mine.push({ lineId: l.id, target: { kind: 'claim', claimId: c.id }, key: 'c:' + c.id,
         label: () => t('bankStatement.collect.claim', { reason: c.reason || '—', tenant: c.tenant ?? '—' }), score, reasons });
     }
     for (const v of invBy.get(amount) ?? []) {
@@ -161,16 +169,17 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
       let score = 50 + (Math.abs(ld - v.dueDay) <= 31 ? 10 : 0);
       if (named(words, v.who)) { score += 20; reasons.push('name'); }
       if (reffed(text, v.refs)) { score += 15; reasons.push('ref'); }
-      cands.push({ lineId: l.id, target: { kind: 'invoice', invoiceId: v.id }, key: 'v:' + v.id,
+      mine.push({ lineId: l.id, target: { kind: 'invoice', invoiceId: v.id }, key: 'v:' + v.id,
         label: () => t('bankStatement.collect.invoice', { no: v.no || '—', customer: v.customer }), score, reasons });
     }
+    for (const c of mine) cands.push(c);
   }
 
   // التوزيع بالأعلى أولاً كمطابقة الحركات (U٢٢): السطر لهدفٍ واحد، والهدف لسطرٍ واحد، والمتنازَع «تحتاج مراجعة»
   // (وأقساطٌ مشتركة بين اقتراحين لهدفين مختلفين لا تُعطى مرتين)
   const perLine = new Map<string, Cand2[]>();
   const perKey = new Map<string, Cand2[]>();
-  for (const c of cands) { perLine.set(c.lineId, [...(perLine.get(c.lineId) ?? []), c]); perKey.set(c.key, [...(perKey.get(c.key) ?? []), c]); }
+  for (const c of cands) { push(perLine, c.lineId, c); push(perKey, c.key, c); }
   const desc = (a: Cand2, b: Cand2) => b.score - a.score;
   for (const g of perLine.values()) g.sort(desc);
   for (const g of perKey.values()) g.sort(desc);
@@ -218,7 +227,11 @@ const targetKey = (x: CollectTarget) => (x.kind === 'installments' ? 'i:' + x.co
 export function approveCollection(db: DB, lineId: string, target: CollectTarget): { txId: string } {
   const base = 'stmt:' + lineId + ':' + targetKey(target);
   let attempt = 0;
-  while (db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [deterministicId(base + ':' + attempt, 1)])) attempt++;
+  // والمعرّف محجوزٌ إن عرفه الجهاز قيداً أو وارداً ينتظر أو مرفوضاً (المدقق الخارجي Y٤: قيدٌ مزوَّر بمعرّف الاعتماد الأول كان يمنع رفع قيد المالك)
+  const taken = (id: string) => !!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [id])
+    || !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ?`, [id])
+    || !!db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ?`, [id]);
+  while (taken(deterministicId(base + ':' + attempt, 1))) attempt++;
   return withDeterministicIds(base + ':' + attempt, () => approveCollectionNow(db, lineId, target));
 }
 

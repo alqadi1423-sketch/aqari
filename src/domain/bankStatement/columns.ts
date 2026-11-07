@@ -10,6 +10,8 @@ export type Role = 'date' | 'valueDate' | 'hijri' | 'descr' | 'debit' | 'credit'
 // كلمات عناوين الكشوف كما تطبعها البنوك، لا نصوص واجهة · مطبَّعةً بـfoldText (ة ← ه، أ ← ا) في dictionary.json
 const DICT = dictionary.roles as Array<[Role, string[]]>;
 
+const AMOUNT_WORDS = DICT.find(([r]) => r === 'amount')?.[1] ?? [];
+
 const hasPhrase = (text: string, phrase: string): boolean => (' ' + text + ' ').includes(' ' + phrase + ' ');
 
 /** دور خلية عنوان، أو null */
@@ -17,7 +19,12 @@ export function roleOf(cell: unknown): Role | null {
   const t = foldText(cell);
   if (!t || t.length > 60) return null;
   // «تاريخ القيمة» و«التاريخ الهجري» قبل «التاريخ»، و«تفاصيل العملية» قبل «العملية»
-  for (const [role, words] of DICT) if (words.some((w) => hasPhrase(t, w))) return role;
+  for (const [role, words] of DICT) {
+    if (!words.some((w) => hasPhrase(t, w))) continue;
+    // ومؤشر «مدين/دائن» مع كلمة المبلغ عمود مبلغٍ موقَّع لا عمود نوع («Debit/Credit Amount»)
+    if (role === 'type' && AMOUNT_WORDS.some((w) => hasPhrase(t, w))) return 'amount';
+    return role;
+  }
   return null;
 }
 

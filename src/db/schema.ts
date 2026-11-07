@@ -1969,8 +1969,8 @@ ALTER TABLE bank_statements ADD COLUMN verified INTEGER NOT NULL DEFAULT 1;
 `;
 
 /**
- * الهجرة ٥٨ · بصمات السطور التي تخطّاها الكشف عند حفظه لأنها في كشفٍ قبله (المدقق الخارجي V١ وV٤): حذف ذلك الكشف ينقلها إلى هذا لا
- * يحذفها، ولا ينقل غيرها · وجهازٌ حذف كشفاً ولم يعرف الكشف المتداخل يعيدها حيّةً إليه حين يصله (statementLineCheck)
+ * الهجرة ٥٨ · بصمات سطور الكشف كلها (المدقق الخارجي V١ وV٤، ومنذ X١ كلها لا ما تخطّاه وحده): حذف كشفٍ آخر فيه سطرٌ منها ينقله إلى
+ * هذا لا يحذفه، ولا ينقل غيره · وجهازٌ حذف كشفاً ولم يعرف الكشف المتداخل يعيده حيّاً إليه حين يصله (statementLineCheck)
  */
 export const MIGRATION_58 = `
 ALTER TABLE bank_statements ADD COLUMN shared_keys TEXT NOT NULL DEFAULT '[]';

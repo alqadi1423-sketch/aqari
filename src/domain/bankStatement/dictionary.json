@@ -47,6 +47,8 @@
     [
       "type",
       [
+        "credit debit",
+        "debit credit",
         "debit credit indicator",
         "مدين او دائن",
         "دائن مدين",

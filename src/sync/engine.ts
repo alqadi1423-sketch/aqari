@@ -219,6 +219,8 @@ export function buildDoc(db: DB, table: string, key: string, op: 'upsert' | 'del
   }
   const doc: RemoteDoc = { ...base, d: stripDerived(table, row), del: false };
   if (table === 'journal_entries') doc.lines = readLines(db, key);
+  // والقيد نفسه برقمٍ آخر في السحابة يُرفع برقمه هناك (المدقق الخارجي Y٥: عكسه برقمه هنا كان يُرفض «نهائياً» كل مرة)
+  if (table === 'journal_entries' && typeof doc.d!.no === 'string' && doc.d!.no) doc.d!.no = cloudJournalNo(db, doc.d!.no);
   if (table === 'bank_tx' && typeof doc.d!.journal_no === 'string' && doc.d!.journal_no) doc.d!.journal_no = cloudJournalNo(db, doc.d!.journal_no);
   return doc;
 }
@@ -667,6 +669,18 @@ function noteJournalNoAlias(db: DB, remoteNo: string, localNo: string): void {
   // وما رُفع منها برقمه هنا يُرفع ثانيةً برقمه في السحابة (buildDoc)
   for (const t of db.all<{ id: string }>(`SELECT id FROM bank_tx WHERE journal_no = ?`, [localNo])) enqueue(db, 'bank_tx', t.id, 'upsert');
 }
+/** سبب رفض القيد المرحّل الذي نسخته في السحابة نهائية */
+const FINAL_IN_CLOUD = 'نهائي في السحابة · نسخة هذا الجهاز تختلف عنها ولم تُرفع'; // i18n-exempt: سبب الرفض المخزَّن
+const PAID_INVOICE = 'مدفوعة'; // i18n-exempt: حالة الفاتورة المخزّنة
+/** سطور القيد الوارد سطور القيد هنا نفسها (الحساب والمدين والدائن) */
+function sameEntryLines(db: DB, doc: RemoteDoc): boolean {
+  const key = (a: unknown, d: unknown, c: unknown) => `${String(a)}|${Number(d) || 0}|${Number(c) || 0}`;
+  const here = db.all<{ a: string; d: number; c: number }>(`SELECT account_code AS a, debit_halalas AS d, credit_halalas AS c FROM journal_lines WHERE entry_id = ?`, [doc.k])
+    .map((l) => key(l.a, l.d, l.c)).sort();
+  const there = (doc.lines ?? []).map((l) => key(l.account_code, l.debit_halalas, l.credit_halalas)).sort();
+  return here.length === there.length && here.every((x, i) => x === there[i]);
+}
+
 /** رقم القيد في السحابة لرقمه هنا (صادراً) */
 function cloudJournalNo(db: DB, localNo: string): string {
   for (const [remote, local] of Object.entries(noAliases(db))) if (local === localNo) return remote;
@@ -920,7 +934,13 @@ interface BankTxState { bank: string; amount: number; no: string; source: string
  * معرّفاً يبقى، والآخر يعود مفتوحاً هنا أو في الوارد، فتتفق الأجهزة بالقاعدة نفسها · والتصحيح يرفعه جهاز المالك وحده (جهاز العضو
  * يصحّح نسخته، وقد لا تجيز له القواعد الكتابة)
  */
-function statementLineCheck(db: DB, row: Record<string, unknown>): boolean {
+function statementLineCheck(db: DB, row: Record<string, unknown>): { changed: boolean; own: boolean } {
+  const r = statementLineFix(db, row);
+  return { changed: r || ownMatch.has(String(row.id)), own: ownMatch.delete(String(row.id)) };
+}
+/** سطورٌ أبقى هذا الجهاز مطابقتها في الوارد المحيا: يرفعها ولو كان جهاز عضو (مطابقته هو · Y٧) */
+const ownMatch = new Set<string>();
+function statementLineFix(db: DB, row: Record<string, unknown>): boolean {
   let changed = false;
   // والسطر حيٌّ ما احتاجه كشفٌ حيّ (تخطّاه عند حفظه لأنه هنا · الهجرة ٥٨ · المدقق الخارجي V٤): جهازٌ حذف كشفه ولم يعرف ذاك يعيده إليه ·
   // وسطرٌ حيٌّ في كشفٍ محذوف (اعتُمد على جهازٍ آخر بعد الحذف · V٥) يُحذف معه
@@ -928,7 +948,16 @@ function statementLineCheck(db: DB, row: Record<string, unknown>): boolean {
     : db.get<{ del: string | null }>(`SELECT deleted_at AS del FROM bank_statements WHERE id = ?`, [String(row.statement_id)]);
   if (row.deleted_at != null || stmt?.del != null) {
     const to = sharingStatement(db, String(row.bank_id ?? ''), String(row.line_key ?? ''), String(row.statement_id ?? ''));
-    if (to) { row.deleted_at = null; row.statement_id = to; changed = true; } else if (row.deleted_at == null) { row.deleted_at = stmt!.del; changed = true; }
+    if (to) {
+      row.deleted_at = null; row.statement_id = to; changed = true;
+      // والحذف تبعاً لكشفه لا يمحو مطابقةً حيّةً هنا للسطر نفسه (المدقق الخارجي Y٧: حذف المالك الأحدث كان يغلب اعتماد العضو)
+      const here = db.get<{ status: string; tx: string | null; at: string | null; note: string; del: string | null }>(
+        `SELECT status, bank_tx_id AS tx, matched_at AS at, note, deleted_at AS del FROM bank_statement_lines WHERE id = ?`, [String(row.id)]);
+      if (here && here.del == null && here.status !== 'open' && row.status === 'open') {
+        row.status = here.status; row.bank_tx_id = here.tx; row.matched_at = here.at; row.note = here.note;
+        ownMatch.add(String(row.id));
+      }
+    } else if (row.deleted_at == null) { row.deleted_at = stmt!.del; changed = true; }
   }
   const demote = () => { row.status = 'open'; row.bank_tx_id = null; row.matched_at = null; return true; };
   if (row.deleted_at != null && (row.status !== 'open' || row.bank_tx_id != null)) return demote();
@@ -946,9 +975,27 @@ function statementLineCheck(db: DB, row: Record<string, unknown>): boolean {
   if (rivals.some((r) => r.id < String(row.id))) return demote();
   for (const r of rivals) {
     db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [r.id]);
-    if (!getSyncState(db, 'membership')) enqueue(db, 'bank_statement_lines', r.id, 'upsert');
+    enqueueStmtFix(db, r.id);
   }
   return changed;
+}
+
+/** سطور الكشف التي صحّحها جهاز المالك ولم تُرفع بعد: تصحيحٌ يغلبه أي تعديلٍ حقيقي وارد (Y٧) */
+const STMT_FIXES = 'stmt_line_fixes';
+function stmtFixes(db: DB): Set<string> {
+  try { return new Set(JSON.parse(getSyncState(db, STMT_FIXES) ?? '[]') as string[]); } catch { return new Set(); }
+}
+function markStmtFix(db: DB, id: string, on: boolean): void {
+  const s = stmtFixes(db);
+  if (on === s.has(id)) return;
+  if (on) s.add(id); else s.delete(id);
+  setSyncState(db, STMT_FIXES, s.size ? JSON.stringify([...s]) : null);
+}
+/** تصحيح سطر كشفٍ يرفعه جهاز المالك وحده، معلَّماً تصحيحاً */
+function enqueueStmtFix(db: DB, id: string, at?: string): void {
+  if (getSyncState(db, 'membership')) return;
+  enqueue(db, 'bank_statement_lines', id, 'upsert', at);
+  markStmtFix(db, id, true);
 }
 
 /** كشفٌ حيٌّ آخر للبنك تخطّى سطراً ببصمته عند حفظه (الهجرة ٥٨)، أو null */
@@ -963,8 +1010,9 @@ function sharingStatement(db: DB, bankId: string, lineKey: string, exceptStateme
  * كشفٌ وارد وسطوره هنا (المدقق الخارجي V٤ وV٥): الحيّ يعيد إليه ما تخطّاه من سطورٍ حُذفت مع كشفها هنا، والمحذوف تُحذف معه سطوره الحيّة
  * هنا إلا ما احتاجه كشفٌ حيٌّ آخر فيُنقل إليه · ويرفع جهاز المالك ما صحّحه
  */
-function statementCascade(db: DB, statementId: string, row: Record<string, unknown>): void {
-  const fix = (id: string) => { if (!getSyncState(db, 'membership')) enqueue(db, 'bank_statement_lines', id, 'upsert'); };
+function statementCascade(db: DB, statementId: string, row: Record<string, unknown>, at: string): void {
+  // بوقت الكشف الوارد لا بوقت الآن: نسخة سطرٍ أحدث منه (مطابقةٌ على جهازٍ آخر) تغلب الإحياء (المدقق الخارجي Y٧)
+  const fix = (id: string) => enqueueStmtFix(db, id, at);
   const bankId = String(row.bank_id ?? '');
   if (row.deleted_at == null) {
     let keys: string[] = [];
@@ -973,7 +1021,7 @@ function statementCascade(db: DB, statementId: string, row: Record<string, unkno
       if (db.get(`SELECT 1 FROM bank_statement_lines WHERE bank_id = ? AND line_key = ? AND deleted_at IS NULL`, [bankId, k])) continue;
       const dead = db.get<{ id: string }>(`SELECT id FROM bank_statement_lines WHERE bank_id = ? AND line_key = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, id LIMIT 1`, [bankId, k]);
       if (!dead) continue;
-      db.run(`UPDATE bank_statement_lines SET deleted_at = NULL, statement_id = ?, status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [statementId, dead.id]);
+      db.run(`UPDATE bank_statement_lines SET deleted_at = NULL, statement_id = ? WHERE id = ?`, [statementId, dead.id]);
       fix(dead.id);
     }
     return;
@@ -1654,9 +1702,25 @@ function applyOne(
 
   // القيد نفسه برقمٍ آخر في السحابة (استعادةٌ على جهازين بمعرّفٍ حتمي · المتحقق المستقل على bea2251): رقم المرحّل لا يتغير، فرقمه
   // في السحابة اسمٌ لرقمه هنا تُترجَم به حركات البنك المربوطة برقم القيد · ويُعرف قبل التعارض فمسار التعارض لا يفوته
+  // والاسم من قيدٍ هو هو وحده: سطوره سطور القيد هنا، ورقمه ليس رقم قيدٍ آخر هنا (المدقق الخارجي Y٦: مستند عضوٍ بالمعرّف نفسه ورقم قيدٍ آخر
+  // كان يعيد ربط حركات ذلك القيد بهذا قبل أي فحص) · وما رُفض «نهائياً» من نسخة هذا الجهاز للقيد نفسه ليس رفضاً (Y٥)
   if (doc.t === 'journal_entries' && doc.d && typeof doc.d.no === 'string') {
     const here = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ? AND status = 'مرحّل'`, [doc.k]); // i18n-exempt: حالة القيد المخزّنة
-    if (here && here.no !== doc.d.no) noteJournalNoAlias(db, doc.d.no, here.no);
+    if (here && here.no !== doc.d.no && !db.get(`SELECT 1 FROM journal_entries WHERE no = ? AND id != ?`, [doc.d.no, doc.k]) && sameEntryLines(db, doc)) {
+      noteJournalNoAlias(db, doc.d.no, here.no);
+      db.run(`DELETE FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ? AND reason = ?`, [doc.k, FINAL_IN_CLOUD]);
+    }
+  }
+
+  // والإلغاء لا رجعة فيه (المدقق الخارجي Y١): نسخةٌ تُحيي دفعةً ملغاة هنا (اعتمادٌ على جهازٍ آخر بالمعرّفات نفسها بعد الإلغاء) لا تُطبَّق،
+  // ويرفع جهاز المالك نسخته · والفاتورة «مدفوعة» بقيد تحصيلٍ معكوسٍ هنا كذلك (Y٢)
+  if (!doc.del && doc.d && (
+    (doc.t === 'contract_payments' && doc.d.cancelled_at == null
+      && db.get(`SELECT 1 FROM contract_payments WHERE id = ? AND cancelled_at IS NOT NULL`, [doc.k]))
+    || (doc.t === 'invoices' && doc.d.status === PAID_INVOICE && doc.d.payment_journal_entry_id
+      && db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NOT NULL`, [String(doc.d.payment_journal_entry_id)])))) {
+    if (!getSyncState(db, 'membership')) enqueue(db, doc.t, doc.k, 'upsert');
+    return 'conflict-local';
   }
 
   const cols = (name: string) => {
@@ -1688,7 +1752,9 @@ function applyOne(
     const theirs = doc.ts && isoCmp(doc.ts, doc.u) < 0 ? doc.ts : doc.u;
     // باللحظة لا بالنص (المراجعة الشاملة · البند ١٦): «…00.995Z» أحدث من «…00.99Z» ونصّه أصغر
     const order = isoCmp(mine, theirs);
-    const localWins = !joining && (order > 0 || (order === 0 && deviceId > doc.dev));
+    // وتصحيح سطر الكشف الذي رفعه جهاز المالك (إحياءٌ أو حذفٌ تبعاً لكشفه) يغلبه أي تعديلٍ حقيقي وارد ولو تساوى الوقت (المدقق الخارجي Y٧)
+    const correction = doc.t === 'bank_statement_lines' && stmtFixes(db).has(doc.k);
+    const localWins = !joining && !correction && (order > 0 || (order === 0 && deviceId > doc.dev));
     if (localWins) {
       // والافتتاحي للمالك وحده (openingKept): جهاز العضو يأخذه من الوارد ولو غلب تعديله، فتحمله نسخته المرفوعة كما في السحابة
       // (المدقق الخارجي Q٢: كان يبقى بالافتتاحي القديم فتُرفض كل تسميةٍ منه ويخطئ رصيد البنك عنده)
@@ -1777,8 +1843,9 @@ function applyOne(
     }
   }
 
-  // سطر كشفٍ صُحّحت مطابقته هنا يُعاد إلى السحابة مصحَّحاً
+  // سطر كشفٍ صُحّحت مطابقته هنا يُعاد إلى السحابة مصحَّحاً (وما أبقى فيه هذا الجهاز مطابقته يرفعه تعديلاً منه لا تصحيحاً)
   let relink = false;
+  let relinkOwn = false;
   try {
     db.transaction(() => {
       if (doc.del) {
@@ -1817,11 +1884,11 @@ function applyOne(
           if (alias) row.journal_no = alias;
           memberBankTxCheck(db, doc, row);
         }
-        if (doc.t === 'bank_statement_lines') relink = statementLineCheck(db, row) && !getSyncState(db, 'membership');
+        if (doc.t === 'bank_statement_lines') { const c = statementLineCheck(db, row); relink = c.changed && (c.own || !getSyncState(db, 'membership')); relinkOwn = c.own; }
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
-        if (doc.t === 'bank_statements') statementCascade(db, doc.k, row);
+        if (doc.t === 'bank_statements') statementCascade(db, doc.k, row, theirs0);
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·
@@ -1844,7 +1911,9 @@ function applyOne(
         if (issues.length) throw new Error('الوارد مرفوض · ' + issues.join(' · '));
       }
       if (pending) db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
-      if (keepOpening || relink) enqueue(db, doc.t, doc.k, 'upsert');
+      if (keepOpening) enqueue(db, doc.t, doc.k, 'upsert');
+      if (relink && relinkOwn) enqueue(db, doc.t, doc.k, 'upsert');
+      else if (relink) enqueueStmtFix(db, doc.k);
       if (conflict) {
         logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', joining
           ? `${doc.t} · ${doc.k} · غلب ما في الحساب على نسخة هذا الجهاز عند انضمامه`
@@ -2442,7 +2511,7 @@ export async function syncOnce(
         if (finalDenied && r.tbl === 'journal_entries') {
           db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
             // i18n-exempt: سبب الرفض المخزَّن
-            [docs[i].id, r.tbl, r.pk, 'نهائي في السحابة · نسخة هذا الجهاز تختلف عنها ولم تُرفع', JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
+            [docs[i].id, r.tbl, r.pk, FINAL_IN_CLOUD, JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
         }
         // الرفض الدائم لصفٍّ بعينه يخرج من الطابور إلى سجل المرفوض (البند ١٥)
         const permanent = !res.ok && !memberDenied && !finalDenied && PERMANENT_PUSH_CODES.has(res.code ?? '');
@@ -2455,6 +2524,7 @@ export async function syncOnce(
         if (res.ok || memberDenied || finalDenied || permanent) {
           // لا يُحذف إن تغيّر الصف أثناء الرفع · يبقى للدفعة التالية بوقته الجديد
           db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND changed_at = ?`, [r.tbl, r.pk, r.changed_at]);
+          if (r.tbl === 'bank_statement_lines') markStmtFix(db, r.pk, false);
           if (res.ok) {
             pushed++;
             // بوقت الالتزام في الخادم إن عُرف، ولا يتجاوز وقت المستند · وبلا وقت الخادم لا يُحفظ (الوارد يغلب كما كان)
