@@ -15,6 +15,7 @@
 import type { DB } from '../../db/adapter';
 import { t } from '../../i18n';
 import { isFiledDate } from '../vatFilings';
+import { today as todayFn } from '../dates';
 import { unitPastProperties } from '../unitMove';
 import {
   contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
@@ -471,6 +472,16 @@ function catchUpOf(db: DB, r: SourceReader, a: AssetDoc, exceptId: string, today
   };
 }
 
+/**
+ * شهرٌ يُهلك حتى آخره انتهى على ساعة المالك (المتحقق المستقل): التطبيق يرحّل الأشهر التامة وحدها (runDepreciation وcatchUpAmounts: حتى
+ * الشهر السابق لليوم)، وشهرٌ مقبل يُقدَّم به إهلاك سنةٍ إلى أخرى ثم يتخطاه الإهلاك الشهري هنا · '' أو 'await' للشهر الجاري هنا
+ * (ساعة الكاتب سبقت عند حدّ الشهر، فيُقبل بعد انتهائه) أو السبب لما بعده
+ */
+function monthEnded(m: number): string {
+  const now = monthIndex(todayFn());
+  return m < now ? '' : m === now ? AWAIT : no('future');
+}
+
 /** المنتهي (المستبعد أو المبيع) لا يُهلك بعد تاريخ انتهائه */
 const endedBy = (a: AssetDoc, d: string) => ENDED.includes(a.status as never) && String(a.end_date ?? '').slice(0, 10) < d;
 
@@ -482,6 +493,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       // له قبله، وبأبعاده يومها · وما لم يكن فيه من الأصول (صفرٌ أو لم يصل جهازه بعد) لا يُطالب به · والمنتهي في الشهر أو قبله لا يُهلك
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(e.srcId)) return no('noEntry');
       const m = monthIndex(e.srcId + '-01');
+      const ended = monthEnded(m);
+      if (ended) return ended;
       const end = monthEnd(m);
       const lines: Want[] = [];
       let pending = false;
@@ -523,6 +536,9 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!evs.length) return AWAIT;
       if (evs.length > 1 || evs[0].kind !== 'cost' || evs[0].asset_id !== a.id) return no('noEntry');
       const today = String(evs[0].date ?? '').slice(0, 10);
+      // إهلاك ما فات حتى الشهر السابق لتاريخ الإثبات
+      const ended = monthEnded(monthIndex(today) - 1);
+      if (ended) return ended;
       const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'catchup', d: today });
       if (led.cost) return led.pending ? AWAIT : no('assetCost');
       const cu = catchUpOf(db, r, a, e.id, today, e.lines, true);
@@ -631,6 +647,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (p.deleted_at) return no('deleted');
       const today = e.date.slice(0, 10);
       if (today < String(p.date ?? '').slice(0, 10)) return no('date');
+      const ended = monthEnded(monthIndex(today) - 1);
+      if (ended) return ended;
       const assets = r.rows<AssetDoc>('assets', 'purchase_id', e.srcId).map((a) => r.asset<AssetDoc>(a.id) ?? a)
         .filter((a) => !a.deleted_at && a.cost_halalas != null);
       // أصولٌ لم يصل صفّها بعد

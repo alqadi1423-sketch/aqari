@@ -6,6 +6,8 @@
  */
 import { createPendingAsset, setAssetCost } from '@/domain/assets/service';
 import { savePurchase, type PurchaseInput } from '@/domain/purchases';
+import { purchaseCatchUp } from '@/domain/assets/purchaseLines';
+import { today } from '@/domain/dates';
 import { addProperty, addUnit } from './helpers/fixtures';
 import { pair, sync, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack, lastEntry, forge } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
@@ -129,6 +131,41 @@ describe('إعادة اشتقاق قيدي إثبات التكلفة وإهلا�
     // تكلفة القطعة 1200 ريال على 84 شهراً من يوليو 2024: 18 شهراً قبل 2026 وشهرا 2026
     expect(-net(s.owner, '1490', 'l.asset_id = ?', [a])).toBe(1428 * 20);
     expect(net(s.owner, '3200', 'l.asset_id = ?', [a])).toBe(1428 * 18);
+    s.close();
+  });
+});
+
+describe('إعادة اشتقاق قيدي إثبات التكلفة وإهلاك ما فات (تتمة · المتحقق المستقل)', () => {
+  test('سلبي · إثبات التكلفة بتاريخٍ بعيدٍ لم يأتِ بعد على ساعة المالك (إهلاك ما فات لأشهرٍ لم تنتهِ): يُرفض', async () => {
+    const s = await setup();
+    const a = createPendingAsset(s.dev, { name: 'سخان مستقبلي مصطنع', category: '1410', unitId: s.ua });
+    setAssetCost(s.dev, a, { costHalalas: 120000, purchaseDate: '2024-06-15', today: '2099-03-10' });
+    await sync(s.dev, s.r);
+    const k = asMember(s.r, 'asset_cost');
+    await pulls(s.owner, s.r);
+    expect(has(s.owner, k)).toBe(false);
+    expect(reasonOf(s.owner, k)).toMatch(/لم ينتهِ/);
+    expect(net(s.owner, '1490')).toBe(0);
+    s.close();
+  });
+
+  test('سلبي · إهلاك ما فات لأصل الفاتورة بتاريخٍ بعيدٍ لم يأتِ بعد: يُرفض', async () => {
+    const s = await setup();
+    // فاتورةٌ بتاريخ اليوم: لا إهلاك ما فات عند حفظها، ثم إهلاك ما فات بتاريخٍ في 2099
+    const pid = savePurchase(s.dev, {
+      supplier: 'مورد تكلفة مصطنع', date: today(), due: today(), category: 'صيانة', incorpItem: '', amortize: false,
+      amortizeMonths: null, exempt: false, excludeFromVat: true, unitId: s.ua, propertyId: null, meterId: null, meterReading: null,
+      subtotalHalalas: 360000, taxHalalas: 0, totalHalalas: 360000,
+      lines: [{ descr: 'مكيف اليوم مصطنع', qty: 1, amountHalalas: 360000, isAsset: true, category: '1410', unitId: s.ua, room: '' }],
+    } as PurchaseInput);
+    purchaseCatchUp(s.dev, pid, '2099-03-10', 'catchup', 'مصطنع');
+    await sync(s.dev, s.r);
+    srcAsMember(s.r, /^purchase$/);
+    const k = asMember(s.r, 'asset_catchup');
+    await pulls(s.owner, s.r);
+    expect(has(s.owner, k)).toBe(false);
+    expect(reasonOf(s.owner, k)).toMatch(/لم ينتهِ/);
+    expect(net(s.owner, '1490')).toBe(0);
     s.close();
   });
 });

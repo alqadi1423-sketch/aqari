@@ -5,6 +5,8 @@
  * ترحيله · بيانات مصطنعة.
  */
 import { createPendingAsset, setAssetCost, transferAsset, disposeAsset, updateAssetInfo } from '@/domain/assets/service';
+import { runDepreciation, monthIndex } from '@/domain/assets/depreciation';
+import { today } from '@/domain/dates';
 import { addProperty, addUnit } from './helpers/fixtures';
 import { MEMBER, pair, sync, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
@@ -196,6 +198,26 @@ describe('إعادة اشتقاق الإهلاك (تتمة · المتحقق ا�
     expect(reasonOf(s.owner, a)).toBe('');
     expect(s.owner.get<{ n: string }>(`SELECT name AS n FROM assets WHERE id = ?`, [a])!.n).toBe('مكيف إهلاك مصطنع معدَّل');
     s.close();
+  });
+
+  test('سلبي · إهلاكٌ شهري لأشهرٍ لم تنتهِ بعد على ساعة المالك: لا يدخل الدفتر، والبعيد منها يُرفض', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    runDepreciation(s.dev, '2099-01-01');
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, /^depreciation$/);
+    await pulls(s.owner, s.r);
+    const now = monthIndex(today());
+    const monthOf = (k: string) => monthIndex(String(s.r.docs.get('journal_entries__' + k)!.d!.src_id) + '-01');
+    const future = ids.filter((k) => monthOf(k) >= now);
+    expect(future.length).toBeGreaterThan(1);
+    expect(future.filter((k) => has(s.owner, k))).toEqual([]);
+    expect(future.filter((k) => monthOf(k) > now).every((k) => /لم ينتهِ|not ended/.test(reasonOf(s.owner, k)))).toBe(true);
+    // وما انتهى من الأشهر يُقبل: المستحق حتى آخر شهرٍ انتهى، ولا يتجاوز تكلفته
+    expect(ids.filter((k) => monthOf(k) < now).every((k) => has(s.owner, k))).toBe(true);
+    expect(accum(s.owner)).toBe(Math.min(84000, 1000 * (now - monthIndex('2026-02-01'))));
+    s.close();
+    void a;
   });
 
 });
