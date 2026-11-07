@@ -14,7 +14,7 @@ import type { DB } from '../../db/adapter';
 import { t } from '../../i18n';
 import { isFiledDate } from '../vatFilings';
 import { unitPastProperties } from '../unitMove';
-import { contractDepositLines, type EntryLine } from './post';
+import { contractDepositLines, depositDeductLines, depositDeductMoveLines, depositRefundLines, type EntryLine } from './post';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
 export interface SrcLine {
@@ -39,6 +39,9 @@ export interface SourceReader {
 /** المصادر التي يُعاد اشتقاقها هنا · وأطراف حساباتها (لما وصل معكوساً) */
 export const DERIVED_SOURCES: Record<string, string[]> = {
   contract_deposit: ['1100', '1260', '2400'],
+  deposit_deduct: ['2400', '4300', '1100'],
+  deposit_deduct_move: ['1265', '1100', '1260'],
+  deposit_refund: ['2400', '1100', '1260'],
 };
 
 /** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة) */
@@ -95,6 +98,32 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!dims) return AWAIT;
       const lines = want(contractDepositLines(amount, c.deposit_holder), () => [dims]);
       return lines ? { lines, date: c.start ?? '', correctable: true } : no('noEntry');
+    }
+    case 'deposit_deduct':
+    case 'deposit_deduct_move':
+    case 'deposit_refund': {
+      // تسوية التأمين (applyDepositSettlement): المخصوم والمردود من صفّ التسوية، وجهة القبض من العقد، ووجهة المخصوم لدى المنصة
+      const c = r.row<{ deposit_halalas: number; deposit_holder: string | null }>('contracts', e.srcId);
+      const s = r.row<{ date: string; deduction_halalas: number; refund_halalas: number; deduct_destination: string | null }>('deposit_settlements', e.srcId);
+      if (!c || !s) return AWAIT;
+      // والتسوية توزّع تأمين العقد كله: المخصوم بعد طرح ما زاد مطالبةً، والمردود (قرار المالك على #27 و2026-10-09) · فلا يُرحَّل
+      // من التأمين أكثر منه بصفّ تسويةٍ يُكتب معه
+      const deduction = num(s.deduction_halalas);
+      const refund = num(s.refund_halalas);
+      if (deduction < 0 || refund < 0 || deduction + refund !== num(c.deposit_halalas)) return no('settlement');
+      const dims = contractDims(db, r, e.srcId);
+      if (!dims) return AWAIT;
+      const PLATFORM = 'منصة إيجار'; // i18n-exempt: جهة مخزّنة
+      const OURS = 'حسابنا'; // i18n-exempt: وجهة مخزّنة
+      const WALLET = 'محفظة إيجار'; // i18n-exempt: وجهة مخزّنة
+      const built = e.src === 'deposit_deduct'
+        // لدى «طرف آخر» لا قيد إلا إن وصل المخصوم للمكتب، ووصوله لا يُخزَّن إلا بقيده (قرار المالك على #26)
+        ? depositDeductLines(deduction, c.deposit_holder, true)
+        : e.src === 'deposit_refund'
+          ? depositRefundLines(refund, c.deposit_holder)
+          : (c.deposit_holder === PLATFORM ? depositDeductMoveLines(deduction, s.deduct_destination === OURS ? OURS : WALLET) : null);
+      const lines = want(built, () => [dims]);
+      return lines ? { lines, date: s.date, correctable: true } : no('noEntry');
     }
   }
   return '';

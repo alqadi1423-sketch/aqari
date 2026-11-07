@@ -791,7 +791,8 @@
     "dims": "A dimension of the line on account {{account}} (contract, unit or property) does not match the entry's document",
     "date": "Its date does not match its document's date",
     "noEntry": "Its document does not post an entry with this source",
-    "mirror": "An entry that arrived reversed does not match its reversal"
+    "mirror": "An entry that arrived reversed does not match its reversal",
+    "settlement": "The deposit settlement does not distribute the contract's whole deposit"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",
