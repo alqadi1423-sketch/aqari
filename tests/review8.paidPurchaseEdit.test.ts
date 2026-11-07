@@ -39,6 +39,7 @@ const snapshot = (db: DB) => JSON.stringify([
 
 function world() {
   const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('S4', 'مورد صيانة مصطنع', '300000000000004', '2026-01-01')`);
   ownerCashIn(db, { amountHalalas: 1_000_000, date: '2026-05-01' });
   const bank = addBank(db, 'بنك مصطنع', 1_000_000);

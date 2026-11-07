@@ -780,7 +780,7 @@ export default function Settings() {
           {storageRow('قاعدة البيانات', storage.dbBytes)}
           {storageRow('سلة المحذوفات', storage.trashBytes, storage.trashCount + ' ملف')}
           {/* طريق الاسترجاع بعد «مسح كل البيانات» · للمالك وحده كسائر الاستعادة */}
-          {storageRow('نسخة الأمان قبل آخر استيراد أو مسح', storage.safetyBytes, storage.safetyCount + ' ملف',
+          {storageRow('نسخ الأمان', storage.safetyBytes, storage.safetyCount + ' ملف',
             admin && storage.safetyCount > 0 ? <BtnGhost small title="استعادة" onPress={doRestoreSafety} disabled={busy} /> : undefined)}
         </Fold>
         <Fold icon="chart" title="بياناتك بالأرقام" value={String(data.total) + ' سجل'}>

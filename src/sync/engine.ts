@@ -986,7 +986,9 @@ function applyLineDims(db: DB, entryId: string, lines: RowData[]): number {
     const cur = db.get<Record<string, string | null>>(
       `SELECT ${DIM_COLS.join(', ')} FROM journal_lines WHERE id = ? AND entry_id = ?`, [l.id as string, entryId]);
     if (!cur) continue;
-    const next = DIM_COLS.map((c) => (l[c] as string | null | undefined) ?? null);
+    // تُملأ الفارغة وحدها، والقائمة لا تُستبدل (الترحيلة ٥١ · القاعدة ٩٩: القرارات المعلّقة القسم ٥ البند ٣): نسخةٌ تحمل بُعداً
+    // آخر لسطرٍ مرحّل لا تغيّره ولا تُرفض به
+    const next = DIM_COLS.map((c) => cur[c] ?? (l[c] as string | null | undefined) ?? null);
     if (DIM_COLS.every((c, i) => (cur[c] ?? null) === next[i])) continue;
     db.run(`UPDATE journal_lines SET ${DIM_COLS.map((c) => c + ' = ?').join(', ')} WHERE id = ?`, [...next, l.id as string]);
     n++;

@@ -14,6 +14,7 @@ import {
 } from '@/domain/accounting/dimensions';
 import { trialBalance, costCenterReport, accountMovement } from '@/domain/accounting/ledger';
 import { financialStatementBlock } from '@/domain/finStatements';
+import { asLegacyDims } from './helpers/legacyDims';
 
 type Line = { account_code: string; property_id: string | null; unit_id: string | null; contract_id: string | null; cost_center_id: string | null };
 const linesOf = (db: DB, entryId: string) => db.all<Line>(
@@ -59,11 +60,15 @@ test('المشترى والفاتورة بعقارهما ووحدتهما · و�
   expect(linesOf(db, rev.id).map((l) => [l.property_id, l.cost_center_id])).toEqual(linesOf(db, pe).map((l) => [l.property_id, l.cost_center_id]));
 });
 
-test('القيد المرحّل: مبالغه وحساباته مجمّدة كما كانت · وأبعاده وحدها تُعدَّل', () => {
+// كانت «وأبعاده وحدها تُعدَّل»، وحسم القاعدة ٩٩ (القرارات المعلّقة القسم ٥ البند ٣، واعتمده المالك 2026-11-07 «وما حُسم بالقاعدة ٩٩
+// يُبنى») أن أبعاد المرحّل تُملأ مرةً إن كانت فارغة ولا تُغيَّر قيمةٌ قائمة (الترحيلة ٥١) · ولا شاشة في التطبيق تعدّلها
+test('القيد المرحّل: مبالغه وحساباته مجمّدة كما كانت · وأبعاده تُملأ إن كانت فارغة ولا تُغيَّر', () => {
   const { db, c1, p2 } = world();
   const e = entryOf(db, 'rent', pay(db, c1, 50000));
   expect(() => db.run(`UPDATE journal_lines SET debit_halalas = debit_halalas + 1 WHERE entry_id = ?`, [e])).toThrow('قيد مرحّل لا يُعدَّل');
   expect(() => db.run(`UPDATE journal_lines SET account_code = '1100' WHERE entry_id = ?`, [e])).toThrow('قيد مرحّل لا يُعدَّل');
+  expect(() => db.run(`UPDATE journal_lines SET property_id = ? WHERE entry_id = ?`, [p2, e])).toThrow('بُعد سطر القيد المرحّل');
+  asLegacyDims(db, () => db.run(`UPDATE journal_lines SET property_id = NULL WHERE entry_id = ?`, [e]));
   db.run(`UPDATE journal_lines SET property_id = ? WHERE entry_id = ?`, [p2, e]);
   expect(linesOf(db, e).every((l) => l.property_id === p2)).toBe(true);
 });
@@ -73,7 +78,7 @@ test('القيود القديمة: الأداة تعرض ما عُرف مصدر�
   const e = entryOf(db, 'rent', pay(db, c1, 70000));
   const manual = postManualEntry(db, { date: '2026-02-01', memo: 'قيد يدوي مصطنع', lines: [{ account: '1100', debit: 1000, credit: 0 }, { account: '3100', debit: 0, credit: 1000 }] })!;
   // كأنهما من إصدارٍ قبل الأبعاد
-  db.run(`UPDATE journal_lines SET property_id = NULL, unit_id = NULL, contract_id = NULL, cost_center_id = NULL`);
+  asLegacyDims(db, () => db.run(`UPDATE journal_lines SET property_id = NULL, unit_id = NULL, contract_id = NULL, cost_center_id = NULL`));
   const plan = planDimsBackfill(db);
   expect(plan.known.map((k) => k.entryId)).toContain(e);
   expect(plan.unknown.map((k) => k.entryId)).toContain(manual.id);
@@ -122,7 +127,7 @@ test('ملء أبعاد القديم على جهاز المالك يصل إلى 
   enableSync(A, 'U-DIMS');
   const pid = pay(A, c1, 90000);
   const e = entryOf(A, 'rent', pid);
-  A.run(`UPDATE journal_lines SET property_id = NULL, unit_id = NULL, contract_id = NULL, cost_center_id = NULL WHERE entry_id = ?`, [e]);
+  asLegacyDims(A, () => A.run(`UPDATE journal_lines SET property_id = NULL, unit_id = NULL, contract_id = NULL, cost_center_id = NULL WHERE entry_id = ?`, [e]));
   await syncOnce(A, r, getMeta(A, 'device_id')!);
   const B = memDb();
   enableSync(B, 'U-DIMS');
@@ -146,7 +151,7 @@ test('ما لا يُعرف مصدره يبقى بلا أبعاد بإقرار ا
   const { accountPeriodChange } = await import('@/domain/accounting/ledger');
   const { db, p1, p2, c1 } = world();
   const manual = postManualEntry(db, { date: '2026-02-01', memo: 'قيد يدوي مصطنع', lines: [{ account: '1100', debit: 1000, credit: 0 }, { account: '3100', debit: 0, credit: 1000 }] })!;
-  db.run(`UPDATE journal_lines SET cost_center_id = NULL WHERE entry_id = ?`, [manual.id]);
+  asLegacyDims(db, () => db.run(`UPDATE journal_lines SET cost_center_id = NULL WHERE entry_id = ?`, [manual.id]));
   expect(planDimsBackfill(db).unknown.map((u) => u.entryId)).toEqual([manual.id]);
   expect(acknowledgeUnknownDims(db, [manual.id])).toBe(1);
   expect(planDimsBackfill(db).unknown).toEqual([]);

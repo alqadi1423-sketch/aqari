@@ -12,7 +12,7 @@ import type { DB } from '../db/adapter';
 import { fmt } from '../domain/money';
 import { dfmtOut, today } from '../domain/dates';
 import {
-  PRINT_CSS, letterhead, esc, type CompanyInfo, type CopyKind,
+  PRINT_CSS, letterhead, esc, shownVatNo, type CompanyInfo, type CopyKind,
   buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc,
   buildHandoverDoc, buildClaimDoc,
 } from '../domain/printDocs';
@@ -42,8 +42,9 @@ export function companyInfo(db: DB): CompanyInfo {
 /** ترويسة التقارير (تستعملها reportExport) · نفس بيانات المنشأة */
 export function companyHeader(db: DB): string {
   const co = companyInfo(db);
+  const vat = shownVatNo(co);
   return `<div><div style="font-weight:800;font-size:16px">${esc(co.name || '')}</div>
-    ${co.vatno ? `<div style="font-size:11.5px;color:#77808F;margin-top:4px">الرقم الضريبي: <span class="num">${esc(co.vatno)}</span></div>` : ''}</div>`;
+    ${vat !== undefined ? `<div style="font-size:11.5px;color:#77808F;margin-top:4px">الرقم الضريبي: <span class="num">${esc(vat)}</span></div>` : ''}</div>`;
 }
 
 const issuedNow = (): string => {

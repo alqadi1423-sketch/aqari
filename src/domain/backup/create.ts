@@ -6,6 +6,7 @@ import { integrityChecks, type IntegrityCheck } from '../accounting/integrity';
 import { reviewData } from './checks';
 import { allAccounts, accountBalance } from '../accounting/ledger';
 import { currentSchemaVersion } from '../../db/migrations';
+import { hasUserData } from './userData';
 import { libSizeLabel } from '../library';
 import type { DB } from '../../db/adapter';
 import {
@@ -63,6 +64,9 @@ export async function makeSafetyBackup(
   const keep = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}.aqbk`;
   const outPath = joinPath(dir, keep);
   await createBackup(env, outPath, onProgress);
+  // ونسخةٌ من قاعدةٍ بلا بيانات لا تحذف ما قبلها (القاعدة ٩٩ · القرارات المعلّقة القسم ٥ البند ١٦): مسحٌ ثم مسحٌ آخر كان يُبقي نسخة
+  // القاعدة الفارغة وحدها وقد حذف التي فيها البيانات · وأول نسخةٍ من قاعدةٍ فيها بيانات بعدها تعيد «واحدة تبقى»
+  if (!hasUserData(env.db)) return outPath;
   // نسخ ما قبل الترقية لها سقفها في upgrade.ts · لا تحذفها نسخة استعادة ولا مسح
   for (const name of env.fs.list(dir)) {
     if (name === keep || !name.endsWith('.aqbk') || name.startsWith(PRE_UPGRADE_PREFIX)) continue;

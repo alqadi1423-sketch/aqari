@@ -61,6 +61,7 @@ describe('المعيار الوحيد: هل الفاتورة باسم المنش
 
   test('الافتراض مستبعدة ما لم يُحدَّد · و«قابلة للخصم» بلا رقم ضريبي تُرفض بجملة', () => {
     const db = seed();
+    db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
     const id = savePurchase(db, {
       ...base, supplier: 'مورد عام', category: 'صيانة',
       subtotalHalalas: 10000, taxHalalas: 1500, totalHalalas: 11500,
@@ -76,6 +77,7 @@ describe('المعيار الوحيد: هل الفاتورة باسم المنش
 
   test('القابلة للخصم: المصروف بالأساس والضريبة في 1270، ثم تقديم واسترداد يُقفلها', () => {
     const db = seed();
+    db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
     const id = savePurchase(db, {
       ...base, supplier: 'مورد عام', category: 'صيانة',
       taxStatus: 'فاتورة ضريبية · قابلة للخصم',
@@ -96,6 +98,7 @@ describe('المعيار الوحيد: هل الفاتورة باسم المنش
 
   test('رفض الاسترداد: الضريبة تصير جزءاً من التكلفة و1270 يُقفل', () => {
     const db = seed();
+    db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
     const id = savePurchase(db, {
       ...base, supplier: 'مورد عام', category: 'مصروفات أخرى',
       taxStatus: 'فاتورة ضريبية · قابلة للخصم',

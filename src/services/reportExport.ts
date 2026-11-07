@@ -7,6 +7,7 @@ import type { DB } from '../db/adapter';
 import { fmt } from '../domain/money';
 import { dfmtOut } from '../domain/dates';
 import { printHtmlDoc, companyHeader, companyInfo } from './print';
+import { shownVatNo } from '../domain/printDocs';
 import {
   unitReportData, propertyReportData, supplierReportData, invoicesReportData,
 } from '../domain/reportData';
@@ -47,7 +48,7 @@ function xlsxDoc(db: DB, report: string, period: string, criteria: Array<[string
   const co = companyInfo(db);
   return {
     companyName: co.name || '',
-    companyVatno: co.vatno || '',
+    companyVatno: shownVatNo(co),
     report, period, issuedAt: issuedAt(), criteria,
   };
 }

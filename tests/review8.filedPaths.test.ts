@@ -29,6 +29,8 @@ const writes = (db: DB) => Number(db.get<{ n: number }>(
 
 function world() {
   const db = memDb();
+  // يُقدّم إقرار الربع الأول فهي مسجّلة، و«قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`);
   db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('S1', 'مورد ضريبي مصطنع', '300000000000003', '2026-01-01')`);
   const bank = addBank(db, 'بنك مصطنع', 5_000_000);
   ownerCashIn(db, { amountHalalas: 5_000_000, date: '2026-01-02' });

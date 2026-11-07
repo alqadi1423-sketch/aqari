@@ -27,6 +27,7 @@ test('#٢٤ مؤشرات التحصيل بلا الملغاة · والمحصَ�
   const live = allInstallments(db, '2026-01-31').filter((x) => x.status !== 'ملغية');
   expect(k.collectionPct).toBe(Math.round((live.reduce((s, x) => s + x.paid, 0) / live.reduce((s, x) => s + x.amount, 0)) * 100));
   // فاتورة خاضعة قابلة للخصم ببند أصل: المصروف ١٠٠ ريال (التركيب) لا ٤٦٠
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('SP1', 'مورد ضريبي مصطنع', '300000000000003', '2026-01-01T00:00:00.000Z')`);
   savePurchase(db, {
     supplier: 'مورد ضريبي مصطنع', date: '2026-02-15', due: '2026-02-15', category: 'صيانة', incorpItem: '', amortize: false, amortizeMonths: null,

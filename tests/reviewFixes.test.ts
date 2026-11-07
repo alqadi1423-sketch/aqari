@@ -465,6 +465,7 @@ describe('٤.٦ الاستعادة من السلة تعيد القيود كما 
 
   test('فاتورة شراء قابلة للخصم بفرق تقريب ومسدَّدة: تُستعاد بقيدها نفسه وسدادها', async () => {
     const { db, bank } = await base();
+    db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
     const { savePurchase, payPurchaseSplit, deletePurchase, TS_DEDUCTIBLE } = await import('@/domain/purchases');
     const { restoreFromTrash } = await import('@/domain/trash');
     const { bankBalance } = await import('@/domain/accounting/ledger');

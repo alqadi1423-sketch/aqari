@@ -23,7 +23,7 @@ import { C, TYPE } from '../src/ui/theme';
 import { Icon } from '../src/ui/icons';
 import {
   savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax, priorPaymentCashOut,
-  TAX_STATUSES, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
+  TAX_STATUSES, taxStatusesFor, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
   type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled, purchaseEditBlock,
 } from '../src/domain/purchases';
 import { today as todayFn } from '../src/domain/dates';
@@ -744,7 +744,9 @@ export default function Purchases() {
           </View>
         </Row>
         <SelectField label="الوضع الضريبي" value={taxStatus}
-          options={TAX_STATUSES.map((v) => ({ value: v, label: v }))}
+          // «قابلة للخصم» للمنشأة المسجّلة، أو لفاتورةٍ هي كذلك من زمن التسجيل (القاعدة ٩٩ · القرارات المعلّقة القسم ٥ البند ١٣)
+          options={taxStatusesFor(db, editingId ? db.get<{ s: string }>(`SELECT tax_status AS s FROM purchases WHERE id = ?`, [editingId])?.s : null)
+            .map((v) => ({ value: v, label: v }))}
           onPick={(v) => {
             setTaxStatus(v);
             if (v === TS_EXEMPT || v === TS_ZERO) { setTaxStr('0'); setTotalStr(subtotal); }

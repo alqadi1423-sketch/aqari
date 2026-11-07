@@ -6,7 +6,7 @@
 import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 50;
+export const SCHEMA_VERSION = 51;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1821,4 +1821,22 @@ CREATE INDEX IF NOT EXISTS ix_inbox_d_method_label ON sync_inbox(tbl, json_extra
 CREATE INDEX IF NOT EXISTS ix_pay_cancel_entry ON contract_payments(cancel_entry_id);
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50];
+/**
+ * الترحيلة ٥١ · أبعاد سطر القيد المرحّل تُملأ مرةً ولا تُغيَّر (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩: القرارات المعلّقة القسم ٥ البند ٣،
+ * وقاعدة المالك ٩٠ «سطور القيد المختوم لا تُمسّ»): العقار والوحدة والعقد ومركز التكلفة والأصل يُملأ الفارغ منها (ملء القيود القديمة
+ * بأداة المالك أو بالمزامنة)، وقيمةٌ قائمة لا تُستبدل · فالمحفّز يرفض في القاعدة نفسها ولو أخطأ الكود
+ */
+// i18n-exempt: رسائل محفّزات القاعدة كأخواتها
+export const MIGRATION_51 = `
+CREATE TRIGGER IF NOT EXISTS trg_jl_dims_fill_only
+BEFORE UPDATE OF property_id, unit_id, contract_id, cost_center_id, asset_id ON journal_lines
+WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) = 'مرحّل'
+  AND ((OLD.property_id IS NOT NULL AND NEW.property_id IS NOT OLD.property_id)
+    OR (OLD.unit_id IS NOT NULL AND NEW.unit_id IS NOT OLD.unit_id)
+    OR (OLD.contract_id IS NOT NULL AND NEW.contract_id IS NOT OLD.contract_id)
+    OR (OLD.cost_center_id IS NOT NULL AND NEW.cost_center_id IS NOT OLD.cost_center_id)
+    OR (OLD.asset_id IS NOT NULL AND NEW.asset_id IS NOT OLD.asset_id))
+BEGIN SELECT RAISE(ABORT, 'بُعد سطر القيد المرحّل يُملأ مرة ولا يُغيَّر'); END;
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51];

@@ -142,7 +142,8 @@ function sheetXml(blocks: ReportBlock[], doc?: XlsxDoc): string {
   if (doc) {
     // الترويسة: أسطر أعلى الجدول بخط أعرض · لا تدخل حساب عرض الأعمدة كي لا تمدّها
     push([doc.companyName || ''], S_DOCNAME, false);
-    push(['الرقم الضريبي: ' + (doc.companyVatno || '')], S_DOCLINE, false);
+    // للمنشأة المسجّلة وحدها (shownVatNo): غائبٌ لا سطر له
+    if (doc.companyVatno !== undefined) push(['الرقم الضريبي: ' + doc.companyVatno], S_DOCLINE, false);
     push([doc.report], S_DOCLINE, false);
     push(['الفترة: ' + doc.period], S_DOCLINE, false);
     if (doc.issuedAt) push(['تاريخ الإصدار: ' + doc.issuedAt], S_DOCLINE, false);
@@ -227,7 +228,7 @@ const criteriaBlock = (doc: XlsxDoc): ReportBlock => ({
     rows: ([
       ['اسم التقرير', doc.report],
       ['المنشأة', doc.companyName || ''],
-      ['الرقم الضريبي', doc.companyVatno || ''],
+      ...(doc.companyVatno !== undefined ? [['الرقم الضريبي', doc.companyVatno]] : []),
       ['الفترة', doc.period],
       ...(doc.issuedAt ? [['تاريخ الإصدار', doc.issuedAt]] : []),
       ...(doc.criteria ?? []),

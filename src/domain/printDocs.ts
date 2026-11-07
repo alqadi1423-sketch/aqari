@@ -70,11 +70,18 @@ export const PRINT_CSS = `
   h3{margin:13px 0 5px;font-size:12.5px;color:#10192E}
 `;
 
+/**
+ * الرقم الضريبي فيما يخرج من التطبيق: للمنشأة المسجّلة وحدها، فلا يوحي مستندٌ بأنه ضريبي وهي غير مسجّلة (القاعدة ٩٩ · القرارات المعلّقة
+ * القسم ٥ البند ١٨) · undefined: لا سطر له أصلاً · والمسجّلة بلا رقمٍ خانةٌ خالية (البند ٤)
+ */
+export const shownVatNo = (co: { vatEnabled: boolean; vatno?: string | null }): string | undefined =>
+  (co.vatEnabled ? (co.vatno ?? '') : undefined);
+
 /** الترويسة الكاملة · بيانات المنشأة من «بيانات المنشأة» لا تُكتب في كل مستند */
 export function letterhead(co: CompanyInfo, docTitle: string, docNo?: string, copyLabel?: string): string {
   const sub = [
     co.cr ? 'س.ت <span class="num">' + esc(co.cr) + '</span>' : '',
-    co.vatEnabled && co.vatno ? 'الرقم الضريبي <span class="num">' + esc(co.vatno) + '</span>' : '',
+    shownVatNo(co) ? 'الرقم الضريبي <span class="num">' + esc(shownVatNo(co)) + '</span>' : '',
     co.phone ? 'هاتف <span class="num">' + esc(co.phone) + '</span>' : '',
     co.address ? esc(co.address) : '',
   ].filter(Boolean).join(' · ');

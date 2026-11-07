@@ -15,6 +15,7 @@ import { correctionDate, isFiledDate, requireOpenPeriod } from './vatFilings';
 import { t } from '../i18n';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber } from './numbering';
+import { vatRegistered } from './taxCode';
 
 export interface PurchaseInput {
   supplier: string;
@@ -54,6 +55,14 @@ export const TS_EXCLUDED: TaxStatus = 'غير قابلة للخصم';
 export const TS_EXEMPT: TaxStatus = 'معفاة من الضريبة';
 export const TS_ZERO: TaxStatus = 'خاضعة بنسبة صفرية';
 export const TAX_STATUSES: TaxStatus[] = [TS_EXCLUDED, TS_DEDUCTIBLE, TS_EXEMPT, TS_ZERO];
+
+/**
+ * الأوضاع المتاحة لفاتورة شراء (القاعدة ٩٩ · القرارات المعلّقة القسم ٥ البند ١٣): «قابلة للخصم» للمنشأة المسجّلة في ضريبة القيمة
+ * المضافة وحدها، فغير المسجّلة لا تُقدّم إقراراً تخصم فيه ضريبة مدخلاتها · ويبقى لفاتورةٍ هي كذلك أصلاً (keep) من زمن التسجيل
+ */
+export function taxStatusesFor(db: DB, keep?: TaxStatus | string | null): TaxStatus[] {
+  return vatRegistered(db) || keep === TS_DEDUCTIBLE ? TAX_STATUSES : TAX_STATUSES.filter((s) => s !== TS_DEDUCTIBLE);
+}
 export const EXCLUDE_REASONS = [
   'الفاتورة باسم المالك',
   'الفاتورة باسم المستأجر',
@@ -98,6 +107,11 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
     const taxStatus: TaxStatus = input.taxStatus ?? (input.exempt ? TS_EXEMPT : TS_EXCLUDED);
     // الرقم الضريبي يأتي من بطاقة المورد · مصدر واحد للحقيقة، ويُلتقط لقطةً في الفاتورة
     let supplierVat = '';
+    // «قابلة للخصم» للمسجّلة وحدها، إلا فاتورةً كانت كذلك قبل إلغاء التسجيل تُعدَّل بوضعها نفسه
+    if (taxStatus === TS_DEDUCTIBLE && !taxStatusesFor(db, existingId
+      ? db.get<{ s: string }>(`SELECT tax_status AS s FROM purchases WHERE id = ?`, [existingId])?.s : null).includes(TS_DEDUCTIBLE)) {
+      throw new Error('المنشأة غير مسجّلة في ضريبة القيمة المضافة · لا تُخصم ضريبة المدخلات، فاختر «' + TS_EXCLUDED + '»');
+    }
     if (taxStatus === TS_DEDUCTIBLE) {
       supplierVat = (db.get<{ vat: string }>(
         `SELECT vat FROM suppliers WHERE name = ? AND deleted_at IS NULL`, [input.supplier]
