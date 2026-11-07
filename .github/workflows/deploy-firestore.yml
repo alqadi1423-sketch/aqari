@@ -1,0 +1,91 @@
+# نشر قواعد Firestore وفهارسه معاً (التوجيه الثالث · «قبل كل شيء» · قرار المالك 2026-11-07)
+# عند كل دمجٍ في main يغيّر أياً من الملفين، ويدوياً بزر «Run workflow».
+# لا نشر قبل: فحص الأنواع، ومطابقة firestore.rules لمولّده، والحزمة كاملةً مع المحاكي (كخط الاختبارات) بلا فشلٍ ولا تعليق، وفحص
+# مفتاح حساب الخدمة · ولا نشر إلا من main (التشغيل اليدوي من فرعٍ آخر يُتخطّى · المتحقق المستقل).
+# الصلاحيات التي يحتاجها الحساب فوق Firebase Admin إن نقصت: roles/serviceusage.serviceUsageConsumer لفحص تفعيل واجهة Firestore في
+# firebase deploy · وقراءة تاريخ انتهاء المفتاح تحتاج iam.serviceAccountKeys.get (وبدونها يُنبَّه بالتاريخ المسجَّل KEY_EXPIRES_AT).
+# المفتاح في السر FIREBASE_SERVICE_ACCOUNT (الحساب github-deploy@aqari-ec12e.iam.gserviceaccount.com بدور Firebase Admin)،
+# يُكتب في ملفٍ مؤقت لا يُطبع ويُحذف آخر التشغيل · وبعد النشر: المنشور يطابق المختبَر، وتجربةٌ حية لسطر العضو عن نفسه.
+name: نشر قواعد Firestore وفهارسه
+
+on:
+  push:
+    branches: [main]
+    paths: [firestore.rules, firestore.indexes.json]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-firestore
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      TZ: Asia/Riyadh
+      FIREBASE_PROJECT: aqari-ec12e
+      # أُنشئ المفتاح 2026-11-07 وتنتهي صلاحيته في يناير 2027 (بنص المالك): أول يومٍ ممكن فيه، فيُنبَّه قبله بشهر حين لا يُقرأ التاريخ
+      # من IAM · يُحدَّث بالتاريخ الدقيق متى عُرف، ومع كل مفتاحٍ جديد
+      KEY_EXPIRES_AT: '2027-01-01'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: تثبيت الحزم
+        run: npm ci
+
+      - name: فحص الأنواع
+        run: npx tsc --noEmit
+
+      - name: مطابقة firestore.rules لمولّده
+        run: npx jest tests/rulesGen.test.ts tests/firebaseDeploy.test.ts
+
+      # الحزمة كاملةً كخط الاختبارات: اختبارات المحاكي وما يفحص نص القواعد خارجها (sync وverifyFixesF07 وغيرهما)
+      - name: الحزمة كاملةً مع المحاكي
+        run: |
+          npx firebase emulators:exec --only firestore,storage --project demo-aqari \
+            "npx jest -i --json --outputFile=suite-results.json" || true
+          node scripts/firebase/assertJest.js suite-results.json "الحزمة مع المحاكي"
+
+      - name: مفتاح حساب الخدمة
+        env:
+          SA_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          umask 077
+          f="$RUNNER_TEMP/firebase-sa.json"
+          printf '%s' "$SA_JSON" > "$f"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=$f" >> "$GITHUB_ENV"
+          node scripts/firebase/checkKey.js "$f"
+
+      - name: النشر
+        run: npx firebase deploy --only firestore:rules,firestore:indexes --project "$FIREBASE_PROJECT" --non-interactive
+
+      - name: المنشور يطابق المختبَر
+        run: node scripts/firebase/verifyRelease.js
+
+      - name: تجربة سطر العضو عن نفسه على المشروع
+        run: |
+          npx jest --roots '<rootDir>/scripts/firebase' --testMatch '**/*.live.test.ts' -i --json --outputFile=live-results.json || true
+          node scripts/firebase/assertJest.js live-results.json "تجربة ما بعد النشر"
+
+      - name: حذف ملف المفتاح
+        if: always()
+        run: rm -f "$RUNNER_TEMP/firebase-sa.json"
