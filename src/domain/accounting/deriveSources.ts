@@ -14,7 +14,10 @@ import type { DB } from '../../db/adapter';
 import { t } from '../../i18n';
 import { isFiledDate } from '../vatFilings';
 import { unitPastProperties } from '../unitMove';
-import { contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines, type EntryLine } from './post';
+import {
+  contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
+  reservationDepositLines, reservationForfeitLines, reservationRefundLines, type EntryLine,
+} from './post';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
 export interface SrcLine {
@@ -45,6 +48,9 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   deposit_deduct_move: ['1265', '1100', '1260'],
   deposit_refund: ['2400', '1100', '1260'],
   deposit_carry: ['2400'],
+  reservation: ['1100', '2450'],
+  reservation_forfeit: ['2450', '4300'],
+  reservation_refund: ['2450', '1100'],
 };
 
 /** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة) */
@@ -119,6 +125,30 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!dims) return AWAIT;
       const lines = want(depositCarryLines(carried, c.renewed_from), (l) => [l.dims?.contractId ? { ...dims, contract: l.dims.contractId } : dims]);
       return lines ? { lines, date: c.start ?? '', correctable: true } : no('noEntry');
+    }
+    case 'reservation':
+    case 'reservation_forfeit':
+    case 'reservation_refund': {
+      // الحجز بعربون (reservations.ts): قبضه بتاريخ إنشاء الحجز، ومصادرته أو ردّه بتاريخ تسويته وبمآله المخزَّن، والمبلغ عربونه كله
+      const rv = r.row<{ unit_id: string | null; deposit_halalas: number; created_date: string | null; deposit_outcome: string | null;
+        deposit_settled_date: string | null; converted_contract_id: string | null }>('reservations', e.srcId);
+      if (!rv) return AWAIT;
+      // أبعاده وحدة الحجز، ومع عقده إن حُوِّل (dimsFromSource: قيدٌ رُحِّل قبل التحويل بلا عقد، وبعده بعقده)
+      const unit = unitDims(db, r, rv.unit_id ?? null);
+      const dims: DimSpec[] = [unit];
+      const conv = rv.converted_contract_id ? contractDims(db, r, rv.converted_contract_id) : null;
+      if (conv) dims.push(conv.unit ? conv : { ...unit, contract: conv.contract });
+      const deposit = num(rv.deposit_halalas);
+      if (e.src === 'reservation') {
+        const lines = want(reservationDepositLines(deposit), () => dims);
+        return lines ? { lines, date: rv.created_date ?? '', correctable: false } : no('noEntry');
+      }
+      const FORFEITED = 'مصادَر'; // i18n-exempt: مآل العربون المخزَّن
+      const REFUNDED = 'مردود'; // i18n-exempt: مآل العربون المخزَّن
+      if (!rv.deposit_outcome) return AWAIT;
+      if (rv.deposit_outcome !== (e.src === 'reservation_forfeit' ? FORFEITED : REFUNDED)) return no('noEntry');
+      const lines = want(e.src === 'reservation_forfeit' ? reservationForfeitLines(deposit) : reservationRefundLines(deposit), () => dims);
+      return lines ? { lines, date: rv.deposit_settled_date ?? '', correctable: false } : no('noEntry');
     }
     case 'deposit_deduct':
     case 'deposit_deduct_move':
