@@ -420,6 +420,10 @@ export default function Purchases() {
         setQrKey(key);
         // والعدّاد لموردٍ قبله لا يبقى مختاراً كما في الاختيار اليدوي (المدقق الخارجي N٥: كانت تُسجَّل قراءةٌ لغير صاحبه)
         if (name) { setSupplier(name); setMeterId(''); }
+        // وفئته الافتراضية كاختياره يدوياً إن لم تُختر فئة (المدقق الخارجي P٧: كان المصروف يُرحَّل على حسابٍ غير حسابه)
+        const cat = name ? db.get<{ c: string | null }>(
+          `SELECT default_category AS c FROM suppliers WHERE name = ? AND archived = 0 AND deleted_at IS NULL`, [name])?.c : null;
+        if (cat) setCategory((c) => c || cat);
         setDate(d.date);
         setSubtotal(fmt(d.subtotalHalalas).replace(/,/g, ''));
         setTaxStr(fmt(d.taxHalalas).replace(/,/g, ''));
@@ -442,6 +446,7 @@ export default function Purchases() {
         body: t('purchaseQr.newSupplierBody', { name: d.supplier, vat: d.newSupplierVat ?? t('purchaseQr.noVat') }),
         actions: [
           { label: t('purchaseQr.addSupplier'), variant: 'primary', onPress: () => {
+            if (seq !== qrSeq.current) return;
             try {
               saveSupplier(db, null, { name: d.supplier, vat: d.newSupplierVat ?? '', phone: '', category: '', amountHalalas: null, utility: '' });
               bump(); apply(d.supplier);
@@ -508,7 +513,8 @@ export default function Purchases() {
   // والمبالغ يُدخلها المستخدم، والحفظ بمسار الخدمة وصلاحيتها كما هما
   useEffect(() => {
     if (params.newNote === undefined && params.newProperty === undefined) return;
-    if (!perm.add || !suppliers.length) return;
+    // وبلا موردين يُفتح كما يُفتح من زرّه (المدقق الخارجي P٨: كان يعود صامتاً، والمورد يُضاف من الرمز أو قبل الحفظ)
+    if (!perm.add) return;
     openNew();
     if (params.newNote) setLines([{ ...emptyLine(), descr: String(params.newNote).slice(0, 200) }]);
     if (params.newProperty && properties.some((p) => p.id === String(params.newProperty))) {
@@ -547,7 +553,7 @@ export default function Purchases() {
       if (pendingFile) {
         attachPicked(db, pendingFile, 'purchase', savedId, 'purchase').catch((e) => reportFailure({ title: 'تعذّر رفع الملف', e }));
       }
-      setFormOpen(false); bump();
+      qrSeq.current++; setFormOpen(false); bump();
       toast(editingId ? 'تم تحديث الفاتورة وإعادة ترحيلها محاسبياً' : 'تم تسجيل الفاتورة وترحيلها محاسبياً');
     } catch (e) {
       reportFailure({ title: 'تعذّر الحفظ', e });
@@ -748,7 +754,8 @@ export default function Purchases() {
       </FilterSheet>
 
       {/* نافذة التسجيل */}
-      <Sheet visible={formOpen} onClose={() => setFormOpen(false)}
+      {/* والإغلاق يُبطل قراءةً جارية كما يُبطلها فتح فاتورةٍ أخرى (المدقق الخارجي P٦) */}
+      <Sheet visible={formOpen} onClose={() => { qrSeq.current++; setFormOpen(false); }}
         title={editingId ? 'تعديل فاتورة الشراء' : 'تسجيل فاتورة شراء / التزام'} tall
         footer={
           <>

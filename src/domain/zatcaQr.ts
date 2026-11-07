@@ -95,6 +95,13 @@ function halalasOf(v: string): number | null {
 }
 
 const VAT_NO = /^3\d{13}3$/;
+/**
+ * ما لا يُرى في نصوص الرمز: علامات الاتجاه (ALM U+061C وLRM وRLM والتضمين والعزل) والمحارف الصفرية (U+200B–U+200D وضامّ الكلمات
+ * وBOM والواصلة اللينة) · تُزال من الوسوم كلها قبل قراءتها (المدقق الخارجي P٣–P٥: حول الرقم كانت تجعله «ليس بصيغة الهيئة»، وحول
+ * الوقت «لا يُقرأ» فلا مفتاح يرفض المكررة، واسمٌ منها وحدها كان يُقترح مورداً بلا اسمٍ مرئي)
+ */
+const INVISIBLE = /[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g;
+export const stripInvisible = (v: string) => v.replace(INVISIBLE, '');
 // والفاصل بين التاريخ والوقت حرف T أو مسافة (RFC 3339 يجيزها · المدقق الخارجي J١٣)
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
 /** الوقت بلا منطقة وقتُ الفاتورة المحلي (ISO 8601) · وبمنطقة يُحوَّل */
@@ -138,12 +145,12 @@ function decodeZatcaQrNow(payload: string): ZatcaQrResult {
     tags.set(tag, bytes.subarray(i + 2, i + 2 + len));
     i += 2 + len;
   }
-  const text = (tag: number): string | null => { const v = tags.get(tag); return v ? utf8(v) : null; };
+  const text = (tag: number): string | null => { const v = tags.get(tag); const s = v ? utf8(v) : null; return s == null ? null : stripInvisible(s); };
   const [seller, vatRaw, issuedAt, totalS, vatS] = [1, 2, 3, 4, 5].map(text);
-  // واسم البائع الفارغ ناقصٌ كغيابه (المدقق الخارجي N٣: كان يُقترح موردٌ بلا اسم)
+  // واسم البائع الفارغ ناقصٌ كغيابه (المدقق الخارجي N٣: كان يُقترح موردٌ بلا اسم)، ومنه ما لا يُرى وحده (P٤)
   if (seller == null || !seller.trim() || vatRaw == null || issuedAt == null || totalS == null || vatS == null) return { ok: false, error: 'missing' };
   // وعلامات الاتجاه والمسافات حول رقم البائع لا تُعدّ منه (N٢: كانت تجعله «ليس بصيغة الهيئة» فلا تُعرف بطاقته)
-  const vatNo = vatRaw.replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069\s]/g, '');
+  const vatNo = vatRaw.replace(/\s/g, '');
   const total = halalasOf(totalS);
   const vat = halalasOf(vatS);
   if (total == null || vat == null) return { ok: false, error: 'format' };

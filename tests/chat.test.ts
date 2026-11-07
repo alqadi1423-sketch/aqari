@@ -897,7 +897,8 @@ test('التحويل إلى مطالبة أو فاتورة شراء: يفتح ن
   const claims = read('claims.tsx');
   expect(claims).toMatch(/if \(!perm\.add \|\| !contracts\.length\) return;\s*openNew\(\);\s*if \(params\.newReason\) setReason/);
   const purchases = read('purchases.tsx');
-  expect(purchases).toMatch(/if \(!perm\.add \|\| !suppliers\.length\) return;\s*openNew\(\);\s*if \(params\.newNote\) setLines/);
+  // وبلا موردين يُفتح أيضاً (المدقق الخارجي P٨): المورد يُضاف من الرمز أو قبل الحفظ
+  expect(purchases).toMatch(/if \(!perm\.add\) return;\s*openNew\(\);\s*if \(params\.newNote\) setLines/);
 });
 
 /* ─── أجوبة المالك 2026-10-08T10:24Z ─── */

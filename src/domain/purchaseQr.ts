@@ -6,7 +6,7 @@
  */
 import type { DB } from '../db/adapter';
 import { localDateOf, today } from './dates';
-import { hasZone, latinDigits, type ZatcaQr } from './zatcaQr';
+import { hasZone, latinDigits, stripInvisible, type ZatcaQr } from './zatcaQr';
 
 export interface PurchaseQrDraft {
   supplier: string;
@@ -25,30 +25,44 @@ export interface PurchaseQrDraft {
 // والرقم أرقامه وحدها: بشرطاتٍ أو مسافاتٍ أو علامة اتجاه (U+200F) كما يُلصق (المدقق الخارجي L٣)
 const normVat = (v: string | null | undefined) => latinDigits(String(v ?? '')).replace(/\D/g, '');
 /**
- * بطاقةٌ تحمل الرقم: أرقامها كلها، أو مقطعٌ منها بين فواصل غير الشرطة والمسافة (المدقق الخارجي N١: «300000000000003 / س.ت 1010101010»
- * فيها الرقم الضريبي ورقم السجل التجاري، فكانت تُعدّ رقماً آخر)
+ * بطاقةٌ تحمل الرقم: في مقطعٍ منها بين فواصل غير الشرطة والمسافة والنقطة (المدقق الخارجي N١: «300000000000003 / س.ت 1010101010»)
+ * مجموعاتُ أرقامٍ متتالية هي الرقم كله · فالرقم المكتوب مجموعاتٍ («300 0000 …») يُعرف، ومعه السجل التجاري بشرطةٍ أو مسافة
+ * («V - CR» و«V CR» · P٢) يُعرف أيضاً، ولا يُعدّ جزءٌ من رقمٍ أطول رقماً
  */
 const cardHasVat = (card: string | null | undefined, vat: string): boolean => {
   if (!vat) return false;
-  const text = latinDigits(String(card ?? ''));
-  return normVat(text) === vat || text.split(/[^\d\s\-.\u200E\u200F]+/).some((seg) => normVat(seg) === vat);
+  for (const seg of stripInvisible(latinDigits(String(card ?? ''))).split(/[^\d\s\-.]+/)) {
+    const groups = seg.split(/\D+/).filter(Boolean);
+    for (let i = 0; i < groups.length; i++) {
+      let run = '';
+      for (let j = i; j < groups.length && run.length < vat.length; j++) { run += groups[j]; if (run === vat) return true; }
+    }
+  }
+  return false;
 };
+// والاسم بلا ما لا يُرى وبمسافاتٍ موحّدة (P٤ب: «RLM + الاسم» كان يُعدّ اسماً آخر فتُضاف بطاقةٌ ثانية تبدو نفسها)
+const normName = (v: string | null | undefined) => stripInvisible(String(v ?? '')).replace(/\s+/g, ' ').trim();
 
 export function purchaseDraftFromQr(db: DB, qr: ZatcaQr, now: () => string = today): PurchaseQrDraft {
   const vat = qr.warnings.includes('vatNo') ? '' : normVat(qr.vatNo);
-  const seller = qr.sellerName.trim();
+  const seller = normName(qr.sellerName);
   // بالرقم الضريبي أولاً، ورقم البطاقة قد يكون بأرقامٍ عربية هندية (المدقق الخارجي J٥) · ثم بالاسم وحده إن لم يكن للبطاقة رقمٌ يخالف
   // رقم البائع (J١: كانت فاتورة بائعٍ برقمٍ آخر تُنسب صامتةً لموردٍ بالاسم نفسه فتُحفظ برقم البطاقة لا برقم البائع)
   const live = db.all<{ id: string; name: string; vat: string | null; archived: number }>(
     `SELECT id, name, vat, archived FROM suppliers WHERE deleted_at IS NULL ORDER BY archived, created_at`);
-  const byVat = vat ? live.find((s) => cardHasVat(s.vat, vat)) : undefined;
-  const byName = live.find((s) => s.name.trim() === seller);
+  // وبين البطاقات التي تحمل الرقم: غير المؤرشفة أولاً، ثم ما رقمها هو الرقم وحده، ثم ما اسمها اسم البائع (المدقق الخارجي P١: بطاقةٌ
+  // أقدم «فيها» الرقم بين أرقامٍ أخرى كانت تسبق بطاقةً رقمها هو الرقم واسمها اسمه، فتُنسب الفاتورة صامتةً لموردٍ آخر)
+  const rank = (s: (typeof live)[number]) =>
+    (Number(s.archived) === 1 ? 4 : 0) + (normVat(s.vat) === vat ? 0 : 2) + (normName(s.name) === seller ? 0 : 1);
+  const byVat = vat ? live.filter((s) => cardHasVat(s.vat, vat)).reduce<(typeof live)[number] | undefined>(
+    (best, s) => (!best || rank(s) < rank(best) ? s : best), undefined) : undefined;
+  const byName = live.find((s) => normName(s.name) === seller);
   const nameClash = !byVat && !!byName && !!vat && !!normVat(byName.vat) && !cardHasVat(byName.vat, vat);
   const match = byVat ?? (nameClash ? undefined : byName);
   // والمورد المؤرشف لا يختاره نموذج الفاتورة (المدقق الخارجي L٤): يُنبَّه ليُعاد من الموردين، ولا يُقترح موردٌ مكرَّر باسمه
   const archived = !!match && Number(match.archived) === 1;
   const known = archived ? undefined : match;
-  const at = qr.issuedAt.trim().replace(' ', 'T');
+  const at = stripInvisible(qr.issuedAt).trim().replace(' ', 'T');
   const date = qr.warnings.includes('issuedAt') ? now() : hasZone(at) ? localDateOf(at) : at.slice(0, 10);
   return {
     supplier: known?.name ?? match?.name ?? (nameClash ? `${seller} · ${vat}` : seller),
