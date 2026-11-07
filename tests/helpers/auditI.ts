@@ -8,7 +8,13 @@ import type { RemoteDoc } from '@/sync/types';
 import type { DB } from '@/db/adapter';
 
 /** لقطة أوقات المستندات في السحابة · ما تغيّر بعدها كتبه الجهاز الثاني */
-export const snap = (r: MemoryRemote) => new Map([...r.docs.values()].map((d) => [d.id, d.ts] as const));
+/** نسخ السحابة قبل كتابة «العضو» · لتُفحص كتابته بقاعدة السحابة كما تُفحص كتابته الحقيقية (openingKept) */
+const PRIOR = new WeakMap<Map<string, string>, Map<string, RemoteDoc>>();
+export const snap = (r: MemoryRemote) => {
+  const m = new Map([...r.docs.values()].map((d) => [d.id, d.ts] as const));
+  PRIOR.set(m, new Map([...r.docs.values()].map((d) => [d.id, JSON.parse(JSON.stringify(d)) as RemoteDoc])));
+  return m;
+};
 
 const OP: Record<string, string> = {
   bank_tx: 'banks', banks: 'banks', key_money_deals: 'reservations', purchases: 'purchases', purchase_lines: 'purchases',
@@ -22,6 +28,13 @@ export function newAsMember(r: MemoryRemote, since: Map<string, string>): Remote
     const { ts: _t, ...doc } = d as RemoteDoc & { ts: string };
     const op = d.t === 'journal_entries' ? 'banks' : OP[d.t] ?? 'banks';
     const m = { ...doc, by: MEMBER, op } as RemoteDoc;
+    // وما ترفضه قاعدة السحابة من العضو لا يُكتب: تبقى النسخة السابقة (الافتتاحي للمالك وحده · المدقق الخارجي O٥)
+    const prior = PRIOR.get(since)?.get(d.id);
+    if (!r.openingKept(prior, m)) {
+      if (prior) r.docs.set(d.id, prior as RemoteDoc & { ts: string });
+      else r.docs.delete(d.id);
+      continue;
+    }
     r.inject(m);
     out.push(m);
   }

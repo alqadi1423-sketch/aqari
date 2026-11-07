@@ -12,8 +12,10 @@ test('(M7) عضوٌ بمسار «ledger» يرفع افتتاحياً للنقد
   await sync(s.dev, s.r);
   const row = s.owner.get<Record<string, unknown>>(`SELECT * FROM accounts WHERE code = '1100'`)!;
   const before = { owner: walletCashBalance(s.owner), opening: row.opening_halalas };
-  s.r.inject({ id: 'accounts__1100', t: 'accounts', k: '1100', d: { ...row, opening_halalas: 1000000 } as never,
-    u: new Date().toISOString(), dev: 'dev-m7', del: false, by: MEMBER, op: 'ledger' } as RemoteDoc);
+  // والكتابة تمرّ بقاعدة السحابة (openingKept · المدقق الخارجي O٥): الافتتاحي في نسخة العضو كما في السابقة، فتُرفض
+  const w = await s.r.write([{ id: 'accounts__1100', t: 'accounts', k: '1100', d: { ...row, opening_halalas: 1000000 } as never,
+    u: new Date().toISOString(), dev: 'dev-m7', del: false, by: MEMBER, op: 'ledger' } as RemoteDoc]);
+  expect(w[0]).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
   await ownerPulls(s.owner, s.r);
   const out = { before, owner: walletCashBalance(s.owner),
     opening: s.owner.get<{ o: number }>(`SELECT opening_halalas AS o FROM accounts WHERE code = '1100'`)!.o,

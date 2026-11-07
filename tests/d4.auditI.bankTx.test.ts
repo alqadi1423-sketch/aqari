@@ -47,9 +47,8 @@ describe('مدقق I · تضخيم البنك والمحفظة بما لا يف�
     console.log('I1', JSON.stringify(out));
     // قبل التغيير: لا بنك ولا نقد · والحارس يقرأ الافتتاحي مالاً موثوقاً: سحبٌ بلا قيد بمليون ريال يُطبَّق، ونقده يُصرف من الدفتر
     expect(out.wd).toBe(false);
-    // والافتتاحي عند المالك لم يتغيّر، ورفضُه ظاهر (الرصيد الافتتاحي يضعه المالك وحده · القاعدة ٩٩ بعد I١)
+    // والافتتاحي عند المالك لم يتغيّر: قاعدة السحابة ترفض افتتاحيّ العضو (openingKept · القاعدة ٩٩ بعد I١، ثم O٥) فلا يصل
     expect(out.opening).toBe(0);
-    expect(out.rejects.some((x: { tbl: string }) => x.tbl === 'banks')).toBe(true);
     // ومصروف العضو من نقدٍ رُفض سحبه يُقبل كأي صرفٍ نقدي متزامن (L٥): المحفظة سالبة ظاهرةً لا مخفية · حدٌّ معروف (DESIGN §١٣.١٨ هـ)
     s.close();
   });
@@ -152,9 +151,12 @@ describe('مدقق I · تدفقاتٌ مشروعة من عضو: يقبلها ا
     s.close();
   });
 
-  test('(L2) فاتورة شراءٍ سُدّدت مقسّمةً على بنكين (أحدهما بلا رصيد) ونقداً، ثم حُذفت واستُعيدت', async () => {
+  test('(L2) فاتورة شراءٍ سُدّدت مقسّمةً على بنكين ونقداً، ثم حُذفت واستُعيدت', async () => {
     const s = await setup(0);
     ownerCashIn(s.owner, { amountHalalas: 1000000, date: '2026-10-01' });
+    // والبنكان يكفيان شطرَيهما: السداد من البنك لا يُنزله تحت الصفر (سجل القرارات ٥٥ · وكان أحدهما بلا رصيد)
+    depositCashToBank(s.owner, { bankId: s.A, amountHalalas: 100000, date: '2026-10-01' });
+    depositCashToBank(s.owner, { bankId: s.B, amountHalalas: 150000, date: '2026-10-01' });
     await sync(s.owner, s.r);
     await sync(s.dev, s.r);
     s.dev.run(`INSERT INTO suppliers (id, name, vat, category, default_category, created_at) VALUES (?,?,?,?,?,?)`,

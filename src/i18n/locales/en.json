@@ -885,7 +885,7 @@
     "bankTxEntryLocked": "The bank transaction of entry ({{no}}) cannot be deleted, moved or re-amounted · it is cancelled by cancelling its operation",
     "bankTxShort": "The bank or wallet balance does not cover this transaction yet",
     "bankTxEdited": "A bank transaction without an entry cannot change its bank, amount or source · delete it and record it again",
-    "bankOpeningOwner": "Only the owner sets an opening balance (bank or account) · it stays as it was"
+    "accountLocked": "A system account, or one used in an entry, keeps its type and group and is not deleted · it stays as it was"
   },
   "restore": {
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",

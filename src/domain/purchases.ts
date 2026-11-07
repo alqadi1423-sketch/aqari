@@ -8,6 +8,7 @@ import { requireCash, entryCashEffect } from './cashGuard';
 import { uid } from './ids';
 import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
+import { bankBalance } from './accounting/ledger';
 import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount, vatRefundLines, vatRejectLines } from './accounting/post';
 import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseAssetsMoved, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
@@ -235,6 +236,17 @@ export function priorPaymentCashOut(db: DB, id: string): number {
   return Math.max(0, -entryCashEffect(db, p.pj));
 }
 
+/**
+ * السداد من حسابٍ بنكي لا يُنزل رصيده تحت الصفر، كالرسوم والسحب والتحويل (القاعدة ٩٩ · سجل القرارات ٥٥ · المدقق الخارجي O٢: جهاز المالك
+ * ينتظر حركة القيد السالبة حتى يكفيها رصيد البنك، فسدادٌ يتجاوزه من جهاز عضوٍ كان يعلق ثم يُرفض) · بعد عكس السداد السابق، فما أخرجه يعود
+ */
+function requireBankCovers(db: DB, bankId: string, amount: number): void {
+  const balance = bankBalance(db, bankId);
+  if (amount <= balance) return;
+  const bank = db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ?`, [bankId])?.name ?? '';
+  throw new RuleViolation(t('bankTx.bankShort', { bank, balance: fmtH(balance), amount: fmtH(amount) }));
+}
+
 export function reversePurchasePayment(db: DB, id: string, keepTerms = false): void {
   const p = db.get<{
     no: string; payment_journal_entry_id: string | null;
@@ -300,6 +312,7 @@ export function payPurchase(
       method === 'cash'
     );
     if (method !== 'cash' && bankId) {
+      requireBankCovers(db, bankId, Number(p.total_halalas));
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,
@@ -354,6 +367,7 @@ export function payPurchaseSplit(db: DB, id: string, lines: PurchasePayLine[], p
     );
     for (const l of valid) {
       if (l.method === 'cash') continue;
+      requireBankCovers(db, l.bankId!, l.amountHalalas);
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,

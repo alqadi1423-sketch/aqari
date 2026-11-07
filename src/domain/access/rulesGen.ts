@@ -176,10 +176,12 @@ function guardFns(schema: RulesSchema): string {
         : op is string && s is string && (op + ':' + s).matches('${Object.entries(OP_JOURNAL_SRC).filter(([, list]) => (list ?? []).length).map(([op, list]) => `${op}:(${(list ?? []).join('|')})`).join('|')}');
     }
     // بصمة الملف وامتداده بشكلهما (#21): منهما يُبنى مسار الملف على كل جهاز · والمرفق بصمته وحدها (امتداده في blobs)
+    // وشكل البنك والحساب (openingKept) في الفحص نفسه: الجداول الأخرى لا تدفع له تعبيراً من حدّ الألف (اختبار الميزانية)
     function blobShapeOk(r) {
-      return r.del != true && (r.t == 'blobs' || r.t == 'attachments')
-        ? (r.d.sha256 is string && r.d.sha256.matches('^[0-9a-f]{64}$')
-            && (r.t == 'attachments' || (r.d.ext is string && r.d.ext.matches('^[a-z0-9]{1,5}$'))))
+      return r.del != true && r.t.matches('blobs|attachments|banks|accounts')
+        ? (r.t == 'banks' || r.t == 'accounts' ? openingKept(resource == null ? null : resource.data, r)
+          : (r.d.sha256 is string && r.d.sha256.matches('^[0-9a-f]{64}$')
+            && (r.t == 'attachments' || (r.d.ext is string && r.d.ext.matches('^[a-z0-9]{1,5}$')))))
         : true;
     }
     // عقارات الصف من حقيقته لا من إعلان كاتبه (#18) · كما يحسبها rowPids في sync/acl.ts، وما يُشتق من صفٍّ آخر
@@ -366,6 +368,24 @@ ${guardFns(schema)}
     function svOk(org) {
       let c = /databases/$(database)/documents/orgs/$(org)/meta/compat;
       return !exists(c) || request.resource.data.get('sv', 0) >= get(c).data.min;
+    }
+
+    // الرصيد الافتتاحي للبنك ولحسابات الدليل يضعه المالك وحده (المدقق الخارجي I١ وM٧ وO٥ · القاعدة ٩٩): العضو ينشئ بافتتاحيٍّ صفر، ويحمل
+    // في كل تعديلٍ افتتاحيّ النسخة السابقة كما هو، فافتتاحيّ نسخة العضو هو افتتاحيّ المالك الأخير ويطبّقه كل جهاز كما هو (وكان جهاز المالك
+    // يقارنه بما عنده، فجهازٌ لم يرَ افتتاحيّ المالك بعد يمحوه) · والحساب النظامي لا يغيّر العضو نوعه ولا مجموعته ولا يحذفه، ولا يجعل حساباً
+    // نظامياً ولا يرفعه عنه (O١: نوع 1100 أو حذفه الناعم كان يُدخل المحفظة مالاً بلا قيد) · والمستعمل في قيدٍ يحرسه جهاز المالك
+    function prevD(before) {
+      return before == null || before.get('del', false) == true || before.get('d', null) == null ? {} : before.d;
+    }
+    // (يستدعيه blobShapeOk للبنك والحساب وحدهما، بلا شاهد حذف · وقبل الإنشاء لا نسخة سابقة: افتتاحيٌّ صفر وغير نظامي)
+    function openingKept(before, after) {
+      return after.get('d', null) == null ? true : openingKeptD(prevD(before), after.d, after.t);
+    }
+    function openingKeptD(b, a, t) {
+      return a.get('opening_halalas', 0) == b.get('opening_halalas', 0)
+        && (t != 'accounts' || (a.get('is_system', 0) == b.get('is_system', 0)
+          && (b.get('is_system', 0) != 1 || (a.get('type', '') == b.get('type', '') && a.get('grp', null) == b.get('grp', null)
+            && a.get('deleted_at', null) == b.get('deleted_at', null)))));
     }
 
     function memberCreates(org) {

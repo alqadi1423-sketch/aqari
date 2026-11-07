@@ -4,7 +4,7 @@
  */
 import { annotate } from '@/sync/acl';
 import { OWNER_ACCESS } from '@/domain/access/access';
-import { enableSync } from '@/sync/engine';
+import { enableSync, prepareMemberUpload } from '@/sync/engine';
 import { memDb } from './helpers/testDb';
 import { withdrawCashFromBank } from '@/domain/cashOps';
 import { walletCashBalance } from '@/domain/accounting/ledger';
@@ -84,6 +84,8 @@ test('(K5) بنكٌ أنشأه عضو بافتتاحيٍّ غير صفر (نمو
   s.dev.run(`INSERT INTO banks (id, name, iban, opening_halalas, opening_date, created_at) VALUES (?,?,?,?,?,?)`,
     [Z, 'بنك العضو مصطنع K5', '', 300000, '2026-01-01', new Date().toISOString()]);
   recordManualBankTx(s.dev, { kind: 'income', bankId: Z, amountHalalas: 50000, date: '2026-10-10', descr: 'وارد بنكي مصطنع K5' });
+  // وجهاز العضو يرفع البنك الجديد بافتتاحيٍّ صفر ويصفّره عنده (syncOnce في وضع العضو · قاعدة السحابة openingKept ترفض غيره · O٥)
+  prepareMemberUpload(s.dev);
   await sync(s.dev, s.r);
   newAsMember(s.r, since);
   await ownerPulls(s.owner, s.r);

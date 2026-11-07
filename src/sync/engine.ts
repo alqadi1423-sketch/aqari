@@ -536,12 +536,44 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   }
   if (!freeOriginals(db, doc.k, src, srcId, originals.map((o) => o.id)).length) {
     awaitPending(true);
+    // وعاكس المالك لأصلٍ يحجزه عاكسٌ في الوارد لم يُطبَّق بعد ينتظره ولا يُرفض: إن رُفض ذاك لطول انتظاره قُبل هذا (المدقق الخارجي O٣:
+    // كان يُرفض نهائياً فيبقى أصل المالك حياً على جهازه الثاني وحده)
+    if (originals.some((o) => inboxHeld(db, o.id, doc.k))) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
     throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
   }
   guessLink(db, doc.k);
   const revs = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]).length; // i18n-exempt: حالة القيد المخزّنة
   if (revs > originals.length) { awaitPending(true); throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' })); }
+}
+
+/** صافي كل حسابٍ في سطور قيد (مدينه ناقص دائنه) */
+function netByAccount(ls: Array<Record<string, unknown>>): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const l of ls) m.set(String(l.account_code ?? ''), (m.get(String(l.account_code ?? '')) ?? 0) + (Number(l.debit_halalas) || 0) - (Number(l.credit_halalas) || 0));
+  return m;
+}
+
+/** عاكسٌ في الوارد لم يُطبَّق بعد، سطوره مرآة سطور الأصل المطبَّق هنا (صافي كل حسابٍ بعكس إشارته) */
+function inboxMirror(db: DB, originalId: string, revId: string): boolean {
+  if (db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [revId])) return false;
+  const p = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [revId])?.payload;
+  if (!p) return false;
+  let rev: RemoteDoc;
+  try { rev = JSON.parse(p) as RemoteDoc; } catch { return false; }
+  if (linesMalformed(rev)) return false;
+  const mine = netByAccount(db.all<Record<string, unknown>>(`SELECT account_code, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`, [originalId]));
+  const theirs = netByAccount(docLines(rev));
+  return mine.size > 0 && theirs.size === mine.size && [...mine].every(([k, v]) => v !== 0 && (theirs.get(k) ?? 0) === -v);
+}
+
+/** أصلٌ يحجزه عاكسٌ مرآته في الوارد لم يُطبَّق بعد غير revId: بربطه هنا، أو بربطه المعلَّق، أو بنسخته الواردة */
+function inboxHeld(db: DB, originalId: string, revId: string): boolean {
+  const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
+  const by = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [originalId])?.r;
+  const named = db.get<{ r: string | null }>(
+    `SELECT json_extract(payload, '$.d.reversed_by') AS r FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [originalId])?.r;
+  return [by, pending[originalId], named].some((x) => !!x && x !== revId && inboxMirror(db, originalId, x));
 }
 
 /** أصلٌ مرحّل من المصدر في الوارد لم يُطبَّق بعد، يسمّي هذا العاكس أو سطوره مرآة سطوره (صافي كل حسابٍ بعكس إشارته) */
@@ -573,13 +605,13 @@ function freeOriginals(db: DB, revId: string, src: string, srcId: string, origin
   const others = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل' AND id != ?`, [src, srcId, revId]); // i18n-exempt: حالة القيد المخزّنة
   const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
-  const exists = (id: string) => !!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [id])
-    || !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [id]);
   return originals.filter((o) => {
     if (mirrorIssue(db, o, revId) !== '') return false;
-    const by = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [o])!.r;
     // وربطٌ بعاكسٍ لا وجود له هنا ولا في الوارد لا يحجز الأصل (المدقق الخارجي M١٠: عضوٌ ربط قيد المالك بعاكسٍ وهمي فرُفض عكس المالك
-    // نفسه على جهازه الثاني)
+    // نفسه على جهازه الثاني) · ولا بعاكسٍ في الوارد ليس مرآته (O٣: قاعدة السحابة تجيز الربط بعاكسٍ قائمٍ فيها، فالمزوَّر يصل الوارد
+    // وينتظر فيه ثلاثين يوماً بسطرٍ على حسابٍ لا وجود له)
+    const exists = (id: string) => !!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [id]) || inboxMirror(db, o, id);
+    const by = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [o])!.r;
     if (by && by !== revId && exists(by)) return false;
     // ولا أصلٌ ربطُه المعلَّق أو نسخته الواردة تسمّي عاكساً آخر (المدقق الخارجي K١: كان يُخمَّن للعاكس أصلٌ خطأ فيُرفض الحقيقي بعده
     // «عاكسه طُبِّق قبله»)
@@ -856,10 +888,16 @@ function memberSourceCheck(db: DB, doc: RemoteDoc): void {
   const date = String(doc.d!.date ?? '');
   const filed = filingRecordedAt(db, date);
   if (filed && (!doc.ts || isoCmp(doc.ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
-  const why = memberSourceIssue(db, sourceReader(db), {
+  const reader = sourceReader(db);
+  const issue = (reversedBy: string | null) => memberSourceIssue(db, reader, {
     id: doc.k, src_type: src, src_id: (doc.d!.src_id as string | null) ?? null, no: (doc.d!.no as string | null) ?? null, date,
-    reversed_by: (doc.d!.reversed_by as string | null) ?? null, lines: (doc.lines ?? []) as SrcLine[],
+    reversed_by: reversedBy, lines: (doc.lines ?? []) as SrcLine[],
   });
+  const reversedBy = (doc.d!.reversed_by as string | null) ?? null;
+  let why = issue(reversedBy);
+  // والواصل معكوساً بعاكسٍ لا يُقبل (ليس مرآته، أو محجوزٌ لغيره) يُحكم عليه غير معكوس كما على الجهاز الذي سبق إليه: يُطبَّق إن طابق مستنده،
+  // والربط معلَّقٌ كما هو هناك (المدقق الخارجي O٤: عضوٌ ربط قيد المالك بعاكسٍ مزوَّر فرفضه هاتف المالك البديل وحده نهائياً)
+  if (why && why !== 'await' && reversedBy) why = issue(null) === '' ? '' : why;
   if (why === 'await') throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
   if (why) throw no(why);
 }
@@ -926,6 +964,12 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> 
       const head = db.get<{ s: string | null }>(`SELECT src_type AS s FROM journal_entries WHERE id = ?`, [entry.id]);
       if (head?.s === 'cash_op' && !db.get(`SELECT 1 FROM journal_lines WHERE entry_id = ? AND account_code IN ('4300', '5400')`, [entry.id])) {
         throw new Error(tr('sync.bankTxOver', { no: nowLive.no, lng: 'ar' }));
+      }
+      // ولا تُنزل حركة القيد السالبة بنكها تحت الصفر، كالرسوم والسحب والتحويل والسداد في التطبيق (المدقق الخارجي O٢: حركةٌ برقم مصروفٍ نثري
+      // أو سدادِ فاتورةٍ نقداً من بنكٍ فارغ كانت تُدخل المحفظة نقداً لا وجود له، فيُودَع في بنكٍ آخر) · فتنتظر ما يكفيها كالحركة بلا قيد،
+      // والمزوَّر لا يكفيه رصيدٌ فيُرفض بطول انتظاره · ومع رصيدٍ يكفي أثرها نقل نقدٍ من البنك إلى المحفظة بلا قيد كالسحب (حدٌّ موثَّق)
+      if (!wasLive && nowLive.amount < 0 && bankBalance(db, nowLive.bank) + nowLive.amount < 0) {
+        throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
       }
       return;
     }
@@ -1187,6 +1231,24 @@ const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? ge
  * (acl.ts: annotate) وكتابته كاملة تمحوه · و«by» كاتب الصف الأول: يدل على العضو في إنشاء الصف وحده، ويبقى على تعديله بعده
  * فلا يدل على من عدّل (من ألغى دفعةً أنشأها غيره) · created: المستند ينشئ الصف
  */
+/**
+ * العضو: بنكٌ أو حسابٌ في الطابور لم يصل السحابة بعد (لا وقت صفٍّ له) يُرفع بافتتاحيٍّ صفر كما تقضي قاعدتها (openingKept)، ويُصفَّر هنا معه
+ * فيتفق الجهازان · نموذج ما قبل e8d6c19 كان يجيز للعضو افتتاحياً (المدقق الخارجي K٥، ثم O٥: القاعدة صارت ترفضه فكانت حركاته تعلق)
+ */
+export function prepareMemberUpload(db: DB): void {
+  db.run(`UPDATE banks SET opening_halalas = 0 WHERE opening_halalas != 0
+    AND id IN (SELECT pk FROM sync_outbox WHERE tbl = 'banks') AND id NOT IN (SELECT pk FROM sync_rowtime WHERE tbl = 'banks')`);
+  db.run(`UPDATE accounts SET opening_halalas = 0 WHERE opening_halalas != 0
+    AND code IN (SELECT pk FROM sync_outbox WHERE tbl = 'accounts') AND code NOT IN (SELECT pk FROM sync_rowtime WHERE tbl = 'accounts')`);
+}
+
+/** حسابٌ عليه سطر قيدٍ هنا أو في قيدٍ وارد لم يُطبَّق بعد (الهاتف البديل يسحب الدليل والقيود في دورةٍ واحدة) */
+function accountUsed(db: DB, code: string): boolean {
+  return !!db.get(`SELECT 1 FROM journal_lines WHERE account_code = ? LIMIT 1`, [code])
+    || !!db.get(`SELECT 1 FROM sync_inbox i, json_each(i.payload, '$.lines') l
+         WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(l.value, '$.account_code') = ? LIMIT 1`, [code]);
+}
+
 function byMember(db: DB, doc: RemoteDoc, created: boolean): boolean {
   if (typeof doc.op === 'string' && doc.op !== '') return true;
   return created && !!doc.by && doc.by !== ownerUid(db);
@@ -1523,24 +1585,29 @@ function applyOne(
     }
   }
 
-  // والرصيد الافتتاحي للبنك يضعه المالك وحده (المدقق الخارجي I١ · القاعدة ٩٩): مالٌ بلا قيد، فعضوٌ يرفعه ثم يسحبه نقداً كان يُدخل
-  // المحفظة ما لا وجود له · فتعديل العضو له يُرفض ونسخة المالك تُعاد إلى السحابة، وبنكه الجديد بافتتاحيٍّ صفر
-  // والعضو كاتب هذه النسخة بمسار قسمه (op) لا منشئ الصف: تعديل المالك لبنكٍ أنشأه عضو يحمل «by» العضو (المدقق الخارجي K٤: كان جهاز المالك
-  // الثاني يرفض افتتاحي المالك نفسه فيتأرجح في السحابة)
-  let bankOpeningZeroed = false;
-  // وكذلك الرصيد الافتتاحي لحسابات الدليل (المدقق الخارجي M٧: افتتاحي 1100 من عضوٍ كان يُدخل المحفظة نقداً بلا قيد)
-  if ((doc.t === 'banks' || doc.t === 'accounts') && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)) {
-    const cur = db.get<{ o: number }>(`SELECT opening_halalas AS o FROM "${doc.t}" WHERE ${doc.t === 'accounts' ? 'code' : 'id'} = ?`, [doc.k]);
-    const o = Number((doc.d as Record<string, unknown> | undefined)?.opening_halalas) || 0;
-    if (cur && o !== (Number(cur.o) || 0)) {
-      enqueue(db, doc.t, doc.k, 'upsert');
-      reject(db, doc, tr('sync.bankOpeningOwner', { lng: 'ar' }));
+  // والرصيد الافتتاحي للبنك ولحسابات الدليل يضعه المالك وحده (المدقق الخارجي I١ وM٧ · القاعدة ٩٩)، وحارسه قاعدة السحابة (openingKept في
+  // rulesGen.ts): العضو ينشئ بافتتاحيٍّ صفر ويحمل في كل تعديلٍ افتتاحيّ النسخة السابقة كما هو · فافتتاحيّ نسخة العضو افتتاحيّ المالك
+  // الأخير، ويُطبَّق كما هو كما يُوثق بكاتبها (op وby) · وكان جهاز المالك يقارنه بما عنده فيرفضه أو يصفّره ثم يعيد نسخته، فجهازٌ لم يرَ
+  // افتتاحيّ المالك بعد (غائبٌ عن الشبكة أو هاتفٌ بديل) يمحوه من السحابة ومن أجهزته كلها (المدقق الخارجي O٥)
+  // والحساب النظامي أو المستعمل في قيد (هنا أو في الوارد) لا يغيّر العضو نوعه ولا يحذفه، ولا مجموعة حسابٍ ولا كونه نظامياً (التطبيق لا
+  // يغيّرهما) · كما يمنعه saveAccount وdeleteBlocker (O١: نوع 1100 «خصم» أو حذفه الناعم كان يُدخل المحفظة مالاً بلا قيد) · فتُعاد
+  // نسخة هذا الجهاز وفيها افتتاحيّ نسخة العضو، فلا تمحو إعادتُها افتتاحياً لم يصل هذا الجهاز بعد
+  if (doc.t === 'accounts' && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)) {
+    const d = (doc.d ?? {}) as Record<string, unknown>;
+    const cur = db.get<{ type: string; grp: string | null; s: number; del: string | null }>(
+      `SELECT type, grp, is_system AS s, deleted_at AS del FROM accounts WHERE code = ?`, [doc.k]);
+    const locked = !!cur && (Number(cur.s) === 1 || accountUsed(db, doc.k));
+    const forged = cur
+      ? String(d.grp ?? '') !== String(cur.grp ?? '') || (Number(d.is_system) || 0) !== (Number(cur.s) || 0)
+        || (locked && (String(d.type ?? '') !== cur.type || (d.deleted_at == null) !== (cur.del == null)))
+      : (Number(d.is_system) || 0) !== 0;
+    if (forged) {
+      if (cur) {
+        db.run(`UPDATE accounts SET opening_halalas = ? WHERE code = ?`, [Number(d.opening_halalas) || 0, doc.k]);
+        enqueue(db, doc.t, doc.k, 'upsert');
+      }
+      reject(db, doc, tr('sync.accountLocked', { lng: 'ar' }));
       return 'rejected';
-    }
-    // وبنك العضو الجديد يُطبَّق بافتتاحيٍّ صفر وتُعاد نسخته كذلك، فلا تعلق حركاته (K٥: بنكٌ أُنشئ برصيدٍ قبل الترقية كان يُرفض كله)
-    if (!cur && o !== 0) {
-      doc.d = { ...(doc.d as Record<string, unknown>), opening_halalas: 0 };
-      bankOpeningZeroed = true;
     }
   }
 
@@ -1624,7 +1691,6 @@ function applyOne(
       }
     });
     noteRowTime(db, doc.t, doc.k, theirs0);
-    if (bankOpeningZeroed) enqueue(db, doc.t, doc.k, 'upsert');
     return conflict ?? 'applied';
   } catch (e) {
     const msg = errText(e);
@@ -2154,6 +2220,7 @@ export async function syncOnce(
   let pushed = 0;
   const total = outboxCount(db);
   let size = remote.memberMode ? MEMBER_PUSH_BATCH : PUSH_BATCH;
+  if (remote.memberMode) prepareMemberUpload(db);
   let failures = 0;
   for (;;) {
     const batch = pendingOutbox(db, size);
