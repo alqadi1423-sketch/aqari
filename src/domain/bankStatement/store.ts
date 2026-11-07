@@ -31,22 +31,22 @@ export function saveStatement(db: DB, bankId: string, r: Ok, file: { name: strin
   const id = uid();
   const now = new Date().toISOString();
   db.transaction(() => {
-    db.run(`INSERT INTO bank_statements (id, bank_id, period_from, period_to, opening_halalas, closing_halalas, file_name, file_hash, line_count, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`, [id, bankId, r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
-      file.name, file.hash, fresh.length, now]);
+    db.run(`INSERT INTO bank_statements (id, bank_id, period_from, period_to, opening_halalas, closing_halalas, file_name, file_hash, line_count, mapping, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [id, bankId, r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
+      file.name, file.hash, fresh.length, JSON.stringify(r.mapping), now]);
     for (const { l, key } of fresh) {
       db.run(`INSERT INTO bank_statement_lines (id, statement_id, bank_id, line_key, date, value_date, descr, ref, amount_halalas, balance_halalas, created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [uid(), id, bankId, key, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, now]);
     }
-    db.run(`UPDATE banks SET stmt_mapping = ? WHERE id = ?`, [JSON.stringify(r.mapping), bankId]);
     audit(db, 'create', file.name || id);
   });
   return { statementId: id, added: fresh.length, skipped: r.lines.length - fresh.length };
 }
 
-/** ربط أعمدة آخر كشفٍ حُفظ لهذا البنك، أو null */
+/** ربط أعمدة آخر كشفٍ حيٍّ حُفظ لهذا البنك (الهجرة ٥٦: مع الكشف لا في صفّ البنك · S٥)، أو null */
 export function statementMapping(db: DB, bankId: string): ColumnMapping | null {
-  const raw = db.get<{ m: string }>(`SELECT stmt_mapping AS m FROM banks WHERE id = ?`, [bankId])?.m;
+  const raw = db.get<{ m: string }>(
+    `SELECT mapping AS m FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL AND mapping != '' ORDER BY created_at DESC, rowid DESC LIMIT 1`, [bankId])?.m;
   if (!raw) return null;
   try { return JSON.parse(raw) as ColumnMapping; } catch { return null; }
 }

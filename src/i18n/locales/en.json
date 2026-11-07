@@ -951,7 +951,7 @@
     "review": "Review the supplier, date and amounts before saving · choose the tax status yourself: the code does not say whether the invoice is in the organization's name and number.",
     "warn": {
       "vatNo": "The VAT number in the code is not in ZATCA format (15 digits starting and ending with 3), so it was not saved for the supplier",
-      "issuedAt": "The invoice time in the code cannot be read, so today's date was used · correct it",
+      "issuedAt": "The invoice time in the code can't be fully read: the date is the day written in it if readable, otherwise today · review and correct it",
       "vatOverTotal": "The VAT in the code exceeds the total · check the invoice",
       "rate": "The VAT in the code is not 15% of the net · the invoice may include exempt or zero-rated items",
       "supplierVat": "A supplier with the same name is registered under another VAT number · a supplier named with the seller VAT number is proposed, so review the supplier before saving",
@@ -967,7 +967,8 @@
     "creditNote": "The file is a credit note from the supplier, not a purchase invoice · record it as a reduction of its invoice",
     "maybeDuplicate": "May already be recorded",
     "maybeDuplicateBody": "Purchase invoice {{no}} dated {{date}} has the same supplier, total and tax, and was recorded without a code · is this a different invoice?",
-    "anotherInvoice": "It's a different invoice"
+    "anotherInvoice": "It's a different invoice",
+    "restoreLookalike": "Purchase invoice {{no}} dated {{date}} may be the same one (day, supplier, total and tax) · it is not restored over it: delete or edit one first"
   },
   "bankStatement": {
     "auditModule": "Bank statement",

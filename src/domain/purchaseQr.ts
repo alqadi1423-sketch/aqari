@@ -6,7 +6,7 @@
  */
 import type { DB } from '../db/adapter';
 import { today } from './dates';
-import { hasZone, latinDigits, leadingDay, riyadhDateOf, stripInvisible, type ZatcaQr } from './zatcaQr';
+import { issueDayOf, latinDigits, parseIssued, stripInvisible, type ZatcaQr } from './zatcaQr';
 
 export interface PurchaseQrDraft {
   supplier: string;
@@ -65,9 +65,8 @@ export function purchaseDraftFromQr(db: DB, qr: ZatcaQr, now: () => string = tod
   // والمورد المؤرشف لا يختاره نموذج الفاتورة (المدقق الخارجي L٤): يُنبَّه ليُعاد من الموردين، ولا يُقترح موردٌ مكرَّر باسمه
   const archived = !!match && Number(match.archived) === 1;
   const known = archived ? undefined : match;
-  const at = stripInvisible(qr.issuedAt).trim().replace(' ', 'T');
-  // ووقتٌ لا يُقرأ ويومه صحيح في أوله يُؤخذ يومه (R٧) · وذو المنطقة بتوقيت المملكة (R٦)
-  const date = qr.warnings.includes('issuedAt') ? (leadingDay(at) ?? now()) : hasZone(at) ? (riyadhDateOf(at) ?? at.slice(0, 10)) : at.slice(0, 10);
+  // يوم الفاتورة: المكتوب لتاريخٍ وحده أو لمنتصف ليلٍ محشوّ، وبتوقيت المملكة لذي المنطقة، وما لا يُقرأ يومه تاريخ اليوم (R٦ وR٧ وT٤ وT٥)
+  const date = issueDayOf(parseIssued(qr.issuedAt)) ?? now();
   return {
     supplier: known?.name ?? match?.name ?? (nameClash ? `${seller} · ${vat}` : seller),
     supplierId: known?.id ?? null,

@@ -420,6 +420,8 @@ export default function Purchases() {
       const apply = (name: string) => {
         if (seq !== qrSeq.current) return;
         setQrKey(key);
+        // وتأكيد «الفاتورة باسم المنشأة وبرقمها» لفاتورةٍ قبلها لا يبقى لهذه (المدقق الخارجي T٨)
+        setConfirmOurs(false);
         // والعدّاد لموردٍ قبله لا يبقى مختاراً كما في الاختيار اليدوي (المدقق الخارجي N٥: كانت تُسجَّل قراءةٌ لغير صاحبه)
         // و«المبالغ وحدها» والمؤرشف يُفرغان المورد فيختاره المستخدم، لا يبقى موردٌ لم يقله الرمز ولا هو (المدقق الخارجي R٩)
         if (name) { setSupplier(name); setMeterId(''); } else { setSupplier(''); setMeterId(''); }

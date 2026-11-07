@@ -105,34 +105,53 @@ const VAT_NO = /^3\d{13}3$/;
 const INVISIBLE = /[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]/g;
 export const stripInvisible = (v: string) => v.replace(INVISIBLE, '');
 // والفاصل بين التاريخ والوقت حرف T أو مسافة (RFC 3339 يجيزها · المدقق الخارجي J١٣)
-// والمنطقة بعد مسافةٍ أيضاً («22:15:00 +0300» · المدقق الخارجي R٧)
-const ISO_TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(\s?(Z|[+-]\d{2}:?\d{2}))?$/;
-/** للتحليل: T بين التاريخ والوقت، ولا مسافة قبل المنطقة */
-const parseable = (t: string) => t.replace(' ', 'T').replace(/\s+(?=(Z|[+-]\d{2}:?\d{2})$)/, '');
-/** الوقت بلا منطقة وقتُ الفاتورة المحلي (ISO 8601) · وبمنطقة يُحوَّل */
 export { latinDigits };
-export const hasZone = (iso: string) => /(Z|[+-]\d{2}:?\d{2})$/.test(iso.trim());
-/** يومٌ في التقويم (المدقق الخارجي L١: «2026-02-30» كان يُقرأ بلا تنبيه، وبمنطقته يصير صامتاً 2 مارس) */
-const realDay = (iso: string): boolean => {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  if (!m) return false;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+
+/**
+ * وقت الإصدار كما في الرمز: اليوم المكتوب، والوقت بالدقيقة أو بالثانية (أو null لتاريخٍ وحده)، ومنطقته إن كُتبت، ولحظته (بمنطقته، أو
+ * بتوقيت المملكة +03:00 إن لم تُكتب) · null لما لا يُقرأ يوماً من التقويم بين 1990 و2100 · ويُقبل: T أو مسافة بين التاريخ والوقت،
+ * والمنطقة «Z» أو «+03:00» أو «+0300» أو «+03» (بعد مسافةٍ أيضاً)، و« UTC» و« GMT» (Ruby وGo)، و«[UTC]» بعدها (Java) · المدقق
+ * الخارجي J١٣ وL١ وR٧ وT٥ وT٩ (والساعة 24 لا تُقرأ)
+ */
+export interface IssuedTime { day: string; time: string | null; seconds: boolean; zone: number | null; instant: number | null; midnight: boolean }
+const realDayYMD = (y: number, mo: number, d: number): boolean => {
   const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
   const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
-  return mo >= 1 && mo <= 12 && d >= 1 && d <= days;
+  return y >= 1990 && y <= 2100 && mo >= 1 && mo <= 12 && d >= 1 && d <= (days ?? 0);
 };
+export function parseIssued(raw: string): IssuedTime | null {
+  let t = latinDigits(stripInvisible(String(raw ?? ''))).trim();
+  t = t.replace(/\[[^\]]*\]$/, '').trim()
+    .replace(/\s*([+-]\d{2}(?::?\d{2})?)\s+(UTC|GMT)$/i, '$1')
+    .replace(/\s*(UTC|GMT)$/i, 'Z');
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?\s?(Z|[+-]\d{2}(?::?\d{2})?)?)?$/.exec(t);
+  if (!m) return null;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (!realDayYMD(y, mo, d)) return null;
+  const day = `${m[1]}-${m[2]}-${m[3]}`;
+  if (m[4] === undefined) return { day, time: null, seconds: false, zone: null, instant: null, midnight: false };
+  const [hh, mi, ss] = [Number(m[4]), Number(m[5]), m[6] === undefined ? 0 : Number(m[6])];
+  if (hh > 23 || mi > 59 || ss > 59) return null;
+  let zone: number | null = null;
+  if (m[8] === 'Z') zone = 0;
+  else if (m[8]) {
+    const z = /^([+-])(\d{2}):?(\d{2})?$/.exec(m[8])!;
+    if (Number(z[2]) > 14 || Number(z[3] ?? 0) > 59) return null;
+    zone = (z[1] === '-' ? -1 : 1) * (Number(z[2]) * 60 + Number(z[3] ?? 0));
+  }
+  const frac = m[7] ? Math.round(Number('0.' + m[7]) * 1000) : 0;
+  const instant = Date.UTC(y, mo - 1, d, hh, mi, ss) + frac - (zone ?? 180) * 60000;
+  // منتصف الليل المحشوّ: «00:00:00» كما كُتب، أو لحظةٌ هي منتصف ليل المملكة (T٤: «…T21:00:00Z» لليوم السابق)
+  const midnight = (hh === 0 && mi === 0 && ss === 0 && frac === 0) || (zone !== null && (instant + 3 * 3600000) % 86400000 === 0);
+  return { day, time: m[6] === undefined ? `${m[4]}:${m[5]}` : `${m[4]}:${m[5]}:${m[6]}`, seconds: m[6] !== undefined, zone, instant, midnight };
+}
 /** وقتٌ مقروء بالدقيقة أو بالثانية في يومٍ من التقويم · لا تاريخٌ وحده ولا نصٌّ لا يُقرأ */
-export const readableTime = (iso: string) => {
-  const t = latinDigits(iso.trim());
-  return ISO_TIME.test(t) && realDay(t) && !Number.isNaN(Date.parse(parseable(t)));
-};
-/**
- * يوم الفاتورة بتوقيت المملكة (+03:00 بلا توقيتٍ صيفي) للوقت ذي المنطقة · لا بمنطقة الهاتف (المدقق الخارجي R٦: فاتورةٌ صدرت 00:30 بتوقيت
- * المملكة أول أكتوبر كانت تصير 30 سبتمبر على هاتفٍ بتوقيت لندن، فتنتقل إلى ربعٍ آخر) · بحساب التقويم لا بلحظةٍ في منطقة الجهاز
- */
-export function riyadhDateOf(iso: string): string | null {
-  const ms = Date.parse(parseable(latinDigits(iso.trim())));
-  if (Number.isNaN(ms)) return null;
+export const readableTime = (iso: string) => parseIssued(iso)?.time != null;
+/** المنطقة مكتوبةٌ في الوقت */
+export const hasZone = (iso: string) => parseIssued(iso)?.zone != null;
+
+/** يومٌ بتوقيت المملكة (+03:00 بلا توقيتٍ صيفي) للحظة · بحساب التقويم لا بمنطقة الجهاز */
+function riyadhDay(ms: number): string {
   const z = Math.floor((ms + 3 * 3600000) / 86400000) + 719468;
   const era = Math.floor(z / 146097);
   const doe = z - era * 146097;
@@ -142,15 +161,24 @@ export function riyadhDateOf(iso: string): string | null {
   const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
   const m = mp < 10 ? mp + 3 : mp - 9;
   const y = yoe + era * 400 + (m <= 2 ? 1 : 0);
-  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
-/** يومٌ صحيح في أول الوقت (YYYY-MM-DD) ولو لم يُقرأ الوقت كله */
+/**
+ * يوم الفاتورة: اليوم المكتوب لتاريخٍ وحده أو لمنتصف ليلٍ محشوٍّ كما كُتب، وبتوقيت المملكة للوقت ذي المنطقة (المدقق الخارجي R٦: لا بمنطقة
+ * الهاتف · وT٤ب: «T00:00:00+04:00» تاريخٌ وحده يومه المكتوب) · null لما لا يُقرأ
+ */
+export function issueDayOf(p: IssuedTime | null): string | null {
+  if (!p) return null;
+  if (p.instant === null || p.zone === null) return p.day;
+  if (p.time === '00:00:00' || p.time === '00:00') return p.day;
+  return riyadhDay(p.instant);
+}
+export const riyadhDateOf = (iso: string): string | null => issueDayOf(parseIssued(iso));
+/** تاريخٌ وحده (بلا وقت) يومه صحيح · لما لا يُقرأ وقته (R٧) */
 export const leadingDay = (iso: string): string | null => {
-  const t = latinDigits(iso.trim()).slice(0, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(t) && realDay(t) ? t : null;
+  const p = parseIssued(iso);
+  return p && p.time === null ? p.day : null;
 };
-/** والمفتاح من وقتٍ بالثانية وحده (L٢: الدقيقة وحدها لا تميّز فاتورتين في الدقيقة نفسها بالمبلغ نفسه) */
-const secondsTime = (iso: string) => readableTime(iso) && /T?\d{2}:\d{2}:\d{2}/.test(latinDigits(iso.trim()).slice(10));
 
 /** يقرأ حمولة QR الفاتورة · ونتيجته مسودةٌ تُراجع قبل الحفظ */
 export function decodeZatcaQr(payload: string): ZatcaQrResult {
@@ -218,14 +246,54 @@ export function pickZatcaQr(values: string[]): ZatcaQrResult {
 }
 
 /**
- * مفتاح الفاتورة من رمزها (الهجرة ٥٤ · «والمكررة تُرفض»): الرقم الضريبي للبائع ووقت الإصدار كما في الرمز (بالثانية) والإجمالي
- * والضريبة بالهللة · فاتورتان من البائع نفسه في اليوم نفسه بالمبلغ نفسه مفتاحان ما اختلف وقتهما
+ * مفتاح الفاتورة من رمزها (الهجرة ٥٤ · «والمكررة تُرفض»): الرقم الضريبي للبائع، ووقت الإصدار، والإجمالي والضريبة بالهللة، وبصمة المرحلة
+ * الثانية (الوسم ٦) إن وُجدت · والوقت «T» ثم لحظته بالثانية، أو «D» ثم يومه لما لا يميّز فاتورتين (تاريخٌ وحده، أو دقيقةٌ بلا ثوانٍ، أو
+ * منتصف ليلٍ محشوّ) · '' لما لا يُقرأ يومه · والتكرار يُحكم بحقائق المفتاح لا بنصّه (qrKeysExact)، فمفاتيح الإصدارات السابقة تُقرأ أيضاً
+ * (المدقق الخارجي T١)
  */
 export function zatcaQrKey(qr: ZatcaQr): string {
-  // وبصمة المرحلة الثانية تميّز الفاتورة يقيناً فهي المفتاح (المدقق الخارجي R٤: فاتورتان في الثانية نفسها بالمبلغ نفسه كانتا مفتاحاً واحداً)
-  if (qr.invoiceHash) return [latinDigits(qr.vatNo), '#' + qr.invoiceHash, qr.totalHalalas, qr.vatHalalas].join('|');
-  // ووقتٌ لا يُقرأ بالثانية (تاريخٌ وحده أو نصٌّ آخر) لا يميّز فاتورتين في يومٍ واحد بالمبلغ نفسه، فلا مفتاح ولا رفض (المدقق الخارجي J١٣)
-  // ومنه منتصف الليل المحشوّ «T00:00:00» (تاريخٌ وحده كما تكتبه أنظمةٌ ورمز فواتير التطبيق نفسه · المدقق الخارجي R١)
-  if (!secondsTime(qr.issuedAt) || /[T ]00:00:00(\.0+)?\s?(Z|[+-]\d{2}:?\d{2})?$/.test(latinDigits(qr.issuedAt.trim()))) return '';
-  return [latinDigits(qr.vatNo), qr.issuedAt.trim().replace(' ', 'T'), qr.totalHalalas, qr.vatHalalas].join('|');
+  const p = parseIssued(qr.issuedAt);
+  const day = issueDayOf(p);
+  if (!p || !day) return '';
+  const time = p.seconds && !p.midnight && p.instant !== null ? 'T' + p.instant : 'D' + day;
+  return [latinDigits(qr.vatNo), time, qr.totalHalalas, qr.vatHalalas, ...(qr.invoiceHash ? ['#' + qr.invoiceHash] : [])].join('|');
+}
+
+/** حقائق مفتاح الفاتورة · بصيغه كلها: «vat|T<لحظة>|…» و«vat|D<يوم>|…» (هذه)، و«vat|<الوقت كما في الرمز>|…» (e7c151c)، و«vat|#بصمة|…» (7e3b492) */
+export interface QrKeyFacts { vat: string; instant: number | null; day: string | null; total: number; tax: number; hash: string | null }
+export function qrKeyFacts(key: string): QrKeyFacts | null {
+  const parts = String(key ?? '').split('|');
+  if (parts.length < 4 || !parts[0]) return null;
+  const [vat, time, total, tax] = parts;
+  let hash = parts.slice(4).find((x) => x.startsWith('#'))?.slice(1) ?? null;
+  let instant: number | null = null;
+  let day: string | null = null;
+  if (time.startsWith('#')) hash = time.slice(1);
+  else if (/^T-?\d+$/.test(time)) { instant = Number(time.slice(1)); day = riyadhDay(instant); }
+  else if (/^D\d{4}-\d{2}-\d{2}$/.test(time)) day = time.slice(1);
+  else {
+    const p = parseIssued(time);
+    day = issueDayOf(p);
+    if (p && p.seconds && !p.midnight) instant = p.instant;
+  }
+  if (!Number.isFinite(Number(total)) || !Number.isFinite(Number(tax))) return null;
+  return { vat, instant, day, total: Number(total), tax: Number(tax), hash };
+}
+/**
+ * الفاتورة نفسها يقيناً: البائع والإجمالي والضريبة نفسها، وبصمتان مختلفتان فاتورتان، واللحظة نفسها بالثانية، أو البصمة نفسها في اليوم نفسه
+ * (أو بلا يومٍ معروف) · ومولّدٌ يكرّر البصمة شهراً بعد شهر فاتورتان (T٦)
+ */
+export function qrKeysExact(a: QrKeyFacts, b: QrKeyFacts): boolean {
+  if (a.vat !== b.vat || a.total !== b.total || a.tax !== b.tax) return false;
+  if (a.hash && b.hash && a.hash !== b.hash) return false;
+  if (a.instant !== null && b.instant !== null) return a.instant === b.instant;
+  if (a.hash && b.hash) return !a.day || !b.day || a.day === b.day;
+  return false;
+}
+/** قد تكون الفاتورة نفسها: البائع والإجمالي والضريبة نفسها في اليوم نفسه، ولا تفرّقهما بصمتان ولا لحظتان مختلفتان */
+export function qrKeysAlike(a: QrKeyFacts, b: QrKeyFacts): boolean {
+  if (a.vat !== b.vat || a.total !== b.total || a.tax !== b.tax) return false;
+  if (a.hash && b.hash && a.hash !== b.hash) return false;
+  if (a.instant !== null && b.instant !== null && a.instant !== b.instant) return false;
+  return !a.day || !b.day || a.day === b.day;
 }

@@ -70,7 +70,8 @@ describe('L٢ · وقتٌ بالدقيقة وحدها يصنع مفتاحاً، 
     catch (e) { err = (e as Error).message; }
     // eslint-disable-next-line no-console
     console.log('L2 · التنبيهات:', q1.warnings, '· المفتاح:', zatcaQrKey(q1), '· فحص الشاشة:', JSON.stringify(dup), '· حفظ الثانية:', err || 'حُفظت');
-    expect(zatcaQrKey(q1)).toBe('');
+    // (المفتاح يحمل حقائقه منذ إصلاح T١، والدقيقة بلا ثوانٍ لا تجعل الثانية «الفاتورة نفسها يقيناً»)
+    expect(dup?.exact ?? false).toBe(false);
     expect(err).toBe('');
   });
 });

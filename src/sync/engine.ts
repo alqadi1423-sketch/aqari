@@ -1032,9 +1032,17 @@ const LATE_LINK_MS = 60 * 60 * 1000;
 /** حركة قيدٍ كُتبت بعد قيدها بأكثر من ساعة (بوقت الخادم)، أو لقيدٍ معكوسٍ هنا، أو لقيدٍ لم يُعرف وقته في السحابة */
 function lateLink(db: DB, entryId: string, doc: RemoteDoc): boolean {
   if (db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NOT NULL`, [entryId])) return true;
+  // وربطٌ معلَّق بعاكسٍ لم يُطبَّق يجدّد وقت القيد، فهو كالمعكوس (المدقق الخارجي S١ب)
+  const pendingLinks = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
+  if (pendingLinks[entryId]) return true;
+  // وكاتب الحركة غير كاتب القيد ربطٌ متأخر أياً كان وقته (S١: وقت «u» يكتبه العضو) · وقيدٌ بلا كاتبٍ وارد كتبه هذا الجهاز (المالك)
+  const rb = db.get<{ uid: string }>(`SELECT uid FROM row_by WHERE tbl = 'journal_entries' AND pk = ?`, [entryId]);
+  const creator = rb ? rb.uid : ownerUid(db) ?? '';
+  if (creator && (doc.by ?? '') !== creator) return true;
   const at = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = 'journal_entries' AND pk = ?`, [entryId])?.u;
   if (!at) return true;
-  return Date.parse(incomingAt(doc)) - Date.parse(at) > LATE_LINK_MS;
+  // وبوقت الخادم وحده (ts تفرضه القاعدة)، لا بـ«u» الذي يكتبه العضو
+  return Date.parse(isoNorm(doc.ts ?? doc.u)) - Date.parse(at) > LATE_LINK_MS;
 }
 
 /** صادرٌ مطبَّق للتحويل نفسه (التاريخ والبيان والمبلغ، ببنكٍ آخر) لم يُقابَل بواردٍ قبل هذا */
@@ -1276,6 +1284,28 @@ export function prepareMemberUpload(db: DB): void {
 
 /** الجدولان اللذان افتتاحيّهما للمالك وحده (openingKept) */
 const OPENING_TABLES = new Set(['banks', 'accounts']);
+const keyCol = (t: string) => (t === 'accounts' ? 'code' : 'id');
+/**
+ * آخر افتتاحيٍّ عرفه هذا الجهاز في السحابة للصف (طبّقه أو رفعه) · فيُعرف هل غيّر المالك الافتتاحي هنا منذ ذلك (المدقق الخارجي S٢: كل تعديلٍ
+ * معلَّق على الصف كان يُعدّ تعديلاً للافتتاحي، فيمحو افتتاحيّه القديمُ أحدثَ وضعه المالك من جهازه الآخر)
+ */
+const SEEN_OPENING = 'opening_seen:';
+function noteSeenOpening(db: DB, t: string, k: string, o: unknown): void {
+  setSyncState(db, SEEN_OPENING + t + ':' + k, String(Number(o) || 0));
+}
+/** افتتاحيّ هذا الجهاز غيّره المالك هنا منذ آخر ما عرفه من السحابة (وبلا معرفةٍ سابقة: له تعديلٌ معلَّق) */
+function openingChangedHere(db: DB, t: string, k: string, hasPending: boolean): boolean {
+  const seen = getSyncState(db, SEEN_OPENING + t + ':' + k);
+  if (seen === null) return hasPending;
+  const mine = db.get<{ o: number }>(`SELECT opening_halalas AS o FROM "${t}" WHERE ${keyCol(t)} = ?`, [k]);
+  return !!mine && (Number(mine.o) || 0) !== Number(seen);
+}
+/** جهاز العضو: الافتتاحي من الوارد (حقل المالك)، فتحمله كل نسخةٍ يعيدها كما في السحابة (Q٢ وS٤) */
+function adoptCloudOpening(db: DB, doc: RemoteDoc): void {
+  if (!getSyncState(db, 'membership') || !OPENING_TABLES.has(doc.t) || !doc.d || doc.del) return;
+  db.run(`UPDATE "${doc.t}" SET opening_halalas = ? WHERE ${keyCol(doc.t)} = ?`, [Number(doc.d.opening_halalas) || 0, doc.k]);
+  noteSeenOpening(db, doc.t, doc.k, doc.d.opening_halalas);
+}
 
 /** حسابٌ عليه سطر قيدٍ هنا أو في قيدٍ وارد لم يُطبَّق بعد (الهاتف البديل يسحب الدليل والقيود في دورةٍ واحدة) */
 function accountUsed(db: DB, code: string): boolean {
@@ -1572,6 +1602,8 @@ function applyOne(
   const pending = db.get<OutRow>(`SELECT tbl, pk, op, changed_at FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
   let conflict: 'conflict-remote' | null = null;
   let keepOpening = false;
+  // افتتاحيّ السحابة كما وصل (قبل أن يُبقي جهاز المالك افتتاحيّه) · يُذكر بعد التطبيق
+  const cloudOpening = OPENING_TABLES.has(doc.t) && doc.d && !doc.del ? Number(doc.d.opening_halalas) || 0 : null;
   if (pending) {
     const localDoc = buildDoc(db, doc.t, doc.k, pending.op, pending.changed_at, deviceId);
     if (sameContent(localDoc, doc)) {
@@ -1588,9 +1620,7 @@ function applyOne(
     if (localWins) {
       // والافتتاحي للمالك وحده (openingKept): جهاز العضو يأخذه من الوارد ولو غلب تعديله، فتحمله نسخته المرفوعة كما في السحابة
       // (المدقق الخارجي Q٢: كان يبقى بالافتتاحي القديم فتُرفض كل تسميةٍ منه ويخطئ رصيد البنك عنده)
-      if (getSyncState(db, 'membership') && OPENING_TABLES.has(doc.t) && doc.d && !doc.del) {
-        db.run(`UPDATE "${doc.t}" SET opening_halalas = ? WHERE ${doc.t === 'accounts' ? 'code' : 'id'} = ?`, [Number(doc.d.opening_halalas) || 0, doc.k]);
-      }
+      adoptCloudOpening(db, doc);
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', `${doc.t} · ${doc.k} · غلب تعديل هذا الجهاز (${mine}) على الوارد (${doc.u})`);
       return 'conflict-local';
     }
@@ -1598,7 +1628,8 @@ function applyOne(
     // وجهاز المالك: تعديل افتتاحيّه المعلَّق يبقى ولو غلب الوارد من عضوٍ بقية الصف، ويُعاد إلى السحابة (المدقق الخارجي Q١: كان يضيع
     // تعديل المالك من جهازه ومن السحابة إن سمّى عضوٌ الصفّ بعده وقتاً)
     // (لا في الانضمام: المعلَّق حينها الدليل المزروع لا تعديل المالك)
-    if (!joining && OPENING_TABLES.has(doc.t) && doc.d && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)) {
+    if (!joining && OPENING_TABLES.has(doc.t) && doc.d && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)
+      && openingChangedHere(db, doc.t, doc.k, true)) {
       const mineOpening = db.get<{ o: number }>(`SELECT opening_halalas AS o FROM "${doc.t}" WHERE ${doc.t === 'accounts' ? 'code' : 'id'} = ?`, [doc.k]);
       if (mineOpening) { doc.d = { ...doc.d, opening_halalas: Number(mineOpening.o) || 0 }; keepOpening = true; }
     }
@@ -1610,6 +1641,7 @@ function applyOne(
   if (!pending && !joining && !t.appendOnly) {
     const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u;
     if (seen && isoCmp(theirs0, seen) < 0) {
+      adoptCloudOpening(db, doc);
       // بوقت النسخة المعروفة لا بوقت الآن (المراجعة الشاملة · البند ١٣): إعادة التأكيد لا تجعل النسخة أحدث مما هي، فلا تغلب تعديلاً
       // أحدث منها من جهازٍ آخر يصل بعدها في الدفعة نفسها أو بعدها
       enqueue(db, doc.t, doc.k, readRow(db, doc.t, doc.k) ? 'upsert' : 'delete', seen);
@@ -1652,8 +1684,9 @@ function applyOne(
     if (forged) {
       if (cur) {
         // إلا أن يكون للصف تعديلٌ معلَّق هنا: افتتاحيّه أحدث (المدقق الخارجي Q١ب)
-        if (!db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])) {
+        if (!openingChangedHere(db, doc.t, doc.k, !!db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]))) {
           db.run(`UPDATE accounts SET opening_halalas = ? WHERE code = ?`, [Number(d.opening_halalas) || 0, doc.k]);
+          noteSeenOpening(db, doc.t, doc.k, d.opening_halalas);
         }
         enqueue(db, doc.t, doc.k, 'upsert');
       }
@@ -1743,6 +1776,7 @@ function applyOne(
       }
     });
     noteRowTime(db, doc.t, doc.k, theirs0);
+    if (cloudOpening !== null) noteSeenOpening(db, doc.t, doc.k, cloudOpening);
     return conflict ?? 'applied';
   } catch (e) {
     const msg = errText(e);
@@ -2349,6 +2383,7 @@ export async function syncOnce(
             pushed++;
             // بوقت الالتزام في الخادم إن عُرف، ولا يتجاوز وقت المستند · وبلا وقت الخادم لا يُحفظ (الوارد يغلب كما كان)
             if (commitIso) noteRowTime(db, r.tbl, r.pk, isoCmp(docs[i].u, commitIso) < 0 ? docs[i].u : commitIso);
+            if (OPENING_TABLES.has(r.tbl) && docs[i].d && !docs[i].del) noteSeenOpening(db, r.tbl, r.pk, docs[i].d!.opening_halalas);
           }
           progressed++;
         } else {
