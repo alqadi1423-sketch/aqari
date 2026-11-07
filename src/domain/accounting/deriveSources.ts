@@ -439,7 +439,7 @@ function assetSpecs(db: DB, r: SourceReader, a: AssetDoc, date: string, units = 
  * pending: قيدٌ في الوارد يمسّ حساب فئته (نقلٌ أو تكلفةٌ لم تُطبَّق بعد)
  */
 interface Place { net: Map<string | null, number>; at: Array<string | null>; seen: Set<string | null>; pending: boolean }
-function placeOf(r: SourceReader, a: AssetDoc, exceptId: string, keep: (x: SrcEntry) => boolean = () => true): Place {
+function placeOf(r: SourceReader, a: AssetDoc, exceptId: string, keep: (x: SrcEntry) => boolean = () => true, ahead = false): Place {
   const net = new Map<string | null, number>();
   const seen = new Set<string | null>();
   let pending = false;
@@ -448,8 +448,11 @@ function placeOf(r: SourceReader, a: AssetDoc, exceptId: string, keep: (x: SrcEn
     const ls = nonZero(x.lines).filter((l) => str(l.asset_id) === a.id && String(l.account_code ?? '') === a.category);
     if (!ls.length) continue;
     const base = String(x.src_type ?? '').replace(/_rev$/, '');
-    // والاستبعاد والبيع في الوارد لا يغيّران موضعها قبلهما
-    if (!x.here) { pending ||= base !== 'asset_dispose' && base !== 'asset_sell'; continue; }
+    // والاستبعاد والبيع في الوارد لا يغيّران موضعها قبلهما · وahead: ما في الوارد محسوبٌ كأنه طُبِّق (الموضع بعد تطبيقه)
+    if (!x.here) {
+      pending ||= base !== 'asset_dispose' && base !== 'asset_sell';
+      if (!ahead) continue;
+    }
     for (const l of ls) seen.add(str(l.unit_id));
     if (base === 'asset_dispose' || base === 'asset_sell' || (base === 'asset_transfer' && !keep(x))) continue;
     for (const l of ls) net.set(str(l.unit_id), (net.get(str(l.unit_id)) ?? 0) + num(l.debit_halalas) - num(l.credit_halalas));
@@ -470,11 +473,22 @@ const transferOut = (r: SourceReader, a: AssetDoc, exceptId: string, unit?: stri
  */
 function depUnits(r: SourceReader, a: AssetDoc, exceptId: string, w: When): { units: Array<string | null>; pending: boolean } {
   const now = placeOf(r, a, exceptId);
-  const then = w.kind === 'month'
-    ? placeOf(r, a, exceptId, (x) => monthIndex(String(x.date ?? '')) <= w.m).at
-    : r.rows<AssetEvent>('asset_events', 'asset_id', a.id).filter((v) => v.kind === 'transfer' && String(v.date ?? '').slice(0, 10) === w.d)
-      .map((v) => v.from_unit_id ?? null).filter((u) => now.seen.has(u));
-  return { units: [...new Set([...then, ...now.at])], pending: now.pending };
+  const fromOp = w.kind === 'month' ? [] : r.rows<AssetEvent>('asset_events', 'asset_id', a.id)
+    .filter((v) => v.kind === 'transfer' && String(v.date ?? '').slice(0, 10) === w.d)
+    .map((v) => v.from_unit_id ?? null).filter((u) => now.seen.has(u));
+  const unitsOf = (ahead: boolean) => {
+    const cur = ahead ? placeOf(r, a, exceptId, () => true, true) : now;
+    const then = w.kind === 'month' ? placeOf(r, a, exceptId, (x) => monthIndex(String(x.date ?? '')) <= w.m, ahead).at : fromOp;
+    return new Set([...then, ...cur.at]);
+  };
+  const here = unitsOf(false);
+  if (!now.pending) return { units: [...here], pending: false };
+  // ونقلٌ أو تكلفةٌ في الوارد لم تُطبَّق هنا (التوجيه الرابع · كان اختبار d3 يسقط مرةً من أربع على main): الموضع من الدفتر هنا وحده قديم،
+  // وكان قيدٌ مزوَّر بالوحدة القديمة يطابقه ويُقبل حين يُفحص قبل النقل في المرور نفسه · فالمقبول ما يصح في الموضعين معاً: هنا، وبعد تطبيق
+  // ما في الوارد · وما خالف ينتظر (pending) حتى يُطبَّق أو يُرفض ما في الوارد · ولا يُنتظر النقل نفسه مقدّماً، فالتاريخ حقلٌ حر لا يدل على
+  // ترتيب الترحيل (نقلٌ ثانٍ بتاريخٍ قبل الأول ينتظر إهلاك ما قبل الأول، فانتظارهما معاً يحبسهما)
+  const ahead = unitsOf(true);
+  return { units: [...here].filter((u) => ahead.has(u)), pending: true };
 }
 
 /** سطرا الإهلاك (مدين المصروف ودائن المجمع) بمبلغه · لا سطر لصفر */

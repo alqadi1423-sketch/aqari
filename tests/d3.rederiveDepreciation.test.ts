@@ -248,6 +248,31 @@ describe('إعادة اشتقاق الإهلاك (تتمة · المتحقق ا�
     }
   });
 
+  test('سلبي · نقلٌ في الوارد لم يُطبَّق بعد: إهلاك أبريل أو إهلاك ما قبل الاستبعاد بوحدته القديمة يُفحص بعده ويُرفض (التوجيه الرابع · كان يُقبل بموضعٍ قديم)', async () => {
+    // كان الاختبار السابق يسقط مرةً من أربع على main (جيت هب 18c43c8): قيد النقل يصل مع الإهلاك في سحبٍ واحد، وإن فُحص الإهلاك قبل
+    // تطبيق النقل حُسب موضع الأصل من دفترٍ بلا النقل فطابقه المزوَّر بوحدته القديمة · هنا يُؤخَّر قيد النقل في ترتيب الوارد عمداً
+    for (const pick of [(r: MemoryRemote) => entryOf(r, 'depreciation', '2026-04'), (r: MemoryRemote, a: string) => entryOf(r, 'asset_dep', a, '2026-05-10')]) {
+      const s = await setup();
+      const a = await costed(s);
+      moveApril(s, a);
+      await sync(s.dev, s.r);
+      runDepreciation(s.dev, '2026-05-02');
+      disposeAsset(s.dev, a, { date: '2026-05-10', reason: 'تلف مصطنع', today: '2026-05-12' });
+      await sync(s.dev, s.r);
+      srcAsMember(s.r, /^(depreciation|asset_dep|asset_transfer)$/);
+      // قيد النقل آخر ما يُطبَّق في المرور (الوارد بالرتبة ثم وقت الخادم ثم المعرّف): يُكتب في الحساب بعد المزوَّر
+      const tr = entryOf(s.r, 'asset_transfer', a);
+      const bad = pick(s.r, a);
+      s.r.inject(atUnit(s.ua, s.pa)(bad));
+      s.r.inject({ ...tr, u: '2026-12-31T00:00:00.000Z' });
+      await pulls(s.owner, s.r);
+      expect(has(s.owner, bad.k)).toBe(false);
+      expect(reasonOf(s.owner, bad.k)).toMatch(/بُعد/);
+      expect(net(s.owner, '5600', 'l.unit_id = ? AND e.date > ?', [s.ua, '2026-04-16'])).toBe(0);
+      s.close();
+    }
+  });
+
   test('سلبي · وحدة الأصل تُغيَّر في صفّه بلا نقل ثم يُهلك فيها: إهلاكه بوحدةٍ لم تكن تكلفته فيها يُرفض', async () => {
     const s = await setup();
     const a = await costed(s);
