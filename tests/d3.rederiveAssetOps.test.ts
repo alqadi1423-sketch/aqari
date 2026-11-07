@@ -5,8 +5,9 @@
  */
 import { createPendingAsset, setAssetCost, transferAsset, disposeAsset, sellAsset } from '@/domain/assets/service';
 import { addProperty, addUnit, addBank } from './helpers/fixtures';
-import { pair, sync, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack, type Lines } from './helpers/rederive';
+import { MEMBER, pair, sync, asMember, has, reasonOf, doubled, moved, otherDims, net, srcAsMember, holdBack, forge, type Lines } from './helpers/rederive';
 import type { DB } from '@/db/adapter';
+import type { RemoteDoc } from '@/sync/types';
 import type { MemoryRemote } from './helpers/memoryRemote';
 
 async function setup() {
@@ -148,4 +149,67 @@ describe('إعادة اشتقاق قيود نقل الأصل واستبعاده 
     expect(net(s.owner, '1490')).toBe(0);
     s.close();
   });
+});
+
+/** قيد النقل بتاريخه في الحساب */
+const transferOn = (r: MemoryRemote, a: string, date: string) => [...r.docs.values()].find((d) => d.t === 'journal_entries'
+  && d.d?.src_type === 'asset_transfer' && d.d?.src_id === a && d.d?.date === date)!;
+const ALL = /^(depreciation|asset_dep|asset_transfer|asset_dispose|asset_sell)$/;
+
+describe('إعادة اشتقاق قيود نقل الأصل واستبعاده (تتمة · المتحقق المستقل)', () => {
+  test('إيجابي · نقلٌ ثانٍ بتاريخٍ قبل الأول (التاريخ حقلٌ حر بعد آخر شهرٍ رُحِّل): يُقبل كما كتبه التطبيق', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    transferAsset(s.dev, a, { unitId: s.ub, date: '2026-04-16', today: '2026-04-20' });
+    await sync(s.dev, s.r);
+    transferAsset(s.dev, a, { unitId: s.uc, date: '2026-04-10', today: '2026-04-20' });
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, ALL);
+    expect(ids.length).toBe(5);
+    await pulls(s.owner, s.r);
+    for (const k of ids) expect([k, has(s.owner, k), reasonOf(s.owner, k)]).toEqual([k, true, '']);
+    expect(net(s.owner, '1410', 'l.unit_id = ?', [s.uc])).toBe(84000);
+    expect(-net(s.owner, '1490', 'l.unit_id = ?', [s.uc])).toBe(2533);
+    s.close();
+  });
+
+  test('حارس · إهلاكٌ بعد الاستبعاد بحدث نقلٍ مزوَّر لم يُقفله قيد الاستبعاد: يُرفض', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    disposeAsset(s.dev, a, { date: '2026-04-10', reason: 'تلف مصطنع', today: '2026-04-20' });
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, ALL);
+    await pulls(s.owner, s.r);
+    for (const k of ids) expect([k, has(s.owner, k)]).toEqual([k, true]);
+    const ev = [...s.r.docs.values()].find((d) => d.t === 'asset_events' && d.d?.asset_id === a && d.d?.kind === 'dispose')!;
+    s.r.inject({ ...ev, id: 'asset_events__ev-forged', k: 'ev-forged', by: MEMBER, op: 'assets',
+      d: { ...ev.d, id: 'ev-forged', kind: 'transfer', date: '2026-04-20', from_unit_id: s.ua, to_unit_id: s.ub, entry_id: null } } as RemoteDoc);
+    // إهلاك عشرة أيامٍ بعد الاستبعاد (2667 ناقص 2333)
+    const base = [...s.r.docs.values()].find((d) => d.t === 'journal_entries' && d.d?.src_type === 'asset_dep' && d.d?.src_id === a)!;
+    const f = forge(base, { lines: base.lines!.map((l) => ({ ...l, debit_halalas: Number(l.debit_halalas) ? 334 : 0, credit_halalas: Number(l.credit_halalas) ? 334 : 0 })) });
+    f.d = { ...f.d, date: '2026-04-20' };
+    s.r.inject(f);
+    await pulls(s.owner, s.r);
+    expect(has(s.owner, f.k)).toBe(false);
+    expect(reasonOf(s.owner, f.k)).toMatch(/5600|1490/);
+    expect(net(s.owner, '1490')).toBe(0);
+    s.close();
+  });
+
+  test('إيجابي · استبعادٌ بتاريخٍ قبل النقل: يُقبل كما كتبه التطبيق', async () => {
+    const s = await setup();
+    const a = await costed(s);
+    transferAsset(s.dev, a, { unitId: s.ub, date: '2026-04-16', today: '2026-04-20' });
+    await sync(s.dev, s.r);
+    disposeAsset(s.dev, a, { date: '2026-04-10', reason: 'تلف مصطنع', today: '2026-04-20' });
+    await sync(s.dev, s.r);
+    const ids = srcAsMember(s.r, ALL);
+    expect(ids.length).toBe(5);
+    await pulls(s.owner, s.r);
+    for (const k of ids) expect([k, has(s.owner, k), reasonOf(s.owner, k)]).toEqual([k, true, '']);
+    expect(net(s.owner, '1410')).toBe(0);
+    expect(net(s.owner, '1490')).toBe(0);
+    s.close();
+  });
+
 });

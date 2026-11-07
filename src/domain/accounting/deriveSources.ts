@@ -331,9 +331,9 @@ const assetNet = (x: SrcEntry, assetId: string, account: string) => x.lines
 
 /**
  * موضع القيد المفحوص في ترتيب الترحيل على الجهاز الكاتب: الإهلاك الشهري لشهرٍ (month)، أو عمليةٌ على الأصل بتاريخها (op: النقل
- * والاستبعاد والبيع وإهلاك ما قبلها)، أو إهلاك ما فات بتاريخ إثبات التكلفة (catchup)
+ * وإهلاك ما قبل العملية)، أو الاستبعاد والبيع بتاريخهما (end: آخر ما يُرحَّل للأصل)، أو إهلاك ما فات بتاريخ إثبات التكلفة (catchup)
  */
-type When = { kind: 'month'; m: number } | { kind: 'op' | 'catchup'; d: string };
+type When = { kind: 'month'; m: number } | { kind: 'op' | 'end' | 'catchup'; d: string };
 
 /**
  * هل رُحِّل x قبل القيد المفحوص على الجهاز الكاتب، فدخل في المجمع المرحَّل (postedAccum) الذي حُسب منه · وترتيب الوصول هنا غير
@@ -341,7 +341,8 @@ type When = { kind: 'month'; m: number } | { kind: 'op' | 'catchup'; d: string }
  *  - الإهلاك الشهري يُرحَّل قبل كل عمليةٍ بتاريخٍ في شهره أو بعده (requireOpenDate: تاريخ العملية بعد آخر شهرٍ رُحِّل)، وبعدها لما بعده.
  *  - وإهلاك العملية (asset_dep) بتاريخها: ما بعده بتاريخه رُحِّل بعده، وما رُحِّل بعده بتاريخٍ قبله صفرٌ لا قيد له.
  *  - وإهلاك ما فات بتاريخ إثبات التكلفة يسبق كل إهلاكٍ للأصل بعد ذلك.
- *  - والاستبعاد والبيع آخر ما يُرحَّل للأصل.
+ *  - والاستبعاد والبيع آخر ما يُرحَّل للأصل: كل إهلاك عمليةٍ قبلهما ولو كان تاريخه بعد تاريخهما (المتحقق المستقل: استبعادٌ بتاريخٍ قبل
+ *    نقلٍ رُحِّل قبله، والتاريخ حقلٌ حر بعد آخر شهرٍ رُحِّل، فكان يُرفض).
  * وما سواها (التكلفة وعكسها، والنقل بصافٍ صفر، وعكس الإهلاك) سابق
  */
 function before(x: SrcEntry, w: When): boolean {
@@ -353,7 +354,7 @@ function before(x: SrcEntry, w: When): boolean {
   }
   if (base === 'asset_dep') {
     const d = String(x.date ?? '').slice(0, 10);
-    return w.kind === 'month' ? monthIndex(d) <= w.m : w.kind === 'op' ? d <= w.d : d < w.d;
+    return w.kind === 'month' ? monthIndex(d) <= w.m : w.kind === 'end' ? true : w.kind === 'op' ? d <= w.d : d < w.d;
   }
   return true;
 }
@@ -362,10 +363,11 @@ function before(x: SrcEntry, w: When): boolean {
  * ما رُحِّل للأصل قبل القيد المفحوص: مجمعه (1490 دائناً) وتكلفته (حساب فئته مديناً) في الدفتر هنا، وهما ما حسبه الجهاز الكاتب
  * (postedAccum وpostedCost) · pending: قيدٌ سابقٌ في الوارد لم يُطبَّق بعد يغيّر أحدهما
  */
-function ledgerOf(r: SourceReader, assetId: string, category: string, exceptId: string, w: When): { accum: number; cost: number; pending: boolean } {
+function ledgerOf(r: SourceReader, assetId: string, category: string, exceptId: string, w: When, also?: (x: SrcEntry) => boolean):
+  { accum: number; cost: number; pending: boolean } {
   let accum = 0, cost = 0, pending = false;
   for (const x of r.assetEntries(assetId)) {
-    if (x.id === exceptId || !before(x, w)) continue;
+    if (x.id === exceptId || !(before(x, w) || also?.(x))) continue;
     const a = -assetNet(x, assetId, ACC_ACCUM);
     const c = assetNet(x, assetId, category);
     if (x.here) { accum += a; cost += c; } else if (a || c) pending = true;
@@ -482,8 +484,17 @@ function monthEnded(m: number): string {
   return m < now ? '' : m === now ? AWAIT : no('future');
 }
 
-/** المنتهي (المستبعد أو المبيع) لا يُهلك بعد تاريخ انتهائه */
-const endedBy = (a: AssetDoc, d: string) => ENDED.includes(a.status as never) && String(a.end_date ?? '').slice(0, 10) < d;
+/**
+ * المنتهي (المستبعد أو المبيع) لا يُهلك بعد تاريخ انتهائه · إلا إهلاك عمليةٍ رُحِّلت قبل انتهائه بتاريخٍ بعده (المتحقق المستقل: النقل
+ * ثم الاستبعاد بتاريخٍ قبله): قيد الانتهاء آخر ما يُرحَّل للأصل، فالمجمع الذي أقفله (هنا أو في الوارد) يشمله · 'await' إن لم يصل
+ */
+function endedBefore(r: SourceReader, a: AssetDoc, d: string, amt: number, exceptId: string): boolean | typeof AWAIT {
+  if (!ENDED.includes(a.status as never) || String(a.end_date ?? '').slice(0, 10) >= d) return false;
+  const end = a.end_entry_id ? r.entry(a.end_entry_id) : null;
+  if (!end) return a.end_entry_id ? AWAIT : true;
+  const here = r.assetEntries(a.id).filter((x) => x.here && x.id !== exceptId && x.id !== end.id).reduce((s, x) => s + accumIn(x.lines, a.id), 0);
+  return sideOf(end.lines, a.id, ACC_ACCUM, 'debit_halalas') < here + amt;
+}
 
 /** سطور القيد المتوقعة من مستنده · 'await' لمستندٍ لم يصل · أو سبب الرفض */
 function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: string; no: string | null; date: string; total: number; lines: SrcLine[] }): Outcome {
@@ -521,7 +532,9 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const x = depOf(db, r, e.srcId, e.id, { kind: 'op', d }, d);
       if (typeof x === 'string') return x;
       const got = accumIn(e.lines, e.srcId);
-      return { lines: depPair(endedBy(x.a, d) ? 0 : x.amt, x.specs), date: d, correctable: false, pending: x.pending || (got > 0 && got < x.amt) };
+      const ended = endedBefore(r, x.a, d, x.amt, e.id);
+      if (ended === AWAIT) return AWAIT;
+      return { lines: depPair(ended ? 0 : x.amt, x.specs), date: d, correctable: false, pending: x.pending || (got > 0 && got < x.amt) };
     }
     case 'asset_cost': {
       // إثبات تكلفة قطعةٍ بلا فاتورة (setAssetCost): مدين حساب فئتها ودائن رأس المال بتكلفتها في صفّها، ومعه إهلاك ما فات منذ شرائها
@@ -565,12 +578,19 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const to = assetSpecs(db, r, a, d, [ev.to_unit_id ?? null]);
       // ومجمعٌ أو تكلفةٌ في القيد فوق ما رُحِّل هنا في حدود الأصل: قيدٌ قبله لم يصل بعد فيُنتظر
       const short = opShort(a, d, led, { cost: sideOf(e.lines, a.id, a.category, 'debit_halalas'), accum: sideOf(e.lines, a.id, ACC_ACCUM, 'credit_halalas') });
+      const form = (l: { cost: number; accum: number }): Want[] => [
+        { account: a.category, debit: l.cost, credit: 0, dims: to }, { account: a.category, debit: 0, credit: l.cost, dims: from },
+        { account: ACC_ACCUM, debit: l.accum, credit: 0, dims: from }, { account: ACC_ACCUM, debit: 0, credit: l.accum, dims: to },
+      ];
+      // ونقلٌ بتاريخٍ قبل نقلٍ رُحِّل قبله إلى وحدته (المتحقق المستقل: التاريخ حقلٌ حر بعد آخر شهرٍ رُحِّل): مجمعه يشمل إهلاك ما قبل
+      // ذلك النقل وإن كان تاريخه بعده
+      const into = r.rows<AssetEvent>('asset_events', 'asset_id', a.id).filter((v) => v.kind === 'transfer' && v.entry_id !== e.id
+        && (v.to_unit_id ?? null) === (ev.from_unit_id ?? null) && String(v.date ?? '').slice(0, 10) > d).map((v) => String(v.date ?? '').slice(0, 10));
+      const prior = into.length ? ledgerOf(r, a.id, a.category, e.id, { kind: 'op', d }, (x) => String(x.src_type ?? '') === 'asset_dep'
+        && into.includes(String(x.date ?? '').slice(0, 10))) : led;
       return {
-        lines: [
-          { account: a.category, debit: led.cost, credit: 0, dims: to }, { account: a.category, debit: 0, credit: led.cost, dims: from },
-          { account: ACC_ACCUM, debit: led.accum, credit: 0, dims: from }, { account: ACC_ACCUM, debit: 0, credit: led.accum, dims: to },
-        ],
-        date: d, correctable: false, pending: led.pending || short,
+        lines: form(led), alts: prior.accum !== led.accum ? [form(prior)] : [],
+        date: d, correctable: false, pending: led.pending || prior.pending || short,
       };
     }
     case 'asset_dispose':
@@ -584,7 +604,7 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!ENDED.includes(a.status as never)) return AWAIT;
       if (a.status !== status || a.end_entry_id !== e.id || !a.end_date) return no('noEntry');
       const d = String(a.end_date).slice(0, 10);
-      const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'op', d });
+      const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'end', d });
       const dims = assetSpecs(db, r, a, d, [a.unit_id ?? null]);
       const nbv = led.cost - led.accum;
       const short = opShort(a, d, led, { cost: sideOf(e.lines, a.id, a.category, 'credit_halalas'), accum: sideOf(e.lines, a.id, ACC_ACCUM, 'debit_halalas') });
