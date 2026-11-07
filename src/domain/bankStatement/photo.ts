@@ -81,9 +81,20 @@ export function readStatementPhoto(lines: OcrLine[], opts: ReadOpts = {}): State
       return a ? { x: t.x, text: a + (mark ? ' ' + mark : '') } : null;
     }).filter((a): a is { x: number; text: string } => !!a);
     const words = toks.filter((t) => !DATE_TOKEN.test(fixDigits(t.text)) && !amountToken(t.text.split(' ')[0])).map((t) => t.text).join(' ');
+    // الملخص: كل كلمة ملخصٍ بالمبلغ الذي يليها في ترتيب القراءة (المدقق الخارجي V١٢: «الافتتاحي … الختامي …» في سطرٍ واحد) · والصف الذي
+    // فيه تاريخٌ ومبلغٌ ورصيد حركةٌ ولو حمل بيانه كلمةً من القاموس كـ«FROM» (V٣)، والفترة وحدها لا تجعل صفاً ملخصاً
     const label = summaryOf(words);
-    if (label && amounts.length) {
-      (moves.length ? tail : head).push([words, amounts[amounts.length - 1].text]);
+    const summaryRow = label && label !== 'period' && amounts.length && (!dates.length || amounts.length === 1);
+    if (summaryRow) {
+      const rows: string[][] = [];
+      let text: string[] = [];
+      for (const t of toks) {
+        const a = amountToken(t.text.split(' ')[0]);
+        if (!a) { if (!DATE_TOKEN.test(fixDigits(t.text))) text.push(t.text); continue; }
+        if (text.length && summaryOf(text.join(' '))) rows.push([text.join(' '), a + (t.text.includes(' ') ? ' ' + t.text.split(' ')[1] : '')]);
+        text = [];
+      }
+      (moves.length ? tail : head).push(...(rows.length ? rows : [[words, amounts[amounts.length - 1].text]]));
       continue;
     }
     if (!dates.length || !amounts.length) {

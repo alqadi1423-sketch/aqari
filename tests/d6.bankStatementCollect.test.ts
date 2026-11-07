@@ -13,7 +13,7 @@ import { depositCashToBank, ownerCashIn } from '@/domain/cashOps';
 import { bankBalance } from '@/domain/accounting/ledger';
 import { readStatementGrid } from '@/domain/bankStatement/read';
 import { saveStatement, matchSuggestions, approveMatch, reconciliation } from '@/domain/bankStatement/store';
-import { collectionSuggestions, approveCollection } from '@/domain/bankStatement/collect';
+import { collectionSuggestions, approveCollection, collectPermission } from '@/domain/bankStatement/collect';
 import type { DB } from '@/db/adapter';
 
 function setup() {
@@ -155,4 +155,29 @@ describe('المزامنة: التحصيل المعتمد من الكشف على
     expect(p.owner.all(`SELECT reason FROM sync_rejects`)).toEqual([]);
     p.close();
   });
+});
+
+test('W٢ · صلاحية الاعتماد كشاشة الهدف وقاعدة السحابة: القسط «إدخال» في التحصيل، والمطالبة والفاتورة «كامل» في قسمهما', () => {
+  expect([
+    collectPermission({ kind: 'installments', contractId: 'c', installmentIds: ['i'] }),
+    collectPermission({ kind: 'claim', claimId: 'x' }),
+    collectPermission({ kind: 'invoice', invoiceId: 'v' }),
+  ]).toEqual([{ section: 'collect', level: 2 }, { section: 'claims', level: 3 }, { section: 'invoices', level: 3 }]);
+});
+
+test('W١ · المعرّفات الحتمية: سطرٌ أُلغيت مطابقته ودفعته ثم اعتُمد ثانيةً يأخذ معرّفاتٍ جديدة (رقم الاعتماد) ولا يصطدم بالأولى', async () => {
+  const { unmatchLine } = await import('@/domain/bankStatement/store');
+  const { cancelPayment } = await import('@/domain/contracts/cancelPayment');
+  const s = setup();
+  const sg = byLine(s.db, s.bank).get('حوالة واردة سالم')!;
+  approveCollection(s.db, sg.line.id, sg.target);
+  const first = s.db.get<{ id: string }>(`SELECT id FROM contract_payments WHERE contract_id = ?`, [s.c1])!.id;
+  unmatchLine(s.db, sg.line.id);
+  cancelPayment(s.db, first, { reason: 'إلغاء مصطنع', date: '2026-10-02' });
+  approveCollection(s.db, sg.line.id, sg.target);
+  const live = s.db.all<{ id: string }>(`SELECT id FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [s.c1]);
+  expect(live.length).toBe(1);
+  expect(live[0].id).not.toBe(first);
+  expect(s.insts(s.c1)[0].paid).toBe(100000);
+  s.db.close();
 });

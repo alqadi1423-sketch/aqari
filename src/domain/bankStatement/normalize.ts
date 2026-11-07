@@ -75,7 +75,8 @@ export function excelSerialDate(n: number): string | null {
 export function parseStatementDate(raw: unknown, ctx: { order?: DateOrder; year?: number; excelSerial?: boolean } = {}): string | null {
   let t = cellText(raw);
   if (!t) return null;
-  if (ctx.excelSerial && /^\d{5}$/.test(t)) return excelSerialDate(Number(t));
+  // والتسلسل بكسر الوقت (46300.4375) يومه جزؤه الصحيح (المدقق الخارجي V٩)
+  if (ctx.excelSerial && /^\d{5}(\.\d+)?$/.test(t)) return excelSerialDate(Math.floor(Number(t)));
   // ووقتٌ بعد التاريخ يُهمل
   t = t.replace(/[ T]\d{1,2}:\d{2}(:\d{2})?(\s?[AaPp][Mm])?$/, '').trim();
   const order = ctx.order ?? 'dmy';

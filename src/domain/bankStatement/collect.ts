@@ -8,7 +8,9 @@
 import type { DB } from '../../db/adapter';
 import { t } from '../../i18n';
 import { logAudit } from '../audit';
+import { deterministicId, withDeterministicIds } from '../ids';
 import { periodLabel } from '../dates';
+import { isFiledDate } from '../vatFilings';
 import { RuleViolation, recordRentPayment, recordBulkRentPayment } from '../contracts/service';
 import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, COLLECTIBLE_INSTALLMENT_SQL } from '../contracts/installments';
 import { collectClaim } from '../claims';
@@ -32,17 +34,30 @@ export interface CollectSuggestion {
 }
 
 const dayNo = (iso: string) => Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10))) / 86400000;
-const days = (a: string, b: string) => Math.abs(dayNo(a) - dayNo(b));
-/** كلمات الاسم (ثلاثة أحرفٍ فأكثر، بلا «المصطنع» وأمثاله من الأوصاف الشائعة) مطبَّعة */
-const nameWords = (s: string) => foldText(s).split(' ').filter((w) => w.length >= 3);
-const sharesName = (descr: string, name: string) => {
-  const d = new Set(foldText(descr).split(' '));
-  return nameWords(name).some((w) => d.has(w) || d.has('ال' + w) || (w.startsWith('ال') && d.has(w.slice(2)))); // i18n-exempt: «ال» التعريف للمقارنة
-};
-const sharesNumber = (descr: string, ...refs: string[]) => {
-  const d = new Set(descr.match(/\d{4,}/g) ?? []);
-  return refs.some((r) => (r.match(/\d{4,}/g) ?? []).some((x) => d.has(x)));
-};
+// صدور الأسماء المركّبة تُضمّ إلى ما بعدها، والوصلات لا تعرّف أحداً (المدقق الخارجي W٥: «عبد» وحدها كانت اسماً مشتركاً)
+const NAME_PREFIX = new Set(['عبد', 'ابو', 'ام']); // i18n-exempt: صدور الأسماء المركّبة للمقارنة
+const NAME_LINK = new Set(['بن', 'بنت', 'ابن', 'ال']); // i18n-exempt: وصلات الأسماء للمقارنة
+// والكلمات العامة في أسماء المنشآت وبيانات الحوالات لا تعرّف الدافع (المدقق الخارجي V٦: «شركة» كانت اسماً مشتركاً)
+const GENERIC = new Set([
+  'شركه', 'مؤسسه', 'مكتب', 'مجموعه', 'مصنع', 'متجر', 'محل', 'مركز', 'تجاره', 'مقاولات', 'عقارات', 'العقاريه', 'التجاريه', 'حواله', 'وارده', 'تحويل', 'ايداع', // i18n-exempt: كلماتٌ عامة للمقارنة
+  'company', 'co', 'est', 'establishment', 'ltd', 'llc', 'trading', 'group', 'transfer', 'from', 'deposit', 'incoming',
+]);
+const stripAl = (w: string) => (w.startsWith('ال') && w.length > 4 ? w.slice(2) : w); // i18n-exempt: «ال» التعريف للمقارنة
+/** كلمات الاسم المميِّزة مطبَّعة: الصدر المركّب مع ما بعده كلمةً واحدة، وبلا الوصلات، و«ال» التعريف لا تفرّق */
+function nameTokens(s: string): string[] {
+  const words = foldText(s).split(' ').filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (NAME_PREFIX.has(w) && i + 1 < words.length) { out.push(w + stripAl(words[++i])); continue; }
+    if (NAME_LINK.has(w) || w.length < 3 || GENERIC.has(w) || GENERIC.has(stripAl(w)) || w.startsWith('لل')) continue; // i18n-exempt: «لل» حرف الجر مع التعريف
+    out.push(stripAl(w));
+  }
+  return out;
+}
+// الاسم في البيان: أول اسمٍ مميِّز للمستأجر (اسمه الأول)، أو اسمان منه · والعائلة وحدها لا تكفي (يشترك فيها كثيرون) · named أدناه
+// المرجع في البيان: رقم العقد أو إيجار أو الفاتورة كاملاً بحروفه وأرقامه (المدقق الخارجي W٤: السنة وحدها في «EJ-2026-001» كانت مرجعاً) · reffed أدناه
+const compact = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
 /** قرب التاريخ من الاستحقاق (أو تاريخ المطالبة والفاتورة) */
 const dateScore = (n: number) => (n <= 3 ? 20 : n <= 7 ? 15 : n <= 15 ? 10 : n <= 31 ? 5 : 0);
 const MAX_RUN = 12;
@@ -55,7 +70,8 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
   const lines = db.all<{ id: string; date: string; descr: string; ref: string | null; amount: number }>(
     `SELECT id, date, descr, ref, amount_halalas AS amount FROM bank_statement_lines
      WHERE bank_id = ? AND status = 'open' AND deleted_at IS NULL AND amount_halalas > 0 ORDER BY date, rowid`, [bankId])
-    .filter((l) => !withTx.has(l.id));
+    // وما في ربعٍ قُدِّم إقراره لا يُسجَّل فيه تحصيل، فلا يُقترح (المدقق الخارجي W٦: كان «جاهزاً» يُرفض اعتماده فيوقف «اعتماد الجاهزة»)
+    .filter((l) => !withTx.has(l.id) && !isFiledDate(db, l.date));
   if (!lines.length) return [];
 
   // الأقساط القائمة بمتبقّيها، لكل عقدٍ بترتيب استحقاقها
@@ -66,8 +82,6 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
      WHERE ${COLLECTIBLE_INSTALLMENT_SQL} ORDER BY i.contract_id, i.due_date, i.sort, i.id`)
     .map((i) => ({ ...i, left: installmentRemaining(i.amount, i.paid, i.discount) }))
     .filter((i) => i.left > 0);
-  const byContract = new Map<string, typeof insts>();
-  for (const i of insts) byContract.set(i.contract_id, [...(byContract.get(i.contract_id) ?? []), i]);
   const claims = db.all<{ id: string; amount: number; reason: string; date: string; tenant: string | null; no: string | null }>(
     // i18n-exempt: حالة المطالبة المخزّنة
     `SELECT cl.id, cl.amount_halalas AS amount, cl.reason, cl.date, c.tenant_name AS tenant, c.contract_no AS no
@@ -80,67 +94,94 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
     .map((v) => ({ ...v, left: invoiceRemaining(db, v.id, Number(v.total)) }))
     .filter((v) => v.left > 0);
 
-  const cands: Cand[] = [];
+  // فهارس بالمبلغ مرتبةٌ باليوم، ويوم كل سطرٍ وقسطٍ ورموز كل اسمٍ ومرجع تُحسب مرةً واحدة، والتسمية للمعروض وحده (المدقق الخارجي V١٠: كان
+  // تربيعياً يمرّ على كل قسطٍ لكل عقدٍ لكل إيداع)
+  type Tpl = { day: number; s: number; several: boolean; contractId: string; run: typeof insts; tenant: string[]; refs: string[] };
+  const byContract = new Map<string, typeof insts>();
+  for (const i of insts) byContract.set(i.contract_id, [...(byContract.get(i.contract_id) ?? []), i]);
+  const tplByAmount = new Map<number, Tpl[]>();
+  const addTpl = (amount: number, t0: Tpl) => tplByAmount.set(amount, [...(tplByAmount.get(amount) ?? []), t0]);
+  for (const [contractId, list] of byContract) {
+    const tenant = nameTokens(list[0].tenant);
+    const refs = [list[0].no, list[0].ejar].map(compact).filter((c) => c.length >= 5 && /\d/.test(c));
+    // قسطٌ واحد بمتبقّيه، أو أقساطٌ متتالية من أقدم القائم بمجموع متبقّيها (ج.٢: تحويلٌ واحد لعدة أقساط)
+    list.forEach((x, s0) => addTpl(x.left, { day: dayNo(x.due), s: s0, several: false, contractId, run: [x], tenant, refs }));
+    let sum = list[0].left;
+    for (let e = 1; e < Math.min(list.length, MAX_RUN); e++) {
+      sum += list[e].left;
+      addTpl(sum, { day: dayNo(list[0].due), s: 0, several: true, contractId, run: list.slice(0, e + 1), tenant, refs });
+    }
+  }
+  for (const l of tplByAmount.values()) l.sort((p, q) => p.day - q.day);
+  const claimsBy = new Map<number, Array<(typeof claims)[number] & { day: number; who: string[]; refs: string[] }>>();
+  for (const c of claims) claimsBy.set(Number(c.amount), [...(claimsBy.get(Number(c.amount)) ?? []), { ...c, day: dayNo(c.date), who: nameTokens(c.tenant ?? ''), refs: [compact(c.no ?? '')].filter((x) => x.length >= 5 && /\d/.test(x)) }]);
+  const invBy = new Map<number, Array<(typeof invoices)[number] & { day: number; dueDay: number; who: string[]; refs: string[] }>>();
+  for (const v of invoices) invBy.set(v.left, [...(invBy.get(v.left) ?? []), { ...v, day: dayNo(v.issue), dueDay: dayNo(v.due || v.issue), who: nameTokens(v.customer), refs: [compact(v.no)].filter((x) => x.length >= 5 && /\d/.test(x)) }]);
+  const firstFrom = (list: Tpl[], day: number) => { let lo = 0; let hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].day < day) lo = m + 1; else hi = m; } return lo; };
+  const named = (d: Set<string>, n: string[]) => n.length > 0 && (d.has(n[0]) || n.filter((w) => d.has(w)).length >= 2);
+  const reffed = (text: string, refs: string[]) => refs.some((r) => text.includes(r));
+
+  type Cand2 = Omit<Cand, 'label'> & { label: () => string };
+  const cands: Cand2[] = [];
   for (const l of lines) {
     const amount = Number(l.amount);
-    const text = l.descr + ' ' + (l.ref ?? '');
-    for (const [contractId, list] of byContract) {
-      // قسطٌ واحد بمتبقّيه، أو أقساطٌ متتالية من أقدم القائم بمجموع متبقّيها (ج.٢: تحويلٌ واحد لعدة أقساط)
-      for (let s = 0; s < list.length; s++) {
-        let sum = 0;
-        for (let e = s; e < Math.min(list.length, s + MAX_RUN); e++) {
-          sum += list[e].left;
-          if (sum > amount) break;
-          if (sum !== amount) continue;
-          const run = list.slice(s, e + 1);
-          const several = run.length > 1;
-          // والمتتالية تبدأ بأقدم القائم: لا يُترك قسطٌ أقدم بلا سداد · والقسط الواحد أقدم القائم أو ما يستحق في أسبوع السطر
-          const n = days(l.date, run[0].due);
-          if ((several && s !== 0) || n > 45 || (!several && s !== 0 && n > 7)) break;
-          const first = run[0];
-          const reasons = ['amount', 'date'];
-          let score = (several ? 45 : 50) + dateScore(n);
-          if (several) reasons.push('several');
-          if (sharesName(text, first.tenant)) { score += 20; reasons.push('name'); }
-          if (sharesNumber(text, first.no, first.ejar)) { score += 15; reasons.push('ref'); }
-          cands.push({
-            lineId: l.id, target: { kind: 'installments', contractId, installmentIds: run.map((x) => x.id) }, key: 'i:' + run.map((x) => x.id).join(','),
-            label: t('bankStatement.collect.installments', { tenant: first.tenant, no: first.no || '—', period: run.map((x) => periodLabel(x.due)).join(', ') }),
-            score, reasons,
-          });
-          break;
-        }
-      }
-    }
-    for (const c of claims) {
-      if (Number(c.amount) !== amount || dayNo(l.date) < dayNo(c.date) - 3) continue;
+    const ld = dayNo(l.date);
+    const words = new Set(nameTokens(l.descr + ' ' + (l.ref ?? '')));
+    const text = compact(l.descr + ' ' + (l.ref ?? ''));
+    const list = tplByAmount.get(amount) ?? [];
+    for (let i = firstFrom(list, ld - 45); i < list.length && list[i].day <= ld + 45; i++) {
+      const tp = list[i];
+      const n = Math.abs(ld - tp.day);
+      // والمتتالية تبدأ بأقدم القائم: لا يُترك قسطٌ أقدم بلا سداد · والقسط الواحد أقدم القائم أو ما يستحق في أسبوع السطر
+      if (!tp.several && tp.s !== 0 && n > 7) continue;
       const reasons = ['amount', 'date'];
-      let score = 50 + (days(l.date, c.date) <= 60 ? 10 : 0);
-      if (c.tenant && sharesName(text, c.tenant)) { score += 20; reasons.push('name'); }
-      if (sharesNumber(text, c.no ?? '')) { score += 15; reasons.push('ref'); }
+      let score = (tp.several ? 45 : 50) + dateScore(n);
+      if (tp.several) reasons.push('several');
+      if (named(words, tp.tenant)) { score += 20; reasons.push('name'); }
+      if (reffed(text, tp.refs)) { score += 15; reasons.push('ref'); }
+      const first = tp.run[0];
+      cands.push({
+        lineId: l.id, target: { kind: 'installments', contractId: tp.contractId, installmentIds: tp.run.map((x) => x.id) }, key: 'i:' + tp.run.map((x) => x.id).join(','),
+        label: () => t('bankStatement.collect.installments', { tenant: first.tenant, no: first.no || '—', period: tp.run.map((x) => periodLabel(x.due)).join(', ') }),
+        score, reasons,
+      });
+    }
+    for (const c of claimsBy.get(amount) ?? []) {
+      if (ld < c.day - 3) continue;
+      const reasons = ['amount', 'date'];
+      let score = 50 + (Math.abs(ld - c.day) <= 60 ? 10 : 0);
+      if (named(words, c.who)) { score += 20; reasons.push('name'); }
+      if (reffed(text, c.refs)) { score += 15; reasons.push('ref'); }
       cands.push({ lineId: l.id, target: { kind: 'claim', claimId: c.id }, key: 'c:' + c.id,
-        label: t('bankStatement.collect.claim', { reason: c.reason || '—', tenant: c.tenant ?? '—' }), score, reasons });
+        label: () => t('bankStatement.collect.claim', { reason: c.reason || '—', tenant: c.tenant ?? '—' }), score, reasons });
     }
-    for (const v of invoices) {
-      if (v.left !== amount || dayNo(l.date) < dayNo(v.issue) - 3) continue;
+    for (const v of invBy.get(amount) ?? []) {
+      if (ld < v.day - 3) continue;
       const reasons = ['amount', 'date'];
-      let score = 50 + (days(l.date, v.due || v.issue) <= 31 ? 10 : 0);
-      if (sharesName(text, v.customer)) { score += 20; reasons.push('name'); }
-      if (sharesNumber(text, v.no)) { score += 15; reasons.push('ref'); }
+      let score = 50 + (Math.abs(ld - v.dueDay) <= 31 ? 10 : 0);
+      if (named(words, v.who)) { score += 20; reasons.push('name'); }
+      if (reffed(text, v.refs)) { score += 15; reasons.push('ref'); }
       cands.push({ lineId: l.id, target: { kind: 'invoice', invoiceId: v.id }, key: 'v:' + v.id,
-        label: t('bankStatement.collect.invoice', { no: v.no || '—', customer: v.customer }), score, reasons });
+        label: () => t('bankStatement.collect.invoice', { no: v.no || '—', customer: v.customer }), score, reasons });
     }
   }
 
   // التوزيع بالأعلى أولاً كمطابقة الحركات (U٢٢): السطر لهدفٍ واحد، والهدف لسطرٍ واحد، والمتنازَع «تحتاج مراجعة»
   // (وأقساطٌ مشتركة بين اقتراحين لهدفين مختلفين لا تُعطى مرتين)
-  const perLine = new Map<string, number>();
-  const perKey = new Map<string, number>();
-  for (const c of cands) { perLine.set(c.lineId, (perLine.get(c.lineId) ?? 0) + 1); perKey.set(c.key, (perKey.get(c.key) ?? 0) + 1); }
-  cands.sort((a, b) => b.score - a.score);
+  const perLine = new Map<string, Cand2[]>();
+  const perKey = new Map<string, Cand2[]>();
+  for (const c of cands) { perLine.set(c.lineId, [...(perLine.get(c.lineId) ?? []), c]); perKey.set(c.key, [...(perKey.get(c.key) ?? []), c]); }
+  const desc = (a: Cand2, b: Cand2) => b.score - a.score;
+  for (const g of perLine.values()) g.sort(desc);
+  for (const g of perKey.values()) g.sort(desc);
+  cands.sort(desc);
   const usedLine = new Set<string>();
   const usedInst = new Set<string>();
   const usedKey = new Set<string>();
+  const rivalIn = (g: Cand2[], c: Cand2, free: (q: Cand2) => boolean) => {
+    for (const q of g) { if (q.score < c.score - 5) return false; if (q !== c && free(q)) return true; }
+    return false;
+  };
   const view = new Map(lines.map((l) => [l.id, { id: l.id, date: l.date, descr: l.descr, amount: Number(l.amount) }]));
   const out: CollectSuggestion[] = [];
   for (const c of cands) {
@@ -149,17 +190,39 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
     usedLine.add(c.lineId); usedKey.add(c.key); ids.forEach((i) => usedInst.add(i));
     let score = c.score;
     const reasons = [...c.reasons];
-    const rival = cands.some((q) => q !== c && ((q.lineId === c.lineId && !usedKey.has(q.key)) || (q.key === c.key && !usedLine.has(q.lineId))) && q.score >= c.score - 5);
-    if (rival) { score -= 15; reasons.push('ambiguous'); } else if (perLine.get(c.lineId) === 1 && perKey.get(c.key) === 1) { score += 5; reasons.push('unique'); }
+    const rival = rivalIn(perLine.get(c.lineId)!, c, (q) => !usedKey.has(q.key)) || rivalIn(perKey.get(c.key)!, c, (q) => !usedLine.has(q.lineId));
+    if (rival) { score -= 15; reasons.push('ambiguous'); } else if (perLine.get(c.lineId)!.length === 1 && perKey.get(c.key)!.length === 1) { score += 5; reasons.push('unique'); }
     score = Math.min(100, score);
     if (score < 50) continue;
-    out.push({ line: view.get(c.lineId)!, target: c.target, label: c.label, score, level: score >= 85 ? 'ready' : 'review', reasons });
+    out.push({ line: view.get(c.lineId)!, target: c.target, label: c.label(), score, level: score >= 85 ? 'ready' : 'review', reasons });
   }
   return out.sort((a, b) => (a.line.date < b.line.date ? -1 : a.line.date > b.line.date ? 1 : 0));
 }
 
-/** اعتماد اقتراح التحصيل بموافقة المستخدم: التحصيل بمساره في بنك الكشف بتاريخ السطر ومبلغه، ثم المطابقة · كله أو لا شيء */
+/**
+ * صلاحية تسجيل التحصيل لكل هدفٍ كما في شاشته وقاعدة السحابة (المدقق الخارجي W٢ · سجل القرارات ٥٩): القسط بـ«إدخال» في التحصيل،
+ * والمطالبة والفاتورة بـ«كامل» في قسمهما (التحصيل يعدّل صفّهما) · ومعها البنوك ٣ للمطابقة
+ */
+export function collectPermission(x: CollectTarget): { section: 'collect' | 'claims' | 'invoices'; level: 2 | 3 } {
+  return x.kind === 'installments' ? { section: 'collect', level: 2 } : { section: x.kind === 'claim' ? 'claims' : 'invoices', level: 3 };
+}
+
+const targetKey = (x: CollectTarget) => (x.kind === 'installments' ? 'i:' + x.contractId + ':' + x.installmentIds.join(',') : x.kind === 'claim' ? 'c:' + x.claimId : 'v:' + x.invoiceId);
+
+/**
+ * اعتماد اقتراح التحصيل بموافقة المستخدم: التحصيل بمساره في بنك الكشف بتاريخ السطر ومبلغه، ثم المطابقة · كله أو لا شيء · ومعرّفات ما
+ * يكتبه (القيد وسطوره والدفعة وحركة البنك) حتميةٌ من السطر والهدف ورقم الاعتماد (المدقق الخارجي W١): جهازان يعتمدان الإيداع نفسه
+ * للهدف نفسه بلا اتصال يكتبان الصفوف نفسها فتلتقي في المزامنة تحصيلاً واحداً · ورقم الاعتماد يزيد إن سبق للسطر تحصيلٌ أُلغي ثم أُعيد
+ * فتحه، فلا يصطدم بقيد ذلك الإلغاء
+ */
 export function approveCollection(db: DB, lineId: string, target: CollectTarget): { txId: string } {
+  const base = 'stmt:' + lineId + ':' + targetKey(target);
+  let attempt = 0;
+  while (db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [deterministicId(base + ':' + attempt, 1)])) attempt++;
+  return withDeterministicIds(base + ':' + attempt, () => approveCollectionNow(db, lineId, target));
+}
+
+function approveCollectionNow(db: DB, lineId: string, target: CollectTarget): { txId: string } {
   const l = db.get<{ bank_id: string; status: string; amount: number; date: string; descr: string }>(
     `SELECT bank_id, status, amount_halalas AS amount, date, descr FROM bank_statement_lines WHERE id = ? AND deleted_at IS NULL`, [lineId]);
   if (!l || l.status !== 'open') throw new RuleViolation(t('bankStatement.lineNotOpen'));
@@ -171,12 +234,17 @@ export function approveCollection(db: DB, lineId: string, target: CollectTarget)
     let entryNo: string | null = null;
     let txId: string | null = null;
     if (target.kind === 'installments') {
+      // والأقساط كلها قائمة الآن: الملغى بعد عرض الاقتراح لا يُتخطّى فيصير الباقي رصيداً دائناً للمستأجر (المدقق الخارجي W٣)
       const rows = db.all<{ id: string; due: string; amount: number; paid: number; discount: number }>(
         `SELECT i.id, i.due_date AS due, i.amount_halalas AS amount, i.paid_halalas AS paid, ${INSTALLMENT_DISCOUNT_SQL} AS discount
-         FROM contract_installments i WHERE i.contract_id = ? AND i.id IN (SELECT value FROM json_each(?))`,
+         FROM contract_installments i JOIN contracts c ON c.id = i.contract_id
+         WHERE i.contract_id = ? AND i.id IN (SELECT value FROM json_each(?)) AND ${COLLECTIBLE_INSTALLMENT_SQL}`,
         [target.contractId, JSON.stringify(target.installmentIds)]);
       const left = rows.reduce((s, r) => s + installmentRemaining(r.amount, r.paid, r.discount), 0);
-      if (rows.length !== target.installmentIds.length || left !== amount) throw new RuleViolation(t('bankStatement.collect.amountDiffers'));
+      if (rows.length !== new Set(target.installmentIds).size || rows.length !== target.installmentIds.length
+        || rows.some((r) => installmentRemaining(r.amount, r.paid, r.discount) <= 0) || left !== amount) {
+        throw new RuleViolation(t('bankStatement.collect.amountDiffers'));
+      }
       const lines = [{ method: 'bank' as const, bankId, amountHalalas: amount }];
       const paymentId = rows.length === 1
         ? recordRentPayment(db, target.contractId, { installmentId: rows[0].id, period: periodLabel(rows[0].due), date: l.date, lines, discountHalalas: 0, notes })

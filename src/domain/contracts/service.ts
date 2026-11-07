@@ -8,7 +8,7 @@ import type { DB } from '../../db/adapter';
 import { allIn } from '../../db/inList';
 import { requireCash } from '../cashGuard';
 import type { ScheduleRow } from '../pdf/parseEjar';
-import { uid } from '../ids';
+import { uid, rowId } from '../ids';
 import { today, dfmt } from '../dates';
 import {
   generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining,
@@ -692,7 +692,7 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
       srcId: input.installmentId || contractId,
     });
 
-    const paymentId = uid();
+    const paymentId = rowId();
     db.run(
       `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
         discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at, discount_kind)
@@ -704,13 +704,13 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
       db.run(
         `INSERT INTO payment_lines (id, payment_id, method, bank_id, amount_halalas) VALUES (?,?,?,?,?)`,
         // الشيك والبطاقة يستقران في حسابٍ بنكي: السطر بنكيٌّ ببنكه، واسم الطريقة في بيان الدفعة (دراسة القائم)
-        [uid(), paymentId, l.method === 'cash' ? 'cash' : 'bank', l.method === 'cash' ? null : l.bankId!, l.amountHalalas]
+        [rowId(), paymentId, l.method === 'cash' ? 'cash' : 'bank', l.method === 'cash' ? null : l.bankId!, l.amountHalalas]
       );
       if (l.method !== 'cash') {
         db.run(
           `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
            VALUES (?,?,?,?,?,1,?,?,?)`,
-          [uid(), l.bankId!, date,
+          [rowId(), l.bankId!, date,
            'تحصيل إيجار · ' + c.tenant_name + (input.period ? ' (' + input.period + ')' : ''),
            l.amountHalalas, entry ? entry.no : '',
            'تحصيل إيجار · ' + PAY_METHOD_LABEL[l.method], new Date().toISOString()]
@@ -958,7 +958,7 @@ export function recordBulkRentPayment(
       .map((l) => (l.method === 'cash' ? 'نقداً' : PAY_METHOD_LABEL[l.method] + ' · ' + bankName(l.bankId)))
       .join(' + ');
 
-    const paymentId = uid();
+    const paymentId = rowId();
     db.run(
       `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
         discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
@@ -970,20 +970,20 @@ export function recordBulkRentPayment(
       db.run(
         `INSERT INTO payment_lines (id, payment_id, method, bank_id, amount_halalas) VALUES (?,?,?,?,?)`,
         // الشيك والبطاقة يستقران في حسابٍ بنكي: السطر بنكيٌّ ببنكه، واسم الطريقة في بيان الدفعة (دراسة القائم)
-        [uid(), paymentId, l.method === 'cash' ? 'cash' : 'bank', l.method === 'cash' ? null : l.bankId!, l.amountHalalas]
+        [rowId(), paymentId, l.method === 'cash' ? 'cash' : 'bank', l.method === 'cash' ? null : l.bankId!, l.amountHalalas]
       );
       if (l.method !== 'cash') {
         db.run(
           `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
            VALUES (?,?,?,?,?,1,?,?,?)`,
-          [uid(), l.bankId!, date, 'تحصيل جماعي · ' + c.tenant_name, l.amountHalalas,
+          [rowId(), l.bankId!, date, 'تحصيل جماعي · ' + c.tenant_name, l.amountHalalas,
            entry ? entry.no : '', 'تحصيل إيجار · ' + PAY_METHOD_LABEL[l.method], new Date().toISOString()]
         );
       }
     }
     for (const a of allocations) {
       db.run(`INSERT INTO payment_allocations (id, payment_id, installment_id, amount_halalas) VALUES (?,?,?,?)`,
-        [uid(), paymentId, a.installmentId, a.amount]);
+        [rowId(), paymentId, a.installmentId, a.amount]);
     }
     recomputeInstallments(db, allocations.map((a) => a.installmentId));
     if (excess > 0) {

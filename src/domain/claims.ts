@@ -3,7 +3,7 @@
  */
 import { t } from '../i18n';
 import type { DB } from '../db/adapter';
-import { uid } from './ids';
+import { uid, rowId } from './ids';
 import { today } from './dates';
 import { postClaim, postClaimCollection, reverseEntryBySource } from './accounting/post';
 import { logAudit } from './audit';
@@ -85,7 +85,7 @@ export function collectClaim(db: DB, id: string, date: string = today(), bankId?
     const entry = postClaimCollection(db, { id, amount: Number(cl.amount_halalas), reason: cl.reason }, date);
     let txId: string | null = null;
     if (bankId && entry) {
-      txId = uid();
+      txId = rowId();
       db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at) VALUES (?,?,?,?,?,1,?,?,?)`,
         [txId, bankId, date, t('claims.bankCollectDescr', { reason: cl.reason, lng: 'ar' }), Number(cl.amount_halalas), entry.no,
           t('claims.bankCollectSource', { lng: 'ar' }), new Date().toISOString()]);

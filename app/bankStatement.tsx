@@ -22,7 +22,7 @@ import { reportFailure } from '../src/ui/failureDialog';
 import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
 import { recordManualBankTx, transferBetweenBanks, type ManualBankKind } from '../src/domain/cashOps';
-import { collectionSuggestions, approveCollection, type CollectSuggestion } from '../src/domain/bankStatement/collect';
+import { collectionSuggestions, approveCollection, collectPermission, type CollectSuggestion } from '../src/domain/bankStatement/collect';
 import { statementSource, type StatementSource } from '../src/services/bankStatement';
 import { unverifiedResult, type StatementResult, type StatementOk, type ColumnMapping, type ReadOpts } from '../src/domain/bankStatement/read';
 import type { Role } from '../src/domain/bankStatement/columns';
@@ -115,7 +115,8 @@ export default function BankStatementScreen() {
       if (r.error === 'needBalances') {
         setAsk({
           src, mapping: opts.mapping, confirmed,
-          opening: r.partial?.opening != null ? plain(r.partial.opening) : '', closing: r.partial?.closing != null ? plain(r.partial.closing) : '',
+          // والختامي يُكتب من رأس الكشف لا من مجموع السطور: المعبّأ منها يجعل الفحص تحصيل حاصل (ملاحظة المدقق الخارجي V)
+          opening: r.partial?.opening != null ? plain(r.partial.opening) : '', closing: '',
         });
         return;
       }
@@ -198,14 +199,22 @@ export default function BankStatementScreen() {
     });
   };
 
-  const canCollect = (s: CollectSuggestion) => perm.manage
-    && (s.target.kind === 'installments' ? collectPerm.add : s.target.kind === 'claim' ? claimsPerm.add : invoicesPerm.add);
+  const canCollect = (s: CollectSuggestion) => {
+    const need = collectPermission(s.target);
+    const p = need.section === 'collect' ? collectPerm : need.section === 'claims' ? claimsPerm : invoicesPerm;
+    return perm.manage && (need.level === 3 ? p.manage : p.add);
+  };
+  // كل اعتمادٍ وحده: ما يُرفض لا يوقف ما بعده، ويُذكر عدده بسبب أولها (المدقق الخارجي W٦)
   const approveCollect = (list: CollectSuggestion[]) => {
-    try {
-      for (const s of list) approveCollection(db, s.line.id, s.target);
-      bump();
-      toast(t('bankStatement.collect.approved'));
-    } catch (e) { bump(); fail(e); }
+    let first: unknown = null;
+    let failed = 0;
+    for (const s of list) {
+      try { approveCollection(db, s.line.id, s.target); } catch (e) { failed++; first = first ?? e; }
+    }
+    bump();
+    if (!failed) toast(t('bankStatement.collect.approved'));
+    else if (list.length === 1) fail(first);
+    else toast(t('bankStatement.collect.someFailed', { n: failed, of: list.length, why: (first as Error)?.message ?? '' }));
   };
   const approveCollectAll = () => {
     const ready = collects.filter((s) => s.level === 'ready' && canCollect(s));
@@ -356,7 +365,7 @@ export default function BankStatementScreen() {
         ))}
       </CollapsibleSection>
 
-      {/* الافتتاحي والختامي من رأس كشفٍ بلا أرصدة · معبّأين بما اشتُق من القراءة */}
+      {/* الافتتاحي والختامي من رأس كشفٍ بلا أرصدة · الافتتاحي معبّأ بما اشتُق من القراءة، والختامي يكتبه المستخدم */}
       <Sheet visible={!!ask} onClose={() => setAsk(null)} title={t('bankStatement.needTitle')}
         footer={<View style={{ flex: 1 }}><BtnPrimary title={t('bankStatement.read')} onPress={() => {
           if (!ask) return;

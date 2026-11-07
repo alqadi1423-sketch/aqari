@@ -36,14 +36,17 @@ export function saveStatement(db: DB, bankId: string, r: Ok, file: { name: strin
   const keys = statementLineKeys(bankId, r.lines);
   const have = new Set(db.all<{ k: string }>(`SELECT line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.k));
   const fresh = r.lines.map((l, i) => ({ l, key: keys[i] })).filter((x) => !have.has(x.key));
+  // وما تخطّاه لأنه في كشفٍ قبله يُذكر معه (الهجرة ٥٨): حذف ذاك ينقله إلى هذا
+  const shared = keys.filter((k) => have.has(k));
   if (!fresh.length) throw new StatementDuplicate(t('bankStatement.nothingNew'));
   const id = uid();
   const now = new Date().toISOString();
   db.transaction(() => {
     // وربط الصورة مصنوعٌ لا من الكشف فلا يُحفظ ربطاً للبنك · والكشف غير المتحقَّق بتأكيده (الهجرة ٥٧)
-    db.run(`INSERT INTO bank_statements (id, bank_id, period_from, period_to, opening_halalas, closing_halalas, file_name, file_hash, line_count, mapping, verified, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [id, bankId, r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
-      file.name, file.hash, fresh.length, r.warnings.includes('photo') ? '' : JSON.stringify(r.mapping), r.warnings.includes('unverified') ? 0 : 1, now]);
+    db.run(`INSERT INTO bank_statements (id, bank_id, period_from, period_to, opening_halalas, closing_halalas, file_name, file_hash, line_count, mapping, verified, shared_keys, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id, bankId, r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
+      file.name, file.hash, fresh.length, r.warnings.includes('photo') ? '' : JSON.stringify(r.mapping), r.warnings.includes('unverified') ? 0 : 1,
+      JSON.stringify(shared), now]);
     for (const { l, key } of fresh) {
       db.run(`INSERT INTO bank_statement_lines (id, statement_id, bank_id, line_key, date, value_date, descr, ref, amount_halalas, balance_halalas, created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [uid(), id, bankId, key, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, now]);
@@ -67,7 +70,8 @@ export interface Suggestion { line: LineView; tx: TxView; score: number; level: 
 
 const dayNo = (iso: string) => Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10))) / 86400000;
 const DATE_SCORE: Array<[number, number]> = [[0, 30], [1, 26], [3, 20], [7, 12], [14, 5]];
-const digitsOf = (s: string) => new Set((s.match(/\d{4,}/g) ?? []));
+// والسنة وحدها (19xx و20xx) ليست رقماً مشتركاً: في البيانات والتواريخ وأرقام الفواتير كلها (نظير المدقق الخارجي W٤)
+const digitsOf = (s: string) => new Set((s.match(/\d{4,}/g) ?? []).filter((d) => !/^(19|20)\d\d$/.test(d)));
 const wordsOf = (s: string) => new Set(foldText(s).split(' ').filter((w) => w.length >= 4 && !/^\d+$/.test(w)));
 
 /**
@@ -83,39 +87,58 @@ export function matchSuggestions(db: DB, bankId: string): Suggestion[] {
     `SELECT t.id, t.date, t.descr, t.amount_halalas AS amount, t.journal_no AS no, t.source FROM bank_tx t
      WHERE t.bank_id = ? AND t.deleted_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM bank_statement_lines l WHERE l.bank_tx_id = t.id AND l.status = 'matched' AND l.deleted_at IS NULL)`, [bankId]);
+  // فهرسٌ بالمبلغ مرتبٌ باليوم، ويوم كل سطرٍ وحركةٍ ورموزهما تُحسب مرةً واحدة (المدقق الخارجي V١٠: كان تربيعياً بالتاريخ في أعمق الحلقة)
+  type X = (typeof txs)[number] & { day: number; digits: Set<string>; words: Set<string> };
+  const byAmount = new Map<number, X[]>();
+  for (const x of txs) {
+    const v: X = { ...x, day: dayNo(String(x.date)), digits: digitsOf(String(x.descr) + ' ' + String(x.no) + ' ' + String(x.source)), words: wordsOf(String(x.descr) + ' ' + String(x.source)) };
+    const k = Number(x.amount);
+    byAmount.set(k, [...(byAmount.get(k) ?? []), v]);
+  }
+  for (const list of byAmount.values()) list.sort((p, q) => p.day - q.day);
+  const firstFrom = (list: X[], day: number) => { let lo = 0; let hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].day < day) lo = m + 1; else hi = m; } return lo; };
   // كل زوجٍ ممكن بدرجته، ثم التوزيع بالأعلى أولاً (المدقق الخارجي U٢٢: سطرٌ أخذ غيرُه أفضلَ مرشحيه يُقترح له التالي الحرّ، والحركة
   // التي يتنازعها سطران بدرجتين متقاربتين «تحتاج مراجعة» لا «جاهزة»)
-  type Pair = { l: (typeof lines)[number]; x: (typeof txs)[number]; score: number; reasons: string[] };
+  type Pair = { l: (typeof lines)[number]; x: X; score: number; gap: number; reasons: string[] };
   const pairs: Pair[] = [];
   for (const l of lines) {
-    for (const x of txs) {
-      if (Number(x.amount) !== Number(l.amount)) continue;
-      const days = Math.abs(dayNo(String(x.date)) - dayNo(l.date));
-      if (days > 14) continue;
-      const reasons = ['amount', days === 0 ? 'sameDay' : 'days'];
-      let score = 50 + (DATE_SCORE.find(([d]) => days <= d)?.[1] ?? 0);
-      const ld = digitsOf(l.descr + ' ' + (l.ref ?? ''));
-      if ([...digitsOf(String(x.descr) + ' ' + String(x.no) + ' ' + String(x.source))].some((d) => ld.has(d))) { score += 15; reasons.push('ref'); }
-      const lw = wordsOf(l.descr);
-      if ([...wordsOf(String(x.descr) + ' ' + String(x.source))].some((w) => lw.has(w))) { score += 3; reasons.push('words'); }
-      pairs.push({ l, x, score, reasons });
+    const list = byAmount.get(Number(l.amount));
+    if (!list) continue;
+    const ld = dayNo(l.date);
+    const lDigits = digitsOf(l.descr + ' ' + (l.ref ?? ''));
+    const lWords = wordsOf(l.descr);
+    for (let i = firstFrom(list, ld - 14); i < list.length && list[i].day <= ld + 14; i++) {
+      const x = list[i];
+      const gap = Math.abs(x.day - ld);
+      const reasons = ['amount', gap === 0 ? 'sameDay' : 'days'];
+      let score = 50 + (DATE_SCORE.find(([d]) => gap <= d)?.[1] ?? 0);
+      if ([...x.digits].some((d) => lDigits.has(d))) { score += 15; reasons.push('ref'); }
+      if ([...x.words].some((w) => lWords.has(w))) { score += 3; reasons.push('words'); }
+      pairs.push({ l, x, score, gap, reasons });
     }
   }
-  const perLine = new Map<string, number>();
-  const perTx = new Map<string, number>();
-  for (const p of pairs) { perLine.set(p.l.id, (perLine.get(p.l.id) ?? 0) + 1); perTx.set(p.x.id, (perTx.get(p.x.id) ?? 0) + 1); }
-  pairs.sort((p, q) => q.score - p.score || Math.abs(dayNo(String(p.x.date)) - dayNo(p.l.date)) - Math.abs(dayNo(String(q.x.date)) - dayNo(q.l.date)));
+  const perLine = new Map<string, Pair[]>();
+  const perTx = new Map<string, Pair[]>();
+  for (const p of pairs) { perLine.set(p.l.id, [...(perLine.get(p.l.id) ?? []), p]); perTx.set(p.x.id, [...(perTx.get(p.x.id) ?? []), p]); }
+  const desc = (p: Pair, q: Pair) => q.score - p.score || p.gap - q.gap;
+  for (const g of perLine.values()) g.sort(desc);
+  for (const g of perTx.values()) g.sort(desc);
+  pairs.sort(desc);
   const usedL = new Set<string>();
   const usedX = new Set<string>();
+  // ومتنازَعٌ عليه: سطرٌ آخر حرٌّ على الحركة نفسها، أو حركةٌ أخرى حرّةٌ للسطر نفسه، بدرجةٍ قريبة (القائمتان مرتبتان بالدرجة فيُقطع المرور)
+  const rivalIn = (g: Pair[], p: Pair, free: (q: Pair) => boolean) => {
+    for (const q of g) { if (q.score < p.score - 5) return false; if (q !== p && free(q)) return true; }
+    return false;
+  };
   const out: Suggestion[] = [];
   for (const p of pairs) {
     if (usedL.has(p.l.id) || usedX.has(p.x.id)) continue;
     usedL.add(p.l.id); usedX.add(p.x.id);
     let score = p.score;
     const reasons = [...p.reasons];
-    // ومتنازَعٌ عليه: سطرٌ آخر حرٌّ على الحركة نفسها، أو حركةٌ أخرى للسطر نفسه، بدرجةٍ قريبة
-    const rival = pairs.some((q) => q !== p && ((q.x.id === p.x.id && !usedL.has(q.l.id)) || (q.l.id === p.l.id && !usedX.has(q.x.id))) && q.score >= p.score - 5);
-    if (rival) { score -= 15; reasons.push('ambiguous'); } else if (perLine.get(p.l.id) === 1 && perTx.get(p.x.id) === 1) { score += 5; reasons.push('unique'); }
+    const rival = rivalIn(perTx.get(p.x.id)!, p, (q) => !usedL.has(q.l.id)) || rivalIn(perLine.get(p.l.id)!, p, (q) => !usedX.has(q.x.id));
+    if (rival) { score -= 15; reasons.push('ambiguous'); } else if (perLine.get(p.l.id)!.length === 1 && perTx.get(p.x.id)!.length === 1) { score += 5; reasons.push('unique'); }
     score = Math.min(100, score);
     if (score < 50) continue;
     out.push({
@@ -254,9 +277,18 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
   };
 }
 
+/** كشفٌ حيٌّ آخر للبنك يحتاج سطراً ببصمته (تخطّاه عند حفظه لأنه في كشفٍ قبله · الهجرة ٥٨)، أو null */
+export function statementSharing(db: DB, bankId: string, lineKey: string, exceptStatementId: string): string | null {
+  return db.get<{ id: string }>(
+    `SELECT s.id FROM bank_statements s, json_each(s.shared_keys) k
+     WHERE s.bank_id = ? AND s.id != ? AND s.deleted_at IS NULL AND k.value = ? ORDER BY s.created_at, s.id LIMIT 1`,
+    [bankId, exceptStatementId, lineKey])?.id ?? null;
+}
+
 /**
- * حذف كشفٍ وسطوره (حذفاً ناعماً) · وما فيه مطابَقٌ تُلغى مطابقته أولاً · وسطرٌ يقع في فترة كشفٍ حيٍّ آخر للبنك نفسه (تُخطّي عند حفظ ذاك
- * لأنه محفوظٌ هنا) يُنقل إليه ولا يُحذف (المدقق الخارجي U١٧)
+ * حذف كشفٍ وسطوره (حذفاً ناعماً) · وما فيه مطابَقٌ تُلغى مطابقته أولاً · وسطرٌ تخطّاه كشفٌ حيٌّ آخر عند حفظه لأنه هنا يُنقل إليه ولا
+ * يُحذف، وما سواه يُحذف ولو وقع تاريخه في فترة ذلك الكشف (المدقق الخارجي U١٧ وV١: كشفٌ غير متحقَّق بسطرٍ مقروءٍ خطأً كان ينقل سطره الخاطئ
+ * إلى الصحيح)
  */
 export function deleteStatement(db: DB, statementId: string): void {
   if (db.get(`SELECT 1 FROM bank_statement_lines WHERE statement_id = ? AND status = 'matched' AND deleted_at IS NULL`, [statementId])) {
@@ -266,12 +298,9 @@ export function deleteStatement(db: DB, statementId: string): void {
   const now = new Date().toISOString();
   db.transaction(() => {
     if (st) {
-      const others = db.all<{ id: string; f: string; tt: string }>(
-        `SELECT id, period_from AS f, period_to AS tt FROM bank_statements WHERE bank_id = ? AND id != ? AND deleted_at IS NULL ORDER BY created_at`,
-        [st.bank_id, statementId]);
-      for (const o of others) {
-        db.run(`UPDATE bank_statement_lines SET statement_id = ? WHERE statement_id = ? AND deleted_at IS NULL AND date BETWEEN ? AND ?`,
-          [o.id, statementId, o.f, o.tt]);
+      for (const l of db.all<{ id: string; k: string }>(`SELECT id, line_key AS k FROM bank_statement_lines WHERE statement_id = ? AND deleted_at IS NULL`, [statementId])) {
+        const to = statementSharing(db, st.bank_id, l.k, statementId);
+        if (to) db.run(`UPDATE bank_statement_lines SET statement_id = ? WHERE id = ?`, [to, l.id]);
       }
     }
     db.run(`UPDATE bank_statement_lines SET deleted_at = ? WHERE statement_id = ? AND deleted_at IS NULL`, [now, statementId]);

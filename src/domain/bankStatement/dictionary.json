@@ -1,21 +1,221 @@
 {
   "roles": [
-    ["valueDate", ["تاريخ القيمه", "value date", "valuedate"]],
-    ["hijri", ["هجري", "الهجري", "hijri", "h"]],
-    ["date", ["التاريخ", "تاريخ", "تاريخ العمليه", "تاريخ الحركه", "تاريخ القيد", "date", "transaction date", "posting date", "trans date", "txn date", "gregorian", "الميلادي"]],
-    ["balance", ["الرصيد", "رصيد", "balance", "running balance", "bal"]],
-    ["debit", ["مدين", "سحب", "المسحوبات", "سحوبات", "مسحوبات", "debit", "debits", "withdrawal", "withdrawals", "dr", "paid out", "money out", "المدين", "السحب", "المسحوب", "المبالغ المدينه"]],
-    ["credit", ["دائن", "ايداع", "الايداعات", "ايداعات", "credit", "credits", "deposit", "deposits", "cr", "paid in", "money in", "الدائن", "الايداع", "المودع", "المبالغ الدائنه"]],
-    ["amount", ["المبلغ", "مبلغ", "amount", "amount sar", "txn amount"]],
-    ["ref", ["المرجع", "مرجع", "الرقم المرجعي", "رقم المرجع", "reference", "ref", "ref no", "reference no", "cheque no", "رقم الشيك"]],
-    ["type", ["نوع العمليه", "نوع الحركه", "النوع", "type", "transaction type"]],
-    ["descr", ["البيان", "بيان", "الوصف", "وصف", "تفاصيل", "التفاصيل", "تفاصيل العمليه", "وصف العمليه", "description", "details", "transaction details", "narration", "narrative", "particulars", "desc", "memo", "remarks"]]
+    [
+      "valueDate",
+      [
+        "تاريخ القيمه",
+        "value date",
+        "valuedate"
+      ]
+    ],
+    [
+      "hijri",
+      [
+        "هجري",
+        "الهجري",
+        "hijri",
+        "h"
+      ]
+    ],
+    [
+      "date",
+      [
+        "التاريخ",
+        "تاريخ",
+        "تاريخ العمليه",
+        "تاريخ الحركه",
+        "تاريخ القيد",
+        "date",
+        "transaction date",
+        "posting date",
+        "trans date",
+        "txn date",
+        "gregorian",
+        "الميلادي"
+      ]
+    ],
+    [
+      "balance",
+      [
+        "الرصيد",
+        "رصيد",
+        "balance",
+        "running balance",
+        "bal"
+      ]
+    ],
+    [
+      "type",
+      [
+        "debit credit indicator",
+        "مدين او دائن",
+        "دائن مدين",
+        "مدين دائن",
+        "dr cr",
+        "cr dr",
+        "نوع العمليه",
+        "نوع الحركه",
+        "النوع",
+        "type",
+        "transaction type"
+      ]
+    ],
+    [
+      "debit",
+      [
+        "مدين",
+        "سحب",
+        "المسحوبات",
+        "سحوبات",
+        "مسحوبات",
+        "debit",
+        "debits",
+        "withdrawal",
+        "withdrawals",
+        "dr",
+        "paid out",
+        "money out",
+        "المدين",
+        "السحب",
+        "المسحوب",
+        "المبالغ المدينه"
+      ]
+    ],
+    [
+      "credit",
+      [
+        "دائن",
+        "ايداع",
+        "الايداعات",
+        "ايداعات",
+        "credit",
+        "credits",
+        "deposit",
+        "deposits",
+        "cr",
+        "paid in",
+        "money in",
+        "الدائن",
+        "الايداع",
+        "المودع",
+        "المبالغ الدائنه"
+      ]
+    ],
+    [
+      "amount",
+      [
+        "المبلغ",
+        "مبلغ",
+        "amount",
+        "amount sar",
+        "txn amount"
+      ]
+    ],
+    [
+      "ref",
+      [
+        "المرجع",
+        "مرجع",
+        "الرقم المرجعي",
+        "رقم المرجع",
+        "reference",
+        "ref",
+        "ref no",
+        "reference no",
+        "cheque no",
+        "رقم الشيك"
+      ]
+    ],
+    [
+      "descr",
+      [
+        "البيان",
+        "بيان",
+        "الوصف",
+        "وصف",
+        "تفاصيل",
+        "التفاصيل",
+        "تفاصيل العمليه",
+        "وصف العمليه",
+        "description",
+        "details",
+        "transaction details",
+        "narration",
+        "narrative",
+        "particulars",
+        "desc",
+        "memo",
+        "remarks"
+      ]
+    ]
   ],
   "summary": [
-    ["opening", ["الرصيد الافتتاحي", "رصيد افتتاحي", "الرصيد السابق", "رصيد سابق", "رصيد اول المده", "رصيد بدايه الفتره", "opening balance", "previous balance", "starting balance", "balance brought forward", "brought forward", "opening"]],
-    ["closing", ["الرصيد الختامي", "رصيد ختامي", "رصيد اخر المده", "رصيد نهايه الفتره", "الرصيد الحالي", "closing balance", "ending balance", "new balance", "balance carried forward", "carried forward", "closing"]],
-    ["totalDebit", ["اجمالي المدين", "مجموع المدين", "اجمالي المسحوبات", "اجمالي السحوبات", "total debit", "total debits", "total withdrawals"]],
-    ["totalCredit", ["اجمالي الدائن", "مجموع الدائن", "اجمالي الايداعات", "total credit", "total credits", "total deposits"]],
-    ["period", ["الفتره من", "الفتره", "من تاريخ", "period", "statement period", "from"]]
+    [
+      "opening",
+      [
+        "الرصيد الافتتاحي",
+        "رصيد افتتاحي",
+        "الرصيد السابق",
+        "رصيد سابق",
+        "رصيد اول المده",
+        "رصيد بدايه الفتره",
+        "opening balance",
+        "previous balance",
+        "starting balance",
+        "balance brought forward",
+        "brought forward",
+        "opening"
+      ]
+    ],
+    [
+      "closing",
+      [
+        "الرصيد الختامي",
+        "رصيد ختامي",
+        "رصيد اخر المده",
+        "رصيد نهايه الفتره",
+        "الرصيد الحالي",
+        "closing balance",
+        "ending balance",
+        "new balance",
+        "balance carried forward",
+        "carried forward",
+        "closing"
+      ]
+    ],
+    [
+      "totalDebit",
+      [
+        "اجمالي المدين",
+        "مجموع المدين",
+        "اجمالي المسحوبات",
+        "اجمالي السحوبات",
+        "total debit",
+        "total debits",
+        "total withdrawals"
+      ]
+    ],
+    [
+      "totalCredit",
+      [
+        "اجمالي الدائن",
+        "مجموع الدائن",
+        "اجمالي الايداعات",
+        "total credit",
+        "total credits",
+        "total deposits"
+      ]
+    ],
+    [
+      "period",
+      [
+        "الفتره من",
+        "الفتره",
+        "من تاريخ",
+        "period",
+        "statement period",
+        "from"
+      ]
+    ]
   ]
 }

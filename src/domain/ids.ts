@@ -22,9 +22,13 @@ function fnv(s: string, h: number): string {
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
   return h.toString(16).padStart(8, '0');
 }
+/** المعرّف الحتمي رقم n (من ١) لبذرة: ما يعطيه rowId في استدعائه n داخل withDeterministicIds */
+export function deterministicId(seed: string, n: number): string {
+  const k = seed + '#' + n;
+  return 'd' + fnv(k, 0x811c9dc5) + fnv(k, 0x050c5d1f);
+}
 export function rowId(): string {
   if (!det) return uid();
   det.n++;
-  const k = det.seed + '#' + det.n;
-  return 'd' + fnv(k, 0x811c9dc5) + fnv(k, 0x050c5d1f);
+  return deterministicId(det.seed, det.n);
 }

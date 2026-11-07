@@ -921,24 +921,69 @@ interface BankTxState { bank: string; amount: number; no: string; source: string
  * يصحّح نسخته، وقد لا تجيز له القواعد الكتابة)
  */
 function statementLineCheck(db: DB, row: Record<string, unknown>): boolean {
+  let changed = false;
+  // والسطر حيٌّ ما احتاجه كشفٌ حيّ (تخطّاه عند حفظه لأنه هنا · الهجرة ٥٨ · المدقق الخارجي V٤): جهازٌ حذف كشفه ولم يعرف ذاك يعيده إليه ·
+  // وسطرٌ حيٌّ في كشفٍ محذوف (اعتُمد على جهازٍ آخر بعد الحذف · V٥) يُحذف معه
+  const stmt = row.statement_id == null ? undefined
+    : db.get<{ del: string | null }>(`SELECT deleted_at AS del FROM bank_statements WHERE id = ?`, [String(row.statement_id)]);
+  if (row.deleted_at != null || stmt?.del != null) {
+    const to = sharingStatement(db, String(row.bank_id ?? ''), String(row.line_key ?? ''), String(row.statement_id ?? ''));
+    if (to) { row.deleted_at = null; row.statement_id = to; changed = true; } else if (row.deleted_at == null) { row.deleted_at = stmt!.del; changed = true; }
+  }
   const demote = () => { row.status = 'open'; row.bank_tx_id = null; row.matched_at = null; return true; };
-  if (row.status !== 'matched') return row.bank_tx_id != null ? demote() : false;
+  if (row.deleted_at != null && (row.status !== 'open' || row.bank_tx_id != null)) return demote();
+  if (row.status !== 'matched') return row.bank_tx_id != null ? demote() : changed;
   // والمحذوف لا يمسك حركة · ولا حركة: لا مطابقة
   const txId = row.bank_tx_id == null ? '' : String(row.bank_tx_id);
   if (row.deleted_at != null || !txId) return demote();
   const tx = db.get<{ b: string; a: number; del: string | null }>(`SELECT bank_id AS b, amount_halalas AS a, deleted_at AS del FROM bank_tx WHERE id = ?`, [txId]);
   // حركةٌ لم تصل بعد: المفتاح الأجنبي يُرجئ السطر حتى تصل
-  if (!tx) return false;
+  if (!tx) return changed;
   if (tx.del != null || String(tx.b) !== String(row.bank_id) || Number(tx.a) !== Number(row.amount_halalas)) return demote();
   const rivals = db.all<{ id: string }>(
     `SELECT id FROM bank_statement_lines WHERE bank_tx_id = ? AND status = 'matched' AND deleted_at IS NULL AND id != ? ORDER BY id`, [txId, String(row.id)]);
-  if (!rivals.length) return false;
+  if (!rivals.length) return changed;
   if (rivals.some((r) => r.id < String(row.id))) return demote();
   for (const r of rivals) {
     db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [r.id]);
     if (!getSyncState(db, 'membership')) enqueue(db, 'bank_statement_lines', r.id, 'upsert');
   }
-  return false;
+  return changed;
+}
+
+/** كشفٌ حيٌّ آخر للبنك تخطّى سطراً ببصمته عند حفظه (الهجرة ٥٨)، أو null */
+function sharingStatement(db: DB, bankId: string, lineKey: string, exceptStatementId: string): string | null {
+  return db.get<{ id: string }>(
+    `SELECT s.id FROM bank_statements s, json_each(s.shared_keys) k
+     WHERE s.bank_id = ? AND s.id != ? AND s.deleted_at IS NULL AND k.value = ? ORDER BY s.created_at, s.id LIMIT 1`,
+    [bankId, exceptStatementId, lineKey])?.id ?? null;
+}
+
+/**
+ * كشفٌ وارد وسطوره هنا (المدقق الخارجي V٤ وV٥): الحيّ يعيد إليه ما تخطّاه من سطورٍ حُذفت مع كشفها هنا، والمحذوف تُحذف معه سطوره الحيّة
+ * هنا إلا ما احتاجه كشفٌ حيٌّ آخر فيُنقل إليه · ويرفع جهاز المالك ما صحّحه
+ */
+function statementCascade(db: DB, statementId: string, row: Record<string, unknown>): void {
+  const fix = (id: string) => { if (!getSyncState(db, 'membership')) enqueue(db, 'bank_statement_lines', id, 'upsert'); };
+  const bankId = String(row.bank_id ?? '');
+  if (row.deleted_at == null) {
+    let keys: string[] = [];
+    try { keys = JSON.parse(String(row.shared_keys ?? '[]')); } catch { keys = []; }
+    for (const k of keys) {
+      if (db.get(`SELECT 1 FROM bank_statement_lines WHERE bank_id = ? AND line_key = ? AND deleted_at IS NULL`, [bankId, k])) continue;
+      const dead = db.get<{ id: string }>(`SELECT id FROM bank_statement_lines WHERE bank_id = ? AND line_key = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, id LIMIT 1`, [bankId, k]);
+      if (!dead) continue;
+      db.run(`UPDATE bank_statement_lines SET deleted_at = NULL, statement_id = ?, status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [statementId, dead.id]);
+      fix(dead.id);
+    }
+    return;
+  }
+  for (const l of db.all<{ id: string; k: string }>(`SELECT id, line_key AS k FROM bank_statement_lines WHERE statement_id = ? AND deleted_at IS NULL`, [statementId])) {
+    const to = sharingStatement(db, bankId, l.k, statementId);
+    if (to) db.run(`UPDATE bank_statement_lines SET statement_id = ? WHERE id = ?`, [to, l.id]);
+    else db.run(`UPDATE bank_statement_lines SET deleted_at = ?, status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [String(row.deleted_at), l.id]);
+    fix(l.id);
+  }
 }
 
 /**
@@ -1776,6 +1821,7 @@ function applyOne(
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
+        if (doc.t === 'bank_statements') statementCascade(db, doc.k, row);
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·

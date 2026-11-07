@@ -1109,7 +1109,8 @@
       "approved": "Collection recorded and the line matched",
       "approveAll": "Approve the ready ones ({{n}})",
       "approveAllBody": "{{n}} deposits are recorded as collections in this bank by their usual path on each line's date, then each line is matched to its transaction",
-      "needPerm": "Approval is for those who record collections and match statements"
+      "needPerm": "Approval is for those who record collections and match statements",
+      "someFailed": "{{n}} of {{of}} were not approved: {{why}}"
     },
     "asExpense": "Expense (purchase invoice)",
     "asCollection": "New collection",

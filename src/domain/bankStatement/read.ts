@@ -212,8 +212,11 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   for (const r of body) {
     const date = yearFor(order, r[dateCol] ?? '');
     // وصفُّ ملخصٍ بتاريخه (الافتتاحي أو الختامي) ليس حركة (U٧)
-    if (date && r.some((c) => { const k = summaryOf(c); return k === 'opening' || k === 'closing' || k === 'totalDebit' || k === 'totalCredit'; })) {
-      noteSummary(r);
+    // وصفٌّ مؤرَّخ بلا مبلغ حركة: ملخصٌ إن حمل كلمته، وإلا ليس حركة (ختم الطباعة في التذييل · المدقق الخارجي V١٣) · والصف الذي فيه مبلغ
+    // مدينٍ أو دائن حركةٌ أياً كانت كلمات بيانه («ACCOUNT OPENING DEPOSIT» · V٢)
+    const moved = [debitCol, creditCol, amountCol].some((c) => c >= 0 && cellText(r[c] ?? '') !== '');
+    if (date && !moved) {
+      if (r.some((c) => { const k = summaryOf(c); return k === 'opening' || k === 'closing' || k === 'totalDebit' || k === 'totalCredit'; })) noteSummary(r);
       continue;
     }
     if (!date) {
@@ -274,9 +277,17 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     if (again.ok) { solved = again; warnings.push('openingPrinted'); }
   }
   const mapping: ColumnMapping = { headerKey, roles, dateOrder: order, signMode, labels: grid[h] };
+  // والفترة المطبوعة تحوي السطور ولا تزيد على مداها بأكثر من شهرين، وإلا أُخذ مدى السطور (U١٠) · في القراءة الناجحة والجزئية سواء (V١١)
+  const periodOf = (ls: StatementLine[]): [string, string] => {
+    const dates = ls.map((l) => l.date).sort();
+    const first = dates[0];
+    const last = dates[dates.length - 1];
+    const days = (a: string, b: string) => (Date.parse(b) - Date.parse(a)) / 86400000;
+    return from && to && !(first < from || last > to || days(from, to) > days(first, last) + 62) ? [from, to] : [first, last];
+  };
   const partialOf = (ls: StatementLine[], o: number | null): Partial<StatementOk> => ({
     lines: ls, opening: o ?? undefined, closing: o == null ? undefined : o + ls.reduce((s, l) => s + l.amount, 0), mapping,
-    from: from ?? ls[0].date, to: to ?? ls[ls.length - 1].date, account: accountOf(grid.slice(0, h)),
+    from: periodOf(ls)[0], to: periodOf(ls)[1], account: accountOf(grid.slice(0, h)),
   });
   if (!solved.ok) {
     // وما عُرفت إشاراته كلها (عمودا مدين ودائن أو مبلغٌ موقَّع) جزءٌ يُحفظ «غير متحقَّق» بتأكيدٍ صريح (قرار المالك 2026-10-09 أ.٤:
@@ -311,14 +322,10 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     totals = (summary.totalDebit == null || Math.abs(summary.totalDebit) === dr) && (summary.totalCredit == null || Math.abs(summary.totalCredit) === cr);
     if (!totals) return fail('balance', 'totals', partial(solved.opening));
   }
-  // والفترة المطبوعة تحوي السطور ولا تزيد على مداها بأكثر من شهرين، وإلا أُخذ مدى السطور (U١٠)
-  const first = out[0].date;
-  const last = out[out.length - 1].date;
-  const days = (a: string, b: string) => (Date.parse(b) - Date.parse(a)) / 86400000;
-  if (from && to && (first < from || last > to || days(from, to) > days(first, last) + 62)) { from = null; to = null; }
+  [from, to] = periodOf(out);
   return {
     ok: true, lines: out, opening: solved.opening, closing,
-    from: from ?? first, to: to ?? last, mapping,
+    from, to, mapping,
     checks: { chain: hadBalances ? true : null, closing: printedClosing != null ? true : null, totals },
     warnings, account: accountOf(grid.slice(0, h)),
   };
@@ -339,12 +346,14 @@ function accountOf(head: string[][]): string | null {
     const iban = /SA\d{2}[0-9A-Z]{20}/i.exec(joined);
     if (iban) return iban[0].toUpperCase();
   }
+  // ورقم الحساب في خلية كلمته بعدها، أو في الخلية التالية وحدها (المدقق الخارجي V٧: ضمّ ما بعده من تواريخ كان يصنع رقماً آخر)
   for (const r of head) {
     const i = r.findIndex((c) => /رقم الحساب|account (no|number)|account/i.test(c));
-    if (i >= 0) {
-      const v = [r[i], ...r.slice(i + 1)].join(' ').replace(/\D/g, '');
-      if (v.length >= 8) return v;
-    }
+    if (i < 0) continue;
+    const own = (r[i].replace(/.*(رقم الحساب|account (no|number)|account)/i, '').match(/\d[\d\s-]{6,}\d/) ?? [''])[0].replace(/\D/g, '');
+    if (own.length >= 8) return own;
+    const next = (r[i + 1] ?? '').replace(/[\s-]/g, '');
+    if (/^\d{8,}$/.test(next)) return next;
   }
   return null;
 }
