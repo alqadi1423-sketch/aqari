@@ -20,7 +20,7 @@ import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
 import { logAudit } from '../src/domain/audit';
 import { reportFailure } from '../src/ui/failureDialog';
-import { usePerm } from '../src/ui/access';
+import { usePerm, useAccess } from '../src/ui/access';
 
 const GROUPS = ['أصل', 'خصم', 'حقوق ملكية', 'إيراد', 'مصروف'];
 const GROUP_LABEL: Record<string, string> = {
@@ -106,6 +106,8 @@ export default function Accounts() {
   const toast = useToast();
   const dialog = useDialog();
   const perm = usePerm('ledger');
+  // الرصيد الافتتاحي يضعه المالك وحده (القاعدة ٩٩ · المدقق الخارجي M٧): جهاز المالك يرفض تعديل العضو له
+  const owner = useAccess().owner;
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
   const [period, setPeriod] = useState<PeriodKey>('all');
@@ -375,7 +377,7 @@ export default function Accounts() {
               : <SelectField label="النوع" value={type} options={GROUPS.map((g) => ({ value: g, label: g }))} onPick={setType} />}
           </View>
         </Row>
-        <Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr />
+        <Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr disabled={!owner} />
       </Sheet>
 
       {/* كشف حركة الحساب · كل سطر يفتح ورقة تفاصيل قيده */}
