@@ -7,7 +7,7 @@ import { requireCash, entryCashEffect } from './cashGuard';
 import { uid } from './ids';
 import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
-import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount } from './accounting/post';
+import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount, vatRefundLines, vatRejectLines } from './accounting/post';
 import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseAssetsMoved, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
@@ -472,10 +472,7 @@ export function markVatRefunded(db: DB, purchaseId: string, date: string): void 
       date,
       memo: 'استرداد ضريبة مدخلات · فاتورة ' + p.no + ' · ' + p.supplier_name,
       srcType: 'vat_refund', srcId: purchaseId,
-      lines: [
-        { account: '1100', descr: 'استرداد ضريبة', debit: Number(p.tax_halalas), credit: 0 },
-        { account: '1270', descr: 'إقفال ضريبة الفاتورة ' + p.no, debit: 0, credit: Number(p.tax_halalas) },
-      ],
+      lines: vatRefundLines(p.no, Number(p.tax_halalas)),
     });
     db.run(`UPDATE purchases SET refund_status = ?, refund_date = ? WHERE id = ?`,
       ['مسترَد بتاريخ ' + date, date, purchaseId]);
@@ -496,10 +493,7 @@ export function markVatRejected(db: DB, purchaseId: string, date: string): void 
       date,
       memo: 'رفض استرداد ضريبة · فاتورة ' + p.no + ' · الضريبة جزء من التكلفة',
       srcType: 'vat_refund', srcId: purchaseId,
-      lines: [
-        { account: purchaseExpenseAccount(p.category), descr: 'ضريبة غير مستردة', debit: Number(p.tax_halalas), credit: 0 },
-        { account: '1270', descr: 'إقفال ضريبة الفاتورة ' + p.no, debit: 0, credit: Number(p.tax_halalas) },
-      ],
+      lines: vatRejectLines(p.category, p.no, Number(p.tax_halalas)),
     });
     db.run(`UPDATE purchases SET refund_status = 'مرفوض' WHERE id = ?`, [purchaseId]);
     logAudit(db, 'فواتير الشراء', 'update', 'رفض استرداد ضريبة', p.no);

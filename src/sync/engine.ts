@@ -19,6 +19,7 @@ import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
 import { nextPurchaseNo } from '../domain/purchases';
+import { postedAccum } from '../domain/assets/depreciation';
 import { t as tr } from '../i18n';
 import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
@@ -31,6 +32,7 @@ import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
+import { memberSourceIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 import { isoCmp, isoNorm } from './isoTime';
@@ -642,6 +644,121 @@ function rentCheckAgainst(db: DB, e: { srcId: string; date: string; lines: Array
   if (why) throw no(why);
 }
 
+/** أحدث نسخةٍ لصفٍّ بمفتاحه الأول (صفّ التسوية بعقده) · كـ latestRow */
+function latestRowByKey<T>(db: DB, table: string, key: string): T | null {
+  const inbox = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = ? AND pk = ? AND del = 0`, [table, key]);
+  if (inbox) return ((JSON.parse(inbox.payload) as RemoteDoc).d ?? null) as T | null;
+  const col = syncTable(table)?.pkCols[0] ?? 'id';
+  return db.get<T>(`SELECT * FROM "${table}" WHERE "${col}" = ?`, [key]) ?? null;
+}
+
+const POSTED = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
+const SRC_LINE_COLS = 'id, entry_id, account_code, debit_halalas, credit_halalas, contract_id, unit_id, property_id, asset_id';
+
+/** قارئ مستندات القيد لإعادة الاشتقاق (deriveSources.ts) على جهاز المالك */
+function sourceReader(db: DB): SourceReader {
+  const linesHere = (id: string) => db.all<SrcLine>(`SELECT ${SRC_LINE_COLS} FROM journal_lines WHERE entry_id = ? ORDER BY rowid`, [id]);
+  type Head = { id: string; src_type: string | null; src_id: string | null; reversed_by: string | null; no: string | null; status: string | null;
+    date: string | null; created_at: string | null; deleted_at: string | null };
+  return {
+    row: <T>(table: string, key: string) => latestRowByKey<T>(db, table, key),
+    asset: <T>(id: string) => {
+      const here = db.get<T>(`SELECT * FROM assets WHERE id = ?`, [id]) ?? null;
+      const p = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'assets' AND pk = ? AND del = 0`, [id]);
+      if (!p) return here;
+      const doc = JSON.parse(p.payload) as RemoteDoc;
+      if (!doc.d) return here;
+      // صفٌّ واردٌ لا يُطبَّق بأساس إهلاكه (assetBasisIssue) لا يُشتق منه: يُشتق مما هنا
+      return here && assetBasisIssue(db, doc, stripDerived('assets', doc.d)) !== '' ? here : (doc.d as T);
+    },
+    rows: <T>(table: string, col: string, value: string) => {
+      // الصفوف هنا بعمودها، وما في الوارد أحدث منها ويغلبها بمفتاحه، والمحذوف في الوارد يُسقطها
+      const pk = syncTable(table)?.pkCols[0] ?? 'id';
+      const out = new Map<string, T>();
+      for (const x of db.all<Record<string, unknown>>(`SELECT * FROM "${table}" WHERE "${col}" = ?`, [value])) out.set(String(x[pk]), x as T);
+      for (const i of db.all<{ pk: string; payload: string; del: number }>(
+        `SELECT pk, payload, del FROM sync_inbox WHERE tbl = ? AND (json_extract(payload, '$.d.${col}') = ? OR pk IN (SELECT value FROM json_each(?)))`,
+        [table, value, JSON.stringify([...out.keys()])])) {
+        const d = (JSON.parse(i.payload) as RemoteDoc).d;
+        if (i.del || !d || String(d[col] ?? '') !== value) out.delete(i.pk);
+        else out.set(i.pk, d as T);
+      }
+      return [...out.values()];
+    },
+    entries: (srcType, srcId) => db.all<{ id: string; src_type: string | null; src_id: string | null; reversed_by: string | null; date: string | null }>(
+      `SELECT id, src_type, src_id, reversed_by, date FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = ?`, [srcType, srcId, POSTED])
+      .map((e) => ({ ...e, lines: linesHere(e.id) })),
+    entry: (id) => {
+      const here = db.get<Head>(
+        `SELECT id, src_type, src_id, reversed_by, no, status, date, created_at, deleted_at FROM journal_entries WHERE id = ? AND status = ?`, [id, POSTED]);
+      if (here) return { ...here, here: true, key: here.id, lines: linesHere(id) };
+      // كما سيُطبَّق من الوارد: أعمدة مستنده وسطوره، ومفتاحه في مستنده (applyOne يرفض ما خالف مفتاحُه مفتاحَ المستند)
+      const p = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [id]);
+      const doc = p ? JSON.parse(p.payload) as RemoteDoc : null;
+      const d = (doc?.d ?? null) as Partial<Record<keyof Head, unknown>> | null;
+      if (!d || d.status !== POSTED) return null;
+      const s = (v: unknown) => (v == null || v === '' ? null : String(v));
+      return { id, here: false, key: s(d.id), src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), no: s(d.no),
+        status: s(d.status), date: s(d.date), created_at: s(d.created_at), deleted_at: s(d.deleted_at), lines: (doc!.lines ?? []) as SrcLine[] };
+    },
+    claimants: (revId) => {
+      const ids = new Set(db.all<{ id: string }>(
+        `SELECT id FROM journal_entries WHERE reversed_by = ?
+         UNION SELECT pk AS id FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.reversed_by') = ?`,
+        [revId, revId]).map((x) => x.id));
+      const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
+      for (const [e, r] of [...Object.entries(pending), ...Object.entries(guessesOf(db))]) if (r === revId) ids.add(e);
+      return [...ids];
+    },
+    taken: (no, lineIds, exceptId) => !!db.get(`SELECT 1 FROM journal_entries WHERE no = ? AND id != ?`, [no, exceptId])
+      || !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND pk != ? AND json_extract(payload, '$.d.no') = ?`, [exceptId, no])
+      || !!db.get(`SELECT 1 FROM journal_lines WHERE entry_id != ? AND id IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)])
+      || !!db.get(`SELECT 1 FROM sync_inbox i, json_each(i.payload, '$.lines') j WHERE i.tbl = 'journal_entries' AND i.del = 0 AND i.pk != ?
+           AND json_extract(j.value, '$.id') IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)]),
+    assetEntries: (assetId) => {
+      const here = db.all<{ id: string; src_type: string | null; src_id: string | null; reversed_by: string | null; date: string | null }>(
+        `SELECT id, src_type, src_id, reversed_by, date FROM journal_entries WHERE status = ? AND deleted_at IS NULL
+           AND id IN (SELECT entry_id FROM journal_lines WHERE asset_id = ?)`, [POSTED, assetId]).map((e) => ({ ...e, here: true, lines: linesHere(e.id) }));
+      const ids = new Set(here.map((e) => e.id));
+      const s = (v: unknown) => (v == null || v === '' ? null : String(v));
+      const inbox = db.all<{ pk: string; payload: string }>(
+        `SELECT i.pk, i.payload FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.status') = ?
+           AND EXISTS (SELECT 1 FROM json_each(i.payload, '$.lines') j WHERE json_extract(j.value, '$.asset_id') = ?)`, [POSTED, assetId])
+        .filter((x) => !ids.has(x.pk)).map((x) => {
+          const doc = JSON.parse(x.payload) as RemoteDoc;
+          const d = doc.d ?? {};
+          return { id: x.pk, here: false, src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), date: s(d.date), lines: (doc.lines ?? []) as SrcLine[] };
+        });
+      return [...here, ...inbox];
+    },
+    pending: (srcType, srcId) => db.all<{ pk: string }>(
+      `SELECT i.pk FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.src_type') = ?
+         AND json_extract(i.payload, '$.d.src_id') = ? AND json_extract(i.payload, '$.d.status') = ?
+         AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.id = i.pk AND e.status = ?)`, [srcType, srcId, POSTED, POSTED]).map((x) => x.pk),
+  };
+}
+
+/**
+ * إعادة اشتقاق قيد العضو من مستنده · بقية المراحل (التوجيه الثالث · ١ · قرار المالك 2026-10-15 «١» و2026-11-07): القيد المرحّل الذي
+ * كتبه عضو بمصدرٍ من DERIVED_SOURCES تُحسب سطوره على جهاز المالك من مستنده بدوال الترحيل نفسها، ويُرفض كله إن خالفها حساباً أو
+ * مبلغاً أو بُعداً أو تاريخاً · وما لم يصل مستنده بعد يُنتظر كالأصل الناقص · وما كتبه المالك لا يُعاد · وما وصل بعد تسجيل تقديم
+ * ربعه يُرفض كقيد التحصيل (القرار ٦ عبر المزامنة)
+ */
+function memberSourceCheck(db: DB, doc: RemoteDoc): void {
+  const src = (doc.d!.src_type as string | null) ?? '';
+  if (!DERIVED_SOURCES[src] || getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
+  const no = (why: string) => new Error(tr('deriveSrc.rejected', { source: src, why, lng: 'ar' }));
+  const date = String(doc.d!.date ?? '');
+  const filed = filingRecordedAt(db, date);
+  if (filed && (!doc.ts || isoCmp(doc.ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
+  const why = memberSourceIssue(db, sourceReader(db), {
+    id: doc.k, src_type: src, src_id: (doc.d!.src_id as string | null) ?? null, no: (doc.d!.no as string | null) ?? null, date,
+    reversed_by: (doc.d!.reversed_by as string | null) ?? null, lines: (doc.lines ?? []) as SrcLine[],
+  });
+  if (why === 'await') throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
+  if (why) throw no(why);
+}
+
 /**
  * الرصيد الدائن المتاح لمستأجر العقد (المتحقق المستقل، الجولة ٣٦ (ع٣): كان سطر 2410 في قيد السداد منه بلا بُعد عقد، فلا ينقص به
  * الرصيد ويُصرف مرتين): 2410 على عقوده في الدفتر بلا قيود دفعات السداد منه ولا عواكسها، ناقصاً تلك الدفعات غير الملغاة هنا وفي
@@ -807,6 +924,43 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
   if (why) throw no(why);
 }
 
+/**
+ * أساس إهلاك الأصل على جهاز المالك (التوجيه الثالث · ١ · المتحقق المستقل): تكلفته وعمره ومتبقيته وتاريخ شرائه وفئته لا يغيّرها عضو
+ * بعد إثبات تكلفته هنا، كما يمنعها updateAssetInfo (lifeLocked) · فالإهلاك يُشتق من الصف، وعمرٌ مقصَّر فيه يُهلك التكلفة كلها في
+ * شهرين · ويُقبل ما يكتبه التطبيق وحده:
+ *  - تعديل فاتورة الشراء أو حذفها يعيد القطعة المربوطة بها «بانتظار تكلفة» (clearPurchaseAssets): التكلفة وربط الفاتورة يُفرَّغان
+ *    وبقية الأساس كما هو.
+ *  - وربطها ثانيةً ببندٍ جديد من فاتورتها (writePurchaseLines: linkAssetId) ولا إهلاك لها في الدفتر هنا ولا حركة (requirePurchaseAssetsFree):
+ *    فئتها فئة البند، وتاريخ شرائها تاريخ الفاتورة، وعمرها ومتبقيتها كما هما.
+ */
+const ASSET_BASIS = ['cost_halalas', 'salvage_halalas', 'life_months', 'purchase_date', 'category'];
+/** سبب رفض صفّ الأصل الوارد بأساس إهلاكه · '' إن قُبل · 'await' إن لم يصل بنده أو فاتورته */
+function assetBasisIssue(db: DB, doc: RemoteDoc, row: RowData): string {
+  if (doc.t !== 'assets' || getSyncState(db, 'membership') || !byMember(db, doc, false)) return '';
+  const cur = db.get<Record<string, unknown>>(`SELECT * FROM assets WHERE id = ?`, [doc.k]);
+  if (!cur || cur.cost_halalas == null) return '';
+  const differs = (c: string) => c in row && String(cur[c] ?? '') !== String(row[c] ?? '');
+  if (!ASSET_BASIS.some(differs)) return '';
+  const locked = tr('deriveSrc.assetBasis', { lng: 'ar' });
+  const same = ['salvage_halalas', 'life_months'].every((c) => !differs(c));
+  if (row.cost_halalas == null) {
+    return cur.purchase_id == null || row.purchase_id != null || !same || differs('category') || differs('purchase_date') ? locked : '';
+  }
+  const lineId = row.purchase_line_id == null ? null : String(row.purchase_line_id);
+  if (!lineId || lineId === String(cur.purchase_line_id ?? '') || row.purchase_id == null || !same) return locked;
+  const line = latestRow<{ purchase_id: string | null; asset_category: string | null }>(db, 'purchase_lines', lineId);
+  const p = latestRow<{ date: string | null }>(db, 'purchases', String(row.purchase_id));
+  if (!line || !p) return 'await';
+  if (line.purchase_id !== row.purchase_id || String(line.asset_category ?? '') !== String(row.category ?? '')
+    || String(p.date ?? '').slice(0, 10) !== String(row.purchase_date ?? '').slice(0, 10)) return locked;
+  return postedAccum(db, doc.k) !== 0 || db.get(`SELECT 1 FROM asset_events WHERE asset_id = ? AND kind NOT IN ('cost', 'convert')`, [doc.k]) ? locked : '';
+}
+function assetBasisCheck(db: DB, doc: RemoteDoc, row: RowData): void {
+  const why = assetBasisIssue(db, doc, row);
+  if (why === 'await') throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
+  if (why) throw new Error(why);
+}
+
 /** مالك المنشأة: صاحب هذا الجهاز إن لم يكن عضواً، وإلا المنشأة نفسها (معرّفها معرّف مالكها) */
 const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? getSyncState(db, 'org') : getSyncState(db, 'uid'));
 
@@ -857,6 +1011,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   const posted = d.status === 'مرحّل';
   // قبل إدخاله: توزيع الإيراد يُحسب من المرحَّل قبله
   if (posted) memberRentCheck(db, doc);
+  if (posted) memberSourceCheck(db, doc);
   if (local) db.run(`DELETE FROM journal_lines WHERE entry_id = ?`, [doc.k]); // مسودة · سطورها تُستبدل
   renumberJoiningCollision(db, 'journal_entries', doc.k, d.no);
   const entry: RowData = { ...d, status: posted ? 'قيد الإنشاء' : d.status, reversed_by: null };
@@ -1164,6 +1319,7 @@ function applyOne(
         const row = stripDerived(doc.t, doc.d!);
         if (doc.t === 'purchases') renumberJoiningCollision(db, 'purchases', doc.k, row.no);
         collectionRowCheck(db, doc, row);
+        assetBasisCheck(db, doc, row);
         // حركة البنك برقم قيدها على هذا الجهاز (noteJournalNoAlias)
         if (doc.t === 'bank_tx' && typeof row.journal_no === 'string') {
           const alias = noAliases(db)[row.journal_no];

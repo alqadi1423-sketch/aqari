@@ -76,6 +76,11 @@ export function postEntry(
     dims?: Dims;
     /** يبقى «قيد الإنشاء» ولا يُرقّى (قيد العضو اليدوي · المراجعة الخارجية ٧ «رابعاً ١ (أ)») */
     draft?: boolean;
+    /**
+     * أبعاد كل سطرٍ (العقار والوحدة والعقد والأصل) كما في سطره بالضبط، والفارغ يبقى فارغاً ولا يُملأ من المصدر (العاكس بأبعاد أصله ·
+     * مركز التكلفة كما كان)
+     */
+    exactDims?: boolean;
   }
 ): PostedEntry | null {
   const rows = args.lines.filter((l) => Math.abs(l.debit || 0) > 0 || Math.abs(l.credit || 0) > 0);
@@ -116,6 +121,12 @@ export function postEntry(
     const explicit = { ...(args.dims ?? {}), costCenterId: cc };
     for (const l of rows) {
       const d = lineDims(derived, explicit, l.dims);
+      if (args.exactDims) {
+        d.propertyId = l.dims?.propertyId ?? null;
+        d.unitId = l.dims?.unitId ?? null;
+        d.contractId = l.dims?.contractId ?? null;
+        d.assetId = l.dims?.assetId ?? null;
+      }
       db.run(
         `INSERT INTO journal_lines (id, entry_id, account_code, descr, debit_halalas, credit_halalas,
            property_id, unit_id, contract_id, cost_center_id, asset_id)
@@ -216,6 +227,10 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string, date?: 
       })),
       srcType: (e.src_type ?? 'manual') + '_rev',
       srcId: e.src_id ?? e.id,
+      // والفارغ من أبعاد الأصل يبقى فارغاً (المتحقق المستقل): قيد عمولة التقبيل يُرحَّل قبل صفّ صفقته فتُكتب سطوره بلا أبعاد، وكان
+      // العاكس يملؤها من الصفقة فيرفضه جهاز المالك (mirrorIssue يطابق الأبعاد) ويبقى إيراد التقبيل الملغى · كما يعكس
+      // reverseAllPostedEntries
+      exactDims: true,
     });
     if (posted) db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [posted.id, e.id]);
     return posted;
@@ -282,22 +297,31 @@ const HELD_BY_OTHERS = '1260';
  * قيد قبض التأمين حسب الجهة القابضة:
  * المكتب: مدين النقدية · منصة إيجار: مدين محتجزات لدى الغير · طرف آخر: لا قيد (بيان فقط)
  */
+/**
+ * سطور قيد قبض التأمين من مبلغه وجهة قبضه · null لما لا قيد له · بها يرحّل الجهاز القيد وبها يعيد جهاز المالك اشتقاق قيد العضو من
+ * عقده (التوجيه الثالث · ١ · إعادة الاشتقاق: قرار المالك 2026-10-15 «١» و2026-11-07)
+ */
+export function contractDepositLines(deposit: number, holder?: string | null): EntryLine[] | null {
+  if (deposit <= 0) return null;
+  const h = holder || 'المكتب';
+  if (h === 'طرف آخر') return null;
+  return [
+    { account: h === 'منصة إيجار' ? HELD_BY_OTHERS : CASH, descr: 'تأمين مستلم', debit: deposit, credit: 0 },
+    { account: '2400', descr: 'التزام تأمين المستأجر', debit: 0, credit: deposit },
+  ];
+}
+
 export const postContractDeposit = (
   db: DB,
   c: { id: string; contract_no: string; tenant: string; start: string; deposit: number; holder?: string }
 ) => {
-  if (c.deposit <= 0) return null;
-  const holder = c.holder || 'المكتب';
-  if (holder === 'طرف آخر') return null;
-  const debitAccount = holder === 'منصة إيجار' ? HELD_BY_OTHERS : CASH;
+  const lines = contractDepositLines(c.deposit, c.holder);
+  if (!lines) return null;
   return postEntry(db, {
     date: c.start,
     memo: 'استلام تأمين · عقد ' + c.contract_no + ' · ' + c.tenant
-      + (holder === 'منصة إيجار' ? ' (محتجز لدى منصة إيجار)' : ''),
-    lines: [
-      { account: debitAccount, descr: 'تأمين مستلم', debit: c.deposit, credit: 0 },
-      { account: '2400', descr: 'التزام تأمين المستأجر', debit: 0, credit: c.deposit },
-    ],
+      + (lines[0].account === HELD_BY_OTHERS ? ' (محتجز لدى منصة إيجار)' : ''),
+    lines,
     srcType: 'contract_deposit',
     srcId: c.id,
   });
@@ -315,127 +339,168 @@ export const postContractDeposit = (
  *  - المطالبة (postClaim): تعويض ضررٍ أو استرداد تكلفة.
  * وما كان منها لوحدةٍ تجارية يتبع ضريبة الإيجار التجاري حين تُبنى في الإقرار (قرار المالك «رابعاً ٤» 2026-10-10).
  */
-export const postDepositDeduct = (db: DB, c: { id: string; contract_no: string; holder?: string; received?: boolean }, deduction: number, date: string) =>
-  deduction > 0 && (c.holder || 'المكتب') === 'طرف آخر' // i18n-exempt: جهة مخزّنة
-    ? (c.received
-      ? postEntry(db, {
-          date,
-          memo: 'قبض المخصوم من تأمين لدى طرف آخر · عقد ' + c.contract_no, // i18n-exempt: نص قيد مخزَّن
-          lines: [
-            { account: CASH, descr: 'المخصوم من التأمين وصل للمكتب', debit: deduction, credit: 0 }, // i18n-exempt: نص قيد مخزَّن
-            { account: '4300', descr: 'إيراد من خصم التأمين', debit: 0, credit: deduction }, // i18n-exempt: نص قيد مخزَّن
-          ],
-          srcType: 'deposit_deduct',
-          srcId: c.id,
-        })
-      : null)
-    : deduction > 0
+/** سطور قيد الخصم من التأمين · null لما لا قيد له (لا خصم، أو لدى طرف آخر ولم يصل المكتب) · بها يعيد جهاز المالك اشتقاق قيد العضو */
+export function depositDeductLines(deduction: number, holder?: string | null, received?: boolean): EntryLine[] | null {
+  if (!(deduction > 0)) return null;
+  if ((holder || 'المكتب') === 'طرف آخر') { // i18n-exempt: جهة مخزّنة
+    return received ? [
+      { account: CASH, descr: 'المخصوم من التأمين وصل للمكتب', debit: deduction, credit: 0 }, // i18n-exempt: نص قيد مخزَّن
+      { account: '4300', descr: 'إيراد من خصم التأمين', debit: 0, credit: deduction }, // i18n-exempt: نص قيد مخزَّن
+    ] : null;
+  }
+  return [
+    { account: '2400', descr: 'إطفاء التزام التأمين', debit: deduction, credit: 0 },
+    { account: '4300', descr: 'إيراد من خصم التأمين', debit: 0, credit: deduction },
+  ];
+}
+
+export const postDepositDeduct = (db: DB, c: { id: string; contract_no: string; holder?: string; received?: boolean }, deduction: number, date: string) => {
+  const lines = depositDeductLines(deduction, c.holder, c.received);
+  return lines
     ? postEntry(db, {
         date,
-        memo: 'خصم من التأمين · عقد ' + c.contract_no,
-        lines: [
-          { account: '2400', descr: 'إطفاء التزام التأمين', debit: deduction, credit: 0 },
-          { account: '4300', descr: 'إيراد من خصم التأمين', debit: 0, credit: deduction },
-        ],
+        memo: lines[0].account === CASH
+          ? 'قبض المخصوم من تأمين لدى طرف آخر · عقد ' + c.contract_no // i18n-exempt: نص قيد مخزَّن
+          : 'خصم من التأمين · عقد ' + c.contract_no,
+        lines,
         srcType: 'deposit_deduct',
         srcId: c.id,
       })
     : null;
+};
 
 /**
  * نقل المخصوم من محتجزات المنصة بعد التسوية: يُقفل 1260 بمقداره،
  * ويستقر في محفظة إيجار (1265) إن بقي هناك، أو في النقدية (1100) إن حُوّل لنا.
  */
+/** سطور قيد استقرار المخصوم من محتجزات المنصة بوجهته · null بلا خصم · بها يعيد جهاز المالك اشتقاق قيد العضو */
+export function depositDeductMoveLines(deduction: number, destination: 'محفظة إيجار' | 'حسابنا'): EntryLine[] | null {
+  return deduction > 0 ? [
+    { account: destination === 'محفظة إيجار' ? '1265' : CASH, descr: 'المخصوم من التأمين', debit: deduction, credit: 0 },
+    { account: HELD_BY_OTHERS, descr: 'إقفال محتجزات المنصة بالمخصوم', debit: 0, credit: deduction },
+  ] : null;
+}
+
 export const postDepositDeductMove = (
   db: DB,
   c: { id: string; contract_no: string },
   deduction: number,
   date: string,
   destination: 'محفظة إيجار' | 'حسابنا'
-) =>
-  deduction > 0
+) => {
+  const lines = depositDeductMoveLines(deduction, destination);
+  return lines
     ? postEntry(db, {
         date,
-        memo: 'استقرار المخصوم من التأمين · عقد ' + c.contract_no + ' · ' + (destination === 'محفظة إيجار' ? 'في محفظة إيجار' : 'حُوّل لحسابنا'),
-        lines: [
-          { account: destination === 'محفظة إيجار' ? '1265' : CASH, descr: 'المخصوم من التأمين', debit: deduction, credit: 0 },
-          { account: HELD_BY_OTHERS, descr: 'إقفال محتجزات المنصة بالمخصوم', debit: 0, credit: deduction },
-        ],
+        memo: 'استقرار المخصوم من التأمين · عقد ' + c.contract_no + ' · ' + (lines[0].account === CASH ? 'حُوّل لحسابنا' : 'في محفظة إيجار'),
+        lines,
         srcType: 'deposit_deduct_move',
         srcId: c.id,
       })
     : null;
+};
 
 /** رد التأمين: من النقدية إن كان لدى المكتب، ومن المحتجزات إن كان لدى المنصة (المنصة ترده مباشرة) */
+/** سطور قيد رد التأمين من جهة قبضه · null لما لا قيد له · بها يعيد جهاز المالك اشتقاق قيد العضو */
+export function depositRefundLines(refund: number, holder?: string | null): EntryLine[] | null {
+  if (refund <= 0) return null;
+  const h = holder || 'المكتب';
+  if (h === 'طرف آخر') return null;
+  return [
+    { account: '2400', descr: 'رد التزام التأمين', debit: refund, credit: 0 },
+    { account: h === 'منصة إيجار' ? HELD_BY_OTHERS : CASH, descr: 'مبلغ مردود', debit: 0, credit: refund },
+  ];
+}
+
 export const postDepositRefund = (
   db: DB,
   c: { id: string; contract_no: string; holder?: string },
   refund: number,
   date: string
 ) => {
-  if (refund <= 0) return null;
-  const holder = c.holder || 'المكتب';
-  if (holder === 'طرف آخر') return null;
-  const creditAccount = holder === 'منصة إيجار' ? HELD_BY_OTHERS : CASH;
+  const lines = depositRefundLines(refund, c.holder);
+  if (!lines) return null;
   return postEntry(db, {
     date,
-    memo: 'رد تأمين · عقد ' + c.contract_no + (holder === 'منصة إيجار' ? ' (رُدَّ عبر المنصة)' : ''),
-    lines: [
-      { account: '2400', descr: 'رد التزام التأمين', debit: refund, credit: 0 },
-      { account: creditAccount, descr: 'مبلغ مردود', debit: 0, credit: refund },
-    ],
+    memo: 'رد تأمين · عقد ' + c.contract_no + (lines[1].account === HELD_BY_OTHERS ? ' (رُدَّ عبر المنصة)' : ''),
+    lines,
     srcType: 'deposit_refund',
     srcId: c.id,
   });
 };
 
 /** ترحيل التأمين عند التجديد: 2400/2400 · لا يزيد الرصيد */
+/** سطور قيد ترحيل التأمين إلى العقد المجدَّد · null بلا تأمين · بها يعيد جهاز المالك اشتقاق قيد العضو */
+export function depositCarryLines(deposit: number, fromId?: string): EntryLine[] | null {
+  return deposit > 0 ? [
+    // سطر الإقفال بأبعاد العقد القديم، فيُقفل التزامه في تصفيته (مراجعة التثبيت #59)
+    { account: '2400', descr: 'إقفال التزام العقد السابق', debit: deposit, credit: 0, dims: fromId ? { contractId: fromId } : undefined },
+    { account: '2400', descr: 'التزام تأمين العقد الجديد', debit: 0, credit: deposit },
+  ] : null;
+}
+
 export const postDepositCarry = (
   db: DB,
   args: { fromNo: string; toNo: string; toId: string; fromId?: string; deposit: number; date: string }
-) =>
-  args.deposit > 0
+) => {
+  const lines = depositCarryLines(args.deposit, args.fromId);
+  return lines
     ? postEntry(db, {
         date: args.date,
         memo: 'ترحيل تأمين من عقد ' + args.fromNo + ' إلى ' + args.toNo,
-        lines: [
-          // سطر الإقفال بأبعاد العقد القديم، فيُقفل التزامه في تصفيته (مراجعة التثبيت #59)
-          { account: '2400', descr: 'إقفال التزام العقد السابق', debit: args.deposit, credit: 0, dims: args.fromId ? { contractId: args.fromId } : undefined },
-          { account: '2400', descr: 'التزام تأمين العقد الجديد', debit: 0, credit: args.deposit },
-        ],
+        lines,
         srcType: 'deposit_carry',
         srcId: args.toId,
       })
     : null;
+};
 
-export const postReservationDeposit = (db: DB, rv: { id: string; name: string; deposit: number; date?: string }) =>
-  rv.deposit > 0
+/** سطور قيود العربون (قبضه ومصادرته وردّه) من مبلغه · null بلا عربون · بها يعيد جهاز المالك اشتقاق قيد العضو من حجزه */
+export function reservationDepositLines(deposit: number): EntryLine[] | null {
+  return deposit > 0 ? [
+    { account: CASH, descr: 'عربون مستلم', debit: deposit, credit: 0 },
+    { account: '2450', descr: 'التزام عربون', debit: 0, credit: deposit },
+  ] : null;
+}
+export function reservationForfeitLines(deposit: number): EntryLine[] | null {
+  return deposit > 0 ? [
+    { account: '2450', descr: 'إطفاء التزام العربون', debit: deposit, credit: 0 },
+    { account: '4300', descr: 'إيراد من مصادرة عربون', debit: 0, credit: deposit },
+  ] : null;
+}
+export function reservationRefundLines(deposit: number): EntryLine[] | null {
+  return deposit > 0 ? [
+    { account: '2450', descr: 'إطفاء التزام العربون', debit: deposit, credit: 0 },
+    { account: CASH, descr: 'عربون مردود', debit: 0, credit: deposit },
+  ] : null;
+}
+
+export const postReservationDeposit = (db: DB, rv: { id: string; name: string; deposit: number; date?: string }) => {
+  const lines = reservationDepositLines(rv.deposit);
+  return lines
     ? postEntry(db, {
         date: rv.date ?? today(),
         memo: 'عربون حجز · ' + rv.name,
-        lines: [
-          { account: CASH, descr: 'عربون مستلم', debit: rv.deposit, credit: 0 },
-          { account: '2450', descr: 'التزام عربون', debit: 0, credit: rv.deposit },
-        ],
+        lines,
         srcType: 'reservation',
         srcId: rv.id,
       })
     : null;
+};
 
 /** مصادرة العربون · إيرادٌ في 4300 بلا ضريبة مخرجات تلقائية (المراجعة الشاملة ٨ · البند ١١ · سببه فوق postDepositDeduct) */
-export const postReservationForfeit = (db: DB, rv: { id: string; name: string; deposit: number; date?: string }) =>
-  rv.deposit > 0
+export const postReservationForfeit = (db: DB, rv: { id: string; name: string; deposit: number; date?: string }) => {
+  const lines = reservationForfeitLines(rv.deposit);
+  return lines
     ? postEntry(db, {
         date: rv.date ?? today(),
         memo: 'مصادرة عربون · ' + rv.name,
-        lines: [
-          { account: '2450', descr: 'إطفاء التزام العربون', debit: rv.deposit, credit: 0 },
-          { account: '4300', descr: 'إيراد من مصادرة عربون', debit: 0, credit: rv.deposit },
-        ],
+        lines,
         srcType: 'reservation_forfeit',
         srcId: rv.id,
       })
     : null;
+};
 
 /**
  * تحويل العربون إلى عقد (المراجعة ٤.٤) · العربون إيجارٌ مقبوض مقدَّماً يُسدَّد به القسط: مدين 2450 / دائن إيراد الإيجار،
@@ -462,48 +527,59 @@ export const postReservationConvert = (
     : null;
 
 /** ردّ العربون لصاحبه عند إلغاء الحجز (المراجعة ٤.٥): مدين 2450 / دائن النقد · كان الإلغاء بلا قيد */
-export const postReservationRefund = (db: DB, rv: { id: string; name: string; deposit: number; date: string }) =>
-  rv.deposit > 0
+export const postReservationRefund = (db: DB, rv: { id: string; name: string; deposit: number; date: string }) => {
+  const lines = reservationRefundLines(rv.deposit);
+  return lines
     ? postEntry(db, {
         date: rv.date,
         memo: 'ردّ عربون حجز · ' + rv.name,
-        lines: [
-          { account: '2450', descr: 'إطفاء التزام العربون', debit: rv.deposit, credit: 0 },
-          { account: CASH, descr: 'عربون مردود', debit: 0, credit: rv.deposit },
-        ],
+        lines,
         srcType: 'reservation_refund',
         srcId: rv.id,
       })
     : null;
+};
 
 /** المطالبة · إيرادٌ في 4300 بلا ضريبة مخرجات تلقائية (المراجعة الشاملة ٨ · البند ١١ · سببه فوق postDepositDeduct) */
-export const postClaim = (db: DB, cl: { id: string; amount: number; reason: string; date?: string }) =>
-  cl.amount > 0
+/** سطور قيد المطالبة وقيد تحصيلها من مبلغها · null بلا مبلغ · بها يعيد جهاز المالك اشتقاق قيد العضو من المطالبة */
+export function claimLines(amount: number): EntryLine[] | null {
+  return amount > 0 ? [
+    { account: '1250', descr: 'ذمة مطالبة على المستأجر', debit: amount, credit: 0 },
+    { account: '4300', descr: 'إيراد مطالبة', debit: 0, credit: amount },
+  ] : null;
+}
+export function claimCollectionLines(amount: number): EntryLine[] | null {
+  return amount > 0 ? [
+    { account: CASH, descr: 'مبلغ محصَّل', debit: amount, credit: 0 },
+    { account: '1250', descr: 'إقفال ذمة المطالبة', debit: 0, credit: amount },
+  ] : null;
+}
+
+export const postClaim = (db: DB, cl: { id: string; amount: number; reason: string; date?: string }) => {
+  const lines = claimLines(cl.amount);
+  return lines
     ? postEntry(db, {
         date: cl.date ?? today(),
         memo: 'مطالبة · ' + (cl.reason || ''),
-        lines: [
-          { account: '1250', descr: 'ذمة مطالبة على المستأجر', debit: cl.amount, credit: 0 },
-          { account: '4300', descr: 'إيراد مطالبة', debit: 0, credit: cl.amount },
-        ],
+        lines,
         srcType: 'claim',
         srcId: cl.id,
       })
     : null;
+};
 
-export const postClaimCollection = (db: DB, cl: { id: string; amount: number; reason: string }, date?: string) =>
-  cl.amount > 0
+export const postClaimCollection = (db: DB, cl: { id: string; amount: number; reason: string }, date?: string) => {
+  const lines = claimCollectionLines(cl.amount);
+  return lines
     ? postEntry(db, {
         date: date ?? today(),
         memo: 'تحصيل مطالبة · ' + (cl.reason || ''),
-        lines: [
-          { account: CASH, descr: 'مبلغ محصَّل', debit: cl.amount, credit: 0 },
-          { account: '1250', descr: 'إقفال ذمة المطالبة', debit: 0, credit: cl.amount },
-        ],
+        lines,
         srcType: 'claim_collect',
         srcId: cl.id,
       })
     : null;
+};
 
 /**
  * قيد تحصيل الإيجار · النقد بالمقبوض فعلاً، وخصم «بعد الاستحقاق» في القيد نفسه:
@@ -585,20 +661,27 @@ export const postKeyMoneyCommission = (
   db: DB,
   k: { id: string; unitLabel: string; outgoing: string; incoming: string; commission: number; date?: string }
 ) => {
-  if (!(k.commission > 0)) return null;
-  const { net, tax } = vatRegistered(db) ? splitVatInclusive(k.commission) : { net: k.commission, tax: 0 };
+  const lines = keyMoneyLines(db, k.commission);
+  if (!lines) return null;
   return postEntry(db, {
     date: k.date ?? today(),
     memo: 'عمولة تقبيل · وحدة ' + k.unitLabel + ' (' + k.outgoing + ' ← ' + k.incoming + ')',
-    lines: [
-      { account: CASH, descr: 'عمولة مستلمة', debit: k.commission, credit: 0 },
-      { account: '4300', descr: 'إيراد عمولة تقبيل', debit: 0, credit: net },
-      ...(tax ? [{ account: '2200', descr: 'ضريبة مخرجات عمولة تقبيل', debit: 0, credit: tax }] : []), // i18n-exempt: بيان القيد المخزَّن
-    ],
+    lines,
     srcType: 'key_money',
     srcId: k.id,
   });
 };
+
+/** سطور قيد عمولة التقبيل من مقبوضها وتسجيل المنشأة في الضريبة · null بلا عمولة · بها يعيد جهاز المالك اشتقاق قيد العضو من صفقته */
+export function keyMoneyLines(db: DB, commission: number): EntryLine[] | null {
+  if (!(commission > 0)) return null;
+  const { net, tax } = vatRegistered(db) ? splitVatInclusive(commission) : { net: commission, tax: 0 };
+  return [
+    { account: CASH, descr: 'عمولة مستلمة', debit: commission, credit: 0 },
+    { account: '4300', descr: 'إيراد عمولة تقبيل', debit: 0, credit: net },
+    ...(tax ? [{ account: '2200', descr: 'ضريبة مخرجات عمولة تقبيل', debit: 0, credit: tax }] : []), // i18n-exempt: بيان القيد المخزَّن
+  ];
+}
 
 /* ─── قيود الفواتير والمشتريات (كما في النموذج حرفياً) ─── */
 
@@ -624,14 +707,17 @@ export const postInvoiceToLedger = (
   postEntry(db, {
     date: v.issue,
     memo: 'فاتورة مبيعات ' + v.no + ' · ' + v.customer,
-    lines: [
-      { account: '1200', debit: v.total, credit: 0 },
-      ...(v.subtotal ? [{ account: '4100', debit: 0, credit: v.subtotal }] : []),
-      ...(v.tax ? [{ account: '2200', debit: 0, credit: v.tax }] : []),
-    ],
+    lines: invoiceLedgerLines(v),
     srcType: 'invoice',
     srcId: v.id,
   });
+
+/** سطور قيد فاتورة المبيعات من صافيها وضريبتها وإجماليها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
+export const invoiceLedgerLines = (v: { subtotal: number; tax: number; total: number }): EntryLine[] => [
+  { account: '1200', debit: v.total, credit: 0 },
+  ...(v.subtotal ? [{ account: '4100', debit: 0, credit: v.subtotal }] : []),
+  ...(v.tax ? [{ account: '2200', debit: 0, credit: v.tax }] : []),
+];
 
 /**
  * إشعار دائن على فاتورة مبيعات (قرار المالك على #30): عكس جزءٍ منها أو كلها بتاريخه · مدين 4100 بالصافي ومدين 2200
@@ -644,14 +730,17 @@ export const postCreditNoteToLedger = (
   postEntry(db, {
     date: v.date,
     memo: 'إشعار دائن ' + v.no + ' على الفاتورة ' + v.refNo + ' · ' + v.customer, // i18n-exempt: بيان القيد المخزَّن
-    lines: [
-      ...(v.subtotal ? [{ account: '4100', debit: v.subtotal, credit: 0 }] : []),
-      ...(v.tax ? [{ account: '2200', debit: v.tax, credit: 0 }] : []),
-      { account: '1200', debit: 0, credit: v.total },
-    ],
+    lines: creditNoteLedgerLines(v),
     srcType: 'invoice',
     srcId: v.id,
   });
+
+/** سطور قيد الإشعار الدائن من صافيه وضريبته وإجماليه (موجبةً) · بها يعيد جهاز المالك اشتقاق قيد العضو من إشعاره */
+export const creditNoteLedgerLines = (v: { subtotal: number; tax: number; total: number }): EntryLine[] => [
+  ...(v.subtotal ? [{ account: '4100', debit: v.subtotal, credit: 0 }] : []),
+  ...(v.tax ? [{ account: '2200', debit: v.tax, credit: 0 }] : []),
+  { account: '1200', debit: 0, credit: v.total },
+];
 
 /**
  * فاتورة شراء: دائن 2100 بالإجمالي، ومدينها:
@@ -665,26 +754,32 @@ export const postPurchaseToLedger = (
   p: { id: string; no: string; supplier: string; date: string; category: string; subtotal: number; tax: number; total: number; roundingDiff?: number; deductible?: boolean },
   /** بنود الفاتورة التي صارت أصولاً (الهجرة ٢٩): مدين حسابات الفئات بأبعاد كل أصل، فيقلّ المصروف بقدرها */
   assetLines: EntryLine[] = [],
-) => {
+) => postEntry(db, {
+  date: p.date,
+  memo: 'فاتورة شراء ' + p.no + ' · ' + p.supplier,
+  lines: purchaseLedgerLines(p, assetLines),
+  srcType: 'purchase',
+  srcId: p.id,
+});
+
+/** سطور قيد فاتورة الشراء من قيمها وأصول بنودها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
+export function purchaseLedgerLines(
+  p: { category: string; subtotal: number; tax: number; total: number; roundingDiff?: number; deductible?: boolean },
+  assetLines: EntryLine[] = [],
+): EntryLine[] {
   const diff = p.roundingDiff ?? 0;
   const assetSum = assetLines.reduce((s, l) => s + (l.debit || 0), 0);
   // «خاضعة باسمنا» وحدها تفصل ضريبتها أصلاً قابلاً للاسترداد (1270) · الباقي بالتكلفة الكاملة
   const dedTax = p.deductible ? p.tax : 0;
-  return postEntry(db, {
-    date: p.date,
-    memo: 'فاتورة شراء ' + p.no + ' · ' + p.supplier,
-    lines: [
-      { account: purchaseExpenseAccount(p.category), debit: p.subtotal + p.tax - dedTax - assetSum, credit: 0 },
-      ...assetLines,
-      ...(dedTax ? [{ account: '1270', descr: 'ضريبة مدخلات قابلة للاسترداد', debit: dedTax, credit: 0 }] : []),
-      ...(diff > 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: diff, credit: 0 }] : []),
-      { account: '2100', debit: 0, credit: p.total },
-      ...(diff < 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: 0, credit: -diff }] : []),
-    ],
-    srcType: 'purchase',
-    srcId: p.id,
-  });
-};
+  return [
+    { account: purchaseExpenseAccount(p.category), debit: p.subtotal + p.tax - dedTax - assetSum, credit: 0 },
+    ...assetLines,
+    ...(dedTax ? [{ account: '1270', descr: 'ضريبة مدخلات قابلة للاسترداد', debit: dedTax, credit: 0 }] : []),
+    ...(diff > 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: diff, credit: 0 }] : []),
+    { account: '2100', debit: 0, credit: p.total },
+    ...(diff < 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: 0, credit: -diff }] : []),
+  ];
+}
 
 /** تحصيل فاتورة مبيعات (المراجعة ٤.٢): مدين 1100 / دائن 1200 بالإجمالي */
 export const postInvoicePayment = (
@@ -696,13 +791,16 @@ export const postInvoicePayment = (
   postEntry(db, {
     date: payDate,
     memo: 'تحصيل فاتورة ' + v.no + ' · ' + v.customer + (cash ? ' (نقداً)' : ''),
-    lines: [
-      { account: CASH, debit: v.total, credit: 0 },
-      { account: '1200', debit: 0, credit: v.total },
-    ],
+    lines: invoicePaymentLines(v.total),
     srcType: 'invoice_pay',
     srcId: v.id,
   });
+
+/** سطور قيد تحصيل فاتورة المبيعات بما بقي منها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
+export const invoicePaymentLines = (total: number): EntryLine[] => [
+  { account: CASH, debit: total, credit: 0 },
+  { account: '1200', debit: 0, credit: total },
+];
 
 /** سداد فاتورة شراء: مدين 2100 / دائن 1100 */
 export const postPurchasePayment = (
@@ -714,10 +812,40 @@ export const postPurchasePayment = (
   postEntry(db, {
     date: payDate,
     memo: 'سداد فاتورة ' + p.no + ' · ' + p.supplier + (cash ? ' (نقداً)' : ''),
-    lines: [
-      { account: '2100', debit: p.total, credit: 0 },
-      { account: CASH, debit: 0, credit: p.total },
-    ],
+    lines: purchasePaymentLines(p.total),
     srcType: 'purchase_pay',
     srcId: p.id,
   });
+
+/** سطور قيد سداد فاتورة الشراء بإجماليها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
+export const purchasePaymentLines = (total: number): EntryLine[] => [
+  { account: '2100', debit: total, credit: 0 },
+  { account: CASH, debit: 0, credit: total },
+];
+
+/** سطور قيد استرداد ضريبة المدخلات نقداً (markVatRefunded): مدين 1100 / دائن 1270 بضريبة الفاتورة · بها يعيد جهاز المالك اشتقاق قيد العضو */
+export const vatRefundLines = (no: string, tax: number): EntryLine[] => [
+  { account: CASH, descr: 'استرداد ضريبة', debit: tax, credit: 0 }, // i18n-exempt: بيان القيد المخزَّن
+  { account: '1270', descr: 'إقفال ضريبة الفاتورة ' + no, debit: 0, credit: tax }, // i18n-exempt: بيان القيد المخزَّن
+];
+
+/** سطور قيد رفض الاسترداد (markVatRejected): الضريبة تكلفةٌ في مصروف الفئة / دائن 1270 · بها يعيد جهاز المالك اشتقاق قيد العضو */
+export const vatRejectLines = (category: string | null | undefined, no: string, tax: number): EntryLine[] => [
+  { account: purchaseExpenseAccount(category), descr: 'ضريبة غير مستردة', debit: tax, credit: 0 }, // i18n-exempt: بيان القيد المخزَّن
+  { account: '1270', descr: 'إقفال ضريبة الفاتورة ' + no, debit: 0, credit: tax }, // i18n-exempt: بيان القيد المخزَّن
+];
+
+/** نوع العملية النقدية التي ترحّل قيداً (cashOps.ts) */
+export type CashOpKind = 'petty' | 'ownerIn' | 'ownerOut' | 'fee' | 'income';
+
+/**
+ * سطور قيد العملية النقدية بنوعها (cashOps.ts): المصروف النثري ورسوم البنك (5400 / 1100)، وإيداع المالك (1100 / 3100) ومسحوباته
+ * (3100 / 1100)، والوارد البنكي الآخر (1100 / 4300) بلا ضريبة مخرجات (المراجعة الشاملة · البند ١١) · descr بيان الحساب المقابل للنقد،
+ * وcash بيان سطر النقد · بها يعيد جهاز المالك اشتقاق قيد العضو
+ */
+export function cashOpLines(kind: CashOpKind, amount: number, descr: string, cash: string): EntryLine[] {
+  if (kind === 'ownerIn') return [{ account: CASH, descr: cash, debit: amount, credit: 0 }, { account: '3100', descr, debit: 0, credit: amount }];
+  if (kind === 'ownerOut') return [{ account: '3100', descr, debit: amount, credit: 0 }, { account: CASH, descr: cash, debit: 0, credit: amount }];
+  if (kind === 'income') return [{ account: CASH, descr: cash, debit: amount, credit: 0 }, { account: '4300', descr, debit: 0, credit: amount }];
+  return [{ account: '5400', descr, debit: amount, credit: 0 }, { account: CASH, descr: cash, debit: 0, credit: amount }];
+}

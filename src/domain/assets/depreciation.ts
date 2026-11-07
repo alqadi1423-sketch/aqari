@@ -176,19 +176,27 @@ export function depreciateAssetTo(db: DB, a: FullAsset, date: string, srcId: str
  * حتى نهاية آخر شهرٍ انتهى، بتاريخ اليوم · ما يقع في السنة الجارية على 5600، وما قبلها على 3200.
  */
 export function catchUpLines(db: DB, a: FullAsset, today: string): Array<{ account: string; descr: string; debit: number; credit: number; dims: ReturnType<typeof assetDims> }> {
-  const through = monthEnd(monthIndex(today) - 1);
-  const already = postedAccum(db, a.id);
-  const total = expectedThrough(a, through) - already;
+  const { total, prior, current } = catchUpAmounts(a, today, postedAccum(db, a.id));
   if (total <= 0) return [];
-  const prevYearEnd = String(Number(today.slice(0, 4)) - 1) + '-12-31';
-  const prior = Math.min(total, Math.max(0, expectedThrough(a, prevYearEnd) - already));
-  const current = total - prior;
   const dims = assetDims(db, a, today);
   return [
     ...(current ? [{ account: ACC_DEPRECIATION, descr: a.name, debit: current, credit: 0, dims }] : []),
     ...(prior ? [{ account: ACC_RETAINED, descr: a.name, debit: prior, credit: 0, dims }] : []),
     { account: ACC_ACCUM, descr: a.name, debit: 0, credit: total, dims },
   ];
+}
+
+/**
+ * مبالغ إهلاك ما فات (catchUpLines) بعد المرحَّل already: حتى نهاية آخر شهرٍ انتهى قبل today، وما يقع قبل سنته (prior) ·
+ * total صفرٌ أو أقل فلا قيد · مستخرجةٌ بلا تغيير لتُشتق منها سطور قيد العضو على جهاز المالك (التوجيه الثالث · ١)
+ */
+export function catchUpAmounts(a: DepreciableAsset, today: string, already: number): { total: number; prior: number; current: number } {
+  const through = monthEnd(monthIndex(today) - 1);
+  const total = expectedThrough(a, through) - already;
+  if (total <= 0) return { total, prior: 0, current: 0 };
+  const prevYearEnd = String(Number(today.slice(0, 4)) - 1) + '-12-31';
+  const prior = Math.min(total, Math.max(0, expectedThrough(a, prevYearEnd) - already));
+  return { total, prior, current: total - prior };
 }
 
 /** أشهرٌ رُحِّل إهلاكها أكثر من مرة (جهازان رحّلا الشهر نفسه) · تظهر في مراجعة الدفتر */
