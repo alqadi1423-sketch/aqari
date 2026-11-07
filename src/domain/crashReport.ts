@@ -64,7 +64,7 @@ function knownWords(): Set<string> {
   if (appWords) return appWords;
   const words = new Set<string>(['تعذّر', 'تعذر', 'فشل']); // i18n-exempt: مطلع عناوين حوار الفشل
   const walk = (v: unknown): void => {
-    if (typeof v === 'string') { for (const w of v.split(/[^\u0621-\u064A\u064B-\u0652\u0670]+/)) if (w) words.add(w); }
+    if (typeof v === 'string') { for (const w of v.split(/[^\u0620-\u065F\u0670-\u06D3\u06D5\u06EE\u06EF\u06FA-\u06FF]+/)) if (w) words.add(w); }
     else if (v && typeof v === 'object') Object.values(v as Record<string, unknown>).forEach(walk);
   };
   walk(ar);
@@ -85,7 +85,8 @@ const whereLabel = (where: string): string => {
     .replace(/«[^»]*»/g, '«…»')
     .replace(/[\d٠-٩۰-۹]+/g, '#')
     .replace(/[^\s\u0600-\u06FF«»#…·:،.()\-]+/g, '…')
-    .replace(/[\u0621-\u064A\u064B-\u0652\u0670]+/g, (w) => (known.has(w) ? w : '…'))
+    // وحروف الكتابة العربية الممتدة (الفارسية والأردية: پ چ ژ ک گ ی ہ ھ …) من الكلمة نفسها (المدقق الخارجي J١٢: كانت تعبر وتقطعها)
+    .replace(/[\u0620-\u065F\u0670-\u06D3\u06D5\u06EE\u06EF\u06FA-\u06FF]+/g, (w) => (known.has(w) ? w : '…'))
     .replace(/…(?:[\s.\-]*…)+/g, '…')
     .slice(0, WHERE_MAX);
 };
@@ -130,12 +131,18 @@ export function recordCrashReport(db: DB, args: { where: string; e: unknown; pla
  * وحده فلا يعرف الجهاز الثاني ما أخذه الأول) · فيُكتب من جديد بالرتبة التالية على هذا الجهاز ما دام دون حدّ اليوم، والقاعدة تحدّ
  * الحساب بعشرين في اليوم أياً كان جهازه · false إن لم يُعَد
  */
-export function retryCrashRank(db: DB, row: Record<string, unknown> | undefined): boolean {
+export function retryCrashRank(db: DB, row: Record<string, unknown> | undefined, at?: Date): boolean {
   try {
     const id = String(row?.id ?? '');
     const m = /^(crash-.+-\d{8}-)(\d+)$/.exec(id);
     if (!m || !row) return false;
     const prefix = m[1];
+    // والرفض الذي لا تغيّره الرتبة لا يُعاد (المدقق الخارجي J١١: يومٌ خارج نافذة القاعدة لجهازٍ عاد بعد أيامٍ بلا اتصال كان يصير عشرين
+    // صفاً كلها مرفوضة) · فالإعادة ليومٍ في نافذتها وحده (crashDayOk: بعد ثمانية أيامٍ مضت وقبل غد)، بهامش يومٍ لساعة الجهاز
+    const day = /-(\d{8})-$/.exec(prefix)?.[1] ?? '';
+    const t = Date.UTC(Number(day.slice(0, 4)), Number(day.slice(4, 6)) - 1, Number(day.slice(6, 8)));
+    const nowMs = (at ?? new Date()).getTime();
+    if (!Number.isFinite(t) || t <= nowMs - 7 * 86400000 || t > nowMs) return false;
     const n = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log WHERE id LIKE ? ESCAPE '\\'`,
       [prefix.replace(/[\\%_]/g, (c) => '\\' + c) + '%'])?.n ?? 0;
     if (n >= CRASH_DAILY_LIMIT) return false;

@@ -944,7 +944,8 @@
       "vatNo": "The VAT number in the code is not in ZATCA format (15 digits starting and ending with 3), so it was not saved for the supplier",
       "issuedAt": "The invoice time in the code cannot be read, so today's date was used · correct it",
       "vatOverTotal": "The VAT in the code exceeds the total · check the invoice",
-      "rate": "The VAT in the code is not 15% of the net · the invoice may include exempt or zero-rated items"
+      "rate": "The VAT in the code is not 15% of the net · the invoice may include exempt or zero-rated items",
+      "supplierVat": "A supplier with the same name is registered under another VAT number · a supplier named with the seller VAT number is proposed, so review the supplier before saving"
     },
     "newSupplier": "Unregistered supplier",
     "newSupplierBody": "“{{name}}” with VAT number {{vat}} is not in your suppliers · add it and record the invoice under it?",
@@ -952,6 +953,7 @@
     "addSupplier": "Add supplier",
     "keepSupplier": "Amounts only",
     "duplicate": "This invoice is already recorded as {{no}} on {{date}} · it cannot be recorded twice",
-    "file": "E-invoice file (PDF or XML)"
+    "file": "E-invoice file (PDF or XML)",
+    "creditNote": "The file is a credit note from the supplier, not a purchase invoice · record it as a reduction of its invoice"
   }
 }

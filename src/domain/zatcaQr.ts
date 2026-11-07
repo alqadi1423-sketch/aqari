@@ -75,17 +75,31 @@ function utf8(b: Uint8Array): string | null {
   return s;
 }
 
-/** مبلغٌ نصّي («1,150.00» أو «1150») إلى هللات · null لما لا يُقرأ */
+/** الأرقام العربية الهندية والفارسية إلى لاتينية (المدقق الخارجي J٤: «١١٥٠٫٠٠» كانت تُرفض والتطبيق نفسه يقرؤها) */
+const latinDigits = (v: string) => v.replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+  .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0));
+
+/**
+ * مبلغٌ نصّي إلى هللات · null لما لا يُقرأ: «1150» و«1150.00» و«1,150.00» (فاصل الآلاف لثلاث خاناتٍ وحدها) و«115,00» (فاصلةٌ عشرية
+ * قبل خانةٍ أو خانتين · المدقق الخارجي J٣: كانت تُحذف كأنها فاصل آلاف فتُقرأ مئة ضعف) · وفاصلا الآلاف والكسور العربيان (U+066C وU+066B)
+ */
 function halalasOf(v: string): number | null {
-  // وفاصلا الآلاف والكسور العربيان (U+066C وU+066B)
-  const t = v.trim().replace(/[,\s\u066C]/g, '').replace(/\u066B/, '.');
+  let t = latinDigits(v.trim()).replace(/\s/g, '').replace(/\u066C/g, ',').replace(/\u066B/g, '.');
+  if (/^\d+,\d{1,2}$/.test(t)) t = t.replace(',', '.');
+  else if (/^\d{1,3}(,\d{3})+(\.\d{1,2})?$/.test(t)) t = t.replace(/,/g, '');
   if (!/^\d+(\.\d{1,2})?$/.test(t)) return null;
   const [whole, frac = ''] = t.split('.');
   return Number(whole) * 100 + Number((frac + '00').slice(0, 2));
 }
 
 const VAT_NO = /^3\d{13}3$/;
-const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
+// والفاصل بين التاريخ والوقت حرف T أو مسافة (RFC 3339 يجيزها · المدقق الخارجي J١٣)
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$/;
+/** الوقت بلا منطقة وقتُ الفاتورة المحلي (ISO 8601) · وبمنطقة يُحوَّل */
+export { latinDigits };
+export const hasZone = (iso: string) => /(Z|[+-]\d{2}:?\d{2})$/.test(iso.trim());
+/** وقتٌ مقروء بالثانية (أو بالدقيقة) · لا تاريخٌ وحده ولا نصٌّ لا يُقرأ */
+export const readableTime = (iso: string) => ISO_TIME.test(iso.trim()) && !Number.isNaN(Date.parse(iso.trim().replace(' ', 'T')));
 
 /** يقرأ حمولة QR الفاتورة · ونتيجته مسودةٌ تُراجع قبل الحفظ */
 export function decodeZatcaQr(payload: string): ZatcaQrResult {
@@ -110,15 +124,15 @@ export function decodeZatcaQr(payload: string): ZatcaQrResult {
   const vat = halalasOf(vatS);
   if (total == null || vat == null) return { ok: false, error: 'format' };
   const warnings: ZatcaQr['warnings'] = [];
-  if (!VAT_NO.test(vatNo.trim())) warnings.push('vatNo');
-  if (!ISO_TIME.test(issuedAt.trim()) || Number.isNaN(Date.parse(issuedAt.trim()))) warnings.push('issuedAt');
+  if (!VAT_NO.test(latinDigits(vatNo.trim()))) warnings.push('vatNo');
+  if (!readableTime(issuedAt)) warnings.push('issuedAt');
   if (vat > total) warnings.push('vatOverTotal');
   // ١٥٪ من الصافي بفارق هللتين للتقريب (الإجمالي والضريبة كلٌّ مقرَّب)
   else if (Math.abs(vat * 115 - total * 15) > 2 * 115) warnings.push('rate');
   return {
     ok: true,
     qr: {
-      sellerName: seller.trim(), vatNo: vatNo.trim(), issuedAt: issuedAt.trim(),
+      sellerName: seller.trim(), vatNo: latinDigits(vatNo.trim()), issuedAt: issuedAt.trim(),
       totalHalalas: total, vatHalalas: vat, subtotalHalalas: total - vat,
       phase: [6, 7, 8, 9].some((t) => tags.has(t)) ? 2 : 1, warnings,
     },
@@ -147,5 +161,7 @@ export function pickZatcaQr(values: string[]): ZatcaQrResult {
  * والضريبة بالهللة · فاتورتان من البائع نفسه في اليوم نفسه بالمبلغ نفسه مفتاحان ما اختلف وقتهما
  */
 export function zatcaQrKey(qr: ZatcaQr): string {
-  return [qr.vatNo, qr.issuedAt, qr.totalHalalas, qr.vatHalalas].join('|');
+  // ووقتٌ لا يُقرأ بالثانية (تاريخٌ وحده أو نصٌّ آخر) لا يميّز فاتورتين في يومٍ واحد بالمبلغ نفسه، فلا مفتاح ولا رفض (المدقق الخارجي J١٣)
+  if (!readableTime(qr.issuedAt)) return '';
+  return [latinDigits(qr.vatNo), qr.issuedAt.trim().replace(' ', 'T'), qr.totalHalalas, qr.vatHalalas].join('|');
 }

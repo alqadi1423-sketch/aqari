@@ -53,8 +53,15 @@ appId: com.aqari.app
     timeout: 15000
 - tapOn: "تم"
 - assertVisible: "E2E QR Supplier"
-- assertVisible: "1150.00|1,150.00"
 - takeScreenshot: 11-filled
+# الصافي ١٠٠٠ والإجمالي ١١٥٠ تحت الطيّة
+- scrollUntilVisible:
+    element: "1000.00|1,000.00"
+    direction: DOWN
+- scrollUntilVisible:
+    element: "1150.00|1,150.00"
+    direction: DOWN
+- takeScreenshot: 11-amounts
 - scrollUntilVisible:
     element: "تسجيل الفاتورة"
     direction: DOWN

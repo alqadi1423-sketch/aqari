@@ -1,16 +1,16 @@
 /**
- * مسودة فاتورة الشراء من QR الفاتورة (التوجيه الرابع ٦ · ١): المورد بالرقم الضريبي إن كان في الموردين وإلا باسم البائع في الرمز،
- * والتاريخ يوم الإصدار بتوقيت الجهاز، والمبالغ كما في الرمز (الصافي الإجمالي ناقص الضريبة) · والوضع الضريبي لا يُقرأ من الرمز: الرمز
- * لا يحمل المشتري، والمعيار «هل الفاتورة باسم المنشأة وبرقمها؟» (purchases.ts) فيبقى الافتراض حتى يختار المستخدم · مسودةٌ تُراجع
- * ولا تُحفظ بنفسها.
+ * مسودة فاتورة الشراء من QR الفاتورة (التوجيه الرابع ٦ · ١): المورد برقمه الضريبي إن كان في الموردين، ثم باسمه إن لم يكن له رقمٌ آخر،
+ * والتاريخ يوم الإصدار (الوقت بلا منطقة وقتُ الفاتورة المحلي، وبمنطقة يُحوَّل إلى توقيت الجهاز)، والمبالغ كما في الرمز (الصافي الإجمالي
+ * ناقص الضريبة) · والوضع الضريبي لا يُقرأ من الرمز: الرمز لا يحمل المشتري، والمعيار «هل الفاتورة باسم المنشأة وبرقمها؟» (purchases.ts)
+ * فيبقى الافتراض حتى يختار المستخدم · مسودةٌ تُراجع ولا تُحفظ بنفسها.
  */
 import type { DB } from '../db/adapter';
 import { localDateOf, today } from './dates';
-import type { ZatcaQr } from './zatcaQr';
+import { hasZone, latinDigits, type ZatcaQr } from './zatcaQr';
 
 export interface PurchaseQrDraft {
   supplier: string;
-  /** المورد موجودٌ بهذا الرقم الضريبي */
+  /** المورد موجودٌ بهذا الرقم الضريبي (أو بالاسم وبلا رقمٍ آخر) */
   supplierId: string | null;
   /** مورد جديد يُنشأ برقمه حين يحفظ المستخدم */
   newSupplierVat: string | null;
@@ -18,24 +18,33 @@ export interface PurchaseQrDraft {
   subtotalHalalas: number;
   taxHalalas: number;
   totalHalalas: number;
-  warnings: ZatcaQr['warnings'];
+  /** تنبيهات الرمز، و«supplierVat»: موردٌ بالاسم نفسه برقمٍ ضريبي آخر، فاقتُرح موردٌ باسمٍ يميّزه برقم البائع */
+  warnings: Array<ZatcaQr['warnings'][number] | 'supplierVat'>;
 }
 
+const normVat = (v: string | null | undefined) => latinDigits(String(v ?? '')).replace(/\s/g, '');
+
 export function purchaseDraftFromQr(db: DB, qr: ZatcaQr, now: () => string = today): PurchaseQrDraft {
-  // بالرقم الضريبي أولاً، ثم بالاسم (موردٌ سُجّل بلا رقمه) فلا يُقترح موردٌ يرفضه الحفظ مكرَّراً (suppliers.ts)
-  const known = (qr.vatNo
-    ? db.get<{ id: string; name: string }>(`SELECT id, name FROM suppliers WHERE TRIM(vat) = ? AND deleted_at IS NULL ORDER BY created_at LIMIT 1`, [qr.vatNo])
-    : null)
-    ?? db.get<{ id: string; name: string }>(`SELECT id, name FROM suppliers WHERE TRIM(name) = ? AND deleted_at IS NULL ORDER BY created_at LIMIT 1`, [qr.sellerName.trim()]);
-  const date = qr.warnings.includes('issuedAt') ? now() : localDateOf(qr.issuedAt);
+  const vat = qr.warnings.includes('vatNo') ? '' : normVat(qr.vatNo);
+  const seller = qr.sellerName.trim();
+  // بالرقم الضريبي أولاً، ورقم البطاقة قد يكون بأرقامٍ عربية هندية (المدقق الخارجي J٥) · ثم بالاسم وحده إن لم يكن للبطاقة رقمٌ يخالف
+  // رقم البائع (J١: كانت فاتورة بائعٍ برقمٍ آخر تُنسب صامتةً لموردٍ بالاسم نفسه فتُحفظ برقم البطاقة لا برقم البائع)
+  const live = db.all<{ id: string; name: string; vat: string | null }>(
+    `SELECT id, name, vat FROM suppliers WHERE deleted_at IS NULL ORDER BY created_at`);
+  const byVat = vat ? live.find((s) => normVat(s.vat) === vat) : undefined;
+  const byName = live.find((s) => s.name.trim() === seller);
+  const nameClash = !byVat && !!byName && !!vat && !!normVat(byName.vat) && normVat(byName.vat) !== vat;
+  const known = byVat ?? (nameClash ? undefined : byName);
+  const at = qr.issuedAt.trim().replace(' ', 'T');
+  const date = qr.warnings.includes('issuedAt') ? now() : hasZone(at) ? localDateOf(at) : at.slice(0, 10);
   return {
-    supplier: known?.name ?? qr.sellerName,
+    supplier: known?.name ?? (nameClash ? `${seller} · ${vat}` : seller),
     supplierId: known?.id ?? null,
-    newSupplierVat: known ? null : (qr.warnings.includes('vatNo') ? null : qr.vatNo),
+    newSupplierVat: known ? null : (vat || null),
     date,
     subtotalHalalas: qr.subtotalHalalas,
     taxHalalas: qr.vatHalalas,
     totalHalalas: qr.totalHalalas,
-    warnings: qr.warnings,
+    warnings: [...qr.warnings, ...(nameClash ? ['supplierVat' as const] : [])],
   };
 }

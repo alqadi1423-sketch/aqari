@@ -376,6 +376,7 @@ export default function Purchases() {
     setTaxStatus(TS_EXCLUDED); setExcludeReason(EXCLUDE_REASONS[0]); setExcludeOther(''); setConfirmOurs(false);
     setPendingFile(null);
     setQrKey('');
+    setQrFile(null);
     setLines([]);
     setFormOpen(true);
   };
@@ -384,12 +385,17 @@ export default function Purchases() {
   const [qrBusy, setQrBusy] = useState(false);
   // مفتاح رمز الفاتورة المقروءة (الهجرة ٥٤): يُحفظ معها فلا تُسجَّل مرتين
   const [qrKey, setQrKey] = useState('');
+  const [qrFile, setQrFile] = useState<PickedFile | null>(null);
   const fillFromQr = async (img: PickedFile, kind: 'image' | 'file' = 'image') => {
     setQrBusy(true);
     try {
       let values: string[];
       try { values = kind === 'image' ? await readQrFromImage(img.uri) : await readQrFromInvoiceFile(img); }
-      catch (e) { toast(t((e as Error).message === 'qr-unavailable' ? 'purchaseQr.unavailable' : 'purchaseQr.readFailed')); return; }
+      catch (e) {
+        const m = (e as Error).message;
+        toast(t(m === 'qr-unavailable' ? 'purchaseQr.unavailable' : m === 'qr-credit' ? 'purchaseQr.creditNote' : 'purchaseQr.readFailed'));
+        return;
+      }
       const r = pickZatcaQr(values);
       if (!r.ok) {
         dialog({ title: t('purchaseQr.notRead'), body: t('purchaseQr.err.' + r.error), actions: [{ label: t('common.ok'), variant: 'primary' }] });
@@ -411,7 +417,8 @@ export default function Purchases() {
         setTaxStr(fmt(d.taxHalalas).replace(/,/g, ''));
         setTotalStr(fmt(d.totalHalalas).replace(/,/g, ''));
         setTouched({ base: true, tax: true, total: true });
-        if (!pendingFile) setPendingFile(img);
+        // والصورة أصلُ هذه الفاتورة: تحلّ محل صورة رمزٍ قُرئ قبلها في النموذج نفسه، لا محل ملفٍ أرفقه المستخدم (المدقق الخارجي J١٠)
+        if (!pendingFile || pendingFile === qrFile) { setPendingFile(img); setQrFile(img); }
         dialog({
           title: t('purchaseQr.filled'),
           body: [t('purchaseQr.review'), ...d.warnings.map((w) => '• ' + t('purchaseQr.warn.' + w))].join('\n'),

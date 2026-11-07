@@ -7,7 +7,11 @@ export async function readQrFromImage(uri: string): Promise<string[]> {
   let scan: (u: string) => Promise<Array<{ value: string }>>;
   try {
     const mod = await import('@react-native-ml-kit/barcode-scanning');
-    scan = (u) => mod.default.scan(u);
+    // والوحدة غير المربوطة (حزمةٌ أقدم أصلاً) يستورد جزؤها المكتوب ويرمي عند أول وصولٍ لخاصية: يُطلب هنا لا عند الاستدعاء (المدقق
+    // الخارجي J٩: كان يُقال «جرّب صورةً أوضح» بدل «حدّث التطبيق»)
+    const fn = mod.default.scan;
+    if (typeof fn !== 'function') throw new Error('qr-unavailable');
+    scan = (u) => fn(u);
   } catch {
     throw new Error('qr-unavailable');
   }
@@ -20,8 +24,10 @@ export async function readQrFromImage(uri: string): Promise<string[]> {
 /** قيم الرموز في ملف فاتورة إلكترونية (XML، أو PDF يضمّنه) على الجهاز · لا شبكة (domain/invoiceFile.ts) */
 export async function readQrFromInvoiceFile(file: { uri: string; name: string; mime: string }): Promise<string[]> {
   const { File } = await import('expo-file-system');
-  const { qrValuesFromInvoiceFile } = await import('../domain/invoiceFile');
+  const { qrValuesFromInvoiceFile, invoiceFileKind } = await import('../domain/invoiceFile');
   let bytes: Uint8Array;
   try { bytes = new File(file.uri).bytesSync(); } catch { throw new Error('qr-read'); }
+  // والإشعار الدائن ليس فاتورة شراء (المدقق الخارجي J٦)
+  if (invoiceFileKind(bytes, file.name, file.mime) === 'credit') throw new Error('qr-credit');
   return qrValuesFromInvoiceFile(bytes, file.name, file.mime);
 }
