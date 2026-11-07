@@ -16,7 +16,8 @@ import { isFiledDate } from '../vatFilings';
 import { unitPastProperties } from '../unitMove';
 import {
   contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
-  reservationDepositLines, reservationForfeitLines, reservationRefundLines, keyMoneyLines, type EntryLine,
+  reservationDepositLines, reservationForfeitLines, reservationRefundLines, keyMoneyLines,
+  claimLines, claimCollectionLines, type EntryLine,
 } from './post';
 
 /** سطرٌ وارد كما في مستنده (journal_lines) */
@@ -52,6 +53,8 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   reservation_forfeit: ['2450', '4300'],
   reservation_refund: ['2450', '1100'],
   key_money: ['1100', '4300', '2200'],
+  claim: ['1250', '4300'],
+  claim_collect: ['1100', '1250'],
 };
 
 /** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة) */
@@ -165,6 +168,23 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!own) return AWAIT;
       const lines = want(keyMoneyLines(db, num(k.commission_halalas)), () => [none, own]);
       return lines ? { lines, date: k.date ?? '', correctable: false } : no('noEntry');
+    }
+    case 'claim':
+    case 'claim_collect': {
+      // المطالبة (claims.ts، ومطالبة زيادة التسوية): قيدها بمبلغها وتاريخها أو تاريخ التصحيح بعده (تعديل المفتوحة يعكس القديم ويرحّل
+      // الجديد) · وتحصيلها بمبلغها وتاريخ تحصيلها المخزَّن · والأبعاد عقد المطالبة ووحدته وعقاره
+      const cl = r.row<{ contract_id: string | null; amount_halalas: number; date: string | null; collected_at: string | null }>('claims', e.srcId);
+      if (!cl) return AWAIT;
+      const dims = cl.contract_id ? contractDims(db, r, cl.contract_id) : unitDims(db, r, null);
+      if (!dims) return AWAIT;
+      if (e.src === 'claim') {
+        const lines = want(claimLines(num(cl.amount_halalas)), () => [dims]);
+        return lines ? { lines, date: cl.date ?? '', correctable: true } : no('noEntry');
+      }
+      // تحصيلٌ لم يصل وسمه بعد يُنتظر
+      if (!cl.collected_at) return AWAIT;
+      const lines = want(claimCollectionLines(num(cl.amount_halalas)), () => [dims]);
+      return lines ? { lines, date: cl.collected_at, correctable: false } : no('noEntry');
     }
     case 'deposit_deduct':
     case 'deposit_deduct_move':
