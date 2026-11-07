@@ -177,9 +177,12 @@ function guardFns(schema: RulesSchema): string {
     }
     // بصمة الملف وامتداده بشكلهما (#21): منهما يُبنى مسار الملف على كل جهاز · والمرفق بصمته وحدها (امتداده في blobs)
     // وشكل البنك والحساب (openingKept) في الفحص نفسه: الجداول الأخرى لا تدفع له تعبيراً من حدّ الألف (اختبار الميزانية)
-    function blobShapeOk(r) {
-      return r.del != true && r.t.matches('blobs|attachments|banks|accounts')
-        ? (r.t == 'banks' || r.t == 'accounts' ? openingKept(resource == null ? null : resource.data, r)
+    // وسطر كشف البنك بالإدخال مفتوحٌ بلا حركة: الاعتماد والاستبعاد للبنوك ٣ (المدقق الخارجي U٢٤ · DESIGN §١٣.٢٢) · هنا لا في
+    // memberCreates: فرعٌ لا يُحسب إلا لجدوله، والشرط هناك كان يُحسب لكل صفٍّ فيتجاوز دفعة العقد حدّ الألف (اختبار الميزانية)
+    function blobShapeOk(r, m) {
+      return r.del != true && r.t.matches('blobs|attachments|banks|accounts|bank_statement_lines')
+        ? (r.t == 'bank_statement_lines' ? (r.d.get('status', '') == 'open' && r.d.get('bank_tx_id', null) == null) || lvlOf(m, 'banks') >= 3
+          : r.t == 'banks' || r.t == 'accounts' ? openingKept(resource == null ? null : resource.data, r)
           : (r.d.sha256 is string && r.d.sha256.matches('^[0-9a-f]{64}$')
             && (r.t == 'attachments' || (r.d.ext is string && r.d.ext.matches('^[a-z0-9]{1,5}$')))))
         : true;
@@ -399,7 +402,7 @@ ${guardFns(schema)}
         // الحراسات أولاً: المزوَّر يُرفض بها رخيصاً قبل أن يبلغ الطلب حدّ ألف تعبير (المراجعة #17 و#18 و#20 و#21)
         // ورموز رؤية الصف الجديد في حدود عقاره أولها (المراجعات الخارجية «ثالثاً أ ٢» · والمتحقق المستقل: عقاراتٌ مكررة أو معها
         // «*» كانت تتخطى الفحص، والرفض كان بنفاد الحد لا بالمنطق) · فالصف غير المستأجر بعقارٍ واحد ورموزه له
-        (pidsGOk(r) && keyOk(r) && blobShapeOk(r) && pidsBound(org, r) && moneyKept(m, null, r)
+        (pidsGOk(r) && keyOk(r) && blobShapeOk(r, m) && pidsBound(org, r) && moneyKept(m, null, r)
           && lvlOf(m, r.op) >= 2 && opCreates(r.op, bt) && propsOk(m, r) && r.get('by', '') == request.auth.uid
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
           && (bt != 'vat_filings' || m.all == true)
@@ -513,7 +516,7 @@ ${guardFns(schema)}
             // ورؤيته كما هي، أو تبعت عقاراته إذ تغيّرت، أو رؤية المرفق (جهته تحدد قرّاءه) في حدود عقاره
             && (after.t in ['tenants', 'tenants~pub'] ? tenantGOk(before, after)
                 : (after.g == before.g || after.pids != before.pids || (after.t == 'attachments' && gBound(after)))))
-        && keyOk(after) && blobShapeOk(after) && moneyKept(m, before, after)
+        && keyOk(after) && blobShapeOk(after, m) && moneyKept(m, before, after)
         && isMember(org) && op is string
         // الكاتب كما هو، أو يضيفه العضو نفسه لصفٍّ بلا كاتب في غير جداول المسودات (ما رُفع قبل الهجرة ٤٢ أو محاه إصدارٌ
         // أقدم للمالك · المتحقق المستقل، الجولة العاشرة) · ولا يدّعي مسودةَ غيره

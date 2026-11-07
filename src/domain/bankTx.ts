@@ -31,6 +31,8 @@ export function deleteBankTx(db: DB, id: string): void {
   db.transaction(() => {
     const t = db.get<{ descr: string }>(`SELECT descr FROM bank_tx WHERE id = ?`, [id]);
     db.run(`UPDATE bank_tx SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), id]);
+    // وسطر الكشف المطابَق بها يعود مفتوحاً، فلا يبقى «مطابَقاً» بحركةٍ في السلة (المدقق الخارجي U١٩)
+    db.run(`UPDATE bank_statement_lines SET bank_tx_id = NULL, status = 'open', matched_at = NULL WHERE bank_tx_id = ?`, [id]);
     if (t) logAudit(db, 'الحركات البنكية', 'delete', 'حركة بنكية', t.descr);
   });
 }

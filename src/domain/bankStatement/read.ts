@@ -30,9 +30,11 @@ export interface ColumnMapping {
   dateOrder: DateOrder;
   /** split: عمودا مدين ودائن · signed: مبلغٌ موقَّع · type: نوعٌ في عمود · chain: من تسلسل الأرصدة */
   signMode: 'split' | 'signed' | 'type' | 'chain';
+  /** نصوص صف العناوين كما في الكشف: تعرضها الشاشة بأدوارها المخمَّنة ليؤكدها المستخدم أو يصححها (U٩) */
+  labels?: string[];
 }
 
-export type StatementError = 'format' | 'encrypted' | 'columns' | 'empty' | 'balance' | 'needBalances';
+export type StatementError = 'format' | 'encrypted' | 'columns' | 'empty' | 'balance' | 'needBalances' | 'image';
 
 export type StatementResult =
   | {
@@ -45,10 +47,28 @@ export type StatementResult =
       mapping: ColumnMapping;
       /** null: لم يُطبع ما يُفحص به */
       checks: { chain: boolean | null; closing: boolean | null; totals: boolean | null };
-      /** openingPrinted: الافتتاحي المطبوع يناقض الأرصدة والمجاميع فقُدِّم الثابت بالتسلسل */
+      /** openingPrinted: الافتتاحي المطبوع يناقض الأرصدة فقُدِّم الثابت بالتسلسل وشهدت المجاميع */
       warnings: string[];
+      /** رقم الحساب أو الآيبان كما في الكشف (MT940 «:25:» أو الرأس) · يُقارن بآيبان البنك عند الحفظ (U٢١) */
+      account?: string | null;
     }
-  | { ok: false; error: StatementError; detail?: string };
+  | { ok: false; error: StatementError; detail?: string; partial?: Partial<StatementOk> };
+
+/** القراءة الناجحة · وجزءٌ منها مع رفض «needBalances» و«balance» لتعبئة الافتتاحي والختامي أو الحفظ بتأكيدٍ صريح (قرار المالك 2026-10-09) */
+export type StatementOk = Extract<StatementResult, { ok: true }>;
+
+/**
+ * قراءةٌ لم يثبت فحصها (الافتتاحي مع الحركات لا يساوي الأرصدة أو الختامي) تُحفظ بتأكيد المستخدم الصريح «غير متحقَّقة» (قرار المالك
+ * 2026-10-09 أ.٤) · والختامي مجموعها لا المطبوع · null إن لم يكن فيها ما يُحفظ (سطورٌ بإشاراتها وافتتاحي)
+ */
+export function unverifiedResult(p: Partial<StatementOk> | undefined): StatementOk | null {
+  if (!p?.lines?.length || p.opening == null || !p.mapping) return null;
+  const closing = p.opening + p.lines.reduce((s, l) => s + l.amount, 0);
+  return {
+    ok: true, lines: p.lines, opening: p.opening, closing, from: p.from ?? p.lines[0].date, to: p.to ?? p.lines[p.lines.length - 1].date,
+    mapping: p.mapping, checks: { chain: false, closing: false, totals: null }, warnings: ['unverified'], account: p.account ?? null,
+  };
+}
 
 export interface ReadOpts {
   mapping?: ColumnMapping;
@@ -58,9 +78,10 @@ export interface ReadOpts {
   excelSerial?: boolean;
 }
 
-const fail = (error: StatementError, detail?: string): StatementResult => ({ ok: false, error, detail });
+const fail = (error: StatementError, detail?: string, partial?: Partial<StatementOk>): StatementResult => ({ ok: false, error, detail, partial });
 const rowKey = (row: string[]): string => row.map(foldText).filter(Boolean).join('|');
 const FULL_DATE = /\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}/g;
+const FULL_DATE_ONLY = /^\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}$/;
 // مبلغٌ داخل نصٍّ (الملخص في خليةٍ واحدة مع كلمته)
 const AMOUNT_IN_TEXT = /[-(]?\d[\d,.٫٬ﺭ]*\)?(?:\s?(?:CR|DR|Cr|Dr))?/g;
 
@@ -78,23 +99,45 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     if (h >= 0) roles = opts.mapping.roles;
   }
   if (h < 0) {
-    h = grid.findIndex((r, i) => i < 80 && isHeader(headerRoles(r)));
+    // وصفُّ الملخص («الرصيد الافتتاحي · إجمالي المدين …») ليس صفَّ عناوين، وأكثر الصفوف أدواراً أولى (المدقق الخارجي U٣)
+    let best = 0;
+    grid.forEach((r, i) => {
+      if (i >= 80 || r.some((c) => summaryOf(c))) return;
+      const rr = headerRoles(r);
+      if (!isHeader(rr)) return;
+      const n = new Set(rr.filter(Boolean)).size;
+      if (n > best) { best = n; h = i; }
+    });
     if (h >= 0) roles = headerRoles(grid[h]);
   }
-  if (h < 0) return fail('columns');
+  // وأعمدةٌ لم تُعرف: صفّ العناوين المرجَّح (ما قبل أول صفٍّ بتاريخ) بأدواره المخمَّنة، ليحدّدها المستخدم (U٩ · قرار المالك أ.٣)
+  const unknownColumns = (at: number): StatementResult => {
+    let k = at;
+    if (k < 0) {
+      const firstDated = grid.findIndex((r) => r.some((c) => FULL_DATE_ONLY.test(c)));
+      k = firstDated - 1;
+      while (k >= 0 && grid[k].filter(Boolean).length < 3) k--;
+    }
+    if (k < 0) return fail('columns');
+    const row = grid[k];
+    return fail('columns', undefined, { mapping: { headerKey: rowKey(row), roles: headerRoles(row), dateOrder: 'dmy', signMode: 'chain', labels: row } });
+  };
+  if (h < 0) return unknownColumns(-1);
   const col = (r: Role) => roles.indexOf(r);
   const dateCol = col('date') >= 0 ? col('date') : col('valueDate');
   const valueCol = col('date') >= 0 ? col('valueDate') : -1;
   const [descrCol, debitCol, creditCol, amountCol, balanceCol, refCol, typeCol] =
     (['descr', 'debit', 'credit', 'amount', 'balance', 'ref', 'type'] as Role[]).map(col);
-  if (dateCol < 0 || (amountCol < 0 && debitCol < 0 && creditCol < 0)) return fail('columns');
+  if (dateCol < 0 || (amountCol < 0 && debitCol < 0 && creditCol < 0)) return unknownColumns(h);
   const headerKey = rowKey(grid[h]);
   const isRepeatHeader = (r: string[]) => rowKey(r) === headerKey || isHeader(headerRoles(r));
 
   // ٢) فترة الكشف من صفوف ما قبل العناوين (تاريخان كاملان)، وصيغة التاريخ بما يُقرأ منه كله وبالفترة
   let from: string | null = null;
   let to: string | null = null;
-  for (const r of grid.slice(0, h)) {
+  // صفُّ «الفترة» أولاً، ثم صفٌّ فيه تاريخان (U١٠: «تاريخ فتح الحساب … تاريخ الطباعة» قبله لا يصير فترة)
+  const head = grid.slice(0, h);
+  for (const r of [...head.filter((x) => x.some((c) => summaryOf(c) === 'period')), ...head.filter((x) => !x.some((c) => summaryOf(c) === 'period'))]) {
     const found = (r.join(' ').match(FULL_DATE) ?? []);
     if (found.length < 2) continue;
     for (const order of ['dmy', 'mdy'] as DateOrder[]) {
@@ -119,10 +162,23 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     const d = yearFor(o, c);
     return d && (!from || !to || (d >= from && d <= to));
   }).length;
-  const order = orders.reduce((a, b) => (score(b) > score(a) ? b : a));
+  // وإن قُرئت الصيغتان كلتاهما: ما تتتابع به التواريخ مع الصفوف، ثم الأقصر مدىً (U٤: «MM/DD» بأيامٍ كلها ≤ ١٢ كانت تُقرأ «DD/MM» بصمت)
+  const shape = (o: DateOrder) => {
+    const ds = dateCells.map((c) => yearFor(o, c)).filter((x): x is string => !!x);
+    const up = ds.every((d, i) => i === 0 || d >= ds[i - 1]);
+    const down = ds.every((d, i) => i === 0 || d <= ds[i - 1]);
+    const sorted = [...ds].sort();
+    const span = ds.length ? (Date.parse(sorted[sorted.length - 1]) - Date.parse(sorted[0])) / 86400000 : 0;
+    return { n: score(o), mono: up || down ? 1 : 0, span };
+  };
+  const order = orders.map((o) => ({ o, ...shape(o) }))
+    .reduce((a, b) => (b.n > a.n || (b.n === a.n && (b.mono > a.mono || (b.mono === a.mono && b.span < a.span))) ? b : a)).o;
 
   // ٣) السطور، والبيان المكمِّل، والملخص
   const signedColumn = amountCol >= 0 && body.some((r) => amountHasSign(r[amountCol] ?? ''));
+  // علامةٌ واحدة في العمود: «CR» وحدها تجعل ما بلا علامة مديناً، و«DR» وحدها دائناً (U١٣)
+  const marks = amountCol >= 0 ? body.map((r) => markOf(r[amountCol] ?? '')) : [];
+  const unmarked: 1 | -1 = marks.includes('cr') && !marks.includes('dr') && !marks.includes('minus') ? -1 : 1;
   const signMode: ColumnMapping['signMode'] = debitCol >= 0 && creditCol >= 0 ? 'split'
     : signedColumn ? 'signed' : typeCol >= 0 ? 'type' : 'chain';
   const raws: Raw[] = [];
@@ -139,9 +195,27 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       summary[k] = v;
     });
   };
-  for (const r of grid.slice(0, h)) noteSummary(r);
+  // وملخصٌ بصفّين: كلماته في صفٍّ وقيمها تحتها في الصف التالي («Opening Balance | Total Debits …» ثم أرقامها · U٣)
+  grid.slice(0, h).forEach((r, i, head) => {
+    const keys = r.map((c) => summaryOf(c));
+    const next = head[i + 1];
+    if (keys.filter((k) => k && k !== 'period').length >= 2 && next && !next.some((c) => summaryOf(c))) {
+      keys.forEach((k, c) => {
+        if (!k || k === 'period' || summary[k] != null) return;
+        const v = parseStatementAmount(next[c] ?? '');
+        if (v != null) summary[k] = v;
+      });
+      return;
+    }
+    noteSummary(r);
+  });
   for (const r of body) {
     const date = yearFor(order, r[dateCol] ?? '');
+    // وصفُّ ملخصٍ بتاريخه (الافتتاحي أو الختامي) ليس حركة (U٧)
+    if (date && r.some((c) => { const k = summaryOf(c); return k === 'opening' || k === 'closing' || k === 'totalDebit' || k === 'totalCredit'; })) {
+      noteSummary(r);
+      continue;
+    }
     if (!date) {
       const filled = r.map((c, i) => (c ? i : -1)).filter((i) => i >= 0);
       const textOnly = filled.length > 0 && filled.every((i) => i === descrCol || i === refCol)
@@ -154,6 +228,9 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     }
     let abs = 0;
     let sign: Raw['sign'] = 0;
+    // وخلية مبلغٍ فيها نصٌّ لا يُقرأ ترفض الكشف ولا تصير صفراً (U٥)
+    const unreadable = (c: number) => c >= 0 && cellText(r[c] ?? '') !== '' && parseStatementAmount(r[c] ?? '') == null;
+    if ([debitCol, creditCol, amountCol].some(unreadable)) return fail('format', 'amount');
     if (signMode === 'split') {
       const d = Math.abs(parseStatementAmount(r[debitCol] ?? '') ?? 0);
       const c = Math.abs(parseStatementAmount(r[creditCol] ?? '') ?? 0);
@@ -165,7 +242,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       const v = parseStatementAmount(cell);
       if (v == null) continue;
       abs = Math.abs(v);
-      if (signMode === 'signed') sign = v < 0 ? -1 : 1;
+      if (signMode === 'signed') sign = amountHasSign(cell) ? (v < 0 ? -1 : 1) : unmarked;
       else if (signMode === 'type') {
         const tt = foldText(r[typeCol] ?? '');
         sign = /مدين|سحب|debit|\bdr\b|withdraw/.test(tt) ? -1 : /دائن|ايداع|credit|\bcr\b|deposit/.test(tt) ? 1 : 0;
@@ -180,7 +257,9 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   if (!raws.length) return fail('empty');
 
   // ٤) الجدول المطبوع مرتين أو أكثر في الملف (الأهلي) مرةً واحدة، والأحدث أولاً يُقلب
-  let lines = collapseRepeats(raws);
+  // (والطيّ إن تكرر صفّ العناوين وحده: حركاتٌ حقيقية متكررة صافيها صفر لا تُطوى · U٦)
+  const headerRepeats = grid.slice(h + 1).some(isRepeatHeader);
+  let lines = headerRepeats ? collapseRepeats(raws) : raws;
   if (lines[0].date > lines[lines.length - 1].date) lines = [...lines].reverse();
 
   // ٥) التسلسل: بالافتتاحي المطبوع، ثم بالمشتق من أول رصيدٍ مطبوع إن ناقضه المطبوع وثبتت المجاميع
@@ -188,33 +267,86 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   const printedClosing = summary.closing ?? opts.closing ?? null;
   let solved = solve(lines, printedOpening);
   const warnings: string[] = [];
-  if (!solved.ok && summary.opening != null && solved.reason === 'opening') {
+  const totalsPrinted = summary.totalDebit != null || summary.totalCredit != null;
+  // والافتتاحي المطبوع المناقض لا يُستبدل إلا بمجاميع مطبوعة تشهد (U٢: الختامي وحده آخر رصيدٍ مطبوع فلا يشهد بشيء)
+  if (!solved.ok && summary.opening != null && solved.reason === 'opening' && totalsPrinted) {
     const again = solve(lines, null);
     if (again.ok) { solved = again; warnings.push('openingPrinted'); }
   }
-  if (!solved.ok) return fail(solved.reason === 'unknown' ? 'needBalances' : 'balance', solved.reason);
+  const mapping: ColumnMapping = { headerKey, roles, dateOrder: order, signMode, labels: grid[h] };
+  const partialOf = (ls: StatementLine[], o: number | null): Partial<StatementOk> => ({
+    lines: ls, opening: o ?? undefined, closing: o == null ? undefined : o + ls.reduce((s, l) => s + l.amount, 0), mapping,
+    from: from ?? ls[0].date, to: to ?? ls[ls.length - 1].date, account: accountOf(grid.slice(0, h)),
+  });
+  if (!solved.ok) {
+    // وما عُرفت إشاراته كلها (عمودا مدين ودائن أو مبلغٌ موقَّع) جزءٌ يُحفظ «غير متحقَّق» بتأكيدٍ صريح (قرار المالك 2026-10-09 أ.٤:
+    // «يُنبَّه ولا تبدأ المطابقة إلا بتأكيد») · وما جُهلت إشارته لا يُحفظ
+    const known = lines.every((l) => l.sign !== 0);
+    const asPrinted: StatementLine[] = lines.map((l) => ({
+      date: l.date, valueDate: l.valueDate, descr: l.descr, ref: l.ref, amount: l.abs === 0 ? 0 : l.sign * l.abs, balance: l.balance,
+    }));
+    const o = printedOpening ?? (asPrinted[0].balance != null ? asPrinted[0].balance - asPrinted[0].amount : null);
+    return fail(solved.reason === 'unknown' ? 'needBalances' : 'balance', solved.reason, known ? partialOf(asPrinted, o) : undefined);
+  }
   const out = solved.lines;
   const total = out.reduce((s, l) => s + l.amount, 0);
-  if (solved.opening == null) return fail('needBalances');
+  const partial = (o: number | null) => partialOf(out, o);
+  if (solved.opening == null) return fail('needBalances', 'opening', partial(null));
   const closing = solved.opening + total;
   const hadBalances = out.some((l) => l.balance != null);
-  if (printedClosing != null && printedClosing !== closing) return fail('balance', 'closing');
-  if (!hadBalances && printedClosing == null) return fail('needBalances');
+  if (printedClosing != null && printedClosing !== closing) return fail('balance', 'closing', partial(solved.opening));
+  // وطرفا الكشف شاهدان: ما قبل أول رصيدٍ مطبوع يشهد له الافتتاحي (مطبوعاً أو مكتوباً)، وما بعد آخره الختامي (U١: سطرٌ أول بـ80,000 بدل
+  // 8,000 كان يُقبل بافتتاحيٍّ مشتقٍّ سالب، وسطرٌ أخير بلا رصيدٍ ولا ختامي بأي مبلغ)
+  if (printedOpening == null && !warnings.includes('openingPrinted')) {
+    // وسطرٌ أول برصيده وحده يُشتق منه الافتتاحي (ويُنبَّه)، أما ما قبله بلا رصيد فلا يشهد له شيء
+    if (out[0].balance == null) return fail('needBalances', 'opening', partial(solved.opening));
+    warnings.push('openingDerived');
+  }
+  if (printedClosing == null && out[out.length - 1].balance == null) return fail('needBalances', 'closing', partial(solved.opening));
+  if (!hadBalances && printedClosing == null) return fail('needBalances', 'closing', partial(solved.opening));
   let totals: boolean | null = null;
   if (summary.totalDebit != null || summary.totalCredit != null) {
     const dr = out.filter((l) => l.amount < 0).reduce((s, l) => s - l.amount, 0);
     const cr = out.filter((l) => l.amount > 0).reduce((s, l) => s + l.amount, 0);
     totals = (summary.totalDebit == null || Math.abs(summary.totalDebit) === dr) && (summary.totalCredit == null || Math.abs(summary.totalCredit) === cr);
-    if (!totals) return fail('balance', 'totals');
+    if (!totals) return fail('balance', 'totals', partial(solved.opening));
   }
-  if (warnings.includes('openingPrinted') && totals == null && printedClosing == null) return fail('balance', 'opening');
+  // والفترة المطبوعة تحوي السطور ولا تزيد على مداها بأكثر من شهرين، وإلا أُخذ مدى السطور (U١٠)
+  const first = out[0].date;
+  const last = out[out.length - 1].date;
+  const days = (a: string, b: string) => (Date.parse(b) - Date.parse(a)) / 86400000;
+  if (from && to && (first < from || last > to || days(from, to) > days(first, last) + 62)) { from = null; to = null; }
   return {
     ok: true, lines: out, opening: solved.opening, closing,
-    from: from ?? out[0].date, to: to ?? out[out.length - 1].date,
-    mapping: { headerKey, roles, dateOrder: order, signMode },
+    from: from ?? first, to: to ?? last, mapping,
     checks: { chain: hadBalances ? true : null, closing: printedClosing != null ? true : null, totals },
-    warnings,
+    warnings, account: accountOf(grid.slice(0, h)),
   };
+}
+
+/** علامة إشارة المبلغ في خليته */
+function markOf(raw: string): 'cr' | 'dr' | 'minus' | null {
+  const t = cellText(raw);
+  if (/\b[Cc][Rr]\b/.test(t)) return 'cr';
+  if (/\b[Dd][Rr]\b/.test(t)) return 'dr';
+  return /^[-\u2212(]|[-\u2212)]$/.test(t.replace(/\s+/g, '')) ? 'minus' : null;
+}
+
+/** الآيبان أو رقم الحساب في رأس الكشف (U٢١) */
+function accountOf(head: string[][]): string | null {
+  for (const r of head) {
+    const joined = r.join(' ').replace(/\s+/g, '');
+    const iban = /SA\d{2}[0-9A-Z]{20}/i.exec(joined);
+    if (iban) return iban[0].toUpperCase();
+  }
+  for (const r of head) {
+    const i = r.findIndex((c) => /رقم الحساب|account (no|number)|account/i.test(c));
+    if (i >= 0) {
+      const v = [r[i], ...r.slice(i + 1)].join(' ').replace(/\D/g, '');
+      if (v.length >= 8) return v;
+    }
+  }
+  return null;
 }
 
 function isHeader(roles: Array<Role | null>): boolean {
@@ -267,6 +399,15 @@ function solve(rs: Raw[], opening: number | null): Solved {
     let j = i;
     while (j < rs.length && rs[j].date === rs[i].date) j++;
     const group = rs.slice(i, j);
+    // اليوم كما طُبع أو مقلوباً أولاً بمرورٍ واحد، والبحث في ترتيب القيد لما سواهما (المدقق الخارجي U٢٦: كان تربيعياً في اليوم الواحد)
+    const fast = [group, [...group].reverse()].map((seq) => walkDay(seq, prev, pending, derived)).find(Boolean);
+    if (fast) {
+      out.push(...fast.lines);
+      ({ prev, pending, derived } = fast);
+      if (fast.sawBalance) firstBalanceSeen = true;
+      i = j;
+      continue;
+    }
     while (group.length) {
       let pick = -1;
       let pickSign: 1 | -1 = 1;
@@ -306,6 +447,33 @@ function solve(rs: Raw[], opening: number | null): Solved {
   return { ok: true, lines: out, opening: derived };
 }
 
+/** مرورٌ على سطور يومٍ بترتيبها: ما تتسلسل به الأرصدة أو null */
+function walkDay(seq: Raw[], prev0: number | null, pending0: number, derived0: number | null):
+  { lines: StatementLine[]; prev: number | null; pending: number; derived: number | null; sawBalance: boolean } | null {
+  let prev = prev0;
+  let pending = pending0;
+  let derived = derived0;
+  let sawBalance = false;
+  const lines: StatementLine[] = [];
+  for (const g of seq) {
+    let sign = g.sign;
+    if (g.balance == null) {
+      if (sign === 0) return null;
+    } else if (prev == null) {
+      if (sign === 0) return null;
+      derived = g.balance - pending - sign * g.abs;
+    } else {
+      const diff = g.balance - (prev + pending);
+      if (sign !== 0 ? diff !== sign * g.abs : Math.abs(diff) !== g.abs) return null;
+      if (sign === 0) sign = diff < 0 ? -1 : 1;
+    }
+    const amount = g.abs === 0 ? 0 : sign * g.abs;
+    if (g.balance != null) { prev = g.balance; pending = 0; sawBalance = true; } else pending += amount;
+    lines.push({ date: g.date, valueDate: g.valueDate, descr: g.descr, ref: g.ref, amount, balance: g.balance });
+  }
+  return { lines, prev, pending, derived, sawBalance };
+}
+
 /** كشف MT940 بنتيجة القارئ: الافتتاحي مع الحركات يساوي الختامي */
 function fromMt940(m: Mt940, opts: ReadOpts): StatementResult {
   if (!m.lines.length) return fail('empty');
@@ -318,8 +486,15 @@ function fromMt940(m: Mt940, opts: ReadOpts): StatementResult {
   return {
     ok: true, lines, opening, closing: closingPrinted, from: lines[0].date, to: lines[lines.length - 1].date,
     mapping: { headerKey: 'mt940', roles: [], dateOrder: 'dmy', signMode: 'signed' },
-    checks: { chain: null, closing: true, totals: null }, warnings: [],
+    checks: { chain: null, closing: true, totals: null }, warnings: [], account: m.account,
   };
+}
+
+/** صورةٌ (JPEG أو PNG بتوقيعهما، أو بامتداد صورة) تُقرأ بقارئ النص لا بالقارئ العام */
+export function isStatementImage(f: { name: string; bytes: Uint8Array }): boolean {
+  const b = f.bytes;
+  return (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) || (b.length >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47)
+    || /\.(jpe?g|png|heic|webp)$/.test(f.name.toLowerCase());
 }
 
 /** ملف الكشف بصيغته: PDF بطبقة نص، أو Excel، أو CSV ونصٌّ مفصول، أو MT940 */
@@ -335,10 +510,12 @@ export function readStatementFile(f: { name: string; bytes: Uint8Array }, opts: 
     const grid = xlsxGrid(b);
     return grid ? readStatementGrid(grid, { ...opts, excelSerial: true }) : fail('format');
   }
+  // والصورة تُقرأ بقارئ النص على الجهاز (services/bankStatement.ts) ثم readStatementPhoto (U١٢)
+  if (isStatementImage(f)) return fail('image');
   if (/\.(csv|tsv|txt|sta|mt940|940)$/.test(name)) {
     const text = decodeText(b);
     if (/^:6[01][FM]?:/m.test(text)) return fromMt940(parseMt940(text), opts);
-    return readStatementGrid(parseCsv(text), opts);
+    try { return readStatementGrid(parseCsv(text), opts); } catch { return fail('format'); }
   }
   return fail('format');
 }

@@ -7,7 +7,6 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawnSync } from 'child_process';
 import ts from 'typescript';
 import { decodeZatcaQr, zatcaQrKey, riyadhDateOf, type ZatcaQr } from '@/domain/zatcaQr';
 import { purchaseDraftFromQr } from '@/domain/purchaseQr';
@@ -42,8 +41,8 @@ const log = (...a: unknown[]) => { /* eslint-disable-next-line no-console */ con
 
 /** zatcaQrKey كما كانت في e7c151c (قبل 7e3b492): المفتاح الذي كتبه التطبيق في كل فاتورةٍ قُرئت من رمزها حتى هذا الإصدار */
 function legacyKeyOf(payload: string): string {
-  const src = spawnSync('git', ['show', 'e7c151c:src/domain/zatcaQr.ts'], { cwd: ROOT, encoding: 'utf8' });
-  if (src.status !== 0) throw new Error('git show e7c151c تعذّر: ' + src.stderr);
+  // نسخة الملف في e7c151c محفوظةٌ بجانب الاختبار: جيت هب يسحب آخر التزامٍ وحده فلا يجد e7c151c (فشلت به الحزمة على c8068f4)
+  const src = { stdout: fs.readFileSync(path.join(ROOT, 'tests', 'fixtures', 'zatcaQr-e7c151c.ts.txt'), 'utf8') };
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'auditT-legacy-'));
   const file = path.join(out, 'zatcaQr.js');
   fs.writeFileSync(file, ts.transpileModule(src.stdout, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText);

@@ -24,6 +24,15 @@ export function saveStatement(db: DB, bankId: string, r: Ok, file: { name: strin
   if (file.hash && db.get(`SELECT 1 FROM bank_statements WHERE bank_id = ? AND file_hash = ? AND deleted_at IS NULL`, [bankId, file.hash])) {
     throw new StatementDuplicate(t('bankStatement.duplicateFile'));
   }
+  // وكشف حسابٍ آخر لا يُحفظ في هذا البنك: رقم الحساب في الكشف يخالف آيبانه (المدقق الخارجي U٢١)
+  const iban = (db.get<{ i: string | null }>(`SELECT iban AS i FROM banks WHERE id = ?`, [bankId])?.i ?? '').replace(/\s+/g, '').toUpperCase();
+  const acct = (r.account ?? '').replace(/\s+/g, '').toUpperCase();
+  if (iban && acct) {
+    const d1 = iban.replace(/\D/g, '');
+    const d2 = acct.replace(/\D/g, '');
+    const same = iban === acct || (d2.length >= 8 && d1.endsWith(d2)) || (d1.length >= 8 && d2.endsWith(d1));
+    if (!same) throw new RuleViolation(t('bankStatement.otherAccount', { account: r.account ?? '' }));
+  }
   const keys = statementLineKeys(bankId, r.lines);
   const have = new Set(db.all<{ k: string }>(`SELECT line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.k));
   const fresh = r.lines.map((l, i) => ({ l, key: keys[i] })).filter((x) => !have.has(x.key));
@@ -31,9 +40,10 @@ export function saveStatement(db: DB, bankId: string, r: Ok, file: { name: strin
   const id = uid();
   const now = new Date().toISOString();
   db.transaction(() => {
-    db.run(`INSERT INTO bank_statements (id, bank_id, period_from, period_to, opening_halalas, closing_halalas, file_name, file_hash, line_count, mapping, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [id, bankId, r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
-      file.name, file.hash, fresh.length, JSON.stringify(r.mapping), now]);
+    // وربط الصورة مصنوعٌ لا من الكشف فلا يُحفظ ربطاً للبنك · والكشف غير المتحقَّق بتأكيده (الهجرة ٥٧)
+    db.run(`INSERT INTO bank_statements (id, bank_id, period_from, period_to, opening_halalas, closing_halalas, file_name, file_hash, line_count, mapping, verified, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, [id, bankId, r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
+      file.name, file.hash, fresh.length, r.warnings.includes('photo') ? '' : JSON.stringify(r.mapping), r.warnings.includes('unverified') ? 0 : 1, now]);
     for (const { l, key } of fresh) {
       db.run(`INSERT INTO bank_statement_lines (id, statement_id, bank_id, line_key, date, value_date, descr, ref, amount_halalas, balance_halalas, created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [uid(), id, bankId, key, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, now]);
@@ -73,34 +83,48 @@ export function matchSuggestions(db: DB, bankId: string): Suggestion[] {
     `SELECT t.id, t.date, t.descr, t.amount_halalas AS amount, t.journal_no AS no, t.source FROM bank_tx t
      WHERE t.bank_id = ? AND t.deleted_at IS NULL
        AND NOT EXISTS (SELECT 1 FROM bank_statement_lines l WHERE l.bank_tx_id = t.id AND l.status = 'matched' AND l.deleted_at IS NULL)`, [bankId]);
-  const all: Suggestion[] = [];
+  // كل زوجٍ ممكن بدرجته، ثم التوزيع بالأعلى أولاً (المدقق الخارجي U٢٢: سطرٌ أخذ غيرُه أفضلَ مرشحيه يُقترح له التالي الحرّ، والحركة
+  // التي يتنازعها سطران بدرجتين متقاربتين «تحتاج مراجعة» لا «جاهزة»)
+  type Pair = { l: (typeof lines)[number]; x: (typeof txs)[number]; score: number; reasons: string[] };
+  const pairs: Pair[] = [];
   for (const l of lines) {
-    const cands = txs.filter((x) => Number(x.amount) === Number(l.amount) && Math.abs(dayNo(String(x.date)) - dayNo(l.date)) <= 14);
-    const scored = cands.map((x) => {
+    for (const x of txs) {
+      if (Number(x.amount) !== Number(l.amount)) continue;
       const days = Math.abs(dayNo(String(x.date)) - dayNo(l.date));
+      if (days > 14) continue;
       const reasons = ['amount', days === 0 ? 'sameDay' : 'days'];
       let score = 50 + (DATE_SCORE.find(([d]) => days <= d)?.[1] ?? 0);
       const ld = digitsOf(l.descr + ' ' + (l.ref ?? ''));
       if ([...digitsOf(String(x.descr) + ' ' + String(x.no) + ' ' + String(x.source))].some((d) => ld.has(d))) { score += 15; reasons.push('ref'); }
       const lw = wordsOf(l.descr);
       if ([...wordsOf(String(x.descr) + ' ' + String(x.source))].some((w) => lw.has(w))) { score += 3; reasons.push('words'); }
-      return { x, score, reasons, days };
-    }).sort((a, b) => b.score - a.score || a.days - b.days);
-    if (!scored.length) continue;
-    const best = scored[0];
-    if (scored.length === 1) { best.score += 5; best.reasons.push('unique'); } else if (scored[1].score === best.score) { best.score -= 15; best.reasons.push('ambiguous'); }
-    const score = Math.min(100, best.score);
+      pairs.push({ l, x, score, reasons });
+    }
+  }
+  const perLine = new Map<string, number>();
+  const perTx = new Map<string, number>();
+  for (const p of pairs) { perLine.set(p.l.id, (perLine.get(p.l.id) ?? 0) + 1); perTx.set(p.x.id, (perTx.get(p.x.id) ?? 0) + 1); }
+  pairs.sort((p, q) => q.score - p.score || Math.abs(dayNo(String(p.x.date)) - dayNo(p.l.date)) - Math.abs(dayNo(String(q.x.date)) - dayNo(q.l.date)));
+  const usedL = new Set<string>();
+  const usedX = new Set<string>();
+  const out: Suggestion[] = [];
+  for (const p of pairs) {
+    if (usedL.has(p.l.id) || usedX.has(p.x.id)) continue;
+    usedL.add(p.l.id); usedX.add(p.x.id);
+    let score = p.score;
+    const reasons = [...p.reasons];
+    // ومتنازَعٌ عليه: سطرٌ آخر حرٌّ على الحركة نفسها، أو حركةٌ أخرى للسطر نفسه، بدرجةٍ قريبة
+    const rival = pairs.some((q) => q !== p && ((q.x.id === p.x.id && !usedL.has(q.l.id)) || (q.l.id === p.l.id && !usedX.has(q.x.id))) && q.score >= p.score - 5);
+    if (rival) { score -= 15; reasons.push('ambiguous'); } else if (perLine.get(p.l.id) === 1 && perTx.get(p.x.id) === 1) { score += 5; reasons.push('unique'); }
+    score = Math.min(100, score);
     if (score < 50) continue;
-    all.push({
-      line: { id: l.id, date: l.date, descr: l.descr, amount: Number(l.amount) },
-      tx: { id: best.x.id, date: String(best.x.date), descr: String(best.x.descr), amount: Number(best.x.amount), no: String(best.x.no ?? '') },
-      score, level: score >= 85 ? 'ready' : 'review', reasons: best.reasons,
+    out.push({
+      line: { id: p.l.id, date: p.l.date, descr: p.l.descr, amount: Number(p.l.amount) },
+      tx: { id: p.x.id, date: String(p.x.date), descr: String(p.x.descr), amount: Number(p.x.amount), no: String(p.x.no ?? '') },
+      score, level: score >= 85 ? 'ready' : 'review', reasons,
     });
   }
-  // والحركة الواحدة لأعلى سطورها درجة
-  const used = new Set<string>();
-  return all.sort((a, b) => b.score - a.score).filter((s) => (used.has(s.tx.id) ? false : (used.add(s.tx.id), true)))
-    .sort((a, b) => (a.line.date < b.line.date ? -1 : a.line.date > b.line.date ? 1 : 0));
+  return out.sort((a2, b2) => (a2.line.date < b2.line.date ? -1 : a2.line.date > b2.line.date ? 1 : 0));
 }
 
 /** اعتماد المطابقة بموافقة المستخدم: سطرٌ مفتوح وحركةٌ حيّة من البنك نفسه بالمبلغ نفسه، غير مطابَقةٍ بسطرٍ آخر */
@@ -152,10 +176,15 @@ export interface Reconciliation {
   onlyInStatement: LineView[];
   excluded: Array<LineView & { note: string }>;
   onlyInBooks: TxView[];
-  /** ما لا يفسّره فرق الافتتاحي ولا السطور غير المطابقة (صفرٌ إن ثبت كل شيء) */
+  /** في الطريق: حركةٌ في دفاتر هذا الشهر سطرُ كشفها في شهرٍ آخر، وسطرُ كشفٍ في هذا الشهر حركتُه في شهرٍ آخر (U١٤) */
+  inTransitBooks: TxView[];
+  inTransitStatement: LineView[];
+  /** ما لا يفسّره فرق الافتتاحي ولا السطور غير المطابقة في الشهر (صفرٌ إن ثبت كل شيء) */
   unexplained: number | null;
   /** ختامي ما قبل كشفٍ يخالف افتتاحيه */
   gaps: Array<{ after: string; closing: number; nextOpening: number }>;
+  /** في الشهر كشفٌ حُفظ «غير متحقَّق» بتأكيد المستخدم (الهجرة ٥٧) */
+  unverified: boolean;
 }
 
 /** تقرير المطابقة لبنكٍ وشهر (YYYY-MM) بالفروق في الطرفين */
@@ -165,67 +194,86 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
   // خط زمن الكشوف: افتتاحي كل كشفٍ قبل سطور يومه، وكل سطرٍ برصيده المطبوع أو بما قبله
   type Ev = { date: string; open?: number; amount?: number; balance?: number | null };
   const events: Ev[] = ([] as Ev[]).concat(
-    ...db.all<{ d: string; o: number }>(`SELECT period_from AS d, opening_halalas AS o FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL`, [bankId])
-      .map((s): Ev => ({ date: s.d, open: Number(s.o) })),
-    ...db.all<{ d: string; a: number; b: number | null }>(
+    db.all<{ d: string; o: number }>(`SELECT period_from AS d, opening_halalas AS o FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL`, [bankId])
+      .map((x): Ev => ({ date: x.d, open: Number(x.o) })),
+    db.all<{ d: string; a: number; b: number | null }>(
       `SELECT date AS d, amount_halalas AS a, balance_halalas AS b FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL ORDER BY date, rowid`, [bankId])
       .map((l): Ev => ({ date: l.d, amount: Number(l.a), balance: l.b == null ? null : Number(l.b) })),
-  ).sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : (a.open != null ? -1 : 0) - (b.open != null ? -1 : 0)));
+  ).sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : (x.open != null ? -1 : 0) - (y.open != null ? -1 : 0)));
   let running: number | null = null;
   let lastDate = '';
-  let crossed = false;
+  let firstInMonth: Ev | null = null;
   let before: number | null = null;
-  let firstOpenInMonth: number | null = null;
   const gaps: Reconciliation['gaps'] = [];
   for (const e of events) {
     if (e.date > end) break;
-    if (!crossed && e.date >= start) { crossed = true; before = running; }
+    if (!firstInMonth && e.date >= start) { firstInMonth = e; before = running; }
     if (e.open != null) {
-      if (e.date >= start) {
-        if (running !== null && running !== e.open) gaps.push({ after: lastDate, closing: running, nextOpening: e.open });
-        if (before === null && firstOpenInMonth === null) firstOpenInMonth = e.open;
-      }
+      if (e.date >= start && running !== null && running !== e.open) gaps.push({ after: lastDate, closing: running, nextOpening: e.open });
       running = e.open;
     } else {
       running = e.balance ?? (running ?? 0) + (e.amount ?? 0);
       lastDate = e.date;
     }
   }
+  // وبلا حدثٍ في الشهر: الجاري عند بدايته (U١٦) · وكشفٌ يبدأ في الشهر بعد فجوة: افتتاحيه هو (U١٥ · والفجوة في gaps)
+  if (!firstInMonth) before = running;
   const covered = !!db.get(`SELECT 1 FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL AND period_from <= ? AND period_to >= ?`, [bankId, end, start]);
-  const statementOpening = covered ? (before ?? firstOpenInMonth) : null;
+  const unverified = !!db.get(`SELECT 1 FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL AND verified = 0 AND period_from <= ? AND period_to >= ?`, [bankId, end, start]);
+  const statementOpening = covered ? (firstInMonth?.open != null ? firstInMonth.open : before) : null;
   const statementClosing = covered ? running : null;
   const bankOpening = Number(db.get<{ o: number }>(`SELECT opening_halalas AS o FROM banks WHERE id = ?`, [bankId])?.o ?? 0);
   const books = (cmp: string, d: string) => bankOpening + Number(db.get<{ s: number }>(
     `SELECT COALESCE(SUM(amount_halalas), 0) AS s FROM bank_tx WHERE bank_id = ? AND deleted_at IS NULL AND date ${cmp} ?`, [bankId, d])?.s ?? 0);
   const booksOpening = books('<', start);
   const booksClosing = books('<=', end);
-  const lineRows = db.all<{ id: string; date: string; descr: string; amount: number; status: string; note: string }>(
-    `SELECT id, date, descr, amount_halalas AS amount, status, note FROM bank_statement_lines
-     WHERE bank_id = ? AND deleted_at IS NULL AND date BETWEEN ? AND ? ORDER BY date, rowid`, [bankId, start, end]);
+  const lineRows = db.all<{ id: string; date: string; descr: string; amount: number; status: string; note: string; txDate: string | null }>(
+    `SELECT l.id, l.date, l.descr, l.amount_halalas AS amount, l.status, l.note,
+       (SELECT t.date FROM bank_tx t WHERE t.id = l.bank_tx_id AND t.deleted_at IS NULL) AS txDate
+     FROM bank_statement_lines l WHERE l.bank_id = ? AND l.deleted_at IS NULL AND l.date BETWEEN ? AND ? ORDER BY l.date, l.rowid`, [bankId, start, end]);
   const view = (r: { id: string; date: string; descr: string; amount: number }): LineView => ({ id: r.id, date: r.date, descr: r.descr, amount: Number(r.amount) });
+  const inMonth = (d: string | null) => !!d && d >= start && d <= end;
   const onlyInStatement = lineRows.filter((r) => r.status === 'open').map(view);
   const excluded = lineRows.filter((r) => r.status === 'excluded').map((r) => ({ ...view(r), note: r.note }));
-  const onlyInBooks = db.all<{ id: string; date: string; descr: string; amount: number; no: string }>(
-    `SELECT t.id, t.date, t.descr, t.amount_halalas AS amount, t.journal_no AS no FROM bank_tx t
-     WHERE t.bank_id = ? AND t.deleted_at IS NULL AND t.date BETWEEN ? AND ?
-       AND NOT EXISTS (SELECT 1 FROM bank_statement_lines l WHERE l.bank_tx_id = t.id AND l.status = 'matched' AND l.deleted_at IS NULL)
-     ORDER BY t.date, t.rowid`, [bankId, start, end]).map((x) => ({ id: x.id, date: x.date, descr: x.descr, amount: Number(x.amount), no: String(x.no ?? '') }));
-  const sum = (xs: Array<{ amount: number }>) => xs.reduce((s, x) => s + x.amount, 0);
+  const inTransitStatement = lineRows.filter((r) => r.status === 'matched' && !inMonth(r.txDate)).map(view);
+  const txRows = db.all<{ id: string; date: string; descr: string; amount: number; no: string; lineDate: string | null }>(
+    `SELECT t.id, t.date, t.descr, t.amount_halalas AS amount, t.journal_no AS no,
+       (SELECT l.date FROM bank_statement_lines l WHERE l.bank_tx_id = t.id AND l.status = 'matched' AND l.deleted_at IS NULL LIMIT 1) AS lineDate
+     FROM bank_tx t WHERE t.bank_id = ? AND t.deleted_at IS NULL AND t.date BETWEEN ? AND ? ORDER BY t.date, t.rowid`, [bankId, start, end]);
+  const tv = (x: (typeof txRows)[number]): TxView => ({ id: x.id, date: x.date, descr: x.descr, amount: Number(x.amount), no: String(x.no ?? '') });
+  const onlyInBooks = txRows.filter((x) => !x.lineDate).map(tv);
+  const inTransitBooks = txRows.filter((x) => x.lineDate && !inMonth(x.lineDate)).map(tv);
+  const sum = (xs: Array<{ amount: number }>) => xs.reduce((acc, x) => acc + x.amount, 0);
   const unexplained = statementOpening == null || statementClosing == null ? null
-    : (statementClosing - booksClosing) - (statementOpening - booksOpening) - sum(onlyInStatement) - sum(excluded) + sum(onlyInBooks);
+    : (statementClosing - booksClosing) - (statementOpening - booksOpening)
+      - sum(onlyInStatement) - sum(excluded) - sum(inTransitStatement) + sum(onlyInBooks) + sum(inTransitBooks);
   return {
     month, covered, statementOpening, statementClosing, booksOpening, booksClosing,
-    matched: lineRows.filter((r) => r.status === 'matched').length, onlyInStatement, excluded, onlyInBooks, unexplained, gaps,
+    matched: lineRows.filter((r) => r.status === 'matched' && inMonth(r.txDate)).length,
+    onlyInStatement, excluded, onlyInBooks, inTransitBooks, inTransitStatement, unexplained, gaps, unverified,
   };
 }
 
-/** حذف كشفٍ وسطوره (حذفاً ناعماً) · وما فيه مطابَقٌ تُلغى مطابقته أولاً */
+/**
+ * حذف كشفٍ وسطوره (حذفاً ناعماً) · وما فيه مطابَقٌ تُلغى مطابقته أولاً · وسطرٌ يقع في فترة كشفٍ حيٍّ آخر للبنك نفسه (تُخطّي عند حفظ ذاك
+ * لأنه محفوظٌ هنا) يُنقل إليه ولا يُحذف (المدقق الخارجي U١٧)
+ */
 export function deleteStatement(db: DB, statementId: string): void {
   if (db.get(`SELECT 1 FROM bank_statement_lines WHERE statement_id = ? AND status = 'matched' AND deleted_at IS NULL`, [statementId])) {
     throw new RuleViolation(t('bankStatement.deleteMatched'));
   }
+  const st = db.get<{ bank_id: string }>(`SELECT bank_id FROM bank_statements WHERE id = ?`, [statementId]);
   const now = new Date().toISOString();
   db.transaction(() => {
+    if (st) {
+      const others = db.all<{ id: string; f: string; tt: string }>(
+        `SELECT id, period_from AS f, period_to AS tt FROM bank_statements WHERE bank_id = ? AND id != ? AND deleted_at IS NULL ORDER BY created_at`,
+        [st.bank_id, statementId]);
+      for (const o of others) {
+        db.run(`UPDATE bank_statement_lines SET statement_id = ? WHERE statement_id = ? AND deleted_at IS NULL AND date BETWEEN ? AND ?`,
+          [o.id, statementId, o.f, o.tt]);
+      }
+    }
     db.run(`UPDATE bank_statement_lines SET deleted_at = ? WHERE statement_id = ? AND deleted_at IS NULL`, [now, statementId]);
     db.run(`UPDATE bank_statements SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`, [now, statementId]);
     logAudit(db, t('bankStatement.auditModule', { lng: 'ar' }), 'delete', t('bankStatement.auditEntity', { lng: 'ar' }), statementId);

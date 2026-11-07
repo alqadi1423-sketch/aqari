@@ -48,7 +48,13 @@ export function parseMt940(text: string): Mt940 {
       const m = /^(\d{6})(\d{4})?(RC|RD|C|D)([A-Z])?([\d,]+)(.*)$/s.exec(value.trim());
       if (!m) continue;
       const valueDate = yymmdd(m[1]);
-      const date = m[2] && valueDate ? yymmdd(valueDate.slice(2, 4) + m[2]) ?? valueDate : valueDate;
+      // وتاريخ القيد (MMDD) بالسنة التي تقرّبه من تاريخ القيمة: قيد 2 يناير لقيمة 31 ديسمبر في السنة التالية (المدقق الخارجي U٨)
+      let date = valueDate;
+      if (m[2] && valueDate) {
+        const y = Number(valueDate.slice(0, 4));
+        const cands = [y - 1, y, y + 1].map((yy) => yymmdd(String(yy).slice(2) + m[2])).filter((x): x is string => !!x);
+        date = cands.sort((a, b) => Math.abs(Date.parse(a) - Date.parse(valueDate)) - Math.abs(Date.parse(b) - Date.parse(valueDate)))[0] ?? valueDate;
+      }
       const a = halalas(m[5]);
       if (!date || a == null) continue;
       const debit = m[3] === 'D' || m[3] === 'RC';

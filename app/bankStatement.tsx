@@ -22,15 +22,21 @@ import { reportFailure } from '../src/ui/failureDialog';
 import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
 import { recordManualBankTx, type ManualBankKind } from '../src/domain/cashOps';
-import { readStatementFromFile } from '../src/services/bankStatement';
-import type { StatementResult } from '../src/domain/bankStatement/read';
+import { statementSource, type StatementSource } from '../src/services/bankStatement';
+import { unverifiedResult, type StatementResult, type StatementOk, type ColumnMapping, type ReadOpts } from '../src/domain/bankStatement/read';
+import type { Role } from '../src/domain/bankStatement/columns';
+import type { DateOrder } from '../src/domain/bankStatement/normalize';
 import {
   saveStatement, statementMapping, matchSuggestions, approveMatch, unmatchLine, excludeLine, reconciliation, deleteStatement,
   type LineView,
 } from '../src/domain/bankStatement/store';
 import { RuleViolation } from '../src/domain/contracts/service';
 
-const FILE_TYPES = ['application/pdf', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv', 'text/plain', '*/*'];
+// والصورة تُقرأ أرقامها وتواريخها (U١٢ · سجل القرارات ٥٦)
+const FILE_TYPES = ['application/pdf', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'text/csv', 'text/plain', 'image/*', '*/*'];
+const ROLE_OPTIONS: Array<Role | 'none'> = ['date', 'valueDate', 'descr', 'debit', 'credit', 'amount', 'balance', 'ref', 'type', 'none'];
+/** مبلغٌ بالهللة نصاً للحقل (بلا فواصل) */
+const plain = (h: number) => (h / 100).toFixed(2);
 const shiftMonth = (m: string, by: number) => {
   const [y, mo] = m.split('-').map(Number);
   const n = y * 12 + (mo - 1) + by;
@@ -45,8 +51,13 @@ export default function BankStatementScreen() {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [month, setMonth] = useState(today().slice(0, 7));
-  // كشفٌ بلا أرصدة: يُطلب الافتتاحي والختامي من رأسه ثم تُعاد القراءة
-  const [ask, setAsk] = useState<{ file: { uri: string; name: string }; opening: string; closing: string } | null>(null);
+  // كشفٌ بلا أرصدة: يُطلب الافتتاحي والختامي من رأسه (معبّأين بما اشتُق منه) ثم تُعاد القراءة
+  const [ask, setAsk] = useState<{ src: StatementSource; mapping?: ColumnMapping; confirmed: boolean; opening: string; closing: string } | null>(null);
+  // الأعمدة المخمَّنة يؤكدها المستخدم أو يصححها أول مرةٍ للبنك أو لشكلٍ جديد (قرار المالك 2026-10-09 أ.٣ · U٩)
+  // (وأعمدةٌ لم تُعرف أصلاً: صفّ العناوين المرجَّح بلا قراءة · r = null)
+  const [mapEdit, setMapEdit] = useState<{
+    src: StatementSource; base: ColumnMapping; r: StatementOk | null; hash: string; roles: Array<Role | null>; order: DateOrder;
+  } | null>(null);
   const [record, setRecord] = useState<{ line: LineView; kind: ManualBankKind; amount: string; date: string; descr: string } | null>(null);
   const [exclude, setExclude] = useState<{ line: LineView; note: string } | null>(null);
 
@@ -77,28 +88,55 @@ export default function BankStatementScreen() {
     else reportFailure({ title: t('common.failed'), where: t('bankStatement.title', { lng: 'ar' }), db, e });
   };
 
-  const showResult = (file: { uri: string; name: string }, r: StatementResult, hash: string) => {
+  const save = (src: StatementSource, r: StatementOk, hash: string) => {
+    try {
+      const saved = saveStatement(db, bankId, r, { name: src.name, hash });
+      bump();
+      toast(saved.skipped ? t('bankStatement.savedSkipped', { added: saved.added, skipped: saved.skipped }) : t('bankStatement.saved', { added: saved.added }));
+    } catch (e) { fail(e); }
+  };
+
+  const showResult = (src: StatementSource, r: StatementResult, hash: string, opts: ReadOpts, confirmed: boolean) => {
     if (!r.ok) {
-      if (r.error === 'needBalances') { setAsk({ file, opening: '', closing: '' }); return; }
-      dialog({ title: t('bankStatement.notRead'), body: t('bankStatement.err.' + r.error), actions: [{ label: t('common.ok'), variant: 'primary' }] });
+      if (r.error === 'needBalances') {
+        setAsk({
+          src, mapping: opts.mapping, confirmed,
+          opening: r.partial?.opening != null ? plain(r.partial.opening) : '', closing: r.partial?.closing != null ? plain(r.partial.closing) : '',
+        });
+        return;
+      }
+      const guess = r.error === 'columns' && !src.photo ? r.partial?.mapping : undefined;
+      if (guess?.labels) {
+        setMapEdit({ src, base: guess, r: null, hash, roles: [...guess.roles], order: guess.dateOrder });
+        return;
+      }
+      // والفحص الذي لم يثبت: يُنبَّه، ويُحفظ «غير متحقَّق» بتأكيدٍ صريح إن عُرفت إشارات حركاته (قرار المالك 2026-10-09 أ.٤)
+      const loose = r.error === 'balance' ? unverifiedResult(r.partial) : null;
+      dialog({
+        title: t('bankStatement.notRead'),
+        body: t('bankStatement.err.' + r.error) + (loose ? '\n\n' + t('bankStatement.unverifiedOffer', {
+          n: loose.lines.length, opening: fmt(loose.opening), closing: fmt(loose.closing),
+        }) : ''),
+        actions: loose
+          ? [{ label: t('bankStatement.saveUnverified'), variant: 'danger', onPress: () => save(src, loose, hash) }, { label: t('common.cancel'), variant: 'ghost' }]
+          : [{ label: t('common.ok'), variant: 'primary' }],
+      });
       return;
     }
     const saved = statementMapping(db, bankId);
+    if (!src.photo && !confirmed && r.mapping.labels && (!saved || saved.headerKey !== r.mapping.headerKey)) {
+      setMapEdit({ src, base: r.mapping, r, hash, roles: [...r.mapping.roles], order: r.mapping.dateOrder });
+      return;
+    }
     const notes = [
       t('bankStatement.preview', { n: r.lines.length, from: dfmt(r.from ?? ''), to: dfmt(r.to ?? ''), opening: fmt(r.opening), closing: fmt(r.closing) }),
-      ...(saved && saved.headerKey !== r.mapping.headerKey ? [t('bankStatement.shapeChanged')] : []),
+      ...(saved && !src.photo && saved.headerKey !== r.mapping.headerKey ? [t('bankStatement.shapeChanged')] : []),
       ...r.warnings.map((w) => t('bankStatement.warn.' + w)),
     ];
     dialog({
       title: t('bankStatement.read'), body: notes.join('\n'),
       actions: [
-        { label: t('bankStatement.save'), variant: 'primary', onPress: () => {
-          try {
-            const s = saveStatement(db, bankId, r, { name: file.name, hash });
-            bump();
-            toast(s.skipped ? t('bankStatement.savedSkipped', { added: s.added, skipped: s.skipped }) : t('bankStatement.saved', { added: s.added }));
-          } catch (e) { fail(e); }
-        } },
+        { label: t('bankStatement.save'), variant: 'primary', onPress: () => save(src, r, hash) },
         { label: t('common.cancel'), variant: 'ghost' },
       ],
     });
@@ -109,9 +147,28 @@ export default function BankStatementScreen() {
     if (!f) return;
     setBusy(true);
     try {
-      const { result, hash } = readStatementFromFile(f, { mapping: statementMapping(db, bankId) ?? undefined });
-      showResult(f, result, hash);
-    } catch (e) { fail(e); } finally { setBusy(false); }
+      const src = await statementSource(f);
+      const opts: ReadOpts = { mapping: src.photo ? undefined : statementMapping(db, bankId) ?? undefined };
+      const { result, hash } = src.read(opts);
+      showResult(src, result, hash, opts, false);
+    } catch (e) {
+      if (e instanceof Error && e.message === 'ocr') toast(t('bankStatement.err.ocr'));
+      else fail(e);
+    } finally { setBusy(false); }
+  };
+
+  /** تأكيد الأعمدة أو تصحيحها: ما لم يتغيّر يُعرض كما قُرئ، والمصحَّح يُعاد به القرار */
+  const confirmMapping = () => {
+    if (!mapEdit) return;
+    const { src, base, r, hash, roles, order } = mapEdit;
+    setMapEdit(null);
+    const changed = order !== base.dateOrder || roles.some((x, i) => x !== base.roles[i]);
+    if (r && !changed) { showResult(src, r, hash, { mapping: r.mapping }, true); return; }
+    try {
+      const mapping: ColumnMapping = { ...base, roles, dateOrder: order };
+      const again = src.read({ mapping });
+      showResult(src, again.result, again.hash, { mapping }, true);
+    } catch (e) { fail(e); }
   };
 
   const approveAll = () => {
@@ -205,8 +262,10 @@ export default function BankStatementScreen() {
                 </Row>
                 <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 6 }}>{t('bankStatement.matchedN', { n: rep.matched })}</T>
                 {rep.gaps.map((g, i) => <Note key={i} tone="danger">{t('bankStatement.gap', { after: dfmt(g.after), closing: fmt(g.closing), next: fmt(g.nextOpening) })}</Note>)}
+                {rep.unverified ? <Note tone="danger">{t('bankStatement.unverifiedMonth')}</Note> : null}
                 {rep.unexplained ? <Note tone="danger">{t('bankStatement.unexplained', { amount: fmt(rep.unexplained) })}</Note> : null}
-                {([['onlyStatement', rep.onlyInStatement], ['onlyBooks', rep.onlyInBooks], ['excludedLines', rep.excluded]] as const).map(([k, xs]) => (
+                {([['onlyStatement', rep.onlyInStatement], ['onlyBooks', rep.onlyInBooks], ['inTransitBooks', rep.inTransitBooks],
+                  ['inTransitStatement', rep.inTransitStatement], ['excludedLines', rep.excluded]] as const).map(([k, xs]) => (
                   <View key={k} style={{ marginTop: 8 }}>
                     <T size={TYPE.cardTitle} bold>{t('bankStatement.' + k)} ({xs.length})</T>
                     {xs.length ? xs.map((x) => <View key={x.id} style={{ paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: C.line }}>{lineHead(x)}</View>)
@@ -237,17 +296,19 @@ export default function BankStatementScreen() {
         ))}
       </CollapsibleSection>
 
-      {/* الافتتاحي والختامي من رأس كشفٍ بلا أرصدة */}
+      {/* الافتتاحي والختامي من رأس كشفٍ بلا أرصدة · معبّأين بما اشتُق من القراءة */}
       <Sheet visible={!!ask} onClose={() => setAsk(null)} title={t('bankStatement.needTitle')}
         footer={<View style={{ flex: 1 }}><BtnPrimary title={t('bankStatement.read')} onPress={() => {
           if (!ask) return;
-          const opening = toHalalas(ask.opening);
-          const closing = toHalalas(ask.closing);
-          const file = ask.file;
+          const opts: ReadOpts = {
+            mapping: ask.mapping ?? (ask.src.photo ? undefined : statementMapping(db, bankId) ?? undefined),
+            opening: toHalalas(ask.opening), closing: toHalalas(ask.closing),
+          };
+          const { src, confirmed } = ask;
           setAsk(null);
           try {
-            const { result, hash } = readStatementFromFile(file, { mapping: statementMapping(db, bankId) ?? undefined, opening, closing });
-            showResult(file, result.ok || result.error !== 'needBalances' ? result : { ok: false, error: 'balance' }, hash);
+            const { result, hash } = src.read(opts);
+            showResult(src, result.ok || result.error !== 'needBalances' ? result : { ok: false, error: 'balance', partial: result.partial }, hash, opts, confirmed);
           } catch (e) { fail(e); }
         }} /></View>}>
         <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>{t('bankStatement.err.needBalances')}</T>
@@ -255,6 +316,29 @@ export default function BankStatementScreen() {
           <>
             <Field label={t('bankStatement.opening')} value={ask.opening} keyboard="numeric" ltr onChange={(v) => setAsk({ ...ask, opening: v })} />
             <Field label={t('bankStatement.closing')} value={ask.closing} keyboard="numeric" ltr onChange={(v) => setAsk({ ...ask, closing: v })} />
+          </>
+        ) : null}
+      </Sheet>
+
+      {/* أعمدة الكشف المخمَّنة: يؤكدها المستخدم أو يصححها، ويُحفظ الربط مع الكشف لهذا البنك (mapping.roles) */}
+      <Sheet visible={!!mapEdit} onClose={() => setMapEdit(null)} title={t('bankStatement.mapTitle')}
+        footer={<View style={{ flex: 1 }}><BtnPrimary title={t('bankStatement.mapConfirm')} onPress={confirmMapping} /></View>}>
+        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>{t('bankStatement.mapHint')}</T>
+        {mapEdit ? (
+          <>
+            {(mapEdit.base.labels ?? []).map((label, i) => (
+              <View key={i} style={{ marginBottom: 10 }}>
+                <T size={TYPE.cardTitle} bold>{label || '—'}</T>
+                <ChipGroup<string> value={mapEdit.roles[i] ?? 'none'} onChange={(v) => {
+                  const role = v === 'none' ? null : (v as Role);
+                  // الدور الواحد لعمودٍ واحد: اختياره هنا يرفعه عن غيره
+                  setMapEdit({ ...mapEdit, roles: mapEdit.roles.map((x, k) => (k === i ? role : x === role ? null : x)) });
+                }} options={ROLE_OPTIONS.map((k) => [k, t('bankStatement.role.' + k)] as [string, string])} />
+              </View>
+            ))}
+            <T size={TYPE.cardTitle} bold>{t('bankStatement.dateOrder')}</T>
+            <ChipGroup<DateOrder> value={mapEdit.order} onChange={(o) => setMapEdit({ ...mapEdit, order: o })}
+              options={[['dmy', t('bankStatement.order.dmy')], ['mdy', t('bankStatement.order.mdy')]]} />
           </>
         ) : null}
       </Sheet>

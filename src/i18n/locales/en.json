@@ -992,7 +992,9 @@
       "columns": "The statement's columns weren't recognised (date, and amount or debit and credit)",
       "empty": "No transactions in the statement",
       "balance": "Opening plus transactions doesn't equal the printed balances or the closing · nothing was saved",
-      "needBalances": "The statement prints no balances · enter the opening and closing from its header"
+      "needBalances": "The statement prints no balances · enter the opening and closing from its header",
+      "ocr": "Reading photos is not available in this app version · update it or choose the statement file",
+      "image": "The photo could not be read · choose a clearer photo or the statement file"
     },
     "needTitle": "Opening and closing",
     "opening": "Opening balance",
@@ -1000,7 +1002,10 @@
     "preview": "{{n}} transactions from {{from}} to {{to}}\nOpening {{opening}} · Closing {{closing}}\nOpening plus transactions equals the closing",
     "shapeChanged": "The statement's layout changed since this bank's last one · review the transactions before saving",
     "warn": {
-      "openingPrinted": "The printed previous balance contradicts the balances and totals, so the opening was taken from their chain"
+      "openingPrinted": "The printed previous balance contradicts the balances and totals, so the opening was taken from their chain",
+      "openingDerived": "No opening balance was printed, so it was taken from the first line's balance",
+      "photo": "Read from a photo: figures and dates only (Arabic descriptions cannot be read from a photo) · the balance chain checks out",
+      "unverified": "Unverified statement"
     },
     "save": "Save statement",
     "saved": "Statement saved · {{added}} new transactions",
@@ -1056,6 +1061,33 @@
     "stmtRow": "{{from}} to {{to}} · {{n}} transactions",
     "deleteStmt": "Delete statement",
     "deleteStmtBody": "The statement and its lines are deleted and stay in the trash",
-    "deleteMatched": "The statement has matched lines · unmatch them first"
+    "deleteMatched": "The statement has matched lines · unmatch them first",
+    "otherAccount": "The statement is for another account ({{account}}), not this bank · choose its bank or correct the IBAN",
+    "inTransitBooks": "In transit: in the books, on another month's statement",
+    "inTransitStatement": "In transit: on the statement, booked in another month",
+    "unverifiedOffer": "It can be saved as “unverified” with your confirmation: {{n}} lines, opening {{opening}}, and its lines make the closing {{closing}} · the reconciliation report flags it",
+    "saveUnverified": "Save it unverified and start matching",
+    "unverifiedMonth": "A statement in this month was saved “unverified” with your confirmation: its opening plus its lines does not equal its balances or closing · check its figures with the bank",
+    "mapTitle": "Statement columns",
+    "mapHint": "First statement for this bank or a new layout: confirm or correct each column's role; the mapping is kept for this bank and used for later statements",
+    "mapConfirm": "Confirm columns",
+    "dateOrder": "Date format",
+    "order": {
+      "dmy": "day/month/year",
+      "mdy": "month/day/year"
+    },
+    "role": {
+      "date": "Date",
+      "valueDate": "Value date",
+      "hijri": "Hijri date",
+      "descr": "Description",
+      "debit": "Debit (withdrawal)",
+      "credit": "Credit (deposit)",
+      "amount": "Amount",
+      "balance": "Balance",
+      "ref": "Reference",
+      "type": "Transaction type",
+      "none": "Nothing"
+    }
   }
 }

@@ -1,9 +1,8 @@
 /**
- * بصمة سطر الكشف (التوجيه الرابع ٦ · ٢ · «منع التكرار»): البنك والتاريخ والمبلغ الموقَّع والرصيد والبيان المطبَّع، ومعها رقم تكرارها في
+ * بصمة سطر الكشف (التوجيه الرابع ٦ · ٢ · «منع التكرار»): البنك والتاريخ والمبلغ الموقَّع، ومعها رقم تكرارها في
  * الكشف نفسه (أسلوب ofxstatement) · فإعادة قراءة الكشف تعطي البصمات نفسها، والكشفان المتداخلان يتشاركانها في منطقة التداخل، وسطران
  * متطابقان حقاً (رسمان في اليوم نفسه) يبقيان اثنين · ومرجع البنك وحده لا يكفي (الحوالة ورسمها قد يشتركان فيه).
  */
-import { foldText } from './normalize';
 import type { StatementLine } from './read';
 
 /** FNV-1a بـ64 بتاً (قطعتان من ٣٢) ستّ عشري · ثابتٌ بين الأجهزة */
@@ -21,7 +20,8 @@ export function fnv64(s: string): string {
 export function statementLineKeys(bankId: string, lines: Array<Pick<StatementLine, 'date' | 'amount' | 'balance' | 'descr'>>): string[] {
   const seen = new Map<string, number>();
   return lines.map((l) => {
-    const base = [bankId, l.date, l.amount, l.balance ?? '', foldText(l.descr)].join('|');
+    // بلا الرصيد والبيان: الحركة نفسها من صيغةٍ أخرى (MT940 بلا رصيد) أو بتصديرٍ ببيانٍ أطول بصمتها نفسها (المدقق الخارجي U١٨)
+    const base = [bankId, l.date, l.amount].join('|');
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
     return fnv64(base + '#' + n);

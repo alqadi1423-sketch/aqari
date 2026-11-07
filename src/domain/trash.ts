@@ -170,7 +170,8 @@ export function purgeManyFromTrash(db: DB, items: Array<{ table: string; id: str
       : [];
     del(`DELETE FROM journal_lines WHERE entry_id IN (:list)`, je);
 
-    // ٢ · الأوراق البسيطة بلا مُعالين
+    // ٢ · الأوراق البسيطة بلا مُعالين · وحركة البنك تُفكّ مطابقة سطر الكشف بها قبل حذفها (المدقق الخارجي U١٩)
+    runIn(db, `UPDATE bank_statement_lines SET bank_tx_id = NULL, status = 'open', matched_at = NULL WHERE bank_tx_id IN (:list)`, ids.get('bank_tx') ?? []);
     for (const t of ['attachments', 'message_scripts', 'company_docs', 'form_templates', 'handovers', 'reservations', 'key_money_deals', 'claims', 'bank_tx'] as const) {
       const arr = ids.get(t) ?? [];
       del(`DELETE FROM "${t}" WHERE id IN (:list) AND deleted_at IS NOT NULL`, arr);
@@ -243,6 +244,11 @@ export function purgeManyFromTrash(db: DB, items: Array<{ table: string; id: str
     }
     const bs = ids.get('banks') ?? [];
     if (bs.length) {
+      // وكشوف البنك وسطورها معه، فلا يوقف مفتاحها الأجنبي الكنس كله (المدقق الخارجي U٢٠)
+      runIn(db, `DELETE FROM bank_statement_lines WHERE bank_id IN (:list)`, bs);
+      runIn(db, `DELETE FROM bank_statements WHERE bank_id IN (:list)`, bs);
+      runIn(db, `UPDATE bank_statement_lines SET bank_tx_id = NULL, status = 'open', matched_at = NULL
+         WHERE bank_tx_id IN (SELECT id FROM bank_tx WHERE bank_id IN (:list))`, bs);
       runIn(db, `DELETE FROM bank_tx WHERE bank_id IN (:list)`, bs);
       runIn(db, `UPDATE payment_lines SET bank_id = NULL WHERE bank_id IN (:list)`, bs);
       del(`DELETE FROM banks WHERE id IN (:list) AND deleted_at IS NOT NULL`, bs);

@@ -915,6 +915,33 @@ const INTERNAL_BANK_SOURCES = new Map<string, number>([
 interface BankTxState { bank: string; amount: number; no: string; source: string; live: boolean }
 
 /**
+ * سطر كشفٍ وارد «مطابَق» بشروط approveMatch نفسها على كل جهاز (المدقق الخارجي U٢٣): حركةٌ حيّة من بنك السطر بمبلغه، ولا يمسكها
+ * سطرٌ آخر · وإلا عاد السطر مفتوحاً ويُعاد مصحَّحاً إلى السحابة (true) · وسطران يمسكان الحركة نفسها (جهازان بلا اتصال): الأصغر
+ * معرّفاً يبقى، والآخر يعود مفتوحاً هنا أو في الوارد، فتتفق الأجهزة بالقاعدة نفسها · والتصحيح يرفعه جهاز المالك وحده (جهاز العضو
+ * يصحّح نسخته، وقد لا تجيز له القواعد الكتابة)
+ */
+function statementLineCheck(db: DB, row: Record<string, unknown>): boolean {
+  const demote = () => { row.status = 'open'; row.bank_tx_id = null; row.matched_at = null; return true; };
+  if (row.status !== 'matched') return row.bank_tx_id != null ? demote() : false;
+  // والمحذوف لا يمسك حركة · ولا حركة: لا مطابقة
+  const txId = row.bank_tx_id == null ? '' : String(row.bank_tx_id);
+  if (row.deleted_at != null || !txId) return demote();
+  const tx = db.get<{ b: string; a: number; del: string | null }>(`SELECT bank_id AS b, amount_halalas AS a, deleted_at AS del FROM bank_tx WHERE id = ?`, [txId]);
+  // حركةٌ لم تصل بعد: المفتاح الأجنبي يُرجئ السطر حتى تصل
+  if (!tx) return false;
+  if (tx.del != null || String(tx.b) !== String(row.bank_id) || Number(tx.a) !== Number(row.amount_halalas)) return demote();
+  const rivals = db.all<{ id: string }>(
+    `SELECT id FROM bank_statement_lines WHERE bank_tx_id = ? AND status = 'matched' AND deleted_at IS NULL AND id != ? ORDER BY id`, [txId, String(row.id)]);
+  if (!rivals.length) return false;
+  if (rivals.some((r) => r.id < String(row.id))) return demote();
+  for (const r of rivals) {
+    db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [r.id]);
+    if (!getSyncState(db, 'membership')) enqueue(db, 'bank_statement_lines', r.id, 'upsert');
+  }
+  return false;
+}
+
+/**
  * حركة البنك من عضو على جهاز المالك (المدقق الخارجي هـ٩، ثم G١ إلى G٦ في الجولة الرابعة): رصيد البنك مجموع حركاته، والمحفظة نقد 1100
  * ناقصاً حركات البنوك كلها · فالحركة تُفحص بأثرها لا بنوعها:
  *  - حركة قيدٍ قائم لا تُحذف ولا تُنقل ولا يتغيّر مبلغها (التطبيق يُلغيها بعكس عمليتها) · والجديدة منها بإشارة نقد القيد كلها، ومجموعها
@@ -1705,6 +1732,8 @@ function applyOne(
     }
   }
 
+  // سطر كشفٍ صُحّحت مطابقته هنا يُعاد إلى السحابة مصحَّحاً
+  let relink = false;
   try {
     db.transaction(() => {
       if (doc.del) {
@@ -1743,6 +1772,7 @@ function applyOne(
           if (alias) row.journal_no = alias;
           memberBankTxCheck(db, doc, row);
         }
+        if (doc.t === 'bank_statement_lines') relink = statementLineCheck(db, row) && !getSyncState(db, 'membership');
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
@@ -1768,7 +1798,7 @@ function applyOne(
         if (issues.length) throw new Error('الوارد مرفوض · ' + issues.join(' · '));
       }
       if (pending) db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
-      if (keepOpening) enqueue(db, doc.t, doc.k, 'upsert');
+      if (keepOpening || relink) enqueue(db, doc.t, doc.k, 'upsert');
       if (conflict) {
         logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', joining
           ? `${doc.t} · ${doc.k} · غلب ما في الحساب على نسخة هذا الجهاز عند انضمامه`
