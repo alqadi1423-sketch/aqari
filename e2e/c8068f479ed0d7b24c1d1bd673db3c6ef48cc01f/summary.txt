@@ -1,0 +1,16 @@
+commit c8068f479ed0d7b24c1d1bd673db3c6ef48cc01f
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42408352600
+success false
+flows 12 · failed 9
+00-smoke fail 145s
+01-property fail 135s
+02-arabic-input fail 134s
+03-offline fail 133s
+04a-persist fail 134s
+04b-memory pass 3s
+04c-alive fail 28s
+04d-kill pass 4s
+04e-restore fail 132s
+05a-secure fail 134s
+05b-secure fail 0s
+06a-permissions pass 1s
