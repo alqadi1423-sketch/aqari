@@ -94,7 +94,8 @@ test('F9 (سابقٌ لـ 1f21568 في الموضع نفسه) · «رُفعت ا
   const b = await uploadBackupToDrive(d.io, 'T', p, 'عقاري · نسخة · ملاحظات.aqbk', { encrypted: true, notes: true });
   // وsettings.tsx (doDriveBackup) يقرأ b.notes ليعرض الملاحظات، ثم b.visibleFailed
   const ui = fs.readFileSync(path.join(__dirname, '..', 'app/settings.tsx'), 'utf8');
-  expect(ui).toMatch(/const b = await backupToDrive\(db, setProgress, signal\);\s*bump\(\);\s*if \(b\.notes\) notesDialog\(/);
+  // (وبعد H٩ تُذكر معها النسخة الظاهرة إن تعذّرت)
+  expect(ui).toMatch(/const b = await backupToDrive\(db, setProgress, signal\);\s*bump\(\);[\s\S]{0,200}if \(b\.notes\) \{\s*const notes = reviewData\(db\)\.notes;\s*notesDialog\(/);
   // eslint-disable-next-line no-console
   console.log('F9 · ما يعيده الرفع:', Object.keys(b));
   expect(b.notes).toBe(true);

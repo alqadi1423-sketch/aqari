@@ -62,16 +62,29 @@ async function json<T>(res: Response, what: string): Promise<T> {
   return (text ? JSON.parse(text) : {}) as T;
 }
 
+/**
+ * قائمة ملفات Drive كلها صفحةً بعد صفحة (المدقق الخارجي H٥ وH٦): عقد files.list يقول إن الصفحة قد تأتي ناقصةً أو فارغةً قبل نهاية القائمة،
+ * فالنهاية غياب nextPageToken وحده · بسقف صفحاتٍ يحمي من حلقة
+ */
+async function listAll<T>(io: DriveIO, token: string, params: Record<string, string>, what: string): Promise<T[]> {
+  const out: T[] = [];
+  let pageToken = '';
+  for (let page = 0; page < 1000; page++) {
+    const q = new URLSearchParams({ ...params, fields: 'nextPageToken,' + params.fields, ...(pageToken ? { pageToken } : {}) });
+    const j = await json<{ files?: T[]; nextPageToken?: string }>(await io.fetch(`${API}/files?${q.toString()}`, { headers: auth(token) }), what);
+    out.push(...(j.files ?? []));
+    if (!j.nextPageToken || j.nextPageToken === pageToken) break;
+    pageToken = j.nextPageToken;
+  }
+  return out;
+}
+
 export async function listDriveBackups(io: DriveIO, token: string): Promise<DriveBackup[]> {
-  const q = new URLSearchParams({
-    spaces: 'appDataFolder',
-    orderBy: 'createdTime desc',
-    pageSize: '50',
-    fields: 'files(id,name,size,createdTime,sha256Checksum,appProperties)',
-  });
-  const res = await io.fetch(`${API}/files?${q.toString()}`, { headers: auth(token) });
-  const j = await json<{ files?: Array<{ id: string; name: string; size?: string; createdTime: string; sha256Checksum?: string; appProperties?: Record<string, string> }> }>(res, 'قراءة النسخ');
-  return (j.files ?? []).map((f) => ({
+  // كل النسخ في المجلد المخفي، لا أول خمسين (H٦: ما قبلها لا يُستعاد من التطبيق، والمجلد المخفي لا يُرى في Drive)
+  const files = await listAll<{ id: string; name: string; size?: string; createdTime: string; sha256Checksum?: string; appProperties?: Record<string, string> }>(
+    io, token, { spaces: 'appDataFolder', orderBy: 'createdTime desc', pageSize: '100', fields: 'files(id,name,size,createdTime,sha256Checksum,appProperties)' },
+    'قراءة النسخ');
+  return files.map((f) => ({
     id: f.id, name: f.name, size: Number(f.size ?? 0), createdTime: f.createdTime,
     sha256: (f.sha256Checksum ?? f.appProperties?.sha256 ?? '').toLowerCase(),
     encrypted: f.appProperties?.encrypted === '1',
@@ -174,28 +187,27 @@ export async function deleteAllAppDataFiles(io: DriveIO, token: string): Promise
  * وحسابٌ لم يُمنح النطاق (403) لم تُرفع له نسخةٌ ظاهرة أصلاً
  */
 async function deleteVisibleCopies(io: DriveIO, token: string): Promise<number> {
-  const fq = new URLSearchParams({
-    q: `mimeType='${FOLDER_MIME}' and trashed=false and appProperties has { key='app' and value='${VISIBLE_FOLDER_TAG}' }`,
-    spaces: 'drive', fields: 'files(id)',
-  });
-  const fr = await io.fetch(`${API}/files?${fq.toString()}`, { headers: auth(token) });
-  if (fr.status === 403) return 0;
-  const folders = (await json<{ files?: Array<{ id: string }> }>(fr, t('drive.findFolder'))).files ?? [];
+  let folders: Array<{ id: string }>;
+  try {
+    folders = await listAll<{ id: string }>(io, token, {
+      q: `mimeType='${FOLDER_MIME}' and trashed=false and appProperties has { key='app' and value='${VISIBLE_FOLDER_TAG}' }`,
+      spaces: 'drive', fields: 'files(id)',
+    }, t('drive.findFolder'));
+  } catch (e) {
+    if (e instanceof DriveError && e.status === 403) return 0;
+    throw e;
+  }
   let n = 0;
   for (const f of folders) {
-    // صفحةً بعد صفحة حتى لا يبقى منها شيء (المدقق الخارجي F٨: كانت صفحةٌ واحدة، مئة ملفٍ افتراضاً)
-    for (let round = 0; round < 1000; round++) {
-      const q = new URLSearchParams({
-        q: `'${f.id}' in parents and trashed=false and appProperties has { key='app' and value='aqari' }`,
-        spaces: 'drive', fields: 'files(id)', pageSize: '1000',
-      });
-      const files = (await json<{ files?: Array<{ id: string }> }>(await io.fetch(`${API}/files?${q.toString()}`, { headers: auth(token) }), t('drive.findFolder'))).files ?? [];
-      if (!files.length) break;
-      for (const x of files) {
-        const res = await io.fetch(`${API}/files/${x.id}`, { method: 'DELETE', headers: auth(token) });
-        if (res.status !== 204 && res.status !== 404) throw deleteError(res.status);
-        n++;
-      }
+    // كل نسخ التطبيق فيه صفحةً بعد صفحة إلى غياب الصفحة التالية، ثم تُحذف (F٨ وH٥: صفحةٌ فارغة قبل النهاية كانت توقف الحذف)
+    const files = await listAll<{ id: string }>(io, token, {
+      q: `'${f.id}' in parents and trashed=false and appProperties has { key='app' and value='aqari' }`,
+      spaces: 'drive', fields: 'files(id)', pageSize: '1000',
+    }, t('drive.findFolder'));
+    for (const x of files) {
+      const res = await io.fetch(`${API}/files/${x.id}`, { method: 'DELETE', headers: auth(token) });
+      if (res.status !== 204 && res.status !== 404) throw deleteError(res.status);
+      n++;
     }
   }
   return n;
@@ -208,14 +220,12 @@ const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
 /** معرّف المجلد الظاهر: ما أنشأه التطبيق من قبل (بعلامته، غير المحذوف)، وإلا يُنشأ في جذر Drive المستخدم */
 export async function ensureVisibleFolder(io: DriveIO, token: string): Promise<string> {
-  const q = new URLSearchParams({
+  // والبحث صفحةً بعد صفحة: صفحةٌ أولى فارغة كانت تُنشئ مجلداً ظاهراً ثانياً (H٥)
+  const found = await listAll<{ id: string }>(io, token, {
     q: `mimeType='${FOLDER_MIME}' and trashed=false and appProperties has { key='app' and value='${VISIBLE_FOLDER_TAG}' }`,
-    spaces: 'drive',
-    fields: 'files(id,name)',
-  });
-  const found = await json<{ files?: Array<{ id: string }> }>(
-    await io.fetch(`${API}/files?${q.toString()}`, { headers: auth(token) }), t('drive.findFolder'));
-  if (found.files?.length) return found.files[0].id;
+    spaces: 'drive', fields: 'files(id,name)',
+  }, t('drive.findFolder'));
+  if (found.length) return found[0].id;
   const made = await json<{ id: string }>(await io.fetch(`${API}/files?fields=id`, {
     method: 'POST',
     headers: auth(token, { 'Content-Type': 'application/json; charset=UTF-8' }),

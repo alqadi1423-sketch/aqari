@@ -11,6 +11,7 @@ import type { DB } from '../db/adapter';
 import { redactForReport } from './redact';
 import { auditActor, auditWriter, AUDIT_WRITER_SQL } from './audit';
 import { APP_VERSION_LABEL } from '../version';
+import ar from '../i18n/locales/ar.json';
 
 /** نوع الصف في سجل العمليات · قيمةٌ مخزّنة تقرؤها القواعد وقائمة الأقسام */
 export const CRASH_ENTITY = 'تقرير عطل'; // i18n-exempt: قيمة مخزّنة
@@ -57,9 +58,37 @@ export function crashReportBody(e: unknown, platform: string): CrashBody {
   return body;
 }
 
-/** الموضع نصٌّ من الكود، وقد يُبنى بقيمةٍ من المستخدم · فما بين «» والأرقام تُحجب، وطوله محدود */
-const whereLabel = (where: string): string =>
-  String(where ?? '').replace(/«[^»]*»/g, '«…»').replace(/[\d٠-٩]+/g, '#').slice(0, WHERE_MAX);
+/** كلمات التطبيق العربية (من ملف ترجمته) · وكلمة الفشل التي تبدأ بها عناوين الحوار */
+let appWords: Set<string> | null = null;
+function knownWords(): Set<string> {
+  if (appWords) return appWords;
+  const words = new Set<string>(['تعذّر', 'تعذر', 'فشل']); // i18n-exempt: مطلع عناوين حوار الفشل
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') { for (const w of v.split(/[^\u0621-\u064A\u064B-\u0652\u0670]+/)) if (w) words.add(w); }
+    else if (v && typeof v === 'object') Object.values(v as Record<string, unknown>).forEach(walk);
+  };
+  walk(ar);
+  return (appWords = words);
+}
+
+/**
+ * الموضع نصٌّ من الكود، وقد يُبنى بقيمةٍ من المستخدم (المدقق الخارجي H٣: اسم الملف المرفوع، وفيه اسم المستأجر ورقمه، كان يصل المالك) ·
+ * فما بين «» وكل رقمٍ بأي كتابة وكل كلمةٍ لاتينية أو بكتابةٍ أخرى تُحجب، والكلمة العربية تبقى إن كانت من كلمات التطبيق وحدها، وطوله محدود
+ */
+/** بادئة سطر الفشل في سجل العمليات (failureDialog) · وجهاز المالك يُسقط المرفوض منها عند الرفع كتقرير العطل (المدقق الخارجي H٨) */
+export const FAILURE_ENTITY_PREFIX = 'فشل '; // i18n-exempt: نوع سطر الفشل المخزَّن
+/** موضع الفشل محجوباً كموضع تقرير العطل · لسطر الفشل في سجل العمليات، ويقرؤه أعضاء المنشأة (H٣) */
+export const failureWhere = (where: string): string => whereLabel(where);
+const whereLabel = (where: string): string => {
+  const known = knownWords();
+  return String(where ?? '')
+    .replace(/«[^»]*»/g, '«…»')
+    .replace(/[\d٠-٩۰-۹]+/g, '#')
+    .replace(/[^\s\u0600-\u06FF«»#…·:،.()\-]+/g, '…')
+    .replace(/[\u0621-\u064A\u064B-\u0652\u0670]+/g, (w) => (known.has(w) ? w : '…'))
+    .replace(/…(?:[\s.\-]*…)+/g, '…')
+    .slice(0, WHERE_MAX);
+};
 
 const syncValue = (db: DB, k: string): string | null => {
   try { return db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = ?`, [k])?.v ?? null; } catch { return null; }
@@ -89,6 +118,32 @@ export function recordCrashReport(db: DB, args: { where: string; e: unknown; pla
        VALUES (?,?,?,?,?,?,?,?,?)`,
       [prefix + n, at.toISOString().slice(0, 19), auditActor(db), CRASH_MODULE, 'update', CRASH_ENTITY, whereLabel(args.where),
         null, JSON.stringify(crashReportBody(args.e, args.platform))],
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * تقرير عطلٍ رفضته السحابة لعضو: قد تكون رتبته أخذها جهازٌ آخر للحساب نفسه في اليوم نفسه (المدقق الخارجي H٢: صفوف التقرير للمالك
+ * وحده فلا يعرف الجهاز الثاني ما أخذه الأول) · فيُكتب من جديد بالرتبة التالية على هذا الجهاز ما دام دون حدّ اليوم، والقاعدة تحدّ
+ * الحساب بعشرين في اليوم أياً كان جهازه · false إن لم يُعَد
+ */
+export function retryCrashRank(db: DB, row: Record<string, unknown> | undefined): boolean {
+  try {
+    const id = String(row?.id ?? '');
+    const m = /^(crash-.+-\d{8}-)(\d+)$/.exec(id);
+    if (!m || !row) return false;
+    const prefix = m[1];
+    const n = db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log WHERE id LIKE ? ESCAPE '\\'`,
+      [prefix.replace(/[\\%_]/g, (c) => '\\' + c) + '%'])?.n ?? 0;
+    if (n >= CRASH_DAILY_LIMIT) return false;
+    db.run(
+      `INSERT INTO audit_log (id, ts, user_name, module, action_type, entity_type, entity_name, before_json, after_json)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [prefix + n, String(row.ts ?? ''), String(row.user_name ?? ''), CRASH_MODULE, 'update', CRASH_ENTITY, String(row.entity_name ?? ''), null,
+        row.after_json == null ? null : String(row.after_json)],
     );
     return true;
   } catch {

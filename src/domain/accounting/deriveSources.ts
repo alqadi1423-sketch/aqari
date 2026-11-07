@@ -173,6 +173,40 @@ const NONE: DimSpec = { contract: null, unit: null, props: [null] };
 /** تواريخ عواكس المصدر هنا: نسخة الاستعادة من السلة تُرحَّل بتاريخ عكس قيدها السابق (repostCopy وrestoreInvoice: repostDate) */
 const revDates = (r: SourceReader, src: string, srcId: string): string[] =>
   r.entries(src + '_rev', srcId).map((x) => String(x.date ?? '')).filter(Boolean);
+/** مبالغ السطور لكل حساب كما في المشتق (بلا الأبعاد: قيودٌ أقدم من أبعاد التقبيل) */
+const sameAmounts = (ls: SrcLine[], w: Want[]): boolean => {
+  const net = new Map<string, number>();
+  for (const l of ls) net.set(String(l.account_code ?? ''), (net.get(String(l.account_code ?? '')) ?? 0) + num(l.debit_halalas) - num(l.credit_halalas));
+  for (const x of w) net.set(x.account, (net.get(x.account) ?? 0) - x.debit + x.credit);
+  return [...net.values()].every((v) => v === 0);
+};
+/**
+ * تواريخ قيد عمولة التقبيل الحيّ غير تاريخ الصفقة: تاريخ عاكس أصلٍ من الصفقة نفسها (نسخة الاستعادة من السلة بتاريخ عكس قيدها السابق ·
+ * repostDate) بشرط أن يكون ذلك الأصل نفسه بتاريخٍ مقبول وبمبالغ الصفقة، وعاكسه مرآته · هنا أو في الوارد
+ */
+function keyMoneyDates(r: SourceReader, dealId: string, exceptId: string, dealDate: string, w: Want[]): string[] {
+  const day = (d: unknown) => String(d ?? '').slice(0, 10);
+  const valid = new Set<string>([day(dealDate)]);
+  const originals = [...new Map([...r.entries('key_money', dealId), ...r.pending('key_money', dealId).map((id) => r.entry(id))]
+    .filter((x): x is SrcEntry => !!x && x.id !== exceptId).map((x) => [x.id, x] as const)).values()];
+  const revsOf = (o: SrcEntry): SrcEntry[] => {
+    const named = o.reversed_by ? [r.entry(o.reversed_by)] : [];
+    const claimed = r.pending('key_money_rev', dealId).filter((id) => r.claimants(id).includes(o.id)).map((id) => r.entry(id));
+    return [...named, ...claimed].filter((x): x is RevEntry => !!x && x.src_type === 'key_money_rev' && x.src_id === dealId && sameMirror(o.lines, x.lines));
+  };
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const o of originals) {
+      if (!valid.has(day(o.date)) || !sameAmounts(nonZero(o.lines), w)) continue;
+      for (const rv of revsOf(o)) {
+        const d = day(rv.date);
+        if (d && !valid.has(d)) { valid.add(d); grew = true; }
+      }
+    }
+  }
+  valid.delete(day(dealDate));
+  return [...valid];
+}
 const want = (lines: EntryLine[] | null, dims: (l: EntryLine, i: number) => DimSpec[]): Want[] | null =>
   lines ? lines.map((l, i) => ({ account: l.account, debit: l.debit || 0, credit: l.credit || 0, dims: dims(l, i) })) : null;
 
@@ -232,7 +266,7 @@ function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, subtota
     'purchase_lines', 'purchase_id', purchaseId).filter((l) => !l.deleted_at).sort((a, b) => num(a.sort) - num(b.sort));
   // لا بند هنا: الفاتورة بلا بنود لا ترحّل حساب أصل، فقيدٌ بحساب أصلٍ بنودُه لم تصل بعد (المتحقق المستقل: كان يُرفض بالمصروف)
   if (!lines.length) return assetAccount ? AWAIT : [none];
-  const assets = r.rows<{ id: string; purchase_line_id: string | null; unit_id: string | null; property_id: string | null; source: string | null; deleted_at?: string | null }>(
+  const assets = r.rows<{ id: string; purchase_line_id: string | null; unit_id: string | null; property_id: string | null; source: string | null; category?: string | null; deleted_at?: string | null }>(
     'assets', 'purchase_id', purchaseId).filter((a) => !a.deleted_at);
   if (assets.some((a) => a.source === 'convert')) return [none];
   // بنود الحفظ مجموعها أساس الفاتورة (validateLines) · ودونه بنودٌ لم تصل بعد: العضو يرفع على دفعاتٍ صغيرة بترتيب الجداول، فقد يصل
@@ -248,7 +282,7 @@ function purchaseAssetForms(db: DB, r: SourceReader, purchaseId: string, subtota
     const mine = assets.filter((a) => a.purchase_line_id === l.id);
     if (mine.length < num(l.qty)) return AWAIT;
     // وبوحدة الأصل يومها: وحدة صفّه أو وحدةٌ نُقل منها بعد (originUnits · المدقق الخارجي هـ٦)
-    const specs = mine.flatMap((a): DimSpec[] => originUnits(r, a.id, a.unit_id ?? null).map((u) => (u === (a.unit_id ?? null)
+    const specs = mine.flatMap((a): DimSpec[] => originUnits(r, a.id, a.unit_id ?? null, String(a.category ?? l.asset_category ?? '')).map((u) => (u === (a.unit_id ?? null)
       ? { contract: null, unit: a.unit_id ?? dims.unit, props: a.property_id ? [a.property_id] : dims.props, asset: a.id }
       : { contract: null, unit: u, props: unitDims(db, r, u).props, asset: a.id })));
     for (const cost of splitQty(costs[i], num(l.qty))) {
@@ -437,9 +471,18 @@ const assetUnits = (r: SourceReader, a: AssetDoc): Array<string | null> => [...n
  * وصفّه بعد نقله يسمّي الجديدة · فإثبات التكلفة أو فاتورة البند ثم النقل قبل أن يسحب المالك كان يُرفض ثم كل ما بعده) · والنقل بعدها
  * يُفحص بحمل التكلفة هنا فلا تُقبل وحدةٌ لم تكن تكلفته فيها
  */
-function originUnits(r: SourceReader, assetId: string, current: string | null): Array<string | null> {
+function originUnits(r: SourceReader, assetId: string, current: string | null, category: string): Array<string | null> {
+  // وحدث النقل يُحسب إن كان له قيدٌ هنا أو في الوارد يشهد له بوحدتيه (المدقق الخارجي O١ وO٢: حدثٌ «شبح» يسمّي قيداً لا وجود له كان
+  // يُدخل تكلفة الأصل أو بند الفاتورة بأبعاد وحدةٍ في عقارٍ آخر لم يكن فيها قط)
   const from = r.rows<AssetEvent>('asset_events', 'asset_id', assetId)
-    .filter((v) => v.kind === 'transfer' && !!v.entry_id && (v.from_unit_id ?? null) !== (v.to_unit_id ?? null)).map((v) => v.from_unit_id ?? null);
+    .filter((v) => {
+      if (v.kind !== 'transfer' || !v.entry_id || (v.from_unit_id ?? null) === (v.to_unit_id ?? null)) return false;
+      const e = r.entry(v.entry_id);
+      if (!e || e.deleted_at) return false;
+      const ls = nonZero(e.lines).filter((l) => str(l.asset_id) === assetId && String(l.account_code ?? '') === category);
+      return ls.length > 0 && ls.every((l) => str(l.unit_id) === (num(l.credit_halalas) > 0 ? (v.from_unit_id ?? null) : (v.to_unit_id ?? null)));
+    })
+    .map((v) => v.from_unit_id ?? null);
   return [...new Set([current, ...from])];
 }
 
@@ -705,7 +748,7 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const led = ledgerOf(r, a.id, a.category, e.id, { kind: 'catchup', d: today });
       if (led.cost) return led.pending ? AWAIT : no('assetCost');
       // والتكلفة تُثبت بوحدته يومها: وحدة صفّه، أو وحدةٌ نُقل منها بعد (originUnits) · لا موضع لها في الدفتر قبل هذا القيد
-      const units = originUnits(r, a.id, a.unit_id ?? null);
+      const units = originUnits(r, a.id, a.unit_id ?? null, a.category);
       const cu = catchUpOf(db, r, a, e.id, today, e.lines, units, true);
       if (typeof cu === 'string') return cu;
       const dims = assetSpecs(db, r, a, today, units);
@@ -987,14 +1030,11 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       // ونسخة الاستعادة من السلة بتاريخ عكس قيدها السابق (repostDate)
       // وعاكسٌ في الوارد لم يُطبَّق بعد يُحسب تاريخه (المدقق الخارجي ج٥: الصفقة وإلغاؤها واستعادتها في سحبٍ واحد)
       // ومرآةٌ لأصلٍ من الصفقة يسمّيها (المدقق الخارجي هـ٢: عاكسٌ مزوَّر معلَّق بتاريخٍ يختاره العضو كان يُقبل به القيد في سنةٍ أخرى)
-      const pendingRev = r.pending(e.src + '_rev', e.srcId).filter((id) => {
-        const rev = r.entry(id);
-        return !!rev && r.claimants(id).some((o) => {
-          const x = r.entry(o);
-          return !!x && x.src_type === e.src && x.src_id === e.srcId && sameMirror(x.lines, rev.lines);
-        });
-      }).map((id) => String(r.entry(id)?.date ?? '')).filter(Boolean);
-      return lines ? { lines, date: k.date ?? '', also: [...revDates(r, e.src, e.srcId), ...pendingRev], correctable: false } : no('noEntry');
+      // والتاريخ المقبول سلسلةٌ من تاريخ الصفقة: عاكسُ أصلٍ من الصفقة بتاريخٍ مقبول وبمبالغها يُقبل تاريخه، ثم أصلٌ بذلك التاريخ وهكذا
+      // (المدقق الخارجي G · K١: أصلٌ مزوَّر يصل معكوساً ومعه عاكسه المرآة كان يجعل تاريخ عاكسه مقبولاً فيُنقل الإيراد وضريبته إلى سنةٍ
+      // أخرى · وشرط هـ٢ لا يحمي لأن العضو يكتب ذلك الأصل)
+      const also = lines ? keyMoneyDates(r, e.srcId, e.id, String(k.date ?? ''), lines) : [];
+      return lines ? { lines, date: k.date ?? '', also, correctable: false } : no('noEntry');
     }
     case 'claim':
     case 'claim_collect': {

@@ -7,6 +7,7 @@ import { entryCashEffect } from './cashGuard';
 import { getSetting } from '../repos/settings';
 import { restoreInvoice } from './invoices';
 import { restorePurchase } from './purchases';
+import { requireBankTxRestorable } from './bankTx';
 import { logAudit } from './audit';
 import { t } from '../i18n';
 import { lastReversedOf, repostBlockers, repostCopy, repostDate } from './accounting/repost';
@@ -108,6 +109,7 @@ export function restoreIntoFiledPeriod(db: DB, table: string, id: string): boole
 function restoreOne(db: DB, table: string, id: string): void {
   if (table === 'invoices') { restoreInvoice(db, id); return; }
   if (table === 'purchases') { restorePurchase(db, id); return; }
+  if (table === 'bank_tx') requireBankTxRestorable(db, id);
   if (restoreIntoFiledPeriod(db, table, id)) throw new Error(t('restore.filedPeriod'));
   const entry = reversedOnDelete(db, table, id);
   if (entry) {

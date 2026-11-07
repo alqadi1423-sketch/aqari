@@ -434,7 +434,9 @@ ${guardFns(schema)}
         && d.get('before_json', null) == null
         && d.get('after_json', null) is string && d.after_json.size() <= 4000
         && d.get('ts', null) is string && d.ts.size() <= 24
-        && d.ts.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]{1,3})?Z?');
+        && d.ts.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]{1,3})?Z?')
+        // ووقته في يوم معرّفه، فيحدّه crashDayOk (المدقق الخارجي H١: وقتٌ في 9999 كان يُبقي المزوَّر أول السجل والشاشة إلى الأبد)
+        && d.ts[0:4] + d.ts[5:7] + d.ts[8:10] == id.split('-')[id.split('-').size() - 2];
     }
     function crashDayOk(p) {
       let day = p[p.size() - 2];

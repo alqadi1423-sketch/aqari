@@ -36,6 +36,8 @@ function requireWalletCovers(db: DB, amountHalalas: number, what: string): void 
 /** مصدرا حركة البنك بلا قيد: نقلُ نقدٍ بين المحفظة والبنك (النقدية 1100 لا تتغير) · قيمتان مخزّنتان يفحص بهما جهاز المالك (engine.ts) */
 export const CASH_DEPOSIT_SOURCE = 'إيداع نقدي من المحفظة'; // i18n-exempt: مصدرٌ مخزَّن
 export const CASH_WITHDRAW_SOURCE = 'سحب نقدي إلى المحفظة'; // i18n-exempt: مصدرٌ مخزَّن
+export const TRANSFER_OUT_SOURCE = 'تحويل بين البنوك · صادر'; // i18n-exempt: مصدرٌ مخزَّن
+export const TRANSFER_IN_SOURCE = 'تحويل بين البنوك · وارد'; // i18n-exempt: مصدرٌ مخزَّن
 
 function insertBankTx(db: DB, bankId: string, date: string, descr: string, amount: number, source: string): void {
   db.run(
@@ -108,8 +110,8 @@ export function transferBetweenBanks(
   }
   db.transaction(() => {
     const descr = args.notes?.trim() || 'تحويل من ' + fromName + ' إلى ' + toName;
-    insertBankTx(db, args.fromBankId, args.date, descr, -args.amountHalalas, 'تحويل بين البنوك · صادر');
-    insertBankTx(db, args.toBankId, args.date, descr, args.amountHalalas, 'تحويل بين البنوك · وارد');
+    insertBankTx(db, args.fromBankId, args.date, descr, -args.amountHalalas, TRANSFER_OUT_SOURCE);
+    insertBankTx(db, args.toBankId, args.date, descr, args.amountHalalas, TRANSFER_IN_SOURCE);
     logAudit(db, MODULE, 'create', 'تحويل بين بنكين', fromName + ' ← ' + toName, undefined, {
       amount_halalas: args.amountHalalas, date: args.date,
     });

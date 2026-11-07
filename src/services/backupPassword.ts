@@ -106,13 +106,17 @@ export async function saveRecoveryKey(key: string, account: string | null): Prom
   f.write(KIND_KEY);
 }
 
-/** تفريغ الجهاز من الحساب (deviceReset.ts): يُمحى سرّه وسوابقه وعلامته، ومعها اسم الجهاز القديم · ولا زرّ في الواجهة يزيله، فالتشفير إجباري */
-export async function clearBackupSecretForReset(account: string | null): Promise<void> {
+/**
+ * تفريغ الجهاز من الحساب (deviceReset.ts): يُمحى سرّه وسوابقه وعلامته · ولا زرّ في الواجهة يزيله، فالتشفير إجباري ·
+ * والسرّ القديم الواحد للجهاز لا يُعرف صاحبه، فيبقى ما دام على الجهاز حسابٌ آخر مركون يحتاجه لنسخه السابقة (المدقق الخارجي H٤:
+ * «حذف حسابي» من حسابٍ كان يمحوه للجميع) · ويُمحى معه حين لا يبقى غيره (dropLegacy)
+ */
+export async function clearBackupSecretForReset(account: string | null, dropLegacy = false): Promise<void> {
   const slot = slotOf(account);
-  for (const k of [keyOf(slot), previousKeyOf(slot), LEGACY_KEY]) {
+  for (const k of [keyOf(slot), previousKeyOf(slot), ...(dropLegacy ? [LEGACY_KEY] : [])]) {
     try { await SecureStore.deleteItemAsync(k); } catch { /* التالي */ }
   }
-  for (const f of [flagFile(slot), legacyFlag()]) {
+  for (const f of [flagFile(slot), ...(dropLegacy ? [legacyFlag()] : [])]) {
     try { if (f.exists) f.delete(); } catch { /* التالي */ }
   }
 }

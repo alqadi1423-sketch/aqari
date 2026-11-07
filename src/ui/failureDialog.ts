@@ -11,7 +11,7 @@
  */
 import { failureAuditDetail } from '../domain/redact';
 import { Share, Platform } from 'react-native';
-import { recordCrashReport } from '../domain/crashReport';
+import { recordCrashReport, failureWhere, FAILURE_ENTITY_PREFIX } from '../domain/crashReport';
 import * as Clipboard from 'expo-clipboard';
 import { showDialog, type DialogAction } from './AppDialog';
 import { showToast } from './Toast';
@@ -66,7 +66,7 @@ export async function recordFailure(args0: Pick<FailureArgs, 'title' | 'where' |
   const where = args.where ?? args.title;
   if (args.db) {
     try {
-      logAudit(args.db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', 'فشل ' + where,
+      logAudit(args.db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', FAILURE_ENTITY_PREFIX + failureWhere(where),
         failureAuditDetail(args.e));
     } catch { /* السجل لا يعطّل */ }
     // وتقريره للمالك (التوجيه الرابع ٤ · ٤): محجوبٌ بحدّ يومه، ولا يرمي
@@ -92,21 +92,23 @@ export async function reportFailure(args: FailureArgs): Promise<void> {
     return;
   }
 
-  if (db) {
-    try {
-      logAudit(db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', 'فشل ' + where,
-        failureAuditDetail(e));
-    } catch { /* السجل لا يعطّل */ }
-    // وتقريره للمالك (التوجيه الرابع ٤ · ٤ · قرار المالك 2026-11-07 «نعم توصلني»): محجوبٌ بحدّ يومه، ولا يرمي · والقاعدة المرفوضة
-    // أعلاه ليست عطلاً فلا تقرير لها
-    recordCrashReport(db, { where, e, platform: Platform.OS });
-  }
-
+  // الأثر يُقاس قبل أن يكتب الحوار نفسه سطر الفشل وتقرير العطل (المدقق الخارجي H٧: سطراهما وطابورهما كانا يُعدّان «أثراً»، فلا تُقال
+  // «لم يتغيّر شيء» أبداً لمن دخل بحسابه)
   let stateLine = '';
   if (before && env) {
     let residue = '';
     try { residue = describeResidue(env, before); } catch { residue = ''; }
     stateLine = residue ? 'وبقي أثر: ' + residue : 'بياناتك الحالية سليمة ولم يتغيّر شيء.';
+  }
+
+  if (db) {
+    try {
+      logAudit(db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', FAILURE_ENTITY_PREFIX + failureWhere(where),
+        failureAuditDetail(e));
+    } catch { /* السجل لا يعطّل */ }
+    // وتقريره للمالك (التوجيه الرابع ٤ · ٤ · قرار المالك 2026-11-07 «نعم توصلني»): محجوبٌ بحدّ يومه، ولا يرمي · والقاعدة المرفوضة
+    // أعلاه ليست عطلاً فلا تقرير لها
+    recordCrashReport(db, { where, e, platform: Platform.OS });
   }
 
   const saved = await saveErrorReport(where, e);

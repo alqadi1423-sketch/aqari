@@ -519,6 +519,9 @@ describe('٤.٦ الاستعادة من السلة تعيد القيود كما 
     payPurchaseSplit(db, pid, [{ method: 'bank', bankId: bank, amountHalalas: 1000 }], '2026-05-03');
     const linked = db.get<{ id: string }>(`SELECT id FROM bank_tx WHERE journal_no != '' AND bank_id = ?`, [bank])!;
     expect(() => deleteBankTx(db, linked.id)).toThrow(/قيد/);
+    // الحركة اليدوية الواردة نقدٌ من المحفظة (المحفظة = نقد 1100 ناقصاً حركات البنوك) · فاستعادتها تحتاجه كحذفها (المدقق الخارجي G٤)
+    const { ownerCashIn } = await import('@/domain/cashOps');
+    ownerCashIn(db, { amountHalalas: 700, date: '2026-05-05' });
     db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, source, created_at) VALUES ('T_manual',?,?,?,?,0,'',?)`,
       [bank, '2026-05-05', 'حركة يدوية', 700, '2026-05-05T00:00:00Z']);
     const b0 = bankBalance(db, bank);

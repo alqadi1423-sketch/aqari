@@ -576,8 +576,12 @@ export default function Settings() {
     try {
       const b = await backupToDrive(db, setProgress, signal);
       bump();
-      if (b.notes) notesDialog('رُفعت النسخة إلى Google Drive وفيها ملاحظات', reviewData(db).notes);
-      else if (b.visibleFailed) dialog({ title: t('drive.visibleFailed'), body: t('drive.visibleNote', { why: b.visibleFailed }), actions: [{ label: t('crash.close'), variant: 'ghost' }] });
+      // ونسخةٌ فيها ملاحظات وتعذّرت نسختها الظاهرة يُقال فيها الأمران (المدقق الخارجي H٩)
+      if (b.notes) {
+        const notes = reviewData(db).notes;
+        notesDialog(b.visibleFailed ? t('drive.visibleFailed') : 'رُفعت النسخة إلى Google Drive وفيها ملاحظات',
+          b.visibleFailed ? [...notes, t('drive.visibleNote', { why: b.visibleFailed })] : notes);
+      } else if (b.visibleFailed) dialog({ title: t('drive.visibleFailed'), body: t('drive.visibleNote', { why: b.visibleFailed }), actions: [{ label: t('crash.close'), variant: 'ghost' }] });
       else toast('رُفعت النسخة مشفّرة إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
     } catch (e) {
       if (isCancelled(e)) { endCancelled('أُلغي النسخ على Google Drive', () => { doDriveBackup(); }); return; }

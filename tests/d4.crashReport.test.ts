@@ -96,9 +96,9 @@ describe('تقرير العطل للمالك', () => {
     db.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('uid', 'OWNER-UID')`);
     db.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('org', 'OWNER-UID')`);
     recordCrashReport(db, { where: 'أول', e: boom(), platform: 'android', at: AT });
-    recordCrashReport(db, { where: 'ثانٍ', e: boom(), platform: 'android', at: new Date(AT.getTime() + 60000) });
+    recordCrashReport(db, { where: 'تعذّر الحفظ', e: boom(), platform: 'android', at: new Date(AT.getTime() + 60000) });
     const list = crashReports(db, 30, new Date(AT.getTime() + 120000));
-    expect(list.map((x) => x.where)).toEqual(['ثانٍ', 'أول']);
+    expect(list.map((x) => x.where)).toEqual(['تعذّر الحفظ', 'أول']);
     expect(list[0].id).toBe(`crash-OWNER-UID-${crashDay(AT)}-1`);
     expect(list[0].version).toBe(APP_VERSION_LABEL);
     expect(list[0].who).toBe('المالك');
@@ -128,4 +128,21 @@ test('المالك يراها في «حالة المزامنة» بعددها، 
     expect(require('../src/i18n/locales/ar.json').crash[k]).toBeTruthy();
     expect(require('../src/i18n/locales/en.json').crash[k]).toBeTruthy();
   }
+});
+
+describe('رتبةٌ أخذها جهازٌ آخر للحساب (H٢)', () => {
+  test('تُعاد بالتالية على هذا الجهاز، ولا تتجاوز حدّ اليوم', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { retryCrashRank: retry, CRASH_DAILY_LIMIT: LIMIT } = require('@/domain/crashReport');
+    const db = memDb();
+    db.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('uid', 'U-R')`);
+    expect(recordCrashReport(db, { where: 'أول', e: new Error('x'), platform: 'android', at: AT })).toBe(true);
+    const row = db.get<Record<string, unknown>>(`SELECT * FROM audit_log WHERE id LIKE 'crash-%'`)!;
+    expect(retry(db, row)).toBe(true);
+    const ids = db.all<{ id: string }>(`SELECT id FROM audit_log WHERE id LIKE 'crash-%' ORDER BY id`).map((r) => r.id);
+    expect(ids).toEqual([`crash-U-R-${crashDay(AT)}-0`, `crash-U-R-${crashDay(AT)}-1`]);
+    for (let i = 2; i < LIMIT; i++) expect(retry(db, row)).toBe(true);
+    expect(retry(db, row)).toBe(false);
+    expect(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log WHERE id LIKE 'crash-%'`)!.n).toBe(LIMIT);
+  });
 });
