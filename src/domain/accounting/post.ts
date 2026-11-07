@@ -822,3 +822,15 @@ export const purchasePaymentLines = (total: number): EntryLine[] => [
   { account: '2100', debit: total, credit: 0 },
   { account: CASH, debit: 0, credit: total },
 ];
+
+/** سطور قيد استرداد ضريبة المدخلات نقداً (markVatRefunded): مدين 1100 / دائن 1270 بضريبة الفاتورة · بها يعيد جهاز المالك اشتقاق قيد العضو */
+export const vatRefundLines = (no: string, tax: number): EntryLine[] => [
+  { account: CASH, descr: 'استرداد ضريبة', debit: tax, credit: 0 }, // i18n-exempt: بيان القيد المخزَّن
+  { account: '1270', descr: 'إقفال ضريبة الفاتورة ' + no, debit: 0, credit: tax }, // i18n-exempt: بيان القيد المخزَّن
+];
+
+/** سطور قيد رفض الاسترداد (markVatRejected): الضريبة تكلفةٌ في مصروف الفئة / دائن 1270 · بها يعيد جهاز المالك اشتقاق قيد العضو */
+export const vatRejectLines = (category: string | null | undefined, no: string, tax: number): EntryLine[] => [
+  { account: purchaseExpenseAccount(category), descr: 'ضريبة غير مستردة', debit: tax, credit: 0 }, // i18n-exempt: بيان القيد المخزَّن
+  { account: '1270', descr: 'إقفال ضريبة الفاتورة ' + no, debit: 0, credit: tax }, // i18n-exempt: بيان القيد المخزَّن
+];

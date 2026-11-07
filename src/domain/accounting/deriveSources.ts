@@ -20,7 +20,7 @@ import {
   contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
   reservationDepositLines, reservationForfeitLines, reservationRefundLines, keyMoneyLines,
   claimLines, claimCollectionLines, purchaseLedgerLines, purchasePaymentLines, PURCHASE_CATEGORY_ACCOUNT,
-  invoiceLedgerLines, creditNoteLedgerLines, invoicePaymentLines, type EntryLine,
+  invoiceLedgerLines, creditNoteLedgerLines, invoicePaymentLines, vatRefundLines, vatRejectLines, type EntryLine,
 } from './post';
 import { TS_DEDUCTIBLE } from '../purchases';
 import { invoiceTotals, normalizeInvoiceLines, KIND_CREDIT } from '../invoices';
@@ -63,6 +63,9 @@ export interface SourceReader {
   pending(srcType: string, srcId: string): string[];
 }
 
+/** حسابات مصروف فئات الشراء (purchaseExpenseAccount: الفئة المعروفة، وإلا 5300) */
+const EXPENSE_ACCOUNTS = [...new Set([...Object.values(PURCHASE_CATEGORY_ACCOUNT), '5300'])];
+
 /** المصادر التي يُعاد اشتقاقها هنا · وأطراف حساباتها (لما وصل معكوساً) */
 export const DERIVED_SOURCES: Record<string, string[]> = {
   contract_deposit: ['1100', '1260', '2400'],
@@ -77,8 +80,10 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   claim: ['1250', '4300'],
   claim_collect: ['1100', '1250'],
   // فاتورة الشراء: مصروف فئتها، وحسابات فئات أصول بنودها، وضريبة المدخلات القابلة للاسترداد، وفرق التقريب، والذمم الدائنة
-  purchase: [...new Set([...Object.values(PURCHASE_CATEGORY_ACCOUNT), '5300']), ...ASSET_CATEGORIES.map((c) => c.code), '1270', '5900', '2100'],
+  purchase: [...EXPENSE_ACCOUNTS, ...ASSET_CATEGORIES.map((c) => c.code), '1270', '5900', '2100'],
   purchase_pay: ['2100', '1100'],
+  // استرداد ضريبة المدخلات نقداً، أو رفضه تكلفةً في مصروف الفئة
+  vat_refund: ['1100', '1270', ...EXPENSE_ACCOUNTS],
   // فاتورة المبيعات وإشعارها الدائن (مصدره صفّ الإشعار نفسه) وتحصيلها
   invoice: ['1200', '4100', '2200'],
   invoice_pay: ['1100', '1200'],
@@ -135,6 +140,7 @@ function live(r: SourceReader, src: string, srcId: string, exceptId: string, by:
 }
 
 interface PurchaseRow {
+  no: string | null; refund_status: string | null; refund_date: string | null;
   category: string | null; subtotal_halalas: number; tax_halalas: number; total_halalas: number; tax_status: string | null;
   date: string | null; unit_id: string | null; property_id: string | null; deleted_at: string | null; journal_entry_id: string | null;
   payment_journal_entry_id: string | null; paid: number; paid_date: string | null;
@@ -356,6 +362,32 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       } else if (head.subtotal + head.tax !== head.total) return no('invoiceTotals');
       const built = want(invoiceLedgerLines(head), () => [dims]);
       return built ? { lines: built, date: v.issue ?? '', also, correctable: false } : no('noEntry');
+    }
+    case 'vat_refund': {
+      // استرداد ضريبة المدخلات أو رفضه (purchases.ts: markVatRefunded وmarkVatRejected) بضريبة الفاتورة كلها، والفاتورة «قابلة للخصم»
+      // وحدها، والمآل من حالة استردادها المخزّنة: «مسترَد» نقداً بتاريخ استرداده، و«مرفوض» تكلفةً في مصروف فئتها · ولا أبعاد له
+      // (dimsFromSource لا يشتقها)
+      const p = r.row<PurchaseRow>('purchases', e.srcId);
+      if (!p) return AWAIT;
+      // المسترَدة والمرفوضة لا تُحذف (failVatSettled) فلا قيد حيّاً لمحذوفة
+      if (p.deleted_at) return no('deleted');
+      if (p.tax_status !== TS_DEDUCTIBLE) return no('noEntry');
+      const status = String(p.refund_status ?? '');
+      const tax = num(p.tax_halalas);
+      const REFUNDED = 'مسترَد'; // i18n-exempt: حالة الاسترداد المخزّنة
+      const REJECTED = 'مرفوض'; // i18n-exempt: حالة الاسترداد المخزّنة
+      if (status.startsWith(REFUNDED)) {
+        if (!p.refund_date) return AWAIT;
+        const lines = tax > 0 ? want(vatRefundLines(p.no ?? '', tax), () => [NONE]) : null;
+        return lines ? { lines, date: p.refund_date, correctable: false } : no('noEntry');
+      }
+      // ولا يُخزَّن تاريخ الرفض فلا يُطابق تاريخه (وفترته المقدَّمة يفحصها memberSourceCheck)
+      if (status === REJECTED) {
+        const lines = tax > 0 ? want(vatRejectLines(p.category, p.no ?? '', tax), () => [NONE]) : null;
+        return lines ? { lines, date: null, correctable: false } : no('noEntry');
+      }
+      // مآلٌ لم يصل وسمه بعد يُنتظر
+      return AWAIT;
     }
     case 'purchase':
     case 'purchase_pay': {
