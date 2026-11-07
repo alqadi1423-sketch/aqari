@@ -918,5 +918,36 @@
     "close": "Close",
     "copy": "Copy details",
     "share": "Send"
+  },
+  "purchaseQr": {
+    "read": "Read invoice QR",
+    "reading": "Reading the image…",
+    "from": "Invoice image",
+    "camera": "Photograph the invoice",
+    "gallery": "Image from gallery",
+    "unavailable": "Code reading is not available in this app version · update it",
+    "readFailed": "The image could not be read · try a clearer photo of the code",
+    "notRead": "Invoice code not read",
+    "err": {
+      "empty": "No code in the image or file · photograph the QR code at the bottom of the invoice close and sharp, or pick the e-invoice file (XML, or a PDF that embeds it)",
+      "url": "The code in the image is a link, not a tax invoice code · a tax invoice code carries the seller name, VAT number and amount",
+      "format": "The code in the image is not a ZATCA tax invoice code",
+      "missing": "The invoice code is incomplete: it lacks the seller name, VAT number, invoice time, total or VAT"
+    },
+    "filled": "Invoice filled from the code",
+    "review": "Review the supplier, date and amounts before saving · choose the tax status yourself: the code does not say whether the invoice is in the organization's name and number.",
+    "warn": {
+      "vatNo": "The VAT number in the code is not in ZATCA format (15 digits starting and ending with 3), so it was not saved for the supplier",
+      "issuedAt": "The invoice time in the code cannot be read, so today's date was used · correct it",
+      "vatOverTotal": "The VAT in the code exceeds the total · check the invoice",
+      "rate": "The VAT in the code is not 15% of the net · the invoice may include exempt or zero-rated items"
+    },
+    "newSupplier": "Unregistered supplier",
+    "newSupplierBody": "“{{name}}” with VAT number {{vat}} is not in your suppliers · add it and record the invoice under it?",
+    "noVat": "unreadable",
+    "addSupplier": "Add supplier",
+    "keepSupplier": "Amounts only",
+    "duplicate": "This invoice is already recorded as {{no}} on {{date}} · it cannot be recorded twice",
+    "file": "E-invoice file (PDF or XML)"
   }
 }

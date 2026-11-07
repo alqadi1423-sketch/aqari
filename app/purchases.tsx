@@ -24,13 +24,17 @@ import { Icon } from '../src/ui/icons';
 import {
   savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax, priorPaymentCashOut,
   TAX_STATUSES, taxStatusesFor, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
-  type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled, purchaseEditBlock,
+  type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled, purchaseEditBlock, purchaseByQrKey,
 } from '../src/domain/purchases';
 import { today as todayFn } from '../src/domain/dates';
 import { metersForPurchase } from '../src/domain/meters';
 import { today, dfmt, daysBetween, toLocalISODate } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
-import { attachPicked, pickFile } from '../src/ui/attach';
+import { attachPicked, pickFile, captureWithCamera, pickFromGallery, type PickedFile } from '../src/ui/attach';
+import { readQrFromImage, readQrFromInvoiceFile } from '../src/services/invoiceQr';
+import { pickZatcaQr, zatcaQrKey } from '../src/domain/zatcaQr';
+import { purchaseDraftFromQr } from '../src/domain/purchaseQr';
+import { saveSupplier } from '../src/domain/suppliers';
 import { FileViewer, type ViewerFile } from '../src/ui/FileViewer';
 import { AttachStrip } from '../src/ui/AttachStrip';
 import { reportFailure } from '../src/ui/failureDialog';
@@ -371,9 +375,77 @@ export default function Purchases() {
     setTouched({ base: false, tax: false, total: false });
     setTaxStatus(TS_EXCLUDED); setExcludeReason(EXCLUDE_REASONS[0]); setExcludeOther(''); setConfirmOurs(false);
     setPendingFile(null);
+    setQrKey('');
     setLines([]);
     setFormOpen(true);
   };
+  // قراءة QR فاتورة الشراء (التوجيه الرابع ٦ · ١): صورةٌ بالكاميرا أو من المعرض، فتُعبَّأ الفاتورة الجديدة من رمز الهيئة وتُرفق الصورة أصلاً
+  // لها · مسودةٌ يراجعها المستخدم ولا تُحفظ بنفسها، والوضع الضريبي يختاره هو (الرمز لا يحمل المشتري)
+  const [qrBusy, setQrBusy] = useState(false);
+  // مفتاح رمز الفاتورة المقروءة (الهجرة ٥٤): يُحفظ معها فلا تُسجَّل مرتين
+  const [qrKey, setQrKey] = useState('');
+  const fillFromQr = async (img: PickedFile, kind: 'image' | 'file' = 'image') => {
+    setQrBusy(true);
+    try {
+      let values: string[];
+      try { values = kind === 'image' ? await readQrFromImage(img.uri) : await readQrFromInvoiceFile(img); }
+      catch (e) { toast(t((e as Error).message === 'qr-unavailable' ? 'purchaseQr.unavailable' : 'purchaseQr.readFailed')); return; }
+      const r = pickZatcaQr(values);
+      if (!r.ok) {
+        dialog({ title: t('purchaseQr.notRead'), body: t('purchaseQr.err.' + r.error), actions: [{ label: t('common.ok'), variant: 'primary' }] });
+        return;
+      }
+      // «والمكررة تُرفض»: فاتورةٌ مسجّلة من رمزها لا تُعبَّأ من جديد
+      const key = zatcaQrKey(r.qr);
+      const dup = purchaseByQrKey(db, key);
+      if (dup) {
+        dialog({ title: t('purchaseQr.notRead'), body: t('purchaseQr.duplicate', { no: dup.no, date: dup.date }), actions: [{ label: t('common.ok'), variant: 'primary' }] });
+        return;
+      }
+      const d = purchaseDraftFromQr(db, r.qr);
+      const apply = (name: string) => {
+        setQrKey(key);
+        if (name) setSupplier(name);
+        setDate(d.date);
+        setSubtotal(fmt(d.subtotalHalalas).replace(/,/g, ''));
+        setTaxStr(fmt(d.taxHalalas).replace(/,/g, ''));
+        setTotalStr(fmt(d.totalHalalas).replace(/,/g, ''));
+        setTouched({ base: true, tax: true, total: true });
+        if (!pendingFile) setPendingFile(img);
+        dialog({
+          title: t('purchaseQr.filled'),
+          body: [t('purchaseQr.review'), ...d.warnings.map((w) => '• ' + t('purchaseQr.warn.' + w))].join('\n'),
+          actions: [{ label: t('common.ok'), variant: 'primary' }],
+        });
+      };
+      if (d.supplierId) { apply(d.supplier); return; }
+      dialog({
+        title: t('purchaseQr.newSupplier'),
+        body: t('purchaseQr.newSupplierBody', { name: d.supplier, vat: d.newSupplierVat ?? t('purchaseQr.noVat') }),
+        actions: [
+          { label: t('purchaseQr.addSupplier'), variant: 'primary', onPress: () => {
+            try {
+              saveSupplier(db, null, { name: d.supplier, vat: d.newSupplierVat ?? '', phone: '', category: '', amountHalalas: null, utility: '' });
+              bump(); apply(d.supplier);
+            } catch (e) { reportFailure({ title: t('common.failed'), e }); }
+          } },
+          { label: t('purchaseQr.keepSupplier'), variant: 'ghost', onPress: () => apply('') },
+        ],
+      });
+    } finally { setQrBusy(false); }
+  };
+  const startQr = () => dialog({
+    title: t('purchaseQr.from'),
+    actions: [
+      { label: t('purchaseQr.camera'), variant: 'primary', onPress: async () => { const f = await captureWithCamera(['images']); if (f) await fillFromQr(f); } },
+      { label: t('purchaseQr.gallery'), onPress: async () => { const f = await pickFromGallery(['images']); if (f) await fillFromQr(f); } },
+      { label: t('purchaseQr.file'), onPress: async () => {
+        const f = await pickFile(['application/pdf', 'text/xml', 'application/xml']);
+        if (f) await fillFromQr(f, 'file');
+      } },
+      { label: t('common.cancel'), variant: 'ghost' },
+    ],
+  });
   const openEdit = useCallback((id: string) => {
     const p = db.get<{
       supplier_name: string; date: string; due: string; category: string; incorp_item: string;
@@ -447,6 +519,7 @@ export default function Purchases() {
         meterId: meterId || null,
         meterReading: meterReading.trim() ? parseFloat(meterReading) : null,
         lines: lines.length ? lines.map(toLineInput) : undefined,
+        qrKey: editingId ? undefined : qrKey || undefined,
       }, editingId ?? undefined);
       if (pendingFile) {
         attachPicked(db, pendingFile, 'purchase', savedId, 'purchase').catch((e) => reportFailure({ title: 'تعذّر رفع الملف', e }));
@@ -658,6 +731,11 @@ export default function Purchases() {
             <View style={{ flex: 1 }}><BtnPrimary title={editingId ? 'حفظ التعديل' : 'تسجيل الفاتورة'} onPress={save} /></View>
           </>
         }>
+        {!editingId ? (
+          <View style={{ marginBottom: 10 }}>
+            <BtnGhost small icon="invoice" title={qrBusy ? t('purchaseQr.reading') : t('purchaseQr.read')} onPress={qrBusy ? () => undefined : startQr} />
+          </View>
+        ) : null}
         <SelectField label="المورد / الجهة" value={selectedSupplier?.id ?? ''}
           display={supplier || undefined}
           options={suppliers.map((s) => ({ value: s.id, label: s.name, sub: s.utility_type ? 'مورد ' + s.utility_type : undefined }))}

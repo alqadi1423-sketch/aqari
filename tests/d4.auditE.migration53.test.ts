@@ -3,7 +3,7 @@
  * ما صمد: المحفّزات تُستبدل، والإدراج والتحديث (ON CONFLICT) وقلب del بحمولاتٍ مشوّهة لا ترمي، والجدول يطابق المسح المحروس.
  */
 import { openNodeDb } from '@/db/nodeAdapter';
-import { MIGRATIONS } from '@/db/schema';
+import { MIGRATIONS, SCHEMA_VERSION } from '@/db/schema';
 import { migrate, currentSchemaVersion } from '@/db/migrations';
 import { stageInbox } from '@/sync/engine';
 import type { RemoteDoc } from '@/sync/types';
@@ -50,7 +50,7 @@ describe('مدقق هـ · الهجرة ٥٣ بعد ٥٢ القديمة', () => 
     stageInbox(db, [{ id: 'journal_entries__m-ok', t: 'journal_entries', k: 'm-ok', del: false, u: '2026-11-01T00:00:00.000Z', dev: 'x',
       d: { id: 'm-ok', no: 'MO-1', status: 'مسودة' }, lines: [{ id: 'm-ok-l0', entry_id: 'm-ok' }] } as RemoteDoc]);
     migrate(db);
-    expect(currentSchemaVersion(db)).toBe(53);
+    expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
     const doc = (k: string, lines: unknown, u: string, del = false): RemoteDoc => ({ id: 'journal_entries__' + k, t: 'journal_entries', k, del, u, dev: 'x',
       d: del ? undefined : { id: k, no: 'N-' + k, status: 'مسودة' }, lines: del ? undefined : lines } as unknown as RemoteDoc);
     const scan = () => db.all<{ l: string; d: string }>(`SELECT json_extract(j.value, '$.id') AS l, i.doc AS d FROM sync_inbox i, json_each(i.payload, '$.lines') j

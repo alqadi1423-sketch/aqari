@@ -46,6 +46,21 @@ export interface PurchaseInput {
   meterReading?: number | null;
   /** بنود الفاتورة (الهجرة ٢٩) · ما يصير منها أصلاً يُقيَّد على حساب فئته · وبلا بنود تبقى الفاتورة كما كانت */
   lines?: PurchaseLineInput[];
+  /** مفتاح رمز QR إن قُرئت منه (zatcaQrKey · الهجرة ٥٤): يُكتب عند الإنشاء وحده، ولا تُسجَّل فاتورةٌ حيّة بالمفتاح نفسه مرتين */
+  qrKey?: string;
+}
+
+/** الفاتورة الحيّة بمفتاح رمزها · null إن لم تُسجَّل (أو كانت في السلة) */
+export function purchaseByQrKey(db: DB, key: string, exceptId = ''): { id: string; no: string; date: string } | null {
+  if (!key) return null;
+  return db.get<{ id: string; no: string; date: string }>(
+    `SELECT id, no, date FROM purchases WHERE qr_key = ? AND qr_key != '' AND deleted_at IS NULL AND id != ? ORDER BY created_at LIMIT 1`,
+    [key, exceptId]) ?? null;
+}
+
+function rejectDuplicateQr(db: DB, key: string, exceptId = ''): void {
+  const dup = purchaseByQrKey(db, key, exceptId);
+  if (dup) throw new Error(t('purchaseQr.duplicate', { no: dup.no, date: dup.date }));
 }
 
 // بلغة الهيئة: «قابلة للخصم» المصطلح الرسمي · الاسم وحده يكفي بلا شرح
@@ -167,17 +182,19 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
          taxStatus, input.excludeReason ?? '', supplierVat, existingId]
       );
     } else {
+      const qrKey = (input.qrKey ?? '').trim();
+      rejectDuplicateQr(db, qrKey);
       no = nextPurchaseNo(db);
       db.run(
         `INSERT INTO purchases (id, no, supplier_name, date, due, category, incorp_item, amortize,
           amortize_months, exempt, exclude_from_vat, tax_status, exclude_reason, supplier_vatno, unit_id, property_id,
-          subtotal_halalas, tax_halalas, total_halalas, meter_id, meter_reading, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          subtotal_halalas, tax_halalas, total_halalas, meter_id, meter_reading, created_at, qr_key)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [id, no, input.supplier, input.date, input.due, input.category, input.incorpItem,
          input.amortize ? 1 : 0, input.amortizeMonths, taxStatus === TS_EXEMPT ? 1 : 0,
          taxStatus === TS_EXCLUDED ? 1 : 0, taxStatus, input.excludeReason ?? '', supplierVat, input.unitId ?? null, input.propertyId ?? null,
          input.subtotalHalalas, tax, total, input.meterId ?? null, input.meterReading ?? null,
-         new Date().toISOString()]
+         new Date().toISOString(), qrKey]
       );
       if (input.meterId) {
         addMeterReading(db, input.meterId, input.meterReading ?? null, total, input.date, no);
@@ -436,11 +453,13 @@ const reversedEntry = (db: DB, entryId: string | null) => entryId
  */
 export function restorePurchase(db: DB, id: string): void {
   db.transaction(() => {
-    const p = db.get<{ no: string; journal_entry_id: string | null; payment_journal_entry_id: string | null; paid: number; deleted_at: string | null }>(
-      `SELECT no, journal_entry_id, payment_journal_entry_id, paid, deleted_at FROM purchases WHERE id = ?`, [id]);
+    const p = db.get<{ no: string; journal_entry_id: string | null; payment_journal_entry_id: string | null; paid: number; deleted_at: string | null; qr_key: string }>(
+      `SELECT no, journal_entry_id, payment_journal_entry_id, paid, deleted_at, qr_key FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
     // الحية لا «تُستعاد» (المراجعة الخارجية ٧ · النتيجة ٤)
     if (!p.deleted_at) throw new Error(t('restore.notInTrash'));
+    // ولا تعود فوق نسختها الحيّة المسجّلة من الرمز نفسه بعد حذفها (الهجرة ٥٤)
+    rejectDuplicateQr(db, p.qr_key ?? '', id);
     // لا تعود إلى فترةٍ قُدِّم إقرارها (التحقق المستقل · قرار المالك 2026-10-09)
     if (isPurchaseFiled(db, id)) throw new Error(t('purchase.filedPeriod'));
     const reg = reversedEntry(db, p.journal_entry_id);

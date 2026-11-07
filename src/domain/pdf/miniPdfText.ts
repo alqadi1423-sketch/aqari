@@ -159,6 +159,18 @@ function extractStreams(bytes: Uint8Array, raw: string): RawStream[] {
   return out;
 }
 
+/**
+ * الملفات المضمّنة في PDF (مجاري /Type /EmbeddedFile) مفكوكةً بسقوف المستخرج نفسها · لفاتورة PDF/A-3 تضمّن XML الفاتورة الإلكترونية
+ * (التوجيه الرابع ٦ · ١) · المشفّر والتالف بلا ملفات
+ */
+export function pdfEmbeddedFiles(bytes: Uint8Array): Uint8Array[] {
+  const raw = latin1(bytes);
+  if (/\/Encrypt\s+\d+\s+\d+\s+R/.test(raw) || /\/Encrypt\s*<</.test(raw)) return [];
+  try {
+    return extractStreams(bytes, raw).filter((s) => /\/Type\s*\/EmbeddedFile\b/.test(s.dict)).map((s) => s.data);
+  } catch { return []; }
+}
+
 /** فك مجرى كائنات ObjStm إلى نص كائناته */
 function expandObjStm(s: RawStream): string {
   const n = parseInt(/\/N\s+(\d+)/.exec(s.dict)?.[1] ?? '0', 10);

@@ -33,9 +33,9 @@ export async function pickFile(types: string[] = ['*/*']): Promise<PickedFile | 
 }
 
 /** صور ومقاطع من المعرض · بلا خيار جودة = بلا إعادة ترميز، الملف يمرّ كما هو */
-export async function pickFromGallery(): Promise<PickedFile | null> {
+export async function pickFromGallery(mediaTypes: ImagePicker.MediaType[] = ['images', 'videos']): Promise<PickedFile | null> {
   const res = await whilePrompting(() => ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ['images', 'videos'],
+    mediaTypes,
   }));
   if (res.canceled || !res.assets?.length) return null;
   const a = res.assets[0];
@@ -48,10 +48,10 @@ export async function pickFromGallery(): Promise<PickedFile | null> {
 }
 
 /** تصوير مباشر بالكاميرا (صورة أو مقطع) · بلا خيار جودة = بلا إعادة ترميز */
-export async function captureWithCamera(): Promise<PickedFile | null> {
+export async function captureWithCamera(mediaTypes: ImagePicker.MediaType[] = ['images', 'videos']): Promise<PickedFile | null> {
   const perm = await ImagePicker.requestCameraPermissionsAsync();
   if (!perm.granted) return null;
-  const res = await whilePrompting(() => ImagePicker.launchCameraAsync({ mediaTypes: ['images', 'videos'] }));
+  const res = await whilePrompting(() => ImagePicker.launchCameraAsync({ mediaTypes }));
   if (res.canceled || !res.assets?.length) return null;
   const a = res.assets[0];
   return {

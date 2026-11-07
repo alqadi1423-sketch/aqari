@@ -15,6 +15,7 @@
     "@react-native-community/datetimepicker": "9.1.0",
     "@react-native-community/slider": "5.2.0",
     "@react-native-google-signin/google-signin": "^16.1.5",
+    "@react-native-ml-kit/barcode-scanning": "2.0.0",
     "@react-native-ml-kit/text-recognition": "^2.0.0",
     "date-fns": "^4.1.0",
     "expo": "~57.0.26",
