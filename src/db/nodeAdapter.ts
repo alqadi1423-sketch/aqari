@@ -18,8 +18,10 @@ export function openNodeDb(path: string): DB {
     if (!s) { s = raw.prepare(sql); cache.set(sql, s); if (cache.size > 96) cache.delete(cache.keys().next().value as string); }
     return s;
   };
+  // وبعد تغيير المخطط تُرمى المحفوظة: node:sqlite في Node 22 يُبقي أعمدة «SELECT *» كما كانت قبل ALTER TABLE، فنجح على هذا الجهاز
+  // اختبارٌ يسقط في جيت هب (Node 24) · upgrade16 على 52f19cb
   const db: DB = {
-    exec: base.exec,
+    exec: (sql: string) => { base.exec(sql); if (/\b(ALTER|CREATE|DROP)\b/i.test(sql)) cache.clear(); },
     run(sql: string, params: SqlParams = []) {
       prep(sql).run(...(params as never[]));
     },

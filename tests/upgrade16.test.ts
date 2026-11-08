@@ -30,7 +30,10 @@ test('قاعدة ١٦ ببيانات قديمة تترقّى إلى ٢٠ دون 
   for (const t of ['trg_je_insert_balanced', 'trg_je_posted_no_trash', 'trg_je_posted_status', 'trg_pay_insert_cap', 'trg_inst_update_cap', 'sync_contracts_ins', 'sync_journal_lines_ins', 'row_by_contracts']) {
     expect(triggers).toContain(t);
   }
-  expect(db.all(`SELECT * FROM journal_entries ORDER BY id`)).toEqual(before);
+  // الأعمدة القائمة لا تتغيّر، وما أضافته الهجرات بعد ١٦ فارغٌ أو بقيمته الافتراضية (لا يُحسب «تغيّر صف»)
+  const after = db.all<Record<string, unknown>>(`SELECT * FROM journal_entries ORDER BY id`);
+  expect(after.map((r) => Object.fromEntries(Object.keys(before[0] as object).map((k) => [k, r[k]])))).toEqual(before);
+  expect(after.map((r) => r.stmt_line_id)).toEqual([null]);
   expect(db.get<{ v: number }>(`SELECT v FROM sync_ctl WHERE k = 'capture'`)!.v).toBe(0);
   expect(Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_outbox`)!.n)).toBe(0);
   expect(semanticIssues(db)).toEqual([]);
