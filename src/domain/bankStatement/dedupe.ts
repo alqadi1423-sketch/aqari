@@ -20,25 +20,57 @@ export function fnv64(s: string): string {
 export function statementLineKeys(bankId: string, lines: Array<Pick<StatementLine, 'date' | 'amount' | 'balance' | 'descr'>>): string[] {
   const seen = new Map<string, number>();
   return lines.map((l) => {
-    // بلا الرصيد والبيان: الحركة نفسها من صيغةٍ أخرى (MT940 بلا رصيد) أو بتصديرٍ ببيانٍ أطول بصمتها نفسها (المدقق الخارجي U١٨)
-    const base = [bankId, l.date, l.amount].join('|');
+    // بلا البيان: الحركة نفسها بتصديرٍ ببيانٍ أطول بصمتها نفسها (المدقق الخارجي U١٨) · والرصيد المطبوع يعرّفها بلا رقم تكرار، فحوالةٌ في
+    // كشف الشهر وفي صورة صفحته بصمتها واحدة (Z١-٢ وA٢-٥) · وما بلا رصيد (MT940) برقم تكراره في ملفه
+    const base = fnv64([bankId, l.date, l.amount].join('|'));
     const n = (seen.get(base) ?? 0) + 1;
     seen.set(base, n);
-    // والرصيد المطبوع لاحقةٌ تفرّق حركتين باليوم والمبلغ نفسيهما في كشفين (صفحتا صورة · المدقق الخارجي Z١-٢)، ولا تمنع مطابقة صيغةٍ بلا
-    // رصيد (sameLineKey)
-    return fnv64(base + '#' + n) + (l.balance == null ? '' : '@' + l.balance);
+    if (l.balance == null) return base + '#' + n;
+    // (وسطران بالرصيد نفسه في الملف نفسه يُميَّزان بتكرارهما)
+    const withBal = base + '@' + l.balance;
+    const m = (seen.get(withBal) ?? 0) + 1;
+    seen.set(withBal, m);
+    return m === 1 ? withBal : withBal + '^' + m;
   });
 }
 
-/** بصمة السطر بلا لاحقة الرصيد */
-export const lineKeyBase = (key: string): string => key.split('@')[0];
+/** بصمة السطر بلا رصيده ولا رقم تكراره (البنك واليوم والمبلغ) */
+export const lineKeyBase = (key: string): string => key.split(/[@#]/)[0];
 /** السطر نفسه: البصمة نفسها، أو القاعدة نفسها وأحدهما بلا رصيد */
 export function sameLineKey(a: string, b: string): boolean {
-  return a === b || (lineKeyBase(a) === lineKeyBase(b) && (!a.includes('@') || !b.includes('@')));
+  return a === b || (lineKeyBase(a) === lineKeyBase(b) && (a.includes('#') || b.includes('#')));
 }
-/** شرط SQL للبصمة نفسها بمعيار sameLineKey · col عمود البصمة، والمعاملان البصمة ثم قاعدتها */
-export const SAME_KEY_SQL = (col: string) =>
-  `(${col} = ? OR ((CASE WHEN instr(${col}, '@') > 0 THEN substr(${col}, 1, instr(${col}, '@') - 1) ELSE ${col} END) = ? AND (instr(${col}, '@') = 0 OR instr(?, '@') = 0)))`;
+/**
+ * شرط SQL للبصمة نفسها بمعيار sameLineKey · بمدى البادئة فيستعمل فهرس (bank_id, line_key) (المدقق الخارجي A٢-٧: كان يمسح سطور البنك
+ * كلها) · ومعاملاته sameKeyParams(key)
+ */
+export const SAME_KEY_SQL = (col: string) => `(${col} BETWEEN ? AND ? AND (${col} = ? OR instr(${col}, '#') > 0 OR instr(?, '#') > 0))`;
+export const sameKeyParams = (key: string): string[] => [lineKeyBase(key), lineKeyBase(key) + '~', key, key];
+
+/**
+ * سطور الملف الجديدة أمام المحفوظ حيّاً للبنك: ذو الرصيد مكرَّرٌ إن حُفظ برصيده، أو بقي للقاعدة سطرٌ بلا رصيدٍ لم يُطابَق · وما بلا رصيد
+ * مكرَّرٌ ما دام رقم تكراره لا يتجاوز عدد المحفوظ بقاعدته
+ */
+export function freshLines(keys: string[], have: string[]): boolean[] {
+  const byBase = new Map<string, { bal: Set<string>; noBal: number; all: number; claimed: number }>();
+  for (const k of have) {
+    const b = lineKeyBase(k);
+    const e = byBase.get(b) ?? { bal: new Set<string>(), noBal: 0, all: 0, claimed: 0 };
+    if (k.includes('#')) e.noBal++; else e.bal.add(k);
+    e.all++;
+    byBase.set(b, e);
+  }
+  return keys.map((k) => {
+    const e = byBase.get(lineKeyBase(k));
+    if (!e) return true;
+    if (k.includes('@')) {
+      if (e.bal.has(k)) return false;
+      if (e.claimed < e.noBal) { e.claimed++; return false; }
+      return true;
+    }
+    return Number(k.split('#')[1]) > e.all;
+  });
+}
 
 /** بصمة بايتات الملف (منع قراءة الملف نفسه مرتين) */
 export function bytesHash(bytes: Uint8Array): string {

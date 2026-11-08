@@ -192,7 +192,9 @@ export function receiptBlocked(db: DB, paymentId: string): string | null {
  * العاكس نفسه وحركته، فلا عاكسان لقيدٍ واحد
  */
 export function cancelPayment(db: DB, paymentId: string, input: { date?: string; reason: string }): CancelPaymentPlan {
-  return withDeterministicIds('cancel:' + paymentId, () => cancelPaymentNow(db, paymentId, input));
+  // (وبتاريخ الإلغاء: إلغاءان بتاريخين لا يلتقيان بمعرّفٍ واحدٍ ومحتويين فتختلط صفوفهما في السحابة، بل يُقبل أولهما على جهاز المالك
+  // ويُرفض الثاني عاكساً ثانياً ظاهراً، وتاريخ الإلغاء وعاكسه نهائيان · المدقق الخارجي A٢-٦)
+  return withDeterministicIds('cancel:' + paymentId + ':' + (input.date || defaultCancelDate(db, paymentId)), () => cancelPaymentNow(db, paymentId, input));
 }
 
 function cancelPaymentNow(db: DB, paymentId: string, input: { date?: string; reason: string }): CancelPaymentPlan {
@@ -228,6 +230,12 @@ function cancelPaymentNow(db: DB, paymentId: string, input: { date?: string; rea
     if (plan.creditReversal !== 0) {
       db.run(`UPDATE tenants SET credit_halalas = credit_halalas - ?
               WHERE id = (SELECT tenant_id FROM contracts WHERE id = ?)`, [plan.creditReversal, plan.contractId]);
+    }
+    // وسطر كشف البنك المطابَق بحركة الدفعة يعود مفتوحاً: الإيداع يُقترح تحصيلاً من جديد ويظهر «في الكشف وحده» (المدقق الخارجي B٢-٧)
+    const origNo = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [p.journal_entry_id ?? ''])?.no;
+    if (origNo) {
+      db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL
+              WHERE deleted_at IS NULL AND status = 'matched' AND bank_tx_id IN (SELECT id FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL)`, [origNo]);
     }
     // ٥) الوسم ثم ٢) المسدَّد من الدفعات
     db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`,

@@ -8,7 +8,7 @@ import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { t } from '../../i18n';
 import { RuleViolation } from '../contracts/service';
-import { statementLineKeys, fnv64, lineKeyBase, sameLineKey, SAME_KEY_SQL } from './dedupe';
+import { statementLineKeys, fnv64, freshLines, SAME_KEY_SQL, sameKeyParams } from './dedupe';
 import { foldText } from './normalize';
 import type { ColumnMapping, StatementResult } from './read';
 
@@ -34,12 +34,9 @@ export function saveStatement(db: DB, bankId: string, r: Ok, file: { name: strin
     if (!same) throw new RuleViolation(t('bankStatement.otherAccount', { account: r.account ?? '' }));
   }
   const keys = statementLineKeys(bankId, r.lines);
-  // والموجود حيّاً بالقاعدة نفسها وأحدهما بلا رصيد، أو برصيده نفسه، هو السطر نفسه (sameLineKey)
-  const have = new Map<string, string[]>();
-  for (const x of db.all<{ k: string }>(`SELECT line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL`, [bankId])) {
-    const a0 = have.get(lineKeyBase(x.k)); if (a0) a0.push(x.k); else have.set(lineKeyBase(x.k), [x.k]);
-  }
-  const fresh = r.lines.map((l, i) => ({ l, key: keys[i] })).filter((x) => !(have.get(lineKeyBase(x.key)) ?? []).some((k) => sameLineKey(k, x.key)));
+  // والموجود حيّاً بالرصيد نفسه، أو بلا رصيدٍ بالقاعدة نفسها، هو السطر نفسه (freshLines)
+  const isFresh = freshLines(keys, db.all<{ k: string }>(`SELECT line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.k));
+  const fresh = r.lines.map((l, i) => ({ l, key: keys[i] })).filter((_, i) => isFresh[i]);
   // وبصمات سطوره كلها معه (الهجرة ٥٨): حذف كشفٍ آخر فيه سطرٌ منها ينقله إلى هذا، على هذا الجهاز أو حين يصل إلى غيره
   if (!fresh.length) throw new StatementDuplicate(t('bankStatement.nothingNew'));
   // ومعرّفا الكشف والسطر حتميان من البنك وبصمة الملف وبصمة السطر (المدقق الخارجي Y٣): الملف نفسه يُقرأ على جهازين بلا اتصال فيلتقي
@@ -295,7 +292,7 @@ export function statementSharing(db: DB, bankId: string, lineKey: string, except
   return db.get<{ id: string }>(
     `SELECT s.id FROM bank_statements s, json_each(s.shared_keys) k
      WHERE s.bank_id = ? AND s.id != ? AND s.deleted_at IS NULL AND ${SAME_KEY_SQL('k.value')} ORDER BY s.created_at, s.id LIMIT 1`,
-    [bankId, exceptStatementId, lineKey, lineKeyBase(lineKey), lineKey])?.id ?? null;
+    [bankId, exceptStatementId, ...sameKeyParams(lineKey)])?.id ?? null;
 }
 
 /**
