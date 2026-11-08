@@ -127,7 +127,9 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
     }
   }
   for (const m of [oldestBy, laterBy, runsBy]) for (const l of m.values()) l.sort((p, q) => p.day - q.day);
-  const RUN_SPAN = 400; // أطول مدى متتاليةٍ بأيامها (اثنا عشر قسطاً شهرياً) مع نافذتها
+  // أطول مدى متتاليةٍ بأيامها مع نافذتها، أياً كانت دورة العقد (المدقق الخارجي F٢-٨: كان ٤٠٠ يومٍ ثابتة للشهري)
+  let RUN_SPAN = 45;
+  for (const l of runsBy.values()) for (const r of l) RUN_SPAN = Math.max(RUN_SPAN, r.last - r.day + 45);
   // والمتتالية تبدأ بأقدم القائم: لا يُترك قسطٌ أقدم بلا سداد · والقسط الواحد أقدم القائم أو ما يستحق في أسبوع السطر
   const WINDOWS: Array<[Map<number, Tpl[]>, number]> = [[oldestBy, 45], [laterBy, 7]];
   // أسباب المرشح بحسب أعلامه (عدة أقساط، والاسم، والمرجع) مصفوفاتٌ مشتركة تُنسخ للمعروض وحده
@@ -144,13 +146,21 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
   for (const c of claims) addParty(nameTokens(c.tenant ?? ''));
   for (const v of invoices) addParty(nameTokens(v.customer));
   const hits = (d: Set<string>, n: string[]) => n.filter((w) => d.has(w)).length;
+  // وأقوى الأسماء الكاملة: ما فيه الاسم الأول بأكثر الكلمات، ثم ما بلا الاسم الأول بأكثرها (المدقق الخارجي F٢-٢: «سعد فهد القحطاني»
+  // يوافق كلمتين من «محمد فهد القحطاني» بلا اسمه الأول، و«فهد سعد القحطاني» بكلمتين أقلّ من الدافع)
   const fullNames = (d: Set<string>): Set<string> => {
-    const out = new Set<string>();
-    for (const w of d) for (const toks of parties.get(w) ?? []) if (hits(d, toks) >= 2) out.add(toks.join(' '));
-    return out;
+    const found = new Map<string, { first: boolean; n: number }>();
+    for (const w of d) for (const toks of parties.get(w) ?? []) {
+      const n = hits(d, toks);
+      if (n >= 2) found.set(toks.join(' '), { first: d.has(toks[0]), n });
+    }
+    const pool = [...found.entries()].filter(([, v]) => v.first);
+    const use = pool.length ? pool : [...found.entries()];
+    const best = Math.max(0, ...use.map(([, v]) => v.n));
+    return new Set(use.filter(([, v]) => v.n === best).map(([k]) => k));
   };
   const firstFrom = (list: Tpl[], day: number) => { let lo = 0; let hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].day < day) lo = m + 1; else hi = m; } return lo; };
-  const named = (d: Set<string>, n: string[], full: Set<string>) => n.length > 0 && (hits(d, n) >= 2 || (d.has(n[0]) && (!full.size || full.has(n.join(' ')))));
+  const named = (d: Set<string>, n: string[], full: Set<string>) => n.length > 0 && (full.size ? full.has(n.join(' ')) : d.has(n[0]));
   const reffed = (text: string, refs: string[]) => refs.some((r) => text.includes(r));
 
   type Cand2 = Omit<Cand, 'label'> & { label: () => string };

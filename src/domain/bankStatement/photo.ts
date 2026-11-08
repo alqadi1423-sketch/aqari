@@ -73,7 +73,12 @@ export function readStatementPhoto(lines: OcrLine[], opts: ReadOpts = {}): State
     const toks: Tok[] = [];
     for (const t of r.toks) {
       if (/^(CR|DR|Cr|Dr)\.?$/.test(t.text) && toks.length && amountToken(toks[toks.length - 1].text)) toks[toks.length - 1].text += ' ' + t.text.slice(0, 2);
-      else toks.push({ ...t });
+      else {
+        // وملتصقةً بالمبلغ («6,000.00CR» · المدقق الخارجي F٢-٥)
+        const glued = /^(.*\d)(CR|DR|Cr|Dr)\.?$/.exec(t.text);
+        if (glued && amountToken(glued[1])) toks.push({ ...t, text: glued[1] + ' ' + glued[2] });
+        else toks.push({ ...t });
+      }
     }
     // والهجري بجانب الميلادي ليس تاريخ الحركة: يُؤخذ ما يُقرأ ميلادياً إن وُجد (المدقق الخارجي D٢-٧)
     const anyDates = toks.filter((t) => DATE_TOKEN.test(fixDigits(t.text)));

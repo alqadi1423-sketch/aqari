@@ -4,6 +4,7 @@
  * متطابقان حقاً (رسمان في اليوم نفسه) يبقيان اثنين · ومرجع البنك وحده لا يكفي (الحوالة ورسمها قد يشتركان فيه).
  */
 import type { StatementLine } from './read';
+import type { DB } from '../../db/adapter';
 
 /** FNV-1a بـ64 بتاً (قطعتان من ٣٢) ستّ عشري · ثابتٌ بين الأجهزة */
 export function fnv64(s: string): string {
@@ -53,10 +54,10 @@ export const sameKeyParams = (key: string): string[] => [lineKeyBase(key), lineK
 /**
  * سطورٌ حيّة بترتيب أولويتها (الأَولى أولاً): ما يبقى منها (true) وما هو تكرار، بقاعدةٍ لا يغيّرها ترتيب الوصول فتُبقي الأجهزة كلها
  * السطور نفسها (المدقق الخارجي C٢-١) · في كل قاعدة (اليوم والمبلغ): البصمة نفسها مرةً، وكل بصمةٍ برصيدٍ حركة (عددها K)، و«#n» بلا رصيد
- * حركةٌ أخرى إن جاوز n عددَ ذوات الرصيد، وإلا فهي وإحدى ذوات الرصيد حركةٌ واحدة لا يُعرف أيّها: يبقى منها K بالأولوية (المطابَق أولاً)
- * · فـ«#1 #2 #3» من MT940 ثلاث حوالات، و«#3» بعد صورة الصفحة الأولى بحوالتين حوالةٌ ثالثة
+ * حركةٌ أخرى إن جاوز n عددَ ذوات الرصيد · وما سواها («#n» وn لا يجاوزه) قد يكون إحدى ذوات الرصيد، فيبقى منه ما يكمل عددَ حركات القاعدة
+ * في أكبر كشفٍ حيٍّ يحملها (need · E٢-١: كشفٌ رصيده آخر اليوم وحده فيه «#1» و«@6000» حوالتان) بالأولوية
  */
-export function keepInOrder(keys: string[]): boolean[] {
+export function keepInOrder(keys: string[], need: (base: string) => number = () => 0): boolean[] {
   const keep = keys.map(() => false);
   const firstOf = new Map<string, number>();
   keys.forEach((k, i) => { if (!firstOf.has(k)) firstOf.set(k, i); });
@@ -65,16 +66,48 @@ export function keepInOrder(keys: string[]): boolean[] {
     const b = lineKeyBase(keys[i]);
     byBase.set(b, [...(byBase.get(b) ?? []), i]);
   }
-  for (const idx of byBase.values()) {
-    const k = idx.filter((i) => !keys[i].includes('#')).length;
+  for (const [b, idx] of byBase) {
     const occ = (i: number) => Number(keys[i].split('#')[1]);
-    let room = k;
-    for (const i of [...idx].sort((a, b) => a - b)) {
-      if (keys[i].includes('#') && occ(i) > k) keep[i] = true;
-      else if (room > 0) { keep[i] = true; room--; }
-    }
+    const bal = idx.filter((i) => !keys[i].includes('#'));
+    const k = bal.length;
+    const hi = idx.filter((i) => keys[i].includes('#') && occ(i) > k);
+    const low = idx.filter((i) => keys[i].includes('#') && occ(i) <= k).sort((x, y) => x - y);
+    for (const i of [...bal, ...hi]) keep[i] = true;
+    let room = Math.max(k + hi.length, need(b)) - k - hi.length;
+    for (const i of low) { if (room <= 0) break; keep[i] = true; room--; }
   }
   return keep;
+}
+
+/** عدد حركات القاعدة (اليوم والمبلغ) في أكبر كشفٍ حيٍّ من هذه الكشوف (بصماته shared_keys) */
+export function statementsNeed(db: DB, statementIds: string[], key: string): number {
+  const base = lineKeyBase(key);
+  let n = 0;
+  for (const id of new Set(statementIds.filter(Boolean))) {
+    n = Math.max(n, Number(db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM bank_statements s, json_each(s.shared_keys) k WHERE s.id = ? AND s.deleted_at IS NULL AND k.value BETWEEN ? AND ?`,
+      [id, base, base + '~'])?.n ?? 0));
+  }
+  return n;
+}
+
+/**
+ * كشفٌ حيٌّ آخر تخطّى عند حفظه سطراً بهذه البصمة وما زال ينقصه (عدد بصماته في القاعدة أكثر من سطوره الحيّة فيها)، أو null · فحذف كشفٍ
+ * ينقل إليه ما تخطّاه وحده لا كل ما في قاعدته (المدقق الخارجي E٢-٣)
+ */
+export function statementWithRoom(db: DB, bankId: string, lineKey: string, exceptStatementId: string, exceptLineId = ''): string | null {
+  const base = lineKeyBase(lineKey);
+  const cands = db.all<{ id: string }>(
+    `SELECT DISTINCT s.id, s.created_at FROM bank_statements s, json_each(s.shared_keys) k
+     WHERE s.bank_id = ? AND s.id != ? AND s.deleted_at IS NULL AND ${SAME_KEY_SQL('k.value')} ORDER BY s.created_at, s.id`,
+    [bankId, exceptStatementId, ...sameKeyParams(lineKey)]);
+  for (const c of cands) {
+    const has = Number(db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM bank_statement_lines WHERE statement_id = ? AND id != ? AND deleted_at IS NULL AND line_key BETWEEN ? AND ?`,
+      [c.id, exceptLineId, base, base + '~'])?.n ?? 0);
+    if (has < statementsNeed(db, [c.id], lineKey)) return c.id;
+  }
+  return null;
 }
 
 /**

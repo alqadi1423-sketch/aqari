@@ -8,7 +8,7 @@ import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { t } from '../../i18n';
 import { RuleViolation } from '../contracts/service';
-import { statementLineKeys, fnv64, freshLines, SAME_KEY_SQL, sameKeyParams } from './dedupe';
+import { statementLineKeys, fnv64, freshLines, statementWithRoom } from './dedupe';
 import { foldText } from './normalize';
 import type { ColumnMapping, StatementResult } from './read';
 
@@ -243,13 +243,13 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
   // خط زمن الكشوف: كل سطرٍ برصيده المطبوع أو بما قبله · وفي اليوم الواحد بتسلسل الأرصدة لا بترتيب الحفظ، وافتتاحي الكشف حيث يتّصل:
   // عند رصيدٍ يساويه، أو قبل سطرٍ يتسلسل منه (المدقق الخارجي D٢-١: صفحةٌ تبدأ في منتصف اليوم كان افتتاحيها يوضع قبل سطور يومه كلها،
   // فتظهر فجوةٌ كاذبة وختاميٌّ خاطئ بحسب أيّ الصفحتين حُفظت أولاً)
-  type Ev = { date: string; open?: number; amount?: number; balance?: number | null };
-  const opens = db.all<{ d: string; o: number }>(
-    `SELECT period_from AS d, opening_halalas AS o FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL ORDER BY period_from, created_at, id`, [bankId])
-    .map((x): Ev => ({ date: x.d, open: Number(x.o) }));
-  const moves = db.all<{ d: string; a: number; b: number | null }>(
-    `SELECT date AS d, amount_halalas AS a, balance_halalas AS b FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL ORDER BY date, rowid`, [bankId])
-    .map((l): Ev => ({ date: l.d, amount: Number(l.a), balance: l.b == null ? null : Number(l.b) }));
+  type Ev = { date: string; open?: number; amount?: number; balance?: number | null; st: string };
+  const opens = db.all<{ d: string; o: number; id: string }>(
+    `SELECT period_from AS d, opening_halalas AS o, id FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL ORDER BY period_from, created_at, id`, [bankId])
+    .map((x): Ev => ({ date: x.d, open: Number(x.o), st: x.id }));
+  const moves = db.all<{ d: string; a: number; b: number | null; st: string }>(
+    `SELECT date AS d, amount_halalas AS a, balance_halalas AS b, statement_id AS st FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL ORDER BY date, rowid`, [bankId])
+    .map((l): Ev => ({ date: l.d, amount: Number(l.a), balance: l.b == null ? null : Number(l.b), st: String(l.st ?? '') }));
   const events: Ev[] = [];
   {
     let cur: number | null = null;
@@ -267,6 +267,9 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
         if (i < 0) {
           const j = os.findIndex((o) => ls.some(chainsFrom(o.open!)));
           if (j >= 0) { cur = take(os, j).open!; continue; }
+          // وبلا أرصدةٍ مطبوعة (MT940): افتتاحي الكشف قبل سطوره في يومه (المدقق الخارجي F٢-١: كان بعدها فيمحوها)
+          const k = os.findIndex((o) => ls.some((l) => l.st === o.st));
+          if (k >= 0) { cur = take(os, k).open!; continue; }
           i = ls.findIndex((l) => l.balance == null);
         }
         if (i < 0 && !ls.length) { cur = take(os, 0).open!; continue; }
@@ -329,12 +332,9 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
   };
 }
 
-/** كشفٌ حيٌّ آخر للبنك يحتاج سطراً ببصمته (تخطّاه عند حفظه لأنه في كشفٍ قبله · الهجرة ٥٨)، أو null */
+/** كشفٌ حيٌّ آخر للبنك يحتاج سطراً ببصمته (تخطّاه عند حفظه لأنه في كشفٍ قبله · الهجرة ٥٨) وما زال ينقصه (E٢-٣)، أو null */
 export function statementSharing(db: DB, bankId: string, lineKey: string, exceptStatementId: string): string | null {
-  return db.get<{ id: string }>(
-    `SELECT s.id FROM bank_statements s, json_each(s.shared_keys) k
-     WHERE s.bank_id = ? AND s.id != ? AND s.deleted_at IS NULL AND ${SAME_KEY_SQL('k.value')} ORDER BY s.created_at, s.id LIMIT 1`,
-    [bankId, exceptStatementId, ...sameKeyParams(lineKey)])?.id ?? null;
+  return statementWithRoom(db, bankId, lineKey, exceptStatementId);
 }
 
 /**

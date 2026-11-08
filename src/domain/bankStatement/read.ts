@@ -82,7 +82,10 @@ const fail = (error: StatementError, detail?: string, partial?: Partial<Statemen
 const rowKey = (row: string[]): string => row.map(foldText).filter(Boolean).join('|');
 const FULL_DATE = /\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}/g;
 const FULL_DATE_ONLY = /^\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}$/;
-const PAGE_MARK = /^(page|pg|صفحه|الصفحه)\s*\d+(\s*(of|من)\s*\d+)?$/;
+// («Page 1 of 2» و«Page 1/2» و«صفحة ١ / ٢» و«1 / 2» · foldText يجعل «/» مسافة · المدقق الخارجي F٢-٤)
+const PAGE_MARK = /^(?:(?:page|pg|صفحه|الصفحه)\s*\d+(?:\s*(?:of|من)?\s*\d+)?|\d+\s+(?:of|من)\s+\d+)$/;
+// (و«n / m» بمسافتين أو بكلمة الصفحة وحدها: «05/10» تاريخٌ بلا سنة)
+const PAGE_SLASH = /^\s*(?:(?:page|pg|صفحة|صفحه|الصفحة|الصفحه)\s*\d+\s*\/\s*\d+|\d+\s+\/\s+\d+)\s*$/i;
 // مبلغٌ داخل نصٍّ (الملخص في خليةٍ واحدة مع كلمته)
 const AMOUNT_IN_TEXT = /[-(]?\d[\d,.٫٬ﺭ]*\)?(?:\s?(?:CR|DR|Cr|Dr))?/g;
 
@@ -90,7 +93,7 @@ interface Raw { date: string; valueDate: string | null; descr: string; ref: stri
 
 export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): StatementResult {
   // ورقم الصفحة في التذييل («Page 1 of 2» · «صفحة ١ من ٢») خانةٌ فارغة: يقع تحت عمود مبلغٍ فيُرفض به كشفٌ صحيح (المدقق الخارجي D٢-٤)
-  const grid = input.map((r) => (Array.isArray(r) ? r : []).map(cellText).map((c) => (PAGE_MARK.test(foldText(c)) ? '' : c)))
+  const grid = input.map((r) => (Array.isArray(r) ? r : []).map(cellText).map((c) => (PAGE_MARK.test(foldText(c)) || PAGE_SLASH.test(c) ? '' : c)))
     .filter((r) => r.some(Boolean));
   if (!grid.length) return fail('empty');
 
@@ -205,6 +208,9 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   // «الرصيد المرحَّل» وعدد الحركات قبله: ختاميٌّ إن لم تأتِ بعده حركة (صورة الصفحة الأولى · Z١-٢)، وإلا رصيدٌ بين صفحتين لا يغلب
   // ختامي الرأس (المدقق الخارجي D٢-٥)
   let carriedAt = -1;
+  // والافتتاحي بموضعه من الحركات: قبلها أو بعدها كلها افتتاحيٌّ، وفي وسطها «رصيدٌ منقول» بين صفحتين لا افتتاحي الكشف (المدقق الخارجي
+  // F٢-٩: «Balance Brought Forward» أعلى الصفحة الثانية كان افتتاحياً للكشف كله)
+  const openings: Array<{ v: number; at: number }> = [];
   const moneyCols = [debitCol, creditCol, amountCol, balanceCol].filter((c) => c >= 0);
   const noteSummary = (r: string[]) => {
     r.forEach((cell, i) => {
@@ -213,7 +219,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       const v = amountAfter(r, i);
       if (v == null) return;
       // الافتتاحي أولُ ما يُطبع (كل صفحةٍ قد تكرره) والختامي آخره
-      if (k === 'opening' && summary.opening != null) return;
+      if (k === 'opening') { openings.push({ v, at: raws.length }); return; }
       if (k === 'carried') carriedAt = raws.length;
       summary[k] = v;
     });
@@ -226,7 +232,8 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       keys.forEach((k, c) => {
         if (!k || k === 'period' || summary[k] != null) return;
         const v = parseStatementAmount(next[c] ?? '');
-        if (v != null) summary[k] = v;
+        if (v != null && k === 'opening') openings.push({ v, at: 0 });
+        else if (v != null) summary[k] = v;
       });
       return;
     }
@@ -238,13 +245,17 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     // وصفٌّ مؤرَّخ بلا مبلغ حركة: ملخصٌ إن حمل كلمته، وإلا ليس حركة (ختم الطباعة في التذييل · المدقق الخارجي V١٣) · والصف الذي فيه مبلغ
     // مدينٍ أو دائن حركةٌ أياً كانت كلمات بيانه («ACCOUNT OPENING DEPOSIT» · V٢)
     // (والصفر «0.00» في خانةٍ فارغة ليس مبلغ حركة · X٦ · وما لا يُقرأ مبلغاً يبقى ليرفضه فحص U٥)
+    // وختم الطباعة بوقته في التذييل ومعه رقم الصفحة وحده («07/11/2026 10:30 … 2») ليس حركة: بلا رصيدٍ، وبلا بيانٍ أو خارج فترة الكشف
+    // (المدقق الخارجي F٢-٤)
+    if (date && /\d{1,2}:\d{2}/.test(r[dateCol] ?? '') && (balanceCol < 0 || !cellText(r[balanceCol] ?? ''))
+      && (!cellText(descrCol >= 0 ? r[descrCol] ?? '' : '') || (from && to && (date < from || date > to)))) continue;
     const moved = [debitCol, creditCol, amountCol].some((c) => c >= 0 && cellText(r[c] ?? '') !== '' && parseStatementAmount(r[c] ?? '') !== 0);
     if (date && !moved) {
       const k = r.map((c) => summaryOf(c)).find((x) => x === 'opening' || x === 'closing' || x === 'carried' || x === 'totalDebit' || x === 'totalCredit');
       // والافتتاحي والختامي المؤرَّخان قيمتهما في عمود الرصيد (والأصفار في المدين والدائن خاناتٌ فارغة · X٦)
       const bal = balanceCol >= 0 ? parseStatementAmount(r[balanceCol] ?? '') : null;
       if ((k === 'opening' || k === 'closing' || k === 'carried') && bal != null) {
-        if (!(k === 'opening' && summary.opening != null)) summary[k] = bal;
+        if (k === 'opening') openings.push({ v: bal, at: raws.length }); else summary[k] = bal;
         if (k === 'carried') carriedAt = raws.length;
       } else if (k) noteSummary(r);
       continue;
@@ -293,7 +304,12 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   // (والطيّ إن تكرر صفّ العناوين وحده: حركاتٌ حقيقية متكررة صافيها صفر لا تُطوى · U٦)
   const headerRepeats = grid.slice(h + 1).some(isRepeatHeader);
   let lines = headerRepeats ? collapseRepeats(raws) : raws;
-  if (lines[0].date > lines[lines.length - 1].date) lines = [...lines].reverse();
+  const newestFirst = lines[0].date > lines[lines.length - 1].date;
+  if (newestFirst) lines = [...lines].reverse();
+  // (والأحدث أولاً: افتتاحيه بعد حركاته في الطباعة)
+  const atStart = (o: { at: number }) => o.at === 0;
+  const atEnd = (o: { at: number }) => o.at === raws.length;
+  summary.opening = (newestFirst ? [...openings].reverse().find(atEnd) ?? openings.find(atStart) : openings.find(atStart) ?? openings.find(atEnd))?.v;
 
   // ٥) التسلسل: بالافتتاحي المطبوع، ثم بالمشتق من أول رصيدٍ مطبوع إن ناقضه المطبوع وثبتت المجاميع
   const printedOpening = summary.opening ?? opts.opening ?? null;
@@ -302,8 +318,10 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   let solved = solve(lines, printedOpening);
   // وعمود «نوع العملية» نصٌّ وصفي («Credit Card Payment» خارج، و«رسوم إيداع شيك» خارج): إن ناقضت إشاراته الأرصدة المطبوعة لكل سطر
   // فالأرصدة تحكم (المدقق الخارجي D٢-٦)
-  if (!solved.ok && signMode === 'type' && lines.every((l) => l.balance != null)) {
-    const byChain = solve(lines.map((l) => ({ ...l, sign: 0 as const })), printedOpening);
+  // (والسطر بلا رصيد يبقى بإشارة نوعه، وبلا افتتاحيٍّ مطبوع يُشتق من أول سطرٍ برصيده بإشارة نوعه · F٢-٣)
+  if (!solved.ok && signMode === 'type' && lines.some((l) => l.balance != null)) {
+    const anchor = printedOpening == null ? lines.findIndex((l) => l.balance != null) : -1;
+    const byChain = solve(lines.map((l, i) => (l.balance != null && i !== anchor ? { ...l, sign: 0 as const } : l)), printedOpening);
     if (byChain.ok) solved = byChain;
   }
   const warnings: string[] = [];
@@ -328,7 +346,8 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   if (!solved.ok) {
     // وما عُرفت إشاراته كلها (عمودا مدين ودائن أو مبلغٌ موقَّع) جزءٌ يُحفظ «غير متحقَّق» بتأكيدٍ صريح (قرار المالك 2026-10-09 أ.٤:
     // «يُنبَّه ولا تبدأ المطابقة إلا بتأكيد») · وما جُهلت إشارته لا يُحفظ
-    const known = lines.every((l) => l.sign !== 0);
+    // (وإشارات عمود النوع التي ناقضتها الأرصدة المطبوعة لا تُعرض للحفظ · F٢-٣)
+    const known = lines.every((l) => l.sign !== 0) && !(signMode === 'type' && lines.some((l) => l.balance != null));
     const asPrinted: StatementLine[] = lines.map((l) => ({
       date: l.date, valueDate: l.valueDate, descr: l.descr, ref: l.ref, amount: l.abs === 0 ? 0 : l.sign * l.abs, balance: l.balance,
     }));
@@ -404,15 +423,19 @@ function isHeader(roles: Array<Role | null>): boolean {
 
 /** أول مبلغٍ بعد خلية الكلمة في الصف، أو في الخلية نفسها بعدها، أو قبلها (الكشف العربي يضع القيمة يسار الكلمة) */
 function amountAfter(r: string[], i: number): number | null {
+  // والمبلغ قبل فحص الدور: «1,000.00 CR» قيمةٌ لا عنوانُ «دائن» (المدقق الخارجي F٢-٧) · والتاريخ ليس مبلغاً، في خليته أو بعدها
+  // («Account Opening Date: 15/03/2015» كان افتتاحياً بـ2,015 · F٢-٦)
   for (let j = i + 1; j < r.length; j++) {
-    if (summaryOf(r[j]) || roleOf(r[j])) break;
+    if (FULL_DATE_ONLY.test(r[j].replace(/\s.*$/, ''))) continue;
     const v = parseStatementAmount(r[j]);
     if (v != null) return v;
+    if (summaryOf(r[j]) || roleOf(r[j])) break;
   }
-  const inCell = (r[i].match(AMOUNT_IN_TEXT) ?? []).map(parseStatementAmount).filter((v): v is number => v != null);
+  const inCell = (r[i].replace(FULL_DATE, ' ').match(AMOUNT_IN_TEXT) ?? []).map(parseStatementAmount).filter((v): v is number => v != null);
   if (inCell.length) return inCell[inCell.length - 1];
   for (let j = i - 1; j >= 0; j--) {
     if (summaryOf(r[j])) break;
+    if (FULL_DATE_ONLY.test(r[j].replace(/\s.*$/, ''))) continue;
     const v = parseStatementAmount(r[j]);
     if (v != null) return v;
   }
