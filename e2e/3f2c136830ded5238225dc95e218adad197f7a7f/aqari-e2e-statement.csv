@@ -1,0 +1,5 @@
+Opening Balance,0.00
+Date,Description,Debit,Credit,Balance
+2026-11-02,E2E Deposit,,500.00,500.00
+2026-11-05,E2E Fee,15.00,,485.00
+Closing Balance,485.00
