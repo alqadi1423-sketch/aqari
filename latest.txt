@@ -1,7 +1,6 @@
-commit f5036b1a60255665d32cefad35e6ba9de01669c9
-run https://github.com/alqadi1423-sketch/aqari/actions/runs/42428568171
+commit 2162a249992867cfae0f510e859b8fb23227b51f
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42429346158
 os Linux · node v24.22.2 · TZ Asia/Riyadh
-success false
-suites 423 passed / 424 total
-tests 2351 passed · 1 failed · 0 skipped / 2352 total
-failed-suite tests/upgrade16.test.ts
+success true
+suites 424 passed / 424 total
+tests 2352 passed · 0 failed · 0 skipped / 2352 total
