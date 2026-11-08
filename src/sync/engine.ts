@@ -15,7 +15,7 @@
  *    الحفظ فلا يبقى من الصف أثر، ويُحفظ في sync_rejects ويُسجَّل، ولا يكسر بقية الدفعة.
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
-import { SAME_KEY_SQL, sameKeyParams, keepInOrder, lineKeyBase, sameLineKey, statementsNeed, statementWithRoom, resetStatementCounts } from '../domain/bankStatement/dedupe';
+import { SAME_KEY_SQL, sameKeyParams, keepInOrder, lineKeyBase, sameLineKey, statementsNeed, statementsKnown, statementWithRoom, resetStatementCounts } from '../domain/bankStatement/dedupe';
 import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
@@ -734,29 +734,43 @@ function liveDepositCollection(db: DB, lineId: string, exceptId: string): string
   for (const x of versions) {
     if (!x.live || x.status !== 'matched' || !x.tx || manualBy.has(x.id)) continue;
     const no = txNo(x.tx);
-    if (no && !held.has(no) && db.get(`SELECT 1 FROM journal_entries WHERE no = ? AND reversed_by IS NULL AND status = ? AND id != ?`, [no, POSTED_ENTRY, exceptId])) manualBy.set(x.id, x);
+    const e = no && !held.has(no) ? db.get<{ id: string; src: string; sid: string }>(`SELECT id, COALESCE(src_type, '') AS src, COALESCE(src_id, '') AS sid FROM journal_entries
+      WHERE no = ? AND reversed_by IS NULL AND status = ? AND id != ?`, [no, POSTED_ENTRY, exceptId]) : undefined;
+    // (ومطابقةٌ يدوية عكسُ قيدها في الوارد تُنتظر ولا تحجز · المدقق الخارجي K٢-٣)
+    if (e) manualBy.set(x.id, { ...x, pending: reversalPending(db, e.id, e.src, e.sid) } as L & { pending: boolean });
   }
-  const manual = [...manualBy.values()];
+  const manual = [...manualBy.values()] as Array<L & { pending?: boolean }>;
+  const manualLive = manual.filter((x) => !x.pending);
   const live = rows.filter((e) => !reversalPending(db, e.id, e.src, e.sid));
   if (rows.some((e) => e.k === ln!.key)) return live.find((e) => e.k === ln!.key)?.id ?? 'pending';
   const same = manual.find((x) => x.key === ln!.key);
-  if (same) return same.tx ?? 'manual';
+  if (same) return same.pending ? 'pending' : same.tx ?? 'manual';
   // والإيداعات بعدّ التوائم نفسه (keepInOrder) وبصمات الكشوف هنا وفي الوارد
   const rankOf = (x: L) => lineRank({ id: x.id, status: x.status, c: x.c, k: x.key, st: x.st });
   const liveLines = [...lines.values()].filter((x) => x.live).sort((a, b) => (rankOf(a) < rankOf(b) ? -1 : 1));
-  const stIds = liveLines.map((x) => x.st);
-  let need = statementsNeed(db, stIds, ln.key);
+  // (وكشوف البنك في الوارد كلها، ولو لم يُطبَّق لها سطرٌ في القاعدة · K٢-٢)
+  const inboxSts = db.all<{ pk: string; p: string }>(`SELECT pk, payload AS p FROM sync_inbox WHERE tbl = 'bank_statements' AND del = 0`)
+    .filter((r) => { try { return String(JSON.parse(r.p)?.d?.bank_id ?? '') === ln!.bank; } catch { return false; } }).map((r) => r.pk);
+  const stIds = [...liveLines.map((x) => x.st), ...bankStatementIds(db, ln.bank), ...inboxSts];
+  const known = statementsKnown(db, stIds, ln.key);
+  let need = known.need;
+  const bal = new Set(known.bal);
   for (const id of new Set(stIds)) {
     if (db.get(`SELECT 1 FROM bank_statements WHERE id = ?`, [id])) continue;
     try {
       const keys = JSON.parse(String(JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'bank_statements' AND pk = ? AND del = 0`, [id])?.p ?? 'null')?.d?.shared_keys ?? '[]'));
-      if (Array.isArray(keys)) need = Math.max(need, keys.filter((k) => lineKeyBase(String(k)) === base).length);
+      if (Array.isArray(keys)) {
+        const mine = keys.map(String).filter((k) => lineKeyBase(k) === base);
+        need = Math.max(need, mine.length);
+        for (const k of mine) if (!k.includes('#')) bal.add(k);
+      }
     } catch { /* مستندٌ تالف لا يشهد */ }
   }
+  need = Math.max(need, bal.size);
   const cap = Math.max(1, keepInOrder(liveLines.map((x) => x.key), () => need).filter(Boolean).length);
   const taken = rows.length + manual.length;
   if (taken < cap) return null;
-  return live.length + manual.length >= cap ? (live[0]?.id ?? manual[0].tx ?? 'manual') : 'pending';
+  return live.length + manualLive.length >= cap ? (live[0]?.id ?? manualLive[0]?.tx ?? 'manual') : 'pending';
 }
 
 /** حركات البنك الحيّة برقم القيد، هنا وفي الوارد (البحث بالرقم المفهرس وحده، والباقي يُقارن هنا) */
@@ -1086,7 +1100,7 @@ function statementLineFix(db: DB, row: Record<string, unknown>, member = false):
     const me: LiveLine = { id: String(row.id), status: String(row.status ?? 'open'), c: String(row.created_at ?? ''), k: String(row.line_key ?? ''), st: String(row.statement_id ?? '') };
     const others = liveOfBase(db, String(row.bank_id ?? ''), me.k, me.id);
     const all = [...others, me].sort((a, b) => (lineRank(a) < lineRank(b) ? -1 : 1));
-    const need = statementsNeed(db, all.map((x) => x.st), me.k);
+    const need = statementsNeed(db, [...all.map((x) => x.st), ...bankStatementIds(db, String(row.bank_id ?? ''))], me.k);
     const keep = keepInOrder(all.map((x) => x.k), () => need);
     // ووقائع الإيداع بأول ما قُرئ به هنا: سطرٌ جديدٌ من عضوٍ بالبصمة نفسها يحمل بيان السطر القائم ومرجعه (المدقق الخارجي E٢-٢: توأمٌ
     // مزوَّر بوقت إنشاءٍ أقدم وبيانٍ يسمّي مستأجراً آخر كان يغلب ويقلب الاقتراح)
@@ -1186,6 +1200,9 @@ function enqueueStmtFix(db: DB, id: string, at?: string): void {
 }
 
 type LiveLine = { id: string; status: string; c: string; k: string; st: string };
+/** كشوف البنك الحيّة كلها: المزامنة تعدّ بها كما يعدّ الحفظ (المدقق الخارجي K٢-١ وK٢-٢: كانت كشوف السطور الحيّة وحدها) */
+const bankStatementIds = (db: DB, bankId: string): string[] =>
+  db.all<{ id: string }>(`SELECT id FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.id);
 /** أولوية سطر الكشف بين سطور قاعدته: المطابَق أو المستبعَد، ثم الأقدم إنشاءً، ثم الأصغر معرّفاً */
 const lineRank = (x: LiveLine): string => [x.status === 'open' ? 1 : 0, x.c, x.id].join('|');
 /** السطور الحيّة للبنك بقاعدة البصمة (اليوم والمبلغ) بمدى الفهرس */
@@ -1198,7 +1215,7 @@ function liveOfBase(db: DB, bankId: string, key: string, exceptId: string): Live
 /** سطرٌ بهذه البصمة تكرارٌ لما هو حيٌّ هنا (لو أُحيي آخرَ سطور قاعدته) */
 function dupOfLive(db: DB, bankId: string, key: string, exceptId: string, statementId: string): boolean {
   const others = liveOfBase(db, bankId, key, exceptId).sort((a, b) => (lineRank(a) < lineRank(b) ? -1 : 1));
-  const need = statementsNeed(db, [...others.map((x) => x.st), statementId], key);
+  const need = statementsNeed(db, [...others.map((x) => x.st), statementId, ...bankStatementIds(db, bankId)], key);
   return !keepInOrder([...others.map((x) => x.k), key], () => need)[others.length];
 }
 
