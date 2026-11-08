@@ -1,0 +1,22 @@
+{
+  "$schema" : "https://storage.googleapis.com/maestro-schemas/artifact-manifest/v1.schema.json",
+  "entries" : [ {
+    "kind" : "MAESTRO_LOG",
+    "format" : "TXT",
+    "relativePath" : "logs/maestro.log",
+    "sizeBytes" : 3133
+  }, {
+    "kind" : "COMMAND_METADATA",
+    "format" : "JSON",
+    "relativePath" : "commands.json",
+    "sizeBytes" : 3698
+  }, {
+    "kind" : "DEVICE_LOG",
+    "format" : "TXT",
+    "relativePath" : "logs/device-logcat.txt",
+    "sizeBytes" : 146933,
+    "metadata" : {
+      "source" : "emulator"
+    }
+  } ]
+}
