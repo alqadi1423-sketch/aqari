@@ -297,7 +297,8 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
           const lastOwn = (x: Ev) => moves.filter((m) => m.st === x.st).reduce((a, m) => (m.date > a ? m.date : a), '');
           const cands = os.map((x, n) => ({ x, n })).filter(({ x }) => chained(x));
           const earliest = cands.length > 1 ? cands.reduce((a, b) => (lastOwn(b.x) < lastOwn(a.x) ? b : a)) : undefined;
-          const j = earliest && cands.filter((c) => lastOwn(c.x) === lastOwn(earliest.x)).length === 1 ? earliest.n : jj >= 0 ? jj : os.findIndex(chained);
+          // (وحين يستبعد الشرط السابق المرشحين كليهما وحده · R٢-٢)
+          const j = jj >= 0 ? jj : earliest && cands.filter((c) => lastOwn(c.x) === lastOwn(earliest.x)).length === 1 ? earliest.n : os.findIndex(chained);
           if (j >= 0) { cur = take(os, j).open!; continue; }
           // وبلا أرصدةٍ مطبوعة (MT940): افتتاحي الكشف قبل سطوره في يومه (المدقق الخارجي F٢-١: كان بعدها فيمحوها)
           const k = os.findIndex((x) => ls.some((l) => l.st === x.st));

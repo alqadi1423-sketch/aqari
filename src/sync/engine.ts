@@ -722,13 +722,18 @@ function liveDepositCollection(db: DB, lineId: string, exceptId: string): string
   // وما طابقه المالك هنا بحركة تحصيلٍ حيٍّ سجّله بنفسه (G٢-٢: الإيداع مطابَقٌ بتحصيلٍ يدوي فلا يسنده تحصيلٌ آخر من الكشف)
   const held = new Set(rows.map((e) => e.no));
   // (وحركة المطابقة اليدوية هنا أو في الوارد: الحركات تُطبَّق بعد القيود · I٢-١)
+  // (بأحدث نسخها: نسخة الوارد قبل ما هنا، محذوفةً أو مستعادة · المدقق الخارجي Q٢-١ وQ٢-٢)
   const txNo = (id: string): string | null => {
+    const inb = db.get<{ p: string; del: number }>(`SELECT payload AS p, del FROM sync_inbox WHERE tbl = 'bank_tx' AND pk = ?`, [id]);
+    if (inb) {
+      if (Number(inb.del)) return null;
+      try {
+        const d = JSON.parse(inb.p ?? 'null')?.d;
+        return d && d.deleted_at == null ? String(d.journal_no ?? '') : null;
+      } catch { return null; }
+    }
     const t0 = db.get<{ n: string; del: string | null }>(`SELECT journal_no AS n, deleted_at AS del FROM bank_tx WHERE id = ?`, [id]);
-    if (t0) return t0.del == null ? String(t0.n ?? '') : null;
-    try {
-      const d = JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'bank_tx' AND pk = ? AND del = 0`, [id])?.p ?? 'null')?.d;
-      return d && d.deleted_at == null ? String(d.journal_no ?? '') : null;
-    } catch { return null; }
+    return t0 && t0.del == null ? String(t0.n ?? '') : null;
   };
   // (وكل حركةٍ حيّة في بنكها تحجز ما طابقته: بلا رقم قيد (إيداع نقدٍ من المحفظة · O٢-٢)، أو قيدها هنا أو في الوارد (O٢-١) · إلا حركة
   // القيد الوارد نفسه، وما عُكس قيده)

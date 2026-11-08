@@ -236,7 +236,9 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   grid.slice(0, h).forEach((r, i, head) => {
     const keys = r.map((c) => summaryOf(c));
     const next = head[i + 1];
-    if (keys.filter((k) => k && k !== 'period').length >= 2 && next && !next.some((c) => summaryOf(c))) {
+    // (وصفّاً بصفّين ما قُرئت قيمه من الصف التالي وحده، وإلا فمن خلاياه · المدقق الخارجي R٢-٣)
+    if (keys.filter((k) => k && k !== 'period').length >= 2 && next && !next.some((c) => summaryOf(c))
+      && keys.some((k, c) => k && k !== 'period' && parseStatementAmount(next[c] ?? '') != null)) {
       keys.forEach((k, c) => {
         if (!k || k === 'period' || summary[k] != null) return;
         const v = parseStatementAmount(next[c] ?? '');
@@ -252,7 +254,9 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   body.forEach((r, i) => {
     const keys = r.map((c) => summaryOf(c));
     const next = body[i + 1];
+    // (لا صفّ ملخصٍ قيمه في خلاياه، ولا صفّ حركةٍ مؤرَّخ قيماً له · المدقق الخارجي R٢-١)
     if (keys.filter((k) => k && k !== 'period').length < 2 || !next || next.some((c) => summaryOf(c)) || r.some((c) => parseStatementAmount(c) != null)) return;
+    if (r.some((c, ci) => summaryOf(c) && amountAfter([c], 0) != null && ci >= 0) || FULL_DATE_ONLY.test((next[dateCol] ?? '').replace(/\s.*$/, ''))) return;
     if (!keys.some((k, c) => k && k !== 'period' && parseStatementAmount(next[c] ?? '') != null)) return;
     skipRow.add(next);
   });
