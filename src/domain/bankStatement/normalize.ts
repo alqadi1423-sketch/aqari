@@ -18,11 +18,11 @@ export function parseStatementAmount(raw: unknown): number | null {
     .replace(CURRENCY, ' ').trim();
   if (!t) return null;
   let sign = 1;
-  // ‏CR وDR قبل المبلغ أو بعده (دائنٌ موجب، ومدينٌ سالب)
-  const dr = /\b[Dd][Rr]\.?$|^[Dd][Rr]\b/.test(t);
-  const cr = /\b[Cc][Rr]\.?$|^[Cc][Rr]\b/.test(t);
+  // ‏CR وDR قبل المبلغ أو بعده (دائنٌ موجب، ومدينٌ سالب)، ومفصولةً أو ملتصقةً به («500.00CR» · المدقق الخارجي D٢-٩)
+  const dr = /(^|[^A-Za-z])[Dd][Rr]\.?$|^[Dd][Rr]\b/.test(t);
+  const cr = /(^|[^A-Za-z])[Cc][Rr]\.?$|^[Cc][Rr]\b/.test(t);
   if (dr || cr) {
-    t = t.replace(/^[CcDd][Rr]\b\.?|\b[CcDd][Rr]\.?$/g, '').trim();
+    t = t.replace(/^[CcDd][Rr]\b\.?|[CcDd][Rr]\.?$/g, '').trim();
     if (dr) sign = -1;
   }
   if (/^\(.*\)$/.test(t)) { sign = -sign; t = t.slice(1, -1).trim(); }
@@ -39,7 +39,7 @@ export function parseStatementAmount(raw: unknown): number | null {
 /** المبلغ وحده بلا إشارةٍ صريحة؟ (للمبلغ الواحد الذي تحدّد إشارته الأرصدة) */
 export function amountHasSign(raw: unknown): boolean {
   const t = cellText(raw).replace(CURRENCY, ' ').trim();
-  return /^[-−(+]|[-−)]$|\b(CR|DR|Cr|Dr|cr|dr)\b/.test(t);
+  return /^[-−(+]|[-−)]$|\b(CR|DR|Cr|Dr|cr|dr)\b|\d(CR|DR|Cr|Dr|cr|dr)\.?$/.test(t);
 }
 
 export type DateOrder = 'dmy' | 'mdy';

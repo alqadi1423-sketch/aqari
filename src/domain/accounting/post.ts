@@ -244,9 +244,22 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string, date?: 
       // (mirrorIssue يطابق الأبعاد) ويبقى إيراد التقبيل الملغى · كما يعكس reverseAllPostedEntries
       exactDims: true,
     });
-    if (posted) db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [posted.id, e.id]);
+    if (posted) {
+      db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [posted.id, e.id]);
+      reopenStatementLines(db, e.no);
+    }
     return posted;
   });
+}
+
+/**
+ * سطر كشف البنك المطابَق بحركة قيدٍ عُكس يعود مفتوحاً، أياً كان ما عكسه (إلغاء دفعة أو تحصيل فاتورة أو عملية نقد): الإيداع يُقترح من
+ * جديد ويظهر «في الكشف وحده» (المدقق الخارجي B٢-٧ ثم C٢-٣: كان في إلغاء الدفعة وحده)
+ */
+export function reopenStatementLines(db: DB, entryNo: string): void {
+  if (!db.get(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bank_statement_lines'`)) return;
+  db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL
+          WHERE deleted_at IS NULL AND status = 'matched' AND bank_tx_id IN (SELECT id FROM bank_tx WHERE journal_no = ?)`, [entryNo]);
 }
 
 /** حذف قيد آلي (بمصدره) حذفاً ناعماً · لإعادة الترحيل عند تعديل فاتورة ونحوه */

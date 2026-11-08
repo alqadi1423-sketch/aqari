@@ -86,6 +86,13 @@ export default function BankStatementScreen() {
      WHERE bank_id = ? AND deleted_at IS NULL AND status != 'matched' ORDER BY date DESC, rowid DESC LIMIT 200`, [bankId]),
   // eslint-disable-next-line react-hooks/exhaustive-deps
   [db, bankId, version]);
+  // والمطابَق يُلغى من هنا (المدقق الخارجي D٢-٣: لم يكن في الشاشة طريقٌ لإلغاء مطابقةٍ خاطئة، ولا لحذف كشفٍ فيه مطابَق)
+  const matchedLines = useMemo(() => db.all<{ id: string; date: string; descr: string; amount: number; status: string; no: string; txDate: string }>(
+    `SELECT l.id, l.date, l.descr, l.amount_halalas AS amount, l.status, COALESCE(t.journal_no, '') AS no, COALESCE(t.date, '') AS txDate
+     FROM bank_statement_lines l LEFT JOIN bank_tx t ON t.id = l.bank_tx_id
+     WHERE l.bank_id = ? AND l.deleted_at IS NULL AND l.status = 'matched' ORDER BY l.date DESC, l.rowid DESC LIMIT 200`, [bankId]),
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [db, bankId, version]);
   const statements = useMemo(() => db.all<{ id: string; from: string; to: string; n: number; name: string }>(
     `SELECT id, period_from AS "from", period_to AS "to", line_count AS n, file_name AS name FROM bank_statements
      WHERE bank_id = ? AND deleted_at IS NULL ORDER BY period_from DESC`, [bankId]),
@@ -120,7 +127,9 @@ export default function BankStatementScreen() {
         });
         return;
       }
-      const guess = r.error === 'columns' && !src.photo ? r.partial?.mapping : undefined;
+      // والأعمدة المخمَّنة تُعرض لتُصحَّح إن لم تُعرف، أو لم يُقرأ بها شيء أو قُرئ مبلغٌ نصاً، ما لم يؤكدها المستخدم للتو (قرار المالك أ.٣)
+      const fixable = r.error === 'columns' || (!confirmed && (r.error === 'empty' || r.error === 'format'));
+      const guess = fixable && !src.photo ? r.partial?.mapping : undefined;
       if (guess?.labels) {
         setMapEdit({ src, base: guess, r: null, hash, roles: [...guess.roles], order: guess.dateOrder });
         return;
@@ -307,6 +316,20 @@ export default function BankStatementScreen() {
               {l.status === 'open' && perm.manage ? <BtnGhost small title={t('bankStatement.exclude')} onPress={() => setExclude({ line: l, note: '' })} /> : null}
               {l.status === 'excluded' && perm.manage ? <BtnGhost small title={t('bankStatement.reopen')} onPress={() => {
                 try { unmatchLine(db, l.id); bump(); } catch (e) { fail(e); }
+              }} /> : null}
+            </Row>
+          </Card>
+        ))}
+      </CollapsibleSection>
+
+      <CollapsibleSection title={t('bankStatement.matchedLines')} count={matchedLines.length} icon="swap" pageKey="stmtMatched">
+        {() => matchedLines.map((l) => (
+          <Card key={l.id}>
+            {lineHead(l)}
+            <T size={TYPE.caption} color={C.muted}>{t('bankStatement.matchedWith', { no: l.no || '—', date: l.txDate ? dfmt(l.txDate) : '—' })}</T>
+            <Row style={{ marginTop: 6 }}>
+              {l.status === 'matched' && perm.manage ? <BtnGhost small title={t('bankStatement.unmatch')} onPress={() => {
+                try { unmatchLine(db, l.id); bump(); toast(t('bankStatement.unmatched')); } catch (e) { fail(e); }
               }} /> : null}
             </Row>
           </Card>

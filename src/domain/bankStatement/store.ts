@@ -83,7 +83,21 @@ const wordsOf = (s: string) => new Set(foldText(s).split(' ').filter((w) => w.le
  * في أسبوعين وما بعدهما لا يُقترح)، ورقمٌ مشترك (رقم القيد أو المرجع · ١٥)، وكلمةٌ مشتركة (٣)، والمرشح الوحيد (+٥) أو المتعادل (−١٥) ·
  * «جاهزة للاعتماد» من ٨٥، و«تحتاج مراجعة» من ٥٠ · والحركة لا تُقترح لسطرين
  */
+/**
+ * الاقتراحات لحالة القاعدة نفسها تُحسب مرةً: الشاشة تطلبها ثم يطلبها اقتراح التحصيل في العرض نفسه (المدقق الخارجي D٢-١٢) · وأي كتابةٍ
+ * تغيّر total_changes() فتُحسب من جديد
+ */
+const suggestionCache = new WeakMap<DB, { bank: string; stamp: number; out: Suggestion[] }>();
 export function matchSuggestions(db: DB, bankId: string): Suggestion[] {
+  const stamp = Number(db.get<{ n: number }>(`SELECT total_changes() AS n`)?.n ?? -1);
+  const hit = suggestionCache.get(db);
+  if (hit && hit.bank === bankId && hit.stamp === stamp) return [...hit.out];
+  const out = computeMatchSuggestions(db, bankId);
+  suggestionCache.set(db, { bank: bankId, stamp, out });
+  return [...out];
+}
+
+function computeMatchSuggestions(db: DB, bankId: string): Suggestion[] {
   const lines = db.all<{ id: string; date: string; descr: string; ref: string | null; amount: number }>(
     `SELECT id, date, descr, ref, amount_halalas AS amount FROM bank_statement_lines
      WHERE bank_id = ? AND status = 'open' AND deleted_at IS NULL ORDER BY date, rowid`, [bankId]);
@@ -106,7 +120,9 @@ export function matchSuggestions(db: DB, bankId: string): Suggestion[] {
   const firstFrom = (list: X[], day: number) => { let lo = 0; let hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].day < day) lo = m + 1; else hi = m; } return lo; };
   // كل زوجٍ ممكن بدرجته، ثم التوزيع بالأعلى أولاً (المدقق الخارجي U٢٢: سطرٌ أخذ غيرُه أفضلَ مرشحيه يُقترح له التالي الحرّ، والحركة
   // التي يتنازعها سطران بدرجتين متقاربتين «تحتاج مراجعة» لا «جاهزة»)
-  type Pair = { l: (typeof lines)[number]; x: X; score: number; gap: number; reasons: string[] };
+  // (والأسباب بأعلامٍ لا بمصفوفةٍ لكل زوج، والرموز بحلقةٍ لا بنسخ المجموعة · D٢-١٢)
+  type Pair = { l: (typeof lines)[number]; x: X; score: number; gap: number; flags: number };
+  const overlaps = (a: Set<string>, b: Set<string>) => { for (const v of a) if (b.has(v)) return true; return false; };
   const pairs: Pair[] = [];
   for (const l of lines) {
     const list = byAmount.get(Number(l.amount));
@@ -117,11 +133,11 @@ export function matchSuggestions(db: DB, bankId: string): Suggestion[] {
     for (let i = firstFrom(list, ld - 14); i < list.length && list[i].day <= ld + 14; i++) {
       const x = list[i];
       const gap = Math.abs(x.day - ld);
-      const reasons = ['amount', gap === 0 ? 'sameDay' : 'days'];
       let score = 50 + (DATE_SCORE.find(([d]) => gap <= d)?.[1] ?? 0);
-      if ([...x.digits].some((d) => lDigits.has(d))) { score += 15; reasons.push('ref'); }
-      if ([...x.words].some((w) => lWords.has(w))) { score += 3; reasons.push('words'); }
-      pairs.push({ l, x, score, gap, reasons });
+      let flags = 0;
+      if (overlaps(x.digits, lDigits)) { score += 15; flags |= 1; }
+      if (overlaps(x.words, lWords)) { score += 3; flags |= 2; }
+      pairs.push({ l, x, score, gap, flags });
     }
   }
   const perLine = new Map<string, Pair[]>();
@@ -146,7 +162,7 @@ export function matchSuggestions(db: DB, bankId: string): Suggestion[] {
     if (usedL.has(p.l.id) || usedX.has(p.x.id)) continue;
     usedL.add(p.l.id); usedX.add(p.x.id);
     let score = p.score;
-    const reasons = [...p.reasons];
+    const reasons = ['amount', p.gap === 0 ? 'sameDay' : 'days', ...(p.flags & 1 ? ['ref'] : []), ...(p.flags & 2 ? ['words'] : [])];
     const rival = rivalIn(perTx.get(p.x.id)!, p, (q) => !usedL.has(q.l.id)) || rivalIn(perLine.get(p.l.id)!, p, (q) => !usedX.has(q.x.id));
     if (rival) { score -= 15; reasons.push('ambiguous'); } else if (perLine.get(p.l.id)!.length === 1 && perTx.get(p.x.id)!.length === 1) { score += 5; reasons.push('unique'); }
     score = Math.min(100, score);
@@ -224,15 +240,41 @@ export interface Reconciliation {
 export function reconciliation(db: DB, bankId: string, month: string): Reconciliation {
   const start = month + '-01';
   const end = month + '-31';
-  // خط زمن الكشوف: افتتاحي كل كشفٍ قبل سطور يومه، وكل سطرٍ برصيده المطبوع أو بما قبله
+  // خط زمن الكشوف: كل سطرٍ برصيده المطبوع أو بما قبله · وفي اليوم الواحد بتسلسل الأرصدة لا بترتيب الحفظ، وافتتاحي الكشف حيث يتّصل:
+  // عند رصيدٍ يساويه، أو قبل سطرٍ يتسلسل منه (المدقق الخارجي D٢-١: صفحةٌ تبدأ في منتصف اليوم كان افتتاحيها يوضع قبل سطور يومه كلها،
+  // فتظهر فجوةٌ كاذبة وختاميٌّ خاطئ بحسب أيّ الصفحتين حُفظت أولاً)
   type Ev = { date: string; open?: number; amount?: number; balance?: number | null };
-  const events: Ev[] = ([] as Ev[]).concat(
-    db.all<{ d: string; o: number }>(`SELECT period_from AS d, opening_halalas AS o FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL`, [bankId])
-      .map((x): Ev => ({ date: x.d, open: Number(x.o) })),
-    db.all<{ d: string; a: number; b: number | null }>(
-      `SELECT date AS d, amount_halalas AS a, balance_halalas AS b FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL ORDER BY date, rowid`, [bankId])
-      .map((l): Ev => ({ date: l.d, amount: Number(l.a), balance: l.b == null ? null : Number(l.b) })),
-  ).sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : (x.open != null ? -1 : 0) - (y.open != null ? -1 : 0)));
+  const opens = db.all<{ d: string; o: number }>(
+    `SELECT period_from AS d, opening_halalas AS o FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL ORDER BY period_from, created_at, id`, [bankId])
+    .map((x): Ev => ({ date: x.d, open: Number(x.o) }));
+  const moves = db.all<{ d: string; a: number; b: number | null }>(
+    `SELECT date AS d, amount_halalas AS a, balance_halalas AS b FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL ORDER BY date, rowid`, [bankId])
+    .map((l): Ev => ({ date: l.d, amount: Number(l.a), balance: l.b == null ? null : Number(l.b) }));
+  const events: Ev[] = [];
+  {
+    let cur: number | null = null;
+    const days = [...new Set([...opens, ...moves].map((e) => e.date))].sort();
+    for (const d of days) {
+      const os = opens.filter((e) => e.date === d);
+      const ls = moves.filter((e) => e.date === d);
+      const chainsFrom = (v: number | null) => (l: Ev) => v != null && l.balance != null && l.balance - (l.amount ?? 0) === v;
+      const take = (arr: Ev[], i: number) => { const e = arr.splice(i, 1)[0]; events.push(e); return e; };
+      while (os.length || ls.length) {
+        let i = os.findIndex((o) => o.open === cur);
+        if (i >= 0) { take(os, i); continue; }
+        i = ls.findIndex(chainsFrom(cur));
+        if (i < 0 && cur == null && os.length) { cur = take(os, 0).open!; continue; }
+        if (i < 0) {
+          const j = os.findIndex((o) => ls.some(chainsFrom(o.open!)));
+          if (j >= 0) { cur = take(os, j).open!; continue; }
+          i = ls.findIndex((l) => l.balance == null);
+        }
+        if (i < 0 && !ls.length) { cur = take(os, 0).open!; continue; }
+        const l = take(ls, i < 0 ? 0 : i);
+        cur = l.balance ?? (cur ?? 0) + (l.amount ?? 0);
+      }
+    }
+  }
   let running: number | null = null;
   let lastDate = '';
   let firstInMonth: Ev | null = null;

@@ -82,13 +82,16 @@ const fail = (error: StatementError, detail?: string, partial?: Partial<Statemen
 const rowKey = (row: string[]): string => row.map(foldText).filter(Boolean).join('|');
 const FULL_DATE = /\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}/g;
 const FULL_DATE_ONLY = /^\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}$/;
+const PAGE_MARK = /^(page|pg|صفحه|الصفحه)\s*\d+(\s*(of|من)\s*\d+)?$/;
 // مبلغٌ داخل نصٍّ (الملخص في خليةٍ واحدة مع كلمته)
 const AMOUNT_IN_TEXT = /[-(]?\d[\d,.٫٬ﺭ]*\)?(?:\s?(?:CR|DR|Cr|Dr))?/g;
 
 interface Raw { date: string; valueDate: string | null; descr: string; ref: string | null; abs: number; sign: 1 | -1 | 0; balance: number | null }
 
 export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): StatementResult {
-  const grid = input.map((r) => (Array.isArray(r) ? r : []).map(cellText)).filter((r) => r.some(Boolean));
+  // ورقم الصفحة في التذييل («Page 1 of 2» · «صفحة ١ من ٢») خانةٌ فارغة: يقع تحت عمود مبلغٍ فيُرفض به كشفٌ صحيح (المدقق الخارجي D٢-٤)
+  const grid = input.map((r) => (Array.isArray(r) ? r : []).map(cellText).map((c) => (PAGE_MARK.test(foldText(c)) ? '' : c)))
+    .filter((r) => r.some(Boolean));
   if (!grid.length) return fail('empty');
 
   // ١) صف العناوين: بصمة الربط المحفوظ أولاً، ثم أول صفٍّ فيه ثلاثة أدوارٍ منها التاريخ والمبلغ أو المدين أو الدائن
@@ -98,6 +101,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     h = grid.findIndex((r) => rowKey(r) === opts.mapping!.headerKey);
     if (h >= 0) roles = opts.mapping.roles;
   }
+  const savedRoles = h >= 0;
   if (h < 0) {
     // وصفُّ الملخص («الرصيد الافتتاحي · إجمالي المدين …») ليس صفَّ عناوين، وأكثر الصفوف أدواراً أولى (المدقق الخارجي U٣)
     let best = 0;
@@ -123,6 +127,18 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     return fail('columns', undefined, { mapping: { headerKey: rowKey(row), roles: headerRoles(row), dateOrder: 'dmy', signMode: 'chain', labels: row } });
   };
   if (h < 0) return unknownColumns(-1);
+  // وعنوانٌ بصفّين: «المبلغ» مدموجاً فوق «مدين | دائن» في الصف التالي يكمّل أدوار صفّ العناوين (المدقق الخارجي D٢-١٠) · صفٌّ كل خاناته
+  // أدوارٌ بلا تاريخٍ ولا مبلغ، وأدواره في خاناتٍ فارغةٍ أو «المبلغ» فوقها
+  let labels = grid[h];
+  const sub = grid[h + 1];
+  if (!savedRoles && sub && !sub.some((c) => FULL_DATE_ONLY.test(c) || parseStatementAmount(c) != null)) {
+    const subRoles = sub.map((c) => (c ? roleOf(c) : null));
+    const fits = sub.every((c, i) => !c || (subRoles[i] && (!roles[i] || roles[i] === 'amount')));
+    if (fits && subRoles.some(Boolean)) {
+      roles = roles.map((r, i) => subRoles[i] ?? (r === 'amount' && subRoles.some((x, j) => x && roles[j] == null) ? null : r));
+      labels = grid[h].map((c, i) => (sub[i] ? (c ? c + ' · ' + sub[i] : sub[i]) : c));
+    }
+  }
   const col = (r: Role) => roles.indexOf(r);
   const dateCol = col('date') >= 0 ? col('date') : col('valueDate');
   const valueCol = col('date') >= 0 ? col('valueDate') : -1;
@@ -181,8 +197,14 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   const unmarked: 1 | -1 = marks.includes('cr') && !marks.includes('dr') && !marks.includes('minus') ? -1 : 1;
   const signMode: ColumnMapping['signMode'] = debitCol >= 0 && creditCol >= 0 ? 'split'
     : signedColumn ? 'signed' : typeCol >= 0 ? 'type' : 'chain';
+  // والربط المخمَّن يرافق رفض «format» و«empty» فتعرضه الشاشة ليُصحَّح (قرار المالك أ.٣ · المدقق الخارجي D٢: عنوانٌ جديد يُخمَّن خطأً كان
+  // يُرفض بلا ورقة الأعمدة)
+  const mapping: ColumnMapping = { headerKey, roles, dateOrder: order, signMode, labels };
   const raws: Raw[] = [];
   const summary: Partial<Record<SummaryKey, number>> = {};
+  // «الرصيد المرحَّل» وعدد الحركات قبله: ختاميٌّ إن لم تأتِ بعده حركة (صورة الصفحة الأولى · Z١-٢)، وإلا رصيدٌ بين صفحتين لا يغلب
+  // ختامي الرأس (المدقق الخارجي D٢-٥)
+  let carriedAt = -1;
   const moneyCols = [debitCol, creditCol, amountCol, balanceCol].filter((c) => c >= 0);
   const noteSummary = (r: string[]) => {
     r.forEach((cell, i) => {
@@ -192,6 +214,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       if (v == null) return;
       // الافتتاحي أولُ ما يُطبع (كل صفحةٍ قد تكرره) والختامي آخره
       if (k === 'opening' && summary.opening != null) return;
+      if (k === 'carried') carriedAt = raws.length;
       summary[k] = v;
     });
   };
@@ -217,10 +240,13 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     // (والصفر «0.00» في خانةٍ فارغة ليس مبلغ حركة · X٦ · وما لا يُقرأ مبلغاً يبقى ليرفضه فحص U٥)
     const moved = [debitCol, creditCol, amountCol].some((c) => c >= 0 && cellText(r[c] ?? '') !== '' && parseStatementAmount(r[c] ?? '') !== 0);
     if (date && !moved) {
-      const k = r.map((c) => summaryOf(c)).find((x) => x === 'opening' || x === 'closing' || x === 'totalDebit' || x === 'totalCredit');
+      const k = r.map((c) => summaryOf(c)).find((x) => x === 'opening' || x === 'closing' || x === 'carried' || x === 'totalDebit' || x === 'totalCredit');
       // والافتتاحي والختامي المؤرَّخان قيمتهما في عمود الرصيد (والأصفار في المدين والدائن خاناتٌ فارغة · X٦)
       const bal = balanceCol >= 0 ? parseStatementAmount(r[balanceCol] ?? '') : null;
-      if ((k === 'opening' || k === 'closing') && bal != null) { if (!(k === 'opening' && summary.opening != null)) summary[k] = bal; } else if (k) noteSummary(r);
+      if ((k === 'opening' || k === 'closing' || k === 'carried') && bal != null) {
+        if (!(k === 'opening' && summary.opening != null)) summary[k] = bal;
+        if (k === 'carried') carriedAt = raws.length;
+      } else if (k) noteSummary(r);
       continue;
     }
     if (!date) {
@@ -237,7 +263,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     let sign: Raw['sign'] = 0;
     // وخلية مبلغٍ فيها نصٌّ لا يُقرأ ترفض الكشف ولا تصير صفراً (U٥)
     const unreadable = (c: number) => c >= 0 && cellText(r[c] ?? '') !== '' && parseStatementAmount(r[c] ?? '') == null;
-    if ([debitCol, creditCol, amountCol].some(unreadable)) return fail('format', 'amount');
+    if ([debitCol, creditCol, amountCol].some(unreadable)) return fail('format', 'amount', { mapping });
     if (signMode === 'split') {
       const d = Math.abs(parseStatementAmount(r[debitCol] ?? '') ?? 0);
       const c = Math.abs(parseStatementAmount(r[creditCol] ?? '') ?? 0);
@@ -261,7 +287,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       abs, sign, balance: balanceCol >= 0 ? parseStatementAmount(r[balanceCol] ?? '') : null,
     });
   }
-  if (!raws.length) return fail('empty');
+  if (!raws.length) return fail('empty', undefined, { mapping });
 
   // ٤) الجدول المطبوع مرتين أو أكثر في الملف (الأهلي) مرةً واحدة، والأحدث أولاً يُقلب
   // (والطيّ إن تكرر صفّ العناوين وحده: حركاتٌ حقيقية متكررة صافيها صفر لا تُطوى · U٦)
@@ -271,8 +297,15 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
 
   // ٥) التسلسل: بالافتتاحي المطبوع، ثم بالمشتق من أول رصيدٍ مطبوع إن ناقضه المطبوع وثبتت المجاميع
   const printedOpening = summary.opening ?? opts.opening ?? null;
-  const printedClosing = summary.closing ?? opts.closing ?? null;
+  const carriedClosing = summary.carried != null && carriedAt === raws.length ? summary.carried : null;
+  const printedClosing = summary.closing ?? carriedClosing ?? opts.closing ?? null;
   let solved = solve(lines, printedOpening);
+  // وعمود «نوع العملية» نصٌّ وصفي («Credit Card Payment» خارج، و«رسوم إيداع شيك» خارج): إن ناقضت إشاراته الأرصدة المطبوعة لكل سطر
+  // فالأرصدة تحكم (المدقق الخارجي D٢-٦)
+  if (!solved.ok && signMode === 'type' && lines.every((l) => l.balance != null)) {
+    const byChain = solve(lines.map((l) => ({ ...l, sign: 0 as const })), printedOpening);
+    if (byChain.ok) solved = byChain;
+  }
   const warnings: string[] = [];
   const totalsPrinted = summary.totalDebit != null || summary.totalCredit != null;
   // والافتتاحي المطبوع المناقض لا يُستبدل إلا بمجاميع مطبوعة تشهد (U٢: الختامي وحده آخر رصيدٍ مطبوع فلا يشهد بشيء)
@@ -280,7 +313,6 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     const again = solve(lines, null);
     if (again.ok) { solved = again; warnings.push('openingPrinted'); }
   }
-  const mapping: ColumnMapping = { headerKey, roles, dateOrder: order, signMode, labels: grid[h] };
   // والفترة المطبوعة تحوي السطور ولا تزيد على مداها بأكثر من شهرين، وإلا أُخذ مدى السطور (U١٠) · في القراءة الناجحة والجزئية سواء (V١١)
   const periodOf = (ls: StatementLine[]): [string, string] => {
     const dates = ls.map((l) => l.date).sort();
@@ -338,8 +370,8 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
 /** علامة إشارة المبلغ في خليته */
 function markOf(raw: string): 'cr' | 'dr' | 'minus' | null {
   const t = cellText(raw);
-  if (/\b[Cc][Rr]\b/.test(t)) return 'cr';
-  if (/\b[Dd][Rr]\b/.test(t)) return 'dr';
+  if (/(^|[^A-Za-z])[Cc][Rr]\b/.test(t)) return 'cr';
+  if (/(^|[^A-Za-z])[Dd][Rr]\b/.test(t)) return 'dr';
   return /^[-\u2212(]|[-\u2212)]$/.test(t.replace(/\s+/g, '')) ? 'minus' : null;
 }
 

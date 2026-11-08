@@ -15,7 +15,7 @@
  *    الحفظ فلا يبقى من الصف أثر، ويُحفظ في sync_rejects ويُسجَّل، ولا يكسر بقية الدفعة.
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
-import { SAME_KEY_SQL, sameKeyParams } from '../domain/bankStatement/dedupe';
+import { SAME_KEY_SQL, sameKeyParams, keepInOrder, lineKeyBase } from '../domain/bankStatement/dedupe';
 import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
@@ -684,11 +684,16 @@ function liveDepositCollection(db: DB, lineId: string, exceptId: string): string
   const line = db.get<{ bank: string; key: string; amount: number; date: string }>(
     `SELECT bank_id AS bank, line_key AS key, amount_halalas AS amount, date FROM bank_statement_lines WHERE id = ?`, [lineId]);
   if (!line) return null;
-  const rows = db.all<{ id: string; no: string; src: string; sid: string }>(
-    `SELECT e.id, e.no, COALESCE(e.src_type, '') AS src, COALESCE(e.src_id, '') AS sid FROM journal_entries e
+  // (والبصمة بلا رصيد «#n» لا تكون حوالةً برصيدٍ إلا وn لا يتجاوز عدد ذوات الرصيد في يومها بمبلغها: «#3» من MT940 بعد صورة الصفحة
+  // الأولى بحوالتين حوالةٌ ثالثة · C٢-١)
+  const balanced = new Set(liveOfBase(db, line.bank, line.key, '').map((x) => x.k).filter((k) => !k.includes('#'))).size;
+  const occ = (k: string) => (k.includes('#') ? Number(k.split('#')[1]) : 0);
+  const rows = db.all<{ id: string; no: string; src: string; sid: string; k: string }>(
+    `SELECT e.id, e.no, COALESCE(e.src_type, '') AS src, COALESCE(e.src_id, '') AS sid, l.line_key AS k FROM journal_entries e
      JOIN bank_statement_lines l ON l.id = e.stmt_line_id
      WHERE e.id != ? AND e.reversed_by IS NULL AND e.status = ? AND l.bank_id = ? AND ${SAME_KEY_SQL('l.line_key')}`,
     [exceptId, POSTED_ENTRY, line.bank, ...sameKeyParams(line.key)])
+    .filter((e) => e.k === line.key || Math.max(occ(e.k), occ(line.key)) <= balanced)
     .filter((e) => txsOfNo(db, e.no).some((t) => t.bank === line.bank && t.amount === Number(line.amount) && t.date === line.date));
   if (!rows.length) return null;
   return rows.every((e) => reversalPending(db, e.id, e.src, e.sid)) ? 'pending' : rows[0].id;
@@ -995,8 +1000,7 @@ function statementLineFix(db: DB, row: Record<string, unknown>): boolean {
   if (row.deleted_at != null || stmt?.del != null) {
     const to = sharingStatement(db, String(row.bank_id ?? ''), String(row.line_key ?? ''), String(row.statement_id ?? ''));
     // ولا يُحيا وللبصمة سطرٌ حيٌّ آخر (المدقق الخارجي X١: قراءة الكشف ثانيةً بمعرّفاتٍ جديدة)
-    const twin = to && db.get(`SELECT 1 FROM bank_statement_lines WHERE bank_id = ? AND id != ? AND deleted_at IS NULL AND ${SAME_KEY_SQL('line_key')}`,
-      [String(row.bank_id ?? ''), String(row.id), ...sameKeyParams(String(row.line_key ?? ''))]);
+    const twin = to && dupOfLive(db, String(row.bank_id ?? ''), String(row.line_key ?? ''), String(row.id));
     if (to && twin) {
       if (row.deleted_at == null) { row.deleted_at = stmt?.del ?? new Date().toISOString(); changed = true; }
     } else if (to) {
@@ -1014,18 +1018,17 @@ function statementLineFix(db: DB, row: Record<string, unknown>): boolean {
   }
   // وسطران حيّان بالبصمة نفسها (حُذف كشفٌ وأُعيدت قراءته بمعرّفاتٍ جديدة على جهاز، وأُحيي سطره القديم في كشفٍ متداخل على آخر · X١):
   // يبقى المطابَق أو المستبعَد، ثم الأقدم إنشاءً، ثم الأصغر معرّفاً، ويُحذف الآخر على كل جهاز
+  // (بعدّ الحفظ نفسه بترتيب الأولوية، لا بالأزواج: حوالاتٌ بلا رصيد في يومٍ واحد حركاتٌ مختلفة · المدقق الخارجي C٢-١)
   if (row.deleted_at == null) {
-    const key = String(row.line_key ?? '');
-    const twins = db.all<{ id: string; status: string; c: string }>(
-      `SELECT id, status, created_at AS c FROM bank_statement_lines WHERE bank_id = ? AND id != ? AND deleted_at IS NULL AND ${SAME_KEY_SQL('line_key')}`,
-      [String(row.bank_id ?? ''), String(row.id), ...sameKeyParams(key)]);
-    const rank = (x: { id: string; status: string; c: string }) => [x.status === 'open' ? 1 : 0, x.c, x.id].join('|');
-    const me = { id: String(row.id), status: String(row.status ?? 'open'), c: String(row.created_at ?? '') };
-    for (const t0 of twins) {
-      if (rank(t0) < rank(me)) { row.deleted_at = new Date().toISOString(); changed = true; break; }
-      db.run(`UPDATE bank_statement_lines SET deleted_at = ?, status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [new Date().toISOString(), t0.id]);
-      enqueueStmtFix(db, t0.id);
-    }
+    const me = { id: String(row.id), status: String(row.status ?? 'open'), c: String(row.created_at ?? ''), k: String(row.line_key ?? '') };
+    const all = [...liveOfBase(db, String(row.bank_id ?? ''), me.k, me.id), me].sort((a, b) => (lineRank(a) < lineRank(b) ? -1 : 1));
+    const keep = keepInOrder(all.map((x) => x.k));
+    all.forEach((x, i) => {
+      if (keep[i]) return;
+      if (x.id === me.id) { row.deleted_at = new Date().toISOString(); changed = true; return; }
+      db.run(`UPDATE bank_statement_lines SET deleted_at = ?, status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [new Date().toISOString(), x.id]);
+      enqueueStmtFix(db, x.id);
+    });
   }
   const demote = () => { row.status = 'open'; row.bank_tx_id = null; row.matched_at = null; return true; };
   if (row.deleted_at != null && (row.status !== 'open' || row.bank_tx_id != null)) return demote();
@@ -1048,6 +1051,8 @@ function statementLineFix(db: DB, row: Record<string, unknown>): boolean {
     return changed;
   }
   if (tx.del != null || String(tx.b) !== String(row.bank_id) || Number(tx.a) !== Number(row.amount_halalas)) return demote();
+  // ولا مطابقة بحركة قيدٍ عُكس (C٢-٢)
+  if (db.get(`SELECT 1 FROM bank_tx t JOIN journal_entries e ON e.no = t.journal_no WHERE t.id = ? AND e.reversed_by IS NOT NULL`, [txId])) return demote();
   const rivals = db.all<{ id: string }>(
     `SELECT id FROM bank_statement_lines WHERE bank_tx_id = ? AND status = 'matched' AND deleted_at IS NULL AND id != ? ORDER BY id`, [txId, String(row.id)]);
   if (!rivals.length) return changed;
@@ -1088,6 +1093,22 @@ function enqueueStmtFix(db: DB, id: string, at?: string): void {
   markStmtFix(db, id, true);
 }
 
+type LiveLine = { id: string; status: string; c: string; k: string };
+/** أولوية سطر الكشف بين سطور قاعدته: المطابَق أو المستبعَد، ثم الأقدم إنشاءً، ثم الأصغر معرّفاً */
+const lineRank = (x: LiveLine): string => [x.status === 'open' ? 1 : 0, x.c, x.id].join('|');
+/** السطور الحيّة للبنك بقاعدة البصمة (اليوم والمبلغ) بمدى الفهرس */
+function liveOfBase(db: DB, bankId: string, key: string, exceptId: string): LiveLine[] {
+  const base = lineKeyBase(key);
+  return db.all<LiveLine>(
+    `SELECT id, status, created_at AS c, line_key AS k FROM bank_statement_lines
+     WHERE bank_id = ? AND line_key BETWEEN ? AND ? AND id != ? AND deleted_at IS NULL`, [bankId, base, base + '~', exceptId]);
+}
+/** سطرٌ بهذه البصمة تكرارٌ لما هو حيٌّ هنا (لو أُحيي آخرَ سطور قاعدته) */
+function dupOfLive(db: DB, bankId: string, key: string, exceptId: string): boolean {
+  const others = liveOfBase(db, bankId, key, exceptId).sort((a, b) => (lineRank(a) < lineRank(b) ? -1 : 1));
+  return !keepInOrder([...others.map((x) => x.k), key])[others.length];
+}
+
 /** كشفٌ حيٌّ آخر للبنك تخطّى سطراً ببصمته عند حفظه (الهجرة ٥٨)، أو null */
 function sharingStatement(db: DB, bankId: string, lineKey: string, exceptStatementId: string): string | null {
   return db.get<{ id: string }>(
@@ -1108,8 +1129,9 @@ function statementCascade(db: DB, statementId: string, row: Record<string, unkno
     let keys: string[] = [];
     try { keys = JSON.parse(String(row.shared_keys ?? '[]')); } catch { keys = []; }
     for (const k of keys) {
-      if (db.get(`SELECT 1 FROM bank_statement_lines WHERE bank_id = ? AND ${SAME_KEY_SQL('line_key')} AND deleted_at IS NULL`, [bankId, ...sameKeyParams(k)])) continue;
-      const dead = db.get<{ id: string }>(`SELECT id FROM bank_statement_lines WHERE bank_id = ? AND ${SAME_KEY_SQL('line_key')} AND deleted_at IS NOT NULL ORDER BY deleted_at DESC, id LIMIT 1`, [bankId, ...sameKeyParams(k)]);
+      if (dupOfLive(db, bankId, k, '')) continue;
+      const dead = db.get<{ id: string }>(`SELECT id FROM bank_statement_lines WHERE bank_id = ? AND ${SAME_KEY_SQL('line_key')} AND deleted_at IS NOT NULL
+        ORDER BY line_key = ? DESC, deleted_at DESC, id LIMIT 1`, [bankId, ...sameKeyParams(k), k]);
       if (!dead) continue;
       db.run(`UPDATE bank_statement_lines SET deleted_at = NULL, statement_id = ? WHERE id = ?`, [statementId, dead.id]);
       fix(dead.id);
@@ -2340,12 +2362,27 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
   quiet(() => {
     resolvePendingReversals(db);
     recomputeInstallments(db, touched.has(ALL_INSTALLMENTS) ? undefined : [...touched]);
+    if (out.applied) reopenReversedMatches(db);
   });
   out.waiting = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
   // قيدٌ وصل ومستنده لا يصل (حذفته استعادة على جهاز آخر) يبقى ويُعلَّم للمراجعة (orphans.ts) ·
   // بعد اكتمال الوارد لا قبله، فالقيد يسبق مستنده في ترتيب التطبيق
   // جهاز العضو يحمل جزءاً من الدفتر بصلاحيته · فلا يُعلَّم ما غاب مصدره عنه يتيماً
   if ((out.applied || out.rejected) && !out.waiting && !getSyncState(db, 'membership')) markOrphans(db, 'وصل بالمزامنة');
+}
+
+/**
+ * سطر كشفٍ مطابَق بحركة قيدٍ عُكس (وصل عكسه من جهازٍ آخر، أو أصلحه هذا الجهاز) يعود مفتوحاً، ويرفعه جهاز المالك (المدقق الخارجي C٢-٢:
+ * المحصِّل بلا صلاحية البنوك يلغي الدفعة فلا يُقبل تصحيح السطر منه، وجهاز المالك كان يُبقيه مطابَقاً بتحصيلٍ أُلغي)
+ */
+function reopenReversedMatches(db: DB): void {
+  const ids = db.all<{ id: string }>(
+    `SELECT l.id FROM bank_statement_lines l JOIN bank_tx t ON t.id = l.bank_tx_id JOIN journal_entries e ON e.no = t.journal_no
+     WHERE l.status = 'matched' AND l.deleted_at IS NULL AND e.reversed_by IS NOT NULL`).map((r) => r.id);
+  for (const id of ids) {
+    db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [id]);
+    enqueueStmtFix(db, id);
+  }
 }
 
 /** التطبيق كله في نداءٍ واحد · للاختبارات والأدوات */

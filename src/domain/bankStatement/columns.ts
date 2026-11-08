@@ -39,7 +39,8 @@ export function headerRoles(cells: unknown[]): Array<Role | null> {
   });
 }
 
-export type SummaryKey = 'opening' | 'closing' | 'totalDebit' | 'totalCredit' | 'period';
+/** carried: «الرصيد المرحَّل» أسفل الصفحة · ختاميٌّ إن لم تأتِ بعده حركة (المدقق الخارجي D٢-٥) */
+export type SummaryKey = 'opening' | 'closing' | 'carried' | 'totalDebit' | 'totalCredit' | 'period';
 
 const SUMMARY = dictionary.summary as Array<[SummaryKey, string[]]>;
 

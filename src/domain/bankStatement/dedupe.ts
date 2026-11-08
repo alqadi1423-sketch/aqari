@@ -36,16 +36,46 @@ export function statementLineKeys(bankId: string, lines: Array<Pick<StatementLin
 
 /** بصمة السطر بلا رصيده ولا رقم تكراره (البنك واليوم والمبلغ) */
 export const lineKeyBase = (key: string): string => key.split(/[@#]/)[0];
-/** السطر نفسه: البصمة نفسها، أو القاعدة نفسها وأحدهما بلا رصيد */
+/**
+ * قد يكونان السطر نفسه: البصمة نفسها، أو القاعدة نفسها وأحدهما وحده بلا رصيد (صورة الصفحة وكشف MT940) · وبصمتان بلا رصيد «#1» و«#2»
+ * حركتان، وبرصيدين حركتان (المدقق الخارجي C٢-١: كانتا «السطر نفسه» فتُحذف حوالاتٌ حقيقية بالمزامنة)
+ */
 export function sameLineKey(a: string, b: string): boolean {
-  return a === b || (lineKeyBase(a) === lineKeyBase(b) && (a.includes('#') || b.includes('#')));
+  return a === b || (lineKeyBase(a) === lineKeyBase(b) && a.includes('#') !== b.includes('#'));
 }
 /**
  * شرط SQL للبصمة نفسها بمعيار sameLineKey · بمدى البادئة فيستعمل فهرس (bank_id, line_key) (المدقق الخارجي A٢-٧: كان يمسح سطور البنك
  * كلها) · ومعاملاته sameKeyParams(key)
  */
-export const SAME_KEY_SQL = (col: string) => `(${col} BETWEEN ? AND ? AND (${col} = ? OR instr(${col}, '#') > 0 OR instr(?, '#') > 0))`;
+export const SAME_KEY_SQL = (col: string) => `(${col} BETWEEN ? AND ? AND (${col} = ? OR (instr(${col}, '#') > 0) != (instr(?, '#') > 0)))`;
 export const sameKeyParams = (key: string): string[] => [lineKeyBase(key), lineKeyBase(key) + '~', key, key];
+
+/**
+ * سطورٌ حيّة بترتيب أولويتها (الأَولى أولاً): ما يبقى منها (true) وما هو تكرار، بقاعدةٍ لا يغيّرها ترتيب الوصول فتُبقي الأجهزة كلها
+ * السطور نفسها (المدقق الخارجي C٢-١) · في كل قاعدة (اليوم والمبلغ): البصمة نفسها مرةً، وكل بصمةٍ برصيدٍ حركة (عددها K)، و«#n» بلا رصيد
+ * حركةٌ أخرى إن جاوز n عددَ ذوات الرصيد، وإلا فهي وإحدى ذوات الرصيد حركةٌ واحدة لا يُعرف أيّها: يبقى منها K بالأولوية (المطابَق أولاً)
+ * · فـ«#1 #2 #3» من MT940 ثلاث حوالات، و«#3» بعد صورة الصفحة الأولى بحوالتين حوالةٌ ثالثة
+ */
+export function keepInOrder(keys: string[]): boolean[] {
+  const keep = keys.map(() => false);
+  const firstOf = new Map<string, number>();
+  keys.forEach((k, i) => { if (!firstOf.has(k)) firstOf.set(k, i); });
+  const byBase = new Map<string, number[]>();
+  for (const i of firstOf.values()) {
+    const b = lineKeyBase(keys[i]);
+    byBase.set(b, [...(byBase.get(b) ?? []), i]);
+  }
+  for (const idx of byBase.values()) {
+    const k = idx.filter((i) => !keys[i].includes('#')).length;
+    const occ = (i: number) => Number(keys[i].split('#')[1]);
+    let room = k;
+    for (const i of [...idx].sort((a, b) => a - b)) {
+      if (keys[i].includes('#') && occ(i) > k) keep[i] = true;
+      else if (room > 0) { keep[i] = true; room--; }
+    }
+  }
+  return keep;
+}
 
 /**
  * سطور الملف الجديدة أمام المحفوظ حيّاً للبنك: ذو الرصيد مكرَّرٌ إن حُفظ برصيده، أو بقي للقاعدة سطرٌ بلا رصيدٍ لم يُطابَق · وما بلا رصيد

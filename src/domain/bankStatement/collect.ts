@@ -98,7 +98,7 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
   // فهارس بالمبلغ مرتبةٌ باليوم، ويوم كل سطرٍ وقسطٍ ورموز كل اسمٍ ومرجع تُحسب مرةً واحدة، والتسمية للمعروض وحده (المدقق الخارجي V١٠: كان
   // تربيعياً يمرّ على كل قسطٍ لكل عقدٍ لكل إيداع)
   // والهدف ومفتاحه وتسميته تُبنى مرةً للقالب لا لكل مرشح (X٧)
-  type Tpl = { day: number; s: number; several: boolean; contractId: string; run: typeof insts; tenant: string[]; refs: string[]; target: CollectTarget; key: string; label: () => string };
+  type Tpl = { day: number; last: number; s: number; several: boolean; contractId: string; run: typeof insts; tenant: string[]; refs: string[]; target: CollectTarget; key: string; label: () => string };
   // (والمجموعات تُبنى بالإضافة لا بنسخ المصفوفة · X٧)
   const push = <K, V>(m: Map<K, V[]>, k: K, v: V) => { const a = m.get(k); if (a) a.push(v); else m.set(k, [v]); };
   const byContract = new Map<string, typeof insts>();
@@ -106,13 +106,16 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
   // أقدم القائم والمتتالية منه بنافذة ٤٥ يوماً، وما بعده بنافذة أسبوعٍ وحدها (المدقق الخارجي X٧: كانت النافذة الواسعة تمرّ على كل قسط)
   const oldestBy = new Map<number, Tpl[]>();
   const laterBy = new Map<number, Tpl[]>();
-  const addTpl = (amount: number, t0: Tpl) => push(t0.s === 0 ? oldestBy : laterBy, amount, t0);
+  // والمتتالية بمداها: من ٤٥ يوماً قبل أقدمها (سدادٌ مقدَّم) إلى ٤٥ بعد آخرها (سداد المتأخرات · المدقق الخارجي D٢-١١: كانت بنافذة أقدمها
+  // وحده فلا يُقترح تحويلٌ واحد بأقساط أغسطس وسبتمبر وأكتوبر في أكتوبر)
+  const runsBy = new Map<number, Tpl[]>();
+  const addTpl = (amount: number, t0: Tpl) => push(t0.several ? runsBy : t0.s === 0 ? oldestBy : laterBy, amount, t0);
   for (const [contractId, list] of byContract) {
     const tenant = nameTokens(list[0].tenant);
     const refs = [list[0].no, list[0].ejar].map(compact).filter((c) => c.length >= 5 && /\d/.test(c));
     // قسطٌ واحد بمتبقّيه، أو أقساطٌ متتالية من أقدم القائم بمجموع متبقّيها (ج.٢: تحويلٌ واحد لعدة أقساط)
     const tpl = (run: typeof insts, s0: number): Tpl => ({
-      day: dayNo(run[0].due), s: s0, several: run.length > 1, contractId, run, tenant, refs,
+      day: dayNo(run[0].due), last: dayNo(run[run.length - 1].due), s: s0, several: run.length > 1, contractId, run, tenant, refs,
       target: { kind: 'installments', contractId, installmentIds: run.map((x) => x.id) }, key: 'i:' + run.map((x) => x.id).join(','),
       label: () => t('bankStatement.collect.installments', { tenant: run[0].tenant, no: run[0].no || '—', period: run.map((x) => periodLabel(x.due)).join(', ') }),
     });
@@ -123,7 +126,8 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
       addTpl(sum, tpl(list.slice(0, e + 1), 0));
     }
   }
-  for (const m of [oldestBy, laterBy]) for (const l of m.values()) l.sort((p, q) => p.day - q.day);
+  for (const m of [oldestBy, laterBy, runsBy]) for (const l of m.values()) l.sort((p, q) => p.day - q.day);
+  const RUN_SPAN = 400; // أطول مدى متتاليةٍ بأيامها (اثنا عشر قسطاً شهرياً) مع نافذتها
   // والمتتالية تبدأ بأقدم القائم: لا يُترك قسطٌ أقدم بلا سداد · والقسط الواحد أقدم القائم أو ما يستحق في أسبوع السطر
   const WINDOWS: Array<[Map<number, Tpl[]>, number]> = [[oldestBy, 45], [laterBy, 7]];
   // أسباب المرشح بحسب أعلامه (عدة أقساط، والاسم، والمرجع) مصفوفاتٌ مشتركة تُنسخ للمعروض وحده
@@ -132,8 +136,21 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
   for (const c of claims) push(claimsBy, Number(c.amount), { ...c, day: dayNo(c.date), who: nameTokens(c.tenant ?? ''), refs: [compact(c.no ?? '')].filter((x) => x.length >= 5 && /\d/.test(x)) });
   const invBy = new Map<number, Array<(typeof invoices)[number] & { day: number; dueDay: number; who: string[]; refs: string[] }>>();
   for (const v of invoices) push(invBy, v.left, { ...v, day: dayNo(v.issue), dueDay: dayNo(v.due || v.issue), who: nameTokens(v.customer), refs: [compact(v.no)].filter((x) => x.length >= 5 && /\d/.test(x)) });
+  // ومن حمل البيان اسمه كاملاً (اسمان منه فأكثر) هو الدافع: من وافق اسمُه الأول كلمةً منه وحدها لا يأخذ درجة الاسم (المدقق الخارجي D٢-٢:
+  // «محمد فهد القحطاني» يحوّل، و«فهد» اسم مستأجرٍ آخر الأول)
+  const parties = new Map<string, string[][]>();
+  const addParty = (toks: string[]) => { if (toks.length >= 2) for (const w of new Set(toks)) push(parties, w, toks); };
+  for (const list of byContract.values()) addParty(nameTokens(list[0].tenant));
+  for (const c of claims) addParty(nameTokens(c.tenant ?? ''));
+  for (const v of invoices) addParty(nameTokens(v.customer));
+  const hits = (d: Set<string>, n: string[]) => n.filter((w) => d.has(w)).length;
+  const fullNames = (d: Set<string>): Set<string> => {
+    const out = new Set<string>();
+    for (const w of d) for (const toks of parties.get(w) ?? []) if (hits(d, toks) >= 2) out.add(toks.join(' '));
+    return out;
+  };
   const firstFrom = (list: Tpl[], day: number) => { let lo = 0; let hi = list.length; while (lo < hi) { const m = (lo + hi) >> 1; if (list[m].day < day) lo = m + 1; else hi = m; } return lo; };
-  const named = (d: Set<string>, n: string[]) => n.length > 0 && (d.has(n[0]) || n.filter((w) => d.has(w)).length >= 2);
+  const named = (d: Set<string>, n: string[], full: Set<string>) => n.length > 0 && (hits(d, n) >= 2 || (d.has(n[0]) && (!full.size || full.has(n.join(' ')))));
   const reffed = (text: string, refs: string[]) => refs.some((r) => text.includes(r));
 
   type Cand2 = Omit<Cand, 'label'> & { label: () => string };
@@ -143,23 +160,34 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
     const ld = dayNo(l.date);
     const words = new Set(nameTokens(l.descr + ' ' + (l.ref ?? '')));
     const text = compact(l.descr + ' ' + (l.ref ?? ''));
+    const full = fullNames(words);
     const mine: Cand2[] = [];
     for (const [m, w] of WINDOWS) {
       const list = m.get(amount);
       if (!list) continue;
       for (let i = firstFrom(list, ld - w); i < list.length && list[i].day <= ld + w; i++) {
         const tp = list[i];
-        const nm = tp.tenant.length > 0 && named(words, tp.tenant);
+        const nm = tp.tenant.length > 0 && named(words, tp.tenant, full);
         const rf = tp.refs.length > 0 && reffed(text, tp.refs);
         const score = (tp.several ? 45 : 50) + dateScore(Math.abs(ld - tp.day)) + (nm ? 20 : 0) + (rf ? 15 : 0);
         mine.push({ lineId: l.id, target: tp.target, key: tp.key, label: tp.label, score, reasons: REASONS[(tp.several ? 1 : 0) | (nm ? 2 : 0) | (rf ? 4 : 0)] });
       }
     }
+    const runs = runsBy.get(amount);
+    for (let i = runs ? firstFrom(runs, ld - RUN_SPAN) : 0; runs && i < runs.length && runs[i].day <= ld + 45; i++) {
+      const tp = runs[i];
+      if (ld < tp.day - 45 || ld > tp.last + 45) continue;
+      const nm = tp.tenant.length > 0 && named(words, tp.tenant, full);
+      const rf = tp.refs.length > 0 && reffed(text, tp.refs);
+      const gap = ld < tp.day ? tp.day - ld : ld > tp.last ? ld - tp.last : 0;
+      const score = 45 + dateScore(gap) + (nm ? 20 : 0) + (rf ? 15 : 0);
+      mine.push({ lineId: l.id, target: tp.target, key: tp.key, label: tp.label, score, reasons: REASONS[1 | (nm ? 2 : 0) | (rf ? 4 : 0)] });
+    }
     for (const c of claimsBy.get(amount) ?? []) {
       if (ld < c.day - 3) continue;
       const reasons = ['amount', 'date'];
       let score = 50 + (Math.abs(ld - c.day) <= 60 ? 10 : 0);
-      if (named(words, c.who)) { score += 20; reasons.push('name'); }
+      if (named(words, c.who, full)) { score += 20; reasons.push('name'); }
       if (reffed(text, c.refs)) { score += 15; reasons.push('ref'); }
       mine.push({ lineId: l.id, target: { kind: 'claim', claimId: c.id }, key: 'c:' + c.id,
         label: () => t('bankStatement.collect.claim', { reason: c.reason || '—', tenant: c.tenant ?? '—' }), score, reasons });
@@ -168,7 +196,7 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
       if (ld < v.day - 3) continue;
       const reasons = ['amount', 'date'];
       let score = 50 + (Math.abs(ld - v.dueDay) <= 31 ? 10 : 0);
-      if (named(words, v.who)) { score += 20; reasons.push('name'); }
+      if (named(words, v.who, full)) { score += 20; reasons.push('name'); }
       if (reffed(text, v.refs)) { score += 15; reasons.push('ref'); }
       mine.push({ lineId: l.id, target: { kind: 'invoice', invoiceId: v.id }, key: 'v:' + v.id,
         label: () => t('bankStatement.collect.invoice', { no: v.no || '—', customer: v.customer }), score, reasons });

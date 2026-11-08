@@ -231,12 +231,7 @@ function cancelPaymentNow(db: DB, paymentId: string, input: { date?: string; rea
       db.run(`UPDATE tenants SET credit_halalas = credit_halalas - ?
               WHERE id = (SELECT tenant_id FROM contracts WHERE id = ?)`, [plan.creditReversal, plan.contractId]);
     }
-    // وسطر كشف البنك المطابَق بحركة الدفعة يعود مفتوحاً: الإيداع يُقترح تحصيلاً من جديد ويظهر «في الكشف وحده» (المدقق الخارجي B٢-٧)
-    const origNo = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [p.journal_entry_id ?? ''])?.no;
-    if (origNo) {
-      db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL
-              WHERE deleted_at IS NULL AND status = 'matched' AND bank_tx_id IN (SELECT id FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL)`, [origNo]);
-    }
+    // (وسطر كشف البنك المطابَق بحركة الدفعة يعود مفتوحاً بعكس قيدها · reopenStatementLines · B٢-٧)
     // ٥) الوسم ثم ٢) المسدَّد من الدفعات
     db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`,
       [date, reason, cancelEntry, paymentId]);

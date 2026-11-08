@@ -7,7 +7,7 @@
  */
 import { readStatementGrid, type ReadOpts, type StatementResult } from './read';
 import { summaryOf } from './columns';
-import { cellText } from './normalize';
+import { cellText, parseStatementDate } from './normalize';
 
 /** سطرٌ من قارئ النص بإطاره (ML Kit: frame) */
 export interface OcrLine { text: string; left: number; top: number; width: number; height: number }
@@ -17,6 +17,7 @@ const LOOKALIKE: Record<string, string> = { O: '0', o: '0', D: '0', Q: '0', l: '
 const NUMERIC_CHARS = /^[\d.,/\-()+OoDQlIi|!SsBZz]+$/;
 
 const DATE_TOKEN = /^(\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}|\d{1,2}-[A-Za-z]{3,9}-\d{2,4})$/;
+const FULL_DATE = /^\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}$/;
 const AMOUNT_SHAPE = /^[-(]?(\d{1,3}([.,]\d{3})*|\d+)[.,]\d{2}[)-]?$/;
 
 /**
@@ -74,7 +75,11 @@ export function readStatementPhoto(lines: OcrLine[], opts: ReadOpts = {}): State
       if (/^(CR|DR|Cr|Dr)\.?$/.test(t.text) && toks.length && amountToken(toks[toks.length - 1].text)) toks[toks.length - 1].text += ' ' + t.text.slice(0, 2);
       else toks.push({ ...t });
     }
-    const dates = toks.filter((t) => DATE_TOKEN.test(fixDigits(t.text)));
+    // والهجري بجانب الميلادي ليس تاريخ الحركة: يُؤخذ ما يُقرأ ميلادياً إن وُجد (المدقق الخارجي D٢-٧)
+    const anyDates = toks.filter((t) => DATE_TOKEN.test(fixDigits(t.text)));
+    const gregorian = anyDates.filter((t) => FULL_DATE.test(fixDigits(t.text)) && !!(parseStatementDate(fixDigits(t.text)) || parseStatementDate(fixDigits(t.text), { order: 'mdy' })));
+    const hijriOnly = anyDates.filter((t) => FULL_DATE.test(fixDigits(t.text)) && !gregorian.includes(t));
+    const dates = gregorian.length && hijriOnly.length ? gregorian : anyDates;
     const amounts = toks.map((t) => {
       const [num, mark] = t.text.split(' ');
       const a = amountToken(num);

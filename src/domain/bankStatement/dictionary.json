@@ -14,7 +14,8 @@
         "هجري",
         "الهجري",
         "hijri",
-        "h"
+        "h",
+        "ه"
       ]
     ],
     [
@@ -47,6 +48,10 @@
     [
       "type",
       [
+        "الدائن او المدين",
+        "المدين او الدائن",
+        "الدائن المدين",
+        "المدين الدائن",
         "credit debit",
         "debit credit",
         "debit credit indicator",
@@ -170,6 +175,16 @@
       ]
     ],
     [
+      "carried",
+      [
+        "balance carried forward",
+        "carried forward",
+        "الرصيد المرحل",
+        "رصيد مرحل",
+        "المرحل للصفحه التاليه"
+      ]
+    ],
+    [
       "closing",
       [
         "الرصيد الختامي",
@@ -180,8 +195,6 @@
         "closing balance",
         "ending balance",
         "new balance",
-        "balance carried forward",
-        "carried forward",
         "closing"
       ]
     ],
