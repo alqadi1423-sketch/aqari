@@ -217,7 +217,8 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   const openings: Array<{ v: number; at: number; bf?: boolean; pg?: boolean }> = [];
   // (وصفّ الملخص بعد صفّ عناوين مكرر أول صفحةٍ جديدة · L٢-١)
   const pageStart = new Set<string[]>();
-  for (let i = h + 1; i < grid.length - 1; i++) if (isRepeatHeader(grid[i])) pageStart.add(grid[i + 1]);
+  // (وقبله مباشرةً: المنقول أعلى الصفحة فوق صفّ العناوين · N٢-٣)
+  for (let i = h + 1; i < grid.length; i++) if (isRepeatHeader(grid[i])) { if (grid[i + 1]) pageStart.add(grid[i + 1]); pageStart.add(grid[i - 1]); }
   const moneyCols = [debitCol, creditCol, amountCol, balanceCol].filter((c) => c >= 0);
   const noteSummary = (r: string[]) => {
     r.forEach((cell, i) => {

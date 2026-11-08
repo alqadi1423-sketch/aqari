@@ -291,7 +291,8 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
         if (i < 0) {
           // (وأولاها افتتاحيٌّ ليس رصيداً مطبوعاً لسطرٍ في يومه: ذاك افتتاحي صفحةٍ تالية · L٢-٢)
           const chained = (x: Ev) => ls.some(chainsFrom(x.open!));
-          const jj = os.findIndex((x) => chained(x) && !ls.some((l) => l.balance === x.open));
+          // (برصيد سطرٍ من كشفٍ آخر لا من كشفه: الرصيد يعود إلى افتتاحيه في يومٍ يُحوَّل فيه الإيجار · N٢-٢)
+          const jj = os.findIndex((x) => chained(x) && !ls.some((l) => l.st !== x.st && l.balance === x.open));
           const j = jj >= 0 ? jj : os.findIndex(chained);
           if (j >= 0) { cur = take(os, j).open!; continue; }
           // وبلا أرصدةٍ مطبوعة (MT940): افتتاحي الكشف قبل سطوره في يومه (المدقق الخارجي F٢-١: كان بعدها فيمحوها)
