@@ -247,7 +247,31 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     }
     noteSummary(r);
   });
-  for (const r of body) {
+  // وملخصٌ بصفّين بعد الحركات (كلماته في صفٍّ وقيمها تحته · جدول ملخص الجزيرة في آخر الكشف · المدقق الخارجي P٢-١)
+  const skipRow = new Set<string[]>();
+  body.forEach((r, i) => {
+    const keys = r.map((c) => summaryOf(c));
+    const next = body[i + 1];
+    if (keys.filter((k) => k && k !== 'period').length < 2 || !next || next.some((c) => summaryOf(c)) || r.some((c) => parseStatementAmount(c) != null)) return;
+    if (!keys.some((k, c) => k && k !== 'period' && parseStatementAmount(next[c] ?? '') != null)) return;
+    skipRow.add(next);
+  });
+  for (let i0 = 0; i0 < body.length; i0++) {
+    const r = body[i0];
+    if (skipRow.has(r)) continue;
+    {
+      const next = body[i0 + 1];
+      if (next && skipRow.has(next)) {
+        r.forEach((c, ci) => {
+          const k = summaryOf(c);
+          const v = k && k !== 'period' ? parseStatementAmount(next[ci] ?? '') : null;
+          if (!k || v == null) return;
+          if (k === 'opening' || k === 'broughtForward') openings.push({ v, at: raws.length, bf: k === 'broughtForward', pg: pageStart.has(r) });
+          else { if (k === 'carried') carriedAt = raws.length; summary[k] = v; }
+        });
+        continue;
+      }
+    }
     const date = yearFor(order, r[dateCol] ?? '');
     // وصفُّ ملخصٍ بتاريخه (الافتتاحي أو الختامي) ليس حركة (U٧)
     // وصفٌّ مؤرَّخ بلا مبلغ حركة: ملخصٌ إن حمل كلمته، وإلا ليس حركة (ختم الطباعة في التذييل · المدقق الخارجي V١٣) · والصف الذي فيه مبلغ

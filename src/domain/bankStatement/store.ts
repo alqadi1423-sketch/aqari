@@ -293,7 +293,11 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
           const chained = (x: Ev) => ls.some(chainsFrom(x.open!));
           // (برصيد سطرٍ من كشفٍ آخر لا من كشفه: الرصيد يعود إلى افتتاحيه في يومٍ يُحوَّل فيه الإيجار · N٢-٢)
           const jj = os.findIndex((x) => chained(x) && !ls.some((l) => l.st !== x.st && l.balance === x.open));
-          const j = jj >= 0 ? jj : os.findIndex(chained);
+          // (وصفحتان تبدأ كلٌّ منهما من رصيدٍ في الأخرى في يومٍ واحد: الأولى ما تنتهي سطورها أبكر · P٢-٢)
+          const lastOwn = (x: Ev) => moves.filter((m) => m.st === x.st).reduce((a, m) => (m.date > a ? m.date : a), '');
+          const cands = os.map((x, n) => ({ x, n })).filter(({ x }) => chained(x));
+          const earliest = cands.length > 1 ? cands.reduce((a, b) => (lastOwn(b.x) < lastOwn(a.x) ? b : a)) : undefined;
+          const j = earliest && cands.filter((c) => lastOwn(c.x) === lastOwn(earliest.x)).length === 1 ? earliest.n : jj >= 0 ? jj : os.findIndex(chained);
           if (j >= 0) { cur = take(os, j).open!; continue; }
           // وبلا أرصدةٍ مطبوعة (MT940): افتتاحي الكشف قبل سطوره في يومه (المدقق الخارجي F٢-١: كان بعدها فيمحوها)
           const k = os.findIndex((x) => ls.some((l) => l.st === x.st));

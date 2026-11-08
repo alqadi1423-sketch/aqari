@@ -730,14 +730,21 @@ function liveDepositCollection(db: DB, lineId: string, exceptId: string): string
       return d && d.deleted_at == null ? String(d.journal_no ?? '') : null;
     } catch { return null; }
   };
+  // (وكل حركةٍ حيّة في بنكها تحجز ما طابقته: بلا رقم قيد (إيداع نقدٍ من المحفظة · O٢-٢)، أو قيدها هنا أو في الوارد (O٢-١) · إلا حركة
+  // القيد الوارد نفسه، وما عُكس قيده)
+  let incomingNo = '';
+  try { incomingNo = String(JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ?`, [exceptId])?.p ?? 'null')?.d?.no ?? ''); } catch { incomingNo = ''; }
   const manualBy = new Map<string, L>();
   for (const x of versions) {
     if (!x.live || x.status !== 'matched' || !x.tx || manualBy.has(x.id)) continue;
     const no = txNo(x.tx);
-    const e = no && !held.has(no) ? db.get<{ id: string; src: string; sid: string }>(`SELECT id, COALESCE(src_type, '') AS src, COALESCE(src_id, '') AS sid FROM journal_entries
-      WHERE no = ? AND reversed_by IS NULL AND status = ? AND id != ?`, [no, POSTED_ENTRY, exceptId]) : undefined;
+    if (no == null || held.has(no) || (no && no === incomingNo)) continue;
+    if (!no) { manualBy.set(x.id, x); continue; }
+    const e = db.get<{ id: string; src: string; sid: string; r: string | null }>(`SELECT id, COALESCE(src_type, '') AS src, COALESCE(src_id, '') AS sid, reversed_by AS r
+      FROM journal_entries WHERE no = ? AND status = ? AND id != ?`, [no, POSTED_ENTRY, exceptId]);
     // (ومطابقةٌ يدوية عكسُ قيدها في الوارد تُنتظر ولا تحجز · المدقق الخارجي K٢-٣)
-    if (e) manualBy.set(x.id, { ...x, pending: reversalPending(db, e.id, e.src, e.sid) } as L & { pending: boolean });
+    if (e && !e.r) manualBy.set(x.id, { ...x, pending: reversalPending(db, e.id, e.src, e.sid) } as L & { pending: boolean });
+    else if (!e && db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.no') = ?`, [no])) manualBy.set(x.id, x);
   }
   const manual = [...manualBy.values()] as Array<L & { pending?: boolean }>;
   const manualLive = manual.filter((x) => !x.pending);
