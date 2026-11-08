@@ -256,43 +256,54 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
     let cur: number | null = null;
     // (وسطران يتسلسلان من الرصيد نفسه: الأول من كشف ما قبله · المدقق الخارجي H٢-٣: كان الأسبق حفظاً فيختلف التقرير بترتيب الحفظ)
     let lastSt = '';
+    // وافتتاحيٌّ لم يتّصل في يومه ولكشفه سطورٌ بعده ينتقل إلى ما بعده حتى يتّصل أو يبلغ سطوره (المدقق الخارجي J٢-٢: صورة الصفحة الثانية
+    // بفترة الشهر كله يُؤرَّخ افتتاحيها بأول الشهر)
+    let carry: Ev[] = [];
+    const ownLater = (o: Ev, d: string) => moves.some((m) => m.st === o.st && m.date > d);
     const days = [...new Set([...opens, ...moves].map((e) => e.date))].sort();
     for (const d of days) {
-      const os = opens.filter((e) => e.date === d);
+      const os = [...carry.map((o) => ({ ...o, date: d })), ...opens.filter((e) => e.date === d)];
+      carry = [];
       const ls = moves.filter((e) => e.date === d);
       const chainsFrom = (v: number | null) => (l: Ev) => v != null && l.balance != null && l.balance - (l.amount ?? 0) === v;
-      const take = (arr: Ev[], i: number) => { const e = arr.splice(i, 1)[0]; events.push(e); lastSt = e.st; return e; };
+      const take = (arr: Ev[], i: number, keepSt = false) => { const e = arr.splice(i, 1)[0]; events.push(e); if (!keepSt) lastSt = e.st; return e; };
       const chainIdx = (v: number | null) => {
         const own = ls.findIndex((l) => l.st === lastSt && chainsFrom(v)(l));
         return own >= 0 ? own : ls.findIndex(chainsFrom(v));
       };
       while (os.length || ls.length) {
-        // (سلسلة الكشف الجاري أولاً، ثم افتتاحي كشفٍ عند الرصيد نفسه، ثم أي سلسلة)
-        let i = ls.findIndex((l) => l.st === lastSt && chainsFrom(cur)(l));
-        if (i < 0) {
-          const o = os.findIndex((x) => x.open === cur);
-          if (o >= 0) { take(os, o); continue; }
-          i = chainIdx(cur);
+        // افتتاحيٌّ عند الرصيد نفسه لا يغيّر شيئاً ولا يحوّل السلسلة إلى كشفه (J٢-١)، ثم سلسلة الكشف الجاري، ثم أي سلسلة
+        const o = os.findIndex((x) => x.open === cur);
+        if (o >= 0) { take(os, o, true); continue; }
+        let i = chainIdx(cur);
+        if (i < 0 && !ls.length) {
+          carry = os.filter((x) => ownLater(x, d));
+          const now = os.filter((x) => !ownLater(x, d));
+          os.length = 0;
+          os.push(...now);
+          if (!os.length) break;
+          cur = take(os, 0).open!;
+          continue;
         }
-        if (i < 0 && cur == null && os.length) { cur = take(os, 0).open!; continue; }
         if (i < 0) {
-          const j = os.findIndex((o) => ls.some(chainsFrom(o.open!)));
+          const j = os.findIndex((x) => ls.some(chainsFrom(x.open!)));
           if (j >= 0) { cur = take(os, j).open!; continue; }
           // وبلا أرصدةٍ مطبوعة (MT940): افتتاحي الكشف قبل سطوره في يومه (المدقق الخارجي F٢-١: كان بعدها فيمحوها)
-          const k = os.findIndex((o) => ls.some((l) => l.st === o.st));
+          const k = os.findIndex((x) => ls.some((l) => l.st === x.st));
           // (إلا كشفاً بدأ قبل ذلك في يومه بسطورٍ تخطّاها عند حفظه وهي هنا من كشفٍ آخر: افتتاحيه خلفنا · C٢-١ مع F٢-١)
           if (k >= 0 && events.some((e) => e.date === d && e.open == null && e.st !== os[k].st && (statementCounts(db, os[k].st)?.get(e.base ?? '') ?? 0) > 0)) {
             os.splice(k, 1);
             continue;
           }
           if (k >= 0) { cur = take(os, k).open!; continue; }
+          if (cur == null && os.length) { cur = take(os, 0).open!; continue; }
           i = ls.findIndex((l) => l.balance == null);
         }
-        if (i < 0 && !ls.length) { cur = take(os, 0).open!; continue; }
         const l = take(ls, i < 0 ? 0 : i);
         cur = l.balance ?? (cur ?? 0) + (l.amount ?? 0);
       }
     }
+    for (const o of carry) events.push(o);
   }
   let running: number | null = null;
   let lastDate = '';

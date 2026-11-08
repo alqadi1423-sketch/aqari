@@ -192,7 +192,8 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     return { n: score(o), mono: up || down ? 1 : 0, span };
   };
   // وصيغة الربط المحفوظ أو المصحَّح تُقدَّم إن قُرئت بها التواريخ كلها (قرار المالك أ.٣ · المدقق الخارجي H٢-٧: كان التخمين الأقصر مدىً يغلبها)
-  const order = opts.mapping && score(opts.mapping.dateOrder) === dateCells.length ? opts.mapping.dateOrder
+  // (وتُقدَّم إن قرأت ما تقرؤه الأخرى: تذييلٌ في عمود التاريخ لا تقرؤه أيٌّ منهما · J٢-٣)
+  const order = opts.mapping && score(opts.mapping.dateOrder) >= score(opts.mapping.dateOrder === 'dmy' ? 'mdy' : 'dmy') && score(opts.mapping.dateOrder) > 0 ? opts.mapping.dateOrder
     : orders.map((o) => ({ o, ...shape(o) }))
       .reduce((a, b) => (b.n > a.n || (b.n === a.n && (b.mono > a.mono || (b.mono === a.mono && b.span < a.span))) ? b : a)).o;
 
@@ -250,7 +251,9 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     // (والصفر «0.00» في خانةٍ فارغة ليس مبلغ حركة · X٦ · وما لا يُقرأ مبلغاً يبقى ليرفضه فحص U٥)
     // وختم الطباعة بوقته في التذييل ومعه رقم الصفحة وحده («07/11/2026 10:30 … 2») ليس حركة: بلا رصيدٍ، وبلا بيانٍ أو خارج فترة الكشف
     // (المدقق الخارجي F٢-٤)
+    // (والصف الذي فيه مبلغٌ بكسرين حركةٌ ولو بلا بيان · J٢-٦ وV٢)
     if (date && /\d{1,2}:\d{2}/.test(r[dateCol] ?? '') && (balanceCol < 0 || !cellText(r[balanceCol] ?? ''))
+      && ![debitCol, creditCol, amountCol].some((c) => c >= 0 && /\d[.,٫]\d{2}(?!\d)/.test(cellText(r[c] ?? '')))
       && (!cellText(descrCol >= 0 ? r[descrCol] ?? '' : '') || (from && to && (date < from || date > to)))) continue;
     const moved = [debitCol, creditCol, amountCol].some((c) => c >= 0 && cellText(r[c] ?? '') !== '' && parseStatementAmount(r[c] ?? '') !== 0);
     if (date && !moved) {
@@ -321,7 +324,10 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   // («الرصيد المنقول» افتتاحيٌّ في أول الكشف زمنياً وحده، و«الافتتاحي» في أوله أو في ملخصٍ آخره · المدقق الخارجي H٢-٦)
   const first = newestFirst ? atEnd : atStart;
   const other = newestFirst ? atStart : atEnd;
-  summary.opening = ((newestFirst ? [...openings].reverse() : openings).find(first) ?? openings.find((o) => !o.bf && other(o)))?.v;
+  // (و«الافتتاحي/السابق» في الطرف الآخر ملخصٌ إلا أن يساوي رصيد آخر حركةٍ قبله في الطباعة: ذاك رصيدٌ منقول بين صفحتين · J٢-٤ مع H٢-٦)
+  const carriedOver = (o: { v: number; at: number }) => o.at > 0 && raws[o.at - 1]?.balance === o.v;
+  summary.opening = ((newestFirst ? [...openings].reverse() : openings).find(first)
+    ?? openings.find((o) => !o.bf && other(o) && !carriedOver(o)))?.v;
 
   // ٥) التسلسل: بالافتتاحي المطبوع، ثم بالمشتق من أول رصيدٍ مطبوع إن ناقضه المطبوع وثبتت المجاميع
   const printedOpening = summary.opening ?? opts.opening ?? null;
@@ -448,7 +454,15 @@ function amountAfter(r: string[], i: number): number | null {
     if (v != null) return v;
     if (summaryOf(r[j]) || roleOf(r[j])) break;
   }
-  const inCell = (r[i].replace(FULL_DATE, ' ').replace(TEXT_DATE, ' ').match(AMOUNT_IN_TEXT) ?? []).map(parseStatementAmount).filter((v): v is number => v != null);
+  // (ومبلغ الخلية نفسها مبلغٌ لا رقم مرجعٍ أو بطاقة: لا يلتصق بحرف، وبلا كسرٍ ولا فاصل آلافٍ لا يُقبل وفي الخلية كلماتٌ غير الملخص · J٢-٥)
+  const cell = r[i].replace(FULL_DATE, ' ').replace(TEXT_DATE, ' ');
+  const inCell = [...cell.matchAll(AMOUNT_IN_TEXT)].filter((m) => {
+    const before = cell.slice(0, m.index ?? 0);
+    if (/[A-Za-z\u0600-\u06FF]$/.test(before)) return false;
+    if (/[.,٫٬ﺭ]\d/.test(m[0])) return true;
+    const rest = foldText(cell.replace(m[0], ' '));
+    return !!summaryOf(rest) && rest.split(' ').filter(Boolean).length <= 4;
+  }).map((m) => parseStatementAmount(m[0])).filter((v): v is number => v != null);
   if (inCell.length) return inCell[inCell.length - 1];
   for (let j = i - 1; j >= 0; j--) {
     if (summaryOf(r[j])) break;
