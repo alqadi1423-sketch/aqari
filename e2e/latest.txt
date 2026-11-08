@@ -1,19 +1,5 @@
-commit cdc2d33247df7588308ecde3779b9fa32b8825b1
-run https://github.com/alqadi1423-sketch/aqari/actions/runs/42442423442
-success true
-flows 15 · failed 0
-00-smoke pass 39s
-01-property pass 46s
-02-arabic-input pass 28s
-03-offline pass 38s
-04a-persist pass 37s
-04b-memory pass 4s
-04c-alive pass 13s
-04d-kill pass 2s
-04e-restore pass 14s
-05a-secure pass 30s
-05b-secure pass 0s
-06a-permissions pass 1s
-06b-permissions pass 27s
-07-widget pass 0s
-08-coldstart pass 10s
+commit 5c203a620b40ebfa3e9acac34c405bb61a28444f
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42443478276
+success false
+flows 0 · failed 0
+no-flows-ran
