@@ -748,23 +748,27 @@ function liveDepositCollection(db: DB, lineId: string, exceptId: string): string
   // والإيداعات بعدّ التوائم نفسه (keepInOrder) وبصمات الكشوف هنا وفي الوارد
   const rankOf = (x: L) => lineRank({ id: x.id, status: x.status, c: x.c, k: x.key, st: x.st });
   const liveLines = [...lines.values()].filter((x) => x.live).sort((a, b) => (rankOf(a) < rankOf(b) ? -1 : 1));
-  // (وكشوف البنك في الوارد كلها، ولو لم يُطبَّق لها سطرٌ في القاعدة · K٢-٢)
-  const inboxSts = db.all<{ pk: string; p: string }>(`SELECT pk, payload AS p FROM sync_inbox WHERE tbl = 'bank_statements' AND del = 0`)
-    .filter((r) => { try { return String(JSON.parse(r.p)?.d?.bank_id ?? '') === ln!.bank; } catch { return false; } }).map((r) => r.pk);
-  const stIds = [...liveLines.map((x) => x.st), ...bankStatementIds(db, ln.bank), ...inboxSts];
+  // (وكشوف البنك في الوارد كلها، ولو لم يُطبَّق لها سطرٌ في القاعدة · K٢-٢) · والمحذوف منها في الوارد لا يُعدّ، ولا نسخته الحيّة هنا
+  // (المدقق الخارجي M٢-١: كشفٌ حذفه كاتبه لأنه خطأ كان يجيز تحصيلاً ثانياً) · وكلٌّ منها يُفكّ مرةً
+  const inboxKeys = new Map<string, string[]>();
+  const deletedIn = new Set<string>();
+  for (const r of db.all<{ pk: string; p: string }>(`SELECT pk, payload AS p FROM sync_inbox WHERE tbl = 'bank_statements' AND del = 0`)) {
+    try {
+      const d = JSON.parse(r.p)?.d;
+      if (String(d?.bank_id ?? '') !== ln.bank) continue;
+      if (d.deleted_at != null) { deletedIn.add(r.pk); continue; }
+      const keys = JSON.parse(String(d.shared_keys ?? '[]'));
+      inboxKeys.set(r.pk, Array.isArray(keys) ? keys.map(String).filter((k: string) => lineKeyBase(k) === base) : []);
+    } catch { /* مستندٌ تالف لا يشهد */ }
+  }
+  for (const r of db.all<{ pk: string }>(`SELECT pk FROM sync_inbox WHERE tbl = 'bank_statements' AND del = 1`)) deletedIn.add(r.pk);
+  const stIds = [...liveLines.map((x) => x.st), ...bankStatementIds(db, ln.bank)].filter((id) => !deletedIn.has(id) && !inboxKeys.has(id));
   const known = statementsKnown(db, stIds, ln.key);
   let need = known.need;
   const bal = new Set(known.bal);
-  for (const id of new Set(stIds)) {
-    if (db.get(`SELECT 1 FROM bank_statements WHERE id = ?`, [id])) continue;
-    try {
-      const keys = JSON.parse(String(JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'bank_statements' AND pk = ? AND del = 0`, [id])?.p ?? 'null')?.d?.shared_keys ?? '[]'));
-      if (Array.isArray(keys)) {
-        const mine = keys.map(String).filter((k) => lineKeyBase(k) === base);
-        need = Math.max(need, mine.length);
-        for (const k of mine) if (!k.includes('#')) bal.add(k);
-      }
-    } catch { /* مستندٌ تالف لا يشهد */ }
+  for (const mine of inboxKeys.values()) {
+    need = Math.max(need, mine.length);
+    for (const k of mine) if (!k.includes('#')) bal.add(k);
   }
   need = Math.max(need, bal.size);
   const cap = Math.max(1, keepInOrder(liveLines.map((x) => x.key), () => need).filter(Boolean).length);
