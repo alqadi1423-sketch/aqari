@@ -36,7 +36,8 @@ export interface CollectSuggestion {
 
 const dayNo = (iso: string) => Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10))) / 86400000;
 // صدور الأسماء المركّبة تُضمّ إلى ما بعدها، والوصلات لا تعرّف أحداً (المدقق الخارجي W٥: «عبد» وحدها كانت اسماً مشتركاً)
-const NAME_PREFIX = new Set(['عبد', 'ابو', 'ام']); // i18n-exempt: صدور الأسماء المركّبة للمقارنة
+// (وبالحروف اللاتينية «Abdul Rahman» و«Abu Bakr» كذلك · المدقق الخارجي L٢-٣)
+const NAME_PREFIX = new Set(['عبد', 'ابو', 'ام', 'abd', 'abdul', 'abdel', 'abu']); // i18n-exempt: صدور الأسماء المركّبة للمقارنة
 const NAME_LINK = new Set(['بن', 'بنت', 'ابن', 'ال']); // i18n-exempt: وصلات الأسماء للمقارنة
 // والكلمات العامة في أسماء المنشآت وبيانات الحوالات لا تعرّف الدافع (المدقق الخارجي V٦: «شركة» كانت اسماً مشتركاً)
 const GENERIC = new Set([

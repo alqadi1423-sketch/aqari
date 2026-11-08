@@ -214,7 +214,10 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   let carriedAt = -1;
   // والافتتاحي بموضعه من الحركات: قبلها أو بعدها كلها افتتاحيٌّ، وفي وسطها «رصيدٌ منقول» بين صفحتين لا افتتاحي الكشف (المدقق الخارجي
   // F٢-٩: «Balance Brought Forward» أعلى الصفحة الثانية كان افتتاحياً للكشف كله)
-  const openings: Array<{ v: number; at: number; bf?: boolean }> = [];
+  const openings: Array<{ v: number; at: number; bf?: boolean; pg?: boolean }> = [];
+  // (وصفّ الملخص بعد صفّ عناوين مكرر أول صفحةٍ جديدة · L٢-١)
+  const pageStart = new Set<string[]>();
+  for (let i = h + 1; i < grid.length - 1; i++) if (isRepeatHeader(grid[i])) pageStart.add(grid[i + 1]);
   const moneyCols = [debitCol, creditCol, amountCol, balanceCol].filter((c) => c >= 0);
   const noteSummary = (r: string[]) => {
     r.forEach((cell, i) => {
@@ -223,7 +226,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       const v = amountAfter(r, i);
       if (v == null) return;
       // الافتتاحي أولُ ما يُطبع (كل صفحةٍ قد تكرره) والختامي آخره
-      if (k === 'opening' || k === 'broughtForward') { openings.push({ v, at: raws.length, bf: k === 'broughtForward' }); return; }
+      if (k === 'opening' || k === 'broughtForward') { openings.push({ v, at: raws.length, bf: k === 'broughtForward', pg: pageStart.has(r) }); return; }
       if (k === 'carried') carriedAt = raws.length;
       summary[k] = v;
     });
@@ -261,7 +264,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       // والافتتاحي والختامي المؤرَّخان قيمتهما في عمود الرصيد (والأصفار في المدين والدائن خاناتٌ فارغة · X٦)
       const bal = balanceCol >= 0 ? parseStatementAmount(r[balanceCol] ?? '') : null;
       if ((k === 'opening' || k === 'broughtForward' || k === 'closing' || k === 'carried') && bal != null) {
-        if (k === 'opening' || k === 'broughtForward') openings.push({ v: bal, at: raws.length, bf: k === 'broughtForward' }); else summary[k] = bal;
+        if (k === 'opening' || k === 'broughtForward') openings.push({ v: bal, at: raws.length, bf: k === 'broughtForward', pg: pageStart.has(r) }); else summary[k] = bal;
         if (k === 'carried') carriedAt = raws.length;
       } else if (k) noteSummary(r);
       continue;
@@ -325,7 +328,8 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   const first = newestFirst ? atEnd : atStart;
   const other = newestFirst ? atStart : atEnd;
   // (و«الافتتاحي/السابق» في الطرف الآخر ملخصٌ إلا أن يساوي رصيد آخر حركةٍ قبله في الطباعة: ذاك رصيدٌ منقول بين صفحتين · J٢-٤ مع H٢-٦)
-  const carriedOver = (o: { v: number; at: number }) => o.at > 0 && raws[o.at - 1]?.balance === o.v;
+  // (وبعد صفّ عناوين مكرر وحده: شهرٌ صافيه صفر ختاميه يساوي افتتاحيه · L٢-١)
+  const carriedOver = (o: { v: number; at: number; pg?: boolean }) => !!o.pg && o.at > 0 && raws[o.at - 1]?.balance === o.v;
   summary.opening = ((newestFirst ? [...openings].reverse() : openings).find(first)
     ?? openings.find((o) => !o.bf && other(o) && !carriedOver(o)))?.v;
 

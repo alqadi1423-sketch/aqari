@@ -289,7 +289,10 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
           continue;
         }
         if (i < 0) {
-          const j = os.findIndex((x) => ls.some(chainsFrom(x.open!)));
+          // (وأولاها افتتاحيٌّ ليس رصيداً مطبوعاً لسطرٍ في يومه: ذاك افتتاحي صفحةٍ تالية · L٢-٢)
+          const chained = (x: Ev) => ls.some(chainsFrom(x.open!));
+          const jj = os.findIndex((x) => chained(x) && !ls.some((l) => l.balance === x.open));
+          const j = jj >= 0 ? jj : os.findIndex(chained);
           if (j >= 0) { cur = take(os, j).open!; continue; }
           // وبلا أرصدةٍ مطبوعة (MT940): افتتاحي الكشف قبل سطوره في يومه (المدقق الخارجي F٢-١: كان بعدها فيمحوها)
           const k = os.findIndex((x) => ls.some((l) => l.st === x.st));
