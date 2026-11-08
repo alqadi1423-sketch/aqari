@@ -1,5 +1,8 @@
-commit af2ba1ff4d45293750835feb0930e11ec6469c50
-run https://github.com/alqadi1423-sketch/aqari/actions/runs/42445177407
-success false
-flows 0 · failed 0
-no-flows-ran
+commit 76a4d92e28197e2e8026f231fd6d5e4290761826
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/42445603546
+success true
+flows 4 · failed 0
+00-smoke pass 32s
+01-property pass 43s
+02-arabic-input pass 25s
+03-offline pass 34s
