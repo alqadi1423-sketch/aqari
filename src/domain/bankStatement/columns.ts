@@ -40,7 +40,8 @@ export function headerRoles(cells: unknown[]): Array<Role | null> {
 }
 
 /** carried: «الرصيد المرحَّل» أسفل الصفحة · ختاميٌّ إن لم تأتِ بعده حركة (المدقق الخارجي D٢-٥) */
-export type SummaryKey = 'opening' | 'closing' | 'carried' | 'totalDebit' | 'totalCredit' | 'period';
+/** broughtForward: «الرصيد المنقول/السابق» · افتتاحيٌّ في أول الكشف زمنياً وحده (H٢-٦) */
+export type SummaryKey = 'opening' | 'broughtForward' | 'closing' | 'carried' | 'totalDebit' | 'totalCredit' | 'period';
 
 const SUMMARY = dictionary.summary as Array<[SummaryKey, string[]]>;
 

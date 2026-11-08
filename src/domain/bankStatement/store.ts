@@ -8,7 +8,7 @@ import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { t } from '../../i18n';
 import { RuleViolation } from '../contracts/service';
-import { statementLineKeys, fnv64, freshLines, statementWithRoom } from './dedupe';
+import { statementLineKeys, fnv64, freshLines, statementWithRoom, resetStatementCounts, statementCounts, lineKeyBase } from './dedupe';
 import { foldText } from './normalize';
 import type { ColumnMapping, StatementResult } from './read';
 
@@ -51,6 +51,7 @@ export function saveStatement(db: DB, bankId: string, r: Ok, file: { name: strin
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, [id, bankId, r.from ?? r.lines[0].date, r.to ?? r.lines[r.lines.length - 1].date, r.opening, r.closing,
       file.name, file.hash, fresh.length, r.warnings.includes('photo') ? '' : JSON.stringify(r.mapping), r.warnings.includes('unverified') ? 0 : 1,
       JSON.stringify(keys), now]);
+    resetStatementCounts(db, id);
     for (const { l, key } of fresh) {
       db.run(`INSERT INTO bank_statement_lines (id, statement_id, bank_id, line_key, date, value_date, descr, ref, amount_halalas, balance_halalas, created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [fixedId('bank_statement_lines', 'sl' + fnv64(bankId + '|' + key)), id, bankId, key, l.date, l.valueDate, l.descr, l.ref, l.amount, l.balance, now]);
@@ -243,32 +244,47 @@ export function reconciliation(db: DB, bankId: string, month: string): Reconcili
   // خط زمن الكشوف: كل سطرٍ برصيده المطبوع أو بما قبله · وفي اليوم الواحد بتسلسل الأرصدة لا بترتيب الحفظ، وافتتاحي الكشف حيث يتّصل:
   // عند رصيدٍ يساويه، أو قبل سطرٍ يتسلسل منه (المدقق الخارجي D٢-١: صفحةٌ تبدأ في منتصف اليوم كان افتتاحيها يوضع قبل سطور يومه كلها،
   // فتظهر فجوةٌ كاذبة وختاميٌّ خاطئ بحسب أيّ الصفحتين حُفظت أولاً)
-  type Ev = { date: string; open?: number; amount?: number; balance?: number | null; st: string };
+  type Ev = { date: string; open?: number; amount?: number; balance?: number | null; st: string; base?: string };
   const opens = db.all<{ d: string; o: number; id: string }>(
     `SELECT period_from AS d, opening_halalas AS o, id FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL ORDER BY period_from, created_at, id`, [bankId])
     .map((x): Ev => ({ date: x.d, open: Number(x.o), st: x.id }));
-  const moves = db.all<{ d: string; a: number; b: number | null; st: string }>(
-    `SELECT date AS d, amount_halalas AS a, balance_halalas AS b, statement_id AS st FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL ORDER BY date, rowid`, [bankId])
-    .map((l): Ev => ({ date: l.d, amount: Number(l.a), balance: l.b == null ? null : Number(l.b), st: String(l.st ?? '') }));
+  const moves = db.all<{ d: string; a: number; b: number | null; st: string; k: string }>(
+    `SELECT date AS d, amount_halalas AS a, balance_halalas AS b, statement_id AS st, line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL ORDER BY date, rowid`, [bankId])
+    .map((l): Ev => ({ date: l.d, amount: Number(l.a), balance: l.b == null ? null : Number(l.b), st: String(l.st ?? ''), base: lineKeyBase(String(l.k ?? '')) }));
   const events: Ev[] = [];
   {
     let cur: number | null = null;
+    // (وسطران يتسلسلان من الرصيد نفسه: الأول من كشف ما قبله · المدقق الخارجي H٢-٣: كان الأسبق حفظاً فيختلف التقرير بترتيب الحفظ)
+    let lastSt = '';
     const days = [...new Set([...opens, ...moves].map((e) => e.date))].sort();
     for (const d of days) {
       const os = opens.filter((e) => e.date === d);
       const ls = moves.filter((e) => e.date === d);
       const chainsFrom = (v: number | null) => (l: Ev) => v != null && l.balance != null && l.balance - (l.amount ?? 0) === v;
-      const take = (arr: Ev[], i: number) => { const e = arr.splice(i, 1)[0]; events.push(e); return e; };
+      const take = (arr: Ev[], i: number) => { const e = arr.splice(i, 1)[0]; events.push(e); lastSt = e.st; return e; };
+      const chainIdx = (v: number | null) => {
+        const own = ls.findIndex((l) => l.st === lastSt && chainsFrom(v)(l));
+        return own >= 0 ? own : ls.findIndex(chainsFrom(v));
+      };
       while (os.length || ls.length) {
-        let i = os.findIndex((o) => o.open === cur);
-        if (i >= 0) { take(os, i); continue; }
-        i = ls.findIndex(chainsFrom(cur));
+        // (سلسلة الكشف الجاري أولاً، ثم افتتاحي كشفٍ عند الرصيد نفسه، ثم أي سلسلة)
+        let i = ls.findIndex((l) => l.st === lastSt && chainsFrom(cur)(l));
+        if (i < 0) {
+          const o = os.findIndex((x) => x.open === cur);
+          if (o >= 0) { take(os, o); continue; }
+          i = chainIdx(cur);
+        }
         if (i < 0 && cur == null && os.length) { cur = take(os, 0).open!; continue; }
         if (i < 0) {
           const j = os.findIndex((o) => ls.some(chainsFrom(o.open!)));
           if (j >= 0) { cur = take(os, j).open!; continue; }
           // وبلا أرصدةٍ مطبوعة (MT940): افتتاحي الكشف قبل سطوره في يومه (المدقق الخارجي F٢-١: كان بعدها فيمحوها)
           const k = os.findIndex((o) => ls.some((l) => l.st === o.st));
+          // (إلا كشفاً بدأ قبل ذلك في يومه بسطورٍ تخطّاها عند حفظه وهي هنا من كشفٍ آخر: افتتاحيه خلفنا · C٢-١ مع F٢-١)
+          if (k >= 0 && events.some((e) => e.date === d && e.open == null && e.st !== os[k].st && (statementCounts(db, os[k].st)?.get(e.base ?? '') ?? 0) > 0)) {
+            os.splice(k, 1);
+            continue;
+          }
           if (k >= 0) { cur = take(os, k).open!; continue; }
           i = ls.findIndex((l) => l.balance == null);
         }
@@ -357,6 +373,7 @@ export function deleteStatement(db: DB, statementId: string): void {
     }
     db.run(`UPDATE bank_statement_lines SET deleted_at = ? WHERE statement_id = ? AND deleted_at IS NULL`, [now, statementId]);
     db.run(`UPDATE bank_statements SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`, [now, statementId]);
+    resetStatementCounts(db, statementId);
     logAudit(db, t('bankStatement.auditModule', { lng: 'ar' }), 'delete', t('bankStatement.auditEntity', { lng: 'ar' }), statementId);
   });
 }

@@ -15,7 +15,7 @@
  *    الحفظ فلا يبقى من الصف أثر، ويُحفظ في sync_rejects ويُسجَّل، ولا يكسر بقية الدفعة.
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
-import { SAME_KEY_SQL, sameKeyParams, keepInOrder, lineKeyBase, statementsNeed, statementWithRoom } from '../domain/bankStatement/dedupe';
+import { SAME_KEY_SQL, sameKeyParams, keepInOrder, lineKeyBase, sameLineKey, statementsNeed, statementWithRoom, resetStatementCounts } from '../domain/bankStatement/dedupe';
 import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
@@ -681,41 +681,67 @@ function reversalPending(db: DB, entryId: string, srcType: string, srcId: string
  * حركةٌ في ذلك البنك بمبلغ السطر ويومه (B٢-١ وB٢-٢) · 'pending' إن كان عاكسه في الطريق · null إن لم يكن
  */
 function liveDepositCollection(db: DB, lineId: string, exceptId: string): string | 'pending' | null {
-  // والسطر الذي لم يُطبَّق بعد يُقرأ من الوارد: القيود تُطبَّق قبل سطور الكشف، فكان تحصيلان لإيداعٍ واحد يُقبلان معاً (المدقق الخارجي
-  // E٢-٤) · ولا ينتظره القيد (السطر ينتظر حركة البنك، وحركة البنك تنتظر القيد)
-  let line = db.get<{ bank: string; key: string; amount: number; date: string }>(
-    `SELECT bank_id AS bank, line_key AS key, amount_halalas AS amount, date FROM bank_statement_lines WHERE id = ?`, [lineId]);
-  if (!line) {
+  // والسطر الذي لم يُطبَّق بعد يُقرأ من الوارد: القيود تُطبَّق قبل سطور الكشف (المدقق الخارجي E٢-٤) · ولا ينتظره القيد (السطر ينتظر حركة
+  // البنك، وحركة البنك تنتظر القيد)
+  type L = { id: string; bank: string; key: string; amount: number; date: string; st: string; live: boolean; status: string; tx: string | null; c: string };
+  const parse = (pk: string, p: string): L | null => {
     try {
-      const d = JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'bank_statement_lines' AND pk = ? AND del = 0`, [lineId])?.p ?? 'null')?.d;
-      if (d?.bank_id && d.line_key) line = { bank: String(d.bank_id), key: String(d.line_key), amount: Number(d.amount_halalas), date: String(d.date) };
+      const d = JSON.parse(p)?.d;
+      return d?.bank_id && d.line_key ? { id: pk, bank: String(d.bank_id), key: String(d.line_key), amount: Number(d.amount_halalas), date: String(d.date),
+        st: String(d.statement_id ?? ''), live: d.deleted_at == null, status: String(d.status ?? 'open'), tx: d.bank_tx_id ?? null, c: String(d.created_at ?? '') } : null;
+    } catch { return null; }
+  };
+  const SEL = `SELECT id, bank_id AS bank, line_key AS key, amount_halalas AS amount, date, COALESCE(statement_id, '') AS st, deleted_at IS NULL AS live,
+    status, bank_tx_id AS tx, created_at AS c FROM bank_statement_lines`;
+  let ln: L | null = db.get<L>(`${SEL} WHERE id = ?`, [lineId]) ?? null;
+  if (!ln) {
+    const p = db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'bank_statement_lines' AND pk = ? AND del = 0`, [lineId])?.p;
+    ln = p ? parse(lineId, p) : null;
+  }
+  if (!ln) return null;
+  // وسطور اليوم والمبلغ هنا وفي الوارد (G٢-٣ وG٢-٤: سطرٌ لم يصل كان لا يُعدّ إيداعاً ولا يُعدّ تحصيله)
+  const base = lineKeyBase(ln.key);
+  const lines = new Map<string, L>();
+  for (const x of db.all<L>(`${SEL} WHERE bank_id = ? AND line_key BETWEEN ? AND ?`, [ln.bank, base, base + '~'])) lines.set(x.id, { ...x, live: !!x.live });
+  for (const r of db.all<{ pk: string; p: string }>(`SELECT pk, payload AS p FROM sync_inbox WHERE tbl = 'bank_statement_lines' AND del = 0
+      AND json_extract(payload, '$.d.line_key') BETWEEN ? AND ?`, [base, base + '~'])) {
+    const x = parse(r.pk, r.p);
+    if (x && x.bank === ln.bank && !lines.has(x.id)) lines.set(x.id, x);
+  }
+  if (!lines.has(ln.id)) lines.set(ln.id, ln);
+  const genuine = (no: string) => txsOfNo(db, no).some((t) => t.bank === ln!.bank && t.amount === Number(ln!.amount) && t.date === ln!.date);
+  const rows = db.all<{ id: string; no: string; src: string; sid: string; lid: string }>(
+    `SELECT id, no, COALESCE(src_type, '') AS src, COALESCE(src_id, '') AS sid, stmt_line_id AS lid FROM journal_entries
+     WHERE stmt_line_id IN (SELECT value FROM json_each(?)) AND id != ? AND reversed_by IS NULL AND status = ?`,
+    [JSON.stringify([...lines.keys()]), exceptId, POSTED_ENTRY])
+    .filter((e) => genuine(e.no))
+    .map((e) => ({ ...e, k: lines.get(e.lid)?.key ?? '' }));
+  // وما طابقه المالك هنا بحركة تحصيلٍ حيٍّ سجّله بنفسه (G٢-٢: الإيداع مطابَقٌ بتحصيلٍ يدوي فلا يسنده تحصيلٌ آخر من الكشف)
+  const held = new Set(rows.map((e) => e.no));
+  const manual = [...lines.values()].filter((x) => x.live && x.status === 'matched' && x.tx && db.get<{ n: string }>(
+    `SELECT e.no AS n FROM bank_tx t JOIN journal_entries e ON e.no = t.journal_no
+     WHERE t.id = ? AND t.deleted_at IS NULL AND e.reversed_by IS NULL AND e.status = ? AND e.id != ?`, [x.tx, POSTED_ENTRY, exceptId])
+    && !held.has(db.get<{ n: string }>(`SELECT journal_no AS n FROM bank_tx WHERE id = ?`, [x.tx])?.n ?? ''));
+  const live = rows.filter((e) => !reversalPending(db, e.id, e.src, e.sid));
+  if (rows.some((e) => e.k === ln!.key)) return live.find((e) => e.k === ln!.key)?.id ?? 'pending';
+  const same = manual.find((x) => x.key === ln!.key);
+  if (same) return same.tx ?? 'manual';
+  // والإيداعات بعدّ التوائم نفسه (keepInOrder) وبصمات الكشوف هنا وفي الوارد
+  const rankOf = (x: L) => lineRank({ id: x.id, status: x.status, c: x.c, k: x.key, st: x.st });
+  const liveLines = [...lines.values()].filter((x) => x.live).sort((a, b) => (rankOf(a) < rankOf(b) ? -1 : 1));
+  const stIds = liveLines.map((x) => x.st);
+  let need = statementsNeed(db, stIds, ln.key);
+  for (const id of new Set(stIds)) {
+    if (db.get(`SELECT 1 FROM bank_statements WHERE id = ?`, [id])) continue;
+    try {
+      const keys = JSON.parse(String(JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'bank_statements' AND pk = ? AND del = 0`, [id])?.p ?? 'null')?.d?.shared_keys ?? '[]'));
+      if (Array.isArray(keys)) need = Math.max(need, keys.filter((k) => lineKeyBase(String(k)) === base).length);
     } catch { /* مستندٌ تالف لا يشهد */ }
   }
-  if (!line) return null;
-  const ln = line;
-  // والتحصيلات في القاعدة (اليوم والمبلغ) لا تجاوز عدد إيداعاتها الحيّة، وسطرٌ بالبصمة نفسها إيداعٌ واحد (B٢-٤) · بالعدّ لا بالأزواج:
-  // حوالتان بلا رصيدٍ أو إحداهما برصيد آخر اليوم إيداعان (C٢-١ وE٢-١)
-  const base = lineKeyBase(ln.key);
-  const rows = db.all<{ id: string; no: string; src: string; sid: string; k: string }>(
-    `SELECT e.id, e.no, COALESCE(e.src_type, '') AS src, COALESCE(e.src_id, '') AS sid, l.line_key AS k FROM journal_entries e
-     JOIN bank_statement_lines l ON l.id = e.stmt_line_id
-     WHERE e.id != ? AND e.reversed_by IS NULL AND e.status = ? AND l.bank_id = ? AND l.line_key BETWEEN ? AND ?`,
-    [exceptId, POSTED_ENTRY, ln.bank, base, base + '~'])
-    .filter((e) => txsOfNo(db, e.no).some((t) => t.bank === ln.bank && t.amount === Number(ln.amount) && t.date === ln.date));
-  // ومعرّف السطر نفسه ولو لم يصل سطره بعد (المحصِّلان قرآ الملف نفسه فالسطر واحد · E٢-٤)
-  for (const e of db.all<{ id: string; no: string; src: string; sid: string }>(
-    `SELECT id, no, COALESCE(src_type, '') AS src, COALESCE(src_id, '') AS sid FROM journal_entries
-     WHERE stmt_line_id = ? AND id != ? AND reversed_by IS NULL AND status = ?`, [lineId, exceptId, POSTED_ENTRY])) {
-    if (!rows.some((x) => x.id === e.id) && txsOfNo(db, e.no).some((t) => t.bank === ln.bank && t.amount === Number(ln.amount) && t.date === ln.date)) {
-      rows.push({ ...e, k: ln.key });
-    }
-  }
-  if (!rows.length) return null;
-  const live = rows.filter((e) => !reversalPending(db, e.id, e.src, e.sid));
-  if (rows.some((e) => e.k === ln.key)) return live.find((e) => e.k === ln.key)?.id ?? 'pending';
-  const cap = Math.max(1, liveOfBase(db, ln.bank, ln.key, '').length);
-  if (rows.length < cap) return null;
-  return live.length >= cap ? live[0].id : 'pending';
+  const cap = Math.max(1, keepInOrder(liveLines.map((x) => x.key), () => need).filter(Boolean).length);
+  const taken = rows.length + manual.length;
+  if (taken < cap) return null;
+  return live.length + manual.length >= cap ? (live[0]?.id ?? manual[0].tx ?? 'manual') : 'pending';
 }
 
 /** حركات البنك الحيّة برقم القيد، هنا وفي الوارد (البحث بالرقم المفهرس وحده، والباقي يُقارن هنا) */
@@ -1049,11 +1075,16 @@ function statementLineFix(db: DB, row: Record<string, unknown>, member = false):
     const keep = keepInOrder(all.map((x) => x.k), () => need);
     // ووقائع الإيداع بأول ما قُرئ به هنا: سطرٌ جديدٌ من عضوٍ بالبصمة نفسها يحمل بيان السطر القائم ومرجعه (المدقق الخارجي E٢-٢: توأمٌ
     // مزوَّر بوقت إنشاءٍ أقدم وبيانٍ يسمّي مستأجراً آخر كان يغلب ويقلب الاقتراح)
-    const local = others.find((x) => x.k === me.k && !keep[all.indexOf(x)]);
+    // (وكذلك سطرٌ قد يكون الإيداع نفسه بصيغةٍ أخرى: «@الرصيد» من العضو مكان «#1» للمالك يحمل بيانه ومرجعه ومطابقته · G٢-٥)
+    const local = others.find((x) => x.k === me.k && !keep[all.indexOf(x)]) ?? others.find((x) => sameLineKey(x.k, me.k) && !keep[all.indexOf(x)]);
     if (member && local && keep[all.indexOf(me)]) {
-      const f = db.get<{ descr: string; ref: string | null; vd: string | null }>(`SELECT descr, ref, value_date AS vd FROM bank_statement_lines WHERE id = ?`, [local.id]);
+      const f = db.get<{ descr: string; ref: string | null; vd: string | null; status: string; tx: string | null; at: string | null; note: string }>(
+        `SELECT descr, ref, value_date AS vd, status, bank_tx_id AS tx, matched_at AS at, note FROM bank_statement_lines WHERE id = ?`, [local.id]);
       if (f && (f.descr !== row.descr || (f.ref ?? null) !== (row.ref ?? null) || (f.vd ?? null) !== (row.value_date ?? null))) {
         row.descr = f.descr; row.ref = f.ref; row.value_date = f.vd; changed = true;
+      }
+      if (f && f.status !== 'open' && (row.status ?? 'open') === 'open') {
+        row.status = f.status; row.bank_tx_id = f.tx; row.matched_at = f.at; row.note = f.note; changed = true;
       }
     }
     all.forEach((x, i) => {
@@ -1072,6 +1103,15 @@ function statementLineFix(db: DB, row: Record<string, unknown>, member = false):
   const tx = db.get<{ b: string; a: number; del: string | null }>(`SELECT bank_id AS b, amount_halalas AS a, deleted_at AS del FROM bank_tx WHERE id = ?`, [txId]);
   // والسطر لحركةٍ ليست هنا وللسطر تحصيلٌ حيٌّ بقيده هنا: يُطابَق بحركة ذلك التحصيل (الإيداع الواحد اعتمده جهازان لهدفين فقُبل أحدهما ·
   // Z٢-١) · وحركةٌ رُفضت لا يُطابَق بها · وما لم يصل بعد يُرجئه المفتاح الأجنبي
+  // ومطابقةٌ واردة لا تثبت (حركتها رُفضت أو من بنكٍ آخر) لا تمحو مطابقةً حيّةً هنا (G٢-٢: تحصيل المالك اليدوي)
+  const keepHere = (): boolean => {
+    const h = db.get<{ s: string; tx: string | null; at: string | null; note: string }>(
+      `SELECT l.status AS s, l.bank_tx_id AS tx, l.matched_at AS at, l.note FROM bank_statement_lines l JOIN bank_tx t ON t.id = l.bank_tx_id
+       WHERE l.id = ? AND l.deleted_at IS NULL AND l.status = 'matched' AND t.deleted_at IS NULL AND l.bank_tx_id != ?`, [String(row.id), txId]);
+    if (!h) return demote();
+    row.status = h.s; row.bank_tx_id = h.tx; row.matched_at = h.at; row.note = h.note;
+    return true;
+  };
   if (!tx) {
     // (بيوم السطر، ولا تمسكها سطرٌ آخر · B٢-٢)
     const alt = db.get<{ id: string }>(
@@ -1080,10 +1120,10 @@ function statementLineFix(db: DB, row: Record<string, unknown>, member = false):
          AND NOT EXISTS (SELECT 1 FROM bank_statement_lines o WHERE o.bank_tx_id = t.id AND o.id != ? AND o.status = 'matched' AND o.deleted_at IS NULL) LIMIT 1`,
       [String(row.bank_id), Number(row.amount_halalas), String(row.date), String(row.id), POSTED_ENTRY, String(row.id)]);
     if (alt) { row.bank_tx_id = alt.id; return true; }
-    if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'bank_tx' AND pk = ?`, [txId])) return demote();
+    if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'bank_tx' AND pk = ?`, [txId])) return keepHere();
     return changed;
   }
-  if (tx.del != null || String(tx.b) !== String(row.bank_id) || Number(tx.a) !== Number(row.amount_halalas)) return demote();
+  if (tx.del != null || String(tx.b) !== String(row.bank_id) || Number(tx.a) !== Number(row.amount_halalas)) return keepHere();
   // ولا مطابقة بحركة قيدٍ عُكس (C٢-٢)
   if (db.get(`SELECT 1 FROM bank_tx t JOIN journal_entries e ON e.no = t.journal_no WHERE t.id = ? AND e.reversed_by IS NOT NULL`, [txId])) return demote();
   const rivals = db.all<{ id: string }>(
@@ -2169,7 +2209,7 @@ function applyOne(
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
-        if (doc.t === 'bank_statements') statementCascade(db, doc.k, row, theirs0);
+        if (doc.t === 'bank_statements') { resetStatementCounts(db, doc.k); statementCascade(db, doc.k, row, theirs0); }
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·
@@ -2194,7 +2234,8 @@ function applyOne(
       if (pending) db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
       if (keepOpening || (repaired && !getSyncState(db, 'membership'))) enqueue(db, doc.t, doc.k, 'upsert');
       if (relink && relinkOwn) enqueue(db, doc.t, doc.k, 'upsert');
-      else if (relink) enqueueStmtFix(db, doc.k);
+      // (بوقت النسخة الواردة لا بوقت الآن: تعديلٌ حقيقي للعضو بعدها يغلب التصحيح · المدقق الخارجي G٢-٧ كـY٧)
+      else if (relink) enqueueStmtFix(db, doc.k, theirs0);
       if (conflict) {
         logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', joining
           ? `${doc.t} · ${doc.k} · غلب ما في الحساب على نسخة هذا الجهاز عند انضمامه`
@@ -2326,6 +2367,7 @@ export interface ApplyResult { applied: number; conflicts: number; rejected: num
  */
 function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: number): Generator<number, void> {
   const cache = new Map<string, Set<string>>();
+  resetStatementCounts(db);
   const money = moneyColumns(db); // مرة لكل تطبيق لا لكل صف
   const joining = getSyncState(db, 'joining') === '1';
   const touched = new Set<string>();

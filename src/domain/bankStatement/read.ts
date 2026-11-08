@@ -157,7 +157,8 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   // صفُّ «الفترة» أولاً، ثم صفٌّ فيه تاريخان (U١٠: «تاريخ فتح الحساب … تاريخ الطباعة» قبله لا يصير فترة)
   const head = grid.slice(0, h);
   for (const r of [...head.filter((x) => x.some((c) => summaryOf(c) === 'period')), ...head.filter((x) => !x.some((c) => summaryOf(c) === 'period'))]) {
-    const found = (r.join(' ').match(FULL_DATE) ?? []);
+    // (والهجري بجانب الميلادي في صفّ الفترة يُترك · المدقق الخارجي H٢-٤)
+    const found = (r.join(' ').match(FULL_DATE) ?? []).filter((x) => parseStatementDate(x, { order: 'dmy' }) || parseStatementDate(x, { order: 'mdy' }));
     if (found.length < 2) continue;
     for (const order of ['dmy', 'mdy'] as DateOrder[]) {
       const ds = found.map((x) => parseStatementDate(x, { order }));
@@ -190,8 +191,10 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
     const span = ds.length ? (Date.parse(sorted[sorted.length - 1]) - Date.parse(sorted[0])) / 86400000 : 0;
     return { n: score(o), mono: up || down ? 1 : 0, span };
   };
-  const order = orders.map((o) => ({ o, ...shape(o) }))
-    .reduce((a, b) => (b.n > a.n || (b.n === a.n && (b.mono > a.mono || (b.mono === a.mono && b.span < a.span))) ? b : a)).o;
+  // وصيغة الربط المحفوظ أو المصحَّح تُقدَّم إن قُرئت بها التواريخ كلها (قرار المالك أ.٣ · المدقق الخارجي H٢-٧: كان التخمين الأقصر مدىً يغلبها)
+  const order = opts.mapping && score(opts.mapping.dateOrder) === dateCells.length ? opts.mapping.dateOrder
+    : orders.map((o) => ({ o, ...shape(o) }))
+      .reduce((a, b) => (b.n > a.n || (b.n === a.n && (b.mono > a.mono || (b.mono === a.mono && b.span < a.span))) ? b : a)).o;
 
   // ٣) السطور، والبيان المكمِّل، والملخص
   const signedColumn = amountCol >= 0 && body.some((r) => amountHasSign(r[amountCol] ?? ''));
@@ -210,7 +213,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   let carriedAt = -1;
   // والافتتاحي بموضعه من الحركات: قبلها أو بعدها كلها افتتاحيٌّ، وفي وسطها «رصيدٌ منقول» بين صفحتين لا افتتاحي الكشف (المدقق الخارجي
   // F٢-٩: «Balance Brought Forward» أعلى الصفحة الثانية كان افتتاحياً للكشف كله)
-  const openings: Array<{ v: number; at: number }> = [];
+  const openings: Array<{ v: number; at: number; bf?: boolean }> = [];
   const moneyCols = [debitCol, creditCol, amountCol, balanceCol].filter((c) => c >= 0);
   const noteSummary = (r: string[]) => {
     r.forEach((cell, i) => {
@@ -219,7 +222,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       const v = amountAfter(r, i);
       if (v == null) return;
       // الافتتاحي أولُ ما يُطبع (كل صفحةٍ قد تكرره) والختامي آخره
-      if (k === 'opening') { openings.push({ v, at: raws.length }); return; }
+      if (k === 'opening' || k === 'broughtForward') { openings.push({ v, at: raws.length, bf: k === 'broughtForward' }); return; }
       if (k === 'carried') carriedAt = raws.length;
       summary[k] = v;
     });
@@ -232,7 +235,7 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       keys.forEach((k, c) => {
         if (!k || k === 'period' || summary[k] != null) return;
         const v = parseStatementAmount(next[c] ?? '');
-        if (v != null && k === 'opening') openings.push({ v, at: 0 });
+        if (v != null && (k === 'opening' || k === 'broughtForward')) openings.push({ v, at: 0, bf: k === 'broughtForward' });
         else if (v != null) summary[k] = v;
       });
       return;
@@ -251,11 +254,11 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       && (!cellText(descrCol >= 0 ? r[descrCol] ?? '' : '') || (from && to && (date < from || date > to)))) continue;
     const moved = [debitCol, creditCol, amountCol].some((c) => c >= 0 && cellText(r[c] ?? '') !== '' && parseStatementAmount(r[c] ?? '') !== 0);
     if (date && !moved) {
-      const k = r.map((c) => summaryOf(c)).find((x) => x === 'opening' || x === 'closing' || x === 'carried' || x === 'totalDebit' || x === 'totalCredit');
+      const k = r.map((c) => summaryOf(c)).find((x) => x === 'opening' || x === 'broughtForward' || x === 'closing' || x === 'carried' || x === 'totalDebit' || x === 'totalCredit');
       // والافتتاحي والختامي المؤرَّخان قيمتهما في عمود الرصيد (والأصفار في المدين والدائن خاناتٌ فارغة · X٦)
       const bal = balanceCol >= 0 ? parseStatementAmount(r[balanceCol] ?? '') : null;
-      if ((k === 'opening' || k === 'closing' || k === 'carried') && bal != null) {
-        if (k === 'opening') openings.push({ v: bal, at: raws.length }); else summary[k] = bal;
+      if ((k === 'opening' || k === 'broughtForward' || k === 'closing' || k === 'carried') && bal != null) {
+        if (k === 'opening' || k === 'broughtForward') openings.push({ v: bal, at: raws.length, bf: k === 'broughtForward' }); else summary[k] = bal;
         if (k === 'carried') carriedAt = raws.length;
       } else if (k) noteSummary(r);
       continue;
@@ -264,7 +267,13 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
       const filled = r.map((c, i) => (c ? i : -1)).filter((i) => i >= 0);
       const textOnly = filled.length > 0 && filled.every((i) => i === descrCol || i === refCol)
         && !moneyCols.some((c) => parseStatementAmount(r[c] ?? '') != null);
-      if (textOnly && raws.length && !r.some((c) => summaryOf(c))) {
+      // (وكلمة ملخصٍ بلا قيمةٍ بعدها، أو «من» بلا تاريخ، بيانٌ مكمِّل لا ملخص · المدقق الخارجي H٢-٩)
+      const summaryRow = r.some((c, i) => {
+        const k = summaryOf(c);
+        if (!k) return false;
+        return k === 'period' ? /\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}/.test(c) : amountAfter(r, i) != null;
+      });
+      if (textOnly && raws.length && !summaryRow) {
         const last = raws[raws.length - 1];
         last.descr = cellText(last.descr + ' ' + (descrCol >= 0 ? r[descrCol] ?? '' : '') + ' ' + (refCol >= 0 && descrCol < 0 ? r[refCol] ?? '' : ''));
       } else noteSummary(r);
@@ -309,7 +318,10 @@ export function readStatementGrid(input: unknown[][], opts: ReadOpts = {}): Stat
   // (والأحدث أولاً: افتتاحيه بعد حركاته في الطباعة)
   const atStart = (o: { at: number }) => o.at === 0;
   const atEnd = (o: { at: number }) => o.at === raws.length;
-  summary.opening = (newestFirst ? [...openings].reverse().find(atEnd) ?? openings.find(atStart) : openings.find(atStart) ?? openings.find(atEnd))?.v;
+  // («الرصيد المنقول» افتتاحيٌّ في أول الكشف زمنياً وحده، و«الافتتاحي» في أوله أو في ملخصٍ آخره · المدقق الخارجي H٢-٦)
+  const first = newestFirst ? atEnd : atStart;
+  const other = newestFirst ? atStart : atEnd;
+  summary.opening = ((newestFirst ? [...openings].reverse() : openings).find(first) ?? openings.find((o) => !o.bf && other(o)))?.v;
 
   // ٥) التسلسل: بالافتتاحي المطبوع، ثم بالمشتق من أول رصيدٍ مطبوع إن ناقضه المطبوع وثبتت المجاميع
   const printedOpening = summary.opening ?? opts.opening ?? null;
@@ -422,20 +434,25 @@ function isHeader(roles: Array<Role | null>): boolean {
 }
 
 /** أول مبلغٍ بعد خلية الكلمة في الصف، أو في الخلية نفسها بعدها، أو قبلها (الكشف العربي يضع القيمة يسار الكلمة) */
+// والتاريخ باسم الشهر («15-Mar-2015» و«Mar 15, 2015») ليس مبلغاً (المدقق الخارجي H٢-٥)
+const MONTH = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
+const TEXT_DATE = new RegExp(`\\b\\d{1,2}[\\s\\-/]+${MONTH}[\\s\\-/,]+\\d{2,4}\\b|\\b${MONTH}\\s+\\d{1,2},?\\s+\\d{4}\\b`, 'gi');
+const TEXT_DATE_ONE = new RegExp(TEXT_DATE.source, 'i');
+const isDateCell = (c: string) => FULL_DATE_ONLY.test(c.replace(/\s.*$/, '')) || (TEXT_DATE_ONE.test(c) && cellText(c).replace(TEXT_DATE, '').trim() === '');
 function amountAfter(r: string[], i: number): number | null {
   // والمبلغ قبل فحص الدور: «1,000.00 CR» قيمةٌ لا عنوانُ «دائن» (المدقق الخارجي F٢-٧) · والتاريخ ليس مبلغاً، في خليته أو بعدها
   // («Account Opening Date: 15/03/2015» كان افتتاحياً بـ2,015 · F٢-٦)
   for (let j = i + 1; j < r.length; j++) {
-    if (FULL_DATE_ONLY.test(r[j].replace(/\s.*$/, ''))) continue;
+    if (isDateCell(r[j])) continue;
     const v = parseStatementAmount(r[j]);
     if (v != null) return v;
     if (summaryOf(r[j]) || roleOf(r[j])) break;
   }
-  const inCell = (r[i].replace(FULL_DATE, ' ').match(AMOUNT_IN_TEXT) ?? []).map(parseStatementAmount).filter((v): v is number => v != null);
+  const inCell = (r[i].replace(FULL_DATE, ' ').replace(TEXT_DATE, ' ').match(AMOUNT_IN_TEXT) ?? []).map(parseStatementAmount).filter((v): v is number => v != null);
   if (inCell.length) return inCell[inCell.length - 1];
   for (let j = i - 1; j >= 0; j--) {
     if (summaryOf(r[j])) break;
-    if (FULL_DATE_ONLY.test(r[j].replace(/\s.*$/, ''))) continue;
+    if (isDateCell(r[j])) continue;
     const v = parseStatementAmount(r[j]);
     if (v != null) return v;
   }

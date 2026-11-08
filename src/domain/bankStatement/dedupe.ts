@@ -79,15 +79,36 @@ export function keepInOrder(keys: string[], need: (base: string) => number = () 
   return keep;
 }
 
+/**
+ * عدد بصمات كل قاعدةٍ في كشف، محسوبٌ مرةً للكشف (المدقق الخارجي G٢-٦: كان json_each لكل سطرٍ وارد فيكبر بمربع الكشف) · يُبطله تغيّر
+ * بصماته (resetStatementCounts)
+ */
+const countCache = new WeakMap<DB, Map<string, Map<string, number> | null>>();
+export function resetStatementCounts(db: DB, statementId?: string): void {
+  const m = countCache.get(db);
+  if (!m) return;
+  if (statementId) m.delete(statementId); else m.clear();
+}
+export function statementCounts(db: DB, id: string): Map<string, number> | null {
+  let m = countCache.get(db);
+  if (!m) { m = new Map(); countCache.set(db, m); }
+  if (m.has(id)) return m.get(id)!;
+  const row = db.get<{ k: string; del: string | null }>(`SELECT shared_keys AS k, deleted_at AS del FROM bank_statements WHERE id = ?`, [id]);
+  let out: Map<string, number> | null = null;
+  if (row && row.del == null) {
+    out = new Map();
+    let keys: unknown = [];
+    try { keys = JSON.parse(String(row.k ?? '[]')); } catch { keys = []; }
+    for (const k of Array.isArray(keys) ? keys : []) { const b = lineKeyBase(String(k)); out.set(b, (out.get(b) ?? 0) + 1); }
+  }
+  m.set(id, out);
+  return out;
+}
 /** عدد حركات القاعدة (اليوم والمبلغ) في أكبر كشفٍ حيٍّ من هذه الكشوف (بصماته shared_keys) */
 export function statementsNeed(db: DB, statementIds: string[], key: string): number {
   const base = lineKeyBase(key);
   let n = 0;
-  for (const id of new Set(statementIds.filter(Boolean))) {
-    n = Math.max(n, Number(db.get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM bank_statements s, json_each(s.shared_keys) k WHERE s.id = ? AND s.deleted_at IS NULL AND k.value BETWEEN ? AND ?`,
-      [id, base, base + '~'])?.n ?? 0));
-  }
+  for (const id of new Set(statementIds.filter(Boolean))) n = Math.max(n, statementCounts(db, id)?.get(base) ?? 0);
   return n;
 }
 
@@ -111,28 +132,29 @@ export function statementWithRoom(db: DB, bankId: string, lineKey: string, excep
 }
 
 /**
- * سطور الملف الجديدة أمام المحفوظ حيّاً للبنك: ذو الرصيد مكرَّرٌ إن حُفظ برصيده، أو بقي للقاعدة سطرٌ بلا رصيدٍ لم يُطابَق · وما بلا رصيد
- * مكرَّرٌ ما دام رقم تكراره لا يتجاوز عدد المحفوظ بقاعدته
+ * سطور الملف الجديدة أمام المحفوظ حيّاً للبنك، في كل قاعدة (اليوم والمبلغ): البصمة نفسها مكرَّرة (كل محفوظٍ يقابل سطراً واحداً) · وعدد
+ * الحركات بعد الحفظ أكبرُ: المحفوظ، وما في هذا الكشف، وذوات الرصيد المختلفة فيهما معاً · فيُضاف الفرق من آخر ما بقي في الملف (المدقق
+ * الخارجي G٢-١: محفوظٌ واحدٌ بلا رصيد كان يقابل سطرين من كشفٍ رصيده آخر اليوم فتضيع حوالة)
  */
 export function freshLines(keys: string[], have: string[]): boolean[] {
-  const byBase = new Map<string, { bal: Set<string>; noBal: number; all: number; claimed: number }>();
-  for (const k of have) {
-    const b = lineKeyBase(k);
-    const e = byBase.get(b) ?? { bal: new Set<string>(), noBal: 0, all: 0, claimed: 0 };
-    if (k.includes('#')) e.noBal++; else e.bal.add(k);
-    e.all++;
-    byBase.set(b, e);
-  }
-  return keys.map((k) => {
-    const e = byBase.get(lineKeyBase(k));
-    if (!e) return true;
-    if (k.includes('@')) {
-      if (e.bal.has(k)) return false;
-      if (e.claimed < e.noBal) { e.claimed++; return false; }
-      return true;
+  const fresh = keys.map(() => false);
+  const haveBy = new Map<string, string[]>();
+  for (const k of have) { const b = lineKeyBase(k); haveBy.set(b, [...(haveBy.get(b) ?? []), k]); }
+  const newBy = new Map<string, number[]>();
+  keys.forEach((k, i) => { const b = lineKeyBase(k); newBy.set(b, [...(newBy.get(b) ?? []), i]); });
+  for (const [b, idx] of newBy) {
+    const saved = haveBy.get(b) ?? [];
+    const left = [...saved];
+    const rest: number[] = [];
+    for (const i of idx) {
+      const j = left.indexOf(keys[i]);
+      if (j >= 0) left.splice(j, 1); else rest.push(i);
     }
-    return Number(k.split('#')[1]) > e.all;
-  });
+    const balanced = new Set([...saved, ...idx.map((i) => keys[i])].filter((k) => !k.includes('#'))).size;
+    const add = Math.max(saved.length, idx.length, balanced) - saved.length;
+    for (const i of rest.slice(Math.max(0, rest.length - add))) fresh[i] = true;
+  }
+  return fresh;
 }
 
 /** بصمة بايتات الملف (منع قراءة الملف نفسه مرتين) */

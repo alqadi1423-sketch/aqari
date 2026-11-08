@@ -162,16 +162,23 @@
       [
         "الرصيد الافتتاحي",
         "رصيد افتتاحي",
-        "الرصيد السابق",
-        "رصيد سابق",
         "رصيد اول المده",
         "رصيد بدايه الفتره",
         "opening balance",
-        "previous balance",
         "starting balance",
+        "opening"
+      ]
+    ],
+    [
+      "broughtForward",
+      [
         "balance brought forward",
         "brought forward",
-        "opening"
+        "الرصيد المنقول",
+        "رصيد منقول",
+        "الرصيد السابق",
+        "رصيد سابق",
+        "previous balance"
       ]
     ],
     [

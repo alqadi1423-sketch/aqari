@@ -67,7 +67,9 @@ export function readStatementPhoto(lines: OcrLine[], opts: ReadOpts = {}): State
   type Mv = { date: string; descr: string; amount: string; balance: string };
   const moves: Mv[] = [];
   const head: string[][] = [];
-  const tail: string[][] = [];
+  // وصفوف الملخص بعد أول حركة في مواضعها بين الحركات («المرحَّل» ثم «المنقول» عند فاصل الصفحة · المدقق الخارجي H٢-٨: كانت كلها تُنقل
+  // إلى آخر الجدول فيصير المرحَّل ختامياً)
+  const body: Array<Mv | string[]> = [];
   for (const r of rows) {
     // «CR» و«DR» بعد المبلغ كلمةٌ منفصلة في القارئ
     const toks: Tok[] = [];
@@ -104,7 +106,7 @@ export function readStatementPhoto(lines: OcrLine[], opts: ReadOpts = {}): State
         if (text.length && summaryOf(text.join(' '))) rows.push([text.join(' '), a + (t.text.includes(' ') ? ' ' + t.text.split(' ')[1] : '')]);
         text = [];
       }
-      (moves.length ? tail : head).push(...(rows.length ? rows : [[words, amounts[amounts.length - 1].text]]));
+      (moves.length ? body : head).push(...(rows.length ? rows : [[words, amounts[amounts.length - 1].text]]));
       continue;
     }
     if (!dates.length || !amounts.length) {
@@ -116,14 +118,16 @@ export function readStatementPhoto(lines: OcrLine[], opts: ReadOpts = {}): State
     const date = rtl ? dates[dates.length - 1] : dates[0];
     const byDistance = [...amounts].sort((a, b) => Math.abs(b.x - date.x) - Math.abs(a.x - date.x));
     if (amounts.length === 1) {
-      moves.push({ date: fixDigits(date.text), descr: words, amount: amounts[0].text, balance: '' });
+      const mv = { date: fixDigits(date.text), descr: words, amount: amounts[0].text, balance: '' };
+      moves.push(mv); body.push(mv);
       continue;
     }
     const balance = byDistance[0];
     // ومع عمودي مدينٍ ودائن مطبوعين «0.00» في أحدهما: الحركة غير الصفر الأقرب إلى الرصيد
     const rest = byDistance.slice(1).filter((a) => !/^[-(]?0+\.00/.test(a.text));
     const amount = rest[0] ?? byDistance[1];
-    moves.push({ date: fixDigits(date.text), descr: words, amount: amount.text, balance: balance.text });
+    const mv = { date: fixDigits(date.text), descr: words, amount: amount.text, balance: balance.text };
+    moves.push(mv); body.push(mv);
   }
   if (!moves.length) return { ok: false, error: 'empty' };
   // ورصيدٌ لكل حركة: الإشارة من التسلسل وحده (علامةٌ ضاعت في الصورة لا تقلب حركة)
@@ -132,8 +136,7 @@ export function readStatementPhoto(lines: OcrLine[], opts: ReadOpts = {}): State
   const grid: string[][] = [
     ...head,
     ['Date', 'Description', 'Amount', 'Balance'],
-    ...moves.map((m) => [m.date, m.descr, chain ? strip(m.amount) : m.amount, m.balance]),
-    ...tail,
+    ...body.map((m) => (Array.isArray(m) ? m : [m.date, m.descr, chain ? strip(m.amount) : m.amount, m.balance])),
   ];
   const r = readStatementGrid(grid, { ...opts, mapping: undefined });
   if (r.ok) return { ...r, warnings: [...r.warnings, 'photo'] };

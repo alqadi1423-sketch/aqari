@@ -50,7 +50,10 @@ function nameTokens(s: string): string[] {
   const out: string[] = [];
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
-    if (NAME_PREFIX.has(w) && i + 1 < words.length) { out.push(w + stripAl(words[++i])); continue; }
+    // والمركّب مفصولاً أو موصولاً اسمٌ واحد: «عبد العزيز» و«عبدالعزيز»، و«عبد الله» و«عبدالله» (المدقق الخارجي H٢-٢)
+    if (NAME_PREFIX.has(w) && i + 1 < words.length) { const n = words[++i]; out.push(w + (n.startsWith('ال') && n.length > 3 ? n.slice(2) : n)); continue; } // i18n-exempt: «ال» التعريف للمقارنة
+    const pre = [...NAME_PREFIX].find((p0) => w.startsWith(p0 + 'ال') && w.length > p0.length + 3); // i18n-exempt: «ال» التعريف للمقارنة
+    if (pre) { out.push(pre + w.slice(pre.length + 2)); continue; }
     if (NAME_LINK.has(w) || w.length < 3 || GENERIC.has(w) || GENERIC.has(stripAl(w)) || w.startsWith('لل')) continue; // i18n-exempt: «لل» حرف الجر مع التعريف
     out.push(stripAl(w));
   }
@@ -145,7 +148,8 @@ export function collectionSuggestions(db: DB, bankId: string): CollectSuggestion
   for (const list of byContract.values()) addParty(nameTokens(list[0].tenant));
   for (const c of claims) addParty(nameTokens(c.tenant ?? ''));
   for (const v of invoices) addParty(nameTokens(v.customer));
-  const hits = (d: Set<string>, n: string[]) => n.filter((w) => d.has(w)).length;
+  // (بالكلمات المختلفة: الجدّ السميّ لا يُعدّ مرتين · المدقق الخارجي H٢-١)
+  const hits = (d: Set<string>, n: string[]) => [...new Set(n)].filter((w) => d.has(w)).length;
   // وأقوى الأسماء الكاملة: ما فيه الاسم الأول بأكثر الكلمات، ثم ما بلا الاسم الأول بأكثرها (المدقق الخارجي F٢-٢: «سعد فهد القحطاني»
   // يوافق كلمتين من «محمد فهد القحطاني» بلا اسمه الأول، و«فهد سعد القحطاني» بكلمتين أقلّ من الدافع)
   const fullNames = (d: Set<string>): Set<string> => {
