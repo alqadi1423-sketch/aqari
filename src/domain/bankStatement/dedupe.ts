@@ -83,33 +83,52 @@ export function keepInOrder(keys: string[], need: (base: string) => number = () 
  * عدد بصمات كل قاعدةٍ في كشف، محسوبٌ مرةً للكشف (المدقق الخارجي G٢-٦: كان json_each لكل سطرٍ وارد فيكبر بمربع الكشف) · يُبطله تغيّر
  * بصماته (resetStatementCounts)
  */
-const countCache = new WeakMap<DB, Map<string, Map<string, number> | null>>();
+type Counts = Map<string, number> & { bal?: Map<string, Set<string>> };
+const countCache = new WeakMap<DB, Map<string, Counts | null>>();
 export function resetStatementCounts(db: DB, statementId?: string): void {
   const m = countCache.get(db);
   if (!m) return;
   if (statementId) m.delete(statementId); else m.clear();
 }
-export function statementCounts(db: DB, id: string): Map<string, number> | null {
+export function statementCounts(db: DB, id: string): Counts | null {
   let m = countCache.get(db);
   if (!m) { m = new Map(); countCache.set(db, m); }
   if (m.has(id)) return m.get(id)!;
   const row = db.get<{ k: string; del: string | null }>(`SELECT shared_keys AS k, deleted_at AS del FROM bank_statements WHERE id = ?`, [id]);
-  let out: Map<string, number> | null = null;
+  let out: Counts | null = null;
   if (row && row.del == null) {
-    out = new Map();
+    out = new Map() as Counts;
+    const bal = new Map<string, Set<string>>();
+    out.bal = bal;
     let keys: unknown = [];
     try { keys = JSON.parse(String(row.k ?? '[]')); } catch { keys = []; }
-    for (const k of Array.isArray(keys) ? keys : []) { const b = lineKeyBase(String(k)); out.set(b, (out.get(b) ?? 0) + 1); }
+    for (const k0 of Array.isArray(keys) ? keys : []) {
+      const k = String(k0);
+      const b = lineKeyBase(k);
+      out.set(b, (out.get(b) ?? 0) + 1);
+      if (!k.includes('#')) { const set = bal.get(b) ?? new Set<string>(); set.add(k); bal.set(b, set); }
+    }
   }
   m.set(id, out);
   return out;
 }
-/** عدد حركات القاعدة (اليوم والمبلغ) في أكبر كشفٍ حيٍّ من هذه الكشوف (بصماته shared_keys) */
-export function statementsNeed(db: DB, statementIds: string[], key: string): number {
+/**
+ * عدد حركات القاعدة (اليوم والمبلغ) في هذه الكشوف: أكبر عددٍ لها في كشفٍ واحد، أو عدد بصماتها برصيدٍ المختلفة فيها كلها (صفحتان
+ * مصوّرتان بحوالتين مختلفتين وكشفٌ بلا رصيد بينهما · المدقق الخارجي I٢-٢ وI٢-٣) · والبصمات برصيدٍ معها
+ */
+export function statementsKnown(db: DB, statementIds: string[], key: string): { need: number; bal: Set<string> } {
   const base = lineKeyBase(key);
-  let n = 0;
-  for (const id of new Set(statementIds.filter(Boolean))) n = Math.max(n, statementCounts(db, id)?.get(base) ?? 0);
-  return n;
+  let need = 0;
+  const bal = new Set<string>();
+  for (const id of new Set(statementIds.filter(Boolean))) {
+    const c = statementCounts(db, id);
+    need = Math.max(need, c?.get(base) ?? 0);
+    for (const k of c?.bal?.get(base) ?? []) bal.add(k);
+  }
+  return { need: Math.max(need, bal.size), bal };
+}
+export function statementsNeed(db: DB, statementIds: string[], key: string): number {
+  return statementsKnown(db, statementIds, key).need;
 }
 
 /**
@@ -136,7 +155,7 @@ export function statementWithRoom(db: DB, bankId: string, lineKey: string, excep
  * الحركات بعد الحفظ أكبرُ: المحفوظ، وما في هذا الكشف، وذوات الرصيد المختلفة فيهما معاً · فيُضاف الفرق من آخر ما بقي في الملف (المدقق
  * الخارجي G٢-١: محفوظٌ واحدٌ بلا رصيد كان يقابل سطرين من كشفٍ رصيده آخر اليوم فتضيع حوالة)
  */
-export function freshLines(keys: string[], have: string[]): boolean[] {
+export function freshLines(keys: string[], have: string[], known: (base: string) => { need: number; bal: Set<string> } = () => ({ need: 0, bal: new Set() })): boolean[] {
   const fresh = keys.map(() => false);
   const haveBy = new Map<string, string[]>();
   for (const k of have) { const b = lineKeyBase(k); haveBy.set(b, [...(haveBy.get(b) ?? []), k]); }
@@ -150,8 +169,9 @@ export function freshLines(keys: string[], have: string[]): boolean[] {
       const j = left.indexOf(keys[i]);
       if (j >= 0) left.splice(j, 1); else rest.push(i);
     }
-    const balanced = new Set([...saved, ...idx.map((i) => keys[i])].filter((k) => !k.includes('#'))).size;
-    const add = Math.max(saved.length, idx.length, balanced) - saved.length;
+    const kn = known(b);
+    const balanced = new Set([...saved, ...idx.map((i) => keys[i]), ...kn.bal].filter((k) => !k.includes('#'))).size;
+    const add = Math.max(saved.length, idx.length, balanced, kn.need) - saved.length;
     for (const i of rest.slice(Math.max(0, rest.length - add))) fresh[i] = true;
   }
   return fresh;

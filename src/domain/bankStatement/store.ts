@@ -8,7 +8,7 @@ import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { t } from '../../i18n';
 import { RuleViolation } from '../contracts/service';
-import { statementLineKeys, fnv64, freshLines, statementWithRoom, resetStatementCounts, statementCounts, lineKeyBase } from './dedupe';
+import { statementLineKeys, fnv64, freshLines, statementWithRoom, resetStatementCounts, statementCounts, statementsKnown, lineKeyBase } from './dedupe';
 import { foldText } from './normalize';
 import type { ColumnMapping, StatementResult } from './read';
 
@@ -35,7 +35,10 @@ export function saveStatement(db: DB, bankId: string, r: Ok, file: { name: strin
   }
   const keys = statementLineKeys(bankId, r.lines);
   // والموجود حيّاً بالرصيد نفسه، أو بلا رصيدٍ بالقاعدة نفسها، هو السطر نفسه (freshLines)
-  const isFresh = freshLines(keys, db.all<{ k: string }>(`SELECT line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.k));
+  // (ومعها ما تعرفه الكشوف الحيّة للبنك من بصماتٍ تخطّتها عند حفظها · I٢-٢)
+  const liveStatements = db.all<{ id: string }>(`SELECT id FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.id);
+  const isFresh = freshLines(keys, db.all<{ k: string }>(`SELECT line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.k),
+    (b) => statementsKnown(db, liveStatements, b + '@'));
   const fresh = r.lines.map((l, i) => ({ l, key: keys[i] })).filter((_, i) => isFresh[i]);
   // وبصمات سطوره كلها معه (الهجرة ٥٨): حذف كشفٍ آخر فيه سطرٌ منها ينقله إلى هذا، على هذا الجهاز أو حين يصل إلى غيره
   if (!fresh.length) throw new StatementDuplicate(t('bankStatement.nothingNew'));
