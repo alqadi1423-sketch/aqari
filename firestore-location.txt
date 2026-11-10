@@ -1,0 +1,1 @@
+database (default) · location me-central2 · type FIRESTORE_NATIVE
