@@ -877,6 +877,7 @@ attachments/<sha256>.<ext> …
 - هذا المسار ينقل ولا يمسح أبداً.
 
 ### ١٣.٣ المزامنة
+- **موقع القاعدة:** قاعدة Firestore للمشروع `aqari-ec12e` هي `(default)` من نوع Native في **`me-central2` (الدمام، داخل المملكة)** · قُرئ 2026-11-10 من إعداد المشروع وحده بحساب النشر (سير العمل `firestore-location.yml`، بإذن المالك في اليوم نفسه)، والناتج في فرع `ci-results` ملف `firestore-location.txt` · وFirebase Authentication يعمل من الولايات المتحدة أياً كان موقع القاعدة.
 
 `src/sync/engine.ts`:
 
