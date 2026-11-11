@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="0" time="80.009" timestamp="2026-11-11T22:33:34">
+    <testcase id="11b-qr-purchase" name="11b-qr-purchase" classname="11b-qr-purchase" file="e2e/maestro/11b-qr-purchase.yaml" time="79.984" timestamp="2026-11-11T22:33:34" status="SUCCESS"/>
+  </testsuite>
+</testsuites>
