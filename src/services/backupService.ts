@@ -23,6 +23,7 @@ import type { CancelSignal, ProgressFn } from '../domain/progress';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from './appLockService';
 import { APP_VERSION_LABEL } from '../version';
+import { t } from '../i18n';
 
 export function appBackupEnv(db: AppDB): BackupEnv {
   const root = appDataRoot();
@@ -126,6 +127,15 @@ export async function pickAndPrepareRestore(
   try { env.fs.remove(pickedUri); } catch { /* المنتقي قد يكون سلّم مرجعاً لا نسخة */ }
   const plan = await prepareRestore(env, archiveTmp, onProgress, opts);
   return { env, plan, archiveTmp };
+}
+
+/**
+ * ملفُّ ما لم يُرفع من عمل العضو بعد خروجه من المنشأة يُرسل إلى صاحبها من نافذة المشاركة (المراجعة الشاملة 2026-11-13 · B-4 ·
+ * قرار المالك س٩: «يُفرَّغ جواله عند أول اتصال بعد حفظ ذلك التعديل وحده في ملفٍ صغير يُرسل لك»)
+ */
+export async function shareUnsyncedFile(path: string, title: string): Promise<void> {
+  if (!(await Sharing.isAvailableAsync())) throw new Error(t('org.exit.shareUnavailable'));
+  await whilePrompting(() => Sharing.shareAsync(new File(path).uri, { dialogTitle: title, mimeType: 'application/json' }));
 }
 
 /** المرحلة الثانية بعد موافقة المستخدم على الملخص */

@@ -253,6 +253,14 @@ const SCHEMA_REJECT = /CHECK constraint failed|has no column named|no such colum
 const PERMANENT_PUSH_CODES = new Set(['INVALID_ARGUMENT', 'DOC_TOO_LARGE']);
 const PERMANENT_PUSH_REASON = 'رفضته السحابة رفضاً دائماً'; // i18n-exempt: بادئة سبب الرفض المخزَّن
 
+/**
+ * مرفوضٌ مما كتبه هذا الجهاز ولم يبلغ السحابة: لصلاحيته، أو رفضاً دائماً، أو قيدٌ نسخته في السحابة نهائية · لا ما رُفض تطبيقه من الوارد ·
+ * فهو من «ما لم يُرفع من عمله» حين يخرج العضو من المنشأة (المراجعة الشاملة 2026-11-13 · B-4 · domain/memberExit.ts)
+ */
+export function isUploadReject(reason: string): boolean {
+  return reason.startsWith('خارج صلاحيتك') || reason.startsWith(PERMANENT_PUSH_REASON) || reason === FINAL_IN_CLOUD; // i18n-exempt: بادئة سبب الرفض المخزَّن
+}
+
 /** مفتاح آخر إصدارٍ أُعيد فيه المرفوض */
 export const REJECTS_REPLAYED_KEY = 'rejects_replayed_sv';
 

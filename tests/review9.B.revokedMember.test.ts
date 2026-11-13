@@ -102,6 +102,9 @@ const MEMBER = 'MEMBER-R9B2';
 import { tempDir, rmrf } from './helpers/testDb';
 import { makeBackupEnv } from './helpers/backupEnv';
 import { addProperty } from './helpers/fixtures';
+import { makeSafetyBackup, safetyBackupsDir } from '@/domain/backup/create';
+import { prepareRestore } from '@/domain/backup/restore';
+import { t } from '@/i18n';
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmrf(d); });
@@ -143,7 +146,7 @@ async function runCycles(env: ReturnType<typeof makeBackupEnv>, n: number) {
   return cloud.cloudState();
 }
 
-test.failing('B-2 (أ) · العضو المُزال: أول دورةٍ متصلة تعرف الإزالة ولا تُبقي بيانات المنشأة على جواله', async () => {
+test('B-2 (أ) · العضو المُزال: أول دورةٍ متصلة تعرف الإزالة ولا تُبقي بيانات المنشأة على جواله', async () => {
   cloudSide.mode = 'removed';
   const env = memberPhone('aqari-r9b2-removed-');
   const st = await runCycles(env, 3);
@@ -158,7 +161,7 @@ test.failing('B-2 (أ) · العضو المُزال: أول دورةٍ متصل�
   expect(knows).toBe(true);
 });
 
-test.failing('B-2 (ب) · إنقاص الصلاحية: الجهاز يعرف صلاحيته الجديدة ولا يبقى يسحب بالقديمة فيُرفض', async () => {
+test('B-2 (ب) · إنقاص الصلاحية: الجهاز يعرف صلاحيته الجديدة ولا يبقى يسحب بالقديمة فيُرفض', async () => {
   cloudSide.mode = 'reduced';
   cloudSide.calls = [];
   const env = memberPhone('aqari-r9b2-reduced-');
@@ -172,4 +175,126 @@ test.failing('B-2 (ب) · إنقاص الصلاحية: الجهاز يعرف ص�
     '· عقارات على الجوال =', live.get<{ n: number }>(`SELECT COUNT(*) AS n FROM properties`)!.n, '· طلب مستند العضوية:', cloudSide.calls.some((c) => c.includes('/members/')));
   // عرف الصلاحية الجديدة (حفظها أو فرّغ الجهاز لها)
   expect(m === null || (m.allProps === false && m.props.join() === 'P1') || pending !== null).toBe(true);
+});
+
+/* ─── B-4 · ما يبقى على جوال المُزال (المراجعة الشاملة 2026-11-13 · قرارا المالك س٩ وس١٠ تطبيقاً لقرار 2026-11-07 (٢ أ)) ───
+ * «يُفرَّغ جواله عند أول اتصال بعد حفظ ذلك التعديل وحده في ملفٍ صغير يُرسل لك، بلا خيار «أبقِ بياناتي»» · كان مسار الإزالة يصنع نسخة أمانٍ
+ * كاملة غير مشفّرة يستعيدها من «البيانات والمساحة» بعد أن يصير جهازه «مالكاً» لحسابه، و«أبقِ بياناتي» يُبقي الجهاز كما هو بلا حد. */
+
+/** الدورات كما في runCycles، والوحدة نفسها تبقى بيد الاختبار (لقرار «تم» بعدها) */
+async function startCycles(env: ReturnType<typeof makeBackupEnv>, n: number) {
+  let cloud!: typeof import('@/services/cloud');
+  await jest.isolateModulesAsync(async () => { cloud = await import('@/services/cloud'); });
+  const stop = cloud.startCloud(env.db as never);
+  const settle = async () => { for (let i = 0; i < 100 && (cloud.cloudState().syncing || !cloud.cloudState().restored); i++) await new Promise((r) => setTimeout(r, 30)); };
+  await new Promise((r) => setTimeout(r, 100));
+  await settle();
+  for (let i = 0; i < n; i++) { await cloud.syncNow(); await settle(); }
+  return { cloud, stop, settle };
+}
+
+/** عملٌ لم يُرفع على جوال العضو: تعديلٌ في الطابور، ورفضٌ لعمله، وواردٌ من غيره رُفض تطبيقه (ليس من عمله) */
+function unsyncedOn(db: import('@/db/adapter').DB) {
+  const dev = db.get<{ value: string }>(`SELECT value FROM meta WHERE key = 'device_id'`)!.value;
+  db.run(`UPDATE properties SET name = 'عقار مصطنع معدَّل' WHERE id = 'P1'`);
+  const at = '2026-11-13T08:00:00.000Z';
+  db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`, ['properties__P2', 'properties', 'P2',
+    'خارج صلاحيتك · بقي على هذا الجهاز ولم يُرفع', JSON.stringify({ id: 'properties__P2', t: 'properties', k: 'P2', d: { id: 'P2', name: 'تعديل مرفوض مصطنع' }, u: at, dev, del: false }), at]);
+  db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`, ['properties__PX', 'properties', 'PX',
+    'سجل أب غير موجود بعد محاولات متكررة', JSON.stringify({ id: 'properties__PX', t: 'properties', k: 'PX', d: { id: 'PX', name: 'وارد مصطنع' }, u: at, dev: 'OTHER-DEVICE', del: false }), at]);
+}
+
+test('B-4 · المُزال وعنده ما لم يُرفع: يُحفظ عمله وحده في ملفٍ صغير، ويُفرَّغ بلا نسخة أمان، وتُحذف نسخ جهازه منذ انضمامه، ولا تُستعاد نسخةٌ صُدّرت قبل خروجه', async () => {
+  cloudSide.mode = 'removed';
+  cloudSide.calls = [];
+  const env = memberPhone('aqari-r9b4-removed-');
+  const db = env.db;
+  const backups = safetyBackupsDir(env);
+  // نسخةٌ قبل انضمامه (بياناته هو) تبقى له · ونسخة أمانٍ وهو عضو (فيها بيانات المنشأة) تُحذف
+  db.run(`INSERT INTO sync_state (k, v) VALUES ('member_since', '2021-01-01T00:00:00.000Z') ON CONFLICT(k) DO UPDATE SET v = excluded.v`);
+  fs.mkdirSync(backups, { recursive: true });
+  fs.writeFileSync(path.join(backups, 'pre-upgrade-2020-01-01T00-00-00-000Z-v50.aqbk'), 'نسخة مصطنعة قبل الانضمام');
+  const memberCopy = await makeSafetyBackup(env, 'pre-wipe');
+  const exported = path.join(env.root, 'exported-before-exit.aqbk');
+  fs.copyFileSync(memberCopy, exported);
+  unsyncedOn(db);
+  expect(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_outbox`)!.n).toBe(1);
+
+  const { cloud, stop, settle } = await startCycles(env, 2);
+  const live = env.live();
+  const st = cloud.cloudState();
+  // أول دورةٍ متصلة: لا رفع بعد الإزالة، والجهاز فُرّغ، والإشعار بعدد ما حُفظ
+  expect(cloudSide.calls.some((c) => c.includes(':commit'))).toBe(false);
+  expect(live.get<{ n: number }>(`SELECT COUNT(*) AS n FROM properties`)!.n).toBe(0);
+  const { readMembership } = await import('@/services/access');
+  expect(readMembership(live)).toBeNull();
+  expect(st.decision).toEqual({ kind: 'removed', pending: 2 });
+  // لا نسخة أمانٍ صُنعت، ونسخ الجهاز منذ انضمامه حُذفت · وما قبله باقٍ
+  expect(fs.readdirSync(backups).filter((n) => n.endsWith('.aqbk'))).toEqual(['pre-upgrade-2020-01-01T00-00-00-000Z-v50.aqbk']);
+  // الملف الصغير: التعديل الذي في الطابور والرفض لعمله وحدهما · لا الوارد من غيره ولا بقية المنشأة
+  const dir = path.join(backups, 'unsynced');
+  const files = fs.readdirSync(dir);
+  expect(files).toHaveLength(1);
+  const work = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+  expect(work.format).toBe('aqari-unsynced-work');
+  expect(work.reason).toBe('removed');
+  expect(work.org).toBe(ORG);
+  expect(work.docs.map((d: { id: string }) => d.id)).toEqual(['properties__P1']);
+  expect(work.docs[0].d.name).toBe('عقار مصطنع معدَّل');
+  expect(work.rejected.map((r: { doc: { id: string } }) => r.doc.id)).toEqual(['properties__P2']);
+  // سطر السجل: التفريغ بسببه، بلا نسخة أمان، وما حُفظ
+  const line = live.get<{ entity_name: string }>(`SELECT entity_name FROM audit_log WHERE entity_type = 'تفريغ الجهاز'`)!.entity_name;
+  expect(line).toContain('بلا نسخة أمان');
+  expect(line).toContain(files[0]);
+  // نسخةٌ صُدّرت أو بقيت من وقت عضويته لا تُستعاد على جهازه بعد خروجه
+  await expect(prepareRestore(env, exported)).rejects.toThrow(t('restore.foreignMembership'));
+  // الدورة التالية لا تنشئ منشأة ولا ترفع: الإشعار ينتظر قراءته
+  expect(cloud.cloudState().decision?.kind).toBe('removed');
+  // «تم»: يُمحى الإشعار ويُحذف الملف بأمره
+  await cloud.resolveDecision('done');
+  await settle();
+  expect(fs.readdirSync(dir)).toEqual([]);
+  expect(env.live().get<{ v: string }>(`SELECT v FROM sync_state WHERE k = 'exit_notice'`)?.v ?? null).toBeNull();
+  stop();
+});
+
+test('B-4 · لا «أبقِ بياناتي» للمُزال: القرار بعد الإزالة لا يُبقي ولا يفرّغ من جديد · وبلا ما لم يُرفع لا ملف', async () => {
+  cloudSide.mode = 'removed';
+  cloudSide.calls = [];
+  const env = memberPhone('aqari-r9b4-nothing-');
+  const { cloud, stop } = await startCycles(env, 1);
+  expect(cloud.cloudState().decision).toEqual({ kind: 'removed', pending: 0 });
+  expect(fs.existsSync(path.join(safetyBackupsDir(env), 'unsynced'))).toBe(false);
+  await cloud.resolveDecision('keep');
+  expect(cloud.cloudState().decision).toEqual({ kind: 'removed', pending: 0 });
+  stop();
+});
+
+test('B-2 · رفضٌ (403) في أثناء الدورة بعد فحص العضوية: تُفحص من جديد فيُعرف أنه أُزيل ولا يظهر «تعذّر الاتصال»', async () => {
+  cloudSide.mode = 'removed';
+  cloudSide.calls = [];
+  const env = memberPhone('aqari-r9b2-race-');
+  // أول قراءةٍ لمستند العضوية تجده كما هو (أُزيل بعدها بلحظة) · وما بعدها كما تقضي القواعد
+  const real = (global as unknown as { fetch: (u: string, i?: unknown) => Promise<unknown> }).fetch;
+  let first = true;
+  (global as unknown as { fetch: unknown }).fetch = async (url: string, init?: unknown) => {
+    if (first && url.includes(`/orgs/${ORG}/members/${MEMBER}`)) {
+      first = false;
+      return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}),
+        text: async () => JSON.stringify({ fields: { email: { stringValue: 'm@example.test' }, perm: { mapValue: { fields: { collect: { integerValue: '1' } } } },
+          all: { booleanValue: true }, props: { arrayValue: { values: [] } }, tokens: { arrayValue: { values: [{ stringValue: 'collect|*' }] } } } }) };
+    }
+    return real(url, init);
+  };
+  try {
+    const { cloud, stop } = await startCycles(env, 0);
+    const st = cloud.cloudState();
+    expect(st.lastError).toBeNull();
+    expect(st.decision?.kind).toBe('removed');
+    const { readMembership } = await import('@/services/access');
+    expect(readMembership(env.live())).toBeNull();
+    stop();
+  } finally {
+    (global as unknown as { fetch: unknown }).fetch = real;
+  }
 });

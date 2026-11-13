@@ -638,7 +638,23 @@
   },
   "org": {
     "leftReason": "You left the organization",
-    "memberKeepRefused": "A member device cannot keep its data after the owner wiped · clear this device"
+    "memberKeepRefused": "A member device cannot keep its data after the owner wiped · clear this device",
+    "removedReason": "Your membership in the organization was removed",
+    "permChanged": "Your permissions in the organization changed · syncing again with them",
+    "exit": {
+      "removedTitle": "Your membership in the organization was removed",
+      "leftTitle": "You left the organization",
+      "wiped": "This device was cleared of the organization's data, and no copy of it remains here.",
+      "saved": "Your work that was not uploaded ({{n}}), attachments included, was saved in one file. Send it to the organization's owner to add it.",
+      "share": "Send the file to the organization's owner",
+      "shareTitle": "My work that was not uploaded",
+      "done": "I sent it · delete it from this device",
+      "ok": "OK",
+      "later": "Later",
+      "saveFailed": "Your work that was not uploaded could not be saved · the device was not cleared and it will be retried",
+      "fileGone": "The file of work that was not uploaded is no longer on this device",
+      "shareUnavailable": "Sharing is not available on this device"
+    }
   },
   "accounts": {
     "required": "Enter the account name and code",
@@ -904,6 +920,7 @@
   },
   "restore": {
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",
+    "foreignMembership": "This backup is from a member device of an organization this account is not a member of, so it is not restored. Its data is with the organization's owner.",
     "notInTrash": "Not in the trash · already restored",
     "filedPeriod": "Its reversal falls in a period whose return was filed, so it cannot be restored into it · record it again with a date in an open period",
     "allDone": "All items were restored",

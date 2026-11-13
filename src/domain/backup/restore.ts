@@ -225,6 +225,8 @@ export async function prepareRestore(
         const ic = probe.get<Record<string, string>>(`PRAGMA integrity_check`);
         if (!ic || String(Object.values(ic)[0]) !== 'ok')
           throw new RestoreError('قاعدة النسخة تالفة (integrity_check)');
+        // نسخة جهاز عضوٍ لا تُستعاد إلا على جهازٍ عضوٍ في منشأتها بالعضوية نفسها (المراجعة الشاملة 2026-11-13 · B-4)
+        assertMembershipRestorable(probe, env.db);
         // قراءة من كل جدول أساسي + مطابقة الأعداد بالبيان · قبل أي تصحيح فيُطابَق ما في الملف كما هو
         const counted = tableCounts(probe);
         // حزام: فتحٌ أنشأ قاعدة فارغة بدل المجهَّزة يُرفض ولا يمرّ صامتاً
@@ -281,6 +283,32 @@ export async function prepareRestore(
   } catch (e) {
     abortRestore(env, stagingDir);
     throw e;
+  }
+}
+
+/** عضوية القاعدة (sync_state) · null بلا عضوية، و'unreadable' لعضويةٍ مكتوبة لا تُقرأ · وبها تُعرف نسخ الجهاز التي صُنعت وهو عضو (memberExit.ts) */
+export function membershipOf(db: DB): { org: string; uid: string } | 'unreadable' | null {
+  let raw: string | null | undefined;
+  try { raw = db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = 'membership'`)?.v; } catch { return null; }
+  if (!raw) return null;
+  try {
+    const m = JSON.parse(raw) as { org?: unknown; uid?: unknown } | null;
+    if (m && typeof m.org === 'string' && m.org) return { org: m.org, uid: String(m.uid ?? '') };
+  } catch { /* أدناه */ }
+  return 'unreadable';
+}
+
+/**
+ * نسخةٌ صُنعت على جهاز عضو تحمل بيانات منشأة غيره (المراجعة الشاملة 2026-11-13 · B-4 · قرار المالك 2026-11-07 (٢ أ) وس٩ وس١٠ في
+ * 2026-11-13: لا تبقى بيانات المنشأة عند من خرج منها): فلا تُستعاد إلا على جهازٍ عضوٍ في منشأتها بالعضوية نفسها · فمن أُزيل أو غادر لا
+ * يعيدها إلى جواله من نسخةٍ بقيت عليه أو صُدّرت قبل خروجه، ولو صار جهازه «مالكاً» لحسابه بعد التفريغ · ونسخة المالك (بلا عضوية) كما كانت
+ */
+export function assertMembershipRestorable(staged: DB, live: DB): void {
+  const theirs = membershipOf(staged);
+  if (theirs === null) return;
+  const mine = membershipOf(live);
+  if (theirs === 'unreadable' || mine === null || mine === 'unreadable' || mine.org !== theirs.org || mine.uid !== theirs.uid) {
+    throw new RestoreError(t('restore.foreignMembership'));
   }
 }
 

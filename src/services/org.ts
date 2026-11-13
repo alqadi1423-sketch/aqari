@@ -15,6 +15,7 @@ import { SECTION_KEYS, type Level, type Perms } from '../domain/access/sections'
 import { readMembership, saveMembership, type Membership } from './access';
 import { EMPTY_PROFILE, type MemberProfile } from '../domain/access/profile';
 import { pendingUnitMoves, PENDING_MOVES_KEY, type UnitMove } from '../domain/unitMove';
+import { MEMBER_SINCE_KEY } from '../domain/memberExit';
 
 export interface MemberSpec {
   email: string;
@@ -224,6 +225,8 @@ export async function acceptInvite(db: DB, remote: FirestoreRemote, org: string,
     setSyncState(db, 'org', org);
     setSyncState(db, 'org_name', doc.orgName || null);
     setSyncState(db, 'cursor', null);
+    // وقت الانضمام: نسخ الجهاز بعده فيها بيانات المنشأة فتُحذف عند خروجه، وما قبله يبقى له (المراجعة الشاملة 2026-11-13 · B-4)
+    setSyncState(db, MEMBER_SINCE_KEY, new Date().toISOString());
   });
   return m;
 }
@@ -231,12 +234,20 @@ export async function acceptInvite(db: DB, remote: FirestoreRemote, org: string,
 /**
  * مقارنة العضوية المحفوظة بما في الخادم · 'removed' أُزيلت (يُمسح الجهاز)، و'changed' تغيّرت صلاحيته
  * (يُعاد السحب من أوله بصلاحيته الجديدة)، و'same' كما هي.
+ * والإزالة لا تُعرف إلا بدليلين معاً (المراجعة الشاملة 2026-11-13 · R11-B2-1): مستند العضوية غائبٌ هو نفسه (getDocStrict: لا 404 القاعدة
+ * أو المشروع)، ورفض الخادم (403) لمستندٍ للأعضاء وحدهم (firestore.rules · isMember) · denied: رُفض في هذه الدورة (سجل النقل)، وإلا يُقرأ
+ * عهد المسح · فغيابٌ بلا رفضٍ يوافقه خطأ اتصالٍ يُعاد، ويبقى الجهاز وعضويته كما هما (قاعدة المالك 2026-10-05: لا مسح إلا بإزالةٍ حقيقية)
  */
-export async function refreshMembership(db: DB, remote: FirestoreRemote): Promise<'same' | 'changed' | 'removed' | 'none'> {
+export async function refreshMembership(db: DB, remote: FirestoreRemote, denied = false): Promise<'same' | 'changed' | 'removed' | 'none'> {
   const m = readMembership(db);
   if (!m) return 'none';
-  const raw = await remote.getDoc(`orgs/${m.org}/members/${m.uid}`);
-  if (!raw) return 'removed';
+  const path = `orgs/${m.org}/members/${m.uid}`;
+  const raw = await remote.getDocStrict(path);
+  if (!raw) {
+    if (denied || await deniedAsMember(remote, m.org)) return 'removed';
+    // نصٌّ فنيّ بلا عربية: فيُعرض بديله «تعذّر الاتصال بالخادم · ستُعاد المحاولة» (cloud.ts · arabic)
+    throw new FirestoreHttpError(404, `${path}: not found, but member-only reads are not denied · not a removal`);
+  }
   const doc = asMemberDoc(raw);
   const next: Membership = { org: m.org, uid: m.uid, perms: doc.perm, allProps: doc.all, props: doc.props, profile: profileOf(doc) };
   const same = JSON.stringify([m.perms, m.allProps, [...m.props].sort()]) === JSON.stringify([next.perms, next.allProps, [...next.props].sort()]);
@@ -247,6 +258,17 @@ export async function refreshMembership(db: DB, remote: FirestoreRemote): Promis
   }
   saveMembership(db, next);
   return 'changed';
+}
+
+/** الدليل الثاني على الإزالة (R11-B2-1): عهد المسح يقرؤه المالك والأعضاء وحدهم، فرفضه (403) أن الخادم لا يعدّه عضواً · وما سوى الرفض والنجاح يرمي */
+async function deniedAsMember(remote: FirestoreRemote, org: string): Promise<boolean> {
+  try {
+    await remote.getDoc(`orgs/${org}/meta/epoch`);
+    return false;
+  } catch (e) {
+    if (e instanceof FirestoreHttpError && e.status === 403) return true;
+    throw e;
+  }
 }
 
 /* ─── الحد الأدنى لإصدار التطبيق (#36 · قرار المالك 2026-10-09: «حد أدنى لإصدار التطبيق، والإصدار الأقدم يطلب

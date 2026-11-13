@@ -353,6 +353,11 @@ export async function unzipYielding(
   onFile?: (name: string, count: number) => void,
   /** البايتات المقروءة من الأرشيف ومجموعها · ويجوز أن يرمي (الإلغاء) */
   onBytes?: (done: number, total: number) => void,
+  /**
+   * ما يُفكّ من المدخلات وحده، وما سواه يُتخطّى بلا فكّ ولا نسخ (المراجعة الشاملة 2026-11-13 · R11-B4-2: قاعدة نسخة الجهاز وحدها لتُعرف
+   * عضويتها) · وبلا مرشّحٍ يُفكّ كل شيء كما كان
+   */
+  want?: (name: string) => boolean,
 ): Promise<Record<string, Uint8Array>> {
   let readBytes = 0;
   const eocd = findEocd(data);
@@ -409,6 +414,7 @@ export async function unzipYielding(
       if (z.csize != null) csize = z.csize;
       if (z.offset != null) local = z.offset;
     }
+    if (want && !want(name)) { p += 46 + nameLen + extraLen + cmtLen; continue; }
 
     // الترويسة المحلية تُقرأ لطولَي الاسم والحقول الإضافية وحدهما · الأحجام من الفهرس
     if (local + 30 > data.length || r32(data, local) !== SIG_LOCAL) {
