@@ -5,6 +5,7 @@
  * يفحص رصيد البنك (شيكٌ مرتجع بعد أن سُحب من البنك) · فعلى جهاز المالك يُطبَّق القيد العكسي (دائن 1100) وتنتظر حركته ثلاثين يوماً ثم
  * تُرفض: المحفظة تنقص بمبلغ الدفعة كله والبنك يبقى بمالٍ خرج، ويختلف الجهازان إلى الأبد.
  * السلوك الصحيح: إلغاءٌ يجيزه التطبيق يُطبَّق كما هو على جهاز المالك (أو يمنعه التطبيق نفسه على جهاز العضو)، فلا يُرفض نصفه.
+ * (منذ إصلاح A2.2 في المراجعة الشاملة 2026-11-13 يمنعه التطبيق على جهاز العضو في Q3 وQ3c، والجهازان متفقان بلا مرفوض.)
  */
 import { withdrawCashFromBank } from '@/domain/cashOps';
 import { confirmContract, recordRentPayment } from '@/domain/contracts/service';
@@ -33,9 +34,10 @@ test('Q3: عضو التحصيل يلغي دفعة إيجارٍ حُصّلت في
   withdrawCashFromBank(s.owner, { bankId: A, amountHalalas: 100000, date: '2026-02-05' });
   await sync(s.owner, s.r);
   await sync(s.dev, s.r);
-  // ٣) الشيك يرتجع: العضو يلغي الدفعة كما يجيزه التطبيق (لا فحص لرصيد البنك في planCancelPayment)
+  // ٣) الشيك يرتجع: العضو يحاول إلغاء الدفعة · والتطبيق نفسه يمنعه الآن على جهاز العضو لأن البنك لا يكفي (المراجعة الشاملة
+  //    2026-11-13 · A2.2: مانع رصيد البنك في planCancelPayment)، وهو أحد طرفي «السلوك الصحيح» أعلاه · فلا نصف عملية عند المالك
   since = snap(s.r);
-  cancelPayment(s.dev, pay, { date: '2026-02-10', reason: 'شيك مرتجع مصطنع' });
+  expect(() => cancelPayment(s.dev, pay, { date: '2026-02-10', reason: 'شيك مرتجع مصطنع' })).toThrow();
   await sync(s.dev, s.r);
   newAsMember(s.r, since);
   await ownerPulls(s.owner, s.r);
@@ -113,7 +115,8 @@ test('Q3c: عضو المشتريات يستعيد من السلة فاتورةً
   await sync(s.owner, s.r);
   await sync(s.dev, s.r);
   const since = snap(s.r);
-  restoreFromTrash(s.dev, 'purchases', pid);
+  // التطبيق نفسه يمنع الاستعادة على جهاز العضو الآن (repostBlockers يفحص رصيد البنك · A2.2)، فلا نصف عملية عند المالك
+  expect(() => restoreFromTrash(s.dev, 'purchases', pid)).toThrow();
   await sync(s.dev, s.r);
   newAsMember(s.r, since);
   await ownerPulls(s.owner, s.r);

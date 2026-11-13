@@ -14,7 +14,7 @@
  */
 import { t } from '../../i18n';
 import type { DB } from '../../db/adapter';
-import { cashShortfall, reversalCashOut, CashShortfallError } from '../cashGuard';
+import { cashShortfall, reversalCashOut, CashShortfallError, bankShortages } from '../cashGuard';
 import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { reverseEntryById } from './post';
@@ -135,7 +135,9 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
   }
 
   if (e.src_type === 'key_money') {
-    return op('إلغاء التقبيل', ['يُعكس قيد العمولة ' + e.no, 'وحركة البنك بمثلها إن كانت', 'والصفقة تدخل سلة المحذوفات'], [], (date, reason) => {
+    // العمولة الواردة إلى بنكٍ يُخرجها عكسُها منه: مانعٌ برصيده كإلغاء العملية أعلاه (المراجعة الشاملة · A2.2)
+    return op('إلغاء التقبيل', ['يُعكس قيد العمولة ' + e.no, 'وحركة البنك بمثلها إن كانت', 'والصفقة تدخل سلة المحذوفات'],
+      bankShortages(db, e.no, 'reverse'), (date, reason) => {
       const revNo = reverse(db, e, date, 'إلغاء تقبيل · ' + reason);
       reverseBankTx(db, e.no, revNo, date, 'إلغاء عمولة تقبيل');
       db.run(`UPDATE key_money_deals SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), e.src_id]);

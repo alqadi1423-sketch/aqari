@@ -24,7 +24,7 @@ import { recordKeyMoneyDeal } from '@/domain/keymoney';
 import { entrySourceAction } from '@/domain/accounting/sourceCancel';
 import { savePurchase, payPurchase, deletePurchase, restorePurchase } from '@/domain/purchases';
 
-test.failing('A2.2 (أ) عكس تحصيل فاتورةٍ دخلت بنكاً لا يُنزل البنك تحت الصفر', () => {
+test('A2.2 (أ) عكس تحصيل فاتورةٍ دخلت بنكاً لا يُنزل البنك تحت الصفر', () => {
   const db = memDb();
   const b1 = addBank(db, 'بنك مصطنع أ', 0);
   const b2 = addBank(db, 'بنك مصطنع ب', 0);
@@ -42,7 +42,7 @@ test.failing('A2.2 (أ) عكس تحصيل فاتورةٍ دخلت بنكاً ل�
   db.close();
 });
 
-test.failing('A2.2 (ب) إلغاء عمولة تقبيلٍ قُبضت في بنكٍ فارغ الآن: لوحة الإلغاء تمنعه', () => {
+test('A2.2 (ب) إلغاء عمولة تقبيلٍ قُبضت في بنكٍ فارغ الآن: لوحة الإلغاء تمنعه', () => {
   const db = memDb();
   const b1 = addBank(db, 'بنك مصطنع', 0);
   const u = addUnit(db, addProperty(db, { name: 'عقار مصطنع' }));
@@ -63,7 +63,7 @@ test.failing('A2.2 (ب) إلغاء عمولة تقبيلٍ قُبضت في بن�
   db.close();
 });
 
-test.failing('A2.2 (ج) استعادة فاتورة شراءٍ مسدَّدة من بنكٍ لم يعد يكفي: تُرفض', () => {
+test('A2.2 (ج) استعادة فاتورة شراءٍ مسدَّدة من بنكٍ لم يعد يكفي: تُرفض', () => {
   const db = memDb();
   const b = addBank(db, 'بنك مصطنع', 200000);
   const id = savePurchase(db, {
@@ -76,5 +76,29 @@ test.failing('A2.2 (ج) استعادة فاتورة شراءٍ مسدَّدة م
   withdrawCashFromBank(db, { bankId: b, amountHalalas: 200000, date: '2026-10-03' });
   expect(() => restorePurchase(db, id)).toThrow();
   expect(bankBalance(db, b)).toBe(0);
+  db.close();
+});
+
+// وأشار المراجع A2 إلى المسار نفسه في إلغاء دفعة الإيجار المحصَّلة بتحويل (contracts/cancelPayment.ts) · يُصلح معه
+test('A2.2 (د) إلغاء دفعة إيجارٍ حُصّلت تحويلاً إلى بنكٍ فارغ الآن: المعاينة تمنعه، والإلغاء يُرفض', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { confirmContract, recordRentPayment } = require('@/domain/contracts/service');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { planCancelPayment, cancelPayment } = require('@/domain/contracts/cancelPayment');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { contractInput } = require('./helpers/fixtures');
+  const db = memDb();
+  const b1 = addBank(db, 'بنك مصطنع أ', 0);
+  const b2 = addBank(db, 'بنك مصطنع ب', 0);
+  const u = addUnit(db, addProperty(db, { name: 'عقار مصطنع' }));
+  const c = confirmContract(db, contractInput(u, { tenant: 'مستأجر مصطنع', idNumber: '1000009201', start: '2026-10-01', end: '2027-09-30',
+    valueHalalas: 1200000, depositHalalas: 0 }));
+  const inst = db.get<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1`, [c])!.id;
+  const pid = recordRentPayment(db, c, { installmentId: inst, period: 'أكتوبر', date: '2026-10-05',
+    lines: [{ method: 'bank', bankId: b1, amountHalalas: 100000 }], discountHalalas: 0, notes: '' });
+  transferBetweenBanks(db, { fromBankId: b1, toBankId: b2, amountHalalas: 100000, date: '2026-10-06' });
+  expect(planCancelPayment(db, pid).blockers.length).toBeGreaterThan(0);
+  expect(() => cancelPayment(db, pid, { reason: 'سبب مصطنع' })).toThrow();
+  expect(bankBalance(db, b1)).toBe(0);
   db.close();
 });

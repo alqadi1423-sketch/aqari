@@ -3,7 +3,7 @@
  * الإصدار يرحّل (1200 / 4100 + 2200)، والعودة لمسودة تعكس القيد.
  */
 import type { DB } from '../db/adapter';
-import { requireCash, reversalCashOut } from './cashGuard';
+import { requireCash, reversalCashOut, requireBanksCover } from './cashGuard';
 import { uid, rowId, withDeterministicIds } from './ids';
 import { ambientCostCenter } from './accounting/dimensions';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment, postCreditNoteToLedger } from './accounting/post';
@@ -243,7 +243,9 @@ export function payInvoice(db: DB, id: string, pay: { method: InvoicePayMethod; 
     // تحصيلٌ قائم يُعكس أولاً فيخرج نقده · بكفاية النقد (التحقق المستقل · قرار المالك 2026-10-05)
     if (v.payment_journal_entry_id) {
       requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION);
-      reverseInvoicePayment(db, id);
+      // إعادة التحصيل إلى البنك نفسه تُرجع ما يُخرجه العكس منه في المعاملة نفسها، فلا يُفحص عكسها وحده (A2.2)
+      const oldBank = db.get<{ b: string | null }>(`SELECT payment_bank_id AS b FROM invoices WHERE id = ?`, [id])?.b ?? null;
+      reverseInvoicePayment(db, id, false, { skipBankCheck: pay.method !== 'cash' && !!pay.bankId && pay.bankId === oldBank });
     }
     const entryId = postCollection(db, id, v, pay);
     db.run(`UPDATE invoices SET status = 'مدفوعة', paid_date = ?, payment_method = ?, payment_bank_id = ?, payment_journal_entry_id = ? WHERE id = ?`,
@@ -256,10 +258,12 @@ export function payInvoice(db: DB, id: string, pay: { method: InvoicePayMethod; 
  * عكس تحصيل فاتورة · القيد يُعكس وحركة البنك تقابلها حركة معاكسة مرتبطة بقيد العكس (كسداد المشتريات).
  * keepTerms: الحذف إلى السلة يُبقي تاريخ التحصيل وطريقته وبنكه ليعيدها الاسترجاع كما كانت.
  */
-export function reverseInvoicePayment(db: DB, id: string, keepTerms = false): void {
+export function reverseInvoicePayment(db: DB, id: string, keepTerms = false, opts: { skipBankCheck?: boolean } = {}): void {
   const v = db.get<{ no: string; payment_journal_entry_id: string | null }>(`SELECT no, payment_journal_entry_id FROM invoices WHERE id = ?`, [id]);
   if (!v || !v.payment_journal_entry_id) return;
   const je = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [v.payment_journal_entry_id]);
+  // ما دخل البنك يخرج منه بالعكس: لا تحت الصفر (قرار ٥٥ · المراجعة الشاملة · A2.2) · قبل أي كتابة
+  if (je && !opts.skipBankCheck) requireBanksCover(db, je.no, 'reverse');
   const rev = reverseEntryById(db, v.payment_journal_entry_id, 'عكس تحصيل الفاتورة ' + v.no + (je ? ' · القيد ' + je.no : ''));
   if (je && rev) {
     for (const t of db.all<{ bank_id: string; amount_halalas: number }>(

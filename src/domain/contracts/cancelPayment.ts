@@ -14,9 +14,11 @@ import type { DB } from '../../db/adapter';
 import { allIn } from '../../db/inList';
 import { cashShortfall, CashShortfallError } from '../cashGuard';
 import { rowId, withDeterministicIds } from '../ids';
+import { fmt } from '../money';
 import { today, dfmt } from '../dates';
 import { logAudit } from '../audit';
 import { reverseEntryById } from '../accounting/post';
+import { bankBalance } from '../accounting/ledger';
 import { RuleViolation } from './service';
 import { t } from '../../i18n';
 import { DISCOUNT_ENTRY_SRC, DISCOUNT_REDUCES_INSTALLMENT } from './installments';
@@ -173,6 +175,19 @@ export function planCancelPayment(db: DB, paymentId: string, date?: string): Can
      FROM payment_lines pl LEFT JOIN banks b ON b.id = pl.bank_id
      WHERE pl.payment_id = ? AND pl.method != 'cash' AND pl.bank_id IS NOT NULL`, [p.id])
     .map((x) => ({ bankId: x.bank_id, bankName: x.name, amount: Number(x.amount) }));
+  // ما دخل البنك بهذه الدفعة يخرج منه بإلغائها: لا تحت الصفر (قرار ٥٥ · المراجعة الشاملة · A2.2، أشار إليه المراجع A2 هنا)
+  if (!p.cancelled_at) {
+    const perBank = new Map<string, { name: string; amount: number }>();
+    for (const b of bank) {
+      const cur = perBank.get(b.bankId) ?? { name: b.bankName, amount: 0 };
+      cur.amount += b.amount;
+      perBank.set(b.bankId, cur);
+    }
+    for (const [bankId, x] of perBank) {
+      const balance = bankBalance(db, bankId);
+      if (x.amount > 0 && balance < x.amount) blockers.push(t('bankTx.bankShort', { bank: x.name, balance: fmt(balance), amount: fmt(x.amount) }));
+    }
+  }
 
   return {
     paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, paymentDate, dateError, net: Number(p.net_halalas),

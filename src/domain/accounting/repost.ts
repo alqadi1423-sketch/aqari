@@ -4,7 +4,7 @@
  * ما يمنع النسخة (حساب أو بنك محذوف) يُعرف قبل أي كتابة فتُرفض الاستعادة بسببه.
  */
 import type { DB } from '../../db/adapter';
-import { cashShortfall, entryCashEffect } from '../cashGuard';
+import { cashShortfall, entryCashEffect, bankShortages } from '../cashGuard';
 import { fmt } from '../money';
 import { rowId, withDeterministicIds } from '../ids';
 import { postEntry, type PostedEntry } from './post';
@@ -35,6 +35,8 @@ export function repostBlockers(db: DB, entryId: string): string[] {
   const out0 = Math.max(0, -entryCashEffect(db, entryId));
   const short = cashShortfall(db, out0);
   if (short > 0) out.push('النقد في المحفظة لا يكفي لإعادة صرفٍ بمبلغ ' + fmt(out0) + ' · ينقصه ' + fmt(short) + '، سجّله «إيداع المالك» أولاً');
+  // ونسخة قيدٍ أخرج من بنكٍ تُخرج منه ثانية: لا تحت الصفر (قرار ٥٥ · المراجعة الشاملة · A2.2)
+  out.push(...bankShortages(db, e.no, 'repost'));
   return out;
 }
 
