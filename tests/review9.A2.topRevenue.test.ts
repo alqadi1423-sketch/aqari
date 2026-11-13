@@ -14,9 +14,10 @@ import { memDb } from './helpers/testDb';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { confirmContract, recordRentPayment } from '@/domain/contracts/service';
 import { saveInvoice } from '@/domain/invoices';
+import { savePurchase, TS_DEDUCTIBLE, type PurchaseInput } from '@/domain/purchases';
 import { computeTopPerformers } from '@/domain/stats';
 
-test.failing('A2.3 العقار الأعلى دخلاً يرى الإيجار المحصَّل ولا يعدّ مسودة فاتورة', () => {
+test('A2.3 العقار الأعلى دخلاً يرى الإيجار المحصَّل ولا يعدّ مسودة فاتورة', () => {
   const db = memDb();
   const p1 = addProperty(db, { name: 'عقار مصطنع أول' });
   const u1 = addUnit(db, p1, { unit_no: 'R9-A' });
@@ -39,5 +40,35 @@ test.failing('A2.3 العقار الأعلى دخلاً يرى الإيجار ا
   const top = computeTopPerformers(db);
   expect(top.topPropRevenue).toEqual({ id: p1, amount: 200000 });
   expect(top.topUnitRevenue).toEqual({ id: u1, amount: 200000 });
+  db.close();
+});
+
+/**
+ * الصرف من الدفتر لا من إجمالي فاتورة الشراء · الأول: شراء قابل للخصم ١٠٠٫٠٠ + ضريبة ١٥٫٠٠ = ١١٥٫٠٠ (الضريبة في 1270 لا في المصروف)
+ * فصرفه ١٠٠٫٠٠. الثاني: شراء معفى لوحدته ١١٠٫٠٠ فصرفه ١١٠٫٠٠ · فالأكثر صرفاً الثاني بـ١١٠٫٠٠ (المستندات كانت تقول الأول بـ١١٥٫٠٠).
+ * وبالفترة: فبراير وحده فيه شراء الأول فقط ← الأول بـ١٠٠٫٠٠.
+ */
+test('A2.3 العقار والوحدة الأكثر صرفاً بلا ضريبة المدخلات القابلة للخصم · وبالفترة', () => {
+  const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // «قابلة للخصم» للمنشأة المسجّلة وحدها
+  db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('S-R9', 'مورد مصطنع', '300000000000003', '2026-01-01')`);
+  const p1 = addProperty(db, { name: 'عقار مصطنع أول' });
+  const p2 = addProperty(db, { name: 'عقار مصطنع ثانٍ' });
+  const u2 = addUnit(db, p2, { unit_no: 'R9-C' });
+  const base = {
+    supplier: 'مورد مصطنع', due: '2026-03-31', category: 'صيانة', incorpItem: '', amortize: false,
+    amortizeMonths: null, excludeFromVat: false,
+  };
+  savePurchase(db, { ...base, date: '2026-02-10', exempt: false, taxStatus: TS_DEDUCTIBLE,
+    subtotalHalalas: 10000, taxHalalas: 1500, totalHalalas: 11500, propertyId: p1 } as PurchaseInput);
+  savePurchase(db, { ...base, date: '2026-03-10', exempt: true,
+    subtotalHalalas: 11000, taxHalalas: 0, totalHalalas: 11000, propertyId: p2, unitId: u2 } as PurchaseInput);
+  const top = computeTopPerformers(db);
+  expect(top.topPropExpense).toEqual({ id: p2, amount: 11000 });
+  expect(top.topUnitExpense).toEqual({ id: u2, amount: 11000 });
+  expect(top.topPropRevenue).toBeNull();
+  const feb = computeTopPerformers(db, '2026-02-01', '2026-02-28');
+  expect(feb.topPropExpense).toEqual({ id: p1, amount: 10000 });
+  expect(feb.topUnitExpense).toBeNull();
   db.close();
 });

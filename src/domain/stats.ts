@@ -514,41 +514,51 @@ export interface TopPerformers {
   topUnitExpense: { id: string; amount: number } | null;
 }
 
-/** العقار/الوحدة الأعلى دخلاً وصرفاً · من الفواتير والمشتريات المرتبطة */
-export function computeTopPerformers(db: DB): TopPerformers {
+/**
+ * العقار/الوحدة الأعلى دخلاً وصرفاً · من سطور الدفتر المرحّلة بأبعادها لا من المستندات: الدخل دائن ناقص مدين
+ * لحسابات «إيراد» (فيدخل الإيجار، ولا تدخل مسودة فاتورة)، والصرف مدين ناقص دائن لحسابات «مصروف» (فلا تدخل
+ * ضريبة المدخلات ولا ما رُسمل أصلاً) · وسطرٌ بوحدةٍ يُحسب لعقارها (قرار ٢٠٢٦-٠٨-١٩) · والقيد القديم بلا أبعاد
+ * خارجها حتى تملأه أداة «أبعاد القيود القديمة» (المراجعة الشاملة 2026-11-13 · A2.3) · إلا قيد استرداد الضريبة ورفضه
+ * (vat_refund وعاكسه): يُرحَّل بلا أبعاد عمداً (deriveSources يشترطه كذلك) فيُنسب إلى عقار فاتورة شرائه ووحدتها
+ * (المراجعة الشاملة 2026-11-13 · A2.3-R11-1)
+ */
+export function computeTopPerformers(db: DB, from: string | null = null, to: string | null = null): TopPerformers {
   const propRevenue: Record<string, number> = {};
   const propExpense: Record<string, number> = {};
   const unitRevenue: Record<string, number> = {};
   const unitExpense: Record<string, number> = {};
-  const unitProp = new Map(
-    db.all<{ id: string; property_id: string }>(`SELECT id, property_id FROM units WHERE deleted_at IS NULL`).map((u) => [u.id, u.property_id])
+  const add = (o: Record<string, number>, k: string | null, v: number) => { if (k && v) o[k] = (o[k] || 0) + v; };
+  const conds = [`(l.property_id IS NOT NULL OR l.unit_id IS NOT NULL OR pu.id IS NOT NULL)`];
+  const params: string[] = [];
+  if (from) { conds.push(`e.date >= ?`); params.push(from); }
+  if (to) { conds.push(`e.date <= ?`); params.push(to); }
+  const rows = db.all<{ pid: string | null; uid: string | null; rev: number; exp: number }>(
+    // i18n-exempt: حالة القيد ونوعا الحساب المخزّنة
+    // سطر رفض الاسترداد بلا أبعاد ← عقار فاتورة الشراء ووحدتها (src_id معرّفها) · المراجعة الشاملة 2026-11-13 · A2.3-R11-1
+    `SELECT COALESCE(u.property_id, l.property_id, pu_u.property_id, pu.property_id) AS pid, COALESCE(l.unit_id, pu.unit_id) AS uid,
+            COALESCE(SUM(CASE WHEN a.type = 'إيراد' THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS rev,
+            COALESCE(SUM(CASE WHEN a.type = 'مصروف' THEN l.debit_halalas - l.credit_halalas ELSE 0 END), 0) AS exp
+     FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.code = l.account_code
+     LEFT JOIN units u ON u.id = l.unit_id
+     LEFT JOIN purchases pu ON l.property_id IS NULL AND l.unit_id IS NULL
+          AND e.src_type IN ('vat_refund', 'vat_refund_rev') AND pu.id = e.src_id
+     LEFT JOIN units pu_u ON pu_u.id = pu.unit_id
+     WHERE e.status = 'مرحّل' AND e.deleted_at IS NULL AND a.type IN ('إيراد', 'مصروف') AND ${conds.join(' AND ')}
+     GROUP BY 1, 2`,
+    params
   );
-  for (const v of db.all<{ unit_id: string | null; property_id: string | null; total_halalas: number }>(
-    `SELECT unit_id, property_id, total_halalas FROM invoices WHERE deleted_at IS NULL`
-  )) {
-    const amt = Number(v.total_halalas);
-    if (v.unit_id) {
-      unitRevenue[v.unit_id] = (unitRevenue[v.unit_id] || 0) + amt;
-      const pid = unitProp.get(v.unit_id);
-      if (pid) propRevenue[pid] = (propRevenue[pid] || 0) + amt;
-    } else if (v.property_id) propRevenue[v.property_id] = (propRevenue[v.property_id] || 0) + amt;
-  }
-  for (const p of db.all<{ unit_id: string | null; property_id: string | null; total_halalas: number }>(
-    `SELECT unit_id, property_id, total_halalas FROM purchases WHERE deleted_at IS NULL`
-  )) {
-    const amt = Number(p.total_halalas);
-    if (p.unit_id) {
-      unitExpense[p.unit_id] = (unitExpense[p.unit_id] || 0) + amt;
-      const pid = unitProp.get(p.unit_id);
-      if (pid) propExpense[pid] = (propExpense[pid] || 0) + amt;
-    } else if (p.property_id) propExpense[p.property_id] = (propExpense[p.property_id] || 0) + amt;
+  for (const r of rows) {
+    add(propRevenue, r.pid, Number(r.rev)); add(propExpense, r.pid, Number(r.exp));
+    add(unitRevenue, r.uid, Number(r.rev)); add(unitExpense, r.uid, Number(r.exp));
   }
   // المحذوف إلى السلة خارج «الأكثر» · عقارٌ في السلة لا يُعرض باسمه (الأعطال ٢٠٢٦-١٠-٠٥)
   const liveProps = new Set(db.all<{ id: string }>(`SELECT id FROM properties WHERE deleted_at IS NULL`).map((x) => x.id));
+  const liveUnits = new Set(db.all<{ id: string }>(`SELECT id FROM units WHERE deleted_at IS NULL`).map((x) => x.id));
   for (const o of [propRevenue, propExpense]) for (const k of Object.keys(o)) if (!liveProps.has(k)) delete o[k];
-  for (const o of [unitRevenue, unitExpense]) for (const k of Object.keys(o)) if (!unitProp.has(k)) delete o[k];
+  for (const o of [unitRevenue, unitExpense]) for (const k of Object.keys(o)) if (!liveUnits.has(k)) delete o[k];
+  // الصافي الموجب وحده · مستندٌ عُكس كله (صافيه صفر) لا يُظهر صاحبه «الأعلى» بلا مبلغ
   const topOf = (obj: Record<string, number>) => {
-    const entries = Object.entries(obj);
+    const entries = Object.entries(obj).filter(([, v]) => v > 0);
     if (!entries.length) return null;
     entries.sort((a, b) => b[1] - a[1]);
     return { id: entries[0][0], amount: entries[0][1] };
