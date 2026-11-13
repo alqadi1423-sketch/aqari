@@ -83,6 +83,17 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/e2e.keystore"
 
+      # قرص المشغّل امتلأ وهو ينزّل صورة المحاكي («No space left on device» على 3dff115): تُحذف أدواتٌ لا يستعملها هذا العمل
+      # ووسائط البناء بعد خروج الحزمة (الحزمة نفسها في outputs باقية، وذاكرة Gradle باقية لحفظها)
+      - name: إفساح القرص للمحاكي
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/android/sdk/ndk || true
+          rm -rf android/app/build/intermediates android/app/build/tmp android/app/.cxx android/build node_modules/.cache || true
+          ls -l "$E2E_APK"
+          df -h / | tail -1
+
       - name: تفعيل KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
