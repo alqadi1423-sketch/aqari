@@ -2,7 +2,7 @@
  * محوّل expo-sqlite · يُستخدم داخل التطبيق فقط.
  */
 import * as SQLite from 'expo-sqlite';
-import { applyOpenPragmas, makeTransactionRunner, type DB, type SqlParams } from './adapter';
+import { applyOpenPragmas, driverCall, makeTransactionRunner, type DB, type SqlParams } from './adapter';
 import { migrate } from './migrations';
 import { seed, ensureDeviceId } from './seed';
 import { upgradeState } from '../domain/backup/upgrade';
@@ -33,7 +33,9 @@ const STATEMENT_CACHE_MAX = 96;
 
 export function openExpoDb(name: string = DB_NAME): AppDB {
   let raw = SQLite.openDatabaseSync(name);
-  const base = { exec: (sql: string) => raw.execSync(sql) };
+  // inTransaction يكشف إلغاء SQLite للمعاملة بنفسها (R12-SYN-1) · وكل نداءٍ إلى المشغّل عبر driverCall: يوسم عطل القاعدة بما رماه
+  // المشغّل («Error code N:» في نصّه) لا بنصّ رسالةٍ يبنيها التطبيق (مراجعة إصلاح R12-SYN-1)
+  const base = { exec: (sql: string) => driverCall(() => raw.execSync(sql)), inTransaction: () => raw.isInTransactionSync() };
   const transaction = makeTransactionRunner(base);
 
   // العبارات المحضَّرة تُحفظ (أعطال ٢٠٢٦-١٠-٠٥: تحضير نصّ الخصم الطويل في كل نداء كان أكثر كلفة المزامنة) ·
@@ -55,13 +57,13 @@ export function openExpoDb(name: string = DB_NAME): AppDB {
     for (const s of cache.values()) { try { s.finalizeSync(); } catch { /* أُنهيت */ } }
     cache.clear();
   };
-  const execute = <T, R>(sql: string, params: SqlParams, read: (r: SQLite.SQLiteExecuteSyncResult<T>) => R): R => {
+  const execute = <T, R>(sql: string, params: SqlParams, read: (r: SQLite.SQLiteExecuteSyncResult<T>) => R): R => driverCall(() => {
     const r = stmt(sql).executeSync<T>(params as SQLite.SQLiteBindParams);
     try { return read(r); } finally { try { r.resetSync(); } catch { /* لا شيء معلّق */ } }
-  };
+  });
 
   const db: AppDB = {
-    exec: (sql) => timed(sql, () => raw.execSync(sql)),
+    exec: (sql) => timed(sql, () => base.exec(sql)),
     run(sql: string, params: SqlParams = []) {
       timed(sql, () => execute(sql, params, () => undefined));
     },
@@ -73,6 +75,7 @@ export function openExpoDb(name: string = DB_NAME): AppDB {
       return timed(sql, () => execute<T, T[]>(sql, params, (r) => r.getAllSync()));
     },
     transaction,
+    inTransaction: base.inTransaction,
     // على خيط القاعدة الأصلي · للعبارات الثقيلة كـ VACUUM INTO فلا يُحتجز خيط الواجهة
     execAsync: (sql) => raw.execAsync(sql),
     close: () => { dropCache(); raw.closeSync(); },

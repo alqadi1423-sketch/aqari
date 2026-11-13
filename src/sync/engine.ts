@@ -22,7 +22,7 @@ import { nextJournalNo } from '../domain/accounting/post';
 import { nextPurchaseNo, PAY_LABEL } from '../domain/purchases';
 import { postedAccum } from '../domain/assets/depreciation';
 import { t as tr } from '../i18n';
-import type { DB, SqlValue } from '../db/adapter';
+import { isDbFault, TransactionAbortedError, type DB, type SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
@@ -2184,7 +2184,11 @@ function reject(db: DB, doc: RemoteDoc, reason: string): void {
   db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
     [doc.id, doc.t, doc.k, reason, payload, nowIso()]);
   // سبب الرفض كاملاً في sync_rejects على الجهاز، وفي سجل العمليات المزامَن محجوباً كنص العطل (المراجعة الشاملة · البند ١٧ ونظيره)
-  try { logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${redactForReport(reason)}`.slice(0, 300)); } catch { /* السجل لا يعطّل */ }
+  // والسجل لا يعطّل إلا إن ألغت SQLite المعاملة عنده (قرصٌ ممتلئ): كان يُبتلع فيذهب سطر الرفض مع الإلغاء ويُحذف المستند من الصندوق
+  // خارج أي معاملة فيضيع بلا أثر · فيُكتب في معاملةٍ متداخلة يكشف مديرها الإلغاء، ويُعاد رمي عطل القاعدة (مراجعة إصلاح R12-SYN-1)
+  try {
+    db.transaction(() => logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${redactForReport(reason)}`.slice(0, 300)));
+  } catch (e) { if (isDbFault(e)) throw e; /* السجل لا يعطّل */ }
 }
 
 /** بنود محضر الاستلام والتسليم كما يكتبها updateHandover ونوعه · وما سواها (السلة ونقل الوحدة) يمضي بالحسم المعتاد */
@@ -2656,7 +2660,7 @@ function applyOne(
               if (db.get(`SELECT 1 FROM contract_installments WHERE id IN (SELECT value FROM json_each(?)) AND paid_halalas < 0`, [JSON.stringify([...insts])]))
                 throw new Error('مسدَّد سالب');
             });
-          } catch { /* المخزَّن كما هو */ }
+          } catch (e) { if (isDbFault(e)) throw e; /* المخزَّن كما هو */ }
         }
         const issues = semanticIssues(db, scope, money);
         if (issues.length) throw new Error('الوارد مرفوض · ' + issues.join(' · '));
@@ -2679,6 +2683,9 @@ function applyOne(
     if (dropped) reject(db, dropped, tr('sync.handoverLocked', { lng: 'ar' }));
     return conflict ?? 'applied';
   } catch (e) {
+    // عطل القاعدة لا المستند (قرصٌ ممتلئ، خطأ إدخال وإخراج، معاملةٌ ألغتها SQLite بنفسها) لا يُرفض به المستند: يُرمى فتُلغى الصفحة كلها
+    // ويبقى ما فيها في الصندوق للدورة التالية · وإلا كُتب رفضه وحُذف من الصندوق خارج أي معاملة فضاع إلى الأبد (R12-SYN-1)
+    if (isDbFault(e)) throw e;
     const msg = errText(e);
     if (isMissingParent(msg) || e instanceof AwaitOriginal || e instanceof AwaitChildren || uniqueHolderLeaving(db, doc, msg)) return 'retry';
     reject(db, doc, msg);
@@ -2806,12 +2813,17 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
   const touched = new Set<string>();
   /** ما له رفضُ انتظار (يملؤه restageArrivedParents في كل مرور) · فلا يُبحث في سجل المرفوض لكل صفٍّ يُطبَّق */
   const waitRejected = new Set<string>();
-  /** معاملةٌ والوارد لا يرتدّ صداه إلى الطابور، ودفعةٌ سُجّلت على جهاز آخر لا يرفضها فحص «المتبقي» المحلي */
+  /**
+   * معاملةٌ والوارد لا يرتدّ صداه إلى الطابور، ودفعةٌ سُجّلت على جهاز آخر لا يرفضها فحص «المتبقي» المحلي · وإن رمى ما فيها أعاد إلغاؤها
+   * العلامتين كما كانتا، فلا تُكتبان بعده: إن ألغتها SQLite بنفسها (قرصٌ ممتلئ) وقعت كتابتهما خارج أي معاملة (R12-SYN-1)
+   */
   const quiet = (fn: () => void) => db.transaction(() => {
     const wasOn = captureOn(db);
     setCapture(db, false);
     setApplying(db, true);
-    try { fn(); } finally { setApplying(db, false); setCapture(db, wasOn); }
+    fn();
+    setApplying(db, false);
+    setCapture(db, wasOn);
   });
   for (let pass = 0; pass < 4; pass++) {
     let progress = 0;
@@ -2834,6 +2846,9 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
           for (const r of page) {
             const doc = JSON.parse(r.payload) as RemoteDoc;
             const res = applyOne(db, doc, deviceId, cache, money, joining);
+            // معاملة الصفحة ما زالت قائمة: إلغاءٌ من SQLite ابتلعه مستدعٍ في الطريق لا يُحذف بعده المستند من الصندوق خارج أي معاملة
+            // فيضيع، ولا يُطبَّق ما بعده والالتقاط عاد مفعّلاً (مراجعة إصلاح R12-SYN-1)
+            if (db.inTransaction?.() === false) throw new TransactionAbortedError(new Error('no transaction is active'));
             if (res === 'retry') {
               // بالزمن لا بالمرور (البند ١٤): المرور الواحد قد يتكرر أربع مرات في الدورة
               const since = r.waiting_since ? Date.parse(r.waiting_since) : NaN;

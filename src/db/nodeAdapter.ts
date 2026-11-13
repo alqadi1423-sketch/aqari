@@ -3,12 +3,15 @@
  * لا يُستورد من كود التطبيق (react-native يستخدم expoAdapter).
  */
 import { DatabaseSync } from 'node:sqlite';
-import { applyOpenPragmas, makeTransactionRunner, type DB, type SqlParams } from './adapter';
+import { applyOpenPragmas, driverCall, makeTransactionRunner, type DB, type SqlParams } from './adapter';
 
 export function openNodeDb(path: string): DB {
   const raw = new DatabaseSync(path);
+  // كل نداءٍ إلى المشغّل عبر driverCall: يوسم عطل القاعدة بما رماه المشغّل لا بنصّ رسالة (مراجعة إصلاح R12-SYN-1)
   const base = {
-    exec: (sql: string) => raw.exec(sql),
+    exec: (sql: string) => driverCall(() => raw.exec(sql)),
+    // يكشف إلغاء SQLite للمعاملة بنفسها (R12-SYN-1)
+    inTransaction: () => raw.isTransaction,
   };
   const transaction = makeTransactionRunner(base);
   // العبارات المحضَّرة تُحفظ كما في expoAdapter
@@ -23,18 +26,18 @@ export function openNodeDb(path: string): DB {
   const db: DB = {
     exec: (sql: string) => { base.exec(sql); if (/\b(ALTER|CREATE|DROP)\b/i.test(sql)) cache.clear(); },
     run(sql: string, params: SqlParams = []) {
-      prep(sql).run(...(params as never[]));
+      driverCall(() => prep(sql).run(...(params as never[])));
     },
     get<T>(sql: string, params: SqlParams = []): T | undefined {
-      const row = prep(sql).get(...(params as never[]));
+      const row = driverCall(() => prep(sql).get(...(params as never[])));
       return row === undefined ? undefined : ({ ...(row as object) } as T);
     },
     all<T>(sql: string, params: SqlParams = []): T[] {
-      return prep(sql)
-        .all(...(params as never[]))
+      return driverCall(() => prep(sql).all(...(params as never[])))
         .map((r: unknown) => ({ ...(r as object) })) as T[];
     },
     transaction,
+    inTransaction: base.inTransaction,
     close: () => raw.close(),
   };
   applyOpenPragmas(db);
