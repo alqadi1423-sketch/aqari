@@ -31,7 +31,7 @@ import { recomputeInstallments, installmentsOfPayment } from '../domain/contract
 import { paidFromDeposit, paidFromSettlement } from '../domain/contracts/cancelPayment';
 import { depositCarryChain } from '../domain/contracts/depositChain';
 import { blockRequests, addBlock } from '../domain/numbering';
-import { markOrphans } from '../domain/accounting/orphans';
+import { markOrphans, recordForeignReview, foreignReviewRows } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
 import { isISODate } from '../domain/dates';
@@ -1395,6 +1395,29 @@ function fixDeadCarries(db: DB): void {
     if (want === null || want === Number(row.deposit_halalas)) continue;
     db.run(`UPDATE contracts SET deposit_halalas = ? WHERE id = ?`, [want, id]);
     noteDeadCarry(db, id, row, want);
+  }
+}
+
+/**
+ * دفعة «من التأمين» حيّةٌ هنا وقيدها معكوسٌ بعاكسٍ مرحّل قُبل وربط: ملغاةٌ بعاكسه، قاعدة الدفعة الواردة نفسها (Z١-١ وZ٢-٢ في applyOne) ·
+ * يُلغيها جهاز المالك بعد التطبيق ويرفعها: عضوٌ لا يرى الدفعة يعكس قيدها في تعديل التسوية ولا يلغيها (قسم «التأمينات» وحده لا يقرأ
+ * الدفعات، أو وصله القيد قبل دفعته · service.ts: reverseDepositRent)، وإصلاح الدفعة الواردة لا يجري إلا حين تصل، والعضو لم يكتبها ·
+ * وكانت تبقى حيّةً بقيدٍ معكوس فالقسط «مدفوع» من تأمينٍ رُدّ، ويحمرّ فحص «كل دفعة محصَّلة لها قيد مرحّل» ويفترق جهاز المالك وجهاز العضو
+ * (المراجع المعاكس الثالث على R12-BAK-2) · بسبب تعديل التسوية وتاريخ العاكس كما يكتبهما الحفظ نفسه، فتطابق نسخة العضو إن كانت له ·
+ * ونسختها في الوارد لم تُطبَّق بعد تُصلح حين تُطبَّق · والدفعة العادية لا: إلغاؤها يكتبه جهاز العاكس معه بسببه وتاريخه (cancelPayment)
+ */
+function cancelReversedDepositRent(db: DB, touched: Set<string>): void {
+  if (getSyncState(db, 'membership')) return;
+  for (const p of db.all<{ id: string; rev: string; d: string }>(
+    `SELECT p.id, r.id AS rev, r.date AS d FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+       JOIN journal_entries r ON r.id = e.reversed_by
+     WHERE p.method_label = ? AND p.cancelled_at IS NULL AND r.status = ? AND r.deleted_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM sync_inbox i WHERE i.tbl = 'contract_payments' AND i.pk = p.id AND i.del = 0)`,
+    [DEPOSIT_RENT_METHOD, POSTED_ENTRY])) {
+    db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`,
+      [p.d, DEPOSIT_RENT_EDIT_REASON, p.rev, p.id]);
+    for (const i of installmentsOfPayment(db, p.id)) touched.add(i);
+    enqueue(db, 'contract_payments', p.id, 'upsert');
   }
 }
 
@@ -3333,6 +3356,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
     resolvePendingReversals(db);
     // وترحيل تأمينٍ رُفض بعد أن طُبِّق صفّ عقده المجدَّد (R12-DEP-1): يُصحَّح تأمينه هنا ويُرفع
     fixDeadCarries(db);
+    // ودفعة «من التأمين» عُكس قيدها بعاكسٍ قُبل هنا ولم تُلغَ: تُلغى بعاكسها وتُرفع (قبل حساب المسدَّد)
+    cancelReversedDepositRent(db, touched);
     recomputeInstallments(db, touched.has(ALL_INSTALLMENTS) ? undefined : [...touched]);
     if (out.applied) reopenReversedMatches(db);
   });
@@ -3502,6 +3527,10 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, e
       db.run(`INSERT OR IGNORE INTO audit_log (${keys.map((c) => `"${c}"`).join(',')}) VALUES (${keys.map(() => '?').join(',')})`,
         keys.map((c) => d.d![c] as SqlValue));
     }
+    // وما ضُمّ منه ويُبنى عليه حكم المراجعة (علامةٌ، وحفظ مستندٍ أعاد ترحيل قيوده، وسطر اعتمادٍ سابق) كُتب في خطٍّ لم تَعُد إليه
+    // البيانات: يُسمّى في سطرٍ واحد فلا يعمل هنا، والاستعادة حكمت من جديد على ما بعد النسخة (المراجع المعاكس الرابع على R12-BAK-2) ·
+    // قبل رفع ما في القاعدة فيُرفع معه
+    recordForeignReview(db, foreignReviewRows(plan.absorb));
     db.run(`DELETE FROM sync_inbox`);
     db.run(`DELETE FROM sync_outbox`);
     setSyncState(db, 'uid', uid);

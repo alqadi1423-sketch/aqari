@@ -137,8 +137,10 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
   }
 
   // ٨) كل دفعة إيجار محصَّلة لها قيدها المرحّل (الربط بين التحصيل والدفتر) · وقيدها غير معكوس، ولو بعاكسٍ معلَّمٍ للمراجعة: الدفعة التي عُكس
-  //    قيدها ملغاةٌ بعاكسه في المزامنة (Z١-١ وZ٢-٢)، فالاستعادة تحمل إلغاءها مع عاكسها (keepPosted.ts) ولا يقبل الفحص حالاً تنقضها المزامنة
-  //    (المراجع المعاكس الثاني على تعارض R12-DEP-2 مع R12-BAK-2)
+  //    قيدها ملغاةٌ بعاكسه، فالاستعادة تحمل إلغاءها مع عاكسها (keepPosted.ts) · والمزامنة تلغيها على جهاز المالك حين تصل الدفعة وقيدها
+  //    معكوسٌ هنا (Z١-١ وZ٢-٢)، ودفعة «من التأمين» حين يُقبل عاكس قيدها من عضوٍ لا يراها (sync/engine.ts: cancelReversedDepositRent) ·
+  //    وما سواهما (عاكس دفعةٍ عادية بلا إلغائها) يبقى أحمر هنا: لا يُصلح بلا سبب الإلغاء وتاريخه
+  //    (المراجع المعاكس الثاني والثالث على تعارض R12-DEP-2 مع R12-BAK-2)
   const unposted = db.get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM contract_payments p
      WHERE p.net_halalas > 0 ${hasCol(db, 'contract_payments', 'cancelled_at') ? 'AND p.cancelled_at IS NULL' : ''} AND NOT EXISTS (

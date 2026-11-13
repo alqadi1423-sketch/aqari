@@ -45,7 +45,7 @@ import {
   reverseEntryById,
 } from '../accounting/post';
 import { logAudit } from '../audit';
-import { documentKept } from '../accounting/orphans';
+import { outOfMatch, REPOSTED_KEY } from '../accounting/orphans';
 import { fmt } from '../money';
 import { linkContractTenant } from '../tenants';
 import { seedTenantOccupant, carryOccupantsToRenewal } from '../occupants';
@@ -498,7 +498,8 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
       [date, input.reason.trim(), input.settle ? deduction : null,
        input.settle ? refund : null, input.deductionReason.trim() || null, newEnd, contractId]
     );
-    logAudit(db, 'العقود', 'update', 'إلغاء عقد', c.tenant_name, { status: c.status }, { status: 'ملغى' });
+    logAudit(db, 'العقود', 'update', 'إلغاء عقد', c.tenant_name, { status: c.status },
+      { status: 'ملغى', ...(input.settle ? { [REPOSTED_KEY]: contractId } : {}) });
     return { excessClaimCreated };
   });
 }
@@ -794,9 +795,21 @@ function depositInstallments(db: DB, contractId: string) {
     .map((i) => ({ ...i, remaining: installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount)) }));
 }
 
-/** ما سدّده التأمين من الأقساط في تسويته القائمة · «منها مقابل أقساطٍ متأخرة» حين تُعدَّل (A1-2) */
+/**
+ * ما سدّده التأمين من الأقساط في تسويته القائمة · «منها مقابل أقساطٍ متأخرة» حين تُعدَّل (A1-2) ·
+ * ومنه دفعةٌ أُلغيت بعاكسٍ ضُمّ بعد استعادةٍ ويُراجَع خارج المطابقة وقيدُها داخلها (keepPosted.ts: إلغاؤها يُحمل مع عاكسها): الإلغاء من
+ * تعديلٍ بعد النسخة ليس في البيانات، وصفّ التسوية فيها بحاله قبله وهي منه · وإلا ملأت الورقة الخانة صفراً والخصم «إيجار ديسمبر» بحاله،
+ * فحفظُها كما تظهر يقيد الخصم أضراراً في 4300 ويبقى القسط مستحقاً، عكس صفّ التسوية وقرار المالك س١ (المراجع المعاكس الثالث · البند ٤)
+ */
 export function depositArrearsPaid(db: DB, contractId: string): number {
-  return liveDepositRent(db, contractId).reduce((s, p) => s + Number(p.net_halalas), 0);
+  const live = liveDepositRent(db, contractId).reduce((s, p) => s + Number(p.net_halalas), 0);
+  const kept = db.all<{ net: number; je: string; ce: string }>(
+    `SELECT p.net_halalas AS net, p.journal_entry_id AS je, p.cancel_entry_id AS ce FROM contract_payments p
+     JOIN journal_entries e ON e.id = p.journal_entry_id
+     WHERE p.method_label = ? AND p.cancelled_at IS NOT NULL AND e.src_type = ? AND e.src_id = ? AND e.reversed_by = p.cancel_entry_id`,
+    [DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, contractId])
+    .filter((p) => outOfMatch(db, p.ce) && !outOfMatch(db, p.je));
+  return live + kept.reduce((s, p) => s + Number(p.net), 0);
 }
 
 /**
@@ -839,23 +852,6 @@ function reverseDepositRent(db: DB, contractId: string): void {
     reverseEntryById(db, e.id, DEPOSIT_RENT_REV_MEMO);
   }
   if (touched.length) recomputeInstallments(db, touched);
-}
-
-/** قيود تسوية التأمين ومصدرها العقد صاحب التأمين · وعكوسها */
-const SETTLEMENT_SRC = ['deposit_deduct', 'deposit_refund', 'deposit_deduct_move', DEPOSIT_RENT_SRC];
-
-/**
- * ما ضُمّ بعد استعادةٍ من قيود هذه التسوية ورُوجع (keepPosted.ts: تعديلها بعد النسخة يُراجَع كله · R12-BAK-2) صار له مستندٌ بحفظها: الحفظ
- * عكس كل قيدٍ حيّ منها، فكل معلَّمٍ منها في زوجٍ أثره صفر (عُكس، أو عاكسُ أصلٍ معكوس) فيعود داخل المطابقة ويخرج من أداة المراجعة ·
- * وإلا بقي العاكس المعلَّم خارجها وأصله داخلها فاحمرّ فحص التأمينات أبداً (المراجع المعاكس الثاني على تعارض R12-DEP-2 مع R12-BAK-2)
- */
-function documentKeptSettlement(db: DB, contractId: string): void {
-  const types = [...SETTLEMENT_SRC, ...SETTLEMENT_SRC.map((s) => s + '_rev')];
-  documentKept(db, db.all<{ id: string; no: string }>(
-    `SELECT e.id, e.no FROM journal_entries e WHERE e.src_id = ? AND e.src_type IN (SELECT value FROM json_each(?))
-       AND e.status = 'مرحّل' AND e.deleted_at IS NULL
-       AND (e.reversed_by IS NOT NULL OR EXISTS (SELECT 1 FROM journal_entries o WHERE o.reversed_by = e.id))`, // i18n-exempt: حالة القيد المخزّنة
-    [contractId, JSON.stringify(types)]), 'حُفظت تسويته'); // i18n-exempt: سببٌ في سجل العمليات
 }
 
 /**
@@ -977,8 +973,9 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
     postDepositDeductMove(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, postDate,
       input.deductDestination ?? 'محفظة إيجار'); // i18n-exempt: وجهة مخزّنة
   }
+  // وما ضُمّ منها بعد استعادةٍ ورُوجع يعود داخل المطابقة بهذا الحفظ نفسه: سطر الحفظ في السجل يسمّي العقد (REPOSTED_KEY ·
+  // orphans.ts: documentedSql)، يكتبه من حفظ ولو عضواً
   postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder }, refund, postDate);
-  documentKeptSettlement(db, contractId);
   db.run(
     `INSERT INTO deposit_settlements (contract_id, date, deduction_halalas, deduction_reason, refund_halalas, notes, deduct_destination)
      VALUES (?,?,?,?,?,?,?)
@@ -1000,8 +997,9 @@ export function saveDepositSettlement(db: DB, contractId: string, input: Deposit
   db.transaction(() => {
     const r = applyDepositSettlement(db, c, contractId, input, 'فرق تسوية التأمين'); // i18n-exempt: سبب مطالبة مخزَّن
     // السجل يوثّق: من ماذا إلى ماذا · والقيود الأولى باقية معكوسة لا ممحوة
+    // وبمعرّف العقد (REPOSTED_KEY): الحفظ أعاد ترحيل قيود التسوية كلها، فما عُلِّم منها بعد استعادةٍ قبله صار له مستند (orphans.ts)
     logAudit(db, 'العقود', 'update', r.prev ? 'تعديل تسوية تأمين' : 'تسوية تأمين', c.tenant_name,
-      r.prev, { deduction_halalas: r.deduction, refund_halalas: r.refund, arrears_halalas: r.arrears, date: input.date });
+      r.prev, { deduction_halalas: r.deduction, refund_halalas: r.refund, arrears_halalas: r.arrears, date: input.date, [REPOSTED_KEY]: contractId });
   });
 }
 

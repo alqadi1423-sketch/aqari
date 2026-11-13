@@ -7,6 +7,7 @@ import { uid, rowId } from './ids';
 import { today } from './dates';
 import { postClaim, postClaimCollection, reverseEntryBySource } from './accounting/post';
 import { logAudit } from './audit';
+import { REPOSTED_KEY } from './accounting/orphans';
 import { correctionDate, requireOpenPeriod } from './vatFilings';
 import { propertyMoveLocked, type Access } from './access/access';
 
@@ -49,13 +50,15 @@ export function saveClaim(db: DB, input: ClaimInput, existingId?: string, opts: 
       );
       // تعديل مطالبة مفتوحة بمبلغ أو تاريخ أو عقد مختلف: عكس القيد القديم بأبعاده وترحيل الجديد بتاريخه (المراجعة ٤.١٧)
       // بعد تحديثها، فتُشتق أبعاده من عقدها الجديد (#34)
-      if (cl.status === 'مفتوحة' && (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date // i18n-exempt: حالة مخزّنة
-        || prevContract !== input.contractId)) {
+      const reposted = cl.status === 'مفتوحة' && (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date // i18n-exempt: حالة مخزّنة
+        || prevContract !== input.contractId);
+      if (reposted) {
         reverseEntryBySource(db, 'claim', existingId, 'تعديل مطالبة · عكس القيد السابق');
         // قيد القيم الجديدة قيدُ تصحيح: بتاريخ المطالبة، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسه (#29)
         postClaim(db, { id: existingId, amount: input.amountHalalas, reason: input.reason, date: correctionDate(db, input.date) });
       }
-      logAudit(db, 'المطالبات', 'update', 'مطالبة', input.reason || existingId);
+      // وتعديلٌ أعاد ترحيل قيدها يسمّيها (REPOSTED_KEY): فعكس قيدها المعلَّم بعد استعادةٍ قبله صار له مستند (orphans.ts)
+      logAudit(db, 'المطالبات', 'update', 'مطالبة', input.reason || existingId, undefined, reposted ? { [REPOSTED_KEY]: existingId } : undefined);
       return existingId;
     }
     const id = uid();
@@ -107,6 +110,8 @@ export function deleteClaim(db: DB, id: string): void {
     if (cl.status !== 'مفتوحة') throw new Error(t('claims.collectedNoDelete')); // i18n-exempt: حالة مخزّنة
     reverseEntryBySource(db, 'claim', id, 'حذف مطالبة · عكس قيدها');
     db.run(`UPDATE claims SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), id]);
-    logAudit(db, 'المطالبات', 'delete', 'مطالبة', cl.reason || id);
+    // وبمعرّفها (REPOSTED_KEY): الحذف يعكس قيدها الحيّ، فعكس قيدها المعلَّم بعد استعادةٍ ضمّته صار له مستند وتعود المطابقة كاملة
+    // (المراجع المعاكس الرابع على R12-BAK-2: كان يبقى خارجها أبداً ويحمرّ فحص المطالبات بمبلغها)
+    logAudit(db, 'المطالبات', 'delete', 'مطالبة', cl.reason || id, undefined, { [REPOSTED_KEY]: id });
   });
 }
