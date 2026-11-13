@@ -522,7 +522,8 @@
     "claimCollected": "Claim collected",
     "upcomingTotal": "Upcoming installments not yet due",
     "installmentPrepaid": "Upcoming installment paid in advance",
-    "installmentCancelledPaid": "Cancelled installment · paid portion"
+    "installmentCancelledPaid": "Cancelled installment · paid portion",
+    "surplusToCredit": "Surplus moved to the tenant credit balance"
   },
   "fin": {
     "unclosedEarnings": "Earnings to date (not closed)",

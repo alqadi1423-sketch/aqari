@@ -4,7 +4,7 @@
 import type { DB } from '../db/adapter';
 import { today, daysBetween } from './dates';
 import { unitActiveReservation, unitCurrentContract, expireOldReservations } from './contracts/rules';
-import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentState, paymentCashSql } from './contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentState, paymentCashSql, paymentAppliedSql, surplusCreditSql } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
 
 export interface InstallmentView {
@@ -208,11 +208,15 @@ export function unitStatusInfo(db: DB, unit: { id: string; under_maintenance: nu
   return { key: 'vacant', label: 'شاغرة', color: '#8A93A6', bg: '#F0F1F3' };
 }
 
-/** المحصَّل الفعلي لعقد: صافي دفعاته الحيّة (مراجعة التثبيت #24) */
+/**
+ * المحصَّل الفعلي لعقد: صافي دفعاته الحيّة (مراجعة التثبيت #24) بما سدّدته من مستحقاته (paymentAppliedSql · المراجعة الشاملة 2026-11-13 ·
+ * R12-DEP-4): الفائض الذي صار رصيداً دائناً للمستأجر يخرج منه، والسداد من الرصيد يدخل العقدَ الذي استُعمل فيه · «إجمالي محصَّل» و«دخل
+ * العقد» في شاشته منه
+ */
 export function contractCollectedValue(db: DB, contractId: string): number {
   const pay = db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(${paymentCashSql()}),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
-    [contractId]
+    `SELECT COALESCE(SUM(${paymentAppliedSql('p.')}),0) - ${surplusCreditSql('?')} AS s FROM contract_payments p WHERE p.contract_id = ? AND p.cancelled_at IS NULL`,
+    [contractId, contractId]
   )!;
   return Number(pay.s);
 }

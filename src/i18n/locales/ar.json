@@ -522,7 +522,8 @@
     "claimCollected": "تحصيل مطالبة",
     "upcomingTotal": "أقساط قادمة لم يحلّ موعدها",
     "installmentPrepaid": "قسط قادم مسدَّد مقدماً",
-    "installmentCancelledPaid": "قسط ملغى · المسدَّد منه"
+    "installmentCancelledPaid": "قسط ملغى · المسدَّد منه",
+    "surplusToCredit": "فائضٌ حُوّل إلى رصيد المستأجر الدائن"
   },
   "fin": {
     "unclosedEarnings": "أرباح الفترات حتى تاريخه (غير مقفلة)",

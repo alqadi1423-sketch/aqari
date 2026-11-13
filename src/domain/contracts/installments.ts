@@ -166,3 +166,25 @@ export const paymentCashSql = (alias = ''): string =>
   `(CASE WHEN ${alias}method_label = '${CREDIT_METHOD}' THEN 0 ELSE ${alias}net_halalas END)`;
 export const paymentCash = (p: { method_label?: string | null; net_halalas: number }): number =>
   (p.method_label === CREDIT_METHOD ? 0 : Number(p.net_halalas) || 0);
+
+/**
+ * فائض الدفعة الذي صار رصيداً دائناً للمستأجر: دائن 2410 في قيدها (التحصيل فوق أقساطه) · الرصيد الدائن للمستأجر لا للعقد، فقد يُستعمل في
+ * عقدٍ آخر (المراجعة الشاملة 2026-11-13 · R12-DEP-4: التجديد، ودمج مستأجرَين)
+ */
+export const paymentSurplusSql = (alias = ''): string =>
+  `COALESCE((SELECT MAX(0, SUM(l.credit_halalas - l.debit_halalas)) FROM journal_lines l
+     WHERE l.entry_id = ${alias}journal_entry_id AND l.account_code = '2410'), 0)`;
+
+/**
+ * ما سدّدته الدفعة من مستحقات عقدها (R12-DEP-4 · كل عقدٍ يتوازن وحده): صافيها ناقصاً فائضها الذي صار رصيداً دائناً، والسداد من الرصيد
+ * الدائن بمبلغه · فالتحصيل فوق الأقساط يُعدّ في عقده بما سدّد منه، والرصيد في العقد الذي استُعمل فيه، ولا يُعدّ مرتين في العقد الواحد
+ * (A2.1) · يقرؤه كشف المستأجر وإجمالي محصَّل العقد ودخله (contractCollectedValue)
+ */
+export const paymentAppliedSql = (alias = ''): string => `(${alias}net_halalas - ${paymentSurplusSql(alias)})`;
+
+/** فائضٌ قديم دخل إيراداً ثم حُوِّل رصيداً دائناً للمستأجر بأداة الفائض (surplus_credit · ledgerReview.ts) لعقدٍ بعينه: دائن 2410 في قيده الحيّ */
+export const surplusCreditSql = (contractExpr: string): string =>
+  `COALESCE((SELECT SUM(l.credit_halalas - l.debit_halalas) FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type = 'surplus_credit' AND e.src_id = ${contractExpr} AND e.reversed_by IS NULL AND e.deleted_at IS NULL
+       AND e.status = '${POSTED_ENTRY}' AND l.account_code = '2410'), 0)`;
+const POSTED_ENTRY = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة

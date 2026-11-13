@@ -18,11 +18,11 @@ import { DateField } from '../../src/ui/DateField';
 import { ActionMenuButton } from '../../src/ui/ActionMenu';
 import { printTenantStatement, printContractDoc, printReceipt } from '../../src/services/print';
 import { paymentForInstallment } from '../../src/domain/contracts/service';
-import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, paymentCashSql } from '../../src/domain/contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining } from '../../src/domain/contracts/installments';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../../src/domain/contracts/vocab';
 import { depositState } from '../../src/domain/contracts/vocab';
 import { InstallmentSheet } from '../../src/ui/InstallmentSheet';
-import { contractRemainingHalalas } from '../../src/domain/stats';
+import { contractRemainingHalalas, contractCollectedValue } from '../../src/domain/stats';
 import { OccupantSheet } from '../../src/ui/OccupantSheet';
 import { usePager, Pager } from '../../src/ui/Pager';
 import { useDeferredReady } from '../../src/ui/useDeferredReady';
@@ -652,9 +652,8 @@ function ContractDetailSheet({
   const rating = db.get<{ on_time: string; payment_commit: string; contract_commit: string; unit_condition: string; neighbor_complaints: string; notes: string }>(
     `SELECT * FROM tenant_ratings WHERE contract_id = ?`, [contractId]
   );
-  const totalPaid = Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(${paymentCashSql()}),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [contractId]
-  )!.s);
+  // بما سدّدته الدفعات من مستحقات العقد: الفائض الذي صار رصيداً يخرج، والسداد من الرصيد يدخل (R12-DEP-4)
+  const totalPaid = contractCollectedValue(db, contractId);
   const ended = contractEnded(c);
   const overall = rating
     ? tenantRatingOverall({
@@ -750,10 +749,7 @@ function ContractDetailSheet({
 
       {/* دخل العقد ومصاريفه */}
       {(() => {
-        const income = db.get<{ s: number }>(
-          `SELECT COALESCE(SUM(${paymentCashSql()}),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
-          [contractId]
-        )!.s;
+        const income = contractCollectedValue(db, contractId);
         const expenses = c.unit_id
           ? db.get<{ s: number }>(
               `SELECT COALESCE(SUM(total_halalas),0) AS s FROM purchases
