@@ -6,7 +6,7 @@
  *
  * الاستعمال:
  *   node scripts/ci/secretScan.js --staged            الأسطر المضافة في المرحَّل
- *   node scripts/ci/secretScan.js <الأساس> <الرأس>     الأسطر المضافة في المدى
+ *   node scripts/ci/secretScan.js <الأساس> <الرأس>     الأسطر المضافة في المدى، وفي كل التزامٍ منه وحده
  * والسطر الذي يحمل «secret-scan:allow» يُستثنى (لأنماط الاختبار المخترعة وحدها، ويُذكر سببه بجانبه).
  */
 const { execFileSync } = require('child_process');
@@ -25,6 +25,19 @@ const RULES = [
   {
     id: 'hardcoded-password',
     re: /\b(?:password|passwd|pwd|secret|api[_-]?key|storePassword|keyPassword)\b\s*[:=]\s*["'][^"'\s$<{]{8,}["']/i,
+  },
+  // صيغة Groovy في build.gradle بلا «=» ولا «:» (storePassword 'x') · المراجعة الشاملة 2026-11-13 · G-4
+  // وفي ملفات Gradle والخصائص وحدها: ذكرُ المثال المصطنع في وثيقةٍ أو تعليق ليس تسرّباً
+  {
+    id: 'gradle-signing-password',
+    file: /\.gradle(?:\.kts)?$|\.properties$/,
+    re: /\b(?:storePassword|keyPassword)\s+["'][^"'\s$<{]{6,}["']/,
+  },
+  // ملفات الخصائص والبيئة والسكربتات: NAME_PASSWORD=value بلا علامتي اقتباس، والاسم موصولٌ بـ«_» · G-4
+  {
+    id: 'env-assignment-secret',
+    file: /(?:\.properties|\.env|\.sh|\.bash|\.npmrc)$|(?:^|\/)\.env(?:\.[^/]*)?$/,
+    re: /^\s*(?:export\s+)?[A-Za-z0-9_.-]*(?:password|passwd|pwd|secret|api[_-]?key|token)[A-Za-z0-9_.-]*\s*[=:]\s*["']?[^\s"'$<{]{8,}/i,
   },
 ];
 
@@ -58,7 +71,10 @@ function scan(lines) {
   const hits = [];
   for (const l of lines) {
     if (l.text.includes('secret-scan:allow')) continue;
-    for (const r of RULES) if (r.re.test(l.text)) hits.push({ file: l.file, line: l.line, rule: r.id });
+    for (const r of RULES) {
+      if (r.file && !r.file.test(l.file)) continue;
+      if (r.re.test(l.text)) hits.push({ file: l.file, line: l.line, rule: r.id });
+    }
   }
   return hits;
 }
@@ -70,18 +86,37 @@ function diffOf(args) {
   });
 }
 
+/** التزامات المدى من الأقدم، وفرق كلٍّ منها عن أبيه الأول · سرٌّ أُضيف ثم حُذف في الدفعة نفسها يبقى في التاريخ (G-4) */
+function commitDiffs(base, head) {
+  const list = execFileSync('git', ['rev-list', '--reverse', `${base}..${head}`], { encoding: 'utf8' }).split('\n').filter(Boolean);
+  return list.map((c) => ({ commit: c, diff: diffOf([`${c}^1`, c]) }));
+}
+
 if (require.main === module) {
   const a = process.argv.slice(2);
-  const diff = a[0] === '--staged' ? diffOf(['--cached']) : a.length === 2 ? diffOf([`${a[0]}..${a[1]}`]) : null;
-  if (diff === null) {
+  let parts = null;
+  if (a[0] === '--staged') parts = [{ commit: '', diff: diffOf(['--cached']) }];
+  else if (a.length === 2) parts = [{ commit: '', diff: diffOf([`${a[0]}..${a[1]}`]) }, ...commitDiffs(a[0], a[1])];
+  if (parts === null) {
     console.error('الاستعمال: node scripts/ci/secretScan.js --staged | <الأساس> <الرأس>');
     process.exit(2);
   }
-  const lines = addedLines(diff);
-  const hits = scan(lines);
-  console.log(`فُحص ${lines.length} سطراً مضافاً بـ${RULES.length} نمطاً`);
+  let count = 0;
+  const seen = new Set();
+  const hits = [];
+  for (const p of parts) {
+    const lines = addedLines(p.diff);
+    if (!p.commit || parts.length === 1) count += lines.length;
+    for (const h of scan(lines)) {
+      const k = h.file + ':' + h.line + ':' + h.rule + ':' + p.commit;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      hits.push({ ...h, commit: p.commit });
+    }
+  }
+  console.log(`فُحص ${count} سطراً مضافاً بـ${RULES.length} نمطاً` + (parts.length > 1 ? ` · وكل التزامٍ وحده (${parts.length - 1})` : ''));
   if (hits.length) {
-    for (const h of hits) console.error(`✗ ${h.file}:${h.line} · ${h.rule}`);
+    for (const h of hits) console.error(`✗ ${h.file}:${h.line} · ${h.rule}` + (h.commit ? ` · ${h.commit.slice(0, 7)}` : ''));
     process.exit(1);
   }
   console.log('✓ لا سرّ في الأسطر المضافة.');

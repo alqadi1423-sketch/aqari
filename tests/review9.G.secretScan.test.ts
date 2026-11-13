@@ -26,12 +26,12 @@ const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'ci', 'secretScan.js');
 const one = (file: string, text: string) => [{ file, line: 1, text }];
 
 describe('G-4 · فحص الأسرار في جيت هب', () => {
-  test.failing('كلمة مرور التوقيع بصيغة Groovy في build.gradle تُلتقط', () => {
+  test('كلمة مرور التوقيع بصيغة Groovy في build.gradle تُلتقط', () => {
     const k = 'store' + 'Password';
     expect(scan(one('android/app/build.gradle', `            ${k} 'Synthetic-Pass-2026'`))).not.toEqual([]);
   });
 
-  test.failing('كلمة مرور التوقيع في ملف خصائص أو بيئة (المتغير الذي يقرؤه build.gradle) تُلتقط', () => {
+  test('كلمة مرور التوقيع في ملف خصائص أو بيئة (المتغير الذي يقرؤه build.gradle) تُلتقط', () => {
     const k = 'AQARI_UPLOAD_STORE_' + 'PASS' + 'WORD';
     expect(scan(one('android/gradle.properties', `${k}=SyntheticPass2026`))).not.toEqual([]);
   });
@@ -66,7 +66,7 @@ describe('G-4 · فحص الأسرار في جيت هب', () => {
     expect(run(base, leak)).toBe(1);
   });
 
-  test.failing('سرٌّ أُضيف ثم حُذف في الدفعة نفسها يُلتقط (فحص كل التزامٍ لا المدى مجموعاً)', () => {
+  test('سرٌّ أُضيف ثم حُذف في الدفعة نفسها يُلتقط (فحص كل التزامٍ لا المدى مجموعاً)', () => {
     expect(run(base, head)).toBe(1); // الواقع 0: الدفعة كلها تمرّ والسرّ في التاريخ
   });
 });
