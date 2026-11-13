@@ -18,6 +18,9 @@ export function DecisionSheet({ decision }: { decision: NonNullable<CloudState['
   const { db, bump } = useApp();
   const [busy, setBusy] = useState(false);
   const [later, setLater] = useState(false);
+  // «أبقِ بياناتي» للمالك وحده (المراجعة الخارجية ٧ · النتيجة ٩ · قرار المالك «رابعاً ٦»)
+  // الخطّاف قبل العودة المبكرة: بعدها كان «لاحقاً» يُسقط التطبيق (المراجعة الشاملة 2026-11-13 · G-2)
+  const owner = useAccess().owner;
   if (later) return null;
   const run = async (choice: 'keep' | 'wipe') => {
     setBusy(true);
@@ -26,8 +29,6 @@ export function DecisionSheet({ decision }: { decision: NonNullable<CloudState['
     setBusy(false);
   };
   const epoch = decision.kind === 'epoch';
-  // «أبقِ بياناتي» للمالك وحده (المراجعة الخارجية ٧ · النتيجة ٩ · قرار المالك «رابعاً ٦»)
-  const owner = useAccess().owner;
   return (
     <Sheet visible onClose={() => setLater(true)} title={epoch ? 'مُسحت بيانات المنشأة من جهاز آخر' : 'أُزيلت عضويتك من المنشأة'}>
       <T size={TYPE.body} style={{ marginBottom: 8 }}>

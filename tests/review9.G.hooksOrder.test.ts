@@ -93,7 +93,7 @@ test('الحارس نفسه: يمسك الخطاف بعد العودة المب�
   expect(hooksAfterEarlyReturn(src, 'x.tsx')).toEqual(['x.tsx:2 Bad useB', 'x.tsx:3 AlsoBad useC']);
 });
 
-test.failing('لا خطّاف بعد عودةٍ مبكرة في أي مكوّن (قاعدة الخطافات · بديل react-hooks/rules-of-hooks حتى يعمل ESLint)', () => {
+test('لا خطّاف بعد عودةٍ مبكرة في أي مكوّن (قاعدة الخطافات · بديل react-hooks/rules-of-hooks حتى يعمل ESLint)', () => {
   const offenders: string[] = [];
   for (const base of ['app', 'src']) {
     for (const f of walk(base)) {
