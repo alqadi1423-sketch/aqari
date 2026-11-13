@@ -23,6 +23,7 @@ import { planKeepPosted, applyKeepPosted, keepShortages, type KeptEntry } from '
 import { readBlocks, writeBlocks, mergeBlocks, type Blocks } from '../numbering';
 import { INV_RESERVED_KEY, INV_PENDING_KEY, pendingIssues } from '../invoiceIssue';
 import type { RemoteDoc } from '../../sync/types';
+import { getSyncState, setSyncState } from '../../sync/engine';
 import { isEncryptedArchive, decryptArchive, PasswordRequiredError, WrongPasswordError } from './encryption';
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
 
@@ -392,6 +393,37 @@ function carryDeviceLetter(from: DB, to: DB): void {
   writeBlocks(to, readBlocks(from));
 }
 
+/**
+ * ما يخصّ هذا التثبيت لا النسخة يُكتب في المجهَّزة قبل نقلها (المراجعة ١٢ · R12-BAK-4): النسخة تحمل هوية الجهاز الذي صنعها (أو لا هوية)
+ * وهذا الجهاز يبقى هو، وإلا ترك كلٌّ من الجهازين كتابة الآخر ظناً أنها صداه · ونسخة بلا علامة الزرع تأخذ ما ينقصها · وحرف الجهاز وكتل
+ * أرقامه ورقم فاتورته المحجوز وما ينتظر إصداره (carryNumbering) · ثم تُدمج صفحات WAL في الملف قبل إغلاقه، فالنقل ينقل الملف وحده ·
+ * وعلامة «استُعيدت ولم تُعتمد للسحابة» (restored_unadopted) متى كان للحية أو للنسخة حسابٌ في المزامنة (مراجعة R12-BAK-4): الشاشة تكتبها
+ * بعد التبديل أو تعتمد النسخة فتمحوها (adoptAsCloudTruth)، وانقطاعٌ قبل ذلك كان يترك قاعدةً بربط النسخة بالحساب بلا علامة فتمرّ بوابة
+ * syncNow وتُدمج النسخة مع السحابة صامتةً · وبلا حسابٍ في أيهما لا سحابة تُدمج معها، والدخول بعدها يمرّ ببوابة البيانات بلا حساب
+ */
+function stampThisDevice(
+  env: BackupEnv, stagedPath: string,
+  live: { deviceId: string | null; letter: string | undefined; numbering: { blocks: Blocks; reserved: string | null; pending: string[] }; uid: string | null },
+): void {
+  const staged = env.openDb(stagedPath);
+  try {
+    seed(staged);
+    ensureDeviceId(staged, live.deviceId);
+    if (live.letter === undefined) staged.run(`DELETE FROM meta WHERE key = 'device_letter'`);
+    else staged.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [live.letter]);
+    carryNumbering(live.numbering, staged);
+    if (live.uid || getSyncState(staged, 'uid')) setSyncState(staged, 'restored_unadopted', '1');
+    staged.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
+  } finally {
+    staged.close();
+  }
+}
+
+/** حساب المزامنة على القاعدة الحية · null لقاعدةٍ بلا جدول حالة المزامنة */
+function liveUid(db: DB): string | null {
+  try { return getSyncState(db, 'uid'); } catch { return null; }
+}
+
 /** ترقيم هذا التثبيت بعد التبديل: كتله الحية مع ما استهلكه الضمّ، ورقم فاتورته المحجوز، وما ينتظر إصداره */
 function carryNumbering(live: { blocks: Blocks; reserved: string | null; pending: string[] }, to: DB): void {
   writeBlocks(to, mergeBlocks(live.blocks, readBlocks(to)));
@@ -464,6 +496,15 @@ export async function commitRestore(
     pending: pendingIssues(env.db),
   };
   const preSwap = env.dbPath + '.pre-restore';
+  // هوية هذا الجهاز وحرفه وترقيمه وعلامة الزرع تُكتب في المجهَّزة **قبل** نقلها مكان الحية (المراجعة ١٢ · R12-BAK-4): فما يصير data.db
+  // بالتبديل يحملها من لحظته، وانقطاعٌ بعده (قتل التطبيق أثناء «جاري الفحص النهائي») لا يترك قاعدةً بهوية الجهاز الذي صنع النسخة ولا
+  // بأرقامه المحجوزة · وفشل الكتابة هنا يلغي الاستعادة قبل أن يُمسّ شيء
+  try {
+    stampThisDevice(env, plan.stagedDbPath, { deviceId, letter, numbering: liveNumbering, uid: liveUid(env.db) });
+  } catch (e) {
+    abortRestore(env, plan.stagingDir);
+    throw new RestoreError(ROLLED_BACK + (e instanceof Error ? e.message : ''));
+  }
   // ما في WAL الحي يُدمج في ملف القاعدة قبل إغلاقها (المراجعة الشاملة · البند ٢٠): حذفُ -wal بعد إغلاقٍ فشل بصمت كان يُضيع آخر ما كُتب ·
   // والإغلاق الذي يفشل يوقف الاستعادة قبل أن يُمسّ ملف
   try {
@@ -501,13 +542,7 @@ export async function commitRestore(
     const ic = fresh.get<Record<string, string>>(`PRAGMA integrity_check`);
     if (!ic || String(Object.values(ic)[0]) !== 'ok')
       throw new RestoreError('فشل الفحص بعد التبديل');
-    // النسخة تحمل هوية الجهاز الذي صنعها (أو لا هوية) · وهذا الجهاز يبقى هو، وإلا ترك كلٌّ
-    // من الجهازين كتابة الآخر ظناً أنها صداه. ونسخة بلا علامة الزرع تأخذ ما ينقصها الآن لا عند التشغيل التالي
-    seed(fresh);
-    ensureDeviceId(fresh, deviceId);
-    if (letter === undefined) fresh.run(`DELETE FROM meta WHERE key = 'device_letter'`);
-    else fresh.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [letter]);
-    carryNumbering(liveNumbering, fresh);
+    // هوية الجهاز وحرفه وترقيمه وعلامة الزرع كُتبت في المجهَّزة قبل التبديل (stampThisDevice · R12-BAK-4)
 
     // دمج المرفقات من staging بالنقل لا بالقراءة · الذاكرة لا تُحمَّل
     env.fs.mkdirp(env.attachmentsDir);
@@ -551,6 +586,39 @@ export async function commitRestore(
     if (!previous) throw new RestoreError(t('restore.previousMissing') + ' ' + (e instanceof Error ? e.message : ''));
     throw e instanceof RestoreError ? e : new RestoreError(ROLLED_BACK + (e instanceof Error ? e.message : ''));
   }
+}
+
+/**
+ * إكمال استعادةٍ انقطعت بعد التبديل عند الإقلاع (المراجعة ١٢ · R12-BAK-4): القاعدة المستعادة صارت data.db (فالمجهَّزة خرجت من مجلد
+ * التجهيز) والسابقة باقية بجانبها، ومرفقات النسخة ما زالت في مجلد التجهيز داخل tmp فيكنسها الإقلاع · فتُنقل قبل الكنس إلى مجلد المرفقات
+ * ما لم يكن فيه ملفٌ بالبصمة نفسها، ثم يُطابَق حال الملفات من القرص (reconcileCache) كما في آخر الاستعادة · ومجلد تجهيزٍ ما زالت فيه
+ * المجهَّزة لم يقع تبديله فلا يُمسّ · ويُعاد عدد ما نُقل · وهوية الجهاز وترقيمه وعلامة «لم تُعتمد» كُتبت قبل التبديل (stampThisDevice) ·
+ * والمطابقة تجري متى وُجدت استعادةٌ انقطعت ولو لم يُنقل ملف (مراجعة R12-BAK-4): استعادة نسخة هذا الجهاز ملفاتها في مكانها قبلها، و«رُفع»
+ * من النسخة يبقى بلا مطابقةٍ فيُفرَّغ ملفٌ قد لا يكون في الخادم
+ */
+export function finishInterruptedRestore(env: BackupEnv): number {
+  const preSwap = env.dbPath + '.pre-restore';
+  if (!env.fs.exists(preSwap) || !env.fs.exists(env.tmpDir)) return 0;
+  let moved = 0;
+  let interrupted = false;
+  for (const name of env.fs.list(env.tmpDir)) {
+    if (!name.startsWith('restore-staging-')) continue;
+    const dir = joinPath(env.tmpDir, name);
+    if (env.fs.exists(joinPath(dir, 'data.db'))) continue;
+    interrupted = true;
+    const att = joinPath(dir, 'attachments');
+    if (!env.fs.exists(att)) continue;
+    env.fs.mkdirp(env.attachmentsDir);
+    for (const f of env.fs.list(att)) {
+      const dot = f.indexOf('.');
+      if (dot <= 0 || !isSafeBlobName(f.slice(0, dot), f.slice(dot + 1))) continue;
+      const dest = joinPath(env.attachmentsDir, f);
+      if (env.fs.exists(dest)) continue;
+      try { env.fs.rename(joinPath(att, f), dest); moved += 1; } catch { /* التالي · ويكنسه الإقلاع */ }
+    }
+  }
+  if (interrupted && env.hasher) reconcileCache({ db: env.db, fs: env.fs, hasher: env.hasher, attachmentsDir: env.attachmentsDir });
+  return moved;
 }
 
 /** المسار المركّب (تجهيز ثم تنفيذ مباشرة) · تستعمله الاختبارات والاستدعاءات غير التفاعلية */

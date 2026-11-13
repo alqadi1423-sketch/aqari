@@ -10,7 +10,7 @@ import { expoFs, expoHasher, appDataRoot } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { createBackup, ensureFreeSpace, safetyBackupsDir } from '../domain/backup/create';
 import { deviceBackupPath, deviceBackups, type DeviceBackup } from '../domain/backup/deviceBackups';
-import { prepareRestore, commitRestore, abortRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
+import { prepareRestore, commitRestore, abortRestore, finishInterruptedRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
 import type { BackupEnv, BackupManifest } from '../domain/backup/types';
 import { setSetting } from '../repos/settings';
 import { toLocalISODate } from '../domain/dates';
@@ -43,6 +43,11 @@ export function appBackupEnv(db: AppDB): BackupEnv {
     reopenLive: () => { db.reopen(); open = true; return db; },
     cipher: deviceCipher,
   };
+}
+
+/** عند الإقلاع وقبل كنس tmp: مرفقات استعادةٍ انقطعت بعد التبديل تُنقل إلى مكانها (R12-BAK-4) · يُعاد عدد ما نُقل */
+export function finishInterruptedRestoreOnBoot(db: AppDB): number {
+  return finishInterruptedRestore(appBackupEnv(db));
 }
 
 /** فتح قاعدة على مسار مطلق عبر expo-sqlite */
