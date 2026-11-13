@@ -1168,6 +1168,9 @@
     "invalid": "Invalid date · type it as year-month-day, e.g. 2026-01-15",
     "invalidValue": "The date \"{{date}}\" is invalid · type it as year-month-day with a real day of the month, e.g. 2026-01-15",
     "invalidKeeps": "Invalid date · {{date}} stays in effect until you type it as year-month-day, e.g. 2026-01-15",
+    "invalidEmpty": "Invalid date · the field counts as having no date until you type it as year-month-day, e.g. 2026-01-15",
+    "emptyKeeps": "The field is empty · {{date}} stays in effect until you type a date as year-month-day, e.g. 2026-01-15",
+    "required": "The date is empty · pick it from the calendar or type it as year-month-day, e.g. 2026-01-15",
     "integrityName": "Every date is year-month-day with a real day of the month",
     "integrityValue": "{{entries}} entries · {{payments}} payments · {{purchases}} purchases · {{bank}} bank transactions · {{invoices}} invoices",
     "integrityFix": "{{entries}} entries · {{payments}} payments · {{purchases}} purchases · {{bank}} bank transactions · {{invoices}} invoices · they fall in no month or quarter, so reports and the VAT return miss them · correct each from its source: cancel the payment, reverse the entry or edit the purchase with the right date, and replace an invoice with a credit note and a new invoice"

@@ -181,7 +181,7 @@ function CompanyBody() {
               {d.numberField === 'cr' && (
                 <Field label={d.numberLabel!} value={cr} onChange={setCr} keyboard="numeric" ltr />
               )}
-              {d.expField && <DateField label="تاريخ الانتهاء" value={crExp} onChange={setCrExp} />}
+              {d.expField && <DateField label="تاريخ الانتهاء" value={crExp} onChange={setCrExp} optional />}
               <Row>
                 {perm.manage ? (
                   <BtnGhost small icon={file ? 'reload' : 'export'} title={file ? 'استبدال الملف' : 'رفع الملف'} onPress={() => uploadOfficial(d.kind)} />
@@ -232,7 +232,7 @@ function CompanyBody() {
           </>
         }>
         <Field label="اسم المستند" value={docName} onChange={setDocName} />
-        <DateField label="تاريخ الانتهاء" value={docExp} onChange={setDocExp} />
+        <DateField label="تاريخ الانتهاء" value={docExp} onChange={setDocExp} optional />
         <BtnGhost small icon="attach" title={docFile ? docFile.name : 'اختيار الملف'}
           onPress={async () => {
             const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({}));

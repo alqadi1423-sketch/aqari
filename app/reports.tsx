@@ -390,8 +390,8 @@ export default function Reports() {
       )}
       {finYear === 'custom' && (
         <Row style={{ marginTop: 8 }}>
-          <View style={{ flex: 1 }}><DateField label="من" value={customFrom} onChange={setCustomFrom} /></View>
-          <View style={{ flex: 1 }}><DateField label="إلى" value={customTo} onChange={setCustomTo} /></View>
+          <View style={{ flex: 1 }}><DateField label="من" value={customFrom} onChange={setCustomFrom} optional /></View>
+          <View style={{ flex: 1 }}><DateField label="إلى" value={customTo} onChange={setCustomTo} optional /></View>
         </Row>
       )}
       <View style={{ marginVertical: 8 }}>
@@ -747,8 +747,8 @@ export default function Reports() {
               value={dRange} onChange={setDRange} />
             {dRange === 'custom' && (
               <Row style={{ marginTop: 8 }}>
-                <View style={{ flex: 1 }}><DateField label="من" value={dFrom} onChange={setDFrom} /></View>
-                <View style={{ flex: 1 }}><DateField label="إلى" value={dTo} onChange={setDTo} /></View>
+                <View style={{ flex: 1 }}><DateField label="من" value={dFrom} onChange={setDFrom} optional /></View>
+                <View style={{ flex: 1 }}><DateField label="إلى" value={dTo} onChange={setDTo} optional /></View>
               </Row>
             )}
             {exporting ? (

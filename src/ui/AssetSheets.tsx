@@ -90,7 +90,7 @@ export function NewAssetSheet({ onClose, unitId }: { onClose: () => void; unitId
         <View style={{ flex: 1 }}><Field label={t('assets.ui.model')} value={model} onChange={setModel} /></View>
         <View style={{ flex: 1 }}><Field label={t('assets.ui.serial')} value={serial} onChange={setSerial} ltr /></View>
       </Row>
-      <DateField label={t('assets.ui.warrantyEnd')} value={warranty} onChange={setWarranty} />
+      <DateField label={t('assets.ui.warrantyEnd')} value={warranty} onChange={setWarranty} optional />
       <Field label={t('common.notes')} value={notes} onChange={setNotes} multiline />
     </Sheet>
   );
@@ -331,7 +331,7 @@ function EditSheet({ a, onClose }: { a: AssetRow; onClose: () => void }) {
         <View style={{ flex: 1 }}><Field label={t('assets.ui.model')} value={model} onChange={setModel} /></View>
         <View style={{ flex: 1 }}><Field label={t('assets.ui.serial')} value={serial} onChange={setSerial} ltr /></View>
       </Row>
-      <DateField label={t('assets.ui.warrantyEnd')} value={warranty} onChange={setWarranty} />
+      <DateField label={t('assets.ui.warrantyEnd')} value={warranty} onChange={setWarranty} optional />
       <Field label={t('common.notes')} value={notes} onChange={setNotes} multiline />
     </Sheet>
   );

@@ -801,7 +801,7 @@ export default function Purchases() {
           }} />
         <Row>
           <View style={{ flex: 1 }}><DateField label="تاريخ الفاتورة" value={date} onChange={setDate} /></View>
-          <View style={{ flex: 1 }}><DateField label="تاريخ الاستحقاق" value={due} onChange={setDue} /></View>
+          <View style={{ flex: 1 }}><DateField label="تاريخ الاستحقاق" value={due} onChange={setDue} optional /></View>
         </Row>
         <CostCenterField value={cc} onChange={setCc} />
         <Field label="الفئة" value={category} onChange={setCategory} />

@@ -285,8 +285,8 @@ export default function Dashboard() {
       /> : null}
       {sees('reports') && range === 'custom' && (
         <Row style={{ marginTop: 8 }}>
-          <View style={{ flex: 1 }}><DateField label="من" value={customFrom} onChange={setCustomFrom} /></View>
-          <View style={{ flex: 1 }}><DateField label="إلى" value={customTo} onChange={setCustomTo} /></View>
+          <View style={{ flex: 1 }}><DateField label="من" value={customFrom} onChange={setCustomFrom} optional /></View>
+          <View style={{ flex: 1 }}><DateField label="إلى" value={customTo} onChange={setCustomTo} optional /></View>
         </Row>
       )}
 

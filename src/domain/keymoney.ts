@@ -10,11 +10,10 @@
  */
 import type { DB } from '../db/adapter';
 import { uid } from './ids';
-import { today } from './dates';
 import { postKeyMoneyCommission } from './accounting/post';
 import { keyMoneyBlockReason, getContract } from './contracts/rules';
 import { logAudit } from './audit';
-import { requireOpenPeriod } from './vatFilings';
+import { requireGivenDate, requireOpenPeriod } from './vatFilings';
 
 export interface KeyMoneyInput {
   unitId: string;
@@ -39,7 +38,8 @@ export function recordKeyMoneyDeal(db: DB, input: KeyMoneyInput): string {
   }
   if (input.commissionHalalas > 0 && input.method === 'bank' && !input.bankId)
     throw new Error('اختر حساباً بنكياً أو بدِّل لنقداً');
-  const date = input.date || today();
+  // ولا صفقة بتاريخٍ فارغ يصير تاريخ اليوم بصمت، ولا بغير صيغته ولو بلا عمولة (المراجعة ١٢ · R12-UI-1)
+  const date = requireGivenDate(input.date);
   if (input.commissionHalalas > 0) requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   return db.transaction(() => {
     const id = uid();

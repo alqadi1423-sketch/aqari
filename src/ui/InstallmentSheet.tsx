@@ -166,8 +166,8 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
       {editOpen ? (
         <Sheet visible onClose={() => setEditOpen(false)} title="تعديل الموعد"
           footer={<View style={{ flex: 1 }}><BtnPrimary title="حفظ" onPress={() => attempt.attempt(!!reason.trim(), saveSchedule)} /></View>}>
-          <DateField label="موعد سداد متفق عليه" value={agreed} onChange={setAgreed} />
-          <DateField label="مهلة سداد حتى" value={grace} onChange={setGrace} />
+          <DateField label="موعد سداد متفق عليه" value={agreed} onChange={setAgreed} optional />
+          <DateField label="مهلة سداد حتى" value={grace} onChange={setGrace} optional />
           <Field label="السبب" value={reason} onChange={setReason} error={attempt.missing(reason)} />
           {/* لا اتفاق قائم فلا شيء يُزال */}
           {i.agreed_date || i.grace_until ? (

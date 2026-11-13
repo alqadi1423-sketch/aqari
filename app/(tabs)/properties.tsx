@@ -481,8 +481,8 @@ function PropertyFormSheet({
             </View>
           </Row>
           <Row>
-            <View style={{ flex: 1 }}><DateField label="بداية عقد الإيجار" value={leaseStart} onChange={setLeaseStart} /></View>
-            <View style={{ flex: 1 }}><DateField label="نهاية عقد الإيجار" value={leaseEnd} onChange={setLeaseEnd} /></View>
+            <View style={{ flex: 1 }}><DateField label="بداية عقد الإيجار" value={leaseStart} onChange={setLeaseStart} optional /></View>
+            <View style={{ flex: 1 }}><DateField label="نهاية عقد الإيجار" value={leaseEnd} onChange={setLeaseEnd} optional /></View>
           </Row>
           <View style={{ marginBottom: 10 }}>
             <BtnGhost small icon="attach" title={pendingFile ? pendingFile.name : 'ملف عقد الإيجار'}

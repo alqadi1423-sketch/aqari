@@ -45,6 +45,16 @@ export function requireISODate(date: string | null | undefined): void {
 }
 
 /**
+ * تاريخٌ لازمٌ في عمليةٍ يكتبها المستخدم (إلغاء العقد، دفعة الإيجار، التحصيل الجماعي، صفقة التقبيل): الفارغ يُرفض برسالته ولا يصير
+ * تاريخ اليوم بصمت، فيُحفظ ما رآه المستخدم لا غيره (المراجعة ١٢ · R12-UI-1) · ثم صيغته كما في requireISODate
+ */
+export function requireGivenDate(date: string | null | undefined): string {
+  if (!date) throw new RuleViolation(t('dates.required'));
+  requireISODate(date);
+  return date;
+}
+
+/**
  * وقت تسجيل تقديم إقرار الربع الذي فيه هذا التاريخ · null إن لم يُقدَّم · ما وصل الخادمَ بعده بتاريخٍ فيه يُرفض في المزامنة
  * (قرار المالك 2026-10-15 «٦» · المتحقق المستقل، الجولة ٣٥ (أ٤): كان يُفحص على الجهاز الكاتب وحده)
  */
