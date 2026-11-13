@@ -2015,10 +2015,16 @@ function noteViaMember(db: DB, doc: RemoteDoc, row: RowData): void {
 function issuedInvoiceSealed(db: DB, id: string): boolean {
   const v = db.get<Record<string, unknown>>(`SELECT * FROM invoices WHERE id = ?`, [id]);
   if (!v || v.status === DRAFT_INVOICE) return false;
-  if (!memberWriterOf(db, 'invoices', id) && !viaMember(db, 'invoices', id)) return true;
-  const lines = db.all<{ qty: number; price_halalas: number; tax_pct: number }>(
-    `SELECT qty, price_halalas, tax_pct FROM invoice_lines WHERE invoice_id = ?`, [id]);
-  if (!lines.length) return false;
+  if (!memberIssued(db, id)) return true;
+  const lines = db.all<InvLine>(`SELECT qty, price_halalas, tax_pct FROM invoice_lines WHERE invoice_id = ?`, [id]);
+  return lines.length > 0 && linesMatchHeader(v, lines);
+}
+
+type InvLine = { qty: unknown; price_halalas: unknown; tax_pct: unknown };
+/** أصدرها عضو: فاتورته، أو فاتورة المالك أصدرها «كامل» (noteViaMember) · فلسطورها ما في الطريق */
+const memberIssued = (db: DB, id: string): boolean => !!memberWriterOf(db, 'invoices', id) || viaMember(db, 'invoices', id);
+/** السطور تعيد رأس الفاتورة كما صدر: صافيه، وضريبته بنسبة كل سطر كما يحسبها invoiceTotals (والإشعار الدائن بصافيه) */
+function linesMatchHeader(v: Record<string, unknown>, lines: InvLine[]): boolean {
   let net = 0, tax = 0;
   for (const l of lines) {
     const n = mulQty(Number(l.qty), Number(l.price_halalas));
@@ -2026,6 +2032,52 @@ function issuedInvoiceSealed(db: DB, id: string): boolean {
     tax += pctOf(n, Number(l.tax_pct));
   }
   return net === Number(v.subtotal_halalas) && (v.kind === KIND_CREDIT_NOTE || tax === Number(v.tax_halalas));
+}
+
+/**
+ * وقت إصدار فاتورة العضو كما عرفه جهاز المالك: وقت الخادم لمستند رأسها الذي وصلها صادرةً وهي هنا غائبةٌ أو مسودة (المراجعة الشاملة
+ * 2026-11-13 · R12-SYN-2) · لا يتقدّم بما يُكتب في رأسها بعد الإصدار (التأخر والتحصيل)
+ */
+const INVOICE_ISSUED = 'invoice_issued:';
+function noteInvoiceIssued(db: DB, doc: RemoteDoc, row: RowData): void {
+  if (doc.t !== 'invoices' || getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
+  if (row.status == null || row.status === DRAFT_INVOICE) return;
+  const cur = db.get<{ s: string }>(`SELECT status AS s FROM invoices WHERE id = ?`, [doc.k]);
+  if (!cur || cur.s === DRAFT_INVOICE) setSyncState(db, INVOICE_ISSUED + doc.k, serverAt(doc));
+}
+/** وقت المستند بساعة الخادم (ts تفرضه القاعدة) · لا «u» الذي يكتبه العضو فيقدّمه أو يؤخّره */
+const serverAt = (doc: RemoteDoc): string => isoNorm(doc.ts ?? doc.u);
+
+/**
+ * سطرٌ يُنشأ أو يُعدَّل أو يُحذف لفاتورةٍ صادرة (المراجعة الشاملة 2026-11-13 · B-1 · R12-SYN-2) · سببُ الرفض أو '' أو LOCK_AWAIT:
+ * قبل اكتمال سطورها يُقبل (ما يكتبه التطبيق مع إصدارها في الطريق) · وبعد اكتمالها كان يُرفض كل سطر، فسطرٌ بسعرٍ صفر (بندٌ مجاني أو سطرٌ
+ * تُرك فارغاً) أو سطرا إضافةٍ وخصمٍ بالمبلغ نفسه، كُتبت مع الإصدار ووصلت بعد ما اكتمل به المجموع، كانت تُرفض وتُحذف من السحابة ومن جهاز
+ * العضو · فما كُتب في ساعة إصدار فاتورة العضو (LATE_LINK_MS بوقت الخادم، كأقساط العقد) يُقبل إن بقيت السطور بعده، مع ما في الوارد من
+ * سطورها، تعيد رأسها كما صدر، وإلا انتظر بقيتها حتى تمضي الساعة · وما بعد الساعة، أو ما يغيّر مبالغها، مرفوض كما كان · ويبقى أن سطراً
+ * لا يغيّر المبالغ يُكتب في ساعة الإصدار يُقبل: لا عدد سطورٍ ولا بصمةَ لها في رأسها بلا تغيير المخطط
+ */
+function issuedLineIssue(db: DB, invoiceId: string, doc: RemoteDoc): string {
+  if (!issuedInvoiceSealed(db, invoiceId)) return '';
+  const locked = tr('sync.issuedInvoiceLocked', { lng: 'ar' });
+  const at = memberIssued(db, invoiceId) ? getSyncState(db, INVOICE_ISSUED + invoiceId) : null;
+  const end = at ? Date.parse(at) + LATE_LINK_MS : NaN;
+  if (!Number.isFinite(end) || Date.parse(serverAt(doc)) > end) return locked;
+  // السطور بعد هذا المستند وما في الوارد من سطورها (غيره): ما هنا، ثم نسخ الوارد، ثم هو
+  const lines = new Map<string, InvLine>();
+  for (const l of db.all<InvLine & { id: string }>(`SELECT id, qty, price_halalas, tax_pct FROM invoice_lines WHERE invoice_id = ?`, [invoiceId])) lines.set(l.id, l);
+  const put = (d: RemoteDoc) => {
+    if (!d.del && d.d && String(d.d.invoice_id ?? '') === invoiceId) lines.set(d.k, d.d as InvLine);
+    else lines.delete(d.k);
+  };
+  for (const r of db.all<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'invoice_lines' AND doc != ?
+      AND (json_extract(payload, '$.d.invoice_id') = ? OR (del = 1 AND pk IN (SELECT id FROM invoice_lines WHERE invoice_id = ?)))`,
+    [doc.id, invoiceId, invoiceId])) {
+    try { put(JSON.parse(r.p) as RemoteDoc); } catch { /* مستندٌ تالف لا يشهد */ }
+  }
+  put(doc);
+  const v = db.get<Record<string, unknown>>(`SELECT * FROM invoices WHERE id = ?`, [invoiceId])!;
+  if (linesMatchHeader(v, [...lines.values()])) return '';
+  return Date.parse(toServerClock(db, nowIso())) <= end ? LOCK_AWAIT : locked;
 }
 
 /** قيدٌ مرحّلٌ حيٌّ هنا (لم يُعكس ولم يُحذف) */
@@ -2093,7 +2145,8 @@ function lockedParentIssue(db: DB, doc: RemoteDoc): string {
     const changed = doc.del ? !!cur : !cur || INVOICE_LINE_COLS.some((c) => String(cur[c] ?? '') !== String(d[c] ?? ''));
     if (!changed) return '';
     const parents = new Set([cur?.invoice_id, doc.del ? null : d.invoice_id].filter((x) => x != null && x !== '').map(String));
-    return [...parents].some((p) => issuedInvoiceSealed(db, p)) ? tr('sync.issuedInvoiceLocked', { lng: 'ar' }) : '';
+    const whys = [...parents].map((p) => issuedLineIssue(db, p, doc));
+    return whys.find((w) => w && w !== LOCK_AWAIT) ?? whys.find((w) => w === LOCK_AWAIT) ?? '';
   }
   // ٣) قسطٌ جديد من عضو: جدول العقد يكتبه من أكّده مع تأكيده (confirmContract وrenewContract)، والمسودة بلا أقساط
   if (doc.t === 'contract_installments' && !doc.del && doc.d && !db.get(`SELECT 1 FROM contract_installments WHERE id = ?`, [doc.k])
@@ -2641,6 +2694,7 @@ function applyOne(
         if (doc.t === 'bank_statement_lines') { const c = statementLineCheck(db, row, !getSyncState(db, 'membership') && byMember(db, doc, true)); relink = c.changed && (c.own || !getSyncState(db, 'membership')); relinkOwn = c.own; }
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         noteViaMember(db, doc, row);
+        noteInvoiceIssued(db, doc, row);
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
         if (doc.t === 'bank_statements') { resetStatementCounts(db, doc.k); statementCascade(db, doc.k, row, theirs0); }
