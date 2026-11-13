@@ -13,6 +13,11 @@ on:
 permissions:
   contents: read
 
+# دفعةٌ تلحقها أخرى على الفرع نفسه تُلغى، فلا تُستهلك دقائق جيت هب على رأسٍ قديم (المراجعة الشاملة 2026-11-13 · G-7)
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   tests:
     runs-on: ubuntu-latest

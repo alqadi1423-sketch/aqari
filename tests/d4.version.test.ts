@@ -75,10 +75,12 @@ describe('وسم الحزمة ونشرتها (apkRelease.js)', () => {
     expect(read('.github/workflows/apk-release.yml')).toMatch(/git fetch -q origin apk ci-results --tags/);
   });
 
-  test('سير العمل يُشغَّل من الفرع الرئيسي (فرع apk بلا ملفات سير عمل)، وبالساعة وبالزر', () => {
+  test('سير العمل يُشغَّل من الفرع الرئيسي (فرع apk بلا ملفات سير عمل)، ومرةً كل يوم وبالزر', () => {
     const wf = read('.github/workflows/apk-release.yml');
     expect(wf).toMatch(/branches: \[main\]/);
     expect(wf).toMatch(/schedule:/);
+    // مرةً كل يوم لا كل ساعة: دقائق جيت هب (G-7)
+    expect(wf).toMatch(/cron: '\d+ \d+ \* \* \*'/);
     expect(wf).toMatch(/workflow_dispatch:/);
     expect(wf).toMatch(/node scripts\/ci\/apkRelease\.js "\$GITHUB_OUTPUT"/);
     for (const m of wf.matchAll(/uses: ([^\s]+)/g)) expect(m[1]).toMatch(/@[0-9a-f]{40}$/);
