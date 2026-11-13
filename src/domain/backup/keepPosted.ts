@@ -13,6 +13,8 @@
  * ودفعة القسط «من التأمين» مستندها تسويته: فلا تُحمل إلا وصفّ التسوية في النسخة (المراجعة الشاملة 2026-11-13 · A1-2)،
  *   تسوية العقد صاحب التأمين مصدر قيدها لا عقد الدفعة (R12-DEP-2: قسط عقدٍ رُحِّل تأمينه).
  * ورقمٌ مستعمل في النسخة لقيد آخر يأخذ القيدُ المضموم رقماً جديداً من تسلسل الجهاز ويُذكر القديم في بيانه.
+ * وحسابٌ في سطوره ليس في دليل النسخة (أُضيف بعدها) يُحمل صفّه من المصدر قبل القيد، وإلا رفض مفتاح الحساب السطر وفشلت الاستعادة كلها ·
+ * وحسابٌ لا صفّ له في أي مصدر يُسمّى برسالة عربية قبل أي كتابة (المراجعة ١٢ · R12-BAK-1).
  * ومسودةٌ في النسخة رُحّلت بعدها (الترحيل يرقّي المسودة في مكانها بمعرّفها) تُستبدل بالمرحّل ولا تعود مسودة
  * (المراجعة الشاملة 2026-11-13 · C-1).
  */
@@ -24,6 +26,8 @@ import { DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD } from '../contracts/
 import { fmt } from '../money';
 import { logAudit } from '../audit';
 import { SOURCE_DOC, markForReview } from '../accounting/orphans';
+import { t } from '../../i18n';
+import { RestoreError } from './types';
 
 export type KeptFrom = 'device' | 'cloud' | 'both';
 
@@ -60,6 +64,8 @@ export interface KeepPlan {
     installments: Array<{ id: string; amount: number }>;
     /** أصلٌ في النسخة يُربط بقيده العكسي المضموم */
     links: Array<{ id: string; reversedBy: string }>;
+    /** حسابات سطور القيود المضمومة وليست في دليل النسخة · تُدرج قبل القيود (R12-BAK-1) */
+    accounts: RowData[];
   };
 }
 
@@ -115,7 +121,7 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
     if (have) { have.from.add('cloud'); if (!have.row.reversed_by && d.d.reversed_by) have.row = { ...have.row, reversed_by: d.d.reversed_by }; continue; }
     byId.set(d.k, { row: { ...d.d }, lines: d.lines ?? [], from: new Set(['cloud']) });
   }
-  const empty: KeepPlan = { entries: [], docs: { entries: [], payments: [], paymentLines: [], allocations: [], bankTx: [], installments: [], links: [] } };
+  const empty: KeepPlan = { entries: [], docs: { entries: [], payments: [], paymentLines: [], allocations: [], bankTx: [], installments: [], links: [], accounts: [] } };
   if (!byId.size) return empty;
 
   const docs = [...byId.values()].sort((a, b) => String(a.row.date).localeCompare(String(b.row.date)) || String(a.row.no).localeCompare(String(b.row.no)));
@@ -124,6 +130,10 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
   const carried = new Map<string, Set<string>>();
   const review = new Map<string, string>();
   const mark = (id: string, what: string) => { if (!carried.has(id)) carried.set(id, new Set()); carried.get(id)!.add(what); };
+
+  // ٠) حسابات السطور: ما ليس في دليل النسخة يُحمل صفّه من الجهاز ثم من السحابة · ولا صفّ له في أي مصدر يوقف الضمّ برسالة تسمّيه
+  //    قبل أي كتابة، لا بخطأ مفتاحٍ إنجليزي في منتصف التطبيق (المراجعة ١٢ · R12-BAK-1)
+  const outAccounts = carryAccounts(target, src, docs, mark);
 
   // ١) الدفعات: بقيدها أو بقيد إلغائها أو بقيد خصمها · الأحدث حالاً أولاً (الملغاة)، ثم نسخة الجهاز
   const discountSrc = docs.filter((d) => /^discount(_rev)?$/.test(String(d.row.src_type ?? ''))).map((d) => String(d.row.src_id ?? ''));
@@ -253,7 +263,43 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       wasDraft: drafts.has(String(d.row.id)),
     };
   });
-  return { entries, docs: { entries: docs, payments: outPayments, paymentLines: outLines, allocations: outAllocs, bankTx: outBank, installments: outInsts, links } };
+  return { entries, docs: { entries: docs, payments: outPayments, paymentLines: outLines, allocations: outAllocs, bankTx: outBank, installments: outInsts, links, accounts: outAccounts } };
+}
+
+/** صفوف الحسابات التي تحتاجها سطور القيود المضمومة وليست في الهدف · من الجهاز أولاً ثم من لقطة السحابة */
+function carryAccounts(target: DB, src: KeepSources, docs: EntryDoc[], mark: (id: string, what: string) => void): RowData[] {
+  const usedBy = new Map<string, string[]>();
+  for (const d of docs) {
+    for (const l of d.lines) {
+      const code = String(l.account_code ?? '');
+      if (!code) continue;
+      if (!usedBy.has(code)) usedBy.set(code, []);
+      usedBy.get(code)!.push(String(d.row.id));
+    }
+  }
+  if (!usedBy.size) return [];
+  const have = new Set(target.all<{ code: string }>(`SELECT code FROM accounts WHERE ${sqlIn('code')}`, [JSON.stringify([...usedBy.keys()])]).map((r) => r.code));
+  const missing = [...usedBy.keys()].filter((c) => !have.has(c)).sort();
+  if (!missing.length) return [];
+  const found = new Map<string, RowData>();
+  if (src.device) {
+    for (const r of src.device.all<RowData>(`SELECT * FROM accounts WHERE ${sqlIn('code')}`, [JSON.stringify(missing)])) found.set(String(r.code), r);
+  }
+  for (const d of src.cloud ?? []) {
+    if (d.del || d.t !== 'accounts' || !d.d || found.has(d.k) || !missing.includes(d.k)) continue;
+    found.set(d.k, { ...d.d, code: d.k });
+  }
+  const lost = missing.find((c) => !found.has(c));
+  if (lost) {
+    const entry = docs.find((d) => d.lines.some((l) => String(l.account_code) === lost))!;
+    const amount = entry.lines.reduce((s, l) => s + Number(l.debit_halalas ?? 0), 0);
+    throw new RestoreError(t('restore.keptAccountMissing', { no: String(entry.row.no), amount: fmt(amount), code: lost }));
+  }
+  return missing.map((code) => {
+    const row = found.get(code)!;
+    for (const id of usedBy.get(code)!) mark(id, t('backup.keptAccount', { code, name: String(row.name ?? '') }).trim());
+    return row;
+  });
 }
 
 function columnsOf(db: DB, table: string): Set<string> {
@@ -278,7 +324,14 @@ export function applyKeepPosted(target: DB, plan: KeepPlan): KeepPlan {
   const ec = columnsOf(target, 'journal_entries');
   const lc = columnsOf(target, 'journal_lines');
   const entries = plan.entries.map((e) => ({ ...e }));
+  const accCols = columnsOf(target, 'accounts');
   target.transaction(() => {
+    // حسابات السطور قبل القيود: مفتاح journal_lines.account_code يرفض سطراً على حسابٍ ليس في الدليل (R12-BAK-1)
+    for (const a of plan.docs.accounts ?? []) {
+      const keys = Object.keys(a).filter((c) => accCols.has(c));
+      target.run(`INSERT INTO accounts (${keys.map((c) => `"${c}"`).join(',')}) VALUES (${keys.map(() => '?').join(',')}) ON CONFLICT(code) DO NOTHING`,
+        keys.map((c) => (a[c] ?? null) as SqlValue));
+    }
     const applyingBefore = Number(target.get<{ v: number }>(`SELECT v FROM sync_ctl WHERE k = 'applying'`)?.v ?? 0);
     // الوارد لا يُقاس بسقف القسط قبل أن يكتمل · ثم يُحسب المسدَّد منه (كما في تطبيق المزامنة)
     target.run(`UPDATE sync_ctl SET v = 1 WHERE k = 'applying'`);

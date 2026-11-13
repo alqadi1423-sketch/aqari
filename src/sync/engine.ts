@@ -3372,9 +3372,12 @@ export interface CloudSnapshot {
   docs: RemoteDoc[];
 }
 
-/** الجداول التي يُحفظ مستندها كاملاً في اللقطة · ما يُضمّ مع القيد المرحّل */
+/**
+ * الجداول التي يُحفظ مستندها كاملاً في اللقطة · ما يُضمّ مع القيد المرحّل · ومنها الحسابات: حسابٌ أُضيف بعد النسخة يُحمل صفّه مع
+ * قيده، وإلا رفض مفتاح الحساب سطره (المراجعة ١٢ · R12-BAK-1) · والدليل صغير فلا يثقل اللقطة
+ */
 export const SNAPSHOT_FULL = new Set(['journal_entries', 'contract_payments', 'payment_lines', 'payment_allocations', 'bank_tx', 'audit_log',
-  'contract_installments', 'tenants']);
+  'contract_installments', 'tenants', 'accounts']);
 
 const PLAN_PAGE = 500;
 
