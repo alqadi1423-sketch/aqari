@@ -973,6 +973,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!prev || !prev.renewed_to) return AWAIT;
       // والسابق مجدَّدٌ إلى هذا العقد نفسه: لا يُرحَّل تأمينه إلى عقدين
       if (prev.renewed_to !== c.contract_no) return no('noEntry');
+      // وتأمينٌ سُوّي لا يُرحَّل: العقد الجديد يحمل ما لم يُقبض فيُردّ مرتين (A1-1)
+      if (r.row('deposit_settlements', c.renewed_from)) return no('carryAfterSettle');
       const carried = num(prev.deposit_halalas);
       // وتأمين الجديد يتسع للمرحَّل مع ما قُبض له (totalDeposit: المرحَّل وزيادته)
       if (live(r, 'contract_deposit', e.srcId, e.id, total) + carried > num(c.deposit_halalas)) return no('carryOver');

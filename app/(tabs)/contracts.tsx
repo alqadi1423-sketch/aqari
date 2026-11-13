@@ -41,7 +41,7 @@ import { C } from '../../src/ui/theme';
 import { useContractForm, ContractFormFields, emptyContractForm, formToInput } from '../../src/ui/contractForm';
 import {
   saveDraft, deleteDraft, confirmContract, cancelContract, renewContract, renewWarnings,
-  saveDepositSettlement, saveTenantRating, tenantRatingOverall, RuleViolation, depositCarried,
+  saveDepositSettlement, saveTenantRating, tenantRatingOverall, RuleViolation, depositCarried, depositSettlementDate,
 } from '../../src/domain/contracts/service';
 import {
   contractDisplayId, contractDisplayStatus, contractStatusKind, contractStatusLabel, refreshContractStatuses,
@@ -979,7 +979,9 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const [value, setValue] = useState(fmt(Number(c.value_halalas)).replace(/,/g, ''));
   const [raise, setRaise] = useState('');
   const [cycle, setCycle] = useState(c.cycle || 'سنوية');
-  const [carry, setCarry] = useState(Number(c.deposit_halalas) > 0);
+  // الخانة غير مؤشَّرة كما تفتح، ولا تُعرض لتأمينٍ سُوّي (A1-1 · «الزر الذي لا يصح لا يُعرض»)
+  const settledOn = depositSettlementDate(db, contractId);
+  const [carry, setCarry] = useState(false);
   const [extraDeposit, setExtraDeposit] = useState('');
   const [services, setServices] = useState(c.services || '');
   const [furnished, setFurnished] = useState(c.furnished || '');
@@ -1075,7 +1077,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
         <View style={{ flex: 1 }}><Field label={t('lease.renewServices')} value={servicesAmt} onChange={setServicesAmt} keyboard="numeric" ltr /></View>
         <View style={{ flex: 1 }}><Field label={t('lease.renewParking')} value={parkingAmt} onChange={setParkingAmt} keyboard="numeric" ltr /></View>
       </Row>
-      {depPerm.add && Number(c.deposit_halalas) > 0 && (
+      {depPerm.add && Number(c.deposit_halalas) > 0 && !settledOn && (
         <Pressable onPress={() => setCarry((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>
           <View style={{
             width: 22, height: 22, borderRadius: 5, borderWidth: 2,

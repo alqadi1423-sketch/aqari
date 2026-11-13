@@ -51,7 +51,10 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     `SELECT COALESCE(SUM(c.deposit_halalas),0) AS s FROM contracts c
      WHERE c.status IN ('سارٍ','منتهٍ','ملغى') AND c.deleted_at IS NULL
        AND COALESCE(c.deposit_holder,'المكتب') != 'طرف آخر'
-       AND c.renewed_to IS NULL -- المجدَّد رُحِّل تأمينه إلى عقده الجديد
+       -- المجدَّد يُستثنى حين رُحِّل تأمينه فعلاً (قيد deposit_carry حيٌّ من خلفه)، لا لمجرد أن له خلفاً: التجديد بلا ترحيل يُبقي
+       -- التأمين القديم محتجزاً حتى يُسوّى (المراجعة الشاملة 2026-11-13 · A1-3 · منطق depositCarried نفسه)
+       AND NOT EXISTS (SELECT 1 FROM contracts n JOIN journal_entries je ON je.src_type = 'deposit_carry' AND je.src_id = n.id
+                       WHERE n.renewed_from = c.id AND n.deleted_at IS NULL AND je.reversed_by IS NULL AND je.deleted_at IS NULL)
        AND NOT EXISTS (SELECT 1 FROM deposit_settlements ds WHERE ds.contract_id = c.id)`
   )!;
   // القيد غائب المستند (orphans.ts) لا مستند يطابقه · يُطرح أثره قبل المطابقة ويُذكر

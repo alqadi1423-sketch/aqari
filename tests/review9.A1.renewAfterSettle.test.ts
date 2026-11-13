@@ -28,7 +28,7 @@ const renewInput = (start: string, end: string, carry: boolean) => ({
   services: '', furnished: 'غير مؤثثة', ejarNo: '', note: '',
 });
 
-test.failing('A1-1 التجديد بعد تسوية التأمين لا يرحّل تأميناً رُدّ للمستأجر', () => {
+test('A1-1 التجديد بعد تسوية التأمين لا يرحّل تأميناً رُدّ للمستأجر', () => {
   const db = memDb();
   ownerCashIn(db, { amountHalalas: 500000, date: '2026-01-01' });
   const u = addUnit(db, addProperty(db, { name: 'عقار تجديد مصطنع' }), { unit_no: 'R-1' });
@@ -53,7 +53,7 @@ test.failing('A1-1 التجديد بعد تسوية التأمين لا يرحّ
   db.close();
 });
 
-test.failing('A1-3 التجديد بلا ترحيل التأمين: الفحص الثالث لا يحمرّ لدفترٍ صحيح', () => {
+test('A1-3 التجديد بلا ترحيل التأمين: الفحص الثالث لا يحمرّ لدفترٍ صحيح', () => {
   const db = memDb();
   const u = addUnit(db, addProperty(db, { name: 'عقار تجديد مصطنع' }), { unit_no: 'R-2' });
   const a = confirmContract(db, contractInput(u, { tenant: 'مستأجر تجديد مصطنع', idNumber: '1000000919',

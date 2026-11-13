@@ -546,7 +546,8 @@
     "excessNote": "The excess over the deposit becomes a claim on the tenant",
     "claimFirst": "The settlement has an excess claim · delete it from Claims first, then edit the settlement",
     "alreadySettled": "This contract's deposit is already settled · cancel without settlement and edit the settlement from its screen",
-    "refundOverLeft": "The refund exceeds what is left after the deduction · left {{left}}"
+    "refundOverLeft": "The refund exceeds what is left after the deduction · left {{left}}",
+    "settledNoCarry": "The deposit was settled on {{date}} · it cannot be carried to the renewal"
   },
   "vat": {
     "alreadyFiled": "This period's return is already recorded as filed",
@@ -856,7 +857,8 @@
     "assetBasis": "A member cannot change an asset's depreciation basis (cost, life, salvage, purchase date and category) after its cost is posted",
     "future": "A month that has not ended yet on the owner's device: its depreciation is not posted before it ends",
     "assetPlace": "The asset's unit in the entry is not the unit where its cost sits in the ledger",
-    "notRegistered": "The organization is not VAT-registered on the owner's device, so the invoice's input VAT is not deductible"
+    "notRegistered": "The organization is not VAT-registered on the owner's device, so the invoice's input VAT is not deductible",
+    "carryAfterSettle": "Carries a deposit already settled before the renewal"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",

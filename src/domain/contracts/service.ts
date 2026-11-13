@@ -544,6 +544,9 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
   if (block) throw new RuleViolation(block);
   const warns = renewWarnings(db, contractId, input);
   if (warns.length) throw new RuleViolation(warns[0]);
+  // تأمينٌ سُوّي (رُدّ أو خُصم) لا يُرحَّل: كان العقد الجديد يحمله بلا قبضٍ فيُردّ مرتين (المراجعة الشاملة 2026-11-13 · A1-1)
+  const settled = depositSettlementDate(db, contractId);
+  if (input.carryDeposit && settled) throw new RuleViolation(t('deposit.settledNoCarry', { date: settled.split('-').reverse().join('/') }));
 
   return db.transaction(() => {
     const newId = uid();
@@ -737,6 +740,11 @@ export interface DepositSettlementInput {
 }
 
 /** رُحِّل تأمين العقد إلى عقده المجدَّد · فلا تسوية له (مراجعة التثبيت #28) */
+/** تاريخ تسوية تأمين العقد إن سُوّي (A1-1: لا يُرحَّل ما سُوّي) */
+export function depositSettlementDate(db: DB, contractId: string): string | null {
+  return db.get<{ date: string }>(`SELECT date FROM deposit_settlements WHERE contract_id = ?`, [contractId])?.date ?? null;
+}
+
 export function depositCarried(db: DB, contractId: string): boolean {
   return !!db.get(
     `SELECT 1 FROM contracts n JOIN journal_entries e ON e.src_type = 'deposit_carry' AND e.src_id = n.id
