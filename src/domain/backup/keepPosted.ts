@@ -11,6 +11,8 @@
  * وما لا يُحمل مستنده (فاتورة · مشتريات · تأمين · حجز · تقبيل …) يُضمّ قيده كما هو ويُدرج في أداة
  * المراجعة «قيد بلا مستند بعد الاستعادة» · إلا زوجاً عكَس أحدُه الآخر، فأثرهما صفر.
  * ورقمٌ مستعمل في النسخة لقيد آخر يأخذ القيدُ المضموم رقماً جديداً من تسلسل الجهاز ويُذكر القديم في بيانه.
+ * ومسودةٌ في النسخة رُحّلت بعدها (الترحيل يرقّي المسودة في مكانها بمعرّفها) تُستبدل بالمرحّل ولا تعود مسودة
+ * (المراجعة الشاملة 2026-11-13 · C-1).
  */
 import type { DB, SqlValue } from '../../db/adapter';
 import type { RemoteDoc, RowData } from '../../sync/types';
@@ -37,6 +39,8 @@ export interface KeptEntry {
   carried: string[];
   /** سبب إدراجه في المراجعة · null حين لا يحتاجها */
   review: string | null;
+  /** كان مسودةً في النسخة بمعرّفه ورُحّل بعدها · فتُستبدل المسودة به (C-1) */
+  wasDraft: boolean;
 }
 
 interface EntryDoc { row: RowData; lines: RowData[]; from: Set<'device' | 'cloud'> }
@@ -87,7 +91,12 @@ function exists(db: DB, table: string, id: string | null | undefined): boolean {
 
 /** القيود المرحّلة في المصادر وليست في القاعدة الهدف · وما يُحمل معها · قراءة فقط */
 export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
-  const targetIds = new Set(target.all<{ id: string }>(`SELECT id FROM journal_entries`).map((r) => r.id));
+  // ما في النسخة مرحّلاً يُتخطّى وحده · ومسودتها بمعرّف قيدٍ مرحّل في المصدر تُرقّى إليه، وإلا عادت مسودةً واختفى أثره
+  // من الدفتر (المراجعة الشاملة 2026-11-13 · C-1)
+  const targetRows = target.all<{ id: string; no: string; posted: number }>(
+    `SELECT id, no, status = 'مرحّل' AS posted FROM journal_entries`); // i18n-exempt: حالة القيد المخزّنة
+  const targetIds = new Set(targetRows.filter((r) => Number(r.posted) === 1).map((r) => r.id));
+  const drafts = new Set(targetRows.filter((r) => Number(r.posted) !== 1).map((r) => r.id));
   const byId = new Map<string, EntryDoc>();
   if (src.device) {
     for (const row of src.device.all<RowData>(
@@ -212,8 +221,10 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       : `قيد ${label} · ${inBackup ? 'مستنده في النسخة بحاله قبل هذا القيد' : 'مستنده ليس في النسخة'}`);
   }
 
-  // ٥) رقمٌ مستعمل في النسخة لقيد آخر · يُعلَّم هنا ويُرقَّم عند التطبيق
-  const takenNos = new Set(target.all<{ no: string }>(`SELECT no FROM journal_entries`).map((r) => r.no));
+  // ٥) رقمٌ مستعمل في النسخة لقيد آخر · يُعلَّم هنا ويُرقَّم عند التطبيق ·
+  //    ورقم المسودة المرقّاة لا يُعدّ تصادماً: التطبيق يستبدل رؤوس المسودات قبل أي قيدٍ آخر، فيخلو رقمها القديم قبل أن
+  //    يُدرج غيرها وإن تغيّر رقمها بعد النسخة (ترقيم الانضمام) · فلا يتوقف هذا على ترتيب التاريخ (المراجعة الشاملة 2026-11-13 · C-1)
+  const takenNos = new Set(targetRows.filter((r) => !(drafts.has(r.id) && keptIds.has(r.id))).map((r) => r.no));
   const seenNos = new Set<string>();
   const entries: KeptEntry[] = docs.map((d) => {
     const no = String(d.row.no);
@@ -224,6 +235,7 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       id: String(d.row.id), no, newNo: clash ? '' : null, date: String(d.row.date), memo: String(d.row.memo ?? ''),
       amount: d.lines.reduce((s, l) => s + Number(l.debit_halalas ?? 0), 0), from,
       carried: [...(carried.get(String(d.row.id)) ?? [])], review: review.get(String(d.row.id)) ?? null,
+      wasDraft: drafts.has(String(d.row.id)),
     };
   });
   return { entries, docs: { entries: docs, payments: outPayments, paymentLines: outLines, allocations: outAllocs, bankTx: outBank, installments: outInsts, links } };
@@ -241,7 +253,8 @@ function insertRow(db: DB, table: string, data: RowData, cols: Set<string>, upse
 }
 
 /**
- * الضمّ ذرّياً · القيد مسودةً بسطوره ثم يُرحَّل فيمرّ بمحفّز التوازن كأي قيد، ثم الدفعات وتوزيعها
+ * الضمّ ذرّياً · القيد مسودةً بسطوره ثم يُرحَّل فيمرّ بمحفّز التوازن كأي قيد (ومسودة النسخة بمعرّفه تُحذف سطورها
+ * ويأخذ رأسها رأسَ المرحّل قبل ذلك، والمسودات قبل غيرها · C-1)، ثم الدفعات وتوزيعها
  * وحركات البنك، ثم روابط العكس، ثم المسدَّد من الدفعات · وما يحتاج مراجعة يُحفظ لأداة المراجعة.
  * يُعيد الخطة بأرقامها الجديدة إن رُقّم شيء.
  */
@@ -255,7 +268,12 @@ export function applyKeepPosted(target: DB, plan: KeepPlan): KeepPlan {
     // الوارد لا يُقاس بسقف القسط قبل أن يكتمل · ثم يُحسب المسدَّد منه (كما في تطبيق المزامنة)
     target.run(`UPDATE sync_ctl SET v = 1 WHERE k = 'applying'`);
     try {
-      for (const d of plan.docs.entries) {
+      // مسودات النسخة أولاً: رقمها القديم خارج فحص التصادم (planKeepPosted ٥)، ومرحّلها قد يحمل رقماً غيره، فلا يُدرج قبلها
+      // قيدٌ برقمها وهي بعدُ تحمله فيرفضه قيد التفرّد وتفشل الاستعادة كلها (المراجعة الشاملة 2026-11-13 · C-1)
+      const draftIds = new Set(entries.filter((e) => e.wasDraft).map((e) => e.id));
+      const ordered = [...plan.docs.entries.filter((d) => draftIds.has(String(d.row.id))),
+        ...plan.docs.entries.filter((d) => !draftIds.has(String(d.row.id)))];
+      for (const d of ordered) {
         const info = entries.find((e) => e.id === d.row.id)!;
         const row: RowData = { ...d.row, status: 'قيد الإنشاء', reversed_by: null };
         if (info.newNo !== null) {
@@ -263,7 +281,9 @@ export function applyKeepPosted(target: DB, plan: KeepPlan): KeepPlan {
           row.no = info.newNo;
           row.memo = String(d.row.memo ?? '') + ' (رقمه قبل الاستعادة ' + info.no + ')';
         }
-        insertRow(target, 'journal_entries', row, ec, false);
+        // مسودة النسخة تُستبدل بالمرحّل كما رُحّل: سطورها تُحذف ورأسها يأخذ رأسه وهو بعدُ مسودة (C-1)
+        if (info.wasDraft) target.run(`DELETE FROM journal_lines WHERE entry_id = ?`, [d.row.id as string]);
+        insertRow(target, 'journal_entries', row, ec, info.wasDraft);
         for (const l of d.lines) insertRow(target, 'journal_lines', { ...l, entry_id: d.row.id }, lc, false);
         target.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [d.row.id as string]);
       }

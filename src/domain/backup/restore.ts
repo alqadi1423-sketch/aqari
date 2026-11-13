@@ -27,6 +27,8 @@ import { isEncryptedArchive, decryptArchive, PasswordRequiredError, WrongPasswor
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
 
 const dec = new TextDecoder();
+/** رسالة الرجوع الفوري حين رجعت القاعدة السابقة مكانها */
+const ROLLED_BACK = 'تعذّرت الاستعادة ورجعت بياناتك السابقة كما كانت. ';
 
 export interface RestorePlan {
   manifest: BackupManifest;
@@ -409,7 +411,16 @@ export async function commitRestore(
     try { if (env.fs.exists(env.dbPath + suffix)) env.fs.remove(env.dbPath + suffix); } catch { /* تجاهل */ }
   }
   try { if (env.fs.exists(preSwap)) env.fs.remove(preSwap); } catch { /* تجاهل */ }
-  env.fs.rename(env.dbPath, preSwap);
+  // نقل القاعدة الحية جانباً داخل حماية: فشلُه يُعيدها مفتوحةً مكانها، لا مغلقةً والتطبيق بلا قاعدة حية
+  // (المراجعة الشاملة 2026-11-13 · C-3)
+  try {
+    env.fs.rename(env.dbPath, preSwap);
+  } catch (e) {
+    try { if (!env.fs.exists(env.dbPath) && env.fs.exists(preSwap)) env.fs.rename(preSwap, env.dbPath); } catch { /* بقيت مكانها */ }
+    try { env.reopenLive(); } catch { /* تُفتح عند التشغيل التالي */ }
+    abortRestore(env, plan.stagingDir);
+    throw new RestoreError(ROLLED_BACK + (e instanceof Error ? e.message : ''));
+  }
   // ما نُقل فعلاً إلى مجلد المرفقات · يُعكس حرفياً إن فشل ما بعده
   const moved: Array<{ src: string; dest: string }> = [];
   try {
@@ -443,29 +454,36 @@ export async function commitRestore(
       // وما بقي من نافذة — أن يفشل النقل في منتصفه — يُعكس بالسجل أدناه
       if (!env.fs.exists(dest)) { env.fs.rename(src, dest); moved.push({ src, dest }); }
     }
-    try { env.fs.remove(preSwap); } catch { /* تجاهل */ }
-    // حال الملفات من القرص لا من النسخة: ما هنا «لم يُرفع» حتى يطابقه الخادم، وما في الخادم وحده يُنزَّل عند فتحه
+    // حال الملفات من القرص لا من النسخة: ما هنا «لم يُرفع» حتى يطابقه الخادم، وما في الخادم وحده يُنزَّل عند فتحه ·
+    // وهي داخل الذرّية: تخطّيها يُبقي «رُفع» من النسخة فيُفرَّغ ملفٌ قد لا يكون في الخادم، ففشلُها يُرجع كل شيء
     if (env.hasher) reconcileCache({ db: fresh, fs: env.fs, hasher: env.hasher, attachmentsDir: env.attachmentsDir });
-    // ٧) التنظيف
+    // ٧) التنظيف · والقاعدة السابقة تُحذف بعد آخر خطوة قد تفشل لا قبلها، وإلا لم يبقَ للرجوع ما يرجع إليه (C-3)
+    try { env.fs.remove(preSwap); } catch { /* تجاهل · تُحذف في الاستعادة التالية */ }
     abortRestore(env, plan.stagingDir);
     return { manifest: plan.manifest, safetyBackupPath, db: fresh, migrated: plan.migrated };
   } catch (e) {
-    // رجوع فوري · بياناتك السابقة ترجع كما كانت، وملفاتها كذلك
-    for (let i = moved.length - 1; i >= 0; i--) {
-      try { if (env.fs.exists(moved[i].dest)) env.fs.rename(moved[i].dest, moved[i].src); } catch { /* التالي */ }
+    // رجوع فوري · بياناتك السابقة ترجع كما كانت، وملفاتها كذلك ·
+    // وبغياب السابقة عن القرص لا يُحذف شيء: تبقى المستعادة بملفاتها ولا يبقى الجهاز بلا قاعدة (C-3)
+    let previous = false;
+    try { previous = env.fs.exists(preSwap); } catch { /* لا يُعرف · فلا يُحذف شيء */ }
+    if (previous) {
+      for (let i = moved.length - 1; i >= 0; i--) {
+        try { if (env.fs.exists(moved[i].dest)) env.fs.rename(moved[i].dest, moved[i].src); } catch { /* التالي */ }
+      }
     }
     try { env.closeLive(); } catch { /* مغلقة */ }
-    try { if (env.fs.exists(env.dbPath)) env.fs.remove(env.dbPath); } catch { /* تجاهل */ }
-    // وملفا WAL وذاكرته للقاعدة المستعادة يُحذفان قبل إرجاع السابقة (البند ٢٠): وإلا فُتحت السابقة بسجلّ غيرها فأُعيدت عليها صفحاته
-    for (const suffix of ['-wal', '-shm']) {
-      try { if (env.fs.exists(env.dbPath + suffix)) env.fs.remove(env.dbPath + suffix); } catch { /* تجاهل */ }
+    if (previous) {
+      try { if (env.fs.exists(env.dbPath)) env.fs.remove(env.dbPath); } catch { /* تجاهل */ }
+      // وملفا WAL وذاكرته للقاعدة المستعادة يُحذفان قبل إرجاع السابقة (البند ٢٠): وإلا فُتحت السابقة بسجلّ غيرها فأُعيدت عليها صفحاته
+      for (const suffix of ['-wal', '-shm']) {
+        try { if (env.fs.exists(env.dbPath + suffix)) env.fs.remove(env.dbPath + suffix); } catch { /* تجاهل */ }
+      }
+      env.fs.rename(preSwap, env.dbPath);
     }
-    env.fs.rename(preSwap, env.dbPath);
     env.reopenLive();
     abortRestore(env, plan.stagingDir);
-    throw e instanceof RestoreError ? e
-      : new RestoreError('تعذّرت الاستعادة ورجعت بياناتك السابقة كما كانت. '
-        + (e instanceof Error ? e.message : ''));
+    if (!previous) throw new RestoreError(t('restore.previousMissing') + ' ' + (e instanceof Error ? e.message : ''));
+    throw e instanceof RestoreError ? e : new RestoreError(ROLLED_BACK + (e instanceof Error ? e.message : ''));
   }
 }
 

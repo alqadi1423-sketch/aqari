@@ -738,6 +738,7 @@
     "needConnection": "Linking needs an internet connection"
   },
   "backup": {
+    "keptWasDraft": "was a draft in the backup and was posted after it",
     "cipherChunkSize": "The encryption component returned a chunk of unexpected size · the backup was not encrypted",
     "passwordLost": "The backup secret saved on this device cannot be read, so no backup is exported or uploaded. Create a new recovery key to resume backups; earlier backups open with their secret if you type it.",
     "keyRequired": "No backup leaves the device unencrypted · create the recovery key under “Backup” first, and keep it somewhere safe.",
@@ -919,6 +920,7 @@
     "pendingDecision": "Pending your decision"
   },
   "restore": {
+    "previousMissing": "Its last step failed and your previous data was not found to return to, so the backup's data stayed in place · the safety backup taken before the restore is kept on this device.",
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",
     "foreignMembership": "This backup is from a member device of an organization this account is not a member of, so it is not restored. Its data is with the organization's owner.",
     "notInTrash": "Not in the trash · already restored",

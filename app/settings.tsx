@@ -331,7 +331,7 @@ export default function Settings() {
   const keptText = (kept: KeptEntry[]) => {
     if (!kept.length) return '';
     const shown = kept.slice(0, 8).map((k) => '· ' + (k.newNo ? k.newNo + ' (كان ' + k.no + ')' : k.no) + ' · ' + k.date + ' · ' + fmt(k.amount)
-      + ' · ' + fromLabel(k) + (k.carried.length ? ' · ومعه ' + k.carried.join(' و') : '') + (k.review ? ' · للمراجعة' : ''));
+      + ' · ' + fromLabel(k) + (k.wasDraft ? ' · ' + t('backup.keptWasDraft') : '') + (k.carried.length ? ' · ومعه ' + k.carried.join(' و') : '') + (k.review ? ' · للمراجعة' : ''));
     const toReview = kept.filter((k) => k.review).length;
     const renamed = kept.filter((k) => k.newNo).length;
     return '\n\nقيود مرحّلة بعد تاريخ النسخة تبقى (' + kept.length + '):\n' + shown.join('\n')
