@@ -925,6 +925,7 @@
     "handoverLocked": "The handover form is locked, so it is not reopened and its items do not change · the late edit from an old copy was rejected; a correction after locking is a separate corrective form",
     "bankOpeningLocked": "A bank with an opening balance is deleted or restored from the trash by the owner only · it stays as it was",
     "collectedTwice": "A second collection of the same claim or invoice while a live one exists · rejected so it is not collected twice",
+    "memberBankShort": "{{why}} · An entry from a member takes more out of the bank than the owner's books hold (cancelling a collection, returning an invoice to due, or restoring a paid purchase) · it was rejected with its bank transaction and what follows it, and the books stay as they were",
     "issuedInvoiceLocked": "An issued invoice is locked: its lines and what it was issued with do not change, it does not return to draft and is not deleted; it is corrected by a credit note · the member's write was rejected and it stays as issued",
     "installmentLocked": "A new installment for a contract the member neither wrote nor confirmed · a contract's schedule is generated when it is confirmed and is not added to, so it was rejected and the schedule stays as it was",
     "companyOwnerOnly": "VAT registration and the company row itself are for the owner alone · the member's write was rejected and it stays as it was",

@@ -43,8 +43,9 @@ import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentS
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 import { isoCmp, isoNorm } from './isoTime';
 import { redactForReport } from '../domain/redact';
-import { mulQty, pctOf } from '../domain/money';
+import { mulQty, pctOf, fmt } from '../domain/money';
 import { OWNER_ONLY_COLS, POSTED_PURCHASE_COLS } from '../domain/access/opWrites';
+import { READ_TABLE } from '../domain/access/readSections';
 
 const nowIso = () => new Date().toISOString();
 
@@ -559,6 +560,222 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   const revs = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]).length; // i18n-exempt: حالة القيد المخزّنة
   if (revs > originals.length) { awaitPending(true); throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' })); }
+}
+
+/**
+ * قيدٌ جديد من عضو لا يُنزل بنكاً تحت الصفر في دفاتر المالك (قرار المالك ٥٥ · المراجعة الشاملة 2026-11-13 · R12-SYN-3): عضو التحصيل
+ * أو الفواتير أو المشتريات لا يقرأ حركات البنك (readSections.ts) فيرى رصيده افتتاحيّه وما كتبه هو، فحدّ A2.2 على جهازه (bankShortages)
+ * يجيز إلغاء تحصيلٍ أو إعادة فاتورةٍ إلى «مستحقة» أو استعادة فاتورة شراءٍ مسدَّدة من بنكٍ سحب منه المالك · وجهاز المالك يرى كل حركة،
+ * فيُرفض القيد نفسه قبل أن يدخل الدفتر، وتُرفض حركته البنكية معه (bankTxEntryRejected) وما يتبعه (bankShortFollowerIssue)، والفاتورة
+ * المحصَّلة بقيدٍ حيّ تبقى (keepLocal) · وكان يُطبَّق كله لأن حركةً كُتبت مع قيدها لا تُفحص (Q٣ في memberBankTxCheck: فحصها وحدها
+ * يُطبّق القيد ويمسك حركته فيختلف الجهازان)، والحكم هنا على القيد قبل حركته فلا نصف عملية · وما كتبه المالك من جهازه الآخر، أو عضوٌ
+ * بقسمٍ يقرأ حركات البنك (البنوك والتقارير والدفتر: op المستند)، لا يُفحص هنا: حدّ A2.2 على جهازه رأى البنك كله، فلا يبقى إلا سدادٌ
+ * متزامنٌ مع سحبٍ بلا اتصال، وهو مقبولٌ كما وثّقه Q٣ب (العملية حقيقية والبنك السالب ظاهرٌ للمالك، ورفضها يُسقط سداداً تمّ)
+ */
+function memberBankOutCheck(db: DB, doc: RemoteDoc): void {
+  if (getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
+  if (typeof doc.op === 'string' && READ_TABLE.bank_tx.includes(doc.op as never)) return;
+  const total = new Map<string, number>();
+  const add = (m: Map<string, number>) => { for (const [b, a] of m) total.set(b, (total.get(b) ?? 0) + a); };
+  add(entryBankEffect(db, doc));
+  // حركات هذا القيد ونُسخ أخواته في الوارد محسوبةٌ في أثره، فلا تُحسب ثانيةً فيما ينتظر
+  const own = new Set<string>([String(doc.d!.no ?? '')].filter(Boolean));
+  // والاستعادة عمليةٌ واحدة: نُسخ قيود المستند نفسه (فاتورة الشراء وسدادها) تُقبل معاً أو تُرفض معاً، فلا تُستعاد الفاتورة بلا سدادها
+  if (!String(doc.d!.src_type ?? '').endsWith('_rev') && repostSourceOf(db, doc)) {
+    const sibs = siblingCopies(db, doc).filter((sib) => sib.k !== doc.k);
+    for (const sib of sibs) {
+      const why = bankShortRejectOf(db, sib.k);
+      if (why) throw new Error(why);
+      if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [sib.k])) { add(entryBankEffect(db, sib)); if (sib.d!.no) own.add(String(sib.d!.no)); }
+    }
+    // ونسخة الفاتورة التي تنتظر نسخة سدادها في الطريق لا يُحكم عليها وحدها (مراجعة إصلاح R12-SYN-3)
+    if (!sibs.some((sib) => sib.d!.src_type === 'purchase_pay') && payCopyAwaited(db, doc)) {
+      throw new AwaitOriginal('purchase_pay copy in transit');
+    }
+  }
+  for (const [bank, a] of total) {
+    if (a >= 0) continue;
+    const balance = bankBalance(db, bank) + pendingBankMoves(db, doc, bank, own);
+    if (balance + a >= 0) continue;
+    const name = db.get<{ n: string }>(`SELECT name AS n FROM banks WHERE id = ?`, [bank])?.n ?? '';
+    const why = tr('bankTx.bankShort', { bank: name, balance: fmt(balance), amount: fmt(-a), lng: 'ar' });
+    throw new Error(tr('sync.memberBankShort', { why, lng: 'ar' }));
+  }
+}
+
+/**
+ * أثر قيدٍ وارد في كل بنك: حركاته التي كُتبت معه وتنتظر في الوارد، وما لم يصل منها: العاكس حركات أصله معكوسةً، ونسخة الاستعادة حركات
+ * القيد المعكوس الذي تنسخه · بالأشدّ منهما لكل بنك (ما يصل منها في دفعةٍ لاحقة لا يفوت الحكم)
+ */
+function entryBankEffect(db: DB, doc: RemoteDoc): Map<string, number> {
+  const d = doc.d!;
+  const out = new Map<string, number>();
+  const take = (rows: Array<{ b: unknown; a: unknown }>, sign: number) => {
+    const per = new Map<string, number>();
+    for (const r of rows) if (r.b != null && r.b !== '') per.set(String(r.b), (per.get(String(r.b)) ?? 0) + sign * (Number(r.a) || 0));
+    for (const [b, a] of per) out.set(b, Math.min(out.get(b) ?? 0, a));
+  };
+  const movesOf = (entryId: string, sign: number) => {
+    const e = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [entryId]);
+    if (e) take(db.all(`SELECT bank_id AS b, amount_halalas AS a FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL`, [e.no]), sign);
+  };
+  if (typeof d.no === 'string' && d.no) {
+    take(db.all(`SELECT json_extract(payload, '$.d.bank_id') AS b, json_extract(payload, '$.d.amount_halalas') AS a FROM sync_inbox
+      WHERE tbl = 'bank_tx' AND del = 0 AND json_extract(payload, '$.d.journal_no') = ? AND json_extract(payload, '$.d.deleted_at') IS NULL`, [d.no]), 1);
+  }
+  if (String(d.src_type ?? '').endsWith('_rev')) for (const o of sourceReader(db).claimants(doc.k)) movesOf(o, -1);
+  else {
+    const copied = repostSourceOf(db, doc);
+    if (copied) movesOf(copied, 1);
+  }
+  return out;
+}
+
+/**
+ * ما ينتظر في الوارد من حركات البنك الجديدة مما يسبق هذا القيد (حركات البنك تُطبَّق بعد القيود، فما سبقه في السحابة لم يدخل الرصيد بعد):
+ * حركات قيدٍ طُبّق هنا (تحصيلٌ وإلغاؤه وصلا معاً، وجهازٌ للمالك جديد يسحب الحساب كله)، أو قيدٍ في الوارد كُتب في السحابة قبله (بوقت
+ * الخادم: ينتظر أباه)، ونقل النقد بلا قيد (السحب إلى المحفظة والإيداع والتحويل بين البنوك · cashOps.ts) كُتب قبله · وما كتبه المالك
+ * أياً كان وقته: جهازه طبّقه قبل أن يصله قيد العضو، أو كتبه بعده في حدّ ما أبقاه · بالداخل والخارج معاً، فيُحكم بترتيب الكتابة في
+ * السحابة لا بتوقيت السحب: كان الداخل وحده يُحسب، فجهاز المالك الذي يسحب في دورةٍ واحدة سحبَ المالك من جهازه الآخر (أو سحب عضو البنوك)
+ * وإلغاءَ العضو بعده يرى البنك قبل السحب فيقبل ما رفضه جهازٌ سحب السحب قبله، وينزل البنك تحت الصفر (مراجعة إصلاح R12-SYN-3) · وما
+ * كتبه عضوٌ بعد هذا القيد يُحكم عليه بعده بما يُبقيه هذا · own: أرقام القيد وأخواته المحسوبة في أثره
+ * (لا يُطلب إلا حين لا يكفي البنك، فيُصفّى البنك هنا لا بفهرس)
+ */
+function pendingBankMoves(db: DB, doc: RemoteDoc, bank: string, own: Set<string>): number {
+  const alias = noAliases(db);
+  const at = db.get<{ u: string }>(`SELECT updated_at AS u FROM sync_inbox WHERE doc = ?`, [doc.id])?.u ?? '';
+  /** كُتب في السحابة قبل هذا القيد، أو كتبه المالك */
+  const counts = (x: { by?: unknown; op?: unknown }, before: unknown) => !!before || !byMember(db, x as RemoteDoc, true);
+  const sure = new Map<string, boolean>();
+  const entryCounts = (no: string): boolean => {
+    let v = sure.get(no);
+    if (v !== undefined) return v;
+    v = !!db.get(`SELECT 1 FROM journal_entries WHERE no = ? AND status = ? AND deleted_at IS NULL`, [alias[no] ?? no, POSTED_ENTRY])
+      || db.all<{ p: string; before: number }>(`SELECT payload AS p, (updated_at, doc) < (?, ?) AS before FROM sync_inbox
+          WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.no') = ?`, [at, doc.id, no])
+        .some((r) => {
+          try {
+            const e = JSON.parse(r.p) as RemoteDoc;
+            return e.d?.status === POSTED_ENTRY && e.d.deleted_at == null && counts(e, r.before);
+          } catch { return false; }
+        });
+    sure.set(no, v);
+    return v;
+  };
+  let n = 0;
+  for (const r of db.all<{ b: unknown; a: unknown; x: unknown; no: unknown; by: unknown; op: unknown; before: number }>(`SELECT
+      json_extract(payload, '$.d.bank_id') AS b, json_extract(payload, '$.d.amount_halalas') AS a, json_extract(payload, '$.d.deleted_at') AS x,
+      json_extract(payload, '$.d.journal_no') AS no, json_extract(payload, '$.by') AS by, json_extract(payload, '$.op') AS op,
+      (updated_at, doc) < (?, ?) AS before
+    FROM sync_inbox WHERE tbl = 'bank_tx' AND del = 0 AND pk NOT IN (SELECT id FROM bank_tx)`, [at, doc.id])) {
+    const no = r.no == null ? '' : String(r.no);
+    if (String(r.b ?? '') !== bank || r.x != null || own.has(no)) continue;
+    if (no ? entryCounts(no) : counts(r, r.before)) n += Number(r.a) || 0;
+  }
+  return n;
+}
+
+/**
+ * نسخة قيد فاتورة شراءٍ تستعيدها من السلة تنتظر نسخة قيد سدادها (مراجعة إصلاح R12-SYN-3): الاستعادة عمليةٌ واحدة يُحكم على نسختيها
+ * معاً، فإن وصلت نسخة الفاتورة في سحبٍ ونسخة السداد في سحبٍ بعده قُبلت الأولى ورُفضت الثانية لنقص البنك، فاستُعيدت الفاتورة بلا سدادها
+ * وبقيت ذمّة المورد حيّة · فتنتظر ما دامت نسخة السداد في الطريق: صفّ الفاتورة الوارد يسمّي قيد سدادٍ لم يصل ولم يُرفض، أو (إن لم يصل
+ * صفّها) فاتورتها هنا في السلة مسدَّدةٌ بقيدٍ معكوس فتعيده الاستعادة (restorePurchase) ولا نسخة سدادٍ حيّة له هنا · ساعةً بوقت الخادم
+ * من كتابتها (LATE_LINK_MS كالربط المتأخر) ثم يُحكم عليها وحدها
+ */
+function payCopyAwaited(db: DB, doc: RemoteDoc): boolean {
+  const d = doc.d!;
+  if (d.src_type !== 'purchase' || d.src_id == null) return false;
+  const pid = String(d.src_id);
+  const row = db.get<{ e: unknown; p: unknown }>(`SELECT json_extract(payload, '$.d.journal_entry_id') AS e,
+    json_extract(payload, '$.d.payment_journal_entry_id') AS p FROM sync_inbox WHERE tbl = 'purchases' AND del = 0 AND pk = ?`, [pid]);
+  let missing: boolean;
+  if (row && String(row.e ?? '') === doc.k) {
+    const pay = row.p == null ? '' : String(row.p);
+    missing = !!pay && !db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [pay])
+      && !db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ?`, [pay]);
+  } else {
+    const here = db.get<{ x: unknown; paid: unknown; p: unknown }>(
+      `SELECT deleted_at AS x, paid, payment_journal_entry_id AS p FROM purchases WHERE id = ?`, [pid]);
+    missing = !!here && here.x != null && Number(here.paid) === 1 && here.p != null
+      && !!db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND status = ? AND reversed_by IS NOT NULL`, [String(here.p), POSTED_ENTRY])
+      && !db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'purchase_pay' AND src_id = ? AND status = ? AND reversed_by IS NULL
+        AND deleted_at IS NULL`, [pid, POSTED_ENTRY]);
+  }
+  return missing && withinLateLink(db, doc);
+}
+
+/** كُتب المستند في السحابة منذ ساعةٍ أو أقل بوقت الخادم (LATE_LINK_MS) · وما لا يُعرف وقته لا ينتظر */
+function withinLateLink(db: DB, doc: RemoteDoc): boolean {
+  const at = Date.parse(isoNorm(doc.ts ?? doc.u));
+  return Number.isFinite(at) && Date.parse(toServerClock(db, nowIso())) - at <= LATE_LINK_MS;
+}
+
+/** القيد المعكوس هنا الذي يعيده هذا القيد نسخةً (repostCopy: مصدره نفسه وسطوره نفسها) · أحدثه */
+function repostSourceOf(db: DB, doc: RemoteDoc): string | null {
+  const d = doc.d!;
+  if (typeof d.src_type !== 'string' || d.src_id == null) return null;
+  const want = netByAccount((doc.lines ?? []) as Array<Record<string, unknown>>);
+  const same = (id: string) => {
+    const got = netByAccount(db.all<Record<string, unknown>>(`SELECT account_code, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`, [id]));
+    return got.size === want.size && [...want].every(([k, v]) => got.get(k) === v);
+  };
+  return db.all<{ id: string }>(`SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND id != ? AND status = ?
+    AND reversed_by IS NOT NULL AND deleted_at IS NULL ORDER BY created_at DESC`, [d.src_type, String(d.src_id), doc.k, POSTED_ENTRY])
+    .map((x) => x.id).find(same) ?? null;
+}
+
+/** نُسخ الاستعادة الأخرى من عضو لقيود المستند نفسه (مصدره وسداده: «purchase» و«purchase_pay») · في الوارد أو مرفوضة */
+function siblingCopies(db: DB, doc: RemoteDoc): RemoteDoc[] {
+  const base = String(doc.d!.src_type).replace(/_pay$/, '');
+  const srcId = String(doc.d!.src_id);
+  const out: RemoteDoc[] = [];
+  for (const r of db.all<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0
+      AND json_extract(payload, '$.d.src_id') = ? AND json_extract(payload, '$.d.src_type') IN (?, ?)
+    UNION ALL SELECT payload AS p FROM sync_rejects WHERE tbl = 'journal_entries'
+      AND json_extract(payload, '$.d.src_id') = ? AND json_extract(payload, '$.d.src_type') IN (?, ?)`,
+  [srcId, base, base + '_pay', srcId, base, base + '_pay'])) {
+    try {
+      const sib = JSON.parse(r.p) as RemoteDoc;
+      if (sib.d && sib.d.status === POSTED_ENTRY && byMember(db, sib, true) && repostSourceOf(db, sib)) out.push(sib);
+    } catch { /* مستندٌ تالف لا يشهد */ }
+  }
+  return out;
+}
+
+/** سبب رفض القيد هنا لأنه يُنزل البنك تحت الصفر (memberBankOutCheck) · أو '' */
+function bankShortRejectOf(db: DB, entryId: string): string {
+  if (db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [entryId])) return '';
+  const tail = tr('sync.memberBankShort', { why: '', lng: 'ar' });
+  return db.all<{ r: string }>(`SELECT reason AS r FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ? ORDER BY id DESC`, [entryId])
+    .map((x) => x.r).find((r) => r.endsWith(tail)) ?? '';
+}
+
+/**
+ * ما يتبع قيداً من عضو رُفض هنا لأنه يُنزل البنك تحت الصفر (memberBankOutCheck · R12-SYN-3): وسم إلغاء الدفعة بعاكسه، وفاتورة الشراء
+ * المستعادة بنسخ قيودها · يُرفض بالسبب نفسه وتُعاد نسخة المالك (فلا ينتظر قيداً لا يُطبَّق ثلاثين يوماً، ولا تُستعاد الفاتورة بلا سدادها)
+ * · والفاتورة المعادة إلى «مستحقة» يُبقيها keepLocal محصَّلةً بقيدها الحيّ · سببُ الرفض أو ''
+ */
+function bankShortFollowerIssue(db: DB, doc: RemoteDoc): string {
+  if (doc.del || !doc.d || getSyncState(db, 'membership') || !byMember(db, doc, false)) return '';
+  const d = doc.d;
+  const named = doc.t === 'contract_payments' ? (d.cancelled_at != null ? [d.cancel_entry_id] : [])
+    : doc.t === 'purchases' ? [d.journal_entry_id, d.payment_journal_entry_id] : [];
+  for (const id of named) {
+    if (id == null || id === '') continue;
+    const why = bankShortRejectOf(db, String(id));
+    if (why) return why;
+  }
+  // وفاتورة الشراء المستعادة من السلة تنتظر قيديها: ما يسمّيه صفّها ولم يصل ولم يُرفض، في الوارد ينتظر أو في طريقه ساعةً بوقت الخادم ·
+  // كانت تُطبَّق قبل أن يُحكم على نسخة سدادها فتخرج من السلة ولو رُفض سدادها بعدها (مراجعة إصلاح R12-SYN-3)
+  if (doc.t === 'purchases' && d.deleted_at == null
+    && db.get(`SELECT 1 FROM purchases WHERE id = ? AND deleted_at IS NOT NULL`, [doc.k])) {
+    for (const id of named) {
+      if (id == null || id === '' || db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [String(id)])) continue;
+      if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ?`, [String(id)])) continue;
+      if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ?`, [String(id)]) || withinLateLink(db, doc)) return LOCK_AWAIT;
+    }
+  }
+  return '';
 }
 
 /** صافي كل حسابٍ في سطور قيد (مدينه ناقص دائنه) */
@@ -1792,6 +2009,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   }
   if (posted) db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [doc.k]);
   if (posted) memberReversalCheck(db, doc);
+  if (posted) memberBankOutCheck(db, doc);
   if (remoteRev) linkReversal(db, doc.k, remoteRev, doc);
   return 'applied';
 }
@@ -2631,7 +2849,7 @@ function applyOne(
 
   // الأب المقفل (الفاتورة الصادرة وسطورها، وأقساط العقد المؤكَّد · المراجعة الشاملة 2026-11-13 · B-1) وإعداد المالك في صفّ المنشأة (B-3):
   // كتابة العضو تُرفض وتُعاد نسخة المالك إلى الطابور (وما ليس عنده شاهدُ حذف) فتعود السحابة وكل جهازٍ إليها، ويظهر الرفض في حالة المزامنة
-  const lockedWhy = lockedParentIssue(db, doc) || ownerColsIssue(db, doc);
+  const lockedWhy = lockedParentIssue(db, doc) || ownerColsIssue(db, doc) || bankShortFollowerIssue(db, doc);
   // (وما في طريقه إليه قيدٌ أو تأكيدٌ أو جدولٌ في الوارد ينتظر كالأب الناقص)
   if (lockedWhy === LOCK_AWAIT) return 'retry';
   if (lockedWhy) {
