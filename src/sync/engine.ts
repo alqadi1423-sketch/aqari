@@ -26,7 +26,7 @@ import { isDbFault, TransactionAbortedError, type DB, type SqlValue } from '../d
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
-import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON } from '../domain/contracts/installments';
+import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON, SETTLEMENT_CLAIM_SOURCE } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
 import { paidFromDeposit, paidFromSettlement } from '../domain/contracts/cancelPayment';
 import { depositCarryChain } from '../domain/contracts/depositChain';
@@ -1335,6 +1335,11 @@ function memberSourceCheck(db: DB, doc: RemoteDoc): void {
 const carryLiveHere = (db: DB, contractId: string): boolean => !!db.get(
   `SELECT 1 FROM journal_entries WHERE src_type = 'deposit_carry' AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL AND status = ?`,
   [contractId, POSTED]);
+
+/** تأمين العقد رُحِّل هنا إلى خلفٍ قائم بقيد ترحيلٍ حيّ (منطق depositCarried في الخدمة · deriveSources: carriedOn) */
+const carriedOnHere = (db: DB, prevId: string): boolean => !!db.get(
+  `SELECT 1 FROM contracts n JOIN journal_entries e ON e.src_type = 'deposit_carry' AND e.src_id = n.id
+   WHERE n.renewed_from = ? AND n.deleted_at IS NULL AND e.reversed_by IS NULL AND e.deleted_at IS NULL AND e.status = ? LIMIT 1`, [prevId, POSTED]);
 
 /** المصدر الحيّ هنا ومعه ما في الوارد مرحّلاً لم يُطبَّق بعد: مجموع دائن قيوده ناقصاً عواكسه */
 function liveOrPendingTotal(db: DB, src: string, srcId: string): number {
@@ -2979,8 +2984,7 @@ function applyOne(
   // قيد ترحيلٍ حيٌّ هنا لخلفه يُرفض كقيود تسويته (deriveSources: settleAfterCarry)، فلا يبدو العقد مُسوّى بلا قيد ولا يُردّ التأمين مرتين ·
   // ونسخة المالك تُعاد إن كانت له هنا تسوية (قرارا المالك ٦٢ و٦٣: دفاتر المالك تغلب ويظهر الرفض في حالة المزامنة)
   if (doc.t === 'deposit_settlements' && !doc.del && doc.d && !joining && !getSyncState(db, 'membership') && byMember(db, doc, true)
-    && db.get(`SELECT 1 FROM contracts n JOIN journal_entries e ON e.src_type = 'deposit_carry' AND e.src_id = n.id
-         WHERE n.renewed_from = ? AND n.deleted_at IS NULL AND e.reversed_by IS NULL AND e.deleted_at IS NULL AND e.status = ? LIMIT 1`, [doc.k, POSTED])) {
+    && carriedOnHere(db, doc.k)) {
     const cur = db.get<Record<string, unknown>>(`SELECT * FROM deposit_settlements WHERE contract_id = ?`, [doc.k]);
     const d = doc.d;
     const same = !!cur && ['date', 'deduction_halalas', 'refund_halalas'].every((c) => String(cur[c] ?? '') === String(d[c] ?? ''));
@@ -2989,6 +2993,14 @@ function applyOne(
       reject(db, doc, tr('sync.settleAfterCarry', { lng: 'ar' }));
       return 'rejected';
     }
+  }
+  // ومطالبة زيادة تلك التسوية (applyDepositSettlement: مصدرها «تسوية تأمين») جزءٌ منها تُرفض معها، فلا تبقى على العقد ذمةً لتسويةٍ
+  // مرفوضة يطالَب بها المستأجر في كشفه وتنشأ ثانيةً حين يُسوّى المجدَّد (المراجع المعاكس على R12-DEP-1) · والقائمة هنا قبلها تمرّ كما هي
+  if (doc.t === 'claims' && !doc.del && doc.d && !joining && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && doc.d.source === SETTLEMENT_CLAIM_SOURCE && doc.d.contract_id != null && !db.get(`SELECT 1 FROM claims WHERE id = ?`, [doc.k])
+    && carriedOnHere(db, String(doc.d.contract_id))) {
+    reject(db, doc, tr('sync.settleAfterCarry', { lng: 'ar' }));
+    return 'rejected';
   }
   // وتأمين العقد المجدَّد بقدر ما يحتجزه له الدفتر حين رُفض ترحيله (R12-DEP-1 · deadCarryDeposit): يُطبَّق الصف به ويُرفع
   let deadCarry: { want: number; was: Record<string, unknown> } | null = null;

@@ -25,7 +25,7 @@ import {
 } from './post';
 import { TS_DEDUCTIBLE } from '../purchases';
 import { RENT_REVENUE_GROUP } from './rentSplit';
-import { DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC } from '../contracts/installments';
+import { DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, SETTLEMENT_CLAIM_SOURCE } from '../contracts/installments';
 import { invoiceTotals, normalizeInvoiceLines, KIND_CREDIT } from '../invoices';
 import { remainingByCodeOf, creditNoteAmounts, type StoredInvoiceLine } from '../creditNote';
 import { lineTaxCode, vatRegistered, type TaxCode } from '../taxCode';
@@ -1078,11 +1078,14 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       // المطالبة (claims.ts، ومطالبة زيادة التسوية): قيدها بمبلغها وتاريخها أو تاريخ التصحيح بعده (تعديل المفتوحة يعكس القديم ويرحّل
       // الجديد) · وتحصيلها بمبلغها وتاريخ تحصيلها المخزَّن · والأبعاد عقد المطالبة ووحدته وعقاره
       const cl = r.row<{ contract_id: string | null; amount_halalas: number; date: string | null; collected_at: string | null;
-        deleted_at: string | null }>('claims', e.srcId);
+        deleted_at: string | null; source: string | null }>('claims', e.srcId);
       if (!cl) return AWAIT;
       // والمحذوفة عُكس قيدها حين حُذفت (deleteClaim) فلا قيد حيّاً لها: قيدٌ جديد بمبلغها يُدخل ذمةً وإيراداً لا مستند لهما
       // (المتحقق المستقل) · وقيدها القديم الواصل معكوساً يمرّ بمسار العكس قبل هذا
       if (cl.deleted_at) return no('deleted');
+      // ومطالبة زيادة التسوية جزءٌ من تسويةٍ تُرفض كلها حين رُحِّل التأمين إلى التجديد، فلا تبقى وحدها ذمةً وإيراداً لتسويةٍ لا وجود لها
+      // (المراجعة الشاملة 2026-11-13 · R12-DEP-1 · كقيود الخصم والرد)
+      if (cl.source === SETTLEMENT_CLAIM_SOURCE && cl.contract_id && carriedOn(db, cl.contract_id)) return no('settleAfterCarry');
       const dims = cl.contract_id ? contractDims(db, r, cl.contract_id) : unitDims(db, r, null);
       if (!dims) return AWAIT;
       if (e.src === 'claim') {

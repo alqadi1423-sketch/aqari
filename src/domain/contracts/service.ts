@@ -12,7 +12,8 @@ import { uid, rowId } from '../ids';
 import { today, dfmt } from '../dates';
 import {
   generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining,
-  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON, type DiscountKind,
+  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON, SETTLEMENT_CLAIM_SOURCE,
+  type DiscountKind,
 } from './installments';
 import { recomputeInstallments } from './paid';
 import { depositCarryChain } from './depositChain';
@@ -766,9 +767,6 @@ export function depositCarried(db: DB, contractId: string): boolean {
      WHERE n.renewed_from = ? AND n.deleted_at IS NULL AND e.reversed_by IS NULL LIMIT 1`, [contractId]);
 }
 
-/** المطالبة التلقائية لزيادة التسوية على التأمين · مصدرها */
-const SETTLEMENT_CLAIM = 'تسوية تأمين'; // i18n-exempt: مصدر مخزَّن
-
 /**
  * الدفعات الحيّة المسدَّدة من تأمين العقد في تسويته (المراجعة الشاملة 2026-11-13 · A1-2) · بقيدها الذي مصدره العقد صاحب التأمين، فتشمل
  * أقساط من رُحِّل تأمينه إليه وهي على عقودها (R12-DEP-2) · ودفعةٌ بلا قيدٍ هنا بعقدها
@@ -899,7 +897,7 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   const prev = db.get<Record<string, unknown>>(`SELECT date, deduction_halalas, refund_halalas FROM deposit_settlements WHERE contract_id = ?`, [contractId]);
   // مطالبة التسوية السابقة: المحصَّلة لا تتغير، والمفتوحة تُعكس وتُحذف وتُنشأ الجديدة إن بقيت زيادة
   const prevClaim = db.get<{ id: string; status: string; amount_halalas: number }>(
-    `SELECT id, status, amount_halalas FROM claims WHERE contract_id = ? AND source = ? AND deleted_at IS NULL`, [contractId, SETTLEMENT_CLAIM]);
+    `SELECT id, status, amount_halalas FROM claims WHERE contract_id = ? AND source = ? AND deleted_at IS NULL`, [contractId, SETTLEMENT_CLAIM_SOURCE]);
   if (prevClaim && prevClaim.status !== 'مفتوحة' && Number(prevClaim.amount_halalas) !== claimAmount) { // i18n-exempt: حالة مخزّنة
     throw new RuleViolation(t('deposit.claimCollected'));
   }
@@ -935,7 +933,7 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
     db.run(
       `INSERT INTO claims (id, contract_id, amount_halalas, reason, date, status, source, created_at)
        VALUES (?,?,?,?,?,'مفتوحة',?,?)`,
-      [claimId, contractId, claimAmount, input.deductionReason.trim() || claimReason, input.date, SETTLEMENT_CLAIM, new Date().toISOString()]
+      [claimId, contractId, claimAmount, input.deductionReason.trim() || claimReason, input.date, SETTLEMENT_CLAIM_SOURCE, new Date().toISOString()]
     );
     postClaim(db, { id: claimId, amount: claimAmount, reason: input.deductionReason.trim() || claimReason, date: postDate });
     excessClaimCreated = true;
