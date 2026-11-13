@@ -13,6 +13,8 @@ import { reportFailure } from './failureDialog';
 import { useApp } from './store';
 import { resolveDecision, type CloudState } from '../services/cloud';
 import { useAccess } from './access';
+import { ErrorBoundary } from './ErrorBoundary';
+import { t } from '../i18n';
 
 export function DecisionSheet({ decision }: { decision: NonNullable<CloudState['decision']> }) {
   const { db, bump } = useApp();
@@ -50,5 +52,19 @@ export function DecisionSheet({ decision }: { decision: NonNullable<CloudState['
       </View>
       <BtnGhost title="لاحقاً" onPress={() => setLater(true)} />
     </Sheet>
+  );
+}
+
+/**
+ * الورقة داخل حاجز أخطاء (G-2): عطلٌ فيها لا يُسقط التطبيق، وبطاقة الحاجز تُغلق بعلامتها كـ«لاحقاً» فلا تبقى تحت الشاشة
+ * (مدقق المرحلة ٠ · P0-13) · وتعود مع الفتح التالي كالورقة نفسها.
+ */
+export function DecisionGate({ decision }: { decision: NonNullable<CloudState['decision']> }) {
+  const [hidden, setHidden] = useState(false);
+  if (hidden) return null;
+  return (
+    <ErrorBoundary where={t('sync.pendingDecision')} onClose={() => setHidden(true)}>
+      <DecisionSheet decision={decision} />
+    </ErrorBoundary>
   );
 }

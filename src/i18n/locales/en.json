@@ -893,7 +893,8 @@
     "bankTxShort": "The bank or wallet balance does not cover this transaction yet",
     "bankTxEdited": "A bank transaction without an entry cannot change its bank, amount or source · delete it and record it again",
     "accountLocked": "A system account, or one used in an entry, keeps its type and group and is not deleted · it stays as it was",
-    "collectedTwice": "A second collection of the same claim or invoice while a live one exists · rejected so it is not collected twice"
+    "collectedTwice": "A second collection of the same claim or invoice while a live one exists · rejected so it is not collected twice",
+    "pendingDecision": "Pending your decision"
   },
   "restore": {
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",

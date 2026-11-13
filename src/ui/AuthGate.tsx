@@ -30,8 +30,7 @@ import { readMembership } from '../services/access';
 import { profileIncomplete } from '../domain/access/profile';
 import { MyProfileForm } from './ProfileForm';
 import { getSyncState } from '../sync/engine';
-import { DecisionSheet } from './DecisionSheet';
-import { ErrorBoundary } from './ErrorBoundary';
+import { DecisionGate } from './DecisionSheet';
 
 /** صفحتا الشروط والخصوصية · لا يظهر رابطاهما قبل نشرهما (src/domain/legal.ts · مراجعة التثبيت #45) */
 export function legalUrls(): { terms: string; privacy: string } | null {
@@ -161,8 +160,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         );
       }
       // ما ينتظر قرار المستخدم يظهر فوق التطبيق ولا يُنفَّذ بدونه
-      // وحاجز أخطاء حولها: عطلٌ فيها لا يُسقط التطبيق كله (G-2)
-      return <>{children}{cloud.decision ? <ErrorBoundary where="ما ينتظر قرارك"><DecisionSheet decision={cloud.decision} /></ErrorBoundary> : null}</>;
+      // وحاجز أخطاء حولها يُغلق كـ«لاحقاً»: عطلٌ فيها لا يُسقط التطبيق كله (G-2 · P0-13)
+      return <>{children}{cloud.decision ? <DecisionGate decision={cloud.decision} /> : null}</>;
     }
     return spinner();
   }
