@@ -26,9 +26,9 @@ import { isDbFault, TransactionAbortedError, type DB, type SqlValue } from '../d
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
-import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC } from '../domain/contracts/installments';
+import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
-import { paidFromDeposit } from '../domain/contracts/cancelPayment';
+import { paidFromDeposit, paidFromSettlement } from '../domain/contracts/cancelPayment';
 import { depositCarryChain } from '../domain/contracts/depositChain';
 import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
@@ -500,6 +500,21 @@ export function resolvePendingReversals(db: DB): number {
 class AwaitOriginal extends Error {}
 
 /**
+ * عكس سداد قسطٍ من التأمين أو إلغاء دفعته من عضو (المراجعة الشاملة 2026-11-13 · R12-DEP-3 · قرار A1-2: «لا تُلغى وحدها بل بتعديل
+ * التسوية»): تعديل التسوية (reverseDepositRent) يكتب صفّ تسوية العقد صاحب التأمين في المعاملة نفسها، فشاهده نسخةٌ من الصف مكتوبةٌ معه أو
+ * بعده هنا أو في الوارد ('ok') · وإلغاءٌ سببه غير سبب التعديل إلغاءٌ للدفعة وحدها (إصدارٌ قبل A1-2) فيُرفض ('no') · وما سواه ينتظر صفّ
+ * التسوية ('await': يُرفع بعد القيود والدفعات وقد يصل في دفعةٍ بعدها، والمزوَّر يُرفض بطول انتظاره ولا أثر له قبل ذلك)
+ */
+function depositRentEdit(db: DB, depositContract: string, doc: RemoteDoc, reason: string | null | undefined): 'ok' | 'await' | 'no' {
+  const at = incomingAt(doc);
+  const inbox = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'deposit_settlements' AND pk = ? AND del = 0`, [depositContract]);
+  if (inbox && isoCmp(incomingAt(JSON.parse(inbox.payload) as RemoteDoc), at) >= 0) return 'ok';
+  const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = 'deposit_settlements' AND pk = ?`, [depositContract])?.u;
+  if (seen && isoCmp(seen, at) >= 0) return 'ok';
+  return reason != null && reason !== DEPOSIT_RENT_EDIT_REASON ? 'no' : 'await';
+}
+
+/**
  * العاكس المرحّل الوارد (المراجعة الخارجية ٧ · النتيجة ١ · المتحقق المستقل، الجولتان العاشرة والحادية عشرة): القواعد تقبل «_rev»
  * من الأعضاء بأي سطور وأي مصدر، والعضو بـ«كامل» يعدّل مسودة غيره فيبقى كاتبها · فجهاز المالك يفحص كل عاكسٍ مرحّل يصله أياً كان
  * كاتبه: مرآةً لأصلٍ قائم عنده (mirror.ts)، ولا عواكس أكثر من أصولها (كانت المرآة المكررة تضاعف أثر العكس) · وإلا رُفض المستند
@@ -539,6 +554,17 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
   if (base === 'reservation_convert' && byMember(db, doc, true)
     && originals.some((o, i) => issues[i] === '' && db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: ربط القيد بمستنده */ WHERE journal_entry_id = ?`, [o.id]))) { // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
     throw new Error(tr('mirror.revRejected', { why: tr('payment.cancelFromDeposit', { lng: 'ar' }), lng: 'ar' }));
+  }
+  // ولا يعكس عضوٌ سداد قسطٍ من التأمين وحده (المراجعة الشاملة 2026-11-13 · R12-DEP-3 · كدفعة العربون أعلاه): يُعكس مع تعديل التسوية
+  // وحده (depositRentEdit) · وإلغاء الدفعة وحدها من جهازٍ بإصدارٍ قبل A1-2 يُرفض فلا يعود القسط مستحقاً وقد سُدّد من التأمين
+  if (base === DEPOSIT_RENT_SRC && byMember(db, doc, true)) {
+    const matched = originals.filter((_, i) => issues[i] === '').map((o) => o.id);
+    const pays = db.all<{ id: string }>(`SELECT id FROM contract_payments /* تشمل الملغاة: الدفعة التي يُلغيها هذا العاكس، ونسختها الواردة تحمل إلغاءه */ WHERE journal_entry_id IN (SELECT value FROM json_each(?))`, [JSON.stringify(matched)]); // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
+    const reason = pays.map((p) => latestRowByKey<{ cancel_entry_id?: string | null; cancel_reason?: string | null }>(db, 'contract_payments', p.id))
+      .find((p) => p?.cancel_entry_id === doc.k)?.cancel_reason;
+    const edit = depositRentEdit(db, srcId, doc, reason);
+    if (edit === 'await') throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
+    if (edit === 'no') throw new Error(tr('mirror.revRejected', { why: tr('payment.cancelFromSettlement', { lng: 'ar' }), lng: 'ar' }));
   }
   // ولا يعكس عضوٌ قيد نقل أصلٍ ما دام حدث نقله قائماً (المدقق الخارجي ج٦): لا مسار في التطبيق يعكسه، وعكسه يعيد تكلفة الأصل في الدفتر
   // إلى وحدته القديمة وصفُّه وحدثه في الجديدة، فيُقبل به إهلاكٌ بالوحدة القديمة · وقيد النقل اليتيم (بلا حدثه) يُعكس كغيره
@@ -1885,6 +1911,13 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
       // ودفعة العربون لا يلغيها عضو (المراجعة الشاملة · البند ٢٧ · المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها فيعود مبلغها
       // عالقاً في 2450) · وإلغاء المالك من جهازه الآخر يُقبل كما كتبه، فلا تفترق أجهزته، ورصيده العالق يُحمّر فحص عربون الحجوزات
       if (byMember(db, doc, false) && paidFromDeposit(db, doc.k)) throw no(tr('payment.cancelFromDeposit', { lng: 'ar' }));
+      // ودفعة «من التأمين» لا يلغيها عضوٌ وحدها: تُلغى مع تعديل التسوية وحده (R12-DEP-3 · depositRentEdit)
+      if (byMember(db, doc, false) && paidFromSettlement(db, doc.k)) {
+        const holder = db.get<{ s: string | null }>(`SELECT src_id AS s FROM journal_entries WHERE id = ?`, [cur.journal_entry_id as string])?.s ?? '';
+        const edit = depositRentEdit(db, holder, doc, (row.cancel_reason as string | null | undefined) ?? '');
+        if (edit === 'await') throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
+        if (edit === 'no') throw no(tr('payment.cancelFromSettlement', { lng: 'ar' }));
+      }
       const rev = (row.cancel_entry_id as string | null) ?? null;
       const orig = db.get<{ t: string | null; s: string | null }>(`SELECT src_type AS t, src_id AS s FROM journal_entries WHERE id = ?`, [cur.journal_entry_id as string]);
       if (!rev || !orig) throw no(tr('derive.cancelNoReversal', { lng: 'ar' }));

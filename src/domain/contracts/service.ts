@@ -12,7 +12,7 @@ import { uid, rowId } from '../ids';
 import { today, dfmt } from '../dates';
 import {
   generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining,
-  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, type DiscountKind,
+  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON, type DiscountKind,
 } from './installments';
 import { recomputeInstallments } from './paid';
 import { depositCarryChain } from './depositChain';
@@ -823,7 +823,7 @@ function reverseDepositRent(db: DB, contractId: string): void {
     const rev = p.journal_entry_id ? reverseEntryById(db, p.journal_entry_id, 'تعديل تسوية التأمين · عكس سداد قسطٍ منه') : null; // i18n-exempt: بيان القيد المخزَّن
     const on = rev ? db.get<{ d: string }>(`SELECT date AS d FROM journal_entries WHERE id = ?`, [rev.id])!.d : today();
     db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`,
-      [on, 'تعديل تسوية التأمين', rev ? rev.id : null, p.id]); // i18n-exempt: سبب إلغاءٍ مخزَّن
+      [on, DEPOSIT_RENT_EDIT_REASON, rev ? rev.id : null, p.id]);
     if (p.installment_id) touched.push(p.installment_id);
   }
   if (touched.length) recomputeInstallments(db, touched);
