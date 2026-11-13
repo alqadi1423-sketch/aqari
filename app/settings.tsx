@@ -52,7 +52,7 @@ import { MyProfileSheet } from '../src/ui/ProfileForm';
 import { readMembership } from '../src/services/access';
 import { getSyncState } from '../src/sync/engine';
 import type { CloudReplacePlan, CloudSnapshot } from '../src/sync/engine';
-import type { PrepareOptions } from '../src/domain/backup/restore';
+import { localFilesOf, type PrepareOptions } from '../src/domain/backup/restore';
 import type { KeptEntry } from '../src/domain/backup/keepPosted';
 import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orphans';
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
@@ -341,6 +341,14 @@ export default function Settings() {
       + (toReview ? '\n' + toReview + ' منها مستنده لم يُحمل · تجدها في «مراجعة الدفتر» لتراجعها.' : '');
   };
   const paidText = (n: number) => (n ? '\n\nمسدَّد ' + n + ' قسط حُسب من دفعات النسخة وتوزيعها بدل الرقم المخزّن فيها.' : '');
+  // نسخة ما قبل الترقية بلا ملفاتها (المراجعة الشاملة 2026-11-13 · C-2): ملفاتها باقية على الجهاز، وما غاب منها يُسمّى قبل التأكيد ·
+  // والعدد يشمل ما سمّته البوابة مفقوداً، فـ«منها N» جزءٌ منه (C2-R11-2)
+  const localText = (listed: number, gone: string[]) => {
+    if (!listed) return '';
+    const more = gone.length > 8 ? '\n' + t('upgrade.missingMore', { count: gone.length - 8 }) : '';
+    return '\n\n' + t('restore.localFiles', { n: listed })
+      + (gone.length ? '\n' + t('restore.localMissing', { n: gone.length }) + '\n· ' + gone.slice(0, 8).join('\n· ') + more : '');
+  };
 
   // المسار الواحد للاستعادة من أي مصدر: التجهيز (فك وبصمات وفحص دلالي) ثم الملخص ثم التنفيذ ·
   // ومع الدخول بحساب: المزامنة تتوقف قبل كل شيء، ولا يُكتب إلى السحابة إلا بالاعتماد صراحةً
@@ -382,6 +390,7 @@ export default function Settings() {
         'عقارات ' + cN('properties') + ' · وحدات ' + cN('units') + ' · عقود ' + cN('contracts') + '\n' +
         'قيود ' + cN('journal_entries') + ' · مرفقات ' + plan.currentAttachments.count
           + ' (' + (plan.currentAttachments.bytes / (1024 * 1024)).toFixed(1) + ' ميغا)'
+          + localText(localFilesOf(plan.manifest).length, plan.localMissing)
           + (plan.ledgerRepair ? repairSummary(plan.ledgerRepair) : '')
           + paidText(plan.paidRecomputed.length)
           + (plan.notes.length ? '\n\nفي النسخة فروق محاسبية لا تمنع استعادتها، وتظهر بعدها في «مراجعة الدفتر»:\n· ' + plan.notes.join('\n· ') : '')

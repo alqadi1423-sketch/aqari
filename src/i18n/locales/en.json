@@ -926,7 +926,11 @@
     "notInTrash": "Not in the trash · already restored",
     "filedPeriod": "Its reversal falls in a period whose return was filed, so it cannot be restored into it · record it again with a date in an open period",
     "allDone": "All items were restored",
-    "partial": "Restored {{n}} of {{total}} · {{left}} remain in the trash: restore each alone to see why"
+    "partial": "Restored {{n}} of {{total}} · {{left}} remain in the trash: restore each alone to see why",
+    "badLocalList": "Backup rejected · the list of its on-device files in its manifest is invalid, so nothing is written from it",
+    "checkingLocal": "Matching the backup's files on this device · {{i}} of {{n}}",
+    "localFiles": "This is a pre-upgrade backup: it holds your data and the list of its files ({{n}}) with their fingerprints, not the files themselves · the files stay on this device as they are and the restore does not touch them.",
+    "localMissing": "{{n}} of them were not found on this device or have changed; the backup does not carry them, so the restore will not bring them back:"
   },
   "bank": {
     "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"
@@ -948,8 +952,9 @@
     "visibleNote": "The backup was uploaded encrypted to Google Drive and its fingerprint matched, but it was not saved in the visible folder «Aqari · Backups»: {{why}}. Back up again later, and allow file access if asked."
   },
   "upgrade": {
-    "missingTitle": "Backup saved except for missing files",
-    "missingBody": "A full backup of your data was saved before the upgrade, except {{count}} attached file(s) that were not found on the phone or were damaged, so they are not in it:",
+    "backingUp": "Backing up your data and its file list before the upgrade",
+    "missingTitle": "Backup saved · some files are missing",
+    "missingBody": "Before the upgrade, a backup of your data and the list of its files with their fingerprints was saved (the files themselves stay on the phone and are not in it) · {{count}} attached file(s) were not found on the phone or were damaged:",
     "missingMore": "and {{count}} more",
     "missingNote": "The records themselves are saved, and a missing file stays missing after the upgrade just as before it. Backups you make (export and Google Drive) will refuse and name it until you attach it again from elsewhere or delete the attachment; the pre-upgrade backup stays under «Data and storage ← Restore».",
     "continue": "Continue the upgrade"

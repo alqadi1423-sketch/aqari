@@ -4,8 +4,10 @@
  * الترقية تعيد بناء جداول وتضيف محفّزات على بيانات المستخدم كلها، والهجرة في معاملة واحدة
  * فلا تترك حالة وسطى · لكن خطأً في منطق الهجرة نفسها لا تحميه المعاملة، فتُحفظ البيانات
  * كما هي قبلها في نسخة تُستعاد من شاشة النسخ الاحتياطي (والاستعادة ترقّي النسخ الأقدم بنفسها).
- * والنسخة بالتحقق الكامل نفسه الذي في createBackup: إعادة فتح الأرشيف، وبصمة القاعدة وكل
- * مرفق، وintegrity_check، ومطابقة الأعداد · ويُحتفظ بآخر ثلاث ويُحذف ما قبلها.
+ * والنسخة بالتحقق الكامل نفسه الذي في createBackup: إعادة فتح الأرشيف، وبصمة القاعدة،
+ * وintegrity_check، ومطابقة الأعداد · ويُحتفظ بآخر ثلاث ويُحذف ما قبلها.
+ * وهي للبيانات وقائمة الملفات وبصماتها بلا الملفات نفسها (قرار المالك س٣ · المراجعة الشاملة 2026-11-13 · C-2):
+ * الهجرات لا تمسّ ملفات المرفقات، ونسخُها كان يحمل المكتبة كلها في الذاكرة فيُقتل التطبيق عند البوابة مع كل فتح.
  */
 import { isCancelled, type CancelSignal, type ProgressFn } from '../progress';
 import { joinPath } from '../../files/fsAdapter';
@@ -69,7 +71,8 @@ export async function makePreUpgradeBackup(
   const outPath = joinPath(dir, `${PRE_UPGRADE_PREFIX}-${stamp}-v${from}.aqbk`);
   let manifest: BackupManifest;
   try {
-    await ensureFreeSpace(env);
+    // مساحة القاعدة وحدها · فالمرفقات لا تُنسخ هنا (C-2)
+    await ensureFreeSpace(env, false);
     env.fs.mkdirp(dir);
     manifest = await createBackup(env, outPath, onProgress, { preUpgrade: true, signal });
   } catch (e) {

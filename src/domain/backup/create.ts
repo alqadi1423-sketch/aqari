@@ -138,12 +138,16 @@ export function describeResidue(env: BackupEnv, before: DataFingerprint): string
   return parts.join('. ');
 }
 
-/** ما تشغله بياناتك على القرص الآن · القاعدة بملفّيها الملحقين ومرفقاتها */
-export function dataFootprintBytes(env: BackupEnv): number {
+/**
+ * ما تشغله بياناتك على القرص الآن · القاعدة بملفّيها الملحقين ومرفقاتها ·
+ * وبلا المرفقات لنسخةٍ لا تنسخها (ما قبل الترقية · المراجعة الشاملة 2026-11-13 · C-2)
+ */
+export function dataFootprintBytes(env: BackupEnv, withFiles = true): number {
   let total = 0;
   for (const suffix of ['', '-wal', '-shm']) {
     try { if (env.fs.exists(env.dbPath + suffix)) total += env.fs.size(env.dbPath + suffix); } catch { /* التالي */ }
   }
+  if (!withFiles) return total;
   try {
     for (const name of env.fs.list(env.attachmentsDir)) {
       try { total += env.fs.size(joinPath(env.attachmentsDir, name)); } catch { /* التالي */ }
@@ -155,9 +159,10 @@ export function dataFootprintBytes(env: BackupEnv): number {
 /**
  * لا تبدأ عمليةً لا يسعها القرص · فالبدء ثم الفشل في المنتصف أسوأ من الامتناع.
  * والحدّ ثلاثة أضعاف ما تشغله البيانات: لقطة القاعدة، ثم الأرشيف، ثم ما يُفكّ منه.
+ * ونسخة ما قبل الترقية لا تنسخ المرفقات، فلا تُطلب لها مساحتها (المراجعة الشاملة 2026-11-13 · C-2).
  */
-export async function ensureFreeSpace(env: BackupEnv): Promise<void> {
-  const needed = dataFootprintBytes(env) * SPACE_FACTOR;
+export async function ensureFreeSpace(env: BackupEnv, withFiles = true): Promise<void> {
+  const needed = dataFootprintBytes(env, withFiles) * SPACE_FACTOR;
   const usable = await env.fs.usableSpace();
   if (usable >= needed) return;
   throw new NotEnoughSpaceError(
@@ -209,7 +214,10 @@ export interface CreateBackupOptions {
    * فحوص الإصدار الحالي (فالرفض هنا يحبس المستخدم خارج تطبيقه بلا سبيل لإصلاح شيء) ·
    * فنتائج الفحوص تُكتب في البيان ولا تمنع، ومرفقٌ مفقود من القرص أو تالف يُسمّى في
    * missing_files وتُوسم النسخة غير كاملة. وكل ما عدا ذلك من تحقق يبقى مانعاً كما هو:
-   * بصمة القاعدة، وإعادة فتح الأرشيف، وintegrity_check، ومطابقة الأعداد، وبصمة كل مرفق محفوظ.
+   * بصمة القاعدة، وإعادة فتح الأرشيف، وintegrity_check، ومطابقة الأعداد.
+   * والمرفقات لا تدخلها (قرار المالك س٣ · المراجعة الشاملة 2026-11-13 · C-2): الهجرات لا تمسّ ملفاتها، فتُذكر في
+   * local_files ببصماتها وأحجامها · يُقرأ كلٌّ وحده لبصمته ثم يُترك، فلا تحمل البوابةُ المكتبةَ في الذاكرة ويُسمّى التالف
+   * قبل الترقية (C2-R11-1). والتصدير وDrive ونسخ الأمان كاملةٌ بملفاتها.
    */
   preUpgrade?: boolean;
   /**
@@ -316,6 +324,7 @@ export async function createBackup(
     const files: BackupManifest['files'] = [];
     const missing: string[] = [];
     const remoteFiles: NonNullable<BackupManifest['remote_files']> = [];
+    const localFiles: NonNullable<BackupManifest['local_files']> = [];
     // «البيانات وحدها»: ما رُفع وطابق يُذكر ببصمته ولا يُقرأ · وما لم يُرفع يُنسخ كما هو
     const uploaded = new Set<string>(opts.dataOnly
       ? env.db.all<{ sha256: string }>(`SELECT sha256 FROM file_cache WHERE uploaded = 1`).map((r) => r.sha256)
@@ -354,6 +363,14 @@ export async function createBackup(
         if (tolerant) { missing.push(`${b.sha256}.${b.ext}`); continue; }
         throw new BackupVerificationError(`بصمة الملف «${label()}» لا تطابق المسجَّلة له · الملف تالف · يُرفض إنشاء النسخة`);
       }
+      // نسخة ما قبل الترقية: الملف يُذكر ببصمته المحسوبة من القرص وحجمه ولا يدخل الأرشيف، ولا تبقى بايتاته بعد بصمته ·
+      // فأكبر ما في الذاكرة ملفٌ واحد لا المكتبة، والتالف بالحجم نفسه يُسمّى في missing_files كما كان
+      // (قرار المالك س٣ · المراجعة الشاملة 2026-11-13 · C-2 · C2-R11-1)
+      if (opts.preUpgrade) {
+        localFiles.push({ sha256: b.sha256, ext: b.ext, size: bytes.byteLength });
+        if (bi % 8 === 0) await yieldUi();
+        continue;
+      }
       // المرفقات تُخزَّن بلا إعادة ضغط · صورها وملفاتها مضغوطة أصلاً
       zipEntries.push({ name: `attachments/${b.sha256}.${b.ext}`, bytes, level: 0 });
       files.push({ sha256: b.sha256, ext: b.ext, size: bytes.byteLength });
@@ -371,6 +388,7 @@ export async function createBackup(
       files,
       missing_files: missing,
       ...(opts.dataOnly ? { remote_files: remoteFiles } : {}),
+      ...(opts.preUpgrade ? { local_files: localFiles } : {}),
       table_counts: counts,
       ledger,
       integrity,

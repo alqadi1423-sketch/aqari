@@ -14,7 +14,7 @@ import { unzipYielding, yieldUi, archiveFailureText } from './zipStream';
 import { currentSchemaVersion, migrate, NewerSchemaError } from '../../db/migrations';
 import { SCHEMA_VERSION } from '../../db/schema';
 import type { DB } from '../../db/adapter';
-import { tableCounts, makeSafetyBackup, ensureFreeSpace } from './create';
+import { tableCounts, makeSafetyBackup, ensureFreeSpace, missingFileLabels } from './create';
 import { reviewData } from './checks';
 import { planLedgerRepair, applyLedgerRepair, type LedgerRepairPlan } from '../ledgerReview';
 import { seed, ensureDeviceId } from '../../db/seed';
@@ -56,6 +56,11 @@ export interface RestorePlan {
   kept: KeptEntry[];
   /** فروق محاسبية في النسخة بعد تجهيزها (checks.ts) · تُعرض في الحوار ولا تمنع، كما في إنشاء النسخة */
   notes: string[];
+  /**
+   * ملفاتٌ ذكرتها النسخة على هذا الجهاز (localFilesOf · نسخة ما قبل الترقية) فلم تُوجد فيه أو تغيّرت بصمتها · بالأسماء التي
+   * يعرفها المستخدم · تُعرض قبل التأكيد ولا تمنع الاستعادة، فالبيانات تعود والملف الغائب لا تحمله النسخة (المراجعة الشاملة 2026-11-13 · C-2)
+   */
+  localMissing: string[];
 }
 
 export interface PrepareOptions {
@@ -85,6 +90,42 @@ export function assertSafeManifestFiles(manifest: BackupManifest): void {
     if (seen.has(name)) throw new RestoreError('النسخة مرفوضة · مرفق مكرر في بيانها');
     seen.add(name);
   }
+  // وملفات الجهاز في نسخة ما قبل الترقية · منها يُبنى مسارٌ في مجلد المرفقات للمطابقة، فبالفحص نفسه (C-2)
+  if (manifest.local_files === undefined) return;
+  if (!Array.isArray(manifest.local_files)) throw new RestoreError(t('restore.badLocalList'));
+  const local = new Set<string>();
+  for (const f of manifest.local_files) {
+    if (!f || !isSafeBlobName(f.sha256, f.ext) || local.has(f.sha256 + '.' + f.ext)) throw new RestoreError(t('restore.badLocalList'));
+    local.add(f.sha256 + '.' + f.ext);
+  }
+  // وما سمّته مفقوداً عند البوابة يُطابَق على الجهاز كذلك، فمنه يُبنى مسارٌ أيضاً (C2-R11-2)
+  const gate: unknown = manifest.missing_files ?? [];
+  if (!Array.isArray(gate) || !gate.every((n) => splitBlobName(n))) throw new RestoreError(t('restore.badLocalList'));
+}
+
+/** «بصمة.امتداد» كما في missing_files إلى جزأيه · أو null لاسمٍ لا يُبنى منه مسار */
+function splitBlobName(name: unknown): { sha256: string; ext: string } | null {
+  if (typeof name !== 'string') return null;
+  const dot = name.indexOf('.');
+  const f = { sha256: name.slice(0, dot), ext: name.slice(dot + 1) };
+  return dot > 0 && isSafeBlobName(f.sha256, f.ext) ? f : null;
+}
+
+/**
+ * ملفات الجهاز التي تذكرها نسخة ما قبل الترقية ولا تحملها: ما في local_files، وما سمّته مفقوداً عند البوابة (missing_files)،
+ * فكلاهما مرفقٌ في قاعدتها ملفه على الجهاز لا في الأرشيف · فارغةٌ لغيرها من النسخ (المراجعة الشاملة 2026-11-13 · C-2 · C2-R11-2) ·
+ * بعد assertSafeManifestFiles
+ */
+export function localFilesOf(manifest: BackupManifest): Array<{ sha256: string; ext: string }> {
+  if (manifest.local_files === undefined) return [];
+  const out: Array<{ sha256: string; ext: string }> = [];
+  const seen = new Set<string>();
+  for (const f of [...manifest.local_files, ...(manifest.missing_files ?? []).map(splitBlobName)]) {
+    if (!f || seen.has(f.sha256 + '.' + f.ext)) continue;
+    seen.add(f.sha256 + '.' + f.ext);
+    out.push({ sha256: f.sha256, ext: f.ext });
+  }
+  return out;
 }
 
 export interface RestoreResult {
@@ -191,6 +232,23 @@ export async function prepareRestore(
         throw new RestoreError('بصمة مرفق لا تطابق بيانها: ' + f.sha256.slice(0, 12));
       if (hi % 8 === 0) await yieldUi();
     }
+    // نسخة ما قبل الترقية بلا ملفاتها (المراجعة الشاملة 2026-11-13 · C-2): ملفاتها في مكانها على الجهاز وتبقى فيه ·
+    // تُطابَق ببصماتها واحداً واحداً، وما غاب أو تغيّر يُسمّى قبل التأكيد لا يُسكت عنه ولا يمنع عودة البيانات ·
+    // ومعها ما كان غائباً أو تالفاً عند البوابة نفسها، فلا يقول الحوار «باقية كما هي» عن ملفٍ لا وجود له (C2-R11-2)
+    const localGone: string[] = [];
+    const localList = localFilesOf(manifest);
+    let li = 0;
+    for (const f of localList) {
+      li += 1;
+      throwIfCancelled(opts.signal);
+      onProgress?.(t('restore.checkingLocal', { i: li, n: localList.length }));
+      const p = joinPath(env.attachmentsDir, `${f.sha256}.${f.ext}`);
+      let same = false;
+      try { same = env.fs.exists(p) && (await hasher(env.fs.read(p))) === f.sha256; } catch { same = false; }
+      if (!same) localGone.push(`${f.sha256}.${f.ext}`);
+      if (li % 8 === 0) await yieldUi();
+    }
+    let localMissing: string[] = [];
     throwIfCancelled(opts.signal);
     const cloudDocs = opts.cloud ? await opts.cloud() : undefined;
     throwIfCancelled(opts.signal);
@@ -266,6 +324,8 @@ export async function prepareRestore(
         if (keep.entries.length) kept = applyKeepPosted(probe, keep).entries;
         // الفحوص نفسها بالحكم نفسه في النسخ (checks.ts): الفرق المحاسبي ملاحظةٌ تُعرض ولا ترفض الاستعادة
         notes = [...notes, ...reviewData(probe).notes];
+        // أسماء ملفات الجهاز الغائبة من قاعدة النسخة نفسها · فيُسمّى الملف كما يعرفه المستخدم (C-2)
+        if (localGone.length) localMissing = missingFileLabels(probe, localGone);
         incoming = ledgerRepair || paidRecomputed.length || kept.length ? tableCounts(probe) : counted;
         probe.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
       } finally {
@@ -277,7 +337,7 @@ export async function prepareRestore(
     // مرفقات البيانات الحالية بالبنود نفسها · فيُرى ما سيُخسر من الجانبين لا من جانب واحد
     const live = liveBlobs(env.db);
     return {
-      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept, notes,
+      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept, notes, localMissing,
       current: tableCounts(env.db),
       attachmentsBytes,
       currentAttachments: { count: live.length, bytes: live.reduce((s, b) => s + Number(b.size_bytes), 0) },

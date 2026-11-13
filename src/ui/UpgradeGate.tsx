@@ -121,7 +121,7 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
       {phase === 'backup' ? (
         <>
           <ActivityIndicator color={C.emerald} size="large" />
-          <Text style={[txt(15, C.ink, true), { marginTop: 18 }]}>نسخة كاملة من بياناتك قبل ترقيتها</Text>
+          <Text style={[txt(15, C.ink, true), { marginTop: 18 }]}>{t('upgrade.backingUp')}</Text>
           <Text style={[txt(12.5, C.muted), { marginTop: 8 }]}>{progressLabel(msg)}</Text>
           {(() => {
             const v = progressView(msg, info);
