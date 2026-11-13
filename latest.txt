@@ -1,6 +1,7 @@
-commit 99588815da87a93e643bf970b4e53b060a6d0b6c
-run https://github.com/alqadi1423-sketch/aqari/actions/runs/43446187328
+commit 7f494fec1b5ffba955d1caccd25407a8e9c7139d
+run https://github.com/alqadi1423-sketch/aqari/actions/runs/43456495221
 os Linux · node v24.22.2 · TZ Asia/Riyadh
-success true
-suites 544 passed / 544 total
-tests 2669 passed · 0 failed · 0 skipped / 2669 total
+success false
+suites 563 passed / 564 total
+tests 2740 passed · 1 failed · 0 skipped / 2741 total
+failed-suite tests/noDashes.test.ts
