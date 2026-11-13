@@ -752,6 +752,7 @@
     "keptWasDraft": "was a draft in the backup and was posted after it",
     "keptAccount": "its account {{code}} {{name}}",
     "keptDepositRentCancel": "reversal of an installment paid from the deposit · its payment cancellation was carried with it, and its settlement is in the backup as it was before the edit",
+    "keptCashMoves": "Along with them, {{n}} cash movements between the wallet and the banks after the backup date (deposit, withdrawal or transfer) stay as they are, so each bank and the wallet keep their current balance.",
     "cipherChunkSize": "The encryption component returned a chunk of unexpected size · the backup was not encrypted",
     "passwordLost": "The backup secret saved on this device cannot be read, so no backup is exported or uploaded. Create a new recovery key to resume backups; earlier backups open with their secret if you type it.",
     "keyRequired": "No backup leaves the device unencrypted · create the recovery key under “Backup” first, and keep it somewhere safe.",
@@ -950,7 +951,9 @@
     "checkingLocal": "Matching the backup's files on this device · {{i}} of {{n}}",
     "localFiles": "This is a pre-upgrade backup: it holds your data and the list of its files ({{n}}) with their fingerprints, not the files themselves · the files stay on this device as they are and the restore does not touch them.",
     "localMissing": "{{n}} of them were not found on this device or have changed; the backup does not carry them, so the restore will not bring them back:",
-    "keptAccountMissing": "Entry {{no}}, posted after the backup date for {{amount}}, has a line on account {{code}}, and that account is not in the backup, on this device or in the cloud · a posted entry is never deleted by a restore, so add account {{code}} to the chart of accounts and then restore the backup"
+    "keptAccountMissing": "Entry {{no}}, posted after the backup date for {{amount}}, has a line on account {{code}}, and that account is not in the backup, on this device or in the cloud · a posted entry is never deleted by a restore, so add account {{code}} to the chart of accounts and then restore the backup",
+    "keptBankShort": "Keeping what was posted after the backup date takes the balance of «{{bank}}» to {{balance}}, short by {{short}} · no bank goes below zero, so the backup was not restored and your data is unchanged",
+    "keptWalletShort": "Keeping what was posted after the backup date takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the backup was not restored and your data is unchanged"
   },
   "bank": {
     "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"

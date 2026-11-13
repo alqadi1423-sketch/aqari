@@ -39,7 +39,7 @@ import { joinPath } from '../files/fsAdapter';
 import { createBackup, ensureFreeSpace } from '../domain/backup/create';
 import { prepareRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
 import type { BackupEnv } from '../domain/backup/types';
-import { planKeepPosted, applyKeepPosted, type KeepPlan } from '../domain/backup/keepPosted';
+import { planKeepPosted, applyKeepPosted, keepShortages, type KeepPlan } from '../domain/backup/keepPosted';
 import { toLocalISODate } from '../domain/dates';
 import { appBackupEnv, shareUnsyncedFile } from './backupService';
 import { backupSecretForSealing } from './backupPassword';
@@ -634,7 +634,11 @@ export async function planAdoptPending(
   db: AppDB, onProgress?: (m: string) => void
 ): Promise<{ snap: CloudSnapshot; keep: KeepPlan; plan: CloudReplacePlan }> {
   const snap = await readCloud(remoteFor(), onProgress, await readEpoch(remoteFor(), orgOfAccount(db)));
-  return { snap, keep: planKeepPosted(db, { cloud: snap.docs }), plan: planFromSnapshot(db, snap) };
+  const keep = planKeepPosted(db, { cloud: snap.docs });
+  // ولا يُنزل الضمّ بنكاً ولا المحفظة تحت الصفر (القرار ٥٥ · R12-BAK-3) · يُسمّى قبل أي كتابة
+  const short = keepShortages(db, keep);
+  if (short.length) throw new Error(short.join(' · '));
+  return { snap, keep, plan: planFromSnapshot(db, snap) };
 }
 
 export async function adoptPendingWithKeep(

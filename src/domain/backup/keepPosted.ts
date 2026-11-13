@@ -19,6 +19,9 @@
  * وحسابٌ لا صفّ له في أي مصدر يُسمّى برسالة عربية قبل أي كتابة (المراجعة ١٢ · R12-BAK-1).
  * ومسودةٌ في النسخة رُحّلت بعدها (الترحيل يرقّي المسودة في مكانها بمعرّفها) تُستبدل بالمرحّل ولا تعود مسودة
  * (المراجعة الشاملة 2026-11-13 · C-1).
+ * ومع القيود المضمومة تُحمل حركات نقل النقد بلا قيد بين المحفظة والبنوك (إيداع وسحب وتحويل · cashOps.ts) بحالها في المصدر: ما ليس في
+ * النسخة يُدرج، وما في السلة هناك يُنقل إلى السلة هنا · فالقيد المضموم الذي صرف من بنكٍ لا يجده بلا الإيداع الذي موّله · وما بقي
+ * يُنزل بنكاً أو المحفظة تحت الصفر بعد الضمّ يُسمّى ويمنع الاستعادة (keepShortages · القرار ٥٥ · المراجعة ١٢ · R12-BAK-3).
  */
 import type { DB, SqlValue } from '../../db/adapter';
 import type { RemoteDoc, RowData } from '../../sync/types';
@@ -30,6 +33,8 @@ import { logAudit } from '../audit';
 import { SOURCE_DOC, markForReview } from '../accounting/orphans';
 import { t } from '../../i18n';
 import { RestoreError } from './types';
+import { CASH_DEPOSIT_SOURCE, CASH_WITHDRAW_SOURCE, TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE } from '../cashOps';
+import { bankBalance, walletCashBalance, ACC_CASH_BANKS } from '../accounting/ledger';
 
 export type KeptFrom = 'device' | 'cloud' | 'both';
 
@@ -68,7 +73,11 @@ export interface KeepPlan {
     links: Array<{ id: string; reversedBy: string }>;
     /** حسابات سطور القيود المضمومة وليست في دليل النسخة · تُدرج قبل القيود (R12-BAK-1) */
     accounts: RowData[];
+    /** حركات نقل النقد في النسخة ونُقلت إلى السلة في المصدر بعدها · معرّفها ووقت حذفها هناك (R12-BAK-3) */
+    trashedMoves: Array<{ id: string; deletedAt: string }>;
   };
+  /** حركات نقل النقد بين المحفظة والبنوك بعد النسخة (إيداع وسحب وتحويل) · تُحمل مع القيود وتُعرض بعددها (R12-BAK-3) */
+  cashMoves: number;
 }
 
 /** مصدر القيود: القاعدة الحالية على الجهاز و/أو لقطة السحابة */
@@ -83,6 +92,9 @@ const SELF_CONTAINED = new Set(['cash_op', 'manual']);
 const SETTLEMENT_ENTRIES = new Set(['deposit_deduct', 'deposit_refund', 'deposit_deduct_move']);
 /** ما تُعرف به التسوية التي سُدّدت بها دفعة «من التأمين» · صفّها في النسخة وفي المصدر */
 const SETTLEMENT_KEY = ['date', 'deduction_halalas', 'refund_halalas', 'deduct_destination'];
+/** مصادر حركة البنك بلا قيد: نقل النقد بين المحفظة والبنوك (cashOps.ts) · تُحمل مع القيود المضمومة (R12-BAK-3) */
+const CASH_MOVE_SOURCES = [CASH_DEPOSIT_SOURCE, CASH_WITHDRAW_SOURCE, TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE];
+const TRANSFER_SOURCES = new Set([TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE]);
 
 const sqlIn = (col: string) => `${col} IN (SELECT value FROM json_each(?))`;
 
@@ -127,7 +139,7 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
     if (have) { have.from.add('cloud'); if (!have.row.reversed_by && d.d.reversed_by) have.row = { ...have.row, reversed_by: d.d.reversed_by }; continue; }
     byId.set(d.k, { row: { ...d.d }, lines: d.lines ?? [], from: new Set(['cloud']) });
   }
-  const empty: KeepPlan = { entries: [], docs: { entries: [], payments: [], paymentLines: [], allocations: [], bankTx: [], installments: [], links: [], accounts: [] } };
+  const empty: KeepPlan = { entries: [], cashMoves: 0, docs: { entries: [], payments: [], paymentLines: [], allocations: [], bankTx: [], installments: [], links: [], accounts: [], trashedMoves: [] } };
   if (!byId.size) return empty;
 
   const docs = [...byId.values()].sort((a, b) => String(a.row.date).localeCompare(String(b.row.date)) || String(a.row.no).localeCompare(String(b.row.no)));
@@ -265,6 +277,8 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       mark(entry, 'حركة البنك');
     }
   }
+  const moves = planCashMoves(target, src, seenTx);
+  outBank.push(...moves.add);
 
   // ٤) المراجعة: ما له مستند لم يُحمل · إلا الزوج المضموم، واليدوي، وعملية النقد
   for (const d of docs) {
@@ -300,7 +314,87 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       wasDraft: drafts.has(String(d.row.id)),
     };
   });
-  return { entries, docs: { entries: docs, payments: outPayments, paymentLines: outLines, allocations: outAllocs, bankTx: outBank, installments: outInsts, links, accounts: outAccounts } };
+  return {
+    entries, cashMoves: moves.add.length + moves.trashed.length,
+    docs: { entries: docs, payments: outPayments, paymentLines: outLines, allocations: outAllocs, bankTx: outBank, installments: outInsts, links,
+      accounts: outAccounts, trashedMoves: moves.trashed },
+  };
+}
+
+/**
+ * حركات نقل النقد بلا قيد بين المحفظة والبنوك (R12-BAK-3) بحالها في المصدر: ما ليس في الهدف وبنكه فيه يُدرج كما هو (حيّاً أو في
+ * السلة)، وما في الهدف حيّاً وفي سلة المصدر يُنقل إليها · وساقا التحويل معاً: ساقٌ بنكها ليس في الهدف تُسقط أختها (التاريخ والبيان
+ * والمبلغ، ببنكٍ آخر)، وإلا خرج من بنكٍ ولم يدخل غيره فصار في المحفظة نقدٌ ليس في اليد
+ */
+function planCashMoves(target: DB, src: KeepSources, seen: Set<string>): { add: RowData[]; trashed: Array<{ id: string; deletedAt: string }> } {
+  const rows: RowData[] = [];
+  const byId = new Set<string>();
+  const take = (r: RowData) => { const id = String(r.id); if (byId.has(id)) return; byId.add(id); rows.push(r); };
+  if (src.device) {
+    for (const r of src.device.all<RowData>(`SELECT * FROM bank_tx WHERE journal_no = '' AND ${sqlIn('source')}`, [JSON.stringify(CASH_MOVE_SOURCES)])) take(r);
+  }
+  for (const d of src.cloud ?? []) {
+    if (d.del || d.t !== 'bank_tx' || !d.d || d.d.journal_no || !CASH_MOVE_SOURCES.includes(String(d.d.source ?? ''))) continue;
+    take({ ...d.d, id: d.k });
+  }
+  const add: RowData[] = [];
+  const trashed: Array<{ id: string; deletedAt: string }> = [];
+  const lost: RowData[] = [];
+  for (const r of rows) {
+    const id = String(r.id);
+    if (seen.has(id)) continue;
+    const mine = target.get<{ del: string | null }>(`SELECT deleted_at AS del FROM bank_tx WHERE id = ?`, [id]);
+    if (mine) {
+      if (!mine.del && r.deleted_at) trashed.push({ id, deletedAt: String(r.deleted_at) });
+      continue;
+    }
+    if (!exists(target, 'banks', r.bank_id as string)) { if (TRANSFER_SOURCES.has(String(r.source))) lost.push(r); continue; }
+    add.push(r);
+  }
+  // ساق تحويلٍ بنكها ليس في الهدف: تُسقط أختها المقابلة مرةً واحدة
+  const key = (r: RowData) => String(r.date) + '|' + String(r.descr) + '|' + Math.abs(Number(r.amount_halalas));
+  for (const l of lost) {
+    const other = l.source === TRANSFER_OUT_SOURCE ? TRANSFER_IN_SOURCE : TRANSFER_OUT_SOURCE;
+    const i = add.findIndex((r) => r.source === other && r.bank_id !== l.bank_id && key(r) === key(l));
+    if (i >= 0) add.splice(i, 1);
+  }
+  for (const r of add) seen.add(String(r.id));
+  return { add, trashed };
+}
+
+/**
+ * ما يُنزله الضمّ تحت الصفر قبل أي كتابة (القرار ٥٥ · R12-BAK-3): رصيد كل بنكٍ بعد حركاته المحمولة، والنقد في المحفظة بعد سطور 1100
+ * في القيود المضمومة ناقصاً ما حُمل إلى البنوك · وبنكٌ أو محفظةٌ كان سالباً في النسخة ولم يزده الضمّ نقصاً لا يمنع (حال النسخة نفسها) ·
+ * رسالةٌ عربية لكلٍّ تسمّيه ورصيده بعد الضمّ وما ينقصه
+ */
+export function keepShortages(target: DB, plan: KeepPlan): string[] {
+  if (!plan.entries.length && !plan.cashMoves) return [];
+  const bankDelta = new Map<string, number>();
+  const live = (r: RowData) => !r.deleted_at;
+  for (const tx of plan.docs.bankTx) if (live(tx)) bankDelta.set(String(tx.bank_id), (bankDelta.get(String(tx.bank_id)) ?? 0) + Number(tx.amount_halalas));
+  for (const m of plan.docs.trashedMoves) {
+    const r = target.get<{ b: string; a: number }>(`SELECT bank_id AS b, amount_halalas AS a FROM bank_tx WHERE id = ?`, [m.id]);
+    if (r) bankDelta.set(r.b, (bankDelta.get(r.b) ?? 0) - Number(r.a));
+  }
+  let cashDelta = 0;
+  for (const d of plan.docs.entries) {
+    // مسودة النسخة لا رصيد لها قبل الضمّ · فسطور مرحّلها كلها أثر
+    for (const l of d.lines) if (String(l.account_code) === ACC_CASH_BANKS) cashDelta += Number(l.debit_halalas ?? 0) - Number(l.credit_halalas ?? 0);
+  }
+  const out: string[] = [];
+  let banksFlow = 0;
+  for (const [bank, delta] of bankDelta) {
+    banksFlow += delta;
+    if (delta >= 0) continue;
+    const after = bankBalance(target, bank) + delta;
+    if (after >= 0) continue;
+    const name = target.get<{ n: string }>(`SELECT name AS n FROM banks WHERE id = ?`, [bank])?.n ?? '';
+    out.push(t('restore.keptBankShort', { bank: name, balance: fmt(after), short: fmt(-after) }));
+  }
+  const walletDelta = cashDelta - banksFlow;
+  const wallet = walletCashBalance(target) + walletDelta;
+  if (walletDelta < 0 && wallet < 0) out.push(t('restore.keptWalletShort', { balance: fmt(wallet), short: fmt(-wallet) }));
+  return out;
 }
 
 /** صفوف الحسابات التي تحتاجها سطور القيود المضمومة وليست في الهدف · من الجهاز أولاً ثم من لقطة السحابة */
@@ -405,6 +499,8 @@ export function applyKeepPosted(target: DB, plan: KeepPlan): KeepPlan {
       const bc = columnsOf(target, 'bank_tx');
       const renamed = new Map(entries.filter((e) => e.newNo).map((e) => [e.no, e.newNo!]));
       for (const t of plan.docs.bankTx) insertRow(target, 'bank_tx', { ...t, journal_no: renamed.get(String(t.journal_no)) ?? t.journal_no }, bc, false);
+      // ونقل النقد الذي حُذف في المصدر بعد النسخة يُنقل إلى السلة هنا (R12-BAK-3)
+      for (const m of plan.docs.trashedMoves ?? []) target.run(`UPDATE bank_tx SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`, [m.deletedAt, m.id]);
       // روابط العكس بعد وجود الطرفين
       for (const d of plan.docs.entries) {
         if (d.row.reversed_by) target.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ? AND reversed_by IS NULL

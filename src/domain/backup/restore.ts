@@ -19,7 +19,7 @@ import { reviewData } from './checks';
 import { planLedgerRepair, applyLedgerRepair, type LedgerRepairPlan } from '../ledgerReview';
 import { seed, ensureDeviceId } from '../../db/seed';
 import { recomputeInstallments, type PaidChange } from '../contracts/paid';
-import { planKeepPosted, applyKeepPosted, type KeptEntry } from './keepPosted';
+import { planKeepPosted, applyKeepPosted, keepShortages, type KeptEntry } from './keepPosted';
 import { readBlocks, writeBlocks, mergeBlocks, type Blocks } from '../numbering';
 import { INV_RESERVED_KEY, INV_PENDING_KEY, pendingIssues } from '../invoiceIssue';
 import type { RemoteDoc } from '../../sync/types';
@@ -54,6 +54,8 @@ export interface RestorePlan {
    * (keepPosted.ts) · تُعرض قبل التأكيد
    */
   kept: KeptEntry[];
+  /** حركات نقل النقد بين المحفظة والبنوك بعد النسخة حُملت مع القيود (R12-BAK-3) · تُعرض بعددها قبل التأكيد */
+  keptCashMoves: number;
   /** فروق محاسبية في النسخة بعد تجهيزها (checks.ts) · تُعرض في الحوار ولا تمنع، كما في إنشاء النسخة */
   notes: string[];
   /**
@@ -259,6 +261,7 @@ export async function prepareRestore(
     let ledgerRepair: LedgerRepairPlan | null = null;
     let paidRecomputed: PaidChange[] = [];
     let kept: KeptEntry[] = [];
+    let keptCashMoves = 0;
     let notes: string[] = [];
     {
       let probe: DB | null = null;
@@ -321,7 +324,10 @@ export async function prepareRestore(
         onProgress?.('جاري ضمّ القيود المرحّلة بعد تاريخ النسخة');
         carryDeviceLetter(env.db, probe);
         const keep = planKeepPosted(probe, { device: env.db, cloud: cloudDocs });
-        if (keep.entries.length) kept = applyKeepPosted(probe, keep).entries;
+        // ولا يُنزل الضمّ بنكاً ولا المحفظة تحت الصفر (القرار ٥٥ · المراجعة ١٢ · R12-BAK-3): يُسمّى ما ينقص قبل أي كتابة
+        const short = keepShortages(probe, keep);
+        if (short.length) throw new RestoreError(short.join(' · '));
+        if (keep.entries.length) { kept = applyKeepPosted(probe, keep).entries; keptCashMoves = keep.cashMoves; }
         // الفحوص نفسها بالحكم نفسه في النسخ (checks.ts): الفرق المحاسبي ملاحظةٌ تُعرض ولا ترفض الاستعادة
         notes = [...notes, ...reviewData(probe).notes];
         // أسماء ملفات الجهاز الغائبة من قاعدة النسخة نفسها · فيُسمّى الملف كما يعرفه المستخدم (C-2)
@@ -337,7 +343,7 @@ export async function prepareRestore(
     // مرفقات البيانات الحالية بالبنود نفسها · فيُرى ما سيُخسر من الجانبين لا من جانب واحد
     const live = liveBlobs(env.db);
     return {
-      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept, notes, localMissing,
+      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept, keptCashMoves, notes, localMissing,
       current: tableCounts(env.db),
       attachmentsBytes,
       currentAttachments: { count: live.length, bytes: live.reduce((s, b) => s + Number(b.size_bytes), 0) },

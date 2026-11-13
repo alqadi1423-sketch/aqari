@@ -328,7 +328,7 @@ export default function Settings() {
 
   /** القيود المرحّلة بعد تاريخ النسخة · تبقى وتُضمّ إليها · سطور الحوار قبل التأكيد */
   const fromLabel = (k: KeptEntry) => (k.from === 'device' ? 'من هذا الجهاز' : k.from === 'cloud' ? 'من السحابة' : 'من الجهاز والسحابة');
-  const keptText = (kept: KeptEntry[]) => {
+  const keptText = (kept: KeptEntry[], cashMoves = 0) => {
     if (!kept.length) return '';
     const shown = kept.slice(0, 8).map((k) => '· ' + (k.newNo ? k.newNo + ' (كان ' + k.no + ')' : k.no) + ' · ' + k.date + ' · ' + fmt(k.amount)
       + ' · ' + fromLabel(k) + (k.wasDraft ? ' · ' + t('backup.keptWasDraft') : '') + (k.carried.length ? ' · ومعه ' + k.carried.join(' و') : '') + (k.review ? ' · للمراجعة' : ''));
@@ -338,7 +338,8 @@ export default function Settings() {
       + (kept.length > shown.length ? '\nو' + (kept.length - shown.length) + ' غيرها' : '')
       + '\nالقيد المرحّل لا يُحذف بالاستعادة · يُضمّ إلى النسخة برقمه وسطوره، ومعه دفعته وتوزيعها وحركة بنكه متى كان عقدها وبنكها في النسخة.'
       + (renamed ? '\n' + renamed + ' منها رقمه مستعمل في النسخة لقيد آخر فيأخذ رقماً جديداً، ويُذكر القديم في بيانه.' : '')
-      + (toReview ? '\n' + toReview + ' منها مستنده لم يُحمل · تجدها في «مراجعة الدفتر» لتراجعها.' : '');
+      + (toReview ? '\n' + toReview + ' منها مستنده لم يُحمل · تجدها في «مراجعة الدفتر» لتراجعها.' : '')
+      + (cashMoves ? '\n' + t('backup.keptCashMoves', { n: cashMoves }) : '');
   };
   const paidText = (n: number) => (n ? '\n\nمسدَّد ' + n + ' قسط حُسب من دفعات النسخة وتوزيعها بدل الرقم المخزّن فيها.' : '');
   // نسخة ما قبل الترقية بلا ملفاتها (المراجعة الشاملة 2026-11-13 · C-2): ملفاتها باقية على الجهاز، وما غاب منها يُسمّى قبل التأكيد ·
@@ -394,7 +395,7 @@ export default function Settings() {
           + (plan.ledgerRepair ? repairSummary(plan.ledgerRepair) : '')
           + paidText(plan.paidRecomputed.length)
           + (plan.notes.length ? '\n\nفي النسخة فروق محاسبية لا تمنع استعادتها، وتظهر بعدها في «مراجعة الدفتر»:\n· ' + plan.notes.join('\n· ') : '')
-          + keptText(plan.kept)
+          + keptText(plan.kept, plan.keptCashMoves)
           + (cloudPlan ? '\n\nأنت داخل بحساب ' + (cloudState().user?.email ?? '') + ' · المزامنة متوقفة الآن.\n' + cloudReplaceText(cloudPlan) : ''),
         tone: 'normal',
         locked: true,
@@ -485,7 +486,7 @@ export default function Settings() {
       dialog({
         title: 'اعتماد بيانات هذا الجهاز',
         body: 'استُعيدت على هذا الجهاز نسخة ولم يُكتب منها شيء إلى السحابة.\n' + cloudReplaceText({ ...p, immutable: { ...p.immutable, entries: 0 } })
-          + keptText(ready.keep.entries),
+          + keptText(ready.keep.entries, ready.keep.cashMoves),
         tone: 'normal',
         locked: true,
         actions: [
