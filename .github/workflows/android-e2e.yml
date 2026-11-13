@@ -53,16 +53,19 @@ jobs:
             ~/.gradle/wrapper
           key: gradle-${{ hashFiles('android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties', 'package-lock.json') }}
 
-      # مفتاح اختبارٍ يُولَّد هنا ويُمرَّر بمتغيرات الإصدار نفسها (build.gradle يرفض الإصدار بلا مفتاح)، ويُحذف بعد البناء
+      # مفتاح اختبارٍ يُولَّد هنا بكلمة مرورٍ عشوائية لكل تشغيل، ويُمرَّر بمتغيرات الإصدار نفسها (build.gradle يرفض الإصدار بلا مفتاح)،
+      # ويُحذف بعد البناء
       - name: مفتاح اختبارٍ مؤقت
         run: |
           ks="$RUNNER_TEMP/e2e.keystore"
-          keytool -genkeypair -keystore "$ks" -storepass e2e-only -keypass e2e-only -alias aqari-upload -keyalg RSA -keysize 2048 \
+          pw="e2e-$(openssl rand -hex 8)"
+          echo "::add-mask::$pw"
+          keytool -genkeypair -keystore "$ks" -storepass "$pw" -keypass "$pw" -alias aqari-upload -keyalg RSA -keysize 2048 \
             -validity 2 -dname "CN=aqari-e2e" >/dev/null
           {
             echo "AQARI_UPLOAD_STORE_FILE=$ks"
-            echo "AQARI_UPLOAD_STORE_PASSWORD=e2e-only"
-            echo "AQARI_UPLOAD_KEY_PASSWORD=e2e-only"
+            echo "AQARI_UPLOAD_STORE_PASSWORD=$pw"
+            echo "AQARI_UPLOAD_KEY_PASSWORD=$pw"
           } >> "$GITHUB_ENV"
 
       - name: بناء حزمة الاختبار (x86_64)
