@@ -56,7 +56,7 @@ PRAGMA foreign_keys = ON;
 PRAGMA synchronous = FULL;
 ```
 
-كل كتابة داخل `BEGIN IMMEDIATE … COMMIT`. المبالغ كلها أعداد صحيحة **بالهللات** (`*_halalas INTEGER`). لا `REAL` في أي حقل مالي: `REAL` مسموح فقط لغير المال (إحداثيات GPS، قراءات العدادات، الكميات).
+كل كتابة داخل `BEGIN IMMEDIATE … COMMIT`، والمتداخلة بنقاط حفظ (`SAVEPOINT`) · وعدّاد التداخل يُضبط مرةً واحدة في كل خروج، فلا يكسر فشلُ `COMMIT` أو `RELEASE` ما بعده، وإن ألغت SQLite المعاملة بنفسها يُرمى الخطأ الأصلي لا خطأ `ROLLBACK` (`makeTransactionRunner` في `src/db/adapter.ts`). المبالغ كلها أعداد صحيحة **بالهللات** (`*_halalas INTEGER`). لا `REAL` في أي حقل مالي: `REAL` مسموح فقط لغير المال (إحداثيات GPS، قراءات العدادات، الكميات).
 
 جدول `meta(key PRIMARY KEY, value)` يحمل `schema_version` و`device_id` وترقيم هذا التثبيت (`number_blocks` كتل الأرقام، و`inv_reserved` و`inv_issue_pending` للفاتورة، و`device_letter` الحرف القديم · القسم ١٣)، وجدول `settings(key PRIMARY KEY, value_json)` يحمل إعدادات التطبيق (المهل، مدة السلة، مقاييس العرض…).
 

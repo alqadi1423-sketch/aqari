@@ -23,38 +23,48 @@ export interface DB {
   close(): void;
 }
 
-/** إدارة المعاملات المتداخلة المشتركة بين المحوّلين */
+/**
+ * إدارة المعاملات المتداخلة المشتركة بين المحوّلين.
+ * العدّاد يُضبط مرةً واحدة في كل خروج: كان ينقص مرتين إن فشل COMMIT أو RELEASE فيصير سالباً،
+ * فتفشل كل معاملةٍ متداخلة بعده حتى إعادة التشغيل (دراسة الويب §٤.٣).
+ * وإن ألغت SQLite المعاملة بنفسها (امتلاء القرص، خطأ إدخال وإخراج) فشل ROLLBACK بعدها
+ * بـ«no transaction is active»؛ يُبتلع ذلك وحده ويُرمى الخطأ الأصلي.
+ */
 export function makeTransactionRunner(db: Pick<DB, 'exec'>): <T>(fn: () => T) => T {
   let depth = 0;
+  const quietly = (sql: string) => { try { db.exec(sql); } catch { /* المعاملة أُلغيت أصلاً · الخطأ الأصلي يُرمى بعده */ } };
   return function transaction<T>(fn: () => T): T {
     if (depth > 0) {
       const name = `sp_${depth}`;
       db.exec(`SAVEPOINT ${name}`);
       depth++;
+      let out: T;
       try {
-        const out = fn();
-        depth--;
-        db.exec(`RELEASE ${name}`);
-        return out;
+        out = fn();
       } catch (e) {
         depth--;
-        db.exec(`ROLLBACK TO ${name}`);
-        db.exec(`RELEASE ${name}`);
+        quietly(`ROLLBACK TO ${name}`);
+        quietly(`RELEASE ${name}`);
         throw e;
       }
+      depth--;
+      // إن فشل RELEASE صعد خطؤه إلى المستوى الأعلى فيُلغي ما فوقه، والعدّاد صحيحٌ هنا
+      db.exec(`RELEASE ${name}`);
+      return out;
     }
     db.exec('BEGIN IMMEDIATE');
-    depth++;
+    depth = 1;
+    let out: T;
     try {
-      const out = fn();
-      depth--;
+      out = fn();
       db.exec('COMMIT');
-      return out;
     } catch (e) {
-      depth--;
-      db.exec('ROLLBACK');
+      depth = 0;
+      quietly('ROLLBACK');
       throw e;
     }
+    depth = 0;
+    return out;
   };
 }
 

@@ -3,7 +3,6 @@
  * عدّاد المعاملات في makeTransactionRunner ينقص مرتين إن فشل COMMIT أو RELEASE،
  * فيصير سالباً، وتفشل بعده كل معاملةٍ متداخلة («cannot start a transaction within a transaction»)
  * حتى يُعاد تشغيل التطبيق.
- * المؤشَّر test.failing يفشل اليوم، ويُرفع وسمه في التزام الإصلاح.
  * والاختبار على SQLite حقيقية (node:sqlite كما في nodeAdapter) مع مغلّفٍ يُفشل أمراً واحداً مرةً واحدة.
  */
 import { DatabaseSync } from 'node:sqlite';
@@ -33,7 +32,7 @@ function harness() {
 }
 
 describe('المعاملات بعد فشل الحفظ (adapter.ts)', () => {
-  test.failing('فشل COMMIT مرةً لا يكسر المعاملات المتداخلة بعده', () => {
+  test('فشل COMMIT مرةً لا يكسر المعاملات المتداخلة بعده', () => {
     const h = harness();
     h.failNext('COMMIT');
     expect(() => h.transaction(() => h.insert(1))).toThrow('فشلٌ مصطنع في COMMIT');
@@ -44,7 +43,7 @@ describe('المعاملات بعد فشل الحفظ (adapter.ts)', () => {
     expect(h.raw.isTransaction).toBe(false);
   });
 
-  test.failing('إن ألغت SQLite المعاملة بنفسها عند فشل COMMIT: يظهر الخطأ الأصلي لا خطأ ROLLBACK، وتعمل المعاملات بعده', () => {
+  test('إن ألغت SQLite المعاملة بنفسها عند فشل COMMIT: يظهر الخطأ الأصلي لا خطأ ROLLBACK، وتعمل المعاملات بعده', () => {
     const h = harness();
     h.failNext('COMMIT', 'autoRollback');
     expect(() => h.transaction(() => h.insert(1))).toThrow('فشلٌ مصطنع في COMMIT');
@@ -53,7 +52,7 @@ describe('المعاملات بعد فشل الحفظ (adapter.ts)', () => {
     expect(h.values()).toEqual([20, 21]);
   });
 
-  test.failing('إن ألغت SQLite المعاملة بنفسها أثناء العمل: يظهر الخطأ الأصلي لا خطأ ROLLBACK', () => {
+  test('إن ألغت SQLite المعاملة بنفسها أثناء العمل: يظهر الخطأ الأصلي لا خطأ ROLLBACK', () => {
     const h = harness();
     expect(() => h.transaction(() => { h.insert(1); h.raw.exec('ROLLBACK'); throw new Error('خطأ العمل الأصلي'); }))
       .toThrow('خطأ العمل الأصلي');
@@ -62,7 +61,7 @@ describe('المعاملات بعد فشل الحفظ (adapter.ts)', () => {
     expect(h.values()).toEqual([30, 31]);
   });
 
-  test.failing('فشل RELEASE لنقطة حفظٍ داخلية يُلغي المعاملة كلها ولا يكسر ما بعدها', () => {
+  test('فشل RELEASE لنقطة حفظٍ داخلية يُلغي المعاملة كلها ولا يكسر ما بعدها', () => {
     const h = harness();
     h.failNext('RELEASE sp_1');
     expect(() => h.nestedWrite(1)).toThrow('فشلٌ مصطنع في RELEASE sp_1');
