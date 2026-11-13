@@ -1,7 +1,8 @@
 /**
  * قراءة ملف كشف البنك على الجهاز (التوجيه الرابع ٦ · ٢): بايتاته إلى القارئ العام (domain/bankStatement/read.ts)، وبصمته لمنع قراءة الملف
- * نفسه مرتين · والصورة بقارئ النص على الجهاز (ML Kit) كلماتٍ بمواضعها إلى قارئ الصورة (domain/bankStatement/photo.ts · U١٢) · الملف
- * والصورة لا يخرجان من الجوال، لكن ML Kit يرسل إلى قوقل بيانات استعمالٍ تقنية (F-2)، ويُستبدل في خطة الخروج من قوقل.
+ * نفسه مرتين · والصورة بقارئ النص على الجهاز (ML Kit) كلماتٍ بمواضعها إلى قارئ الصورة (domain/bankStatement/photo.ts · U١٢) · ML Kit
+ * لا يرسل الصورة ولا نصها، لكنه يرسل إلى قوقل بيانات استعمالٍ تقنية (F-2)، ويُستبدل في خطة الخروج من قوقل · وسطور الكشف المحفوظة
+ * تتبع المزامنة كبقية البيانات (P0-10).
  */
 import { File } from 'expo-file-system';
 import { readStatementFile, isStatementImage, type ReadOpts, type StatementResult } from '../domain/bankStatement/read';
