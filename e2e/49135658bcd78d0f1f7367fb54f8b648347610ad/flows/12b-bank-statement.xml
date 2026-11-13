@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="0" time="81.77" timestamp="2026-11-14T01:50:24">
+    <testcase id="12b-bank-statement" name="12b-bank-statement" classname="12b-bank-statement" file="e2e/maestro/12b-bank-statement.yaml" time="81.731" timestamp="2026-11-14T01:50:24" status="SUCCESS"/>
+  </testsuite>
+</testsuites>
