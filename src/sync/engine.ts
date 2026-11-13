@@ -36,7 +36,8 @@ import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, en
 import { filingRecordedAt } from '../domain/vatFilings';
 import { isISODate } from '../domain/dates';
 import { TS_DEDUCTIBLE } from '../domain/purchases';
-import { walletCashBalance, bankBalance } from '../domain/accounting/ledger';
+import { walletCashBalance, bankBalance, ACC_OPENING_BALANCES } from '../domain/accounting/ledger';
+import { MIGRATED_SYSTEM_ACCOUNTS } from '../db/seed';
 import { CASH_DEPOSIT_SOURCE, CASH_WITHDRAW_SOURCE, TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE } from '../domain/cashOps';
 import { CRASH_ENTITY, FAILURE_ENTITY_PREFIX, retryCrashRank } from '../domain/crashReport';
 import { memberSourceIssue, deductibleIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
@@ -2633,8 +2634,14 @@ function applyOne(
 ): ApplyOutcome {
   const t = syncTable(doc.t);
   if (!t) { reject(db, doc, 'جدول خارج المزامنة'); return 'rejected'; }
-  // صدى ما كتبه هذا الجهاز · بمحتواه لا بمعرّف الجهاز وحده: العضو يكتب «dev» فينتحل الجهاز (مراجعة التثبيت #56)
-  if (doc.dev === deviceId && isEcho(db, doc, deviceId)) return 'skipped';
+  // حذف رمز 3300 الذي أنشأه المستخدم (غير نظاميٍّ محذوف، أو شاهد حذفه) · حارسه أدناه
+  const stale3300 = doc.t === 'accounts' && doc.k === ACC_OPENING_BALANCES
+    && (doc.del || (!!doc.d && Number(doc.d.is_system) !== 1 && doc.d.deleted_at != null));
+  // صدى ما كتبه هذا الجهاز · بمحتواه لا بمعرّف الجهاز وحده: العضو يكتب «dev» فينتحل الجهاز (مراجعة التثبيت #56) · إلا صدى حذفه رمز 3300
+  // ولا تعديل له هنا لم يُرفع: الكاتب نفسه يمرّ بحارس 3300 كمن استقبل الحذف، فيحلّ محلّه حساب النظام عنده أيضاً ولا يفترق دفتره عن
+  // أجهزة المنشأة (مراجعة R12-BAK-5: كان الحارس على المستقبِل وحده، فالجهاز الذي حذف يبقى بلا حساب النظام وأخوه عليه)
+  if (doc.dev === deviceId && isEcho(db, doc, deviceId)
+    && !(stale3300 && !db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]))) return 'skipped';
   // مفتاح الصف داخل المستند هو مفتاحه (المراجعة #20): وإلا استبدل مستندٌ صفاً آخر
   if (!doc.del && doc.d) {
     const want = pkParams(doc.t, doc.k);
@@ -2656,6 +2663,23 @@ function applyOne(
       || (doc.t === 'attachments' && !isSafeBlobName(doc.d.sha256, 'bin'))) {
       reject(db, doc, 'اسم ملف غير آمن'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض كأسبابه الأخرى
       return 'rejected';
+    }
+  }
+
+  // حساب النظام 3300 «أرصدة افتتاحية» (الهجرة ٦٢ · A2.4 · قرار المالك س٢) يحلّ على كل جهاز محلّ رمزٍ 3300 أنشأه المستخدم ثم حذفه، والهجرة
+  // لا ترفع شيئاً (R11-A2.4-3) · فمستند السحابة لذلك الرمز (غير نظاميٍّ محذوف، أو شاهد حذفه إن كُنس من السلة) قديمٌ أبداً: لا يُكتب فوق
+  // حساب النظام الحيّ هنا (جوالٌ بدأ من السحابة بعد الترقية، أو جهازٌ ترقّى قبل صدى حذفه) · وحسابٌ غير نظاميٍّ هنا (ترقّى وهو حيّ) يصله
+  // حذفه بلا سطر قيدٍ عليه يحلّ محلّه حساب النظام بقاعدة الهجرة نفسها · فأجهزة المنشأة كلها على دفترٍ واحد (المراجعة ١٢ · R12-BAK-5) ·
+  // والجهاز الذي كتب الحذف (مالكاً أو عضواً) يمرّ هنا بصداه، فيتحوّل عند أول مزامنةٍ بعد الحذف كغيره، ولا يُرفع شيء (R11-A2.4-3)
+  if (stale3300) {
+    const here = db.get<{ s: number; del: string | null }>(`SELECT is_system AS s, deleted_at AS del FROM accounts WHERE code = ?`, [doc.k]);
+    if (here && Number(here.s) === 1) return 'skipped';
+    const sys = MIGRATED_SYSTEM_ACCOUNTS.find((a) => a.code === doc.k);
+    if (sys && !db.get(`SELECT 1 FROM journal_lines WHERE account_code = ?`, [doc.k])) {
+      db.run(`DELETE FROM accounts WHERE code = ? AND is_system = 0`, [doc.k]);
+      db.run(`INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES (?,?,?,?,0,1,?)`,
+        [sys.code, sys.name, sys.type, sys.grp, nowIso()]);
+      return 'applied';
     }
   }
 
