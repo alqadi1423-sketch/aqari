@@ -16,7 +16,8 @@
  *   وتسويتها تسوية العقد صاحب التأمين مصدر قيدها لا عقد الدفعة (R12-DEP-2: قسط عقدٍ رُحِّل تأمينه).
  * ورقمٌ مستعمل في النسخة لقيد آخر يأخذ القيدُ المضموم رقماً جديداً من تسلسل الجهاز ويُذكر القديم في بيانه.
  * وحسابٌ في سطوره ليس في دليل النسخة (أُضيف بعدها) يُحمل صفّه من المصدر قبل القيد، وإلا رفض مفتاح الحساب السطر وفشلت الاستعادة كلها ·
- * وحسابٌ لا صفّ له في أي مصدر يُسمّى برسالة عربية قبل أي كتابة (المراجعة ١٢ · R12-BAK-1).
+ * وحسابٌ لا صفّ له في أي مصدر يُسمّى برسالة عربية قبل أي كتابة (المراجعة ١٢ · R12-BAK-1) · وحسابٌ في سلة النسخة حيٌّ في المصدر
+ * يعود حيّاً بصفّه هناك، وفي السلة في كل مصدر يُسمّى أنه في السلة، فلا يبقى قيدٌ مرحّل على حسابٍ محذوف خارج الميزان.
  * ومسودةٌ في النسخة رُحّلت بعدها (الترحيل يرقّي المسودة في مكانها بمعرّفها) تُستبدل بالمرحّل ولا تعود مسودة
  * (المراجعة الشاملة 2026-11-13 · C-1).
  * ومع القيود المضمومة تُحمل حركات نقل النقد بلا قيد بين المحفظة والبنوك (إيداع وسحب وتحويل · cashOps.ts) بحالها في المصدر: ما ليس في
@@ -397,7 +398,11 @@ export function keepShortages(target: DB, plan: KeepPlan): string[] {
   return out;
 }
 
-/** صفوف الحسابات التي تحتاجها سطور القيود المضمومة وليست في الهدف · من الجهاز أولاً ثم من لقطة السحابة */
+/**
+ * صفوف الحسابات التي تحتاجها سطور القيود المضمومة وليست حيّةً في الهدف · من الجهاز أولاً ثم من لقطة السحابة، والحيّ منها وحده ·
+ * فحسابٌ في سلة النسخة استُعيد من السلة بعدها ورُحّل عليه يعود حيّاً بصفّه في المصدر، وإلا بقي القيد على حسابٍ محذوف فخرج من الدليل
+ * والميزان واحمرّ فحص التوازن (مراجعة R12-BAK-1) · والتطبيق يكتب صفّ المصدر فوق صفّ السلة
+ */
 function carryAccounts(target: DB, src: KeepSources, docs: EntryDoc[], mark: (id: string, what: string) => void): RowData[] {
   const usedBy = new Map<string, string[]>();
   for (const d of docs) {
@@ -409,22 +414,27 @@ function carryAccounts(target: DB, src: KeepSources, docs: EntryDoc[], mark: (id
     }
   }
   if (!usedBy.size) return [];
-  const have = new Set(target.all<{ code: string }>(`SELECT code FROM accounts WHERE ${sqlIn('code')}`, [JSON.stringify([...usedBy.keys()])]).map((r) => r.code));
+  const codes = JSON.stringify([...usedBy.keys()]);
+  const have = new Set(target.all<{ code: string }>(`SELECT code FROM accounts WHERE ${sqlIn('code')} AND deleted_at IS NULL`, [codes]).map((r) => r.code));
   const missing = [...usedBy.keys()].filter((c) => !have.has(c)).sort();
   if (!missing.length) return [];
   const found = new Map<string, RowData>();
   if (src.device) {
-    for (const r of src.device.all<RowData>(`SELECT * FROM accounts WHERE ${sqlIn('code')}`, [JSON.stringify(missing)])) found.set(String(r.code), r);
+    for (const r of src.device.all<RowData>(`SELECT * FROM accounts WHERE ${sqlIn('code')} AND deleted_at IS NULL`, [JSON.stringify(missing)])) found.set(String(r.code), r);
   }
   for (const d of src.cloud ?? []) {
-    if (d.del || d.t !== 'accounts' || !d.d || found.has(d.k) || !missing.includes(d.k)) continue;
+    if (d.del || d.t !== 'accounts' || !d.d || d.d.deleted_at || found.has(d.k) || !missing.includes(d.k)) continue;
     found.set(d.k, { ...d.d, code: d.k });
   }
   const lost = missing.find((c) => !found.has(c));
   if (lost) {
     const entry = docs.find((d) => d.lines.some((l) => String(l.account_code) === lost))!;
     const amount = entry.lines.reduce((s, l) => s + Number(l.debit_halalas ?? 0), 0);
-    throw new RestoreError(t('restore.keptAccountMissing', { no: String(entry.row.no), amount: fmt(amount), code: lost }));
+    // له صفٌّ في سلة النسخة أو المصدر ولا صفّ حيّاً له: يُسمّى أنه في السلة، فاستعادته من السلة على هذا الجهاز تحلّه
+    const trashed = !!target.get(`SELECT 1 FROM accounts WHERE code = ?`, [lost])
+      || !!src.device?.get(`SELECT 1 FROM accounts WHERE code = ?`, [lost])
+      || (src.cloud ?? []).some((d) => !d.del && d.t === 'accounts' && d.k === lost);
+    throw new RestoreError(t(trashed ? 'restore.keptAccountTrashed' : 'restore.keptAccountMissing', { no: String(entry.row.no), amount: fmt(amount), code: lost }));
   }
   return missing.map((code) => {
     const row = found.get(code)!;
@@ -457,10 +467,13 @@ export function applyKeepPosted(target: DB, plan: KeepPlan): KeepPlan {
   const entries = plan.entries.map((e) => ({ ...e }));
   const accCols = columnsOf(target, 'accounts');
   target.transaction(() => {
-    // حسابات السطور قبل القيود: مفتاح journal_lines.account_code يرفض سطراً على حسابٍ ليس في الدليل (R12-BAK-1)
+    // حسابات السطور قبل القيود: مفتاح journal_lines.account_code يرفض سطراً على حسابٍ ليس في الدليل (R12-BAK-1) · وحسابٌ في سلة
+    // النسخة يأخذ صفّه الحيّ من المصدر فيخرج من السلة (مراجعة R12-BAK-1) · والحيّ في النسخة لا يُحمل أصلاً فلا يُمسّ
     for (const a of plan.docs.accounts ?? []) {
       const keys = Object.keys(a).filter((c) => accCols.has(c));
-      target.run(`INSERT INTO accounts (${keys.map((c) => `"${c}"`).join(',')}) VALUES (${keys.map(() => '?').join(',')}) ON CONFLICT(code) DO NOTHING`,
+      const rest = keys.filter((c) => c !== 'code');
+      target.run(`INSERT INTO accounts (${keys.map((c) => `"${c}"`).join(',')}) VALUES (${keys.map(() => '?').join(',')})`
+        + ` ON CONFLICT(code) DO ${rest.length ? `UPDATE SET ${rest.map((c) => `"${c}" = excluded."${c}"`).join(', ')} WHERE accounts.deleted_at IS NOT NULL` : 'NOTHING'}`,
         keys.map((c) => (a[c] ?? null) as SqlValue));
     }
     const applyingBefore = Number(target.get<{ v: number }>(`SELECT v FROM sync_ctl WHERE k = 'applying'`)?.v ?? 0);
