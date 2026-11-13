@@ -36,8 +36,9 @@ jobs:
       - name: رأس فرع apk ورقم إصداره
         id: plan
         run: |
-          # ومعه ci-results: لا وسم لحزمةٍ لم تنجح اختبارات مصدرها (المراجعة الشاملة 2026-11-13 · G-1)
-          git fetch -q origin apk ci-results --tags
+          # فرعا apk وci-results ووسومهما جُلبت بـfetch-depth: 0 · ولا جلب هنا: الاعتماد أُزيل بعد الاستخراج (persist-credentials)
+          # والمستودع خاص (مدقق المرحلة ٠ · P0-3)
+          git rev-parse -q --verify origin/apk >/dev/null && git rev-parse -q --verify origin/ci-results >/dev/null
           node scripts/ci/apkRelease.js "$GITHUB_OUTPUT"
 
       - name: الوسم والنشرة والحزمة

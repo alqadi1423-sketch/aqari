@@ -72,7 +72,16 @@ describe('وسم الحزمة ونشرتها (apkRelease.js)', () => {
     expect(rel.testsVerdict('commit abc\nfailed-suite success true\n')).toBe('fail');
     const src = read('scripts/ci/apkRelease.js');
     expect(src).toMatch(/origin\/ci-results:runs\//);
-    expect(read('.github/workflows/apk-release.yml')).toMatch(/git fetch -q origin apk ci-results --tags/);
+    // الفرعان من fetch-depth: 0 لا من جلبٍ ثانٍ بلا اعتماد في مستودعٍ خاص (P0-3)
+    const wfr = read('.github/workflows/apk-release.yml');
+    expect(wfr).toMatch(/fetch-depth: 0/);
+    expect(wfr).not.toMatch(/git fetch/);
+    // مسارات الجوال الافتراضي في الحارس هي مسارات سير عمله (P0-14)
+    const e2e = read('.github/workflows/android-e2e.yml');
+    const paths = [...(/paths: \[([\s\S]*?)\]/.exec(e2e)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1].replace(/\/\*\*$/, ''))
+      .filter((p) => !p.startsWith('.github'));
+    expect([...rel.E2E_PATHS].sort()).toEqual(paths.sort());
+    expect(src).toMatch(/origin\/ci-results:e2e\//);
   });
 
   test('سير العمل يُشغَّل من الفرع الرئيسي (فرع apk بلا ملفات سير عمل)، ومرةً كل يوم وبالزر', () => {

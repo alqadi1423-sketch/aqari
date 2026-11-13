@@ -111,4 +111,6 @@ jobs:
           cp /tmp/result/result.txt latest.txt
           git add runs latest.txt
           git commit -q -m "نتيجة الاختبارات ${GITHUB_SHA}"
-          git push -q origin HEAD:ci-results
+          # دفعتان متقاربتان تتسابقان على ci-results: يُعاد الدفع بعد سحبٍ وإعادة تأسيس كالجوال الافتراضي (مدقق المرحلة ٠ · P0-4)
+          for i in 1 2 3 4; do git push -q origin HEAD:ci-results && exit 0; git pull -q --rebase origin ci-results; done
+          exit 1

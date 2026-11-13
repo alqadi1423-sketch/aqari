@@ -3,7 +3,8 @@
  * وسمٌ ونشرة في جيت هب لكل APK (التوجيه الرابع ٤ · ٢ · قرار المالك 2026-11-07 «أرقام إصدارات وسجل تغييرات لكل APK»).
  * يقرأ رأس فرع apk: رسالة التزامه تسمّي التزام المصدر («من main <بصمة>» أو «· <بصمة> ·»)، ومن المصدر يُقرأ رقم الإصدار
  * (src/version.ts) وقسمه في سجل التغييرات (docs/سجل-التغييرات.md) · فإن لم يُوسَم الرقم بعد أعدّ الوسم والنشرة، وإن وُسم
- * برقمه نفسه لحزمةٍ أخرى فشل: لكل حزمةٍ رقمٌ جديد · ولا وسم قبل أن تنجح اختبارات المصدر في فرع ci-results.
+ * برقمه نفسه لحزمةٍ أخرى فشل: لكل حزمةٍ رقمٌ جديد · ولا وسم قبل أن تنجح في فرع ci-results اختبارات المصدر وتدفقات الجوال الافتراضي
+ * على شيفرته، وغياب إحداهما أكثر من يوم يُفشل التشغيل.
  *
  * الاستعمال (في سير العمل، بعد جلب الفروع والوسوم): node scripts/ci/apkRelease.js <ملف الخرج>
  * يكتب في الخرج: tag وsource وtitle وnotes (ملف النشرة) وaction (create أو skip)، بصيغة GITHUB_OUTPUT.
@@ -36,6 +37,11 @@ function notesOf(changelog, version) {
   return lines.slice(start + 1, end).join('\n').trim();
 }
 
+/** مسارات شيفرة التطبيق التي يُشغَّل عليها الجوال الافتراضي (android-e2e.yml · on.push.paths) */
+const E2E_PATHS = ['app', 'src', 'android', 'assets', 'e2e', 'package.json', 'package-lock.json', 'app.json', 'babel.config.js', 'metro.config.js'];
+/** مهلة انتظار نتيجةٍ لم تصل: يوم */
+const MAX_WAIT_SECONDS = 24 * 3600;
+
 /**
  * حكم اختبارات التزام المصدر من خلاصته في فرع ci-results (runs/<البصمة>.txt): pass أو fail أو missing.
  * لا حزمة تُوسَم من التزامٍ لم تنجح اختباراته (قرار المالك 2026-10-07 «لا حزمة قبل ذلك» · المراجعة الشاملة 2026-11-13 · G-1).
@@ -62,18 +68,31 @@ if (require.main === module) {
     console.log('المصدر ' + full.slice(0, 7) + ' قبل نظام الإصدارات · لا وسم');
     process.exit(0);
   }
-  let result = '';
-  try { result = git('show', 'origin/ci-results:runs/' + full + '.txt'); } catch { result = ''; }
-  const verdict = testsVerdict(result);
-  if (verdict === 'fail') {
-    console.error('اختبارات التزام المصدر ' + full.slice(0, 7) + ' لم تنجح (ci-results/runs) · لا وسم ولا نشرة لحزمته');
-    process.exit(1);
-  }
-  if (verdict === 'missing') {
-    // الاختبارات لم تنتهِ بعد أو لم تُشغَّل: يُعاد الفحص في التشغيل التالي
-    fs.appendFileSync(out, 'action=skip\n');
-    console.log('لا نتيجة اختباراتٍ لالتزام المصدر ' + full.slice(0, 7) + ' بعد · لا وسم حتى تنجح');
-    process.exit(0);
+  // اختبارات المصدر، وتدفقات الجوال الافتراضي على آخر التزامٍ غيّر شيفرة التطبيق حتى المصدر (المسارات نفسها في android-e2e.yml)
+  const show = (spec) => { try { return git('show', spec); } catch { return ''; } };
+  const e2eAt = git('log', '-1', '--format=%H', full, '--', ...E2E_PATHS) || full;
+  const checks = [
+    { name: 'الاختبارات', sha: full, text: show('origin/ci-results:runs/' + full + '.txt') },
+    { name: 'الجوال الافتراضي', sha: e2eAt, text: show('origin/ci-results:e2e/' + e2eAt + '/summary.txt') },
+  ];
+  for (const c of checks) {
+    const verdict = testsVerdict(c.text);
+    if (verdict === 'fail') {
+      console.error(c.name + ' على ' + c.sha.slice(0, 7) + ' لم تنجح (ci-results) · لا وسم ولا نشرة لحزمة ' + full.slice(0, 7));
+      process.exit(1);
+    }
+    if (verdict === 'missing') {
+      // لم تنتهِ بعد: يُعاد الفحص في التشغيل التالي · وإن مضى على الحزمة يومٌ فالغياب دائم (تشغيلٌ أُلغي، أو نشرٌ خسر السباق)
+      // فيُفشل التشغيل بما يُفعل، لا تخطٍّ صامت إلى الأبد (مدقق المرحلة ٠ · P0-4)
+      const age = Date.now() / 1000 - Number(git('log', '-1', '--format=%ct', head));
+      if (age > MAX_WAIT_SECONDS) {
+        console.error('لا نتيجة لـ«' + c.name + '» على ' + c.sha.slice(0, 7) + ' منذ أكثر من يوم · أعد تشغيلها عليه من جيت هب ثم أعد هذا التشغيل');
+        process.exit(1);
+      }
+      fs.appendFileSync(out, 'action=skip\n');
+      console.log('لا نتيجة لـ«' + c.name + '» على ' + c.sha.slice(0, 7) + ' بعد · لا وسم حتى تنجح');
+      process.exit(0);
+    }
   }
   const tag = 'v' + v.version;
   let tagged = null;
@@ -94,4 +113,4 @@ if (require.main === module) {
   console.log('يُوسم ' + tag + ' على ' + full.slice(0, 7));
 }
 
-module.exports = { sourceOf, versionOf, notesOf, testsVerdict };
+module.exports = { sourceOf, versionOf, notesOf, testsVerdict, E2E_PATHS, MAX_WAIT_SECONDS };
