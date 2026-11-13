@@ -2554,6 +2554,23 @@ function applyOne(
       return 'rejected';
     }
   }
+  // وافتتاحي البنك في الدفتر منذ الهجرة ٦٢ (مدين 1100 ودائن 3300 من البنوك الحية): حذف العضو بنكاً افتتاحيه غير صفر أو استعادته من السلة
+  // يغيّر المال بلا قيد، والافتتاحي للمالك وحده (القاعدة ٩٩ · I١ وM٧ وO٥، وكحذف الحساب النظامي في O١) · فيُرفض على جهاز المالك وتُعاد
+  // نسخته وفيها افتتاحيّ نسخة العضو كفرع الحساب أعلاه (المراجعة الشاملة 2026-11-13 · R11-A2.4-2)
+  if (doc.t === 'banks' && !getSyncState(db, 'membership') && (doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, false))) {
+    const d = (doc.d ?? {}) as Record<string, unknown>;
+    const cur = db.get<{ o: number; del: string | null }>(`SELECT opening_halalas AS o, deleted_at AS del FROM banks WHERE id = ?`, [doc.k]);
+    const moved = !!cur && (doc.del ? cur.del == null : (d.deleted_at == null) !== (cur.del == null));
+    if (cur && moved && ((Number(cur.o) || 0) !== 0 || (Number(d.opening_halalas) || 0) !== 0)) {
+      if (doc.d && !openingChangedHere(db, doc.t, doc.k, !!db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]))) {
+        db.run(`UPDATE banks SET opening_halalas = ? WHERE id = ?`, [Number(d.opening_halalas) || 0, doc.k]);
+        noteSeenOpening(db, doc.t, doc.k, d.opening_halalas);
+      }
+      enqueue(db, doc.t, doc.k, 'upsert');
+      reject(db, doc, tr('sync.bankOpeningLocked', { lng: 'ar' }));
+      return 'rejected';
+    }
+  }
 
   // الأب المقفل (الفاتورة الصادرة وسطورها، وأقساط العقد المؤكَّد · المراجعة الشاملة 2026-11-13 · B-1) وإعداد المالك في صفّ المنشأة (B-3):
   // كتابة العضو تُرفض وتُعاد نسخة المالك إلى الطابور (وما ليس عنده شاهدُ حذف) فتعود السحابة وكل جهازٍ إليها، ويظهر الرفض في حالة المزامنة

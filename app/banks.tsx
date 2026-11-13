@@ -166,7 +166,8 @@ export default function Banks() {
                 bump(); toast(Number(b.archived) ? 'أُلغيت الأرشفة' : 'أُرشف الحساب · حركاته وأرصدته باقية كما هي');
               },
             },
-            Number(b.linked_n) || !perm.manage ? null : { icon: 'trash' as const, label: 'حذف', danger: true, onPress: () => onDelete(b) },
+            // وبنكٌ افتتاحيه غير صفر لا يحذفه إلا المالك: افتتاحيه في 1100 و3300 (المراجعة الشاملة 2026-11-13 · R11-A2.4-2)
+            Number(b.linked_n) || !perm.manage || (!bankAccess.owner && Number(b.opening_halalas)) ? null : { icon: 'trash' as const, label: 'حذف', danger: true, onPress: () => onDelete(b) },
           ]} />
         </Row>
       </Row>

@@ -675,7 +675,9 @@
     "auditEntity": "Account",
     "openingDiff": "Opening balances are not balanced: difference {{amount}} ({{side}}). They are saved as entered; complete the missing side to correct them.",
     "openingDebit": "debit is larger",
-    "openingCredit": "credit is larger"
+    "openingCredit": "credit is larger",
+    "openingOwnerOnly": "Only the owner sets an opening balance · not saved",
+    "bankOpeningHint": "Bank opening balances of {{amount}} are added to this (offset in 3300 «Opening balances»); edit them in Banks, not here"
   },
   "tenants": {
     "mergeDifferentIds": "Two different ID numbers are merged only with explicit confirmation",
@@ -920,6 +922,7 @@
     "bankTxEdited": "A bank transaction without an entry cannot change its bank, amount or source · delete it and record it again",
     "accountLocked": "A system account, or one used in an entry, keeps its type and group and is not deleted · it stays as it was",
     "handoverLocked": "The handover form is locked, so it is not reopened and its items do not change · the late edit from an old copy was rejected; a correction after locking is a separate corrective form",
+    "bankOpeningLocked": "A bank with an opening balance is deleted or restored from the trash by the owner only · it stays as it was",
     "collectedTwice": "A second collection of the same claim or invoice while a live one exists · rejected so it is not collected twice",
     "issuedInvoiceLocked": "An issued invoice is locked: its lines and what it was issued with do not change, it does not return to draft and is not deleted; it is corrected by a credit note · the member's write was rejected and it stays as issued",
     "installmentLocked": "A new installment for a contract the member neither wrote nor confirmed · a contract's schedule is generated when it is confirmed and is not added to, so it was rejected and the schedule stays as it was",

@@ -498,8 +498,9 @@ describe('٤.٦ الاستعادة من السلة تعيد القيود كما 
     });
     payPurchaseSplit(db, id, [{ method: 'bank', bankId: bank, amountHalalas: 20000 }], '2026-05-03');
     deletePurchase(db, id);
-    const mid = await balances(db);
     db.run(`UPDATE banks SET deleted_at = ? WHERE id = ?`, ['2026-05-04T00:00:00Z', bank]);
+    // افتتاحي البنك المحذوف يخرج من 1100 و3300 معاً (الهجرة ٦٢ · المراجعة الشاملة 2026-11-13 · A2.4)، فالمرجع بعد حذفه
+    const mid = await balances(db);
     expect(() => restoreFromTrash(db, 'purchases', id)).toThrow(/البنك/);
     expect(await balances(db)).toEqual(mid);
     expect(db.get<{ d: string | null }>(`SELECT deleted_at AS d FROM purchases WHERE id = ?`, [id])!.d).toBeTruthy();

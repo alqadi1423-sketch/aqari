@@ -5,6 +5,8 @@
 import type { DB } from '../../db/adapter';
 import { logAudit } from '../audit';
 import { t } from '../../i18n';
+import { memberDevice } from './orphans';
+import { ledgerBankOpenings } from './ledger';
 
 export interface AccountInput { code: string; name: string; type: string; openingHalalas: number }
 
@@ -17,28 +19,37 @@ const usedCount = (db: DB, code: string): number =>
 export function saveAccount(db: DB, input: AccountInput, editingCode?: string): void {
   const name = input.name.trim(), code = input.code.trim();
   if (!name || !code) throw new Error(t('accounts.required'));
+  const opening = Number(input.openingHalalas) || 0;
   db.transaction(() => {
     if (editingCode) {
-      const acc = db.get<{ type: string }>(`SELECT type FROM accounts WHERE code = ?`, [editingCode]);
+      const acc = db.get<{ type: string; o: number }>(`SELECT type, opening_halalas AS o FROM accounts WHERE code = ?`, [editingCode]);
       if (!acc) throw new Error(t('accounts.notFound'));
       if (acc.type !== input.type && isSystemAccount(db, editingCode)) throw new Error(t('accounts.systemType'));
       const used = usedCount(db, editingCode) > 0;
       if (used && acc.type !== input.type) throw new Error(t('accounts.usedType'));
-      db.run(`UPDATE accounts SET name = ?, type = ?${used ? '' : ', opening_halalas = ?'} WHERE code = ?`,
-        used ? [name, input.type, editingCode] : [name, input.type, input.openingHalalas, editingCode]);
+      // الافتتاحي ليس قيداً مرحّلاً فلا يمسّ سطراً: يُحفظ كما أُدخل ولو مرّ على الحساب قيد، للمالك وحده وبقبله وبعده في السجل · وكان يُسقط
+      // صامتاً والحفظ «ينجح» (المراجعة الشاملة 2026-11-13 · A2.5 · قرار المالك س١٨) · وجهاز العضو يُرفض تغييره برسالة (القاعدة ٩٩)
+      const before = Number(acc.o) || 0;
+      const changed = opening !== before;
+      if (changed && memberDevice(db)) throw new Error(t('accounts.openingOwnerOnly'));
+      db.run(`UPDATE accounts SET name = ?, type = ?, opening_halalas = ? WHERE code = ?`, [name, input.type, opening, editingCode]);
+      logAudit(db, t('accounts.auditModule', { lng: 'ar' }), 'update', t('accounts.auditEntity', { lng: 'ar' }), name,
+        changed ? { code: editingCode, opening_halalas: before } : undefined, changed ? { code: editingCode, opening_halalas: opening } : undefined);
     } else {
       if (db.get(`SELECT code FROM accounts WHERE code = ?`, [code])) throw new Error(t('accounts.codeTaken', { code }));
+      if (opening !== 0 && memberDevice(db)) throw new Error(t('accounts.openingOwnerOnly'));
       db.run(`INSERT INTO accounts (code, name, type, opening_halalas, created_at) VALUES (?,?,?,?,?)`,
-        [code, name, input.type, input.openingHalalas, new Date().toISOString()]);
+        [code, name, input.type, opening, new Date().toISOString()]);
+      logAudit(db, t('accounts.auditModule', { lng: 'ar' }), 'create', t('accounts.auditEntity', { lng: 'ar' }), name);
     }
-    logAudit(db, t('accounts.auditModule', { lng: 'ar' }), editingCode ? 'update' : 'create', t('accounts.auditEntity', { lng: 'ar' }), name);
   });
 }
 
 /** يعيد سبب منع الحذف، أو null إن جاز */
 /**
- * فرق الأرصدة الافتتاحية (مراجعة التثبيت #60 · قرار المالك 2026-10-07: «يُحفظ ويظهر الفرق»): مدينها (الأصول والمصروفات
- * وافتتاحيات البنوك، وهي خارج الدفتر حتى تُسجَّل فيه) ناقص دائنها (الخصوم وحقوق الملكية والإيرادات) · صفرٌ إن توازنت
+ * فرق الأرصدة الافتتاحية (مراجعة التثبيت #60 · قرار المالك 2026-10-07: «يُحفظ ويظهر الفرق»): مدينها (الأصول والمصروفات) ناقص دائنها
+ * (الخصوم وحقوق الملكية والإيرادات) · صفرٌ إن توازنت · وافتتاحيات البنوك في الدفتر منذ الهجرة ٦٢ مدينةً في 1100 ودائنةً في 3300 «أرصدة
+ * افتتاحية» فلا فرق منها (المراجعة الشاملة 2026-11-13 · A2.4 · قرار المالك س٢) · وما بقي منها خارجه (قاعدةٌ قبل الهجرة) طرفٌ مدين كما كان
  */
 export function openingDifference(db: DB): number {
   const acc = Number(db.get<{ d: number }>(
@@ -48,7 +59,7 @@ export function openingDifference(db: DB): number {
   try {
     banks = Number(db.get<{ b: number }>(`SELECT COALESCE(SUM(opening_halalas), 0) AS b FROM banks WHERE deleted_at IS NULL`)?.b ?? 0);
   } catch { /* قاعدة بلا جدول البنوك */ }
-  return acc + banks;
+  return acc + banks - ledgerBankOpenings(db);
 }
 
 export function deleteBlocker(db: DB, code: string): string | null {

@@ -6,7 +6,7 @@
 import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, STATEMENT_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 61;
+export const SCHEMA_VERSION = 62;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -2001,4 +2001,24 @@ export const MIGRATION_61 = `
 CREATE INDEX IF NOT EXISTS ix_inbox_d_line_key ON sync_inbox(tbl, json_extract(payload, '$.d.line_key'));
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53, MIGRATION_54, MIGRATION_55, MIGRATION_56, MIGRATION_57, MIGRATION_58, MIGRATION_59, MIGRATION_60, MIGRATION_61];
+/**
+ * الهجرة ٦٢ · حساب 3300 «أرصدة افتتاحية» (المراجعة الشاملة 2026-11-13 · A2.4 · قرار المالك س٢: يُبنى الآن قبل بقية الأساس المحاسبي):
+ * افتتاحي كل بنكٍ حيّ مدينٌ في 1100 ودائنٌ في 3300، مشتقٌّ من banks.opening_halalas عند كل قراءة رصيد (ledger.ts: allAccounts) فلا يُخزَّن
+ * قيدٌ يتكرر أو يتأخر بين الأجهزة، والبنوك القائمة يشملها الاشتقاق بلا ترحيل · نظاميٌّ بالرقم والاسم والنوع أينما وُجد فلا يتعارض في المزامنة
+ * والالتقاط مطفأ كالهجرة ٤٨: كل جهاز يُنشئ 3300 بهجرته، فلا يُرفع صفٌّ بوقت الترقية يغلب تسميةً أحدث للمالك من جهازه الآخر، ولا يرفعه جهاز
+ * العضو حساباً نظامياً جديداً فترفضه السحابة (openingKept) ويبقى عنده «مرفوضاً» (المراجعة الشاملة 2026-11-13 · R11-A2.4-3)
+ * ورمزٌ 3300 أنشأه المستخدم ثم حذفه (غير نظاميٍّ في السلة بلا سطر قيد) يُحذف ويُدرج حساب النظام مكانه، وإلا بقي الرمز مأخوذاً فلا يُصلَح A2.4
+ * له أبداً · وحسابه الحيّ يُترك كما هو، وافتتاحيات البنوك حينها خارج الدفتر ظاهرةً في الفرق (ledger.ts: ledgerBankOpenings · R11-A2.4-1)
+ */
+// i18n-exempt: اسم حساب النظام ونوعه كما يُخزَّنان في الدليل
+export const MIGRATION_62 = `
+CREATE TEMP TABLE _m62_cap AS SELECT k, v FROM sync_ctl WHERE k = 'capture';
+UPDATE sync_ctl SET v = 0 WHERE k = 'capture';
+DELETE FROM accounts WHERE code = '3300' AND is_system = 0 AND deleted_at IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM journal_lines WHERE account_code = '3300');
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('3300', 'أرصدة افتتاحية', 'حقوق ملكية', NULL, 0, 1, datetime('now'));
+UPDATE sync_ctl SET v = (SELECT v FROM _m62_cap WHERE _m62_cap.k = sync_ctl.k) WHERE k IN (SELECT k FROM _m62_cap);
+DROP TABLE _m62_cap;
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53, MIGRATION_54, MIGRATION_55, MIGRATION_56, MIGRATION_57, MIGRATION_58, MIGRATION_59, MIGRATION_60, MIGRATION_61, MIGRATION_62];
