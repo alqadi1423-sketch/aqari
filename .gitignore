@@ -55,3 +55,6 @@ yarn-error.*
 # سجلات انهيار JVM أثناء البناء
 hs_err_pid*.log
 replay_pid*.log
+
+# نسخ العمل المؤقتة لأدوات الوكيل (سير العمل) · لا تُرفع
+.claude/worktrees/
