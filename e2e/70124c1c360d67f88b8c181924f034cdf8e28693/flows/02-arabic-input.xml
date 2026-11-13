@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="0" time="55.493" timestamp="2026-11-13T17:42:39">
+    <testcase id="02-arabic-input" name="02-arabic-input" classname="02-arabic-input" file="e2e/maestro/02-arabic-input.yaml" time="55.46" timestamp="2026-11-13T17:42:39" status="SUCCESS"/>
+  </testsuite>
+</testsuites>
