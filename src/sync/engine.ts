@@ -42,6 +42,8 @@ import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentS
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 import { isoCmp, isoNorm } from './isoTime';
 import { redactForReport } from '../domain/redact';
+import { mulQty, pctOf } from '../domain/money';
+import { OWNER_ONLY_COLS, POSTED_PURCHASE_COLS } from '../domain/access/opWrites';
 
 const nowIso = () => new Date().toISOString();
 
@@ -1910,6 +1912,222 @@ function childTime(db: DB, table: string, key: string, at: string): string {
   return seen && isoCmp(seen, at) < 0 ? seen : at;
 }
 
+/*
+ * الأب المقفل أمام كتابة العضو (المراجعة الشاملة 2026-11-13 · B-1): «الفاتورة الصادرة مقفلة: لا تُعدَّل ولا تعود مسودة ولا تُحذف» (قرار
+ * المالك 2026-10-07 على #30 · DESIGN §١٣.١٣)، وجدول أقساط العقد المؤكَّد «يُولَّد آلياً عند الإنشاء ولا يُعاد توليده» · والقفل كان في
+ * الشاشة وحدها (saveInvoice وconfirmContract)، فسطرٌ يكتبه عضوٌ في السحابة لفاتورةٍ صادرة، أو قسطٌ لعقدٍ مؤكَّد لغيره، كان يطبّقه جهاز
+ * المالك كما هو فيتغيّر الإقرار والفاتورة المطبوعة وجدول المستأجر بعد إصدارها · وما يكتبه التطبيق نفسه يصل على دفعات (دفعة العضو ثمانية
+ * صفوف: MEMBER_PUSH_BATCH) بعد رأسه في ترتيب الرفع، فالأب الصادر في الطريق لم تكتمل أبناؤه بعد، وما بعد اكتمالها مزوَّر
+ */
+const DRAFT_INVOICE = 'مسودة'; // i18n-exempt: حالة الفاتورة المخزّنة
+const KIND_CREDIT_NOTE = 'credit_note';
+/** حالات الفاتورة الصادرة التي يكتبها التطبيق بعد إصدارها: التأخر والتحصيل وعكسه (setInvoiceStatus وpayInvoice) */
+const ISSUED_INVOICE_STATUSES = new Set(['مستحقة', 'متأخرة', PAID_INVOICE]); // i18n-exempt: حالات الفاتورة المخزّنة
+/**
+ * ما يغيّره التطبيق في الفاتورة الصادرة (المراجعة الشاملة 2026-11-13 · B-1 ب · المدقق المستقل R11-B1-2: كانت قائمة منعٍ فاتها رابط قيد
+ * الإصدار، فمحاه «كامل» فرحّل تعليمُها «متأخرة» عند المالك قيد إصدارٍ ثانياً) · قائمة سماح: الحالة (ISSUED_INVOICE_STATUSES)، وحقول
+ * التحصيل، وعقارها بنقل وحدتها (unitMove.ts) · وما سواها لا يتغيّر من عضو، إلا قيد الإصدار في حالتيه (namedEntryIssue) والإخراج من السلة
+ */
+const ISSUED_INVOICE_OPEN = new Set(['status', 'paid_date', 'payment_method', 'payment_bank_id', 'payment_journal_entry_id', 'property_id']);
+/** حقول سطر الفاتورة كما يكتبها saveInvoice · تغيّر أيٍّ منها تعديلٌ للسطر */
+const INVOICE_LINE_COLS = ['invoice_id', 'descr', 'qty', 'price_halalas', 'tax_pct', 'sort', 'tax_code'];
+/** حكم الأب المقفل: ينتظر ما في الوارد (قيدٌ أو تأكيدٌ أو جدولٌ في الطريق) ولا يُرفض بعد */
+const LOCK_AWAIT = '\u0000await';
+
+/** كاتب الصف الأول إن كان عضواً (row_by) · وما كتبه المالك هنا أو بلا كاتبٍ معروف (ما قبل الهجرة ٤٢) null */
+function memberWriterOf(db: DB, table: string, key: string): string | null {
+  const w = db.get<{ uid: string }>(`SELECT uid FROM row_by WHERE tbl = ? AND pk = ?`, [table, key])?.uid ?? '';
+  return w && w !== ownerUid(db) ? w : null;
+}
+
+/**
+ * الأب المقفل صار صادراً أو مؤكَّداً هنا بمستند عضو (المراجعة الشاملة 2026-11-13 · المدقق المستقل R11-B1-4 وR11-B1-5) · فأبناؤه من
+ * عضوٍ قد تكون في الطريق بعده: الفاتورة التي كتبها المالك وأصدرها «كامل» الفواتير (فحص الاكتمال لا القفل التام)، ومسودة عضوٍ أكّدها
+ * عضوٌ آخر («كامل» العقود يكتب جدولها لا كاتبها) · ويُعلَّم ما لا يُعرف بكاتبه وحده: فاتورة المالك، وعقد العضو الذي كان هنا مسودة
+ */
+const VIA_MEMBER = 'locked_via_member:';
+const viaMember = (db: DB, t: string, k: string): boolean => getSyncState(db, VIA_MEMBER + t + ':' + k) != null;
+function noteViaMember(db: DB, doc: RemoteDoc, row: RowData): void {
+  if ((doc.t !== 'invoices' && doc.t !== 'contracts') || getSyncState(db, 'membership') || !byMember(db, doc, false)) return;
+  if (row.status == null || row.status === DRAFT_INVOICE) return;
+  const cur = db.get<{ s: string }>(`SELECT status AS s FROM "${doc.t}" WHERE id = ?`, [doc.k]);
+  const member = memberWriterOf(db, doc.t, doc.k) != null;
+  // (حالة المسودة في الجدولين «مسودة»: DRAFT_INVOICE وDRAFT_CONTRACT)
+  const mark = doc.t === 'invoices' ? !member && (!cur || cur.s === DRAFT_INVOICE) : member && cur?.s === DRAFT_CONTRACT;
+  if (mark) setSyncState(db, VIA_MEMBER + doc.t + ':' + doc.k, '1');
+}
+
+/**
+ * فاتورةٌ صادرة هنا مقفلةٌ أمام سطور العضو (المراجعة الشاملة 2026-11-13 · B-1): ما صدر هنا لا بمستند عضو (كتبها المالك وأصدرها هو)
+ * لا سطور له في الطريق، فهي مقفلة كيفما كانت سطورها (المدقق المستقل R11-B1-5: فاتورةٌ قديمة بلا سطور كان «كامل» يضيف لها سطوراً
+ * يُحسب بها البند ١) · وما أصدره عضو (فاتورته، أو فاتورة المالك أصدرها «كامل» · noteViaMember) مقفلٌ متى اكتملت سطوره: سطوره هنا تعيد
+ * رأسه كما صدر (صافيه، وضريبته بنسبة كل سطر كما يحسبها invoiceTotals، والإشعار الدائن بصافيه: ضريبته من باقي فاتورته لا من سطوره ·
+ * creditNoteAmounts) · وقبل اكتمالها يُقبل ما يكتبه التطبيق مع إصدارها: فاتورةٌ جديدة صادرة، ومسودةٌ عُدّلت وصدرت في حفظٍ واحد فحُذفت
+ * سطورها القديمة، والإشعار الدائن
+ */
+function issuedInvoiceSealed(db: DB, id: string): boolean {
+  const v = db.get<Record<string, unknown>>(`SELECT * FROM invoices WHERE id = ?`, [id]);
+  if (!v || v.status === DRAFT_INVOICE) return false;
+  if (!memberWriterOf(db, 'invoices', id) && !viaMember(db, 'invoices', id)) return true;
+  const lines = db.all<{ qty: number; price_halalas: number; tax_pct: number }>(
+    `SELECT qty, price_halalas, tax_pct FROM invoice_lines WHERE invoice_id = ?`, [id]);
+  if (!lines.length) return false;
+  let net = 0, tax = 0;
+  for (const l of lines) {
+    const n = mulQty(Number(l.qty), Number(l.price_halalas));
+    net += n;
+    tax += pctOf(n, Number(l.tax_pct));
+  }
+  return net === Number(v.subtotal_halalas) && (v.kind === KIND_CREDIT_NOTE || tax === Number(v.tax_halalas));
+}
+
+/** قيدٌ مرحّلٌ حيٌّ هنا (لم يُعكس ولم يُحذف) */
+const liveEntry = (db: DB, id: unknown): boolean => id != null && id !== ''
+  && !!db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND status = ? AND reversed_by IS NULL AND deleted_at IS NULL`, [String(id), POSTED_ENTRY]);
+/** قيدٌ ينتظر في الوارد */
+const entryInbox = (db: DB, id: string): boolean =>
+  !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [id]);
+/**
+ * القيد الذي يسمّيه رأس المصدر الوارد بدل قيده هنا (قيد إصدار الفاتورة · قيد فاتورة الشراء): قيدُ المصدر نفسه مرحّلٌ حيٌّ هنا (وقد طابق
+ * رأسه الوارد في إعادة الاشتقاق: memberSourceCheck)، وقيده القديم ليس حيّاً هنا · وما في الوارد منهما ينتظر · سببُ الرفض أو '' أو LOCK_AWAIT
+ */
+function namedEntryIssue(db: DB, src: string, srcId: string, oldId: unknown, newId: unknown, why: string): string {
+  const next = newId == null ? '' : String(newId);
+  if (!next || next === String(oldId ?? '')) return why;
+  if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND status = ? AND src_type = ? AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL`,
+    [next, POSTED_ENTRY, src, srcId])) return entryInbox(db, next) ? LOCK_AWAIT : why;
+  if (!liveEntry(db, oldId)) return '';
+  // وقيده القديم في طريقه إلى العكس: عاكسه أو نسخته المعكوسة في الوارد
+  return reversalPending(db, String(oldId), src, srcId)
+    || db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0 AND json_extract(payload, '$.d.reversed_by') IS NOT NULL`, [String(oldId)])
+    ? LOCK_AWAIT : why;
+}
+
+/**
+ * حارس الأب المقفل على جهاز المالك (المراجعة الشاملة 2026-11-13 · B-1) · سببُ الرفض أو '' أو LOCK_AWAIT · والمرفوض تُعاد نسخة المالك منه
+ * إلى الطابور (وما ليس عنده شاهدُ حذف: buildDoc) فتعود السحابة وكل جهازٍ إليها · والقواعد ترفض منه ما يسعه حدّ الألف تعبير (rulesGen.ts:
+ * سطر «إدخال» لفاتورةٍ غير مسودة، وما صدرت به الفاتورة من «كامل» ورابط قيد إصدارها)، وما لا يسعه هنا وحده: سطر «كامل» وتعديله وحذفه
+ * (حذف السطور القديمة لمسودةٍ صدرت في حفظٍ واحد يصل بعد رأسها الصادر)، وأعمدة الصادرة التي أُضيفت بعد المخطط الأول، وقسط العقد كله
+ * (إنشاء العقد أثقل كتابات العضو: اختبار الميزانية)، وفاتورة الشراء المرحّلة
+ */
+const LOCKED_PARENT_TABLES = new Set(['invoices', 'invoice_lines', 'contract_installments', 'purchases']);
+function lockedParentIssue(db: DB, doc: RemoteDoc): string {
+  // الجدول أولاً: ما سواها لا يدفع قراءةً لكل وارد (فحص المالك خطيٌّ في حجم الوارد · tests/d4.memberScale.test.ts)
+  if (!LOCKED_PARENT_TABLES.has(doc.t) || getSyncState(db, 'membership')) return '';
+  const d = (doc.d ?? {}) as Record<string, unknown>;
+  // ١) رأس الفاتورة الصادرة: لا تعود مسودة ولا تُحذف، ولا يتغيّر منها إلا ما يكتبه التطبيق (ISSUED_INVOICE_OPEN)
+  if (doc.t === 'invoices' && (doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, false))) {
+    const cur = db.get<Record<string, unknown>>(`SELECT * FROM invoices WHERE id = ?`, [doc.k]);
+    if (!cur || cur.status === DRAFT_INVOICE) return '';
+    const locked = tr('sync.issuedInvoiceLocked', { lng: 'ar' });
+    if (doc.del || ('status' in d && !ISSUED_INVOICE_STATUSES.has(String(d.status)))) return locked;
+    const trashed = cur.deleted_at != null;
+    // الحقل الغائب عن المستند لا يمسّه التطبيق (upsertRow)، فيُقارن الحاضر وحده (مستندٌ من إصدارٍ أقدم بلا عمودٍ أُضيف بعده)
+    for (const c of Object.keys(cur)) {
+      if (!(c in d) || String(cur[c] ?? '') === String(d[c] ?? '') || ISSUED_INVOICE_OPEN.has(c)) continue;
+      // والمحذوفة قبل القفل تخرج من السلة (restoreInvoice) ولا تدخلها صادرةٌ حيّة
+      if (c === 'deleted_at' && trashed && d.deleted_at == null) continue;
+      // وقيد الإصدار يتغيّر في حالتين يكتبهما التطبيق: صادرةٌ بلا قيدٍ حيّ (setInvoiceStatus لصادرةٍ قديمة بلا قيد)، والإخراج من السلة
+      // بقيدٍ جديد · وقيدها الجديد قيدُ إصدارها هنا (طابق رأسها)
+      if (c === 'journal_entry_id') {
+        const why = namedEntryIssue(db, 'invoice', doc.k, cur.journal_entry_id, d.journal_entry_id, locked);
+        if (why) return why;
+        continue;
+      }
+      return locked;
+    }
+    return '';
+  }
+  // ٢) سطر الفاتورة: إنشاؤه أو تعديله أو حذفه لفاتورةٍ صادرة مقفلة هنا (قبلها وبعدها: invoice_id هنا وفي المستند)
+  if (doc.t === 'invoice_lines') {
+    const cur = db.get<Record<string, unknown>>(`SELECT ${INVOICE_LINE_COLS.join(', ')} FROM invoice_lines WHERE id = ?`, [doc.k]);
+    if (!(doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, !cur))) return '';
+    // ونسخةٌ مطابقة لما هنا ليست تعديلاً (إعادة رفعٍ بلا تغيير)
+    const changed = doc.del ? !!cur : !cur || INVOICE_LINE_COLS.some((c) => String(cur[c] ?? '') !== String(d[c] ?? ''));
+    if (!changed) return '';
+    const parents = new Set([cur?.invoice_id, doc.del ? null : d.invoice_id].filter((x) => x != null && x !== '').map(String));
+    return [...parents].some((p) => issuedInvoiceSealed(db, p)) ? tr('sync.issuedInvoiceLocked', { lng: 'ar' }) : '';
+  }
+  // ٣) قسطٌ جديد من عضو: جدول العقد يكتبه من أكّده مع تأكيده (confirmContract وrenewContract)، والمسودة بلا أقساط
+  if (doc.t === 'contract_installments' && !doc.del && doc.d && !db.get(`SELECT 1 FROM contract_installments WHERE id = ?`, [doc.k])
+    && byMember(db, doc, true)) {
+    return installmentIssue(db, doc, String(d.contract_id ?? ''));
+  }
+  // ٤) فاتورة الشراء المرحّلة: صافيها وضريبتها وإجماليها ووضعها الضريبي وتاريخها لا تتغيّر من عضوٍ إلا بقيدها الجديد وعكس القديم
+  // (المدقق المستقل R11-B1-3: كان «كامل» المشتريات يضاعف البند ٧ من رأسها والدفتر كما هو)
+  if (doc.t === 'purchases' && !doc.del && doc.d && byMember(db, doc, false)) {
+    const cur = db.get<Record<string, unknown>>(`SELECT * FROM purchases WHERE id = ?`, [doc.k]);
+    if (!cur || !POSTED_PURCHASE_COLS.some((c) => c in d && c in cur && String(cur[c] ?? '') !== String(d[c] ?? ''))) return '';
+    return namedEntryIssue(db, 'purchase', doc.k, cur.journal_entry_id, d.journal_entry_id, tr('sync.postedPurchaseLocked', { lng: 'ar' }));
+  }
+  return '';
+}
+
+/**
+ * قسطٌ جديد من عضو (المراجعة الشاملة 2026-11-13 · B-1 ب · المدقق المستقل R11-B1-1 وR11-B1-4) · سببُ الرفض أو '' أو LOCK_AWAIT:
+ *  - المسودة: لا أقساط لها في التطبيق (يولّدها التأكيد في معاملته)، فقسطٌ لها ينتظر تأكيدها الوارد، ولا يُقبل إلا من كاتبها (قرار المالك
+ *    2026-10-04: «صاحب إدخال يعدّل مسودته هو فقط») · كان يُقبل من أي عضو، فيصير قسطه المزروع جدول العقد كله حين يؤكّده المالك
+ *    (confirmContract لا يولّد جدولاً لعقدٍ له أقساط).
+ *  - عقدٌ كاتبه عضو (row_by): جدوله لكاتبه، فلا يُقبل قسطُ غيره ما دام لكاتبه قسطٌ هنا أو في الوارد · وغيرُه يكتبه حين أكّد مسودته
+ *    («كامل» العقود)، فيُقبل من أول كاتبٍ لأقساطه إن كان العقد هنا مسودةً حين وصل تأكيده (noteViaMember) · وإلا (عقدٌ وصل مؤكَّداً)
+ *    ينتظر أقساط كاتبه ساعةً بوقت الخادم من آخر نسخةٍ لرأسه (LATE_LINK_MS: ما كُتب معه يُرفع في دورته ولو على دفعات)، ثم أول كاتب ·
+ *    كان «أول كاتب» وحده، فقسطٌ يسبق به عضوٌ أقساطَ صاحب العقد يملك جدوله وتُرفض أقساط صاحبه كلها.
+ *  - عقدٌ بلا كاتبٍ عضو (مسودة المالك أكّدها «كامل» العقود، أو ما قبل الهجرة ٤٢): أول كاتبٍ لأقساطه، أو أقساطه هنا كلها من كاتب هذا
+ *    القسط.
+ * ويبقى في «أول كاتب» ما لا يعرفه جهاز المالك: عضوٌ يسبق مؤكِّد المسودة بقسطٍ وهو في الطريق، أو يسبق صاحب العقد بعد أن انقطع رفعه
+ * أكثر من ساعة · وسدّه حقلُ «آخر كاتب» تفرضه القاعدة (الكاتب «by» لا يتغيّر بعد الإنشاء)، أو صلاحية كل عضوٍ على جهاز المالك
+ */
+function installmentIssue(db: DB, doc: RemoteDoc, cid: string): string {
+  const c = db.get<{ s: string }>(`SELECT status AS s FROM contracts WHERE id = ?`, [cid]);
+  // العقد لم يصل بعد: ينتظره القسط بمفتاحه الأجنبي
+  if (!c) return '';
+  const locked = tr('sync.installmentLocked', { lng: 'ar' });
+  const by = String(doc.by ?? '');
+  const writer = memberWriterOf(db, 'contracts', cid);
+  if (!by) return locked;
+  if (c.s === DRAFT_CONTRACT) {
+    // تأكيدها في الوارد لم يُطبَّق بعد (ينتظر أباً): ينتظره قسطه
+    if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'contracts' AND pk = ? AND del = 0 AND json_extract(payload, '$.d.status') != ?`,
+      [cid, DRAFT_CONTRACT])) return LOCK_AWAIT;
+    return writer && by === writer ? '' : locked;
+  }
+  // كاتب كل قسطٍ هنا: من وصل بالمزامنة بكاتبه (stageInbox)، وما أنشأه المالك هنا بلا كاتب
+  const writers = db.all<{ w: string }>(`SELECT COALESCE(b.uid, '') AS w FROM contract_installments i
+    LEFT JOIN row_by b ON b.tbl = 'contract_installments' AND b.pk = i.id WHERE i.contract_id = ?`, [cid]).map((x) => x.w);
+  const firstWriter = writers.every((w) => w === by) ? '' : locked;
+  if (!writer || by === writer) return firstWriter;
+  if (writers.includes(writer) || db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'contract_installments' AND del = 0
+    AND json_extract(payload, '$.d.contract_id') = ? AND json_extract(payload, '$.by') = ?`, [cid, writer])) return locked;
+  if (viaMember(db, 'contracts', cid)) return firstWriter;
+  const at = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = 'contracts' AND pk = ?`, [cid])?.u;
+  return at && Date.parse(toServerClock(db, nowIso())) - Date.parse(at) <= LATE_LINK_MS ? LOCK_AWAIT : firstWriter;
+}
+
+/**
+ * إعدادات المالك وحده في صفّ المنشأة (المراجعة الشاملة 2026-11-13 · B-3): تسجيل ضريبة القيمة المضافة في «المالية» للمالك وحده
+ * (app/settings.tsx · admin)، لكنه عمودٌ في جدولٍ يملكه قسم «المنشأة والقوالب»، فعضوٌ له «كامل» فيه كان يطفئه من السحابة فيسقط البند ١
+ * من الإقرار على كل جهاز · ولا يحذف العضو صفّ المنشأة · والقاعدة ترفضهما (rulesGen.ts)، وجهاز المالك يرفضهما ويعيد نسخته · والأعمدة
+ * في OWNER_ONLY_COLS (opWrites.ts) · سببُ الرفض أو ''
+ */
+function ownerColsIssue(db: DB, doc: RemoteDoc): string {
+  const cols = OWNER_ONLY_COLS[doc.t];
+  if (!cols || getSyncState(db, 'membership')) return '';
+  if (!(doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, false))) return '';
+  if (doc.del) return tr('sync.companyOwnerOnly', { lng: 'ar' });
+  const cur = readRow(db, doc.t, doc.k);
+  const d = (doc.d ?? {}) as Record<string, unknown>;
+  return cur && cols.some((c) => c in d && String(d[c] ?? '') !== String(cur[c] ?? ''))
+    ? tr('sync.companyOwnerOnly', { lng: 'ar' }) : '';
+}
+/** جهاز العضو: إعداد المالك في صفّه من الوارد ولو غلب تعديله، فلا يرفع قيمةً قديمة ترفضها القاعدة (B-3 · كالافتتاحي adoptCloudOpening) */
+function adoptOwnerCols(db: DB, doc: RemoteDoc): void {
+  const cols = OWNER_ONLY_COLS[doc.t];
+  if (!cols || !getSyncState(db, 'membership') || !doc.d || doc.del) return;
+  for (const c of cols) {
+    if (c in doc.d) db.run(`UPDATE "${doc.t}" SET "${c}" = ? WHERE ${pkWhere(doc.t)}`, [doc.d[c] as SqlValue, ...pkParams(doc.t, doc.k)]);
+  }
+}
+
 type ApplyOutcome = 'applied' | 'skipped' | 'conflict-local' | 'conflict-remote' | 'retry' | 'rejected';
 
 function reject(db: DB, doc: RemoteDoc, reason: string): void {
@@ -2100,7 +2318,8 @@ function applyOne(
   // التعارض على مستوى الصف · الأحدث تغييراً يغلب
   const pending = db.get<OutRow>(`SELECT tbl, pk, op, changed_at FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
   let conflict: 'conflict-remote' | null = null;
-  let keepOpening = false;
+  // ما يُبقيه جهاز المالك من قيمه في الصف الوارد (الافتتاحي وإعداد المالك) فيُعاد الصف مدموجاً إلى السحابة
+  let keepOwnerValue = false;
   // افتتاحيّ السحابة كما وصل (قبل أن يُبقي جهاز المالك افتتاحيّه) · يُذكر بعد التطبيق
   const cloudOpening = OPENING_TABLES.has(doc.t) && doc.d && !doc.del ? Number(doc.d.opening_halalas) || 0 : null;
   if (pending) {
@@ -2133,6 +2352,7 @@ function applyOne(
       // والافتتاحي للمالك وحده (openingKept): جهاز العضو يأخذه من الوارد ولو غلب تعديله، فتحمله نسخته المرفوعة كما في السحابة
       // (المدقق الخارجي Q٢: كان يبقى بالافتتاحي القديم فتُرفض كل تسميةٍ منه ويخطئ رصيد البنك عنده)
       adoptCloudOpening(db, doc);
+      adoptOwnerCols(db, doc);
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', `${doc.t} · ${doc.k} · غلب تعديل هذا الجهاز (${mine}) على الوارد (${doc.u})`);
       return 'conflict-local';
     }
@@ -2143,7 +2363,15 @@ function applyOne(
     if (!joining && OPENING_TABLES.has(doc.t) && doc.d && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)
       && openingChangedHere(db, doc.t, doc.k, true)) {
       const mineOpening = db.get<{ o: number }>(`SELECT opening_halalas AS o FROM "${doc.t}" WHERE ${doc.t === 'accounts' ? 'code' : 'id'} = ?`, [doc.k]);
-      if (mineOpening) { doc.d = { ...doc.d, opening_halalas: Number(mineOpening.o) || 0 }; keepOpening = true; }
+      if (mineOpening) { doc.d = { ...doc.d, opening_halalas: Number(mineOpening.o) || 0 }; keepOwnerValue = true; }
+    }
+    // وإعداد المالك في صفّ المنشأة كذلك (المراجعة الشاملة 2026-11-13 · B-3 · المدقق المستقل R11-B3-1): تعديله المعلَّق هنا يبقى ولو
+    // غلب الوارد من عضوٍ بقية الصف، ويُطبَّق الباقي ويُعاد الصف مدموجاً · كان الصف كله يُرفض (ownerColsIssue) فيضيع تعديل العضو المشروع
+    // لاسم المنشأة · ونسخة عضوٍ بقيمةٍ مزوَّرة لا تغلب هنا على حالٍ، فقيمة المالك هي الباقية
+    if (!joining && OWNER_ONLY_COLS[doc.t] && doc.d && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)) {
+      const mineRow = readRow(db, doc.t, doc.k);
+      const kept = mineRow ? OWNER_ONLY_COLS[doc.t].filter((c) => c in doc.d! && c in mineRow && String(doc.d![c] ?? '') !== String(mineRow[c] ?? '')) : [];
+      if (kept.length) { doc.d = { ...doc.d, ...Object.fromEntries(kept.map((c) => [c, mineRow![c]])) }; keepOwnerValue = true; }
     }
   }
   // الوقت الوارد لا يتجاوز وقت كتابته في الخادم (#56)
@@ -2207,6 +2435,17 @@ function applyOne(
     }
   }
 
+  // الأب المقفل (الفاتورة الصادرة وسطورها، وأقساط العقد المؤكَّد · المراجعة الشاملة 2026-11-13 · B-1) وإعداد المالك في صفّ المنشأة (B-3):
+  // كتابة العضو تُرفض وتُعاد نسخة المالك إلى الطابور (وما ليس عنده شاهدُ حذف) فتعود السحابة وكل جهازٍ إليها، ويظهر الرفض في حالة المزامنة
+  const lockedWhy = lockedParentIssue(db, doc) || ownerColsIssue(db, doc);
+  // (وما في طريقه إليه قيدٌ أو تأكيدٌ أو جدولٌ في الوارد ينتظر كالأب الناقص)
+  if (lockedWhy === LOCK_AWAIT) return 'retry';
+  if (lockedWhy) {
+    enqueue(db, doc.t, doc.k, 'upsert');
+    reject(db, doc, lockedWhy);
+    return 'rejected';
+  }
+
   if (doc.del && doc.t === 'contract_installments' && !getSyncState(db, 'membership') && doc.dby !== ownerUid(db)) {
     const c = db.get<{ s: string }>(`SELECT c.status AS s FROM contract_installments i JOIN contracts c ON c.id = i.contract_id WHERE i.id = ?`, [doc.k]);
     // مسودة العقد تُستبدل أقساطها فتُحذف · وأقساط المؤكَّد تبقى (قرار المالك 2026-10-15 «٨» · المتحقق المستقل، الجولة ٣٦)
@@ -2260,6 +2499,7 @@ function applyOne(
         }
         if (doc.t === 'bank_statement_lines') { const c = statementLineCheck(db, row, !getSyncState(db, 'membership') && byMember(db, doc, true)); relink = c.changed && (c.own || !getSyncState(db, 'membership')); relinkOwn = c.own; }
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
+        noteViaMember(db, doc, row);
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
         if (doc.t === 'bank_statements') { resetStatementCounts(db, doc.k); statementCascade(db, doc.k, row, theirs0); }
@@ -2285,7 +2525,7 @@ function applyOne(
         if (issues.length) throw new Error('الوارد مرفوض · ' + issues.join(' · '));
       }
       if (pending) db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
-      if (keepOpening || (repaired && !getSyncState(db, 'membership'))) enqueue(db, doc.t, doc.k, 'upsert');
+      if (keepOwnerValue || (repaired && !getSyncState(db, 'membership'))) enqueue(db, doc.t, doc.k, 'upsert');
       if (relink && relinkOwn) enqueue(db, doc.t, doc.k, 'upsert');
       // (بوقت النسخة الواردة لا بوقت الآن: تعديلٌ حقيقي للعضو بعدها يغلب التصحيح · المدقق الخارجي G٢-٧ كـY٧)
       else if (relink) enqueueStmtFix(db, doc.k, theirs0);

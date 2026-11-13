@@ -489,6 +489,55 @@ service cloud.firestore {
             && a.get('deleted_at', null) == b.get('deleted_at', null)))));
     }
 
+    // إنشاء العضو (يُستدعى لجداول lockedCreateTables وحدها، وكلٌّ بدالته: القواعد تحسب كل تعبيرٍ مكتوبٍ في الدالة ولو تُرك فرعه):
+    // الفاتورة بإدخال تُحفظ مسودة والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53) · وسطرها لمسودةٍ وحدها إلا من «كامل» الفواتير
+    // («إدخال» لا يُصدر، فلا يكتب سطراً لصادرة) · وصفّ إعداد المالك لا ينشئه العضو
+    function lockedCreateOk(org, r, m, bt) {
+      return bt == 'invoices' ? invoiceCreateOk(r, m) : (bt == 'invoice_lines' ? invoiceLineCreateOk(org, r, m) : false);
+    }
+    // i18n-exempt: حالة الفاتورة المخزّنة في نص القواعد
+    function invoiceCreateOk(r, m) {
+      return r.d != null ? (r.d.get('status', '') == 'مسودة' ? true : lvlOf(m, 'invoices') >= 3) : true;
+    }
+    function invoiceLineCreateOk(org, r, m) {
+      return r.del == true ? true : (lvlOf(m, 'invoices') >= 3 ? true : invoiceDraftAt(org, r.d.invoice_id));
+    }
+    function invoiceDraftAt(org, id) {
+      return isDraft(getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$('invoices__' + id)).data);
+    }
+    // تعديل العضو: الفاتورة الصادرة لا يتغيّر ما صدرت به ولا رابط قيدها ولا تعود مسودة ولا تُحذف (والتحصيل وحالة التأخر يكتبها التطبيق)،
+    // وإعداد المالك لا يتغيّر ولا يُحذف صفّه، وفاتورة الشراء لا تتغيّر قيمها إلا بقيدها الجديد
+    function lockedUpdateOk(org, before, after) {
+      return after.t.matches('(company)(~pub)?') ? ownerColsKept(before, after)
+        : (after.del == true || before.get('d', null) == null ? true
+          : (after.t == 'purchases' ? postedPurchaseKept(org, after.k, before.d, after.d)
+            : (isDraft(before) ? true : issuedInvoiceKept(before.d, after.d))));
+    }
+    function issuedInvoiceKept(b, a) {
+      return !a.diff(b).affectedKeys().hasAny(['no', 'customer_name', 'customer_vat', 'issue', 'due', 'notes', 'subtotal_halalas', 'tax_halalas', 'total_halalas']) && a.get('status', '') != 'مسودة'
+        && (b.get('deleted_at', null) != null || (a.get('deleted_at', null) == null
+          && (b.get('journal_entry_id', null) == null || a.get('journal_entry_id', null) == b.get('journal_entry_id', null))));
+    }
+    // صافي فاتورة الشراء وضريبتها وإجماليها ووضعها الضريبي وتاريخها (البند ٧ ومثله) يتغيّر بقيدٍ جديد لها مكتوبٍ في السحابة، وقيدها القديم
+    // معكوس (savePurchase) · ثلاثيٌّ فلا يُقرأ القيد إلا لتغييرها
+    function postedPurchaseKept(org, k, b, a) {
+      return a.diff(b).affectedKeys().hasAny(['subtotal_halalas', 'tax_halalas', 'total_halalas', 'tax_status', 'date'])
+        ? (a.get('journal_entry_id', null) is string && a.journal_entry_id != b.get('journal_entry_id', null)
+          ? purchaseEntryAt(org, k, a.journal_entry_id) && (b.get('journal_entry_id', null) is string ? entryReversedAt(org, b.journal_entry_id) : true)
+          : false)
+        : true;
+    }
+    function purchaseEntryAt(org, k, id) {
+      return getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$('journal_entries__' + id)).data.d.get('src_id', '') == k;
+    }
+    function entryReversedAt(org, id) {
+      return getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$('journal_entries__' + id)).data.d.get('reversed_by', null) != null;
+    }
+    function ownerColsKept(before, after) {
+      return after.del != true && before.get('d', null) != null
+        && (after.t != 'company' || (after.d.get('vat_enabled', null) == before.d.get('vat_enabled', null)));
+    }
+
     function memberCreates(org) {
       let r = request.resource.data;
       let m = mem(org);
@@ -505,9 +554,10 @@ service cloud.firestore {
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
           && (bt != 'vat_filings' || m.all == true)
           && (r.del != true && bt == 'journal_entries' ? srcOk(r.op, r.d.get('src_type', null), r.d.get('status', '')) : true)
-          // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53)
-          // i18n-exempt: حالة الفاتورة المخزّنة في نص القواعد
-          && (bt == 'invoices' && r.d != null ? (r.d.get('status', '') == 'مسودة' ? true : lvlOf(m, 'invoices') >= 3) : true)
+          // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53) · وأبناء الأب المقفل وصفّ إعداد المالك
+          // (المراجعة الشاملة 2026-11-13 · B-1 وB-3) · ثلاثيٌّ واحد بتعبيرٍ نمطي واحد ودالةٌ لكل جدول: تعابير الفرع المتروك المكتوبة هنا كانت
+          // تُحسب لكل صف، فصار ما يدفعه غير هذه الجداول من الحد أقلّ مما كان (اختبار الميزانية)
+          && (bt.matches('invoices|invoice_lines|company') ? lockedCreateOk(org, r, m, bt) : true)
           // العضو لا ينتحل المالك في سجل العمليات (مراجعة التثبيت #54) · وتقرير العطل بمساره وحده (المدقق الخارجي F٢: كان يُكتب بعملية قسمٍ
           // فيتخطى حدّه وشكل معرّفه)
           && (bt != 'audit_log' || (r.d != null && r.d.get('user_name', '') != 'المالك' && r.d.get('entity_type', '') != 'تقرير عطل')))));
@@ -621,6 +671,9 @@ service cloud.firestore {
         && (after.get('by', null) == before.get('by', null) ? true
             : (!('by' in before) && after.get('by', '') == request.auth.uid && !(baseT(after.t) in ['contracts', 'invoices', 'journal_entries'])))
         && (baseT(after.t) != 'vat_filings' || m.all == true)
+        // والفاتورة الصادرة مقفلة وإعداد المالك له وحده وفاتورة الشراء المرحّلة بقيدها (المراجعة الشاملة 2026-11-13 · B-1 وB-3): ثلاثيٌّ
+        // بتعبيرٍ نمطي واحد لجداولها
+        && (after.t.matches('(invoices|company)(~pub)?|purchases') ? lockedUpdateOk(org, before, after) : true)
         // مصدر القيد عند التعديل كالإنشاء (المراجعات الخارجية «ثالثاً أ ٤» · المتحقق المستقل: كان يُفحص عند الإنشاء وحده)
         && (after.del == true || baseT(after.t) != 'journal_entries' || srcOk(op, after.d.get('src_type', null), after.d.get('status', '')))
         && (

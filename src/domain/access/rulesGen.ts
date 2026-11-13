@@ -7,7 +7,7 @@ import { MEMBER_NO_HARD_DELETE } from '../../db/softDelete';
 import { NAME_CLASS, LETTER_FOLDS, RESERVED_CORE } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
-import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR, SELF_AUDIT_ACTIONS, SELF_AUDIT_AHEAD_DAYS, LEGACY_NEUTRAL } from './opWrites';
+import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR, SELF_AUDIT_ACTIONS, SELF_AUDIT_AHEAD_DAYS, LEGACY_NEUTRAL, OWNER_ONLY_COLS, POSTED_PURCHASE_COLS } from './opWrites';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, READ_TABLE, readSectionsOf } from './readSections';
 import { SYNC_TABLES } from '../../db/syncTables';
 import { CRASH_ENTITY, CRASH_MODULE, CRASH_DAILY_LIMIT } from '../crashReport';
@@ -293,6 +293,94 @@ ${crossMoney.map((x) => `        && (r.t != '${x.t}' || m.all == true || !keys.h
     }`;
 }
 
+/**
+ * ما صدرت به الفاتورة من أعمدة المخطط الأول (src/db/schema.ts: CREATE TABLE invoices) فلا يغيّره العضو بعد إصدارها (المراجعة الشاملة
+ * 2026-11-13 · B-1 ب) · أعمدة المخطط الأول وحدها: مستندٌ كُتب قبل هجرةٍ أضافت عموداً بلاه، فإضافته في كتابة العضو تُعدّ تغييراً فتُرفض
+ * كتابةٌ مشروعة كالتحصيل · وما أُضيف بعدها (النوع ومرجع الإشعار وسببه ومركز التكلفة) يحرسه جهاز المالك بقائمة سماح (sync/engine.ts:
+ * ISSUED_INVOICE_OPEN) · ورابط قيد إصدارها (journal_entry_id، من المخطط الأول) في issuedInvoiceKept بشرطه: لا يتغيّر في صادرةٍ حيّة لها
+ * قيد (المدقق المستقل R11-B1-2: كان «كامل» يمحوه فيرحّل تعليمها «متأخرة» عند المالك قيد إصدارٍ ثانياً)، ويُكتب لصادرةٍ قديمة بلا قيد
+ * (setInvoiceStatus) ولما يخرج من السلة بقيدٍ جديد (restoreInvoice) كما يكتبهما التطبيق
+ */
+export const ISSUED_INVOICE_RULE_COLS = ['no', 'customer_name', 'customer_vat', 'issue', 'due', 'notes', 'subtotal_halalas', 'tax_halalas', 'total_halalas'];
+/**
+ * جداول الإنشاء التي تحرسها lockedCreateOk: الفاتورة (حالتها بمستوى كاتبها · مراجعة التثبيت #53)، وسطرها (B-1)، وصفوف إعداد المالك (B-3: لا
+ * ينشئها العضو) · وقسط العقد المؤكَّد لغيره (B-1 ب) على جهاز المالك وحده: إنشاء العقد أثقل كتابات العضو، وأي تعبيرٍ لكل قسطٍ تجاوز به ٨٥٪
+ * من حدّ الألف تعبير (اختبار الميزانية على المحاكي 2026-11-13: «العقود» رُفضت أقساطه كلها بالحد ولو بثلاثيٍّ لكامل العقود)
+ */
+function lockedCreateTables(): string[] {
+  return ['invoices', 'invoice_lines', ...Object.keys(OWNER_ONLY_COLS)];
+}
+/**
+ * نمط جداول التعديل التي تحرسها lockedUpdateOk: الفاتورة الصادرة (B-1 ب) وصفوف إعداد المالك (B-3) بإسقاطهما، وفاتورة الشراء المرحّلة
+ * بمستندها الكامل وحده (R11-B1-3: إسقاطها بلا مبالغ، فلا يمرّ بحارس الفاتورة)
+ */
+function lockedUpdatePattern(): string {
+  return `(${['invoices', ...Object.keys(OWNER_ONLY_COLS)].join('|')})(~pub)?|purchases`;
+}
+
+/**
+ * الأب المقفل وإعداد المالك في القواعد (المراجعة الشاملة 2026-11-13 · B-1 وB-3) · كل دالةٍ هنا لجدولها وحده من ثلاثيٍّ في memberCreates
+ * وmemberUpdates، فلا تدفع كتابات الجداول الأخرى شيئاً من حدّ الألف تعبير (اختبار الميزانية) · والقراءة في دالةٍ بمعاملاتٍ بسيطة: البديل
+ * المتروك تُحسب معاملاته (معايرة المحاكي 2026-10-10)
+ * ما لا يسعه الحد ولا تعرفه القاعدة يحرسه جهاز المالك (sync/engine.ts: lockedParentIssue): سطر «كامل» الفواتير وتعديله وحذفه لفاتورةٍ
+ * صادرة اكتملت سطورها (حذف السطور القديمة لمسودةٍ صدرت في حفظٍ واحد يصل بعد رأسها الصادر، فلا تُشترط المسودة هنا)، وقسط العقد كله
+ * (lockedCreateTables)، وما صدرت به الفاتورة من أعمدةٍ أُضيفت بعد المخطط الأول (ISSUED_INVOICE_RULE_COLS)، وأن قيد فاتورة الشراء الجديد
+ * بقيمها (إعادة الاشتقاق) · والقاعدة تشترط له أن يكون قيداً لها في السحابة بعد الكتابة، وقيدها القديم معكوساً
+ */
+function lockedFns(): string {
+  const owner = Object.entries(OWNER_ONLY_COLS);
+  // i18n-exempt: نص القواعد المولَّدة وتعليقاتها وحالة الفاتورة المخزّنة
+  return `
+    // إنشاء العضو (يُستدعى لجداول lockedCreateTables وحدها، وكلٌّ بدالته: القواعد تحسب كل تعبيرٍ مكتوبٍ في الدالة ولو تُرك فرعه):
+    // الفاتورة بإدخال تُحفظ مسودة والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53) · وسطرها لمسودةٍ وحدها إلا من «كامل» الفواتير
+    // («إدخال» لا يُصدر، فلا يكتب سطراً لصادرة) · وصفّ إعداد المالك لا ينشئه العضو
+    function lockedCreateOk(org, r, m, bt) {
+      return bt == 'invoices' ? invoiceCreateOk(r, m) : (bt == 'invoice_lines' ? invoiceLineCreateOk(org, r, m) : false);
+    }
+    // i18n-exempt: حالة الفاتورة المخزّنة في نص القواعد
+    function invoiceCreateOk(r, m) {
+      return r.d != null ? (r.d.get('status', '') == 'مسودة' ? true : lvlOf(m, 'invoices') >= 3) : true;
+    }
+    function invoiceLineCreateOk(org, r, m) {
+      return r.del == true ? true : (lvlOf(m, 'invoices') >= 3 ? true : invoiceDraftAt(org, r.d.invoice_id));
+    }
+    function invoiceDraftAt(org, id) {
+      return isDraft(getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$('invoices__' + id)).data);
+    }
+    // تعديل العضو: الفاتورة الصادرة لا يتغيّر ما صدرت به ولا رابط قيدها ولا تعود مسودة ولا تُحذف (والتحصيل وحالة التأخر يكتبها التطبيق)،
+    // وإعداد المالك لا يتغيّر ولا يُحذف صفّه، وفاتورة الشراء لا تتغيّر قيمها إلا بقيدها الجديد
+    function lockedUpdateOk(org, before, after) {
+      return after.t.matches('(${owner.map(([t]) => t).join('|') || '^$'})(~pub)?') ? ownerColsKept(before, after)
+        : (after.del == true || before.get('d', null) == null ? true
+          : (after.t == 'purchases' ? postedPurchaseKept(org, after.k, before.d, after.d)
+            : (isDraft(before) ? true : issuedInvoiceKept(before.d, after.d))));
+    }
+    function issuedInvoiceKept(b, a) {
+      return !a.diff(b).affectedKeys().hasAny(${q(ISSUED_INVOICE_RULE_COLS)}) && a.get('status', '') != 'مسودة'
+        && (b.get('deleted_at', null) != null || (a.get('deleted_at', null) == null
+          && (b.get('journal_entry_id', null) == null || a.get('journal_entry_id', null) == b.get('journal_entry_id', null))));
+    }
+    // صافي فاتورة الشراء وضريبتها وإجماليها ووضعها الضريبي وتاريخها (البند ٧ ومثله) يتغيّر بقيدٍ جديد لها مكتوبٍ في السحابة، وقيدها القديم
+    // معكوس (savePurchase) · ثلاثيٌّ فلا يُقرأ القيد إلا لتغييرها
+    function postedPurchaseKept(org, k, b, a) {
+      return a.diff(b).affectedKeys().hasAny(${q(POSTED_PURCHASE_COLS)})
+        ? (a.get('journal_entry_id', null) is string && a.journal_entry_id != b.get('journal_entry_id', null)
+          ? purchaseEntryAt(org, k, a.journal_entry_id) && (b.get('journal_entry_id', null) is string ? entryReversedAt(org, b.journal_entry_id) : true)
+          : false)
+        : true;
+    }
+    function purchaseEntryAt(org, k, id) {
+      return getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$('journal_entries__' + id)).data.d.get('src_id', '') == k;
+    }
+    function entryReversedAt(org, id) {
+      return getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$('journal_entries__' + id)).data.d.get('reversed_by', null) != null;
+    }
+    function ownerColsKept(before, after) {
+      return after.del != true && before.get('d', null) != null
+        && ${owner.map(([t, cols]) => `(after.t != '${t}' || (${cols.map((c) => `after.d.get('${c}', null) == before.d.get('${c}', null)`).join(' && ')}))`).join('\n        && ') || 'true'};
+    }`;
+}
+
 export function generateOrgRules(schema: RulesSchema = { money: {} }): string {
   return `${BEGIN}
     // صلاحيات الأقسام: المالك (uid == org) يقرأ ويكتب كل شيء بقيود الصف نفسها، والعضو بمستند عضويته
@@ -390,6 +478,7 @@ ${guardFns(schema)}
           && (b.get('is_system', 0) != 1 || (a.get('type', '') == b.get('type', '') && a.get('grp', null) == b.get('grp', null)
             && a.get('deleted_at', null) == b.get('deleted_at', null)))));
     }
+${lockedFns()}
 
     function memberCreates(org) {
       let r = request.resource.data;
@@ -407,9 +496,10 @@ ${guardFns(schema)}
           // الإقرار المقدَّم للمنشأة كلها: يكتبه ذو كل العقارات وحده (التحقق المستقل)
           && (bt != 'vat_filings' || m.all == true)
           && (r.del != true && bt == 'journal_entries' ? srcOk(r.op, r.d.get('src_type', null), r.d.get('status', '')) : true)
-          // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53)
-          // i18n-exempt: حالة الفاتورة المخزّنة في نص القواعد
-          && (bt == 'invoices' && r.d != null ? (r.d.get('status', '') == 'مسودة' ? true : lvlOf(m, 'invoices') >= 3) : true)
+          // الفاتورة بإدخال تُحفظ مسودة، والإصدار لـ«كامل» كما في الشاشة (مراجعة التثبيت #53) · وأبناء الأب المقفل وصفّ إعداد المالك
+          // (المراجعة الشاملة 2026-11-13 · B-1 وB-3) · ثلاثيٌّ واحد بتعبيرٍ نمطي واحد ودالةٌ لكل جدول: تعابير الفرع المتروك المكتوبة هنا كانت
+          // تُحسب لكل صف، فصار ما يدفعه غير هذه الجداول من الحد أقلّ مما كان (اختبار الميزانية)
+          && (bt.matches('${lockedCreateTables().join('|')}') ? lockedCreateOk(org, r, m, bt) : true)
           // العضو لا ينتحل المالك في سجل العمليات (مراجعة التثبيت #54) · وتقرير العطل بمساره وحده (المدقق الخارجي F٢: كان يُكتب بعملية قسمٍ
           // فيتخطى حدّه وشكل معرّفه)
           && (bt != 'audit_log' || (r.d != null && r.d.get('user_name', '') != '${OWNER_ACTOR}' && r.d.get('entity_type', '') != '${CRASH_ENTITY}')))));
@@ -523,6 +613,9 @@ ${guardFns(schema)}
         && (after.get('by', null) == before.get('by', null) ? true
             : (!('by' in before) && after.get('by', '') == request.auth.uid && !(baseT(after.t) in ['contracts', 'invoices', 'journal_entries'])))
         && (baseT(after.t) != 'vat_filings' || m.all == true)
+        // والفاتورة الصادرة مقفلة وإعداد المالك له وحده وفاتورة الشراء المرحّلة بقيدها (المراجعة الشاملة 2026-11-13 · B-1 وB-3): ثلاثيٌّ
+        // بتعبيرٍ نمطي واحد لجداولها
+        && (after.t.matches('${lockedUpdatePattern()}') ? lockedUpdateOk(org, before, after) : true)
         // مصدر القيد عند التعديل كالإنشاء (المراجعات الخارجية «ثالثاً أ ٤» · المتحقق المستقل: كان يُفحص عند الإنشاء وحده)
         && (after.del == true || baseT(after.t) != 'journal_entries' || srcOk(op, after.d.get('src_type', null), after.d.get('status', '')))
         && (

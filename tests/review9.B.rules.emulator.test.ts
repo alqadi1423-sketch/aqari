@@ -81,7 +81,7 @@ d('B-1 · الفاتورة الصادرة في قواعد السحابة', () =>
   });
   afterAll(() => db?.close());
 
-  test.failing('(أ) عضو «إدخال» لا ينشئ سطراً لفاتورةٍ صادرة', async () => {
+  test('(أ) عضو «إدخال» لا ينشئ سطراً لفاتورةٍ صادرة', async () => {
     const k = 'R9B-FORGED-LINE';
     const forged: RemoteDoc = annotate(db, {
       id: 'invoice_lines__' + k, t: 'invoice_lines', k, u: new Date().toISOString(), dev: 'DEV-M', del: false,
@@ -93,7 +93,7 @@ d('B-1 · الفاتورة الصادرة في قواعد السحابة', () =>
     expect(res.ok).toBe(false);
   });
 
-  test.failing('(ب) عضو «كامل» لا يغيّر مبالغ فاتورةٍ صادرة بلا قيد', async () => {
+  test('(ب) عضو «كامل» لا يغيّر مبالغ فاتورةٍ صادرة بلا قيد', async () => {
     const cur = buildDoc(db, 'invoices', inv, 'upsert', new Date().toISOString(), 'DEV-F');
     const changed: RemoteDoc = { ...cur, d: { ...cur.d!, subtotal_halalas: 1_000, tax_halalas: 150, total_halalas: 1_150 } };
     const doc = annotate(db, changed, FULL).doc;
@@ -123,7 +123,7 @@ d('B-2 · ما يراه جوال العضو المُزال من السحابة (
 });
 
 d('B-3 · تسجيل الضريبة في صفّ المنشأة من عضو «كامل المنشأة»', () => {
-  test.failing('القاعدة ترفض تغيير vat_enabled من عضو (إعدادٌ للمالك وحده في الشاشة)', async () => {
+  test('القاعدة ترفض تغيير vat_enabled من عضو (إعدادٌ للمالك وحده في الشاشة)', async () => {
     const { memDb } = await import('./helpers/testDb');
     const db2 = memDb();
     db2.run(`UPDATE company SET vat_enabled = 1, name = 'منشأة مصطنعة' WHERE id = 1`);

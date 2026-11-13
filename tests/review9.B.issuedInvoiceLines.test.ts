@@ -25,7 +25,7 @@ import { vatReturnData } from '@/domain/vatReturn';
 import type { Access } from '@/domain/access/access';
 import type { RemoteDoc } from '@/sync/types';
 
-test.failing('B-1 · سطرٌ مزوَّر من عضو «إدخال» على فاتورةٍ صادرة لا يدخل دفاتر المالك ولا إقراره', async () => {
+test('B-1 · سطرٌ مزوَّر من عضو «إدخال» على فاتورةٍ صادرة لا يدخل دفاتر المالك ولا إقراره', async () => {
   const db = memDb();
   const r = new MemoryRemote();
   enableSync(db, 'OWNER-B1');
@@ -61,7 +61,7 @@ test.failing('B-1 · سطرٌ مزوَّر من عضو «إدخال» على ف�
   db.close();
 });
 
-test.failing('B-1 (ب) · قسطٌ يضيفه عضو «إدخال» العقود إلى عقدٍ مؤكَّد لغيره لا يدخل جدول أقساطه', async () => {
+test('B-1 (ب) · قسطٌ يضيفه عضو «إدخال» العقود إلى عقدٍ مؤكَّد لغيره لا يدخل جدول أقساطه', async () => {
   const { addProperty, addUnit, contractInput } = await import('./helpers/fixtures');
   const { confirmContract } = await import('@/domain/contracts/service');
   const db = memDb();
@@ -96,7 +96,7 @@ test.failing('B-1 (ب) · قسطٌ يضيفه عضو «إدخال» العقود
  * لماذا يهم: إعدادٌ للمالك وحده في الشاشة يغيّره عضوٌ من السحابة، فيسقط البند ١ من الإقرار إلى صفر وتخرج الفواتير بلا ضريبة على كل الأجهزة ·
  * السلوك الصحيح: جهاز المالك (والقاعدة) لا يقبلان من عضوٍ تغيير vat_enabled ولا حذف صفّ المنشأة، ويعيد المالك نسخته.
  */
-test.failing('B-3 · عضو «كامل المنشأة» لا يطفئ تسجيل الضريبة ولا يحذف صفّ المنشأة', async () => {
+test('B-3 · عضو «كامل المنشأة» لا يطفئ تسجيل الضريبة ولا يحذف صفّ المنشأة', async () => {
   const db = memDb();
   const r = new MemoryRemote();
   enableSync(db, 'OWNER-B4');

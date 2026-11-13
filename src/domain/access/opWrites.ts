@@ -104,6 +104,20 @@ export const SELF_AUDIT_AHEAD_DAYS = 2;
  */
 export const LEGACY_NEUTRAL = { table: 'contracts', col: 'original_end', equals: 'end' } as const;
 
+/**
+ * إعداداتٌ للمالك وحده تسكن صفاً في جدولٍ يملكه قسم (المراجعة الشاملة 2026-11-13 · B-3): تسجيل ضريبة القيمة المضافة في «المالية» للمالك
+ * وحده (app/settings.tsx · admin)، وعموده في صفّ المنشأة الذي يعدّله «كامل» المنشأة والقوالب (الاسم والسجل والشعار) · فلا يغيّرها العضو
+ * ولا يُنشئ صفّها ولا يحذفه: القاعدة (rulesGen: ownerColsKept) وجهاز المالك (sync/engine.ts: ownerColsIssue) · ولم يُوجد غيره في الإعدادات
+ */
+export const OWNER_ONLY_COLS: Record<string, string[]> = { company: ['vat_enabled'] };
+
+/**
+ * ما يقرؤه الإقرار ويرحّله قيد فاتورة الشراء من رأسها (vatReturn.ts: البنود ٧ و١٠ و١١ · postPurchaseToLedger) · فلا يتغيّر من عضوٍ في
+ * فاتورةٍ مرحّلة إلا بتعديلها في التطبيق (savePurchase: عكس قيدها القديم وقيدٌ جديد بقيمها) · القاعدة (rulesGen: postedPurchaseKept)
+ * وجهاز المالك (sync/engine.ts: lockedParentIssue) · المراجعة الشاملة 2026-11-13 · المدقق المستقل R11-B1-3
+ */
+export const POSTED_PURCHASE_COLS = ['subtotal_halalas', 'tax_halalas', 'total_halalas', 'tax_status', 'date'];
+
 export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update' | 'delete', cols: string[] = []): boolean {
   const w = OP_WRITES[op];
   if (!w) return false;
