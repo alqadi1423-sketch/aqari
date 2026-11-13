@@ -635,8 +635,9 @@ export async function planAdoptPending(
 ): Promise<{ snap: CloudSnapshot; keep: KeepPlan; plan: CloudReplacePlan }> {
   const snap = await readCloud(remoteFor(), onProgress, await readEpoch(remoteFor(), orgOfAccount(db)));
   const keep = planKeepPosted(db, { cloud: snap.docs });
-  // ولا يُنزل الضمّ بنكاً ولا المحفظة تحت الصفر (القرار ٥٥ · R12-BAK-3) · يُسمّى قبل أي كتابة
-  const short = keepShortages(db, keep);
+  // ولا يُنزل الضمّ بنكاً ولا المحفظة تحت الصفر (القرار ٥٥ · R12-BAK-3) · يُسمّى قبل أي كتابة · والنسخة هنا مستعادةٌ تنتظر الاعتماد،
+  // فالرسالة تقول إنها لم تُعتمد لا إنها لم تُستعد (مراجعة R12-BAK-3)
+  const short = keepShortages(db, keep, 'adopt');
   if (short.length) throw new Error(short.join(' · '));
   return { snap, keep, plan: planFromSnapshot(db, snap) };
 }

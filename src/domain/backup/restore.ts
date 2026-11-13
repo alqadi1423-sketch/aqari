@@ -57,6 +57,8 @@ export interface RestorePlan {
   kept: KeptEntry[];
   /** حركات نقل النقد بين المحفظة والبنوك بعد النسخة حُملت مع القيود (R12-BAK-3) · تُعرض بعددها قبل التأكيد */
   keptCashMoves: number;
+  /** حركات نقل النقد الحيّة في النسخة ولا أثر لها على الجهاز ولا في السحابة · تعود بالاستعادة فتُذكر بعددها قبل التأكيد (مراجعة R12-BAK-3) */
+  keptRevivedMoves: number;
   /** فروق محاسبية في النسخة بعد تجهيزها (checks.ts) · تُعرض في الحوار ولا تمنع، كما في إنشاء النسخة */
   notes: string[];
   /**
@@ -263,6 +265,7 @@ export async function prepareRestore(
     let paidRecomputed: PaidChange[] = [];
     let kept: KeptEntry[] = [];
     let keptCashMoves = 0;
+    let keptRevivedMoves = 0;
     let notes: string[] = [];
     {
       let probe: DB | null = null;
@@ -328,7 +331,7 @@ export async function prepareRestore(
         // ولا يُنزل الضمّ بنكاً ولا المحفظة تحت الصفر (القرار ٥٥ · المراجعة ١٢ · R12-BAK-3): يُسمّى ما ينقص قبل أي كتابة
         const short = keepShortages(probe, keep);
         if (short.length) throw new RestoreError(short.join(' · '));
-        if (keep.entries.length) { kept = applyKeepPosted(probe, keep).entries; keptCashMoves = keep.cashMoves; }
+        if (keep.entries.length) { kept = applyKeepPosted(probe, keep).entries; keptCashMoves = keep.cashMoves; keptRevivedMoves = keep.revivedMoves; }
         // الفحوص نفسها بالحكم نفسه في النسخ (checks.ts): الفرق المحاسبي ملاحظةٌ تُعرض ولا ترفض الاستعادة
         notes = [...notes, ...reviewData(probe).notes];
         // أسماء ملفات الجهاز الغائبة من قاعدة النسخة نفسها · فيُسمّى الملف كما يعرفه المستخدم (C-2)
@@ -344,7 +347,7 @@ export async function prepareRestore(
     // مرفقات البيانات الحالية بالبنود نفسها · فيُرى ما سيُخسر من الجانبين لا من جانب واحد
     const live = liveBlobs(env.db);
     return {
-      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept, keptCashMoves, notes, localMissing,
+      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept, keptCashMoves, keptRevivedMoves, notes, localMissing,
       current: tableCounts(env.db),
       attachmentsBytes,
       currentAttachments: { count: live.length, bytes: live.reduce((s, b) => s + Number(b.size_bytes), 0) },

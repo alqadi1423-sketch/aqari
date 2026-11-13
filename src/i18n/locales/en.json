@@ -753,6 +753,7 @@
     "keptAccount": "its account {{code}} {{name}}",
     "keptDepositRentCancel": "reversal of an installment paid from the deposit · its payment cancellation was carried with it, and its settlement is in the backup as it was before the edit",
     "keptCashMoves": "Along with them, {{n}} cash movements between the wallet and the banks after the backup date (deposit, withdrawal or transfer) stay as they are, so each bank and the wallet keep their current balance.",
+    "keptRevivedMoves": "And {{n}} cash movements between the wallet and the banks in the backup are not on this device now (deleted permanently after the backup date, or never on it); they come back with the restore as in the backup, so their bank and the wallet change from their current balance.",
     "cipherChunkSize": "The encryption component returned a chunk of unexpected size · the backup was not encrypted",
     "passwordLost": "The backup secret saved on this device cannot be read, so no backup is exported or uploaded. Create a new recovery key to resume backups; earlier backups open with their secret if you type it.",
     "keyRequired": "No backup leaves the device unencrypted · create the recovery key under “Backup” first, and keep it somewhere safe.",
@@ -954,7 +955,9 @@
     "keptAccountMissing": "Entry {{no}}, posted after the backup date for {{amount}}, has a line on account {{code}}, and that account is not in the backup, on this device or in the cloud · a posted entry is never deleted by a restore, so add account {{code}} to the chart of accounts and then restore the backup",
     "keptAccountTrashed": "Entry {{no}}, posted after the backup date for {{amount}}, has a line on account {{code}}, and that account is in the trash · a posted entry is never deleted by a restore nor left on a deleted account, so restore account {{code}} from the trash and then restore the backup",
     "keptBankShort": "Keeping what was posted after the backup date takes the balance of «{{bank}}» to {{balance}}, short by {{short}} · no bank goes below zero, so the backup was not restored and your data is unchanged",
-    "keptWalletShort": "Keeping what was posted after the backup date takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the backup was not restored and your data is unchanged"
+    "keptWalletShort": "Keeping what was posted after the backup date takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the backup was not restored and your data is unchanged",
+    "keptBankShortAdopt": "Keeping what was posted in the cloud after the backup date takes the balance of «{{bank}}» to {{balance}}, short by {{short}} · no bank goes below zero, so the restored backup on this device was not adopted and nothing from it was uploaded to the cloud; sync is waiting",
+    "keptWalletShortAdopt": "Keeping what was posted in the cloud after the backup date takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the restored backup on this device was not adopted and nothing from it was uploaded to the cloud; sync is waiting"
   },
   "bank": {
     "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"
