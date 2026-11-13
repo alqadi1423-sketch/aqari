@@ -2168,6 +2168,60 @@ function reject(db: DB, doc: RemoteDoc, reason: string): void {
   try { logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${redactForReport(reason)}`.slice(0, 300)); } catch { /* السجل لا يعطّل */ }
 }
 
+/** بنود محضر الاستلام والتسليم كما يكتبها updateHandover ونوعه · وما سواها (السلة ونقل الوحدة) يمضي بالحسم المعتاد */
+const HANDOVER_FORM = ['type', 'employee_name', 'tenant_name', 'id_number', 'phone', 'address', 'unit_floor', 'contract_period',
+  'date', 'other_notes', 'tenant_sign', 'company_sign', 'sections_json'] as const;
+const handoverForm = (row: Record<string, unknown>): string => stable(HANDOVER_FORM.map((c) => {
+  const v = row[c];
+  if (c === 'sections_json' && typeof v === 'string') { try { return JSON.parse(v) as unknown; } catch { return v; } }
+  return v ?? '';
+}));
+
+/**
+ * أول ما عرف هذا الجهاز نسخته المقفلة من المحضر في السحابة (رفعها أو طبّقها) بساعة الخادم، وهل رفعها هو فأقفله هنا · لا يتقدّم بما
+ * يمضي على المقفَل بعده (نقل الوحدة والسلة وإعادة الرفع للرؤية) فيُرتَّب به قفلان مختلفان (المراجعة الشاملة 2026-11-13 · E-1/R11-3:
+ * وقت الصف ووقت الطابور كانا يتقدّمان بنقل الوحدة فيغلب الإقفالُ الثاني الأول) · ويبقى حتى يغلب قفلٌ آخر فيُستبدل
+ */
+const LOCK_SEEN = 'handover_lock:';
+function lockSeen(db: DB, k: string): { at: string; own: boolean } | null {
+  try {
+    const o = JSON.parse(getSyncState(db, LOCK_SEEN + k) ?? 'null') as { at?: unknown; own?: unknown } | null;
+    return o && typeof o.at === 'string' ? { at: o.at, own: o.own === true } : null;
+  } catch { return null; }
+}
+function noteLockSeen(db: DB, k: string, at: string, own: boolean, replace: boolean): void {
+  if (!replace && lockSeen(db, k)) return;
+  setSyncState(db, LOCK_SEEN + k, JSON.stringify({ at: isoNorm(at), own }));
+}
+
+/**
+ * المحضر المُقفَل نهائي والقفل باتجاهٍ واحد (المراجعة الشاملة 2026-11-13 · E-1 · قرار المالك س٢٩): حسم الصف كله بالأحدث كان يجعل
+ * تعديلاً متأخراً من نسخةٍ غير مقفلة (جهازٌ بلا اتصال) يفتح القفل ويغيّر البنود على الأجهزة كلها · فالمقفلة تغلب غير المقفلة أياً كان
+ * وقتها · وبين مقفلتين مختلفتين يغلب ما بلغ السحابة أولاً: قفلٌ هنا لم يُرفع بعد تعديلٌ متأخر لمحضرٍ أُقفل هناك، وقفلان رُفعا (سباق
+ * الرفع) يُرتَّبان بأول ما عرفه كل جهاز (lockSeen) لا بوقت الصف · وقبل القفل الحسم المعتاد
+ * act 'keep': يبقى ما هنا · 'take': يغلب الوارد ولو كان أقدم أو لهذا الجهاز تعديلٌ معلَّق · null: الحسم المعتاد
+ * late: البنود مختلفة فالساقط تعديلٌ متأخر يُسجَّل مرفوضاً · وغير المقفلة ببنود المقفلة نفسها نسخةُ ما قبل القفل (نافذة أمان السحب
+ * تعيدها) لا تعديل (E-1/R11-2) · at: وقت ما هنا يُعاد به إلى السحابة إن بقي
+ */
+function handoverLock(db: DB, doc: RemoteDoc, pending: OutRow | undefined, deviceId: string, joining: boolean): { act: 'keep' | 'take'; late: boolean; at?: string } | null {
+  if (doc.t !== 'handovers' || doc.del || !doc.d) return null;
+  const here = readRow(db, doc.t, doc.k);
+  if (!here) return null;
+  const mineLocked = Number(here.locked) === 1;
+  const theirsLocked = Number(doc.d.locked) === 1;
+  if (!mineLocked && !theirsLocked) return null;
+  const differ = handoverForm(here) !== handoverForm(doc.d);
+  if (!theirsLocked) return { act: 'keep', late: differ };
+  // (ونسخة هذا الجهاز غير المقفلة بلا تعديلٍ معلَّق هي ما عرفه من السحابة: لا يسقط منه شيء · ولا بذرة الانضمام: ليست تعديلاً)
+  if (!mineLocked) return { act: 'take', late: differ && !!pending && !joining };
+  if (!differ) return null;
+  const mine = lockSeen(db, doc.k)?.at
+    ?? (pending ? undefined : db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u);
+  if (!mine) return pending ? { act: 'take', late: true } : null;
+  const order = isoCmp(mine, incomingAt(doc));
+  return order < 0 || (order === 0 && deviceId < doc.dev) ? { act: 'keep', late: true, at: mine } : { act: 'take', late: true };
+}
+
 function applyOne(
   db: DB, doc: RemoteDoc, deviceId: string, cache: Map<string, Set<string>>, money: Map<string, string[]>, joining: boolean,
 ): ApplyOutcome {
@@ -2345,6 +2399,24 @@ function applyOne(
   }
   // التعارض على مستوى الصف · الأحدث تغييراً يغلب
   const pending = db.get<OutRow>(`SELECT tbl, pk, op, changed_at FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
+  // والمحضر المُقفَل لا يُفتح ولا يغلبه تعديلٌ متأخر (E-1 · س٢٩): الوارد المرفوض في سجل المرفوض فيظهر في «حالة المزامنة»، وتُرفع
+  // النسخة المقفلة بوقتها فتعود إلى السحابة · وما يغلبه القفل الوارد من تعديلٍ معلَّق هنا أو قفلٍ لاحق يُسجَّل مرفوضاً كذلك ·
+  // والتصحيح بعد القفل بنموذجٍ تصحيحي منفصل
+  const lock = handoverLock(db, doc, pending, deviceId, joining);
+  /** نسخة هذا الجهاز التي يُسقطها القفل الوارد · تُسجَّل مرفوضةً بعد أن يُطبَّق */
+  let dropped: RemoteDoc | null = null;
+  if (lock) {
+    const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u;
+    if (lock.act === 'keep') {
+      // يرفعها جهاز المالك، وجهاز العضو إن كان هو مُقفلها فرفع قفله (E-1/R11-1: قفل المندوب يكتب فوقه في السحابة رفعٌ متسابق من
+      // جوال المالك فلا يعرفه المالك ليعيده، ولا كان العضو يعيده فيبقى مقفلاً عنده وحده)
+      if (!pending && (!getSyncState(db, 'membership') || lockSeen(db, doc.k)?.own)) enqueue(db, doc.t, doc.k, 'upsert', lock.at ?? seen);
+      if (!lock.late) return 'conflict-local';
+      reject(db, doc, tr('sync.handoverLocked', { lng: 'ar' }));
+      return 'rejected';
+    }
+    if (lock.late) dropped = buildDoc(db, doc.t, doc.k, 'upsert', pending?.changed_at ?? (seen ? fromServerClock(db, seen) : nowIso()), deviceId);
+  }
   let conflict: 'conflict-remote' | null = null;
   // ما يُبقيه جهاز المالك من قيمه في الصف الوارد (الافتتاحي وإعداد المالك) فيُعاد الصف مدموجاً إلى السحابة
   let keepOwnerValue = false;
@@ -2375,7 +2447,7 @@ function applyOne(
     // والعكس نهائي: القيد الوارد معكوساً يغلب نسخته هنا بلا عاكس (Z١-١: جهازٌ اعتمد الإيداع نفسه بعد إلغاء غيره كان يبقى قيده بلا عاكسه)
     const reversed = doc.t === 'journal_entries' && !doc.del && doc.d?.reversed_by != null
       && !db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [doc.k])?.r;
-    const localWins = !joining && !correction && !recreated && !reversed && !advanced && (order > 0 || (order === 0 && deviceId > doc.dev));
+    const localWins = !joining && !correction && !recreated && !reversed && !advanced && lock?.act !== 'take' && (order > 0 || (order === 0 && deviceId > doc.dev));
     if (localWins) {
       // والافتتاحي للمالك وحده (openingKept): جهاز العضو يأخذه من الوارد ولو غلب تعديله، فتحمله نسخته المرفوعة كما في السحابة
       // (المدقق الخارجي Q٢: كان يبقى بالافتتاحي القديم فتُرفض كل تسميةٍ منه ويخطئ رصيد البنك عنده)
@@ -2406,7 +2478,8 @@ function applyOne(
   const theirs0 = incomingAt(doc);
   // ولا طابور: الوارد أقدم مما عرفه الجهاز للصف (رفعه أو طبّقه) لا يكتب فوقه، ويُرفع ما عنده فيتفق الأجهزة (المراجعة الخارجية ٧ ·
   // النتيجة ٨: دورة جهازٍ سحبت قبل تعديل غيره ودفعت بعده فكان الأقدم يغلب بلا أثر) · وأول دورةٍ للجهاز ما في الحساب يغلب
-  if (!pending && !joining && !t.appendOnly) {
+  // (والقفل الوارد يغلب ولو كان أقدم مما عرفه الجهاز · E-1)
+  if (!pending && !joining && !t.appendOnly && lock?.act !== 'take') {
     const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u;
     if (seen && isoCmp(theirs0, seen) < 0) {
       adoptCloudOpening(db, doc);
@@ -2565,6 +2638,9 @@ function applyOne(
     });
     noteRowTime(db, doc.t, doc.k, theirs0);
     if (cloudOpening !== null) noteSeenOpening(db, doc.t, doc.k, cloudOpening);
+    // والقفل الوارد أول ما عرفه الجهاز في السحابة · ويستبدل ما قبله إن غلب (E-1/R11-3)
+    if (doc.t === 'handovers' && !doc.del && Number(doc.d?.locked) === 1) noteLockSeen(db, doc.k, theirs0, false, lock?.act === 'take');
+    if (dropped) reject(db, dropped, tr('sync.handoverLocked', { lng: 'ar' }));
     return conflict ?? 'applied';
   } catch (e) {
     const msg = errText(e);
@@ -3192,6 +3268,10 @@ export async function syncOnce(
             // بوقت الالتزام في الخادم إن عُرف، ولا يتجاوز وقت المستند · وبلا وقت الخادم لا يُحفظ (الوارد يغلب كما كان)
             if (commitIso) noteRowTime(db, r.tbl, r.pk, isoCmp(docs[i].u, commitIso) < 0 ? docs[i].u : commitIso);
             if (OPENING_TABLES.has(r.tbl) && docs[i].d && !docs[i].del) noteSeenOpening(db, r.tbl, r.pk, docs[i].d!.opening_halalas);
+            // والمحضر المقفل: أول ما بلغ قفله السحابة من هذا الجهاز، وهو مُقفله إن لم يعرفه قبلُ (E-1/R11-1 وR11-3)
+            if (r.tbl === 'handovers' && !docs[i].del && Number(docs[i].d?.locked) === 1) {
+              noteLockSeen(db, r.pk, commitIso && isoCmp(commitIso, docs[i].u) < 0 ? commitIso : docs[i].u, true, false);
+            }
           }
           progressed++;
         } else {
