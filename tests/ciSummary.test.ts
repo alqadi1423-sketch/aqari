@@ -64,5 +64,10 @@ describe('تشغيلٌ أُلغي لا يُكتب فشلاً (المراجعة �
     }
     expect(workflow).not.toMatch(/if: always\(\)/);
     expect(e2e).toMatch(/- name: حذف مفتاح الاختبار\n\s+if: always\(\)/);
+    // التعليق فشلُ خطوة لا إلغاء: مهلة الخطوات الطويلة دون مهلة العمل (P0-5)
+    const stepT = (wf: string, name: string) => Number(new RegExp('- name: ' + name + '[^\\n]*\\n\\s+timeout-minutes: (\\d+)').exec(wf)?.[1]);
+    const jobT = (wf: string) => Number(/runs-on: ubuntu-latest\n\s+timeout-minutes: (\d+)/.exec(wf)?.[1]);
+    expect(stepT(workflow, 'الاختبارات كاملة')).toBeLessThan(jobT(workflow) - 5);
+    expect(stepT(e2e, 'بناء حزمة الاختبار') + stepT(e2e, 'التدفقات على المحاكي')).toBeLessThan(jobT(e2e) - 10);
   });
 });

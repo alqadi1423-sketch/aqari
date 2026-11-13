@@ -68,7 +68,9 @@ jobs:
             echo "AQARI_UPLOAD_KEY_PASSWORD=$pw"
           } >> "$GITHUB_ENV"
 
+      # مهلتا الخطوتين دون مهلة العمل (١٢٠): التعليق فشلُ خطوةٍ تُكتب خلاصته، لا إلغاء (P0-5)
       - name: بناء حزمة الاختبار (x86_64)
+        timeout-minutes: 40
         working-directory: android
         run: |
           bash ./gradlew :app:assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 \
@@ -93,6 +95,7 @@ jobs:
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
       - name: التدفقات على المحاكي
+        timeout-minutes: 60
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
         with:
           api-level: 34

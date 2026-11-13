@@ -49,7 +49,9 @@ jobs:
         run: npx tsc --noEmit
 
       # firebase-tools من package-lock بإصداره المثبَّت لا من الشبكة وقت التشغيل (المراجعة الخارجية ٧ · القرار ١٤ من «رابعاً»)
+      # مهلةٌ للخطوة دون مهلة العمل: التعليق يصير فشلَ خطوةٍ تُكتب خلاصته، لا إلغاءً يُسقطها «!cancelled()» (مدقق المرحلة ٠ · P0-5)
       - name: الاختبارات كاملة مع محاكي Firestore
+        timeout-minutes: 35
         run: npx firebase emulators:exec --only firestore,storage --project demo-aqari "npx jest -i --json --outputFile=jest-results.json"
 
       # لا خلاصة لتشغيلٍ أُلغي (دفعةٌ لحقته): كانت تُكتب «success false» فتُحسب على التزامٍ لم يُختبر (G-7)
