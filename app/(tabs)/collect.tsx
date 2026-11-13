@@ -4,7 +4,7 @@
  * على القسط نفسه، آخر التحصيلات.
  */
 import React, { useMemo, useState, useEffect } from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useNavigation } from 'expo-router';
 import { View, Pressable, Linking, FlatList } from 'react-native';
 import { Screen } from '../../src/ui/Screen';
 import {
@@ -26,7 +26,7 @@ import { useToast } from '../../src/ui/Toast';
 import { C } from '../../src/ui/theme';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../../src/ui/FilterSheet';
 import {
-  allInstallments, filterInstallments, collectKpis,
+  allInstallments, filterInstallments, collectKpis, collectPayTarget,
   type CollectFilter, type InstallmentView,
 } from '../../src/domain/stats';
 import { recordRentPayment, paymentForInstallment, applyTenantCredit, tenantCreditOf, type RentPaymentLine, type PayMethod } from '../../src/domain/contracts/service';
@@ -140,13 +140,16 @@ export default function Collect() {
   const [paying, setPaying] = useState<InstallmentView | null>(null);
   const [payRef, setPayRef] = useState('');
   const [payFile, setPayFile] = useState<PickedFile | null>(null);
-  // القدوم من جدول العقد: نفس نافذة السداد لا نافذة ثانية
+  // القدوم من جدول العقد أو الوحدة أو تفاصيل القسط: نفس نافذة السداد لا نافذة ثانية ·
+  // القسط يُقرأ من القاعدة لا من «base» (فارغٌ في أول رسم، والشاشة تُركَّب من جديد حين تأتي من الوحدات)،
+  // ثم يُستهلك المعامل فتعمل الضغطة الثانية على القسط نفسه (المراجعة الشاملة 2026-11-13 · D-1)
   const params = useLocalSearchParams<{ pay?: string; filter?: string; bucket?: string; q?: string }>();
+  const navigation = useNavigation();
   useEffect(() => {
-    if (params.pay && perm.add) {
-      const x = base.all.find((r) => r.installmentId === String(params.pay));
-      if (x) openPayment(x);
-    }
+    if (!params.pay) return;
+    const x = collectPayTarget(db, params.pay, perm.add, T_);
+    if (x) openPayment(x);
+    navigation.setParams({ pay: undefined } as never);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.pay]);
   useEffect(() => {

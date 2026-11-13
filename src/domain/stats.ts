@@ -36,6 +36,26 @@ export interface InstallmentView {
 
 /** كل الأقساط (لغير المسودات) · أساس شاشة التحصيل المبنية على الدفعة لا الشخص */
 export function allInstallments(db: DB, T: string = today()): InstallmentView[] {
+  return installmentViews(db, T);
+}
+
+/**
+ * رابط «تحصيل» من جدول العقد أو الوحدة أو تفاصيل القسط (/collect?pay=): القسط يُقرأ من القاعدة بعينه،
+ * لا من قائمة الشاشة المؤجَّلة عن أول رسم (فارغةٌ حينها) · فتُفتح نافذة السداد من أول زيارة ومن شاشةٍ مكدَّسة.
+ * ولا قسط بلا صلاحية الإضافة، ولا لقسطٍ لا يقبل تحصيلاً (قاعدة بطاقة القسط وجدول العقد نفسها)
+ * (المراجعة الشاملة 2026-11-13 · D-1).
+ */
+export function collectPayTarget(
+  db: DB, pay: string | string[] | undefined, canAdd: boolean, T: string = today(),
+): InstallmentView | null {
+  const id = Array.isArray(pay) ? pay[0] : pay;
+  if (!id || !canAdd) return null;
+  const x = installmentViews(db, T, String(id))[0];
+  return x && x.remaining > 0 && x.status !== CANCELLED_INST ? x : null;
+}
+
+/** صفوف الأقساط بعرض التحصيل · كلها، أو قسطٌ بعينه (onlyId) بالاستعلام والاشتقاق نفسيهما */
+function installmentViews(db: DB, T: string, onlyId?: string): InstallmentView[] {
   const rows = db.all<{
     installmentId: string; contractId: string; contractNo: string | null; contractStatus: string;
     tenant: string; phone: string; unitId: string; unitNo: string;
@@ -51,8 +71,9 @@ export function allInstallments(db: DB, T: string = today()): InstallmentView[] 
      FROM contract_installments i
      JOIN contracts c ON c.id = i.contract_id
      LEFT JOIN units u ON u.id = c.unit_id
-     WHERE c.status != 'مسودة' AND c.deleted_at IS NULL
-     ORDER BY COALESCE(i.agreed_date, i.due_date)`
+     WHERE c.status != 'مسودة' AND c.deleted_at IS NULL${onlyId === undefined ? '' : ' AND i.id = ?'}
+     ORDER BY COALESCE(i.agreed_date, i.due_date)`,
+    onlyId === undefined ? [] : [onlyId],
   );
   return rows.map((r) => {
     const amount = Number(r.amount);
