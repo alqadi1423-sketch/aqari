@@ -52,8 +52,9 @@ jobs:
       - name: الاختبارات كاملة مع محاكي Firestore
         run: npx firebase emulators:exec --only firestore,storage --project demo-aqari "npx jest -i --json --outputFile=jest-results.json"
 
+      # لا خلاصة لتشغيلٍ أُلغي (دفعةٌ لحقته): كانت تُكتب «success false» فتُحسب على التزامٍ لم يُختبر (G-7)
       - name: الخلاصة
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           node -e '
             const fs = require("fs");
@@ -77,7 +78,7 @@ jobs:
           '
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
+        if: ${{ !cancelled() }}
         with:
           name: result
           path: result.txt
@@ -85,7 +86,7 @@ jobs:
   # الكتابة في ci-results وحدها بصلاحية كتابة · لا تثبيت ولا تشغيل لحزمة هنا
   publish:
     needs: tests
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

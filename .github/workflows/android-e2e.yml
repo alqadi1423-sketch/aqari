@@ -101,12 +101,13 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: bash e2e/run.sh
 
+      # لا خلاصة لتشغيلٍ أُلغي (دفعةٌ لحقته): لا يُحسب فشلاً على التزامٍ لم يُختبر (G-7)
       - name: الخلاصة
-        if: always()
+        if: ${{ !cancelled() }}
         run: node e2e/summary.js
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
+        if: ${{ !cancelled() }}
         with:
           name: e2e
           path: e2e-out/
@@ -114,7 +115,7 @@ jobs:
   # الكتابة في ci-results وحدها بصلاحية كتابة · لا تثبيت ولا تشغيل لحزمة هنا
   publish:
     needs: e2e
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
