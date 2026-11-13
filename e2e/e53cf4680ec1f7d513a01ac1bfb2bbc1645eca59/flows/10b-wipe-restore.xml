@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="86.823" timestamp="2026-11-13T20:44:55">
+    <testcase id="10b-wipe-restore" name="10b-wipe-restore" classname="10b-wipe-restore" file="e2e/maestro/10b-wipe-restore.yaml" time="86.765" timestamp="2026-11-13T20:44:55" status="ERROR">
+      <failure>Element not found: Text matching regex: تنفيذ المسح</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
