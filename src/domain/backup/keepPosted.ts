@@ -10,8 +10,10 @@
  *  - ربط القيد العكسي بأصله (reversed_by).
  * وما لا يُحمل مستنده (فاتورة · مشتريات · تأمين · حجز · تقبيل …) يُضمّ قيده كما هو ويُدرج في أداة
  * المراجعة «قيد بلا مستند بعد الاستعادة» · إلا زوجاً عكَس أحدُه الآخر، فأثرهما صفر.
- * ودفعة القسط «من التأمين» مستندها تسويته: فلا تُحمل إلا وصفّ التسوية في النسخة (المراجعة الشاملة 2026-11-13 · A1-2)،
- *   تسوية العقد صاحب التأمين مصدر قيدها لا عقد الدفعة (R12-DEP-2: قسط عقدٍ رُحِّل تأمينه).
+ * ودفعة القسط «من التأمين» مستندها تسويته: فلا تُحمل إلا وصفّ التسوية في النسخة (المراجعة الشاملة 2026-11-13 · A1-2)، وهو التسوية التي
+ * سُدّدت بها، ولا أخت لها من قيود التسوية تُراجَع · فتعديل التسوية بعد النسخة يُحمل كله أو يُراجَع كله (المراجعة ١٢ · R12-BAK-2) ·
+ *   إلا إلغاء دفعةٍ في النسخة بعاكس قيدها: يُحمل ويُراجَع العاكس مع أخواته، فالدفعة التي عُكس قيدها ملغاةٌ بعاكسه كما في المزامنة ·
+ *   وتسويتها تسوية العقد صاحب التأمين مصدر قيدها لا عقد الدفعة (R12-DEP-2: قسط عقدٍ رُحِّل تأمينه).
  * ورقمٌ مستعمل في النسخة لقيد آخر يأخذ القيدُ المضموم رقماً جديداً من تسلسل الجهاز ويُذكر القديم في بيانه.
  * وحسابٌ في سطوره ليس في دليل النسخة (أُضيف بعدها) يُحمل صفّه من المصدر قبل القيد، وإلا رفض مفتاح الحساب السطر وفشلت الاستعادة كلها ·
  * وحسابٌ لا صفّ له في أي مصدر يُسمّى برسالة عربية قبل أي كتابة (المراجعة ١٢ · R12-BAK-1).
@@ -77,6 +79,10 @@ export interface KeepSources {
 
 /** قيدٌ هو مستند نفسه · لا مستند يُحمل ولا مراجعة */
 const SELF_CONTAINED = new Set(['cash_op', 'manual']);
+/** قيود التسوية التي لا يُحمل مستندها (صفّ التسوية) · أخوات دفعة «من التأمين» في التسوية الواحدة (R12-BAK-2) */
+const SETTLEMENT_ENTRIES = new Set(['deposit_deduct', 'deposit_refund', 'deposit_deduct_move']);
+/** ما تُعرف به التسوية التي سُدّدت بها دفعة «من التأمين» · صفّها في النسخة وفي المصدر */
+const SETTLEMENT_KEY = ['date', 'deduction_halalas', 'refund_halalas', 'deduct_destination'];
 
 const sqlIn = (col: string) => `${col} IN (SELECT value FROM json_each(?))`;
 
@@ -135,6 +141,47 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
   //    قبل أي كتابة، لا بخطأ مفتاحٍ إنجليزي في منتصف التطبيق (المراجعة ١٢ · R12-BAK-1)
   const outAccounts = carryAccounts(target, src, docs, mark);
 
+  // ٣) القيد العكسي وأصله: أصلٌ في النسخة يُربط به · وزوجٌ مضموم كله أثره صفر ·
+  //    قبل الدفعات: حمل دفعة «من التأمين» يتوقف على أن أخواتها من قيود التسوية لا تُراجَع (R12-BAK-2)، وحمل إلغائها على ربط عاكسها ·
+  //    والعاكس يُربط بأصله ولو رُوجع (عاكس دفعة «من التأمين» في تعديل تسويةٍ يُراجَع كله): الربط حال الدفتر، وبلا ربطٍ تحمرّ «مرآة واحدة
+  //    لكل أصل» ولا «عكس القيد» لمرآة · والدفعة التي عُكس قيدها يُحمل إلغاؤها معه (١)، فلا تفترق الاستعادة والمزامنة (Z١-١ وY١)
+  const links: Array<{ id: string; reversedBy: string }> = [];
+  const paired = new Set<string>();
+  const originals = new Map<string, string>(); // العكسي ← أصله
+  if (src.device) {
+    for (const o of src.device.all<{ id: string; rb: string }>(
+      `SELECT id, reversed_by AS rb FROM journal_entries WHERE ${sqlIn('reversed_by')}`, [JSON.stringify([...keptIds])])) originals.set(o.rb, o.id);
+  }
+  for (const d of src.cloud ?? []) {
+    const rb = d.t === 'journal_entries' && !d.del ? (d.d?.reversed_by as string | null) : null;
+    if (rb && keptIds.has(rb) && !originals.has(rb)) originals.set(rb, d.k);
+  }
+  for (const [rev, orig] of originals) {
+    if (keptIds.has(orig)) { paired.add(rev); paired.add(orig); continue; }
+    const t = target.get<{ rb: string | null }>(`SELECT reversed_by AS rb FROM journal_entries WHERE id = ?`, [orig]);
+    if (t && !t.rb) { links.push({ id: orig, reversedBy: rev }); mark(rev, 'ربطه بأصله'); }
+  }
+
+  // دفعات «من التأمين» لعقدٍ تُحمل معاً أو لا تُحمل (R12-BAK-2): صفّ تسويته في النسخة هو التسوية التي سُدّدت بها (تاريخها وخصمها وردّها
+  // ووجهة المخصوم كما في المصدر) · ولا قيد تسويةٍ مضموم لعقدها (خصم أو ردّ أو استقرار مخصوم، أو عكسها) يُراجَع، وإلا حُمل جزء التعديل
+  // وروجع باقيه فصرفت المستندات التأمين مرتين واحمرّ فحص التأمينات
+  const blockedRent = new Map<string, boolean>();
+  const depositRentBlocked = (cid: string): boolean => {
+    if (blockedRent.has(cid)) return blockedRent.get(cid)!;
+    const mine = target.get<RowData>(`SELECT * FROM deposit_settlements WHERE contract_id = ?`, [cid]);
+    let blocked = !mine;
+    for (const which of ['device', 'cloud'] as const) {
+      const theirs = blocked ? undefined : rowsFrom(src, which, 'deposit_settlements', 'contract_id', [cid])[0];
+      if (theirs && SETTLEMENT_KEY.some((k) => String(theirs[k] ?? '') !== String(mine![k] ?? ''))) blocked = true;
+    }
+    if (!blocked) {
+      blocked = docs.some((d) => String(d.row.src_id ?? '') === cid && Number(d.row.auto) === 1 && !paired.has(String(d.row.id))
+        && SETTLEMENT_ENTRIES.has(String(d.row.src_type ?? '').replace(/_rev$/, '')));
+    }
+    blockedRent.set(cid, blocked);
+    return blocked;
+  };
+
   // ١) الدفعات: بقيدها أو بقيد إلغائها أو بقيد خصمها · الأحدث حالاً أولاً (الملغاة)، ثم نسخة الجهاز
   const discountSrc = docs.filter((d) => /^discount(_rev)?$/.test(String(d.row.src_type ?? ''))).map((d) => String(d.row.src_id ?? ''));
   const payments = new Map<string, { row: RowData; from: 'device' | 'cloud' }>();
@@ -171,12 +218,20 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       : lines.some((l) => l.bank_id && !exists(target, 'banks', l.bank_id as string)) ? 'دفعة إيجار · بنكها ليس في النسخة'
       : null;
     if (why) { for (const e of entriesOf) if (!review.has(e)) review.set(e, why); continue; }
-    // دفعة القسط من التأمين بلا صفّ تسويتها في النسخة (نسخةٌ قبل التسوية): لا تُحمل، فيُراجَع قيدها كقيد الخصم «مستنده في النسخة
-    // بحاله قبل هذا القيد» ويخرج أثره من مطابقة 2400 · وكان يُحمل فيبقى التأمين محتجزاً والتزامه صفراً (المراجعة الشاملة 2026-11-13 · A1-2)
-    // وتسويتها تسوية العقد صاحب التأمين، مصدر قيدها، لا عقد الدفعة: قسط عقدٍ رُحِّل تأمينه دفعته على عقده وقيدها مصدره المجدَّد
-    // (R12-DEP-2)، والسابق لا تسوية له فكان إلغاؤها بتعديل التسوية لا يُحمل مع عاكسها (المراجع المعاكس على R12-DEP-2)
-    if (p.method_label === DEPOSIT_RENT_METHOD
-      && !target.get(`SELECT 1 FROM deposit_settlements WHERE contract_id = ?`, [depositHolderOf(p)])) continue;
+    // دفعة القسط من التأمين مستندها تسويتها: لا تُحمل إلا والتسوية التي سُدّدت بها في النسخة، فيُراجَع قيدها كقيد الخصم «مستنده في النسخة
+    // بحاله قبل هذا القيد» ويخرج أثره من مطابقة 2400 (المراجعة الشاملة 2026-11-13 · A1-2) · وتعديل التسوية بعد النسخة يُحمل كله أو
+    // يُراجَع كله (المراجعة ١٢ · R12-BAK-2) · وتسويتها تسوية العقد صاحب التأمين، مصدر قيدها، لا عقد الدفعة: قسط عقدٍ رُحِّل تأمينه
+    // دفعته على عقده وقيدها مصدره المجدَّد (R12-DEP-2)، والسابق لا تسوية له
+    // إلا إلغاء دفعةٍ في النسخة قيدُها فيها ربطه الضمّ بعاكسه (٣): الدفعة التي عُكس قيدها ملغاةٌ بعاكسه، قاعدة المزامنة نفسها (Z١-١ وZ٢-٢)،
+    // والإلغاء لا رجعة فيه (Y١) · فيُحمل إلغاؤها ويبقى عاكسها في المراجعة مع أخواته من قيود التعديل، فلا تفترق الاستعادة والمزامنة
+    // ولا يحمرّ فحص التأمينات: صفّ التسوية في النسخة يطابقه أصل القيد، والعاكس وأخواته خارج المطابقة حتى تُحفظ التسوية ثانيةً
+    // (المراجع المعاكس الثاني على تعارض R12-DEP-2 مع R12-BAK-2)
+    if (p.method_label === DEPOSIT_RENT_METHOD && depositRentBlocked(depositHolderOf(p))) {
+      const je = String(p.journal_entry_id ?? '');
+      const ce = String(p.cancel_entry_id ?? '');
+      if (!p.cancelled_at || !keptIds.has(ce) || keptIds.has(je) || !links.some((l) => l.id === je && l.reversedBy === ce)) continue;
+      review.set(ce, t('backup.keptDepositRentCancel'));
+    }
     outPayments.push(p);
     if (p.discount_kind === DISCOUNT_REDUCES_INSTALLMENT && p.installment_id) {
       const srcInst = rowsFrom(src, from, 'contract_installments', 'id', [String(p.installment_id)])[0];
@@ -209,24 +264,6 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       outBank.push(t);
       mark(entry, 'حركة البنك');
     }
-  }
-
-  // ٣) القيد العكسي وأصله: أصلٌ في النسخة يُربط به · وزوجٌ مضموم كله أثره صفر
-  const links: Array<{ id: string; reversedBy: string }> = [];
-  const paired = new Set<string>();
-  const originals = new Map<string, string>(); // العكسي ← أصله
-  if (src.device) {
-    for (const o of src.device.all<{ id: string; rb: string }>(
-      `SELECT id, reversed_by AS rb FROM journal_entries WHERE ${sqlIn('reversed_by')}`, [JSON.stringify([...keptIds])])) originals.set(o.rb, o.id);
-  }
-  for (const d of src.cloud ?? []) {
-    const rb = d.t === 'journal_entries' && !d.del ? (d.d?.reversed_by as string | null) : null;
-    if (rb && keptIds.has(rb) && !originals.has(rb)) originals.set(rb, d.k);
-  }
-  for (const [rev, orig] of originals) {
-    if (keptIds.has(orig)) { paired.add(rev); paired.add(orig); continue; }
-    const t = target.get<{ rb: string | null }>(`SELECT reversed_by AS rb FROM journal_entries WHERE id = ?`, [orig]);
-    if (t && !t.rb) { links.push({ id: orig, reversedBy: rev }); mark(rev, 'ربطه بأصله'); }
   }
 
   // ٤) المراجعة: ما له مستند لم يُحمل · إلا الزوج المضموم، واليدوي، وعملية النقد

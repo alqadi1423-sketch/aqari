@@ -45,6 +45,7 @@ import {
   reverseEntryById,
 } from '../accounting/post';
 import { logAudit } from '../audit';
+import { documentKept } from '../accounting/orphans';
 import { fmt } from '../money';
 import { linkContractTenant } from '../tenants';
 import { seedTenantOccupant, carryOccupantsToRenewal } from '../occupants';
@@ -811,20 +812,50 @@ export function depositArrearsDue(db: DB, contractId: string, date: string): num
     .reduce((sum, i) => sum + i.remaining + (back.get(i.id) ?? 0), 0);
 }
 
+const DEPOSIT_RENT_REV_MEMO = 'تعديل تسوية التأمين · عكس سداد قسطٍ منه'; // i18n-exempt: بيان القيد المخزَّن
+
 /**
  * تعديل التسوية يعكس ما سدّده التأمين من الأقساط قبل إعادة التطبيق (A1-2 · كعكس قيود الخصم والرد): قيد كل دفعةٍ بمرآته بتاريخ
- * التصحيح، والدفعة توسم ملغاةً بعاكسها فتخرج من المسدَّد، ثم يُعاد حساب أقساطها
+ * التصحيح، والدفعة توسم ملغاةً بعاكسها فتخرج من المسدَّد، ثم يُعاد حساب أقساطها ·
+ * وقيدها المعكوس من قبل (عاكسٌ ضُمّ بعد استعادة) تُلغى بعاكسه القائم كما تصلحها المزامنة (Z١-١ وZ٢-٢)، لا بلا عاكسٍ يرفضه جهاز المالك ·
+ * وقيد سدادٍ من هذا التأمين حيٌّ بلا دفعةٍ حيّة (ضُمّ بعد استعادةٍ ولم تُحمل دفعته · R12-BAK-2) يُعكس كأخواته من قيود التسوية، وإلا بقي
+ * إيراد قسطه في الدفتر بعد كل حفظ فقُيد القسط مرتين (المراجع المعاكس الثاني على تعارض R12-DEP-2 مع R12-BAK-2)
  */
 function reverseDepositRent(db: DB, contractId: string): void {
   const touched: string[] = [];
   for (const p of liveDepositRent(db, contractId)) {
-    const rev = p.journal_entry_id ? reverseEntryById(db, p.journal_entry_id, 'تعديل تسوية التأمين · عكس سداد قسطٍ منه') : null; // i18n-exempt: بيان القيد المخزَّن
+    const had = p.journal_entry_id ? db.get<{ id: string }>(`SELECT r.id FROM journal_entries e JOIN journal_entries r ON r.id = e.reversed_by
+      WHERE e.id = ?`, [p.journal_entry_id]) : undefined;
+    const rev = had ?? (p.journal_entry_id ? reverseEntryById(db, p.journal_entry_id, DEPOSIT_RENT_REV_MEMO) : null);
     const on = rev ? db.get<{ d: string }>(`SELECT date AS d FROM journal_entries WHERE id = ?`, [rev.id])!.d : today();
     db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`,
       [on, DEPOSIT_RENT_EDIT_REASON, rev ? rev.id : null, p.id]);
     if (p.installment_id) touched.push(p.installment_id);
   }
+  for (const e of db.all<{ id: string }>(
+    `SELECT e.id FROM journal_entries e WHERE e.src_type = ? AND e.src_id = ? AND e.status = 'مرحّل' AND e.deleted_at IS NULL
+       AND e.reversed_by IS NULL AND NOT EXISTS (SELECT 1 FROM contract_payments p WHERE p.journal_entry_id = e.id AND p.cancelled_at IS NULL)
+     ORDER BY e.date, e.no`, [DEPOSIT_RENT_SRC, contractId])) { // i18n-exempt: حالة القيد المخزّنة
+    reverseEntryById(db, e.id, DEPOSIT_RENT_REV_MEMO);
+  }
   if (touched.length) recomputeInstallments(db, touched);
+}
+
+/** قيود تسوية التأمين ومصدرها العقد صاحب التأمين · وعكوسها */
+const SETTLEMENT_SRC = ['deposit_deduct', 'deposit_refund', 'deposit_deduct_move', DEPOSIT_RENT_SRC];
+
+/**
+ * ما ضُمّ بعد استعادةٍ من قيود هذه التسوية ورُوجع (keepPosted.ts: تعديلها بعد النسخة يُراجَع كله · R12-BAK-2) صار له مستندٌ بحفظها: الحفظ
+ * عكس كل قيدٍ حيّ منها، فكل معلَّمٍ منها في زوجٍ أثره صفر (عُكس، أو عاكسُ أصلٍ معكوس) فيعود داخل المطابقة ويخرج من أداة المراجعة ·
+ * وإلا بقي العاكس المعلَّم خارجها وأصله داخلها فاحمرّ فحص التأمينات أبداً (المراجع المعاكس الثاني على تعارض R12-DEP-2 مع R12-BAK-2)
+ */
+function documentKeptSettlement(db: DB, contractId: string): void {
+  const types = [...SETTLEMENT_SRC, ...SETTLEMENT_SRC.map((s) => s + '_rev')];
+  documentKept(db, db.all<{ id: string; no: string }>(
+    `SELECT e.id, e.no FROM journal_entries e WHERE e.src_id = ? AND e.src_type IN (SELECT value FROM json_each(?))
+       AND e.status = 'مرحّل' AND e.deleted_at IS NULL
+       AND (e.reversed_by IS NOT NULL OR EXISTS (SELECT 1 FROM journal_entries o WHERE o.reversed_by = e.id))`, // i18n-exempt: حالة القيد المخزّنة
+    [contractId, JSON.stringify(types)]), 'حُفظت تسويته'); // i18n-exempt: سببٌ في سجل العمليات
 }
 
 /**
@@ -947,6 +978,7 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
       input.deductDestination ?? 'محفظة إيجار'); // i18n-exempt: وجهة مخزّنة
   }
   postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder }, refund, postDate);
+  documentKeptSettlement(db, contractId);
   db.run(
     `INSERT INTO deposit_settlements (contract_id, date, deduction_halalas, deduction_reason, refund_halalas, notes, deduct_destination)
      VALUES (?,?,?,?,?,?,?)

@@ -3374,10 +3374,11 @@ export interface CloudSnapshot {
 
 /**
  * الجداول التي يُحفظ مستندها كاملاً في اللقطة · ما يُضمّ مع القيد المرحّل · ومنها الحسابات: حسابٌ أُضيف بعد النسخة يُحمل صفّه مع
- * قيده، وإلا رفض مفتاح الحساب سطره (المراجعة ١٢ · R12-BAK-1) · والدليل صغير فلا يثقل اللقطة
+ * قيده، وإلا رفض مفتاح الحساب سطره (المراجعة ١٢ · R12-BAK-1) · والدليل صغير فلا يثقل اللقطة · وصفوف التسوية: بها يُعرف أن دفعة
+ * «من التأمين» سُدّدت بالتسوية التي في النسخة (R12-BAK-2)
  */
 export const SNAPSHOT_FULL = new Set(['journal_entries', 'contract_payments', 'payment_lines', 'payment_allocations', 'bank_tx', 'audit_log',
-  'contract_installments', 'tenants', 'accounts']);
+  'contract_installments', 'tenants', 'accounts', 'deposit_settlements']);
 
 const PLAN_PAGE = 500;
 

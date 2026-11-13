@@ -751,6 +751,7 @@
   "backup": {
     "keptWasDraft": "was a draft in the backup and was posted after it",
     "keptAccount": "its account {{code}} {{name}}",
+    "keptDepositRentCancel": "reversal of an installment paid from the deposit · its payment cancellation was carried with it, and its settlement is in the backup as it was before the edit",
     "cipherChunkSize": "The encryption component returned a chunk of unexpected size · the backup was not encrypted",
     "passwordLost": "The backup secret saved on this device cannot be read, so no backup is exported or uploaded. Create a new recovery key to resume backups; earlier backups open with their secret if you type it.",
     "keyRequired": "No backup leaves the device unencrypted · create the recovery key under “Backup” first, and keep it somewhere safe.",

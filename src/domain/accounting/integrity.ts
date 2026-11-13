@@ -136,7 +136,9 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     });
   }
 
-  // ٨) كل دفعة إيجار محصَّلة لها قيدها المرحّل (الربط بين التحصيل والدفتر)
+  // ٨) كل دفعة إيجار محصَّلة لها قيدها المرحّل (الربط بين التحصيل والدفتر) · وقيدها غير معكوس، ولو بعاكسٍ معلَّمٍ للمراجعة: الدفعة التي عُكس
+  //    قيدها ملغاةٌ بعاكسه في المزامنة (Z١-١ وZ٢-٢)، فالاستعادة تحمل إلغاءها مع عاكسها (keepPosted.ts) ولا يقبل الفحص حالاً تنقضها المزامنة
+  //    (المراجع المعاكس الثاني على تعارض R12-DEP-2 مع R12-BAK-2)
   const unposted = db.get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM contract_payments p
      WHERE p.net_halalas > 0 ${hasCol(db, 'contract_payments', 'cancelled_at') ? 'AND p.cancelled_at IS NULL' : ''} AND NOT EXISTS (

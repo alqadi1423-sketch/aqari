@@ -6,13 +6,18 @@
  * العلامة سطرٌ في سجل العمليات لا إعدادٌ على الجهاز: السجل يُزامَن ولا يُعدَّل، فيرى القائمةَ نفسها
  * كلُّ جهاز على الحساب. والقيد المعلَّم (وعكسه إن عُكس) خارج فحوص مطابقة الدفتر بالمستندات
  * (integrity.ts) لأنه لا مستند له يطابقه · فلا يمنع النسخ الاحتياطي، ويبقى ظاهراً في أداة المراجعة
- * حتى يُعكس أو يُعلَّم «تمّت مراجعته».
+ * حتى يُعكس أو يُعلَّم «تمّت مراجعته»، أو يصير له مستندٌ بحفظ مستنده (KEPT_DOCUMENTED_ENTITY) فيعود داخل المطابقة.
  */
 import type { DB } from '../../db/adapter';
 import { logAudit } from '../audit';
 
 export const KEPT_REVIEW_ENTITY = 'قيد بلا مستند بعد الاستعادة';
 export const KEPT_REVIEWED_ENTITY = 'مراجعة قيد بعد الاستعادة';
+/**
+ * معلَّمٌ صار له مستند: حُفظ مستنده بعد الاستعادة فعكس الحفظُ قيوده الحيّة، فهو في زوجٍ أثره صفر (عُكس، أو عاكسُ أصلٍ معكوس) · فيعود داخل
+ * المطابقة ويخرج من أداة المراجعة · وإلا بقي عاكسٌ معلَّم خارجها وأصله داخلها أبداً (المراجع المعاكس الثاني على تعارض R12-DEP-2 مع R12-BAK-2)
+ */
+export const KEPT_DOCUMENTED_ENTITY = 'قيد بعد الاستعادة صار له مستند'; // i18n-exempt: نوع سجلٍ مخزَّن يقارن به الكود
 
 /** نوع المستند وجدوله · ومعرّف المستند في src_id */
 export const SOURCE_DOC: Record<string, [label: string, tables: string[]]> = {
@@ -65,16 +70,17 @@ function orphanSql(db: DB): string {
 const MARKED = (alias: string) =>
   `EXISTS (SELECT 1 FROM audit_log a WHERE a.entity_type = '${KEPT_REVIEW_ENTITY}' AND json_extract(a.after_json, '$.id') = ${alias}.id)`;
 
-/** صافي حساب (مدين موجب) في القيود المعلَّمة وعكوسها · يُطرح من رصيد الدفتر قبل مطابقته بالمستندات */
+/** صافي حساب (مدين موجب) في القيود المعلَّمة وعكوسها · يُطرح من رصيد الدفتر قبل مطابقته بالمستندات · إلا ما صار له مستند */
 export function markedNetOn(db: DB, account: string): number {
   // المعلَّم يُجمع مرة ثم عكوسه · لا مسح لسجل العمليات عند كل سطر
   return Number(db.get<{ s: number }>(
-    `WITH m AS (SELECT DISTINCT json_extract(after_json, '$.id') AS id FROM audit_log WHERE entity_type = ?),
+    `WITH m AS (SELECT DISTINCT json_extract(after_json, '$.id') AS id FROM audit_log WHERE entity_type = ?
+                EXCEPT SELECT json_extract(after_json, '$.id') FROM audit_log WHERE entity_type = ?),
           ids AS (SELECT id FROM m UNION SELECT e.reversed_by FROM journal_entries e JOIN m ON m.id = e.id WHERE e.reversed_by IS NOT NULL)
      SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS s
      FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
      WHERE l.account_code = ? AND e.status = 'مرحّل' AND e.deleted_at IS NULL AND e.id IN (SELECT id FROM ids)`,
-    [KEPT_REVIEW_ENTITY, account])!.s);
+    [KEPT_REVIEW_ENTITY, KEPT_DOCUMENTED_ENTITY, account])!.s);
 }
 
 /**
@@ -118,14 +124,31 @@ export function markOrphans(db: DB, how: string): number {
 
 export interface KeptReviewItem { id: string; no: string; reason: string }
 
-/** أداة المراجعة: ما عُلِّم ولم يُعكس ولم يُراجَع */
+/** أداة المراجعة: ما عُلِّم ولم يُعكس ولم يُراجَع ولم يصر له مستند */
 export function keptForReview(db: DB): KeptReviewItem[] {
   return db.all<KeptReviewItem>(
     `SELECT e.id, e.no, MAX(json_extract(a.after_json, '$.reason')) AS reason
      FROM audit_log a JOIN journal_entries e ON e.id = json_extract(a.after_json, '$.id')
      WHERE a.entity_type = ? AND e.reversed_by IS NULL AND e.deleted_at IS NULL
-       AND NOT EXISTS (SELECT 1 FROM audit_log d WHERE d.entity_type = ? AND json_extract(d.after_json, '$.id') = e.id)
-     GROUP BY e.id ORDER BY e.date, e.no`, [KEPT_REVIEW_ENTITY, KEPT_REVIEWED_ENTITY]);
+       AND NOT EXISTS (SELECT 1 FROM audit_log d WHERE d.entity_type IN (?, ?) AND json_extract(d.after_json, '$.id') = e.id)
+     GROUP BY e.id ORDER BY e.date, e.no`, [KEPT_REVIEW_ENTITY, KEPT_REVIEWED_ENTITY, KEPT_DOCUMENTED_ENTITY]);
+}
+
+/**
+ * القيود المعلَّمة من هذه صار لها مستند (KEPT_DOCUMENTED_ENTITY) · يُستدعى بعد حفظ مستندها في معاملته، بقيودٍ كلٌّ منها في زوجٍ أثره صفر ·
+ * وغير المعلَّم وما صار له مستند من قبل لا يُكتب له سطر
+ */
+export function documentKept(db: DB, entries: Array<{ id: string; no: string }>, how: string): number {
+  let n = 0;
+  for (const e of entries) {
+    const open = db.get(`SELECT 1 FROM audit_log a WHERE a.entity_type = ? AND json_extract(a.after_json, '$.id') = ?
+      AND NOT EXISTS (SELECT 1 FROM audit_log d WHERE d.entity_type = ? AND json_extract(d.after_json, '$.id') = ?)`,
+    [KEPT_REVIEW_ENTITY, e.id, KEPT_DOCUMENTED_ENTITY, e.id]);
+    if (!open) continue;
+    logAudit(db, 'النسخ الاحتياطي', 'update', KEPT_DOCUMENTED_ENTITY, e.no, undefined, { id: e.id, no: e.no, how }); // i18n-exempt: قسمٌ مخزَّن في سجل العمليات كأخواته
+    n++;
+  }
+  return n;
 }
 
 /** «تمّت مراجعته» · بقرار المستخدم · يبقى القيد خارج المطابقة لأن مستنده غائب */
