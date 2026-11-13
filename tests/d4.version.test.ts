@@ -62,6 +62,19 @@ describe('وسم الحزمة ونشرتها (apkRelease.js)', () => {
     expect(rel.notesOf(log, '3.0.0')).toBeNull();
   });
 
+  test('لا وسم لحزمةٍ لم تنجح اختبارات مصدرها (G-1): الحكم من خلاصته في ci-results', () => {
+    const ok = 'commit abc\nrun x\nsuccess true\nsuites 1 passed / 1 total\n';
+    const bad = 'commit abc\nrun x\nsuccess false\nfailed-suite tests/x.test.ts\n';
+    expect(rel.testsVerdict(ok)).toBe('pass');
+    expect(rel.testsVerdict(bad)).toBe('fail');
+    expect(rel.testsVerdict('')).toBe('missing');
+    // سطرٌ يحمل العبارة في غير موضعها لا يُعدّ نجاحاً
+    expect(rel.testsVerdict('commit abc\nfailed-suite success true\n')).toBe('fail');
+    const src = read('scripts/ci/apkRelease.js');
+    expect(src).toMatch(/origin\/ci-results:runs\//);
+    expect(read('.github/workflows/apk-release.yml')).toMatch(/git fetch -q origin apk ci-results --tags/);
+  });
+
   test('سير العمل يُشغَّل من الفرع الرئيسي (فرع apk بلا ملفات سير عمل)، وبالساعة وبالزر', () => {
     const wf = read('.github/workflows/apk-release.yml');
     expect(wf).toMatch(/branches: \[main\]/);

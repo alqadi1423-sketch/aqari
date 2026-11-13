@@ -3,7 +3,7 @@
  * وسمٌ ونشرة في جيت هب لكل APK (التوجيه الرابع ٤ · ٢ · قرار المالك 2026-11-07 «أرقام إصدارات وسجل تغييرات لكل APK»).
  * يقرأ رأس فرع apk: رسالة التزامه تسمّي التزام المصدر («من main <بصمة>» أو «· <بصمة> ·»)، ومن المصدر يُقرأ رقم الإصدار
  * (src/version.ts) وقسمه في سجل التغييرات (docs/سجل-التغييرات.md) · فإن لم يُوسَم الرقم بعد أعدّ الوسم والنشرة، وإن وُسم
- * برقمه نفسه لحزمةٍ أخرى فشل: لكل حزمةٍ رقمٌ جديد.
+ * برقمه نفسه لحزمةٍ أخرى فشل: لكل حزمةٍ رقمٌ جديد · ولا وسم قبل أن تنجح اختبارات المصدر في فرع ci-results.
  *
  * الاستعمال (في سير العمل، بعد جلب الفروع والوسوم): node scripts/ci/apkRelease.js <ملف الخرج>
  * يكتب في الخرج: tag وsource وtitle وnotes (ملف النشرة) وaction (create أو skip)، بصيغة GITHUB_OUTPUT.
@@ -36,6 +36,15 @@ function notesOf(changelog, version) {
   return lines.slice(start + 1, end).join('\n').trim();
 }
 
+/**
+ * حكم اختبارات التزام المصدر من خلاصته في فرع ci-results (runs/<البصمة>.txt): pass أو fail أو missing.
+ * لا حزمة تُوسَم من التزامٍ لم تنجح اختباراته (قرار المالك 2026-10-07 «لا حزمة قبل ذلك» · المراجعة الشاملة 2026-11-13 · G-1).
+ */
+function testsVerdict(resultText) {
+  if (!resultText) return 'missing';
+  return /^success true$/m.test(resultText) ? 'pass' : 'fail';
+}
+
 if (require.main === module) {
   const out = process.argv[2];
   if (!out) { console.error('الاستعمال: node scripts/ci/apkRelease.js <ملف الخرج>'); process.exit(2); }
@@ -51,6 +60,19 @@ if (require.main === module) {
     // حزمةٌ قبل نظام الإصدارات (1.0.0): لا وسم لها
     fs.appendFileSync(out, 'action=skip\n');
     console.log('المصدر ' + full.slice(0, 7) + ' قبل نظام الإصدارات · لا وسم');
+    process.exit(0);
+  }
+  let result = '';
+  try { result = git('show', 'origin/ci-results:runs/' + full + '.txt'); } catch { result = ''; }
+  const verdict = testsVerdict(result);
+  if (verdict === 'fail') {
+    console.error('اختبارات التزام المصدر ' + full.slice(0, 7) + ' لم تنجح (ci-results/runs) · لا وسم ولا نشرة لحزمته');
+    process.exit(1);
+  }
+  if (verdict === 'missing') {
+    // الاختبارات لم تنتهِ بعد أو لم تُشغَّل: يُعاد الفحص في التشغيل التالي
+    fs.appendFileSync(out, 'action=skip\n');
+    console.log('لا نتيجة اختباراتٍ لالتزام المصدر ' + full.slice(0, 7) + ' بعد · لا وسم حتى تنجح');
     process.exit(0);
   }
   const tag = 'v' + v.version;
@@ -72,4 +94,4 @@ if (require.main === module) {
   console.log('يُوسم ' + tag + ' على ' + full.slice(0, 7));
 }
 
-module.exports = { sourceOf, versionOf, notesOf };
+module.exports = { sourceOf, versionOf, notesOf, testsVerdict };
