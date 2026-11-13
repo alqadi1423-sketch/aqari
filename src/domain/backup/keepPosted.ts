@@ -10,7 +10,8 @@
  *  - ربط القيد العكسي بأصله (reversed_by).
  * وما لا يُحمل مستنده (فاتورة · مشتريات · تأمين · حجز · تقبيل …) يُضمّ قيده كما هو ويُدرج في أداة
  * المراجعة «قيد بلا مستند بعد الاستعادة» · إلا زوجاً عكَس أحدُه الآخر، فأثرهما صفر.
- * ودفعة القسط «من التأمين» مستندها تسويته: فلا تُحمل إلا وصفّ التسوية في النسخة (المراجعة الشاملة 2026-11-13 · A1-2).
+ * ودفعة القسط «من التأمين» مستندها تسويته: فلا تُحمل إلا وصفّ التسوية في النسخة (المراجعة الشاملة 2026-11-13 · A1-2)،
+ *   تسوية العقد صاحب التأمين مصدر قيدها لا عقد الدفعة (R12-DEP-2: قسط عقدٍ رُحِّل تأمينه).
  * ورقمٌ مستعمل في النسخة لقيد آخر يأخذ القيدُ المضموم رقماً جديداً من تسلسل الجهاز ويُذكر القديم في بيانه.
  * ومسودةٌ في النسخة رُحّلت بعدها (الترحيل يرقّي المسودة في مكانها بمعرّفها) تُستبدل بالمرحّل ولا تعود مسودة
  * (المراجعة الشاملة 2026-11-13 · C-1).
@@ -138,6 +139,13 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       if (!have || (!have.row.cancelled_at && p.cancelled_at)) payments.set(String(p.id), { row: p, from: which });
     }
   }
+  // العقد صاحب التأمين لدفعةٍ «من التأمين»: مصدر قيدها، من القيد المضموم أو من النسخة، وإلا عقد الدفعة (R12-DEP-2)
+  const depositHolderOf = (p: RowData): string => {
+    const je = String(p.journal_entry_id ?? '');
+    const kept = je ? byId.get(je)?.row.src_id : null;
+    const held = kept ?? (je ? target.get<{ s: string | null }>(`SELECT src_id AS s FROM journal_entries WHERE id = ?`, [je])?.s : null);
+    return String(held || p.contract_id || '');
+  };
   const outPayments: RowData[] = [];
   const outLines: RowData[] = [];
   const outAllocs: RowData[] = [];
@@ -155,7 +163,10 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
     if (why) { for (const e of entriesOf) if (!review.has(e)) review.set(e, why); continue; }
     // دفعة القسط من التأمين بلا صفّ تسويتها في النسخة (نسخةٌ قبل التسوية): لا تُحمل، فيُراجَع قيدها كقيد الخصم «مستنده في النسخة
     // بحاله قبل هذا القيد» ويخرج أثره من مطابقة 2400 · وكان يُحمل فيبقى التأمين محتجزاً والتزامه صفراً (المراجعة الشاملة 2026-11-13 · A1-2)
-    if (p.method_label === DEPOSIT_RENT_METHOD && !target.get(`SELECT 1 FROM deposit_settlements WHERE contract_id = ?`, [p.contract_id as string])) continue;
+    // وتسويتها تسوية العقد صاحب التأمين، مصدر قيدها، لا عقد الدفعة: قسط عقدٍ رُحِّل تأمينه دفعته على عقده وقيدها مصدره المجدَّد
+    // (R12-DEP-2)، والسابق لا تسوية له فكان إلغاؤها بتعديل التسوية لا يُحمل مع عاكسها (المراجع المعاكس على R12-DEP-2)
+    if (p.method_label === DEPOSIT_RENT_METHOD
+      && !target.get(`SELECT 1 FROM deposit_settlements WHERE contract_id = ?`, [depositHolderOf(p)])) continue;
     outPayments.push(p);
     if (p.discount_kind === DISCOUNT_REDUCES_INSTALLMENT && p.installment_id) {
       const srcInst = rowsFrom(src, from, 'contract_installments', 'id', [String(p.installment_id)])[0];

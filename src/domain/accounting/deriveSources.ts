@@ -247,6 +247,23 @@ function carriedOn(db: DB, contractId: string): boolean {
     [contractId, POSTED]);
 }
 
+/**
+ * العقد ومن رُحِّل تأمينه إليه بترحيلٍ حيٍّ هنا (depositCarryChain على جهاز المالك · R12-DEP-2) · pending: ترحيلٌ إلى حلقةٍ في الوارد لم
+ * يُطبَّق بعد
+ */
+function carryChain(r: SourceReader, contractId: string): { ids: string[]; pending: boolean } {
+  const ids = [contractId];
+  let cur = contractId;
+  for (let i = 0; i < 100; i++) {
+    const prev = r.row<{ renewed_from: string | null }>('contracts', cur)?.renewed_from ?? null;
+    if (!prev || ids.includes(prev)) break;
+    if (live(r, 'deposit_carry', cur, '', total) <= 0) return { ids, pending: r.pending('deposit_carry', cur).length > 0 };
+    ids.push(prev);
+    cur = prev;
+  }
+  return { ids, pending: false };
+}
+
 /** المصدر الحيّ الذي لم يُعكس: قيوده المرحّلة هنا ناقصاً عواكسها · بمجموع مبالغها أو عددها */
 function live(r: SourceReader, src: string, srcId: string, exceptId: string, by: (e: SrcEntry) => number): number {
   return r.entries(src, srcId).filter((e) => e.id !== exceptId).reduce((s, e) => s + by(e), 0)
@@ -1214,7 +1231,12 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
         'contract_payments', 'journal_entry_id', e.id);
       if (!pays.length) return AWAIT;
       const pay = pays[0];
-      if (pays.length > 1 || pay.contract_id !== e.srcId || pay.method_label !== DEPOSIT_RENT_METHOD) return no('noEntry');
+      if (pays.length > 1 || pay.method_label !== DEPOSIT_RENT_METHOD) return no('noEntry');
+      // ودفعة قسطٍ من عقدٍ رُحِّل تأمينه إلى عقد القيد (R12-DEP-2): على عقد القسط، وترحيله حيٌّ هنا · وترحيلٌ في الوارد لم يُطبَّق بعد يُنتظر
+      if (pay.contract_id !== e.srcId) {
+        const chain = carryChain(r, e.srcId);
+        if (!chain.ids.includes(pay.contract_id)) return chain.pending ? AWAIT : no('noEntry');
+      }
       // ولا يُسدَّد من تأمينٍ رُحِّل إلى التجديد (R12-DEP-1)
       if (carriedOn(db, e.srcId)) return no('settleAfterCarry');
       const c = r.row<{ deposit_holder: string | null }>('contracts', e.srcId);
@@ -1226,9 +1248,11 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (amount <= 0 || live(r, DEPOSIT_RENT_SRC, e.srcId, e.id, total) + amount > num(s.deduction_halalas)) return AWAIT;
       const dims = contractDims(db, r, e.srcId);
       if (!dims) return AWAIT;
+      // والإيراد بعقد القسط (lineDims: الصريح فيه العقد وحده، والوحدة والعقار من مصدر القيد)
+      const revDims = pay.contract_id === e.srcId ? dims : contractDims(db, r, e.srcId, pay.contract_id)!;
       // تقسيم الإيراد من العقد ودفعاته (rentSplit) يبعد بين جهازين بهللةٍ لكل حساب (derive.ts: SPLIT_SLACK) · فالوارد يُقبل بتقسيمه
       // إن طابق مجموعُه المبلغ وقرُب كل حسابٍ من المشتق، وإلا قورن بالمشتق فرُفض
-      const derived = depositRentLines(db, e.srcId, amount)!;
+      const derived = depositRentLines(db, e.srcId, amount, pay.contract_id)!;
       const got = new Map<string, number>();
       for (const l of nonZero(e.lines)) {
         const a = String(l.account_code ?? '');
@@ -1240,7 +1264,7 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const built = near
         ? [derived[0], ...[...got].filter(([, v]) => v).map(([account, v]) => ({ account, debit: 0, credit: v }))]
         : derived;
-      return { lines: want(built, () => [dims])!, date: pay.date ?? '', correctable: true };
+      return { lines: want(built, (l) => [l.account === '2400' ? dims : revDims])!, date: pay.date ?? '', correctable: true };
     }
     case 'deposit_deduct':
     case 'deposit_deduct_move':

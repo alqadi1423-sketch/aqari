@@ -397,19 +397,25 @@ export const postDepositDeduct = (db: DB, c: { id: string; contract_no: string; 
  * التأمين ويُسدَّد القسط نفسه بدفعةٍ «من التأمين» · مدين 2400 / دائن إيراد العقد بتقسيمه · وما بقي من الخصم (الأضرار) 4300 كما هو ·
  * بها يرحّل الجهاز القيد وبها يعيد جهاز المالك اشتقاق قيد العضو (deriveSources.ts)
  */
-export function depositRentLines(db: DB, contractId: string, amount: number): EntryLine[] | null {
+export function depositRentLines(db: DB, contractId: string, amount: number, installmentContractId?: string | null): EntryLine[] | null {
+  // وقسطٌ من عقدٍ رُحِّل تأمينه إلى هذا (R12-DEP-2): الإيراد إيراد عقد القسط بتقسيمه وبُعده، والالتزام التزام هذا العقد
+  const own = installmentContractId && installmentContractId !== contractId ? installmentContractId : null;
   return amount > 0 ? [
     { account: '2400', descr: 'إطفاء التزام التأمين بقسطٍ متأخر', debit: amount, credit: 0 }, // i18n-exempt: نص قيد مخزَّن
-    ...rentRevenueLines(db, contractId, amount, 'إيراد إيجار من التأمين', 'credit'), // i18n-exempt: نص قيد مخزَّن
+    ...rentRevenueLines(db, own ?? contractId, amount, 'إيراد إيجار من التأمين', 'credit') // i18n-exempt: نص قيد مخزَّن
+      .map((l) => (own ? { ...l, dims: { contractId: own } } : l)),
   ] : null;
 }
 
-/** قيد سداد قسطٍ واحد من التأمين · مصدره العقد (DEPOSIT_RENT_SRC) فأبعاده أبعاده، ولكل قسطٍ قيده ودفعته كتحويل العربون */
+/**
+ * قيد سداد قسطٍ واحد من التأمين · مصدره العقد صاحب التأمين (DEPOSIT_RENT_SRC) فأبعاده أبعاده، ولكل قسطٍ قيده ودفعته كتحويل العربون ·
+ * وقسط عقدٍ رُحِّل تأمينه إليه بإيراده على عقد القسط (installmentContractId · R12-DEP-2)
+ */
 export const postDepositRent = (
   db: DB,
-  a: { contractId: string; contractNo: string; tenant: string; amount: number; date: string; period: string }
+  a: { contractId: string; contractNo: string; tenant: string; amount: number; date: string; period: string; installmentContractId?: string }
 ) => {
-  const lines = depositRentLines(db, a.contractId, a.amount);
+  const lines = depositRentLines(db, a.contractId, a.amount, a.installmentContractId);
   return lines
     ? postEntry(db, {
         date: a.date,

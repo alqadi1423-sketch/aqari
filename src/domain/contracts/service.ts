@@ -12,9 +12,10 @@ import { uid, rowId } from '../ids';
 import { today, dfmt } from '../dates';
 import {
   generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining,
-  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, type DiscountKind,
+  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, type DiscountKind,
 } from './installments';
 import { recomputeInstallments } from './paid';
+import { depositCarryChain } from './depositChain';
 import {
   validateConfirmedContract,
   nextContractNo,
@@ -768,11 +769,30 @@ export function depositCarried(db: DB, contractId: string): boolean {
 /** المطالبة التلقائية لزيادة التسوية على التأمين · مصدرها */
 const SETTLEMENT_CLAIM = 'تسوية تأمين'; // i18n-exempt: مصدر مخزَّن
 
-/** دفعات العقد الحيّة المسدَّدة من تأمينه في تسويته (المراجعة الشاملة 2026-11-13 · A1-2) */
+/**
+ * الدفعات الحيّة المسدَّدة من تأمين العقد في تسويته (المراجعة الشاملة 2026-11-13 · A1-2) · بقيدها الذي مصدره العقد صاحب التأمين، فتشمل
+ * أقساط من رُحِّل تأمينه إليه وهي على عقودها (R12-DEP-2) · ودفعةٌ بلا قيدٍ هنا بعقدها
+ */
 function liveDepositRent(db: DB, contractId: string) {
   return db.all<{ id: string; installment_id: string | null; net_halalas: number; journal_entry_id: string | null }>(
-    `SELECT id, installment_id, net_halalas, journal_entry_id FROM contract_payments
-     WHERE contract_id = ? AND method_label = ? AND cancelled_at IS NULL ORDER BY date, rowid`, [contractId, DEPOSIT_RENT_METHOD]);
+    `SELECT p.id, p.installment_id, p.net_halalas, p.journal_entry_id FROM contract_payments p
+     LEFT JOIN journal_entries e ON e.id = p.journal_entry_id
+     WHERE p.method_label = ? AND p.cancelled_at IS NULL
+       AND ((e.src_type = ? AND e.src_id = ?) OR (e.id IS NULL AND p.contract_id = ?))
+     ORDER BY p.date, p.rowid`, [DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, contractId, contractId]);
+}
+
+/**
+ * الأقساط التي يسدّدها تأمين العقد في تسويته (R12-DEP-2): أقساطه وأقساط من رُحِّل تأمينه إليه (depositCarryChain)، فالتأمين المرحَّل
+ * تأمين السابق نفسه والسابق لا يُسوّى بعد ترحيله · بترتيب الاستحقاق ثم الجدول ثم المعرّف كتحويل العربون
+ */
+function depositInstallments(db: DB, contractId: string) {
+  const chain = depositCarryChain(db, contractId);
+  return db.all<{ id: string; contract_id: string; amount_halalas: number; paid_halalas: number; discount: number; due_date: string }>(
+    `SELECT i.id, i.contract_id, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount, i.due_date
+     FROM contract_installments i WHERE i.contract_id IN (SELECT value FROM json_each(?)) AND i.status <> 'ملغية'
+     ORDER BY i.due_date, i.sort, i.id`, [JSON.stringify(chain)])
+    .map((i) => ({ ...i, remaining: installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount)) }));
 }
 
 /** ما سدّده التأمين من الأقساط في تسويته القائمة · «منها مقابل أقساطٍ متأخرة» حين تُعدَّل (A1-2) */
@@ -781,15 +801,15 @@ export function depositArrearsPaid(db: DB, contractId: string): number {
 }
 
 /**
- * سقف «منها مقابل أقساطٍ متأخرة» وافتراضها في الشاشتين (A1-2): المتبقي على أقساط العقد القائمة التي حلّت بتاريخ التسوية، ومعه ما
- * سدّده التأمين منها في تسويةٍ قائمة (تعديلها يعكسه أولاً)
+ * سقف «منها مقابل أقساطٍ متأخرة» وافتراضها في الشاشتين (A1-2): المتبقي على الأقساط القائمة التي حلّت بتاريخ التسوية، أقساط العقد
+ * وأقساط من رُحِّل تأمينه إليه (R12-DEP-2)، ومعه ما سدّده التأمين منها في تسويةٍ قائمة (تعديلها يعكسه أولاً)
  */
 export function depositArrearsDue(db: DB, contractId: string, date: string): number {
   const back = new Map<string, number>();
   for (const p of liveDepositRent(db, contractId)) {
     if (p.installment_id) back.set(p.installment_id, (back.get(p.installment_id) ?? 0) + Number(p.net_halalas));
   }
-  return openInstallments(db, contractId).filter((i) => i.due_date <= date)
+  return depositInstallments(db, contractId).filter((i) => i.due_date <= date)
     .reduce((sum, i) => sum + i.remaining + (back.get(i.id) ?? 0), 0);
 }
 
@@ -812,22 +832,29 @@ function reverseDepositRent(db: DB, contractId: string): void {
 /**
  * سداد ما حلّ من الأقساط بجزء الخصم «مقابل أقساطٍ متأخرة» (A1-2 · قرار المالك س١): بترتيب الاستحقاق ثم ترتيب الجدول ثم المعرّف
  * كتحويل العربون، لكل قسطٍ دفعةٌ «من التأمين» وقيدها (مدين 2400 / دائن الإيراد بتقسيمه)، ثم يُعاد حساب المسدَّد · cutoff تاريخ التسوية
+ * والقسط من عقدٍ رُحِّل تأمينه إلى هذا (R12-DEP-2): دفعته على عقد القسط، وقيدها مصدره هذا العقد صاحب التأمين، فمدين 2400 بأبعاده
+ * ودائن إيراد عقد القسط بتقسيمه وبُعده
  */
 function payArrearsFromDeposit(db: DB, c: ContractRow, contractId: string, amount: number, date: string, cutoff: string): void {
   let left = amount;
   const covered: string[] = [];
-  for (const i of openInstallments(db, contractId)) {
+  for (const i of depositInstallments(db, contractId)) {
     if (left <= 0) break;
     if (i.due_date > cutoff || i.remaining <= 0) continue;
     const amt = Math.min(left, i.remaining);
     left -= amt;
     const period = 'قسط ' + dfmt(i.due_date); // i18n-exempt: بيان الدفعة المخزَّن كأخواته
-    const entry = postDepositRent(db, { contractId, contractNo: c.contract_no || '', tenant: c.tenant_name, amount: amt, date, period });
+    const of = i.contract_id === contractId ? null
+      : db.get<{ no: string | null }>(`SELECT contract_no AS no FROM contracts WHERE id = ?`, [i.contract_id])?.no ?? '';
+    const entry = postDepositRent(db, {
+      contractId, contractNo: of ?? (c.contract_no || ''), tenant: c.tenant_name, amount: amt, date, period,
+      ...(of === null ? {} : { installmentContractId: i.contract_id }),
+    });
     db.run(
       `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
         discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
        VALUES (?,?,?,?,?,?,0,?,?,?,?,?)`,
-      [uid(), contractId, i.id, period, date, amt, amt, DEPOSIT_RENT_METHOD, '', entry ? entry.id : null, new Date().toISOString()]);
+      [uid(), i.contract_id, i.id, period, date, amt, amt, DEPOSIT_RENT_METHOD, '', entry ? entry.id : null, new Date().toISOString()]);
     covered.push(i.id);
   }
   // السقف فُحص قبل التطبيق (depositArrearsDue) · فما بقي هنا خللٌ لا يُسكت عنه

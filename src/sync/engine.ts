@@ -29,6 +29,7 @@ import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/back
 import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
 import { paidFromDeposit } from '../domain/contracts/cancelPayment';
+import { depositCarryChain } from '../domain/contracts/depositChain';
 import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
@@ -1830,7 +1831,9 @@ function reservationConvertCheck(db: DB, je: string, row: RowData): void {
  */
 function depositRentCheck(db: DB, je: string, srcId: string | null, row: RowData): void {
   const bad = () => new Error(tr('derive.rejected', { why: tr('derive.entryType', { lng: 'ar' }), lng: 'ar' }));
-  if (row.method_label !== DEPOSIT_RENT_METHOD || srcId !== row.contract_id || row.installment_id == null) throw bad();
+  if (row.method_label !== DEPOSIT_RENT_METHOD || row.installment_id == null) throw bad();
+  // وعقد الدفعة عقد القيد صاحب التأمين، أو عقدٌ رُحِّل تأمينه إليه بترحيلٍ حيٍّ هنا (R12-DEP-2)
+  if (srcId !== row.contract_id && !depositCarryChain(db, srcId ?? '').includes(String(row.contract_id ?? ''))) throw bad();
   const net = Number(row.net_halalas) || 0;
   const lines = db.all<{ a: string; n: number }>(
     `SELECT account_code AS a, SUM(debit_halalas - credit_halalas) AS n FROM journal_lines WHERE entry_id = ? GROUP BY account_code`, [je]);
