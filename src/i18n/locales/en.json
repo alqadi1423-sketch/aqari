@@ -885,7 +885,8 @@
     "future": "A month that has not ended yet on the owner's device: its depreciation is not posted before it ends",
     "assetPlace": "The asset's unit in the entry is not the unit where its cost sits in the ledger",
     "notRegistered": "The organization is not VAT-registered on the owner's device, so the invoice's input VAT is not deductible",
-    "carryAfterSettle": "Carries a deposit already settled before the renewal"
+    "carryAfterSettle": "Carries a deposit already settled before the renewal",
+    "settleAfterCarry": "Settles a deposit already carried to the renewed contract"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",
@@ -924,6 +925,8 @@
     "accountLocked": "A system account, or one used in an entry, keeps its type and group and is not deleted · it stays as it was",
     "handoverLocked": "The handover form is locked, so it is not reopened and its items do not change · the late edit from an old copy was rejected; a correction after locking is a separate corrective form",
     "bankOpeningLocked": "A bank with an opening balance is deleted or restored from the trash by the owner only · it stays as it was",
+    "settleAfterCarry": "Settlement of a contract whose deposit was carried to its renewal · rejected so the deposit is not refunded to the tenant and kept in the renewed contract at once; it is settled when the renewal ends",
+    "deadCarryDeposit": "Deposit of contract {{no}} is now {{to}} instead of {{from}} · the carry from the previous contract was rejected because it was settled before the renewal, so the renewal holds only what was received for it",
     "collectedTwice": "A second collection of the same claim or invoice while a live one exists · rejected so it is not collected twice",
     "memberBankShort": "{{why}} · An entry from a member takes more out of the bank than the owner's books hold (cancelling a collection, returning an invoice to due, or restoring a paid purchase) · it was rejected with its bank transaction and what follows it, and the books stay as they were",
     "issuedInvoiceLocked": "An issued invoice is locked: its lines and what it was issued with do not change, it does not return to draft and is not deleted; it is corrected by a credit note · the member's write was rejected and it stays as issued",

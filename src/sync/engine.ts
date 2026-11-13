@@ -1304,6 +1304,77 @@ function memberSourceCheck(db: DB, doc: RemoteDoc): void {
   if (why) throw no(why);
 }
 
+/** قيد ترحيل تأمينٍ حيٌّ هنا للعقد المجدَّد (منطق depositCarried في الخدمة) */
+const carryLiveHere = (db: DB, contractId: string): boolean => !!db.get(
+  `SELECT 1 FROM journal_entries WHERE src_type = 'deposit_carry' AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL AND status = ?`,
+  [contractId, POSTED]);
+
+/** المصدر الحيّ هنا ومعه ما في الوارد مرحّلاً لم يُطبَّق بعد: مجموع دائن قيوده ناقصاً عواكسه */
+function liveOrPendingTotal(db: DB, src: string, srcId: string): number {
+  const here = (s: string) => Number(db.get<{ n: number }>(
+    `SELECT COALESCE(SUM(l.credit_halalas), 0) AS n FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type = ? AND e.src_id = ? AND e.status = ? AND e.deleted_at IS NULL`, [s, srcId, POSTED])!.n);
+  const inbox = (s: string) => db.all<{ payload: string }>(
+    `SELECT i.payload FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.src_type') = ?
+       AND json_extract(i.payload, '$.d.src_id') = ? AND json_extract(i.payload, '$.d.status') = ?
+       AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.id = i.pk)`, [s, srcId, POSTED])
+    .reduce((sum, r) => sum + docLines(JSON.parse(r.payload) as RemoteDoc).reduce((x, l) => x + (Number(l.credit_halalas) || 0), 0), 0);
+  return here(src) + inbox(src) - here(src + '_rev') - inbox(src + '_rev');
+}
+
+/**
+ * ترحيل تأمينٍ رفضه جهاز المالك لأن تأمين العقد السابق سُوّي (deriveSources: carryAfterSettle · المراجعة الشاملة 2026-11-13 · R12-DEP-1):
+ * قيد deposit_carry للعقد المجدَّد في سجل المرفوض أو في الوارد ينتظر، وتسوية السابق هنا أو في الوارد، ولا ترحيل حيّاً هنا · فتأمين
+ * العقد المجدَّد في صفّه (المرحَّل وزيادته في renewContract) يحمل ما لم يحتجزه له الدفتر، وتسويته تعرض ردّه ثانية · يعيد التأمين الذي
+ * يحتجزه الدفتر له، أو null إن لم يكن ترحيلٌ ميت:
+ *  - التأمين لدى المكتب أو المنصة: ما قُبض له فعلاً (قيود contract_deposit الحيّة هنا وما في الوارد منها، وهي الزيادة وحدها)، فالحساب
+ *    واحدٌ من الصف المنفوخ أو المصحَّح (يُرفع المصحَّح ويعود من السحابة إلى كل جهاز، ولا يُطرح المرحَّل منه مرتين)
+ *  - لدى طرف آخر (لم يدخل الدفتر): صفّه ناقصاً المرحَّل مرةً واحدة، يحفظها جهاز المالك (DEAD_CARRY)
+ */
+const DEAD_CARRY = 'dead_carry:';
+function deadCarryDeposit(db: DB, contractId: string, row: Record<string, unknown>): number | null {
+  const prevId = row.renewed_from == null ? '' : String(row.renewed_from);
+  if (!prevId || getSyncState(db, 'membership') || carryLiveHere(db, contractId)) return null;
+  if (!latestRowByKey(db, 'deposit_settlements', prevId)) return null;
+  const docs = [
+    ...db.all<{ payload: string }>(`SELECT payload FROM sync_rejects WHERE tbl = 'journal_entries'
+      AND json_extract(payload, '$.d.src_type') = 'deposit_carry' AND json_extract(payload, '$.d.src_id') = ?`, [contractId]),
+    ...db.all<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0
+      AND json_extract(payload, '$.d.src_type') = 'deposit_carry' AND json_extract(payload, '$.d.src_id') = ?`, [contractId]),
+  ].map((x) => JSON.parse(x.payload) as RemoteDoc);
+  const carried = Math.max(0, ...docs.map((d) => docLines(d).reduce((s, l) => s + (Number(l.credit_halalas) || 0), 0)));
+  if (!(carried > 0)) return null;
+  const deposit = Number(row.deposit_halalas) || 0;
+  if (String(row.deposit_holder ?? '') !== 'طرف آخر') return Math.max(0, liveOrPendingTotal(db, 'contract_deposit', contractId)); // i18n-exempt: جهة مخزّنة
+  const seen = getSyncState(db, DEAD_CARRY + contractId);
+  return seen != null && Number.isFinite(Number(seen)) ? Number(seen) : Math.max(0, deposit - carried);
+}
+
+/** يصحّح تأمين العقد المجدَّد هنا إن كان ترحيله ميتاً · ويُرفع صفّه فيعود إلى السحابة وكل جهاز (بعد التطبيق: ترحيلٌ رُفض بعد صفّه) */
+function fixDeadCarries(db: DB): void {
+  if (getSyncState(db, 'membership')) return;
+  const ids = db.all<{ k: string }>(`SELECT DISTINCT json_extract(payload, '$.d.src_id') AS k FROM sync_rejects WHERE tbl = 'journal_entries'
+    AND json_extract(payload, '$.d.src_type') = 'deposit_carry'`).map((x) => String(x.k ?? '')).filter(Boolean);
+  for (const id of ids) {
+    const row = db.get<Record<string, unknown>>(`SELECT * FROM contracts WHERE id = ?`, [id]);
+    if (!row) continue;
+    const want = deadCarryDeposit(db, id, row);
+    if (want === null || want === Number(row.deposit_halalas)) continue;
+    db.run(`UPDATE contracts SET deposit_halalas = ? WHERE id = ?`, [want, id]);
+    noteDeadCarry(db, id, row, want);
+  }
+}
+
+/** صفّ العقد صُحّح تأمينه هنا: يُذكر ويُرفع */
+function noteDeadCarry(db: DB, id: string, row: Record<string, unknown>, want: number): void {
+  if (String(row.deposit_holder ?? '') === 'طرف آخر') setSyncState(db, DEAD_CARRY + id, String(want)); // i18n-exempt: جهة مخزّنة
+  enqueue(db, 'contracts', id, 'upsert');
+  try {
+    logAudit(db, 'المزامنة', 'update', 'تصحيح تأمين عقدٍ مجدَّد', // i18n-exempt: وحدة السجل ونوعه المخزّنان
+      tr('sync.deadCarryDeposit', { no: String(row.contract_no ?? ''), from: fmt(Number(row.deposit_halalas) || 0), to: fmt(want), lng: 'ar' }));
+  } catch { /* السجل لا يعطّل */ }
+}
+
 /**
  * حركة بنكٍ كتبها عضوٌ برقم قيد (المدقق الخارجي ك٢): لا تُطبَّق على جهاز المالك قبل قيدها · فرصيد البنك يُحسب من الحركات، وقيدٌ
  * مرفوض (عمولة تقبيلٍ بلا أبعاد من إصدارٍ أقدم مثلاً) كانت حركته تُطبَّق فيرتفع رصيد البنك بلا قيد · قيدها هنا تُطبَّق، وفي الوارد أو
@@ -2868,6 +2939,31 @@ function applyOne(
     }
   }
 
+  // وتسوية تأمينٍ رُحِّل إلى التجديد من عضو (المراجعة الشاملة 2026-11-13 · R12-DEP-1 · مرآة carryAfterSettle): صفّ التسوية لعقدٍ له
+  // قيد ترحيلٍ حيٌّ هنا لخلفه يُرفض كقيود تسويته (deriveSources: settleAfterCarry)، فلا يبدو العقد مُسوّى بلا قيد ولا يُردّ التأمين مرتين ·
+  // ونسخة المالك تُعاد إن كانت له هنا تسوية (قرارا المالك ٦٢ و٦٣: دفاتر المالك تغلب ويظهر الرفض في حالة المزامنة)
+  if (doc.t === 'deposit_settlements' && !doc.del && doc.d && !joining && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && db.get(`SELECT 1 FROM contracts n JOIN journal_entries e ON e.src_type = 'deposit_carry' AND e.src_id = n.id
+         WHERE n.renewed_from = ? AND n.deleted_at IS NULL AND e.reversed_by IS NULL AND e.deleted_at IS NULL AND e.status = ? LIMIT 1`, [doc.k, POSTED])) {
+    const cur = db.get<Record<string, unknown>>(`SELECT * FROM deposit_settlements WHERE contract_id = ?`, [doc.k]);
+    const d = doc.d;
+    const same = !!cur && ['date', 'deduction_halalas', 'refund_halalas'].every((c) => String(cur[c] ?? '') === String(d[c] ?? ''));
+    if (!same) {
+      if (cur) enqueue(db, doc.t, doc.k, 'upsert');
+      reject(db, doc, tr('sync.settleAfterCarry', { lng: 'ar' }));
+      return 'rejected';
+    }
+  }
+  // وتأمين العقد المجدَّد بقدر ما يحتجزه له الدفتر حين رُفض ترحيله (R12-DEP-1 · deadCarryDeposit): يُطبَّق الصف به ويُرفع
+  let deadCarry: { want: number; was: Record<string, unknown> } | null = null;
+  if (doc.t === 'contracts' && !doc.del && doc.d && !joining) {
+    const want = deadCarryDeposit(db, doc.k, doc.d);
+    if (want !== null && want !== Number(doc.d.deposit_halalas)) {
+      deadCarry = { want, was: doc.d };
+      doc.d = { ...doc.d, deposit_halalas: want };
+    }
+  }
+
   // سطر كشفٍ صُحّحت مطابقته هنا يُعاد إلى السحابة مصحَّحاً (وما أبقى فيه هذا الجهاز مطابقته يرفعه تعديلاً منه لا تصحيحاً)
   let relink = false;
   let relinkOwn = false;
@@ -2915,6 +3011,7 @@ function applyOne(
         noteInvoiceIssued(db, doc, row);
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
+        if (deadCarry) noteDeadCarry(db, doc.k, deadCarry.was, deadCarry.want);
         if (doc.t === 'bank_statements') { resetStatementCounts(db, doc.k); statementCascade(db, doc.k, row, theirs0); }
       }
       if (!doc.del) {
@@ -3162,6 +3259,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
   // المسدَّد والحالة من الدفعات للأقساط التي مسّها الوارد · وما حُسب لا يرتدّ إلى الطابور
   quiet(() => {
     resolvePendingReversals(db);
+    // وترحيل تأمينٍ رُفض بعد أن طُبِّق صفّ عقده المجدَّد (R12-DEP-1): يُصحَّح تأمينه هنا ويُرفع
+    fixDeadCarries(db);
     recomputeInstallments(db, touched.has(ALL_INSTALLMENTS) ? undefined : [...touched]);
     if (out.applied) reopenReversedMatches(db);
   });

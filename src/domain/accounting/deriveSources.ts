@@ -235,6 +235,18 @@ export function deductibleIssue(db: DB, purchaseId: string): boolean {
   return db.get<{ s: string | null }>(`SELECT tax_status AS s FROM purchases WHERE id = ?`, [purchaseId])?.s !== TS_DEDUCTIBLE;
 }
 
+/**
+ * تأمين العقد رُحِّل إلى عقدٍ مجدَّد: قيد deposit_carry حيٌّ هنا لخلفٍ قائم (منطق depositCarried في الخدمة) · فلا يُسوّى بعده
+ * (المراجعة الشاملة 2026-11-13 · R12-DEP-1: مرآة carryAfterSettle، فالتأمين لا يُردّ للمستأجر ويبقى محمولاً في المجدَّد معاً) · وما في
+ * الوارد من الترحيل لم يُطبَّق بعد لا يُعدّ: يُفحص هو بصفّ التسوية هنا أو في الوارد فيُرفض (carryAfterSettle)
+ */
+function carriedOn(db: DB, contractId: string): boolean {
+  return !!db.get(
+    `SELECT 1 FROM contracts n JOIN journal_entries e ON e.src_type = 'deposit_carry' AND e.src_id = n.id
+     WHERE n.renewed_from = ? AND n.deleted_at IS NULL AND e.reversed_by IS NULL AND e.deleted_at IS NULL AND e.status = ? LIMIT 1`,
+    [contractId, POSTED]);
+}
+
 /** المصدر الحيّ الذي لم يُعكس: قيوده المرحّلة هنا ناقصاً عواكسها · بمجموع مبالغها أو عددها */
 function live(r: SourceReader, src: string, srcId: string, exceptId: string, by: (e: SrcEntry) => number): number {
   return r.entries(src, srcId).filter((e) => e.id !== exceptId).reduce((s, e) => s + by(e), 0)
@@ -1203,6 +1215,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       if (!pays.length) return AWAIT;
       const pay = pays[0];
       if (pays.length > 1 || pay.contract_id !== e.srcId || pay.method_label !== DEPOSIT_RENT_METHOD) return no('noEntry');
+      // ولا يُسدَّد من تأمينٍ رُحِّل إلى التجديد (R12-DEP-1)
+      if (carriedOn(db, e.srcId)) return no('settleAfterCarry');
       const c = r.row<{ deposit_holder: string | null }>('contracts', e.srcId);
       const s = r.row<{ deduction_halalas: number }>('deposit_settlements', e.srcId);
       if (!c || !s) return AWAIT;
@@ -1232,6 +1246,8 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
     case 'deposit_deduct_move':
     case 'deposit_refund': {
       // تسوية التأمين (applyDepositSettlement): المخصوم والمردود من صفّ التسوية، وجهة القبض من العقد، ووجهة المخصوم لدى المنصة
+      // ولا تسوية لتأمينٍ رُحِّل إلى التجديد: يُردّ للمستأجر ويبقى محمولاً في المجدَّد فيُردّ مرتين (R12-DEP-1 · مرآة carryAfterSettle)
+      if (carriedOn(db, e.srcId)) return no('settleAfterCarry');
       const c = r.row<{ deposit_halalas: number; deposit_holder: string | null }>('contracts', e.srcId);
       const s = r.row<{ date: string; deduction_halalas: number; refund_halalas: number; deduct_destination: string | null }>('deposit_settlements', e.srcId);
       if (!c || !s) return AWAIT;
