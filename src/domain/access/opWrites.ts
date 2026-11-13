@@ -47,7 +47,11 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
     // والموعد المتفق عليه ومهلته من شاشة القسط (مراجعة التثبيت #38: كانت الشاشة تتيحهما والقواعد ترفضهما)
     touch: { ...LINKS_REVERSAL, contract_installments: ['paid_halalas', 'status', 'agreed_date', 'grace_until'], tenants: ['credit_halalas'] },
   },
-  deposits: { own: ['deposit_settlements'], create: [...POSTS, 'bank_tx', 'claims'], touch: LINKS_REVERSAL },
+  // والتسوية تسدّد ما حلّ من الأقساط بدفعاتٍ من التأمين، وتعديلها يعكسها ويسمها ملغاة (المراجعة الشاملة 2026-11-13 · A1-2)
+  deposits: {
+    own: ['deposit_settlements'], create: [...POSTS, 'bank_tx', 'claims', 'contract_payments'],
+    touch: { ...LINKS_REVERSAL, contract_installments: ['paid_halalas', 'status'], contract_payments: ['cancelled_at', 'cancel_reason', 'cancel_entry_id'] },
+  },
   reservations: { own: ['reservations', 'key_money_deals'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   claims: { own: ['claims'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   invoices: { own: ['invoices', 'invoice_lines'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
@@ -139,8 +143,8 @@ export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update
 export const OP_JOURNAL_SRC: Partial<Record<SectionKey, string[]>> = {
   contracts: ['contract_deposit', 'deposit_carry', 'reservation_convert'],
   collect: ['rent', 'rent_rev', 'discount_rev', 'rent_payment_rev'],
-  deposits: ['deposit_deduct', 'deposit_deduct_move', 'deposit_refund',
-    'deposit_deduct_rev', 'deposit_deduct_move_rev', 'deposit_refund_rev', 'claim'],
+  deposits: ['deposit_deduct', 'deposit_deduct_move', 'deposit_refund', 'deposit_rent',
+    'deposit_deduct_rev', 'deposit_deduct_move_rev', 'deposit_refund_rev', 'deposit_rent_rev', 'claim'],
   reservations: ['reservation', 'reservation_forfeit', 'reservation_refund', 'key_money'],
   claims: ['claim', 'claim_collect', 'claim_rev'],
   invoices: ['invoice', 'invoice_rev', 'invoice_pay', 'invoice_pay_rev'],

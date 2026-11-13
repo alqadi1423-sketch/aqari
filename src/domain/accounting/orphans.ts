@@ -35,6 +35,7 @@ export const SOURCE_DOC: Record<string, [label: string, tables: string[]]> = {
   deposit_carry: ['ترحيل تأمين', ['contracts']],
   deposit_deduct: ['خصم من التأمين', ['contracts']],
   deposit_deduct_move: ['خصم من التأمين', ['contracts']],
+  deposit_rent: ['سداد قسط من التأمين', ['contracts']], // i18n-exempt: نوع مستند في سجل العمليات · A1-2
   reservation: ['حجز', ['reservations']],
   reservation_convert: ['تحويل حجز', ['reservations']],
   reservation_forfeit: ['مصادرة حجز', ['reservations']],

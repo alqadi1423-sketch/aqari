@@ -10,6 +10,7 @@
  *  - ربط القيد العكسي بأصله (reversed_by).
  * وما لا يُحمل مستنده (فاتورة · مشتريات · تأمين · حجز · تقبيل …) يُضمّ قيده كما هو ويُدرج في أداة
  * المراجعة «قيد بلا مستند بعد الاستعادة» · إلا زوجاً عكَس أحدُه الآخر، فأثرهما صفر.
+ * ودفعة القسط «من التأمين» مستندها تسويته: فلا تُحمل إلا وصفّ التسوية في النسخة (المراجعة الشاملة 2026-11-13 · A1-2).
  * ورقمٌ مستعمل في النسخة لقيد آخر يأخذ القيدُ المضموم رقماً جديداً من تسلسل الجهاز ويُذكر القديم في بيانه.
  * ومسودةٌ في النسخة رُحّلت بعدها (الترحيل يرقّي المسودة في مكانها بمعرّفها) تُستبدل بالمرحّل ولا تعود مسودة
  * (المراجعة الشاملة 2026-11-13 · C-1).
@@ -18,7 +19,7 @@ import type { DB, SqlValue } from '../../db/adapter';
 import type { RemoteDoc, RowData } from '../../sync/types';
 import { nextJournalNo } from '../accounting/post';
 import { recomputeInstallments } from '../contracts/paid';
-import { DISCOUNT_REDUCES_INSTALLMENT } from '../contracts/installments';
+import { DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD } from '../contracts/installments';
 import { fmt } from '../money';
 import { logAudit } from '../audit';
 import { SOURCE_DOC, markForReview } from '../accounting/orphans';
@@ -152,6 +153,9 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
       : lines.some((l) => l.bank_id && !exists(target, 'banks', l.bank_id as string)) ? 'دفعة إيجار · بنكها ليس في النسخة'
       : null;
     if (why) { for (const e of entriesOf) if (!review.has(e)) review.set(e, why); continue; }
+    // دفعة القسط من التأمين بلا صفّ تسويتها في النسخة (نسخةٌ قبل التسوية): لا تُحمل، فيُراجَع قيدها كقيد الخصم «مستنده في النسخة
+    // بحاله قبل هذا القيد» ويخرج أثره من مطابقة 2400 · وكان يُحمل فيبقى التأمين محتجزاً والتزامه صفراً (المراجعة الشاملة 2026-11-13 · A1-2)
+    if (p.method_label === DEPOSIT_RENT_METHOD && !target.get(`SELECT 1 FROM deposit_settlements WHERE contract_id = ?`, [p.contract_id as string])) continue;
     outPayments.push(p);
     if (p.discount_kind === DISCOUNT_REDUCES_INSTALLMENT && p.installment_id) {
       const srcInst = rowsFrom(src, from, 'contract_installments', 'id', [String(p.installment_id)])[0];

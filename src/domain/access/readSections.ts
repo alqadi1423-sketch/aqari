@@ -4,6 +4,7 @@
  * الجدول يُقرأ لقسمه ولما يحتاجه من الأقسام سياقاً، لا لكل قسم.
  */
 import { SECTION_KEYS, type SectionKey } from './sections';
+import { DEPOSIT_RENT_SRC } from '../contracts/installments';
 
 /** أقسام تحتاج اسم العقار والوحدة سياقاً لعملها */
 const NEEDS_UNITS: SectionKey[] = [
@@ -153,7 +154,11 @@ export function readSectionsOf(table: string, row: Record<string, unknown> | nul
     const own = journalSection(row?.src_type as string | null);
     const src = JOURNAL_SOURCE[own];
     const viaSource = src ? (READ_TABLE[src] ?? []).filter((x) => MONEY_SECTIONS.has(x)) : [];
-    return [...new Set<SectionKey>([...MONEY_BOOKS, own, ...viaSource])];
+    // وقيد سداد القسط من التأمين (وعكسه) مستنده دفعته «من التأمين» أيضاً: فقارئها (التحصيل) يقرؤه، وإلا انتظرت أباها على جهازه
+    // وبقي القسط مستحقاً يطالَب به المستأجر (المراجعة الشاملة 2026-11-13 · A1-2) · والكتابة بـ OP_JOURNAL_SRC لا تتغير
+    const viaPayment = String(row?.src_type ?? '').replace(/_rev$/, '') === DEPOSIT_RENT_SRC
+      ? READ_TABLE.contract_payments.filter((x) => MONEY_SECTIONS.has(x)) : [];
+    return [...new Set<SectionKey>([...MONEY_BOOKS, own, ...viaSource, ...viaPayment])];
   }
   return READ_TABLE[table] ?? [];
 }

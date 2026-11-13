@@ -26,7 +26,7 @@ import type { DB, SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
-import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
+import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
 import { paidFromDeposit } from '../domain/contracts/cancelPayment';
 import { blockRequests, addBlock } from '../domain/numbering';
@@ -1537,6 +1537,21 @@ function reservationConvertCheck(db: DB, je: string, row: RowData): void {
 }
 
 /**
+ * دفعة القسط المسدَّد من التأمين في تسويته (المراجعة الشاملة 2026-11-13 · A1-2) وقيدها: طريقتها «من التأمين»، وقيدها من عقدها، مدين
+ * 2400 بمبلغها ودائن الإيراد به، ولا سطر غيرهما · وسقفه بالمخصوم في صفّ التسوية يفحصه اشتقاق القيد نفسه (deriveSources.ts)
+ */
+function depositRentCheck(db: DB, je: string, srcId: string | null, row: RowData): void {
+  const bad = () => new Error(tr('derive.rejected', { why: tr('derive.entryType', { lng: 'ar' }), lng: 'ar' }));
+  if (row.method_label !== DEPOSIT_RENT_METHOD || srcId !== row.contract_id || row.installment_id == null) throw bad();
+  const net = Number(row.net_halalas) || 0;
+  const lines = db.all<{ a: string; n: number }>(
+    `SELECT account_code AS a, SUM(debit_halalas - credit_halalas) AS n FROM journal_lines WHERE entry_id = ? GROUP BY account_code`, [je]);
+  const revenue = lines.filter((l) => RENT_REVENUE_GROUP.includes(l.a)).reduce((sum, l) => sum - Number(l.n), 0);
+  const others = lines.filter((l) => l.a !== '2400' && !RENT_REVENUE_GROUP.includes(l.a) && Number(l.n) !== 0);
+  if (net <= 0 || Number(lines.find((l) => l.a === '2400')?.n ?? 0) !== net || revenue !== net || others.length) throw bad();
+}
+
+/**
  * صفوف التحصيل على جهاز المالك (المتحقق المستقل، الجولة ٣٥ (أ٢ وأ٣ وأ٥)): الدفعة وسطورها وتخصيصها لا تتغير مبالغها ولا روابطها
  * بعد إنشائها أياً كان كاتبها (الإلغاء بـ cancelled_at، والتطبيق لا يعدّلها) · ودفعة العضو الجديدة: قيدٌ واحد لها، وقيدها
  * المرحّل يُعاد اشتقاقه منها · وسطورها وتخصيصها لا يتجاوزان المقبوض ولا المتبقي على أقساط عقدها
@@ -1602,6 +1617,7 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
     // المتحقق المستقل، الجولة ٣٦ (ع١ وع٢): كانت دفعة العضو تُقبل بقيدٍ مرحّل من غير التحصيل (يدوي، أو عكس دفعةٍ ملغاة) فيُسدَّد
     // القسط بلا نقد
     if (e?.src_type === 'reservation_convert') { reservationConvertCheck(db, je, row); return; }
+    if (e?.src_type === DEPOSIT_RENT_SRC) { depositRentCheck(db, je, e.src_id, row); return; }
     if (e?.src_type !== 'rent') throw no(tr('derive.entryType', { lng: 'ar' }));
     const lines = db.all<{ account_code: string; debit_halalas: number; credit_halalas: number }>(
       `SELECT account_code, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`, [je]);
@@ -1614,9 +1630,12 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
   if (!pay) return; // الأب الناقص يُنتظر بالمفتاح الأجنبي
   if (doc.t === 'payment_lines') {
     const sum = Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(amount_halalas), 0) AS n FROM payment_lines WHERE payment_id = ?`, [pay.id])!.n);
-    if (pay.method_label === CREDIT_METHOD || sum + (Number(row.amount_halalas) || 0) > (Number(pay.net_halalas) || 0)) throw no(tr('derive.method', { lng: 'ar' }));
+    if (pay.method_label === CREDIT_METHOD || pay.method_label === DEPOSIT_RENT_METHOD
+      || sum + (Number(row.amount_halalas) || 0) > (Number(pay.net_halalas) || 0)) throw no(tr('derive.method', { lng: 'ar' }));
     return;
   }
+  // ودفعة التأمين من تسويته على قسطها وحده: لا سطور طرق سدادٍ لها ولا تخصيص ينقلها إلى قسطٍ آخر (A1-2)
+  if (pay.method_label === DEPOSIT_RENT_METHOD) throw no(tr('derive.method', { lng: 'ar' }));
   // التخصيص: بمتبقي أقساط العقد، ومجموعه بما خصّصه قيدها (المقبوض ناقصاً الرصيد الدائن)
   const credit = pay.journal_entry_id ? Number(db.get<{ n: number }>(
     `SELECT COALESCE(SUM(credit_halalas - debit_halalas), 0) AS n FROM journal_lines WHERE entry_id = ? AND account_code = '2410'`, [pay.journal_entry_id])!.n) : 0;

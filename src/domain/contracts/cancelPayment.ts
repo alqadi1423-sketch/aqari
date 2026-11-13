@@ -21,7 +21,7 @@ import { reverseEntryById } from '../accounting/post';
 import { bankBalance } from '../accounting/ledger';
 import { RuleViolation } from './service';
 import { t } from '../../i18n';
-import { DISCOUNT_ENTRY_SRC, DISCOUNT_REDUCES_INSTALLMENT } from './installments';
+import { DISCOUNT_ENTRY_SRC, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_SRC } from './installments';
 import { recomputeInstallments, installmentsOfPayment, DERIVED_PAID_SQL } from './paid';
 
 export interface CancelPaymentPlan {
@@ -97,6 +97,16 @@ export function paidFromDeposit(db: DB, paymentId: string): boolean {
 }
 
 /**
+ * الدفعة سدّدت قسطاً متأخراً من التأمين في تسويته (المراجعة الشاملة 2026-11-13 · A1-2): لا تُلغى وحدها، فإلغاؤها يعيد مبلغها التزاماً
+ * في 2400 والتسوية تقول إنه خُصم · تُعدَّل التسوية فيُعكس سدادها معها في معاملةٍ واحدة (applyDepositSettlement)
+ */
+export function paidFromSettlement(db: DB, paymentId: string): boolean {
+  return !!db.get(
+    `SELECT 1 FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+     WHERE p.id = ? AND e.src_type = ?`, [paymentId, DEPOSIT_RENT_SRC]);
+}
+
+/**
  * يوم الدفعة · المخزَّن تاريخٌ، والقديم قد يكون لحظة · وما كتبه الحقل القديم بغير صيغته «2026-3-15» لا يومَ له: يُقارن حرفاً فيعلو كل
  * تاريخٍ صحيح في سنته، فكان تاريخ الإلغاء الافتراضي المعيبَ نفسه ويُرفض كل صحيحٍ «قبل الدفعة» (المراجعة الشاملة 2026-11-13 · D2-R11-2)
  */
@@ -133,12 +143,12 @@ export function planCancelPayment(db: DB, paymentId: string, date?: string): Can
   const paymentDate = payDay(p);
   const dateError = cancelDateError(p, date);
   if (p.cancelled_at) blockers.push('الدفعة ملغاة من قبل');
-  else if (paidFromDeposit(db, p.id)) {
-    // منعٌ دائم: المعاينة سببه وحده، فلا أثرٌ يُعرض لإلغاءٍ لن يقع (المتحقق المستقل على البند ٢٧)
+  else if (paidFromDeposit(db, p.id) || paidFromSettlement(db, p.id)) {
+    // منعٌ دائم: المعاينة سببه وحده، فلا أثرٌ يُعرض لإلغاءٍ لن يقع (المتحقق المستقل على البند ٢٧) · ودفعة التأمين من تسويته (A1-2)
     return {
       paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, paymentDate, dateError, net: Number(p.net_halalas),
       entries: [], installments: [], bank: [], creditReversal: 0, restoreAmount: null,
-      blockers: [t('payment.cancelFromDeposit')], cashShort: 0,
+      blockers: [t(paidFromDeposit(db, p.id) ? 'payment.cancelFromDeposit' : 'payment.cancelFromSettlement')], cashShort: 0,
     };
   }
 

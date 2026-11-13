@@ -18,12 +18,14 @@ import { isFiledDate } from '../vatFilings';
 import { today as todayFn } from '../dates';
 import { unitPastProperties } from '../unitMove';
 import {
-  contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines,
+  contractDepositLines, depositCarryLines, depositDeductLines, depositDeductMoveLines, depositRefundLines, depositRentLines,
   reservationDepositLines, reservationForfeitLines, reservationRefundLines, keyMoneyLines,
   claimLines, claimCollectionLines, purchaseLedgerLines, purchasePaymentLines, PURCHASE_CATEGORY_ACCOUNT,
   invoiceLedgerLines, creditNoteLedgerLines, invoicePaymentLines, vatRefundLines, vatRejectLines, cashOpLines, purchaseExpenseAccount, type EntryLine,
 } from './post';
 import { TS_DEDUCTIBLE } from '../purchases';
+import { RENT_REVENUE_GROUP } from './rentSplit';
+import { DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC } from '../contracts/installments';
 import { invoiceTotals, normalizeInvoiceLines, KIND_CREDIT } from '../invoices';
 import { remainingByCodeOf, creditNoteAmounts, type StoredInvoiceLine } from '../creditNote';
 import { lineTaxCode, vatRegistered, type TaxCode } from '../taxCode';
@@ -84,6 +86,8 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   deposit_deduct_move: ['1265', '1100', '1260'],
   deposit_refund: ['2400', '1100', '1260'],
   deposit_carry: ['2400'],
+  // سداد القسط المتأخر من التأمين في تسويته (المراجعة الشاملة 2026-11-13 · A1-2): التزام التأمين وإيراد العقد بتقسيمه
+  deposit_rent: ['2400', ...RENT_REVENUE_GROUP],
   reservation: ['1100', '2450'],
   reservation_forfeit: ['2450', '4300'],
   reservation_refund: ['2450', '1100'],
@@ -118,7 +122,8 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
  * مصادر يرحّل منها التطبيق قيوداً عدة حيّة لمستندٍ واحد (المعرّف معرّف الأصل): إهلاك ما قبل كل نقلٍ أو استبعادٍ أو بيع، وكل نقل ·
  * فلا يُنتظر لها عاكس قيدٍ سابق، ويُفحص تكرارها بالمطابقة نفسها (المجمع بعد ما رُحِّل قبلها، والنقل بحدثه المسمّي قيده)
  */
-const MULTI = ['asset_dep', 'asset_transfer'];
+// وسداد الأقساط من التأمين: قيدٌ حيّ لكل قسطٍ والمعرّف العقد (A1-2)
+const MULTI = ['asset_dep', 'asset_transfer', DEPOSIT_RENT_SRC];
 
 /** أبعاد سطرٍ متوقعة: العقد والوحدة، والعقار أحد عقاراتٍ (الحالي أو ما نُقلت منه الوحدة)، والأصل (بنود الشراء الأصول وحدها) */
 interface DimSpec { contract: string | null; unit: string | null; props: Array<string | null>; asset?: string | null }
@@ -1189,6 +1194,40 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       })!);
       return { lines: built[0], alts: built.slice(1), date: p.date ?? '', also, correctable: true };
     }
+    case 'deposit_rent': {
+      // سداد قسطٍ متأخر من التأمين في تسويته (applyDepositSettlement · المراجعة الشاملة 2026-11-13 · A1-2): دفعته «من التأمين» تسمّي
+      // القيد ومن عقده، وتسويته قائمة، والتأمين ليس لدى طرف آخر (لم يدخل 2400)، والحيّ من هذه القيود لا يتجاوز المخصوم في صفّ التسوية ·
+      // والسطور مدين 2400 بمبلغ الدفعة ودائن إيراد العقد به
+      const pays = r.rows<{ id: string; contract_id: string; date: string; net_halalas: number; method_label: string | null }>(
+        'contract_payments', 'journal_entry_id', e.id);
+      if (!pays.length) return AWAIT;
+      const pay = pays[0];
+      if (pays.length > 1 || pay.contract_id !== e.srcId || pay.method_label !== DEPOSIT_RENT_METHOD) return no('noEntry');
+      const c = r.row<{ deposit_holder: string | null }>('contracts', e.srcId);
+      const s = r.row<{ deduction_halalas: number }>('deposit_settlements', e.srcId);
+      if (!c || !s) return AWAIT;
+      if (c.deposit_holder === 'طرف آخر') return no('noEntry'); // i18n-exempt: جهة مخزّنة
+      const amount = num(pay.net_halalas);
+      // فوق المخصوم: تعديل تسويةٍ لم يصل عاكس سدادها السابق بعد، فيُنتظر (والمزوَّر يُرفض لطول انتظاره ولا يدخل الدفتر)
+      if (amount <= 0 || live(r, DEPOSIT_RENT_SRC, e.srcId, e.id, total) + amount > num(s.deduction_halalas)) return AWAIT;
+      const dims = contractDims(db, r, e.srcId);
+      if (!dims) return AWAIT;
+      // تقسيم الإيراد من العقد ودفعاته (rentSplit) يبعد بين جهازين بهللةٍ لكل حساب (derive.ts: SPLIT_SLACK) · فالوارد يُقبل بتقسيمه
+      // إن طابق مجموعُه المبلغ وقرُب كل حسابٍ من المشتق، وإلا قورن بالمشتق فرُفض
+      const derived = depositRentLines(db, e.srcId, amount)!;
+      const got = new Map<string, number>();
+      for (const l of nonZero(e.lines)) {
+        const a = String(l.account_code ?? '');
+        if (RENT_REVENUE_GROUP.includes(a)) got.set(a, (got.get(a) ?? 0) + num(l.credit_halalas) - num(l.debit_halalas));
+      }
+      const wantRev = new Map<string, number>(derived.filter((l) => l.account !== '2400').map((l) => [l.account, l.credit]));
+      const near = [...got.values()].reduce((x, v) => x + v, 0) === amount
+        && [...new Set([...got.keys(), ...wantRev.keys()])].every((a) => Math.abs((got.get(a) ?? 0) - (wantRev.get(a) ?? 0)) <= 2);
+      const built = near
+        ? [derived[0], ...[...got].filter(([, v]) => v).map(([account, v]) => ({ account, debit: 0, credit: v }))]
+        : derived;
+      return { lines: want(built, () => [dims])!, date: pay.date ?? '', correctable: true };
+    }
     case 'deposit_deduct':
     case 'deposit_deduct_move':
     case 'deposit_refund': {
@@ -1206,9 +1245,13 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       const PLATFORM = 'منصة إيجار'; // i18n-exempt: جهة مخزّنة
       const OURS = 'حسابنا'; // i18n-exempt: وجهة مخزّنة
       const WALLET = 'محفظة إيجار'; // i18n-exempt: وجهة مخزّنة
+      // وما سدّد من المخصوم أقساطاً متأخرة قيدُه إيجارٌ (deposit_rent · A1-2) فخصم 4300 بما بقي · وما في الوارد منه لم يُطبَّق بعد
+      // يُنتظر (يُرحَّل قبل الخصم في المعاملة نفسها)
+      if (e.src === 'deposit_deduct' && (r.pending(DEPOSIT_RENT_SRC, e.srcId).length || r.pending(DEPOSIT_RENT_SRC + '_rev', e.srcId).length)) return AWAIT;
+      const arrears = e.src === 'deposit_deduct' ? live(r, DEPOSIT_RENT_SRC, e.srcId, e.id, total) : 0;
       const built = e.src === 'deposit_deduct'
         // لدى «طرف آخر» لا قيد إلا إن وصل المخصوم للمكتب، ووصوله لا يُخزَّن إلا بقيده (قرار المالك على #26)
-        ? depositDeductLines(deduction, c.deposit_holder, true)
+        ? depositDeductLines(deduction - arrears, c.deposit_holder, true)
         : e.src === 'deposit_refund'
           ? depositRefundLines(refund, c.deposit_holder)
           : (c.deposit_holder === PLATFORM ? depositDeductMoveLines(deduction, s.deduct_destination === OURS ? OURS : WALLET) : null);

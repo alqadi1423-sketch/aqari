@@ -315,7 +315,7 @@ function BankDetailSheet({ bankId, onClose, onEdit }: { bankId: string; onClose:
         const cRow = db.get<{ contract_id: string }>(`SELECT contract_id FROM contract_payments WHERE id = ?`, [srcId]);
         if (cRow) return () => { onClose(); router.push(`/contracts?detail=${cRow.contract_id}`); };
       }
-      if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'key_money'].includes(srcType)
+      if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_rent', 'key_money'].includes(srcType)
         && routeAllowed(access, '/contracts')) {
         const cRow = db.get<{ id: string }>(`SELECT id FROM contracts WHERE id = ?`, [srcId]);
         if (cRow) return () => { onClose(); router.push(`/contracts?detail=${srcId}`); };

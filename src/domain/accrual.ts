@@ -38,8 +38,10 @@ export const BASIS_CASH: Basis = 'نقدي';
 // وتسوية الفائض (ردّاً أو رصيداً) مدينها الإيراد بما قُبض فوق الأقساط · والتوزيع لم يعدّ ذلك الفائض أصلاً
 // فيُستثنى جانب إيرادها كذلك
 // والعربون المحوَّل إلى عقد إيرادٌ من قيمة العقد التي يعدّها التوزيع كاملة (مراجعة التثبيت #11)
+// وكذلك القسط المتأخر المسدَّد من التأمين في تسويته (deposit_rent · المراجعة الشاملة 2026-11-13 · A1-2): كان خصمه 4300 فيُعدّ مرتين
 const RENT_SOURCES = ['rent', 'rent_rev', 'rent_payment', 'rent_payment_rev', 'discount', 'discount_rev',
-  'surplus_refund', 'surplus_refund_rev', 'surplus_credit', 'surplus_credit_rev', 'reservation_convert', 'reservation_convert_rev'];
+  'surplus_refund', 'surplus_refund_rev', 'surplus_credit', 'surplus_credit_rev', 'reservation_convert', 'reservation_convert_rev',
+  'deposit_rent', 'deposit_rent_rev'];
 const PURCHASE_SOURCES = ['purchase', 'purchase_rev'];
 
 // ─── توزيع قيمة على أيامها ───

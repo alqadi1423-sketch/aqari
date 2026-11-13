@@ -12,7 +12,7 @@ import { uid, rowId } from '../ids';
 import { today, dfmt } from '../dates';
 import {
   generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining,
-  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, type DiscountKind,
+  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, type DiscountKind,
 } from './installments';
 import { recomputeInstallments } from './paid';
 import {
@@ -34,12 +34,13 @@ import {
   postContractDeposit,
   postDepositCarry,
   postDepositDeduct, postDepositDeductMove,
-  postDepositRefund,
+  postDepositRefund, postDepositRent,
   postReservationConvert,
   postClaim,
   postRentCollection,
   postEntry,
   reverseEntryBySource,
+  reverseEntryById,
 } from '../accounting/post';
 import { logAudit } from '../audit';
 import { fmt } from '../money';
@@ -337,7 +338,7 @@ export function confirmContract(db: DB, inputRaw: ContractDraftInput, draftId?: 
 function openInstallments(db: DB, contractId: string) {
   return db.all<{ id: string; amount_halalas: number; paid_halalas: number; discount: number; due_date: string }>(
     `SELECT i.id, i.amount_halalas, i.paid_halalas, ${INSTALLMENT_DISCOUNT_SQL} AS discount, i.due_date
-     FROM contract_installments i WHERE i.contract_id = ? AND i.status <> 'ملغية' ORDER BY i.due_date, i.sort`, [contractId])
+     FROM contract_installments i WHERE i.contract_id = ? AND i.status <> 'ملغية' ORDER BY i.due_date, i.sort, i.id`, [contractId])
     .map((i) => ({ ...i, remaining: installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount)) }));
 }
 
@@ -439,6 +440,8 @@ export interface CancelInput {
   deductionReason: string;
   /** التأمين لدى «طرف آخر»: وصل المخصوم إلى المكتب فيُسجَّل قبضاً (قرار المالك على #26) */
   deductReceived?: boolean;
+  /** منها مقابل أقساطٍ متأخرة: تُسدَّد بها الأقساط نفسها (المراجعة الشاملة 2026-11-13 · A1-2) */
+  arrearsHalalas?: number;
 }
 
 /** القاعدة ١١: إلغاء العقد · خصم من التأمين، والفائض مطالبة تلقائية */
@@ -465,7 +468,7 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
       // ثم الإلغاء بتسوية كانا يرحّلان مرتين)، والزيادة على التأمين مطالبة تلقائية، والنقص لا يُحفظ
       const r = applyDepositSettlement(db, c, contractId, {
         date, deductionHalalas: input.deductionHalalas || 0, deductionReason: input.deductionReason || '',
-        refundHalalas: input.refundHalalas || 0, notes: '', deductReceived: input.deductReceived,
+        refundHalalas: input.refundHalalas || 0, notes: '', deductReceived: input.deductReceived, arrearsHalalas: input.arrearsHalalas,
       }, 'فرق تسوية التأمين عند إلغاء العقد'); // i18n-exempt: سبب مطالبة مخزَّن
       excessClaimCreated = r.excessClaimCreated;
       deduction = r.deduction; refund = r.refund;
@@ -744,6 +747,11 @@ export interface DepositSettlementInput {
   deductDestination?: 'محفظة إيجار' | 'حسابنا';
   /** التأمين لدى «طرف آخر»: وصل المخصوم إلى المكتب فيُسجَّل قبضاً (قرار المالك على #26) */
   deductReceived?: boolean;
+  /**
+   * «منها مقابل أقساطٍ متأخرة» (المراجعة الشاملة 2026-11-13 · A1-2 · قرار المالك س١): جزءٌ من الخصم يُسدَّد به ما حلّ من الأقساط
+   * بتاريخ التسوية، فيُحسب إيجاراً لا «إيراداً آخر» · لا يتجاوز الخصم ولا المتبقي على تلك الأقساط
+   */
+  arrearsHalalas?: number;
 }
 
 /** رُحِّل تأمين العقد إلى عقده المجدَّد · فلا تسوية له (مراجعة التثبيت #28) */
@@ -761,6 +769,73 @@ export function depositCarried(db: DB, contractId: string): boolean {
 /** المطالبة التلقائية لزيادة التسوية على التأمين · مصدرها */
 const SETTLEMENT_CLAIM = 'تسوية تأمين'; // i18n-exempt: مصدر مخزَّن
 
+/** دفعات العقد الحيّة المسدَّدة من تأمينه في تسويته (المراجعة الشاملة 2026-11-13 · A1-2) */
+function liveDepositRent(db: DB, contractId: string) {
+  return db.all<{ id: string; installment_id: string | null; net_halalas: number; journal_entry_id: string | null }>(
+    `SELECT id, installment_id, net_halalas, journal_entry_id FROM contract_payments
+     WHERE contract_id = ? AND method_label = ? AND cancelled_at IS NULL ORDER BY date, rowid`, [contractId, DEPOSIT_RENT_METHOD]);
+}
+
+/** ما سدّده التأمين من الأقساط في تسويته القائمة · «منها مقابل أقساطٍ متأخرة» حين تُعدَّل (A1-2) */
+export function depositArrearsPaid(db: DB, contractId: string): number {
+  return liveDepositRent(db, contractId).reduce((s, p) => s + Number(p.net_halalas), 0);
+}
+
+/**
+ * سقف «منها مقابل أقساطٍ متأخرة» وافتراضها في الشاشتين (A1-2): المتبقي على أقساط العقد القائمة التي حلّت بتاريخ التسوية، ومعه ما
+ * سدّده التأمين منها في تسويةٍ قائمة (تعديلها يعكسه أولاً)
+ */
+export function depositArrearsDue(db: DB, contractId: string, date: string): number {
+  const back = new Map<string, number>();
+  for (const p of liveDepositRent(db, contractId)) {
+    if (p.installment_id) back.set(p.installment_id, (back.get(p.installment_id) ?? 0) + Number(p.net_halalas));
+  }
+  return openInstallments(db, contractId).filter((i) => i.due_date <= date)
+    .reduce((sum, i) => sum + i.remaining + (back.get(i.id) ?? 0), 0);
+}
+
+/**
+ * تعديل التسوية يعكس ما سدّده التأمين من الأقساط قبل إعادة التطبيق (A1-2 · كعكس قيود الخصم والرد): قيد كل دفعةٍ بمرآته بتاريخ
+ * التصحيح، والدفعة توسم ملغاةً بعاكسها فتخرج من المسدَّد، ثم يُعاد حساب أقساطها
+ */
+function reverseDepositRent(db: DB, contractId: string): void {
+  const touched: string[] = [];
+  for (const p of liveDepositRent(db, contractId)) {
+    const rev = p.journal_entry_id ? reverseEntryById(db, p.journal_entry_id, 'تعديل تسوية التأمين · عكس سداد قسطٍ منه') : null; // i18n-exempt: بيان القيد المخزَّن
+    const on = rev ? db.get<{ d: string }>(`SELECT date AS d FROM journal_entries WHERE id = ?`, [rev.id])!.d : today();
+    db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`,
+      [on, 'تعديل تسوية التأمين', rev ? rev.id : null, p.id]); // i18n-exempt: سبب إلغاءٍ مخزَّن
+    if (p.installment_id) touched.push(p.installment_id);
+  }
+  if (touched.length) recomputeInstallments(db, touched);
+}
+
+/**
+ * سداد ما حلّ من الأقساط بجزء الخصم «مقابل أقساطٍ متأخرة» (A1-2 · قرار المالك س١): بترتيب الاستحقاق ثم ترتيب الجدول ثم المعرّف
+ * كتحويل العربون، لكل قسطٍ دفعةٌ «من التأمين» وقيدها (مدين 2400 / دائن الإيراد بتقسيمه)، ثم يُعاد حساب المسدَّد · cutoff تاريخ التسوية
+ */
+function payArrearsFromDeposit(db: DB, c: ContractRow, contractId: string, amount: number, date: string, cutoff: string): void {
+  let left = amount;
+  const covered: string[] = [];
+  for (const i of openInstallments(db, contractId)) {
+    if (left <= 0) break;
+    if (i.due_date > cutoff || i.remaining <= 0) continue;
+    const amt = Math.min(left, i.remaining);
+    left -= amt;
+    const period = 'قسط ' + dfmt(i.due_date); // i18n-exempt: بيان الدفعة المخزَّن كأخواته
+    const entry = postDepositRent(db, { contractId, contractNo: c.contract_no || '', tenant: c.tenant_name, amount: amt, date, period });
+    db.run(
+      `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
+        discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
+       VALUES (?,?,?,?,?,?,0,?,?,?,?,?)`,
+      [uid(), contractId, i.id, period, date, amt, amt, DEPOSIT_RENT_METHOD, '', entry ? entry.id : null, new Date().toISOString()]);
+    covered.push(i.id);
+  }
+  // السقف فُحص قبل التطبيق (depositArrearsDue) · فما بقي هنا خللٌ لا يُسكت عنه
+  if (left > 0) throw new RuleViolation(t('deposit.arrearsOverDue', { due: fmt(amount - left) }));
+  if (covered.length) recomputeInstallments(db, covered);
+}
+
 /**
  * مسار التسوية الواحد للتسوية بعد الانتهاء وللإلغاء بتسوية:
  *  - قرار المالك على #27: «تسوية لا تساوي التأمين: الزيادة مطالبة تلقائية، والنقص لا يُحفظ حتى يُوزَّع.»
@@ -769,11 +844,20 @@ const SETTLEMENT_CLAIM = 'تسوية تأمين'; // i18n-exempt: مصدر مخ�
  *  - والمخصوم من تأمينٍ لدى المنصة يُقفل من 1260 (#25)
  */
 function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, input: DepositSettlementInput, claimReason: string):
-  { excessClaimCreated: boolean; deduction: number; refund: number; prev: Record<string, unknown> | undefined } {
+  { excessClaimCreated: boolean; deduction: number; refund: number; arrears: number; prev: Record<string, unknown> | undefined } {
   const holder = depositHolderOf(c);
   const deposit = Number(c.deposit_halalas) || 0;
   let deduction = Math.max(0, input.deductionHalalas || 0);
   const refund = Math.max(0, input.refundHalalas || 0);
+  // «منها مقابل أقساطٍ متأخرة» (المراجعة الشاملة 2026-11-13 · A1-2 · قرار المالك س١): جزءٌ من الخصم لا يتجاوزه ولا يتجاوز المتبقي
+  // على ما حلّ من الأقساط بتاريخ التسوية · والتأمين لدى طرف آخر لم يدخل دفتر المكتب فلا يُسدَّد منه قسط (يُحصَّل ما وصل منه تحصيلاً)
+  const arrears = Math.max(0, Math.round(input.arrearsHalalas || 0));
+  if (arrears > deduction) throw new RuleViolation(t('deposit.arrearsOverDeduction'));
+  if (arrears > 0 && holder === 'طرف آخر') throw new RuleViolation(t('deposit.arrearsOtherHolder')); // i18n-exempt: جهة مخزّنة
+  if (arrears > 0) {
+    const due = depositArrearsDue(db, contractId, input.date);
+    if (arrears > due) throw new RuleViolation(t('deposit.arrearsOverDue', { due: fmt(due) }));
+  }
   if (refund > deposit) throw new RuleViolation(t('deposit.refundOver'));
   // قرار المالك 2026-10-09: «لا مسترد أكبر من الباقي بعد الخصم» · فالزيادة على التأمين لا تأتي إلا من خصمٍ يتجاوزه
   const refundLeft = Math.max(0, deposit - deduction);
@@ -782,16 +866,20 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   if (sum < deposit) throw new RuleViolation(t('deposit.mustDistribute', { left: fmt(deposit - sum) }));
   const excess = sum - deposit;
   deduction -= excess;
+  // ما يسدّده التأمين من الأقساط أولاً، وما زاد منها على التأمين يبقى على أقساطه مستحقاً · فالمطالبة بما زاد على الأقساط وحده، لا
+  // بالأقساط مرةً ثانية فوق بقائها مفتوحة (A1-2)
+  const arrearsPaid = Math.min(arrears, deduction);
+  const claimAmount = excess - (arrears - arrearsPaid);
   const prev = db.get<Record<string, unknown>>(`SELECT date, deduction_halalas, refund_halalas FROM deposit_settlements WHERE contract_id = ?`, [contractId]);
   // مطالبة التسوية السابقة: المحصَّلة لا تتغير، والمفتوحة تُعكس وتُحذف وتُنشأ الجديدة إن بقيت زيادة
   const prevClaim = db.get<{ id: string; status: string; amount_halalas: number }>(
     `SELECT id, status, amount_halalas FROM claims WHERE contract_id = ? AND source = ? AND deleted_at IS NULL`, [contractId, SETTLEMENT_CLAIM]);
-  if (prevClaim && prevClaim.status !== 'مفتوحة' && Number(prevClaim.amount_halalas) !== excess) { // i18n-exempt: حالة مخزّنة
+  if (prevClaim && prevClaim.status !== 'مفتوحة' && Number(prevClaim.amount_halalas) !== claimAmount) { // i18n-exempt: حالة مخزّنة
     throw new RuleViolation(t('deposit.claimCollected'));
   }
   // ومطالبة الزيادة المفتوحة لا يحذفها مسار التسوية: حذفها لصاحب صلاحية المطالبات من شاشتها (التحقق المستقل: لمسُ
   // «حذف المطالبة» من قسم التأمين كان يجيز لعضوٍ حذف أي مطالبة في عقاره)
-  if (prevClaim && Number(prevClaim.amount_halalas) !== excess) throw new RuleViolation(t('deposit.claimFirst'));
+  if (prevClaim && Number(prevClaim.amount_halalas) !== claimAmount) throw new RuleViolation(t('deposit.claimFirst'));
   // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق يُعكس (قرار المالك ٢٠٢٦-١٠-٠٥) · والسابق من قيده الحيّ
   // لا من صفّ التسوية وحده (التحقق المستقل N2)
   // كفاية النقد بصافي أثر التسوية على النقدية مقابل قيودها الحيّة: الرد نقداً خارجٌ، والمخصوم الواصل (طرف آخر، أو من
@@ -808,23 +896,27 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   for (const [src, memo] of [['deposit_deduct', 'عكس الخصم السابق'], ['deposit_refund', 'عكس الرد السابق'], ['deposit_deduct_move', 'عكس استقرار المخصوم']]) {
     for (let i = 0; i < 20 && reverseEntryBySource(db, src, contractId, 'تعديل تسوية التأمين · ' + memo); i++) { /* حتى لا يبقى حيّ */ }
   }
+  // وما سدّده التأمين من الأقساط في التسوية السابقة يُعكس في المعاملة نفسها قبل الجديدة (A1-2)
+  reverseDepositRent(db, contractId);
   // تعديل تسويةٍ قائمة: قيودها الجديدة قيود تصحيح بتاريخها، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسها (#29) · والتسوية الأولى
   // بتاريخٍ في فترةٍ مقدَّمة مرفوضة (المراجعة الخارجية ٧ · النتيجة ٦ · قرار المالك «رابعاً ٥»)
   if (input.date) requireISODate(input.date); // ولا بتاريخٍ بغير صيغته يتجاوز القفل (D-2)
   if (!prev && isFiledDate(db, input.date)) throw new RuleViolation(t('vat.filedDate'));
   const postDate = prev ? correctionDate(db, input.date) : input.date;
   let excessClaimCreated = false;
-  if (excess > 0 && !prevClaim) {
+  if (claimAmount > 0 && !prevClaim) {
     const claimId = uid();
     db.run(
       `INSERT INTO claims (id, contract_id, amount_halalas, reason, date, status, source, created_at)
        VALUES (?,?,?,?,?,'مفتوحة',?,?)`,
-      [claimId, contractId, excess, input.deductionReason.trim() || claimReason, input.date, SETTLEMENT_CLAIM, new Date().toISOString()]
+      [claimId, contractId, claimAmount, input.deductionReason.trim() || claimReason, input.date, SETTLEMENT_CLAIM, new Date().toISOString()]
     );
-    postClaim(db, { id: claimId, amount: excess, reason: input.deductionReason.trim() || claimReason, date: postDate });
+    postClaim(db, { id: claimId, amount: claimAmount, reason: input.deductionReason.trim() || claimReason, date: postDate });
     excessClaimCreated = true;
   }
-  postDepositDeduct(db, { id: contractId, contract_no: c.contract_no || '', holder, received: !!input.deductReceived }, deduction, postDate);
+  // الأقساط المتأخرة تُسدَّد من التأمين إيجاراً، وما بقي من المخصوم (الأضرار) 4300 كما هو · والمخصوم كله يستقر من المنصة أدناه (A1-2)
+  payArrearsFromDeposit(db, c, contractId, arrearsPaid, postDate, input.date);
+  postDepositDeduct(db, { id: contractId, contract_no: c.contract_no || '', holder, received: !!input.deductReceived }, deduction - arrearsPaid, postDate);
   // التأمين لدى المنصة: المخصوم يُقفل من 1260 ويستقر في محفظة إيجار أو حسابنا
   if (holder === 'منصة إيجار' && deduction > 0) { // i18n-exempt: جهة مخزّنة
     postDepositDeductMove(db, { id: contractId, contract_no: c.contract_no || '' }, deduction, postDate,
@@ -840,7 +932,7 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
     [contractId, input.date, deduction, input.deductionReason.trim(), refund, input.notes.trim(),
      holder === 'منصة إيجار' ? (input.deductDestination ?? 'محفظة إيجار') : ''] // i18n-exempt: قيم مخزّنة
   );
-  return { excessClaimCreated, deduction, refund, prev };
+  return { excessClaimCreated, deduction, refund, arrears: arrearsPaid, prev };
 }
 
 /** القاعدة ٨: التصرف بالتأمين · بعد انتهاء العقد فقط. التعديل يعكس الترحيل السابق ويعيد الترحيل. */
@@ -853,7 +945,7 @@ export function saveDepositSettlement(db: DB, contractId: string, input: Deposit
     const r = applyDepositSettlement(db, c, contractId, input, 'فرق تسوية التأمين'); // i18n-exempt: سبب مطالبة مخزَّن
     // السجل يوثّق: من ماذا إلى ماذا · والقيود الأولى باقية معكوسة لا ممحوة
     logAudit(db, 'العقود', 'update', r.prev ? 'تعديل تسوية تأمين' : 'تسوية تأمين', c.tenant_name,
-      r.prev, { deduction_halalas: r.deduction, refund_halalas: r.refund, date: input.date });
+      r.prev, { deduction_halalas: r.deduction, refund_halalas: r.refund, arrears_halalas: r.arrears, date: input.date });
   });
 }
 

@@ -6,7 +6,7 @@ import { uid, rowId } from '../ids';
 import { today } from '../dates';
 import { correctionDate, isFiledDate, requireISODate, requireOpenPeriod } from '../vatFilings';
 import { fmt } from '../money';
-import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
+import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
 import { rentRevenueLines } from './rentSplit';
 import { vatRegistered } from '../taxCode';
@@ -356,7 +356,8 @@ export const postContractDeposit = (
  * مصادر 4300 غير عمولة التقبيل بلا ضريبة مخرجات ولو كانت المنشأة مسجّلة (المراجعة الشاملة ٨ · البند ١١ · قرارٌ بسببه كالوارد
  * البنكي اليدوي في cashOps.ts): عمولة التقبيل وحدها مقابلُ خدمةٍ يقدّمها المكتب، وهذه ليست كذلك بطبيعتها ولا مدخل فيها يقول إنها
  * خاضعة، فلا تُفرض عليها ضريبةٌ تلقائياً:
- *  - الخصم من التأمين: تعويضٌ عن ضررٍ أو متأخراتٍ لا مقابل توريد، أو تابعٌ لإيجارٍ سكني معفى.
+ *  - الخصم من التأمين: تعويضٌ عن ضررٍ لا مقابل توريد، أو تابعٌ لإيجارٍ سكني معفى · وما كان منه مقابل أقساطٍ متأخرة يسدّدها
+ *    إيجاراً لا هنا (depositRentLines · المراجعة الشاملة 2026-11-13 · A1-2).
  *  - مصادرة العربون (postReservationForfeit): تتبع طبيعة العقد الذي لم يتمّ.
  *  - المطالبة (postClaim): تعويض ضررٍ أو استرداد تكلفة.
  * وما كان منها لوحدةٍ تجارية يتبع ضريبة الإيجار التجاري حين تُبنى في الإقرار (قرار المالك «رابعاً ٤» 2026-10-10).
@@ -387,6 +388,35 @@ export const postDepositDeduct = (db: DB, c: { id: string; contract_no: string; 
         lines,
         srcType: 'deposit_deduct',
         srcId: c.id,
+      })
+    : null;
+};
+
+/**
+ * ما خُصم من التأمين مقابل قسطٍ متأخر إيجارٌ لا «إيراد آخر» (المراجعة الشاملة 2026-11-13 · A1-2 · قرار المالك س١): يُطفأ به التزام
+ * التأمين ويُسدَّد القسط نفسه بدفعةٍ «من التأمين» · مدين 2400 / دائن إيراد العقد بتقسيمه · وما بقي من الخصم (الأضرار) 4300 كما هو ·
+ * بها يرحّل الجهاز القيد وبها يعيد جهاز المالك اشتقاق قيد العضو (deriveSources.ts)
+ */
+export function depositRentLines(db: DB, contractId: string, amount: number): EntryLine[] | null {
+  return amount > 0 ? [
+    { account: '2400', descr: 'إطفاء التزام التأمين بقسطٍ متأخر', debit: amount, credit: 0 }, // i18n-exempt: نص قيد مخزَّن
+    ...rentRevenueLines(db, contractId, amount, 'إيراد إيجار من التأمين', 'credit'), // i18n-exempt: نص قيد مخزَّن
+  ] : null;
+}
+
+/** قيد سداد قسطٍ واحد من التأمين · مصدره العقد (DEPOSIT_RENT_SRC) فأبعاده أبعاده، ولكل قسطٍ قيده ودفعته كتحويل العربون */
+export const postDepositRent = (
+  db: DB,
+  a: { contractId: string; contractNo: string; tenant: string; amount: number; date: string; period: string }
+) => {
+  const lines = depositRentLines(db, a.contractId, a.amount);
+  return lines
+    ? postEntry(db, {
+        date: a.date,
+        memo: 'سداد قسط من التأمين · عقد ' + a.contractNo + ' · ' + a.tenant + ' · ' + a.period, // i18n-exempt: نص قيد مخزَّن
+        lines,
+        srcType: DEPOSIT_RENT_SRC,
+        srcId: a.contractId,
       })
     : null;
 };

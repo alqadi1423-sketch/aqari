@@ -331,6 +331,7 @@
   "payment": {
     "cancelTitle": "Cancel payment",
     "cancelFromDeposit": "Paid from the deposit of a reservation converted to this contract · it cannot be cancelled, as cancelling would return the amount to a held deposit that can no longer be refunded or forfeited",
+    "cancelFromSettlement": "Paid from the deposit in its settlement · edit it from the deposit settlement, which reverses this payment with it",
     "cancelBeforePayment": "The cancellation date is before the payment date ({{date}}) · choose that date or later",
     "stuckDepositTitle": "Deposit returned to its liability by cancelling its conversion payment",
     "stuckDepositExplain": "A payment made from the deposit of a reservation converted to a contract was cancelled before cancelling was blocked, so its amount went back to 2450 while a converted reservation can no longer be refunded or forfeited. Applying settles the contract's remaining installments in order with it, using the deposit conversion entry dated {{date}} (today, or the first open day if today falls in a period whose return was filed), and the cancelled payment stays as it is.",
@@ -547,7 +548,13 @@
     "claimFirst": "The settlement has an excess claim · delete it from Claims first, then edit the settlement",
     "alreadySettled": "This contract's deposit is already settled · cancel without settlement and edit the settlement from its screen",
     "refundOverLeft": "The refund exceeds what is left after the deduction · left {{left}}",
-    "settledNoCarry": "The deposit was settled on {{date}} · it cannot be carried to the renewal"
+    "settledNoCarry": "The deposit was settled on {{date}} · it cannot be carried to the renewal",
+    "arrearsLabel": "Of which for overdue installments",
+    "arrearsHint": "Pays the installments due by the settlement date and still unpaid ({{due}}), counted as rent · the rest of the deduction is other income",
+    "arrearsOverDeduction": "The amount for overdue installments exceeds the deduction itself",
+    "arrearsOverDue": "The amount for overdue installments exceeds what is left on the installments due by the settlement date · left {{due}}",
+    "arrearsOtherHolder": "A deposit held by another party never entered the office books, so it cannot pay an installment · record what reached you for installments as a collection",
+    "srcLabel": "Installment paid from deposit"
   },
   "vat": {
     "alreadyFiled": "This period's return is already recorded as filed",

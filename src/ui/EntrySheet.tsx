@@ -16,6 +16,8 @@ import { useApp, useFs } from './store';
 import { useAccess } from './access';
 import { routeAllowed } from '../domain/access/routes';
 import { dfmt } from '../domain/dates';
+import { DEPOSIT_RENT_SRC } from '../domain/contracts/installments';
+import { t } from '../i18n';
 import type { DB } from '../db/adapter';
 
 /** اسم كل مصدر قيدٍ بالعربية · المفتاح تقني والقيمة وحدها ما يُعرض */
@@ -52,7 +54,8 @@ const baseType = (srcType: string) => (srcType.endsWith(REV) ? srcType.slice(0, 
 export function srcTypeLabel(srcType: string | null | undefined): string {
   if (!srcType) return JE_MANUAL_LABEL;
   const base = baseType(srcType);
-  const name = JE_SOURCE_AR[base] ?? JE_MANUAL_LABEL;
+  // سداد القسط من التأمين في تسويته (المراجعة الشاملة 2026-11-13 · A1-2)
+  const name = base === DEPOSIT_RENT_SRC ? t('deposit.srcLabel') : JE_SOURCE_AR[base] ?? JE_MANUAL_LABEL;
   return srcType.endsWith(REV) ? 'عكس ' + name : name;
 }
 
@@ -76,7 +79,7 @@ export function entrySourceRoute(db: DB, srcType: string | null, srcId: string |
     const p = db.get<{ contract_id: string }>(`SELECT contract_id FROM contract_payments WHERE id = ?`, [srcId]);
     return p ? `/contracts?detail=${p.contract_id}` : null;
   }
-  if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', 'key_money'].includes(t)) {
+  if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', DEPOSIT_RENT_SRC, 'key_money'].includes(t)) {
     return exists(`SELECT id FROM contracts WHERE id = ?`) ? `/contracts?detail=${srcId}` : null;
   }
   if (['claim', 'claim_collect'].includes(t)) {

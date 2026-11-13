@@ -42,6 +42,7 @@ import { useContractForm, ContractFormFields, emptyContractForm, formToInput } f
 import {
   saveDraft, deleteDraft, confirmContract, cancelContract, renewContract, renewWarnings,
   saveDepositSettlement, saveTenantRating, tenantRatingOverall, RuleViolation, depositCarried, depositSettlementDate,
+  depositArrearsDue, depositArrearsPaid,
 } from '../../src/domain/contracts/service';
 import {
   contractDisplayId, contractDisplayStatus, contractStatusKind, contractStatusLabel, refreshContractStatuses,
@@ -1148,10 +1149,19 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const canSettleHere = !db.get(`SELECT 1 FROM deposit_settlements WHERE contract_id = ?`, [contractId]) && !depositCarried(db, contractId);
   const otherHeld = (c as unknown as { deposit_holder?: string }).deposit_holder === 'طرف آخر';
   const [received, setReceived] = useState(false);
+  const [arrears, setArrears] = useState('');
 
   const dedH = toHalalas(deduction);
   const depH = Number(c.deposit_halalas) || 0;
+  // «منها مقابل أقساطٍ متأخرة» (المراجعة الشاملة 2026-11-13 · A1-2): افتراضها الأقل من الخصم ومن المتبقي على ما حلّ بتاريخ الإلغاء
+  // · ولا خصم فلا مقابل: الخانة وخطؤها مخفيان حينئذ فلا يُخفي الزرَّ ما في الخانة بلا سببٍ ظاهر
+  const arrearsDue = settle && !otherHeld ? depositArrearsDue(db, contractId, date) : 0;
+  const arrearsH = arrearsDue > 0 && dedH > 0 ? (arrears.trim() ? toHalalas(arrears) : Math.min(dedH, arrearsDue)) : 0;
+  const arrearsOver = arrearsH > dedH ? t('deposit.arrearsOverDeduction')
+    : arrearsH > arrearsDue ? t('deposit.arrearsOverDue', { due: fmt(arrearsDue) }) : null;
   const excess = dedH > depH ? dedH - depH : 0;
+  // والمطالبة بما زاد على الأقساط وحده: ما لم يسعه التأمين منها يبقى على أقساطه (applyDepositSettlement)
+  const excessClaim = excess - Math.max(0, arrearsH - depH);
   // «الفارق يُحوَّل تلقائياً إلى مطالبة» · والمسترد يُحتسب تلقائياً
   const autoRefund = dedH > depH ? 0 : depH - dedH;
   // ردّ التأمين نقداً حين يقبضه المكتب · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
@@ -1171,6 +1181,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         refundHalalas: settle ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0,
         deductionReason: dedReason,
         deductReceived: otherHeld ? received : undefined,
+        arrearsHalalas: settle ? arrearsH : 0,
       });
       onClose();
       onDone(excessClaimCreated
@@ -1183,7 +1194,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
     <Sheet visible onClose={onClose} title="إلغاء العقد" tall
       footer={
         <>
-          {cashOk && !refundOver ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
+          {cashOk && !refundOver && !arrearsOver ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
         </>
       }>
       <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
@@ -1223,15 +1234,21 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
           </Row>
           {refundOver ? <T size={11.5} color={C.rose} style={{ marginBottom: 10 }}>{t('deposit.refundOverLeft', { left: fmt(autoRefund) })}</T> : null}
           <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
+          {arrearsDue > 0 && dedH > 0 ? (
+            <>
+              <Field label={t('deposit.arrearsLabel')} value={arrears || fmt(arrearsH).replace(/,/g, '')} onChange={setArrears} keyboard="numeric" ltr error={!!arrearsOver} />
+              <T size={11.5} color={arrearsOver ? C.rose : C.muted} style={{ marginBottom: 10 }}>{arrearsOver ?? t('deposit.arrearsHint', { due: fmt(arrearsDue) })}</T>
+            </>
+          ) : null}
           {/* «طرف آخر»: وصل المخصوم للمكتب فيُسجَّل قبضاً (قرار المالك على #26 · التحقق المستقل N4) */}
           {otherHeld && dedH > 0 ? (
             <SelectField label={t('deposit.received')} value={received ? 'y' : 'n'}
               options={[{ value: 'y', label: t('deposit.received') }, { value: 'n', label: t('deposit.receivedNo') }]}
               onPick={(v) => setReceived(v === 'y')} />
           ) : null}
-          {excess > 0 && (
+          {excessClaim > 0 && (
             <Note tone="danger">
-              مبلغ الخصم ({fmt(dedH)}) أكبر من التأمين المحجوز ({fmt(depH)}) · الفارق {fmt(excess)} سيُحوَّل تلقائياً إلى مطالبة عند تأكيد الإلغاء.
+              مبلغ الخصم ({fmt(dedH)}) أكبر من التأمين المحجوز ({fmt(depH)}) · الفارق {fmt(excessClaim)} سيُحوَّل تلقائياً إلى مطالبة عند تأكيد الإلغاء.
             </Note>
           )}
         </>
@@ -1310,6 +1327,15 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
   // «طرف آخر»: وصل المخصوم للمكتب؟ · من قيده إن سُجّل قبضاً سابقاً (قرار المالك على #26)
   const [received, setReceived] = useState<boolean>(
     !!db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'deposit_deduct' AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL`, [contractId]));
+  // «منها مقابل أقساطٍ متأخرة» (المراجعة الشاملة 2026-11-13 · A1-2): التسوية القائمة بما سدّده التأمين منها، والجديدة افتراضها الأقل
+  // من الخصم ومن المتبقي على ما حلّ بتاريخ التسوية
+  const [arrears, setArrears] = useState(existing ? fmt(depositArrearsPaid(db, contractId)).replace(/,/g, '') : '');
+  const arrearsDue = otherHeld ? 0 : depositArrearsDue(db, contractId, date);
+  // ولا خصم فلا مقابل (ما في الخانة من تسويةٍ سابقة لا يُخفي الزرَّ والخانة مخفية)
+  const arrearsH = arrearsDue > 0 && toHalalas(deduction) > 0
+    ? (arrears.trim() ? toHalalas(arrears) : Math.min(toHalalas(deduction), arrearsDue)) : 0;
+  const arrearsOver = arrearsH > toHalalas(deduction) ? t('deposit.arrearsOverDeduction')
+    : arrearsH > arrearsDue ? t('deposit.arrearsOverDue', { due: fmt(arrearsDue) }) : null;
   const diff = toHalalas(deduction) + toHalalas(refund) - Number(c.deposit_halalas);
   // «لا مسترد أكبر من الباقي بعد الخصم» (قرار المالك 2026-10-09)
   const refundLeft = Math.max(0, Number(c.deposit_halalas) - toHalalas(deduction));
@@ -1327,6 +1353,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
         refundHalalas: toHalalas(refund), notes,
         deductDestination: platformHeld ? dest : undefined,
         deductReceived: otherHeld ? received : undefined,
+        arrearsHalalas: arrearsH,
       });
       onClose();
       onDone('تم حفظ تفاصيل التصرف بالتأمين');
@@ -1337,7 +1364,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
       footer={
         <>
           {/* النقص عن التأمين لا يُحفظ حتى يُوزَّع (قرار المالك على #27) · فلا يظهر الزر ويظهر سببه */}
-          {cashOk && diff >= 0 && !refundOver ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
+          {cashOk && diff >= 0 && !refundOver && !arrearsOver ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
         </>
       }>
       <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
@@ -1349,6 +1376,12 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
       <CostCenterField value={cc} onChange={setCc} />
       <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="numeric" ltr />
       <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
+      {arrearsDue > 0 && toHalalas(deduction) > 0 ? (
+        <>
+          <Field label={t('deposit.arrearsLabel')} value={arrears || fmt(arrearsH).replace(/,/g, '')} onChange={setArrears} keyboard="numeric" ltr error={!!arrearsOver} />
+          <T size={11.5} color={arrearsOver ? C.rose : C.muted} style={{ marginTop: -4, marginBottom: 10 }}>{arrearsOver ?? t('deposit.arrearsHint', { due: fmt(arrearsDue) })}</T>
+        </>
+      ) : null}
       {platformHeld && toHalalas(deduction) > 0 ? (
         <SelectField label="وجهة المخصوم بعد إقفال محتجزات المنصة" value={dest}
           options={[
