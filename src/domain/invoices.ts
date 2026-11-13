@@ -3,7 +3,7 @@
  * الإصدار يرحّل (1200 / 4100 + 2200)، والعودة لمسودة تعكس القيد.
  */
 import type { DB } from '../db/adapter';
-import { requireCash, reversalCashOut, requireBanksCover } from './cashGuard';
+import { requireCash, reversalCashOut, requireBanksCover, bankShortages } from './cashGuard';
 import { uid, rowId, withDeterministicIds } from './ids';
 import { ambientCostCenter } from './accounting/dimensions';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment, postCreditNoteToLedger } from './accounting/post';
@@ -327,6 +327,17 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
 export function collectionCashOut(db: DB, id: string): number {
   const pj = db.get<{ pj: string | null }>(`SELECT payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [id])?.pj;
   return pj ? reversalCashOut(db, pj) : 0;
+}
+
+/**
+ * ما يمنع عكس تحصيل الفاتورة من البنك: سطرٌ لكل بنكٍ لا يكفي رصيده ما يُخرجه العكس منه، باسمه ورصيده والمبلغ (قرار ٥٥ · A2.2) ·
+ * فارغٌ إن كفى أو كان التحصيل نقداً أو لا تحصيل · ورقة «تغيير حالة الفاتورة» تُخفي به خيارات الرجوع عن «مدفوعة» وتعرض سببها، فلا
+ * تَعرض رجوعاً يرفضه reverseInvoicePayment بعد الضغط (المراجعة ١٢ · R12-UI-2)
+ */
+export function collectionBankShortages(db: DB, id: string): string[] {
+  const pj = db.get<{ pj: string | null }>(`SELECT payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [id])?.pj;
+  const je = pj ? db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [pj]) : undefined;
+  return je ? bankShortages(db, je.no, 'reverse') : [];
 }
 
 /** حذف ناعم · القيد المرحّل يُعكَس بقيد مرآة ولا يُخفى فالتاريخ لا يُمحى */

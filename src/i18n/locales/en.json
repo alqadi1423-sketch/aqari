@@ -588,6 +588,7 @@
     "creditFor": "for invoice {{no}}",
     "creditOnIssued": "A credit note applies to an issued invoice only",
     "creditPaid": "The invoice is collected · set it back to «due» to reverse the collection, then issue the note",
+    "revertBankShort": "Cannot revert from \"Paid\" now · reversing the collection takes its amount out of its bank · {{reason}} · move the amount back first",
     "creditReason": "Enter the reason for the note",
     "creditAmount": "Enter the note amount before tax",
     "creditOver": "The note exceeds what remains of the invoice",

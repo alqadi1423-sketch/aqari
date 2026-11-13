@@ -21,7 +21,7 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import {
-  payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, invoiceNoLabel, invoiceRemaining, creditTaxFor, creditLeft, KIND_CREDIT,
+  payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, collectionBankShortages, invoiceNoLabel, invoiceRemaining, creditTaxFor, creditLeft, KIND_CREDIT,
   type InvoiceLineInput, type InvoicePayMethod,
 } from '../src/domain/invoices';
 import { useLang } from '../src/i18n';
@@ -313,6 +313,9 @@ export default function Invoices() {
   const statusNow = statusRow?.status ?? '';
   // «مدفوعة» من نسخة سابقة بلا قيد تحصيل (المراجعة ٤.٢): يُعرض لها «تسجيل التحصيل» ليقيّدها المالك بتاريخها وطريقته
   const legacyPaid = statusNow === 'مدفوعة' && !statusRow?.pj;
+  // وتحصيلٌ دخل بنكاً يُخرجه العكس منه: لا رجوع عن «مدفوعة» يُنزل البنك تحت الصفر (قرار ٥٥ · A2.2)، فتُخفى خياراته ويظهر السبب
+  // برصيد البنك قبل الضغط لا بعده (المراجعة ١٢ · R12-UI-2)
+  const revertBankShort = statusFor && statusNow === 'مدفوعة' && !legacyPaid ? collectionBankShortages(db, statusFor) : [];
   const legacyCount = useMemo(
     () => Number(db.get<{ n: number }>(
       `SELECT COUNT(*) AS n FROM invoices WHERE deleted_at IS NULL AND status = 'مدفوعة' AND payment_journal_entry_id IS NULL`)?.n ?? 0),
@@ -441,10 +444,14 @@ export default function Invoices() {
         <Sheet visible onClose={() => setStatusFor(null)} title="تغيير حالة الفاتورة">
           {/* الرجوع عن «مدفوعة» يعكس تحصيلاً نقدياً فيخرج من المحفظة · لا يظهر حين لا يكفي النقد */}
           {statusNow === 'مدفوعة' && !legacyPaid ? <CashShortNote needed={collectionCashOut(db, statusFor)} what="عكس تحصيل الفاتورة" /> : null}
+          {/* والتحصيل البنكي يخرج من بنكه بالعكس · لا يظهر الرجوع حين لا يكفي رصيده، ومكانه السبب (قرار المالك 2026-08-24) */}
+          {revertBankShort.map((m) => (
+            <T key={m} size={12} color={C.rose} style={{ marginBottom: 8 }}>{t('invoice.revertBankShort', { reason: m })}</T>
+          ))}
           {/* المسودة لا تُحصَّل فلا يظهر لها «تسجيل التحصيل» */}
           {/* الصادرة لا تعود مسودة (قرار المالك على #30) */}
           {ALL_STATUSES.filter((s) => (s !== statusNow || legacyPaid) && !(s === 'مدفوعة' && statusNow === 'مسودة') && !(s === 'مسودة' && statusNow !== 'مسودة')) // i18n-exempt: حالات مخزّنة
-            .filter((s) => s === 'مدفوعة' || statusNow !== 'مدفوعة' || legacyPaid || cashShortfall(db, collectionCashOut(db, statusFor)) <= 0).map((s) => (
+            .filter((s) => s === 'مدفوعة' || statusNow !== 'مدفوعة' || legacyPaid || (cashShortfall(db, collectionCashOut(db, statusFor)) <= 0 && !revertBankShort.length)).map((s) => (
             <View key={s} style={{ marginBottom: 8 }}>
               <BtnGhost
                 title={s === 'مدفوعة' ? 'مدفوعة · تسجيل التحصيل'
