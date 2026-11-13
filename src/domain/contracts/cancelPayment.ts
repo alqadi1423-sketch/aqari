@@ -15,7 +15,7 @@ import { allIn } from '../../db/inList';
 import { cashShortfall, CashShortfallError } from '../cashGuard';
 import { rowId, withDeterministicIds } from '../ids';
 import { fmt } from '../money';
-import { today, dfmt } from '../dates';
+import { today, dfmt, isISODate } from '../dates';
 import { logAudit } from '../audit';
 import { reverseEntryById } from '../accounting/post';
 import { bankBalance } from '../accounting/ledger';
@@ -96,8 +96,14 @@ export function paidFromDeposit(db: DB, paymentId: string): boolean {
      WHERE p.id = ? AND e.src_type = 'reservation_convert'`, [paymentId]);
 }
 
-/** يوم الدفعة · المخزَّن تاريخٌ، والقديم قد يكون لحظة */
-const payDay = (p: PaymentRow): string => String(p.date ?? '').slice(0, 10);
+/**
+ * يوم الدفعة · المخزَّن تاريخٌ، والقديم قد يكون لحظة · وما كتبه الحقل القديم بغير صيغته «2026-3-15» لا يومَ له: يُقارن حرفاً فيعلو كل
+ * تاريخٍ صحيح في سنته، فكان تاريخ الإلغاء الافتراضي المعيبَ نفسه ويُرفض كل صحيحٍ «قبل الدفعة» (المراجعة الشاملة 2026-11-13 · D2-R11-2)
+ */
+const payDay = (p: PaymentRow): string => {
+  const day = String(p.date ?? '').slice(0, 10);
+  return isISODate(day) ? day : '';
+};
 
 /**
  * تاريخ الإلغاء لا يسبق تاريخ الدفعة (المراجعة الشاملة · البند ١٠ · تتمة المراجعة الأخيرة): الدفعة تبقى في ربعها ما لم تُلغَ فيه،

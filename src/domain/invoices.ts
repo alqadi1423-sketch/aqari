@@ -11,7 +11,7 @@ import { t } from '../i18n';
 import { lineTaxCode, type TaxCode } from './taxCode';
 import { remainingByCodeOf, creditNoteAmounts, creditTaxFor, type CodePart, type StoredInvoiceLine } from './creditNote';
 import { lastReversedOf, repostDate } from './accounting/repost';
-import { isFiledDate, requireOpenPeriod } from './vatFilings';
+import { isFiledDate, requireISODate, requireOpenPeriod } from './vatFilings';
 import { mulQty, pctOf } from './money';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
@@ -101,6 +101,7 @@ export function nextInvoiceNo(db: DB, issue?: string): string {
  */
 export function checkInvoiceIssue(db: DB, input: Pick<InvoiceInput, 'issue' | 'lines'>): void {
   normalizeInvoiceLines(input.lines);
+  if (input.issue) requireISODate(input.issue); // ولا تاريخٌ بغير صيغته يتجاوز القفل (المراجعة الشاملة 2026-11-13 · D-2)
   if (isFiledDate(db, input.issue)) throw new Error(t('invoice.filedPeriod'));
 }
 
@@ -116,6 +117,7 @@ export function saveInvoice(
   // الرمز والنسبة متطابقان قبل أي حساب (البند ٦)
   const input: InvoiceInput = { ...input0, lines: normalizeInvoiceLines(input0.lines) };
   // لا فاتورة تصدر بتاريخٍ في فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم · بروح قرار المالك 2026-10-09)
+  if (input.issue) requireISODate(input.issue); // ولا تاريخٌ بغير صيغته ولو في مسودة (D-2)
   if (status !== 'مسودة' && isFiledDate(db, input.issue)) throw new Error(t('invoice.filedPeriod')); // i18n-exempt: حالة مخزّنة
   return db.transaction(() => {
     const { subtotal, tax, total } = invoiceTotals(input.lines);
@@ -293,6 +295,8 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
     }>(`SELECT no, customer_name, issue, subtotal_halalas, tax_halalas, total_halalas, journal_entry_id, status
         FROM invoices WHERE id = ?`, [id]);
     if (!v) return;
+    // ولا تصدر مسودةٌ بتاريخٍ بغير صيغته من الحقل القديم (المراجعة الشاملة 2026-11-13 · D2-R11-3)
+    if (newStatus !== 'مسودة' && v.status === 'مسودة' && v.issue) requireISODate(v.issue); // i18n-exempt: حالة مخزّنة
     if (newStatus !== 'مسودة' && v.status === 'مسودة' && isFiledDate(db, v.issue)) throw new Error(t('invoice.filedPeriod')); // i18n-exempt: حالة مخزّنة
     // مسودةٌ برقم مؤقت تصدر الآن: رقمها الحقيقي لحظة إصدارها
     if (newStatus !== 'مسودة' && isTempInvoiceNo(v.no)) {
@@ -464,6 +468,7 @@ function creditNoteChecked(db: DB, invoiceId: string, input: CreditNoteInput) {
   const reason = input.reason.trim();
   if (!reason) throw new Error(t('invoice.creditReason'));
   // لا قبل تاريخ فاتورته، ولا في فترةٍ قُدِّم إقرارها فيتغيّر المجمَّد (التحقق المستقل)
+  if (input.date) requireISODate(input.date); // ولا تاريخٌ بغير صيغته يُقارن حرفاً فيتجاوز الحدّين (D-2)
   if (input.date < v.issue) throw new Error(t('invoice.creditBeforeInvoice'));
   if (isFiledDate(db, input.date)) throw new Error(t('invoice.creditFiledPeriod'));
   const sub = Math.round(input.subtotalHalalas);

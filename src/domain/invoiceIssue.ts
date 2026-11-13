@@ -13,7 +13,8 @@ import {
   type InvoiceInput, type CreditNoteInput,
 } from './invoices';
 import { t } from '../i18n';
-import { isFiledDate } from './vatFilings';
+import { isFiledDate, requireISODate } from './vatFilings';
+import { isISODate } from './dates';
 
 export interface InvoiceNumberSource { takeInvoiceSeq(floor: number): Promise<number> }
 
@@ -93,6 +94,8 @@ export async function setInvoiceStatusIssued(
   }
   // مسودةٌ تاريخها في ربعٍ قُدِّم إقراره لا تصدر · فلا تأخذ رقماً (تتمة البند ١٢)
   const draftIssue = db.get<{ issue: string }>(`SELECT issue FROM invoices WHERE id = ?`, [id])?.issue;
+  // ولا مسودةٌ بتاريخٍ بغير صيغته كتبه الحقل القديم: يرفضها الترحيل بعد أخذ الرقم (المراجعة الشاملة 2026-11-13 · D2-R11-3)
+  if (draftIssue) requireISODate(draftIssue);
   if (draftIssue && isFiledDate(db, draftIssue)) throw new Error(t('invoice.filedPeriod'));
   let seq: number;
   try {
@@ -123,6 +126,9 @@ export async function issuePendingInvoices(db: DB, src: InvoiceNumberSource): Pr
     // تاريخها في ربعٍ قُدِّم إقراره بعد حفظها: لا تصدر فيه، وتبقى ظاهرةً للمستخدم يغيّر تاريخها، ولا توقف ما بعدها (التحقق المستقل)
     const issue = db.get<{ issue: string }>(`SELECT issue FROM invoices WHERE id = ?`, [id])?.issue;
     if (issue && isFiledDate(db, issue)) continue;
+    // وكذلك تاريخها بغير صيغته «2026-3-15» من الحقل القديم: كان يُرمى من الطابور فلا يصدر ما بعدها وتسقط بقية دورة المزامنة
+    // (المراجعة الشاملة 2026-11-13 · D2-R11-3)
+    if (issue && !isISODate(issue)) continue;
     let r: IssueResult;
     try {
       r = await setInvoiceStatusIssued(db, src, id, 'مستحقة');

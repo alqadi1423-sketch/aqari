@@ -3,7 +3,7 @@
  * كل دالة تتم بمعاملة واحدة، والترحيل المحاسبي عبر مسار postEvent الواحد.
  */
 import { contractDims } from '../accounting/dimensions';
-import { correctionDate, isFiledDate, requireOpenPeriod } from '../vatFilings';
+import { correctionDate, isFiledDate, requireISODate, requireOpenPeriod } from '../vatFilings';
 import type { DB } from '../../db/adapter';
 import { allIn } from '../../db/inList';
 import { requireCash } from '../cashGuard';
@@ -450,6 +450,8 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
   if (c.status === 'مسودة') throw new RuleViolation('العقد لسا مسودة ولم يُوثَّق · احذفه بدل الإلغاء');
   if (c.status === 'ملغى') throw new RuleViolation('العقد ملغى بالفعل');
+  // ولا إلغاءٌ بتاريخٍ بغير صيغته: «2026-3-15» يعلو حرفاً كل قسطٍ في سنته فلا يُلغى منها شيء (المراجعة الشاملة 2026-11-13 · D2-R11-4)
+  if (input.date) requireISODate(input.date);
 
   return db.transaction(() => {
     const date = input.date || today();
@@ -542,6 +544,9 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
   const block = renewBlockReason(c);
   if (block) throw new RuleViolation(block);
+  // والتجديد بتاريخين بصيغتهما كالتوثيق (D2-R11-4)
+  requireISODate(input.start);
+  requireISODate(input.end);
   const warns = renewWarnings(db, contractId, input);
   if (warns.length) throw new RuleViolation(warns[0]);
   // تأمينٌ سُوّي (رُدّ أو خُصم) لا يُرحَّل: كان العقد الجديد يحمله بلا قبضٍ فيُردّ مرتين (المراجعة الشاملة 2026-11-13 · A1-1)
@@ -636,7 +641,9 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
   // العقد الملغى تبقى أقساطه السابقة لإلغائه دَيناً يُحصَّل بقسطه المحدد (المراجعة ٤.٩)
   if (c.status === 'ملغى' && !input.installmentId) throw new RuleViolation('العقد ملغى · التحصيل على أقساطه القائمة وحدها، فاختر القسط');
-  // ولا دفعة بتاريخٍ في فترةٍ قُدِّم إقرارها (قرار المالك 2026-10-15 «٦»)
+  // ولا دفعة بتاريخٍ في فترةٍ قُدِّم إقرارها (قرار المالك 2026-10-15 «٦») · ولا بتاريخٍ بغير صيغته يتجاوز القفل ويغيب من التقارير
+  // (المراجعة الشاملة 2026-11-13 · D-2) · والفارغ تاريخ اليوم
+  if (input.date) requireISODate(input.date);
   if (isFiledDate(db, input.date)) throw new RuleViolation(t('vat.filedEntry'));
   const rawLines = input.lines.filter((l) => (l.amountHalalas || 0) > 0);
   if (!rawLines.length) throw new RuleViolation('أدخل مبلغاً واحداً على الأقل');
@@ -803,6 +810,7 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   }
   // تعديل تسويةٍ قائمة: قيودها الجديدة قيود تصحيح بتاريخها، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسها (#29) · والتسوية الأولى
   // بتاريخٍ في فترةٍ مقدَّمة مرفوضة (المراجعة الخارجية ٧ · النتيجة ٦ · قرار المالك «رابعاً ٥»)
+  if (input.date) requireISODate(input.date); // ولا بتاريخٍ بغير صيغته يتجاوز القفل (D-2)
   if (!prev && isFiledDate(db, input.date)) throw new RuleViolation(t('vat.filedDate'));
   const postDate = prev ? correctionDate(db, input.date) : input.date;
   let excessClaimCreated = false;
@@ -908,6 +916,7 @@ export function recordBulkRentPayment(
 ): string {
   const c = getContract(db, contractId);
   if (!c) throw new RuleViolation('تعذّر العثور على العقد');
+  if (input.date) requireISODate(input.date); // ولا بتاريخٍ بغير صيغته يتجاوز القفل (D-2) · والفارغ تاريخ اليوم
   if (isFiledDate(db, input.date)) throw new RuleViolation(t('vat.filedEntry'));
   // العقد الملغى: التوزيع على أقساطه القائمة غير الملغاة وحدها (المراجعة ٤.٩)
   const rawLines = input.lines.filter((l) => (l.amountHalalas || 0) > 0);

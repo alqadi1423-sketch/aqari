@@ -33,6 +33,7 @@ import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
+import { isISODate } from '../domain/dates';
 import { TS_DEDUCTIBLE } from '../domain/purchases';
 import { walletCashBalance, bankBalance } from '../domain/accounting/ledger';
 import { CASH_DEPOSIT_SOURCE, CASH_WITHDRAW_SOURCE, TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE } from '../domain/cashOps';
@@ -903,10 +904,26 @@ function memberRentCheck(db: DB, doc: RemoteDoc): void {
   }, pay, doc.ts);
 }
 
+/**
+ * تاريخ قيد العضو بصيغة سنة-شهر-يوم ويومٍ قائم على جهاز المالك (المراجعة الشاملة 2026-11-13 · D2-R11-1): «2026-2-01» لا يعرفه قفل
+ * الربع المقدَّم (quarterId) فكان يدخل ربعاً قُدِّم إقراره ويغيب من التقارير · من عضوٍ بإصدارٍ أقدم يمرّر حقلُه المكتوب، أو عابث ·
+ * وما وصل الخادم قبل يوم هذا الإصلاح يُقبل كما قبله جهاز المالك القديم، فلا يرفضه وحده هاتفٌ بديل يسحب كل شيء (يظهر في «فحص
+ * المطابقة» ويُصحَّح بعكسه) · فالحدّ ثابتٌ واحد على كل جهاز لا وقت ترقيته · واللحظة القديمة «2026-02-01T…» بيومها
+ */
+const MEMBER_ISO_DATE_SINCE = '2026-11-13T00:00:00.000Z';
+function memberDateIssue(date: string, ts: string | undefined): string {
+  if (isISODate(String(date ?? '').slice(0, 10))) return '';
+  if (ts && isoCmp(ts, MEMBER_ISO_DATE_SINCE) < 0) return '';
+  return tr('dates.invalidValue', { date, lng: 'ar' });
+}
+
 /** قيد التحصيل ودفعته: الفترة المقدَّمة، والتخصيص، ورصيد المستأجر الدائن، ثم السطور من الدفعة · يرمي بالسبب أو بالانتظار */
 function rentCheckAgainst(db: DB, e: { srcId: string; date: string; lines: Array<{ account: string; debit: number; credit: number }> },
   pay: RentPaymentSrc, ts: string | undefined): void {
   const no = (why: string) => new Error(tr('derive.rejected', { why, lng: 'ar' }));
+  // والتاريخ بغير صيغته قبل القفل: لا ربع له فلا يُرفض به (D2-R11-1)
+  const dateWhy = memberDateIssue(e.date, ts);
+  if (dateWhy) throw no(dateWhy);
   // القرار ٦ عبر المزامنة: ما وصل الخادم بعد تسجيل تقديم ربعه يُرفض (المتحقق المستقل، الجولة ٣٥ (أ٤))
   const filed = filingRecordedAt(db, e.date);
   if (filed && (!ts || isoCmp(ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
@@ -1051,6 +1068,9 @@ function memberSourceCheck(db: DB, doc: RemoteDoc): void {
   if (!DERIVED_SOURCES[src] || getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
   const no = (why: string) => new Error(tr('deriveSrc.rejected', { source: src, why, lng: 'ar' }));
   const date = String(doc.d!.date ?? '');
+  // والتاريخ بغير صيغته قبل القفل (D2-R11-1)
+  const dateWhy = memberDateIssue(date, doc.ts);
+  if (dateWhy) throw no(dateWhy);
   const filed = filingRecordedAt(db, date);
   if (filed && (!doc.ts || isoCmp(doc.ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
   const reader = sourceReader(db);

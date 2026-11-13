@@ -6,10 +6,11 @@
  */
 import type { DB } from '../db/adapter';
 import { fmt } from './money';
-import { today, dfmt } from './dates';
+import { today, dfmt, isISODate } from './dates';
 import { logAudit } from './audit';
 import { t } from '../i18n';
 import { quarterRange, vatReturnData, type VatItem, type VatReturnData } from './vatReturn';
+import { RuleViolation } from './contracts/service';
 
 export type Quarter = 1 | 2 | 3 | 4;
 
@@ -29,7 +30,18 @@ const hasTable = (db: DB): boolean =>
  * الخارجية ٧ · النتيجة ٦: كان الإلغاء والعكس وحدهما يُرفضان)
  */
 export function requireOpenPeriod(db: DB, date: string): void {
-  if (date && isFiledDate(db, date)) throw new Error(t('vat.filedEntry'));
+  if (!date) return;
+  // والتاريخ بغير صيغته لا يعرفه القفل (quarterId يطلب شهراً من رقمين) فيُرفض قبله (المراجعة الشاملة 2026-11-13 · D-2)
+  requireISODate(date);
+  if (isFiledDate(db, date)) throw new Error(t('vat.filedEntry'));
+}
+
+/**
+ * لا يصل الدفترَ تاريخٌ ليس بصيغة YYYY-MM-DD ويومٍ قائمٍ في شهره: «2026-1-15» لا يقع في مدى شهرٍ ولا ربع، فيغيب من التقارير والإقرار
+ * وهو في الرصيد، ويتجاوز قفل الربع المقدَّم (المراجعة الشاملة 2026-11-13 · D-2) · حارسٌ أخير خلف حقل التاريخ
+ */
+export function requireISODate(date: string | null | undefined): void {
+  if (!isISODate(date)) throw new RuleViolation(date ? t('dates.invalidValue', { date }) : t('dates.invalid'));
 }
 
 /**
@@ -70,7 +82,8 @@ function openToday(db: DB): string {
  * يظهر إيرادٌ سالب في فترة وزائد في أخرى · إلا إن قُدِّم إقرار فترته فاليوم (قرار المالك على #29) · واليوم في فترةٍ مفتوحة (البند ٨)
  */
 export function correctionDate(db: DB, original: string | null | undefined): string {
-  if (!original || !/^\d{4}-\d{2}-\d{2}/.test(original)) return openToday(db);
+  // ويومٌ لا يقوم في شهره «2026-02-31» كتبه الحقل القديم كالمكتوب بلا صفر: اليوم، فلا يُرفض عكسه أبداً (المراجعة الشاملة 2026-11-13 · D2-R11-2)
+  if (!original || !isISODate(String(original).slice(0, 10))) return openToday(db);
   return isFiledDate(db, original) ? openToday(db) : original.slice(0, 10);
 }
 

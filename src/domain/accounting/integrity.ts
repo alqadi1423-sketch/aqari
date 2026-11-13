@@ -2,6 +2,7 @@ import type { DB } from '../../db/adapter';
 import { accountBalance, allAccounts, ledgerNet } from './ledger';
 import { markedNetOn, unmarkedOrphans, memberDevice } from './orphans';
 import { fmt } from '../money';
+import { t } from '../../i18n';
 
 export interface IntegrityCheck {
   name: string;
@@ -232,7 +233,36 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     value: strays.payments + ' دفعة · ' + strays.installments + ' قسط · ' + strays.contracts + ' عقد',
   });
 
+  // تاريخٌ بغير صيغته كتبه حقل التاريخ قبل إصلاحه «2026-3-15» أو «2026-02-31»: لا يقع في شهرٍ ولا ربع فيغيب من التقارير والإقرار
+  // وهو في الرصيد (المراجعة الشاملة 2026-11-13 · D-2 · الخطة ٣ · D2-R11-2) · الحيّ منه وحده: ما عُكس قيده أو أُلغيت دفعته صُحّح ·
+  // واللحظة القديمة «2026-01-15T…» بيومها كما يقرؤها correctionDate
+  const odd = badDateCounts(db);
+  const oddTotal = odd.entries + odd.payments + odd.purchases + odd.bank + odd.invoices;
+  out.push({
+    name: t('dates.integrityName'),
+    ok: oddTotal === 0,
+    value: t(oddTotal ? 'dates.integrityFix' : 'dates.integrityValue', odd),
+  });
+
   return out;
+}
+
+/** صفوفٌ حيّة بتاريخٍ ليس بصيغة سنة-شهر-يوم ويومٍ قائم · date() في SQLite يعيد غير المكتوب لـ«2026-02-31» ولا شيء لـ«2026-3-15» */
+export function badDateCounts(db: DB): { entries: number; payments: number; purchases: number; bank: number; invoices: number } {
+  const bad = (c: string) => `(${c} IS NOT NULL AND ${c} <> '' AND date(substr(${c}, 1, 10)) IS NOT substr(${c}, 1, 10))`;
+  const n = (sql: string) => Number(db.get<{ n: number }>(sql)!.n);
+  return {
+    // i18n-exempt: حالة القيد المخزّنة
+    entries: n(`SELECT COUNT(*) AS n FROM journal_entries WHERE status = 'مرحّل' AND deleted_at IS NULL AND reversed_by IS NULL AND ${bad('date')}`),
+    payments: n(`SELECT COUNT(*) AS n FROM contract_payments WHERE ${bad('date')}
+      ${hasCol(db, 'contract_payments', 'cancelled_at') ? 'AND cancelled_at IS NULL' : ''}`),
+    purchases: n(`SELECT COUNT(*) AS n FROM purchases WHERE deleted_at IS NULL AND ${bad('date')}`),
+    // وحركة البنك التي عُكس قيدها (إلغاء دفعتها) صُحّحت بالعاكس
+    bank: n(`SELECT COUNT(*) AS n FROM bank_tx t WHERE t.deleted_at IS NULL AND ${bad('t.date')}
+      AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE t.journal_no <> '' AND e.no = t.journal_no AND e.reversed_by IS NOT NULL)`),
+    // i18n-exempt: حالة الفاتورة المخزّنة
+    invoices: n(`SELECT COUNT(*) AS n FROM invoices WHERE deleted_at IS NULL AND status <> 'مسودة' AND ${bad('issue')}`),
+  };
 }
 
 /** السجلات اليتيمة: أبوها غائب أو في السلة وهي قائمة */

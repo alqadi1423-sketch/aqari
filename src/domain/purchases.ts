@@ -13,7 +13,7 @@ import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryB
 import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseAssetsMoved, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
-import { correctionDate, isFiledDate, requireOpenPeriod } from './vatFilings';
+import { correctionDate, isFiledDate, requireISODate, requireOpenPeriod } from './vatFilings';
 import { t } from '../i18n';
 import { cardHasVat, normName } from './purchaseQr';
 import { qrKeyFacts, qrKeysAlike, qrKeysExact } from './zatcaQr';
@@ -180,7 +180,8 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
     const block = purchaseEditBlock(db, existingId);
     if (block) throw new Error(block);
   }
-  // لا شراء جديد ولا نقلُ تاريخٍ إلى فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم)
+  // لا شراء جديد ولا نقلُ تاريخٍ إلى فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم) · ولا تاريخٌ بغير صيغته يتجاوز القفل (D-2)
+  if (input.date) requireISODate(input.date);
   if (isFiledDate(db, input.date)) throw new Error(t('purchase.filedPeriod'));
   return db.transaction(() => {
     // الافتراض مستبعدة ما لم يُثبَت العكس · و«خاضعة باسمنا» تشترط الرقم الضريبي للمورد

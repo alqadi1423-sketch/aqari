@@ -4,7 +4,7 @@ import { requireCash } from '../cashGuard';
 import { t } from '../../i18n';
 import { uid, rowId } from '../ids';
 import { today } from '../dates';
-import { correctionDate, isFiledDate, requireOpenPeriod } from '../vatFilings';
+import { correctionDate, isFiledDate, requireISODate, requireOpenPeriod } from '../vatFilings';
 import { fmt } from '../money';
 import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
@@ -93,6 +93,8 @@ export function postEntry(
 ): PostedEntry | null {
   const rows = args.lines.filter((l) => Math.abs(l.debit || 0) > 0 || Math.abs(l.credit || 0) > 0);
   if (!rows.length) return null;
+  // ولا قيد بتاريخٍ بغير صيغته من أي مسار ترحيل (المراجعة الشاملة 2026-11-13 · D-2)
+  requireISODate(args.date);
   const D = rows.reduce((s, r) => s + (r.debit || 0), 0);
   const C = rows.reduce((s, r) => s + (r.credit || 0), 0);
   if (D !== C) throw new UnbalancedEntryError();
