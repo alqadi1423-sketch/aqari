@@ -12,8 +12,8 @@ import { uid, rowId } from '../ids';
 import { today, dfmt } from '../dates';
 import {
   generateInstallments, INSTALLMENT_DISCOUNT_SQL, installmentRemaining,
-  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON, SETTLEMENT_CLAIM_SOURCE,
-  type DiscountKind,
+  DISCOUNT_KINDS, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON, DEPOSIT_RENT_KEPT_REASON,
+  SETTLEMENT_CLAIM_SOURCE, type DiscountKind,
 } from './installments';
 import { recomputeInstallments } from './paid';
 import { depositCarryChain } from './depositChain';
@@ -45,7 +45,7 @@ import {
   reverseEntryById,
 } from '../accounting/post';
 import { logAudit } from '../audit';
-import { outOfMatch, REPOSTED_KEY } from '../accounting/orphans';
+import { reviewState, memberDevice, REPOSTED_KEY } from '../accounting/orphans';
 import { fmt } from '../money';
 import { linkContractTenant } from '../tenants';
 import { seedTenantOccupant, carryOccupantsToRenewal } from '../occupants';
@@ -799,16 +799,21 @@ function depositInstallments(db: DB, contractId: string) {
  * ما سدّده التأمين من الأقساط في تسويته القائمة · «منها مقابل أقساطٍ متأخرة» حين تُعدَّل (A1-2) ·
  * ومنه دفعةٌ أُلغيت بعاكسٍ ضُمّ بعد استعادةٍ ويُراجَع خارج المطابقة وقيدُها داخلها (keepPosted.ts: إلغاؤها يُحمل مع عاكسها): الإلغاء من
  * تعديلٍ بعد النسخة ليس في البيانات، وصفّ التسوية فيها بحاله قبله وهي منه · وإلا ملأت الورقة الخانة صفراً والخصم «إيجار ديسمبر» بحاله،
- * فحفظُها كما تظهر يقيد الخصم أضراراً في 4300 ويبقى القسط مستحقاً، عكس صفّ التسوية وقرار المالك س١ (المراجع المعاكس الثالث · البند ٤)
+ * فحفظُها كما تظهر يقيد الخصم أضراراً في 4300 ويبقى القسط مستحقاً، عكس صفّ التسوية وقرار المالك س١ (المراجع المعاكس الثالث · البند ٤) ·
+ * وجهاز العضو لا يصله سجل العمليات (قسمه «سجل العمليات» وحده) فلا علامة فيه: يعدّها بسبب إلغائها الذي يكتبه الضمّ (DEPOSIT_RENT_KEPT_REASON)
+ * ويعيده حفظ التسوية بعدها، ويصحّحه جهاز المالك من علاماته (sync/engine.ts: unkeepDocumentedDepositRent) · وإلا ملأ الخانة صفراً على جهاز
+ * الموظف وحده فقيد حفظُه كما يظهر ديسمبر أضراراً (المراجع المستقل الخامس على R12-BAK-2) · وحال المراجعة تُحسب مرةً لا لكل دفعة
  */
 export function depositArrearsPaid(db: DB, contractId: string): number {
   const live = liveDepositRent(db, contractId).reduce((s, p) => s + Number(p.net_halalas), 0);
-  const kept = db.all<{ net: number; je: string; ce: string }>(
-    `SELECT p.net_halalas AS net, p.journal_entry_id AS je, p.cancel_entry_id AS ce FROM contract_payments p
+  const cancelled = db.all<{ net: number; je: string; ce: string; why: string | null }>(
+    `SELECT p.net_halalas AS net, p.journal_entry_id AS je, p.cancel_entry_id AS ce, p.cancel_reason AS why FROM contract_payments p
      JOIN journal_entries e ON e.id = p.journal_entry_id
      WHERE p.method_label = ? AND p.cancelled_at IS NOT NULL AND e.src_type = ? AND e.src_id = ? AND e.reversed_by = p.cancel_entry_id`,
-    [DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, contractId])
-    .filter((p) => outOfMatch(db, p.ce) && !outOfMatch(db, p.je));
+    [DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, contractId]);
+  if (!cancelled.length) return live;
+  const out = memberDevice(db) ? null : reviewState(db).out;
+  const kept = cancelled.filter((p) => (out ? out.has(p.ce) && !out.has(p.je) : p.why === DEPOSIT_RENT_KEPT_REASON));
   return live + kept.reduce((s, p) => s + Number(p.net), 0);
 }
 
@@ -835,6 +840,11 @@ const DEPOSIT_RENT_REV_MEMO = 'تعديل تسوية التأمين · عكس س
  * إيراد قسطه في الدفتر بعد كل حفظ فقُيد القسط مرتين (المراجع المعاكس الثاني على تعارض R12-DEP-2 مع R12-BAK-2)
  */
 function reverseDepositRent(db: DB, contractId: string): void {
+  // وإلغاءٌ حمله ضمّ استعادةٍ مع عاكسٍ يُراجَع (DEPOSIT_RENT_KEPT_REASON): هذا الحفظ يوثّق عاكسه (سطر الحفظ · orphans.ts: documentedSql)،
+  // فيعود إلغاء تعديلٍ كأخواته ولا تعدّه ورقة التسوية بعده على أي جهاز (المراجع المستقل الخامس على R12-BAK-2)
+  db.run(`UPDATE contract_payments SET cancel_reason = ? WHERE cancel_reason = ? AND method_label = ? AND cancelled_at IS NOT NULL
+     AND journal_entry_id IN (SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ?)`,
+    [DEPOSIT_RENT_EDIT_REASON, DEPOSIT_RENT_KEPT_REASON, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, contractId]);
   const touched: string[] = [];
   for (const p of liveDepositRent(db, contractId)) {
     const had = p.journal_entry_id ? db.get<{ id: string }>(`SELECT r.id FROM journal_entries e JOIN journal_entries r ON r.id = e.reversed_by

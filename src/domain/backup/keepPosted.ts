@@ -30,7 +30,7 @@ import type { DB, SqlValue } from '../../db/adapter';
 import type { RemoteDoc, RowData } from '../../sync/types';
 import { nextJournalNo } from '../accounting/post';
 import { recomputeInstallments } from '../contracts/paid';
-import { DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD } from '../contracts/installments';
+import { DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_KEPT_REASON } from '../contracts/installments';
 import { fmt } from '../money';
 import { logAudit } from '../audit';
 import { SOURCE_DOC, markForReview } from '../accounting/orphans';
@@ -249,13 +249,17 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
     // والإلغاء لا رجعة فيه (Y١) · فيُحمل إلغاؤها ويبقى عاكسها في المراجعة مع أخواته من قيود التعديل، فلا تفترق الاستعادة والمزامنة
     // ولا يحمرّ فحص التأمينات: صفّ التسوية في النسخة يطابقه أصل القيد، والعاكس وأخواته خارج المطابقة حتى تُحفظ التسوية ثانيةً
     // (المراجع المعاكس الثاني على تعارض R12-DEP-2 مع R12-BAK-2)
+    let carriedRow = p;
     if (p.method_label === DEPOSIT_RENT_METHOD && depositRentBlocked(depositHolderOf(p))) {
       const je = String(p.journal_entry_id ?? '');
       const ce = String(p.cancel_entry_id ?? '');
       if (!p.cancelled_at || !keptIds.has(ce) || keptIds.has(je) || !links.some((l) => l.id === je && l.reversedBy === ce)) continue;
       review.set(ce, t('backup.keptDepositRentCancel'));
+      // وسبب إلغائها أنه من تعديلٍ بعد النسخة يُراجَع عاكسه (DEPOSIT_RENT_KEPT_REASON): تعدّها به ورقة التسوية على جهاز العضو، ولا علامة فيه
+      // (المراجع المستقل الخامس على R12-BAK-2) · نسخةٌ لا الصف نفسه: صفوف السحابة من اللقطة التي يُبنى عليها الاعتماد فيُرفع الفرق
+      carriedRow = { ...p, cancel_reason: DEPOSIT_RENT_KEPT_REASON };
     }
-    outPayments.push(p);
+    outPayments.push(carriedRow);
     if (p.discount_kind === DISCOUNT_REDUCES_INSTALLMENT && p.installment_id) {
       const srcInst = rowsFrom(src, from, 'contract_installments', 'id', [String(p.installment_id)])[0];
       const cur = target.get<{ a: number }>(`SELECT amount_halalas AS a FROM contract_installments WHERE id = ?`, [p.installment_id as string]);

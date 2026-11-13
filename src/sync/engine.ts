@@ -26,12 +26,12 @@ import { isDbFault, TransactionAbortedError, type DB, type SqlValue } from '../d
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
-import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON, SETTLEMENT_CLAIM_SOURCE } from '../domain/contracts/installments';
+import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON, DEPOSIT_RENT_KEPT_REASON, SETTLEMENT_CLAIM_SOURCE } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
 import { paidFromDeposit, paidFromSettlement } from '../domain/contracts/cancelPayment';
 import { depositCarryChain } from '../domain/contracts/depositChain';
 import { blockRequests, addBlock } from '../domain/numbering';
-import { markOrphans, recordForeignReview, foreignReviewRows } from '../domain/accounting/orphans';
+import { markOrphans, recordForeignReview, foreignReviewRows, reviewState } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
 import { isISODate } from '../domain/dates';
@@ -1417,6 +1417,27 @@ function cancelReversedDepositRent(db: DB, touched: Set<string>): void {
     db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`,
       [p.d, DEPOSIT_RENT_EDIT_REASON, p.rev, p.id]);
     for (const i of installmentsOfPayment(db, p.id)) touched.add(i);
+    enqueue(db, 'contract_payments', p.id, 'upsert');
+  }
+}
+
+/**
+ * دفعة «من التأمين» ملغاةٌ بسبب الضمّ (DEPOSIT_RENT_KEPT_REASON) وعاكسها لم يعد خارج المطابقة على جهاز المالك: يعيد سببها سبب التعديل
+ * ويرفعها، فتتفق ورقة التسوية على جهاز العضو (بالسبب) وعلى جهاز المالك (بالعلامات · depositArrearsPaid) · وذلك حين يحفظ التسوية عضوٌ
+ * لا يرى الدفعات (قسم «التأمينات» وحده) فلا يعيده هو (reverseDepositRent)، وسطر حفظه يوثّق العاكس هنا (المراجع المستقل الخامس على R12-BAK-2) ·
+ * ولا يعيده إلا بدليلٍ هنا: علامةٌ نافذة على عاكسها صار له مستند، أو أصلها نفسه خارج المطابقة · فجهاز مالكٍ آخر وصلته الدفعة قبل علامتها
+ * لا يمسّها · والحساب مرةً حين توجد دفعةٌ بهذا السبب، وهي نادرة
+ */
+function unkeepDocumentedDepositRent(db: DB): void {
+  if (getSyncState(db, 'membership')) return;
+  const kept = db.all<{ id: string; je: string; ce: string }>(
+    `SELECT id, journal_entry_id AS je, cancel_entry_id AS ce FROM contract_payments
+     WHERE cancel_reason = ? AND method_label = ? AND cancelled_at IS NOT NULL`, [DEPOSIT_RENT_KEPT_REASON, DEPOSIT_RENT_METHOD]);
+  if (!kept.length) return;
+  const { out, marked } = reviewState(db);
+  for (const p of kept) {
+    if (!((marked.has(p.ce) && !out.has(p.ce)) || out.has(p.je))) continue;
+    db.run(`UPDATE contract_payments SET cancel_reason = ? WHERE id = ?`, [DEPOSIT_RENT_EDIT_REASON, p.id]);
     enqueue(db, 'contract_payments', p.id, 'upsert');
   }
 }
@@ -3358,6 +3379,8 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
     fixDeadCarries(db);
     // ودفعة «من التأمين» عُكس قيدها بعاكسٍ قُبل هنا ولم تُلغَ: تُلغى بعاكسها وتُرفع (قبل حساب المسدَّد)
     cancelReversedDepositRent(db, touched);
+    // وإلغاءٌ حمله ضمّ استعادةٍ وصار عاكسه موثَّقاً هنا: يعود سببه سبب التعديل ويُرفع (سببٌ لا مبلغ، فلا يمسّ المسدَّد)
+    unkeepDocumentedDepositRent(db);
     recomputeInstallments(db, touched.has(ALL_INSTALLMENTS) ? undefined : [...touched]);
     if (out.applied) reopenReversedMatches(db);
   });

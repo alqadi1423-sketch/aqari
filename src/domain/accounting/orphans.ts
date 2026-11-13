@@ -131,12 +131,14 @@ export function recordForeignReview(db: DB, ids: string[]): void {
 
 /**
  * جداول الاستعلام (WITH) بمعامل واحد: معرّفات ما لا يعمل (foreignAuditIds) · fx: هي، mk: العلامات النافذة بمعرّف قيدها ونصّها ووقتها،
- * sv: حفظ المستندات النافذ بمعرّف المستند
+ * sv: حفظ المستندات النافذ بمعرّف المستند ·
+ * مجسَّدةٌ (MATERIALIZED): يُمسح السجل لكلٍّ منها مرةً في الاستعلام · وبلاه كانت تُضمَّن في الاستعلام الفرعي المرتبط (documentedSql) فيُمسح
+ * السجل كله مرتين لكل قيدٍ معلَّم، فكلفة المطابقة وأداة المراجعة وورقة التسوية عدد العلامات × حجم السجل (المراجع المستقل الخامس على R12-BAK-2)
  */
-const REVIEW_CTE = `fx AS (SELECT value AS id FROM json_each(?)),
-  mk AS (SELECT a.id AS mid, ${jsonOf('a.after_json', '$.id')} AS id, a.after_json AS aj, a.ts AS ts FROM audit_log a
+const REVIEW_CTE = `fx AS MATERIALIZED (SELECT value AS id FROM json_each(?)),
+  mk AS MATERIALIZED (SELECT a.id AS mid, ${jsonOf('a.after_json', '$.id')} AS id, a.after_json AS aj, a.ts AS ts FROM audit_log a
          WHERE a.entity_type = '${KEPT_REVIEW_ENTITY}' AND a.id NOT IN (SELECT id FROM fx) AND ${jsonOf('a.after_json', '$.id')} IS NOT NULL),
-  sv AS (SELECT a.id, ${jsonOf('a.after_json', '$.' + REPOSTED_KEY)} AS doc, a.ts FROM audit_log a
+  sv AS MATERIALIZED (SELECT a.id, ${jsonOf('a.after_json', '$.' + REPOSTED_KEY)} AS doc, a.ts FROM audit_log a
          WHERE instr(a.after_json, '"${REPOSTED_KEY}"') > 0 AND a.id NOT IN (SELECT id FROM fx)
            AND ${jsonOf('a.after_json', '$.' + REPOSTED_KEY)} IS NOT NULL)`;
 
@@ -174,9 +176,14 @@ export function markedNetOn(db: DB, account: string): number {
     [JSON.stringify(foreignAuditIds(db)), account])!.s);
 }
 
-/** القيد معلَّمٌ خارج المطابقة (أو عاكسُ معلَّمٍ خارجها) · بعد استعادة: من تعديلٍ ليس مستنده في البيانات */
-export function outOfMatch(db: DB, entryId: string): boolean {
-  return !!db.get(`${OUT_OF_MATCH} SELECT 1 FROM ids WHERE id = ?`, [JSON.stringify(foreignAuditIds(db)), entryId]);
+/**
+ * حال المراجعة في استعلامٍ واحد لمن يسأل عن عدة قيود (السجل يُمسح مرةً لا لكل قيد) · out: المعلَّم خارج المطابقة وعكوسه (بعد استعادة: من
+ * تعديلٍ ليس مستنده في البيانات) · marked: ما عليه علامةٌ نافذة هنا، صار له مستند أو لم يصر
+ */
+export function reviewState(db: DB): { out: Set<string>; marked: Set<string> } {
+  const rows = db.all<{ id: string; m: number }>(`${OUT_OF_MATCH} SELECT id, 0 AS m FROM ids UNION ALL SELECT id, 1 AS m FROM mk`,
+    [JSON.stringify(foreignAuditIds(db))]);
+  return { out: new Set(rows.filter((r) => !Number(r.m)).map((r) => r.id)), marked: new Set(rows.filter((r) => Number(r.m)).map((r) => r.id)) };
 }
 
 /**
@@ -231,14 +238,15 @@ export function markOrphans(db: DB, how: string): number {
 
 export interface KeptReviewItem { id: string; no: string; reason: string }
 
-/** أداة المراجعة: ما عُلِّم بعلامةٍ نافذة ولم يُعكس ولم يُراجَع ولم يصر له مستند */
+/** أداة المراجعة: ما عُلِّم بعلامةٍ نافذة ولم يُعكس ولم يُراجَع ولم يصر له مستند · و«تمّت مراجعته» مجسَّدةٌ كأخواتها (مسحٌ واحد لا لكل علامة) */
 export function keptForReview(db: DB): KeptReviewItem[] {
   return db.all<KeptReviewItem>(
-    `WITH ${REVIEW_CTE}
+    `WITH ${REVIEW_CTE},
+       dm AS MATERIALIZED (SELECT ${jsonOf('d.after_json', '$.id')} AS id FROM audit_log d WHERE d.entity_type = ?)
      SELECT e.id, e.no, MAX(${jsonOf('mk.aj', '$.reason')}) AS reason
      FROM mk JOIN journal_entries e ON e.id = mk.id
      WHERE e.reversed_by IS NULL AND e.deleted_at IS NULL
-       AND NOT EXISTS (SELECT 1 FROM audit_log d WHERE d.entity_type = ? AND json_extract(d.after_json, '$.id') = e.id)
+       AND NOT EXISTS (SELECT 1 FROM dm WHERE dm.id = e.id)
        AND NOT ${documentedSql('e')}
      GROUP BY e.id ORDER BY e.date, e.no`, [JSON.stringify(foreignAuditIds(db)), KEPT_REVIEWED_ENTITY]);
 }

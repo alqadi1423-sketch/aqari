@@ -1325,7 +1325,8 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
     !!db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'deposit_deduct' AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL`, [contractId]));
   // «منها مقابل أقساطٍ متأخرة» (المراجعة الشاملة 2026-11-13 · A1-2): التسوية القائمة بما سدّده التأمين منها، والجديدة افتراضها الأقل
   // من الخصم ومن المتبقي على ما حلّ بتاريخ التسوية
-  const [arrears, setArrears] = useState(existing ? fmt(depositArrearsPaid(db, contractId)).replace(/,/g, '') : '');
+  // بدالةٍ تُحسب مرةً عند الفتح لا مع كل رسمٍ وحرف (المراجع المستقل الخامس على R12-BAK-2)
+  const [arrears, setArrears] = useState(() => (existing ? fmt(depositArrearsPaid(db, contractId)).replace(/,/g, '') : ''));
   const arrearsDue = otherHeld ? 0 : depositArrearsDue(db, contractId, date);
   // ولا خصم فلا مقابل (ما في الخانة من تسويةٍ سابقة لا يُخفي الزرَّ والخانة مخفية)
   const arrearsH = arrearsDue > 0 && toHalalas(deduction) > 0
