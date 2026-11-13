@@ -11,6 +11,10 @@ import { readStatementGrid } from '@/domain/bankStatement/read';
 import { saveStatement } from '@/domain/bankStatement/store';
 import { collectionSuggestions } from '@/domain/bankStatement/collect';
 
+// اختبار زمن على آلةٍ مشتركة: يُعاد مرتين إن سقط، فالتقلّب يمرّ والانحدار الحقيقي يسقط في المحاولات الثلاث كلها
+// (المراجعة الشاملة 2026-11-13 · G-5: سقط memberQuadratic على التزامٍ غيّر سطراً في docs وحده) · والحاجز باقٍ: لا عزل ولا تخطٍّ
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 describe('X7 · [منخفض] الفهرس بالمبلغ لا يجعل الزمن خطياً: النافذة ±45 يوماً تمرّ على كل قسطٍ بالمبلغ نفسه، والمجموعات تُبنى بنسخ المصفوفة ([...a, x])، فالزمن يكبر بمكعب عدد الوحدات (collect.ts:103 و132-135 و173)', () => {
   // بأرقام هذا الجهاز (Node): مئة وحدة 0.37 ثانية، ومئتان 1.3، وثلاثمئة 3.3 (ثلاثة أضعاف البيانات تسعة أضعاف الزمن) · وmatchSuggestions
   // بالبناء نفسه (store.ts:96 و122) ثانيتان لثلاثمئة وحدة · وHermes على الجوال أبطأ بأضعاف، والشاشة تعيد الحساب بعد كل «اعتماد»

@@ -15,6 +15,10 @@ import { saveInvoice, payInvoice, reverseInvoicePayment, type InvoiceInput } fro
 import { addProperty, addUnit } from './helpers/fixtures';
 import { pair, sync, MEMBER } from './helpers/rederive';
 
+// اختبار زمن على آلةٍ مشتركة: يُعاد مرتين إن سقط، فالتقلّب يمرّ والانحدار الحقيقي يسقط في المحاولات الثلاث كلها
+// (المراجعة الشاملة 2026-11-13 · G-5: سقط memberQuadratic على التزامٍ غيّر سطراً في docs وحده) · والحاجز باقٍ: لا عزل ولا تخطٍّ
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 const plan = (sql: string, p: unknown[]) => {
   const db = memDb();
   const out = db.all<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, p as never).map((r) => r.detail).join(' | ');

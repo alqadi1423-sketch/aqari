@@ -12,6 +12,10 @@ import { readStatementGrid } from '@/domain/bankStatement/read';
 import { saveStatement, matchSuggestions } from '@/domain/bankStatement/store';
 import { collectionSuggestions } from '@/domain/bankStatement/collect';
 
+// اختبار زمن على آلةٍ مشتركة: يُعاد مرتين إن سقط، فالتقلّب يمرّ والانحدار الحقيقي يسقط في المحاولات الثلاث كلها
+// (المراجعة الشاملة 2026-11-13 · G-5: سقط memberQuadratic على التزامٍ غيّر سطراً في docs وحده) · والحاجز باقٍ: لا عزل ولا تخطٍّ
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 const UNITS = 100;
 /** كشف سنةٍ لعمارةٍ من مئة وحدةٍ بإيجارٍ واحد (1,500 شهرياً): إيداعٌ لكل وحدةٍ في الأيام ١–٩ من كل شهر */
 function yearOfRent(): { rows: string[][]; dates: string[] } {
