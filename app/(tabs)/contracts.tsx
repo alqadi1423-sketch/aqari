@@ -18,7 +18,7 @@ import { DateField } from '../../src/ui/DateField';
 import { ActionMenuButton } from '../../src/ui/ActionMenu';
 import { printTenantStatement, printContractDoc, printReceipt } from '../../src/services/print';
 import { paymentForInstallment } from '../../src/domain/contracts/service';
-import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining } from '../../src/domain/contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, paymentCashSql } from '../../src/domain/contracts/installments';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../../src/domain/contracts/vocab';
 import { depositState } from '../../src/domain/contracts/vocab';
 import { InstallmentSheet } from '../../src/ui/InstallmentSheet';
@@ -652,7 +652,7 @@ function ContractDetailSheet({
     `SELECT * FROM tenant_ratings WHERE contract_id = ?`, [contractId]
   );
   const totalPaid = Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [contractId]
+    `SELECT COALESCE(SUM(${paymentCashSql()}),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [contractId]
   )!.s);
   const ended = contractEnded(c);
   const overall = rating
@@ -750,7 +750,7 @@ function ContractDetailSheet({
       {/* دخل العقد ومصاريفه */}
       {(() => {
         const income = db.get<{ s: number }>(
-          `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
+          `SELECT COALESCE(SUM(${paymentCashSql()}),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
           [contractId]
         )!.s;
         const expenses = c.unit_id

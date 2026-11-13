@@ -3,7 +3,7 @@
  * كلٌّ بمدة قابلة للتحديد (from فارغ = من البداية) وشامل لتفاصيل نوعه،
  * وتُغذّي تصدير PDF وإكسل من مصدر واحد.
  */
-import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, paymentCash, CREDIT_METHOD } from './contracts/installments';
 import type { DB } from '../db/adapter';
 import { today } from './dates';
 import { contractStatusLabel } from './contracts/rules';
@@ -51,7 +51,7 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
   const payments = db.all<UnitReport['payments'][number]>(
     `SELECT p.date, p.period, p.method_label, p.net_halalas, c.tenant_name
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.cancelled_at IS NULL AND c.unit_id = ?${period('p.date', from, to)}
+     WHERE p.cancelled_at IS NULL AND c.unit_id = ? AND p.method_label IS NOT '${CREDIT_METHOD}'${period('p.date', from, to)}
      ORDER BY p.date DESC`, [unitId]
   );
   const expenses = db.all<UnitReport['expenses'][number]>(
@@ -81,7 +81,7 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
      LEFT JOIN suppliers sp ON sp.id = m.supplier_id
      WHERE m.owner_type = 'unit' AND m.owner_id = ? AND m.deleted_at IS NULL`, [unitId]
   );
-  const income = payments.reduce((s, p) => s + Number(p.net_halalas), 0);
+  const income = payments.reduce((s, p) => s + paymentCash(p), 0); // A2.1: سداد القسط من الرصيد الدائن لا نقد فيه
   const exp = expenses.reduce((s, e) => s + Number(e.total_halalas), 0);
   return { unit, propertyName, contracts, payments, expenses, handoversCount, installments, meters: unitMeters, totals: { income, expenses: exp, net: income - exp } };
 }
@@ -90,7 +90,7 @@ export interface PropertyReport {
   property: { name: string; address: string; ownership: string; deed_no: string; floors: number | null };
   units: Array<{ unit_no: string; floor: string; type: string; rent_monthly_halalas: number; tenant: string | null }>;
   occupancy: { total: number; occupied: number; pct: number };
-  payments: Array<{ date: string; period: string; net_halalas: number; tenant_name: string; unit_label: string; unit_no: string }>;
+  payments: Array<{ date: string; period: string; method_label: string; net_halalas: number; tenant_name: string; unit_label: string; unit_no: string }>;
   sharedExpenses: Array<{ date: string; supplier_name: string; category: string; total_halalas: number }>;
   unitExpenses: Array<{ date: string; supplier_name: string; category: string; total_halalas: number; unit_no: string }>;
   perUnit: Array<{ unit_no: string; income: number; expenses: number; net: number }>;
@@ -113,10 +113,10 @@ export function propertyReportData(db: DB, propertyId: string, from: string | nu
   );
   const occupied = units.filter((u) => u.tenant).length;
   const payments = db.all<PropertyReport['payments'][number]>(
-    `SELECT p.date, p.period, p.net_halalas, c.tenant_name, c.unit_label, u.unit_no
+    `SELECT p.date, p.period, p.method_label, p.net_halalas, c.tenant_name, c.unit_label, u.unit_no
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE u.property_id = ? AND p.cancelled_at IS NULL${period('p.date', from, to)}
+     WHERE u.property_id = ? AND p.cancelled_at IS NULL AND p.method_label IS NOT '${CREDIT_METHOD}'${period('p.date', from, to)}
      ORDER BY p.date DESC`, [propertyId]
   );
   const sharedExpenses = db.all<PropertyReport['sharedExpenses'][number]>(
@@ -130,7 +130,7 @@ export function propertyReportData(db: DB, propertyId: string, from: string | nu
      WHERE u.property_id = ? AND pu.deleted_at IS NULL${period('pu.date', from, to)}
      ORDER BY pu.date DESC`, [propertyId]
   );
-  const income = payments.reduce((s, p) => s + Number(p.net_halalas), 0);
+  const income = payments.reduce((s, p) => s + paymentCash(p), 0); // A2.1: سداد القسط من الرصيد الدائن لا نقد فيه
   const shared = sharedExpenses.reduce((s, e) => s + Number(e.total_halalas), 0);
   const unitsExp = unitExpenses.reduce((s, e) => s + Number(e.total_halalas), 0);
   const perUnitMap = new Map<string, { income: number; expenses: number }>();
@@ -138,7 +138,7 @@ export function propertyReportData(db: DB, propertyId: string, from: string | nu
   for (const p2 of payments) {
     const k = p2.unit_no;
     const cur = perUnitMap.get(k) ?? { income: 0, expenses: 0 };
-    cur.income += Number(p2.net_halalas); perUnitMap.set(k, cur);
+    cur.income += paymentCash(p2); perUnitMap.set(k, cur);
   }
   for (const e of unitExpenses) {
     const cur = perUnitMap.get(e.unit_no) ?? { income: 0, expenses: 0 };

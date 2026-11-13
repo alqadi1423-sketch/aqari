@@ -47,7 +47,7 @@ test('A2.1 الدفتر نفسه: نقدٌ ٣٬٠٠٠ وإيراد ٣٬٠٠٠ و
   db.close();
 });
 
-test.failing('A2.1 كشف حساب المستأجر: رصيده صفر بعد سداد القسط الثالث من رصيده الدائن', () => {
+test('A2.1 كشف حساب المستأجر: رصيده صفر بعد سداد القسط الثالث من رصيده الدائن', () => {
   const { db, cid } = world();
   const rows = tenantStatementRows(db, cid, '2026-03-15').filter((r) => !r.future);
   const balance = rows.reduce((s, r) => s + r.debitHalalas - r.creditHalalas, 0);
@@ -56,14 +56,14 @@ test.failing('A2.1 كشف حساب المستأجر: رصيده صفر بعد س
   db.close();
 });
 
-test.failing('A2.1 «الدخل المحصَّل» في تقرير الوحدة والعقار يطابق النقد المقبوض (٣٬٠٠٠ لا ٤٬٠٠٠)', () => {
+test('A2.1 «الدخل المحصَّل» في تقرير الوحدة والعقار يطابق النقد المقبوض (٣٬٠٠٠ لا ٤٬٠٠٠)', () => {
   const { db, p, u } = world();
   expect(unitReportData(db, u, null, '2026-12-31')!.totals.income).toBe(300000);
   expect(propertyReportData(db, p, null, '2026-12-31')!.totals.income).toBe(300000);
   db.close();
 });
 
-test.failing('A2.1 بطاقة «إجمالي قيمة عقود الإيجار (المحصَّلة)» تطابق المقبوض', () => {
+test('A2.1 بطاقة «إجمالي قيمة عقود الإيجار (المحصَّلة)» تطابق المقبوض', () => {
   const { db } = world();
   expect(portfolioStats(db, '2026-06-01').income).toBe(300000);
   db.close();

@@ -4,7 +4,7 @@
 import type { DB } from '../db/adapter';
 import { today, daysBetween } from './dates';
 import { unitActiveReservation, unitCurrentContract, expireOldReservations } from './contracts/rules';
-import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentState } from './contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentState, paymentCashSql } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
 
 export interface InstallmentView {
@@ -190,7 +190,7 @@ export function unitStatusInfo(db: DB, unit: { id: string; under_maintenance: nu
 /** المحصَّل الفعلي لعقد: صافي دفعاته الحيّة (مراجعة التثبيت #24) */
 export function contractCollectedValue(db: DB, contractId: string): number {
   const pay = db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
+    `SELECT COALESCE(SUM(${paymentCashSql()}),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
     [contractId]
   )!;
   return Number(pay.s);
@@ -205,7 +205,7 @@ function cancelledValueSql(db: DB, c: string): string {
   return `(CASE WHEN EXISTS (SELECT 1 FROM contract_installments i0 WHERE i0.contract_id = ${c}.id)
     THEN (SELECT COALESCE(SUM(MAX(0, i.amount_halalas - i.paid_halalas - ${INSTALLMENT_DISCOUNT_SQL})),0)
           FROM contract_installments i WHERE i.contract_id = ${c}.id AND i.status = '${CANCELLED_INST}')
-    ELSE MAX(0, ${contractTotalSql(db, c + '.')} - (SELECT COALESCE(SUM(pm.net_halalas),0) FROM contract_payments pm
+    ELSE MAX(0, ${contractTotalSql(db, c + '.')} - (SELECT COALESCE(SUM(${paymentCashSql('pm.')}),0) FROM contract_payments pm
           WHERE pm.contract_id = ${c}.id AND pm.cancelled_at IS NULL)) END)`;
 }
 
@@ -250,7 +250,7 @@ function aggregatedStats(db: DB, propertyId: string | null, T: string): Property
   // فيُسقط المدفوع جزئياً ويعدّ الخصم محصَّلاً
   const instPaid = 0;
   const payOnly = Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(pm.net_halalas),0) AS s
+    `SELECT COALESCE(SUM(${paymentCashSql('pm.')}),0) AS s
      FROM contract_payments pm
      JOIN contracts c ON c.id = pm.contract_id
      JOIN units u ON u.id = c.unit_id
@@ -304,7 +304,7 @@ export function allPropertyStats(db: DB, T: string = today()): Map<string, Prope
   )) ensure(r.pid).occupied = Number(r.n);
   // المحصَّل ما قُبض فعلاً: صافي الدفعات الحيّة (مراجعة التثبيت #24)
   for (const r of db.all<{ pid: string; s: number }>(
-    `SELECT u.property_id AS pid, COALESCE(SUM(pm.net_halalas),0) AS s
+    `SELECT u.property_id AS pid, COALESCE(SUM(${paymentCashSql('pm.')}),0) AS s
      FROM contract_payments pm
      JOIN contracts c ON c.id = pm.contract_id
      JOIN units u ON u.id = c.unit_id

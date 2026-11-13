@@ -7,7 +7,7 @@
  */
 import type { DB } from '../db/adapter';
 import type { StatementRow } from './printDocs';
-import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, paymentCash } from './contracts/installments';
 import { today } from './dates';
 import { t } from '../i18n';
 
@@ -44,7 +44,8 @@ export function tenantStatementRows(db: DB, contractId: string, asOf: string = t
   for (const p of db.all<{ date: string; period: string; net_halalas: number; method_label: string }>(
     `SELECT date, period, net_halalas, method_label FROM contract_payments
      WHERE contract_id = ? AND cancelled_at IS NULL ORDER BY date`, [contractId])) {
-    rows.push({ date: p.date, descr: 'سداد' + (p.period ? ' · ' + p.period : '') + ' · ' + p.method_label, debitHalalas: 0, creditHalalas: Number(p.net_halalas) });
+    // سداد القسط من الرصيد الدائن يظهر بلا مبلغ: المال دخل الكشف يوم قُبض الفائض في دفعته (المراجعة الشاملة · A2.1)
+    rows.push({ date: p.date, descr: 'سداد' + (p.period ? ' · ' + p.period : '') + ' · ' + p.method_label, debitHalalas: 0, creditHalalas: paymentCash(p) });
   }
   for (const cl of db.all<{ date: string; amount_halalas: number; reason: string; status: string; collected_at: string | null }>(
     `SELECT date, amount_halalas, reason, status, collected_at FROM claims WHERE contract_id = ? AND deleted_at IS NULL ORDER BY date`, [contractId])) {

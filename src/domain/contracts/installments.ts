@@ -140,3 +140,16 @@ export function generateInstallments(
   }
   return out;
 }
+
+/** طريقة سداد القسط من رصيد المستأجر الدائن (applyTenantCredit) */
+export const CREDIT_METHOD = 'من الرصيد الدائن'; // i18n-exempt: طريقة مخزّنة
+
+/**
+ * المقبوض نقداً من دفعة العقد: سداد القسط من الرصيد الدائن لا نقد فيه، لأن الفائض عُدّ مقبوضاً يوم قُبض في دفعته (والدفعة تحمل
+ * المقبوض كله ومنه الفائض) · فالمحصَّل والدخل وكشف المستأجر يجمعون هذا لا net_halalas (المراجعة الشاملة 2026-11-13 · A2.1).
+ * وما سُدّد به القسط (DERIVED_PAID_SQL) يبقى بالصافي: الرصيد الدائن يسدّد القسط فعلاً.
+ */
+export const paymentCashSql = (alias = ''): string =>
+  `(CASE WHEN ${alias}method_label = '${CREDIT_METHOD}' THEN 0 ELSE ${alias}net_halalas END)`;
+export const paymentCash = (p: { method_label?: string | null; net_halalas: number }): number =>
+  (p.method_label === CREDIT_METHOD ? 0 : Number(p.net_halalas) || 0);
