@@ -95,18 +95,27 @@ test.failing('C-2 (الاستعادة) تجهيز استعادة نسخة كبي
   const dstDir = tempDir('aq-r9c-mem2d-');
   dirs.push(dstDir);
   const dst = makeBackupEnv(dstDir);
+  // أكبر مصفوفةٍ تُقرأ من القرص: مقياسٌ حتمي · وذروة الذاكرة المأخوذة كل ميلي ثانيتين تفوتها تحت الحِمل حين يجري الفكّ متزامناً
+  // فكان الاختبار «ينجح» صدفةً في الحزمة كاملة (المراجعة الشاملة 2026-11-13 · بعد المرحلة ٠)
+  let maxRead = 0;
+  const watched = { ...dst, fs: { ...dst.fs, read: (p: string) => { const b = dst.fs.read(p); maxRead = Math.max(maxRead, b.byteLength); return b; } } };
   (globalThis as { gc?: () => void }).gc?.();
   const base = process.memoryUsage().arrayBuffers;
   let peak = base;
   const timer = setInterval(() => { peak = Math.max(peak, process.memoryUsage().arrayBuffers); }, 2);
   let plan: Awaited<ReturnType<typeof prepareRestore>>;
   try {
-    plan = await prepareRestore(dst, archive);
+    plan = await prepareRestore(watched, archive);
   } finally {
     clearInterval(timer);
   }
   abortRestore(dst, plan.stagingDir);
-  const peakOverArchive = Math.round(((peak - base) / archiveBytes) * 10) / 10;
-  expect({ peakBelowArchive: peakOverArchive < 1, peakOverArchive }).toEqual({ peakBelowArchive: true, peakOverArchive });
+  const observed = {
+    maxReadMB: Math.round((maxRead / MB) * 10) / 10,
+    peakOverArchive: Math.round(((peak - base) / archiveBytes) * 10) / 10,
+  };
+  // ثماني ميغا حدٌّ سخيّ لقراءةٍ متدفقة، والأرشيف هنا نحو ٢٤ ميغا
+  expect({ boundedRead: observed.maxReadMB <= 8, peakBelowArchive: observed.peakOverArchive < 1, ...observed })
+    .toEqual({ boundedRead: true, peakBelowArchive: true, ...observed });
   dst.closeLive();
 });
