@@ -37,6 +37,15 @@ function violations(commits) {
   return out;
 }
 
+/**
+ * الاستثناء الموثَّق (.statusdoc-ignore): التزامٌ مضى خالف القاعدة ولا يُصلح إلا بإعادة كتابة التاريخ (ممنوعة · القاعدة ٣٩)،
+ * يُسمّى ببصمته وسببه والتزام تداركه، ويُطبع في كل فحص · ولا يُستثنى به التزامٌ لم يُسمَّ.
+ */
+function loadIgnore(text) {
+  return text.split('\n').map((l) => l.replace(/#.*$/, '').trim()).filter((l) => /^[0-9a-f]{7,40}$/.test(l));
+}
+const ignoredSha = (list, sha) => list.some((x) => sha.startsWith(x));
+
 function git(args) {
   return execFileSync('git', ['-c', 'core.quotepath=false', ...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
@@ -64,7 +73,11 @@ if (require.main === module) {
     process.exit(2);
   }
   const commits = commitsInRange(base, head);
-  const bad = violations(commits);
+  let ignore = [];
+  try { ignore = loadIgnore(require('fs').readFileSync('.statusdoc-ignore', 'utf8')); } catch { ignore = []; }
+  const all = violations(commits);
+  for (const b of all.filter((x) => ignoredSha(ignore, x.sha))) console.log(`· ${b.sha.slice(0, 7)} «${b.subject}» مستثنى بسببه في .statusdoc-ignore`);
+  const bad = all.filter((x) => !ignoredSha(ignore, x.sha));
   console.log(`فُحص ${commits.length} التزاماً من ${base.slice(0, 7)} إلى ${head.slice(0, 7)}`);
   if (bad.length) {
     for (const b of bad) {
@@ -77,4 +90,4 @@ if (require.main === module) {
   console.log('✓ كل التزامٍ غيّر الكود حدّث ملف الحال.');
 }
 
-module.exports = { violations, isCode, STATUS_FILE, CODE_DIRS };
+module.exports = { violations, isCode, STATUS_FILE, CODE_DIRS, loadIgnore, ignoredSha };

@@ -143,3 +143,16 @@ describe('فحص الأسرار في الأسطر المضافة', () => {
     expect(fs.readFileSync(WORKFLOW, 'utf8')).toMatch(/node scripts\/ci\/secretScan\.js "\$BASE" "\$HEAD_SHA"/);
   });
 });
+
+describe('الاستثناء الموثَّق (.statusdoc-ignore)', () => {
+  test('يقرأ البصمات وحدها ويطابق بأولها، ولا يستثني غيرها', () => {
+    const list = sd.loadIgnore('# تعليق\n25fe9ea  # سبب\nليس-بصمة\n');
+    expect(list).toEqual(['25fe9ea']);
+    expect(sd.ignoredSha(list, '25fe9ea1234')).toBe(true);
+    expect(sd.ignoredSha(list, 'abcdef0')).toBe(false);
+  });
+  test('كل سطرٍ في الملف بسببٍ مكتوب', () => {
+    const text = require('fs').readFileSync(require('path').join(__dirname, '..', '.statusdoc-ignore'), 'utf8') as string;
+    for (const l of text.split('\n').filter((x) => /^[0-9a-f]{7,40}\b/.test(x))) expect(l).toMatch(/#\s*\S/);
+  });
+});
