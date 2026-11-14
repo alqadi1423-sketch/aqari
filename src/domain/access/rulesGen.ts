@@ -7,7 +7,7 @@ import { MEMBER_NO_HARD_DELETE } from '../../db/softDelete';
 import { NAME_CLASS, LETTER_FOLDS, RESERVED_CORE } from './profile';
 import { OP_WRITES, OP_JOURNAL_SRC } from './opWrites';
 import { SECTION_KEYS, type SectionKey } from './sections';
-import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR, SELF_AUDIT_ACTIONS, SELF_AUDIT_AHEAD_DAYS, LEGACY_NEUTRAL, OWNER_ONLY_COLS, POSTED_PURCHASE_COLS } from './opWrites';
+import { SELF_OP, SELF_AUDIT_ENTITY, SELF_AUDIT_MODULE, OWNER_ACTOR, SELF_AUDIT_ACTIONS, SELF_AUDIT_AHEAD_DAYS, LEGACY_NEUTRAL, OWNER_ONLY_COLS, POSTED_PURCHASE_COLS, HANDOVER_FORM_COLS } from './opWrites';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, READ_TABLE, readSectionsOf } from './readSections';
 import { SYNC_TABLES } from '../../db/syncTables';
 import { CRASH_ENTITY, CRASH_MODULE, CRASH_DAILY_LIMIT } from '../crashReport';
@@ -312,10 +312,11 @@ function lockedCreateTables(): string[] {
 }
 /**
  * نمط جداول التعديل التي تحرسها lockedUpdateOk: الفاتورة الصادرة (B-1 ب) وصفوف إعداد المالك (B-3) بإسقاطهما، وفاتورة الشراء المرحّلة
- * بمستندها الكامل وحده (R11-B1-3: إسقاطها بلا مبالغ، فلا يمرّ بحارس الفاتورة)
+ * بمستندها الكامل وحده (R11-B1-3: إسقاطها بلا مبالغ، فلا يمرّ بحارس الفاتورة)، ومحضر الاستلام والتسليم المقفل (E-1 · المراجعة ١٢: بلا
+ * إسقاط، لا مبالغ فيه)
  */
 function lockedUpdatePattern(): string {
-  return `(${['invoices', ...Object.keys(OWNER_ONLY_COLS)].join('|')})(~pub)?|purchases`;
+  return `(${['invoices', ...Object.keys(OWNER_ONLY_COLS)].join('|')})(~pub)?|purchases|handovers`;
 }
 
 /**
@@ -348,12 +349,20 @@ function lockedFns(): string {
       return isDraft(getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$('invoices__' + id)).data);
     }
     // تعديل العضو: الفاتورة الصادرة لا يتغيّر ما صدرت به ولا رابط قيدها ولا تعود مسودة ولا تُحذف (والتحصيل وحالة التأخر يكتبها التطبيق)،
-    // وإعداد المالك لا يتغيّر ولا يُحذف صفّه، وفاتورة الشراء لا تتغيّر قيمها إلا بقيدها الجديد
+    // وإعداد المالك لا يتغيّر ولا يُحذف صفّه، وفاتورة الشراء لا تتغيّر قيمها إلا بقيدها الجديد، والمحضر المقفل لا يُعدَّل
+    // (وشاهد الحذف هنا: حذف العضو النهائي لهذه الجداول مرفوضٌ قبلها بـ MEMBER_NO_HARD_DELETE)
     function lockedUpdateOk(org, before, after) {
       return after.t.matches('(${owner.map(([t]) => t).join('|') || '^$'})(~pub)?') ? ownerColsKept(before, after)
         : (after.del == true || before.get('d', null) == null ? true
           : (after.t == 'purchases' ? postedPurchaseKept(org, after.k, before.d, after.d)
-            : (isDraft(before) ? true : issuedInvoiceKept(before.d, after.d))));
+            : (after.t == 'handovers' ? handoverLockKept(before.d, after.d)
+              : (isDraft(before) ? true : issuedInvoiceKept(before.d, after.d)))));
+    }
+    // محضر الاستلام والتسليم المقفل في السحابة (d.locked = 1) نهائي (المراجعة الشاملة 2026-11-13 · E-1 · قرار المالك س٢٩ · المراجعة ١٢):
+    // العضو لا يغيّر بنوده ولا يفتح قفله ولا يحذفه حذفاً ناعماً ولا يستعيده، ويعيد رفعه كما هو (نقل الوحدة وإعادة الرفع للرؤية) · وكان
+    // جهاز المالك وحده يرفض التعديل المتأخر (sync/engine.ts: handoverLock) · وغير المقفل يعدّله ويقفله كما كان
+    function handoverLockKept(b, a) {
+      return b.get('locked', 0) != 1 || !a.diff(b).affectedKeys().hasAny(${q([...HANDOVER_FORM_COLS, 'locked', 'deleted_at'])});
     }
     function issuedInvoiceKept(b, a) {
       return !a.diff(b).affectedKeys().hasAny(${q(ISSUED_INVOICE_RULE_COLS)}) && a.get('status', '') != 'مسودة'
@@ -472,11 +481,15 @@ ${guardFns(schema)}
     function openingKept(before, after) {
       return after.get('d', null) == null ? true : openingKeptD(prevD(before), after.d, after.t);
     }
+    // والبنك الذي افتتاحيّه في السحابة غير صفر لا يحذفه العضو حذفاً ناعماً ولا يستعيده من السلة (A2.4 · R11-A2.4-2 · المراجعة ١٢): افتتاحيّ
+    // البنوك الحية في الدفتر منذ الهجرة ٦٢، فحذفه يغيّر المال بلا قيد · وكان جهاز المالك وحده يرفضه (sync/engine.ts: bankOpeningLocked) ·
+    // وحذفه النهائي مرفوضٌ للعضو قبل هذا (MEMBER_NO_HARD_DELETE)
     function openingKeptD(b, a, t) {
       return a.get('opening_halalas', 0) == b.get('opening_halalas', 0)
-        && (t != 'accounts' || (a.get('is_system', 0) == b.get('is_system', 0)
-          && (b.get('is_system', 0) != 1 || (a.get('type', '') == b.get('type', '') && a.get('grp', null) == b.get('grp', null)
-            && a.get('deleted_at', null) == b.get('deleted_at', null)))));
+        && (t == 'banks' ? (b.get('opening_halalas', 0) == 0 || (a.get('deleted_at', null) == null) == (b.get('deleted_at', null) == null))
+          : (t != 'accounts' || (a.get('is_system', 0) == b.get('is_system', 0)
+            && (b.get('is_system', 0) != 1 || (a.get('type', '') == b.get('type', '') && a.get('grp', null) == b.get('grp', null)
+              && a.get('deleted_at', null) == b.get('deleted_at', null))))));
     }
 ${lockedFns()}
 

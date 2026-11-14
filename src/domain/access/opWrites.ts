@@ -122,6 +122,14 @@ export const OWNER_ONLY_COLS: Record<string, string[]> = { company: ['vat_enable
  */
 export const POSTED_PURCHASE_COLS = ['subtotal_halalas', 'tax_halalas', 'total_halalas', 'tax_status', 'date'];
 
+/**
+ * بنود محضر الاستلام والتسليم كما يكتبها updateHandover ونوعه (src/domain/handover/service.ts) · بعد إقفاله لا تتغيّر (المراجعة الشاملة
+ * 2026-11-13 · E-1 · قرار المالك س٢٩): جهاز المالك يحسم بها التعديل المتأخر (sync/engine.ts: handoverLock)، والقاعدة لا تجيز للعضو
+ * تغييرها ولا فتح القفل ولا الحذف الناعم في محضرٍ مقفلٍ في السحابة (rulesGen: handoverLockKept · المراجعة ١٢)
+ */
+export const HANDOVER_FORM_COLS = ['type', 'employee_name', 'tenant_name', 'id_number', 'phone', 'address', 'unit_floor', 'contract_period',
+  'date', 'other_notes', 'tenant_sign', 'company_sign', 'sections_json'] as const;
+
 export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update' | 'delete', cols: string[] = []): boolean {
   const w = OP_WRITES[op];
   if (!w) return false;

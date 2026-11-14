@@ -46,7 +46,7 @@ import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, Wri
 import { isoCmp, isoNorm } from './isoTime';
 import { redactForReport } from '../domain/redact';
 import { mulQty, pctOf, fmt } from '../domain/money';
-import { OWNER_ONLY_COLS, POSTED_PURCHASE_COLS } from '../domain/access/opWrites';
+import { OWNER_ONLY_COLS, POSTED_PURCHASE_COLS, HANDOVER_FORM_COLS } from '../domain/access/opWrites';
 import { READ_TABLE } from '../domain/access/readSections';
 
 const nowIso = () => new Date().toISOString();
@@ -2619,10 +2619,8 @@ function reject(db: DB, doc: RemoteDoc, reason: string): void {
   } catch (e) { if (isDbFault(e)) throw e; /* السجل لا يعطّل */ }
 }
 
-/** بنود محضر الاستلام والتسليم كما يكتبها updateHandover ونوعه · وما سواها (السلة ونقل الوحدة) يمضي بالحسم المعتاد */
-const HANDOVER_FORM = ['type', 'employee_name', 'tenant_name', 'id_number', 'phone', 'address', 'unit_floor', 'contract_period',
-  'date', 'other_notes', 'tenant_sign', 'company_sign', 'sections_json'] as const;
-const handoverForm = (row: Record<string, unknown>): string => stable(HANDOVER_FORM.map((c) => {
+/** بنود محضر الاستلام والتسليم (HANDOVER_FORM_COLS في opWrites.ts) · وما سواها (السلة ونقل الوحدة) يمضي بالحسم المعتاد هنا، والقاعدة لا تجيز للعضو السلة في المقفل */
+const handoverForm = (row: Record<string, unknown>): string => stable(HANDOVER_FORM_COLS.map((c) => {
   const v = row[c];
   if (c === 'sections_json' && typeof v === 'string') { try { return JSON.parse(v) as unknown; } catch { return v; } }
   return v ?? '';

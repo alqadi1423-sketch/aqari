@@ -484,11 +484,15 @@ service cloud.firestore {
     function openingKept(before, after) {
       return after.get('d', null) == null ? true : openingKeptD(prevD(before), after.d, after.t);
     }
+    // والبنك الذي افتتاحيّه في السحابة غير صفر لا يحذفه العضو حذفاً ناعماً ولا يستعيده من السلة (A2.4 · R11-A2.4-2 · المراجعة ١٢): افتتاحيّ
+    // البنوك الحية في الدفتر منذ الهجرة ٦٢، فحذفه يغيّر المال بلا قيد · وكان جهاز المالك وحده يرفضه (sync/engine.ts: bankOpeningLocked) ·
+    // وحذفه النهائي مرفوضٌ للعضو قبل هذا (MEMBER_NO_HARD_DELETE)
     function openingKeptD(b, a, t) {
       return a.get('opening_halalas', 0) == b.get('opening_halalas', 0)
-        && (t != 'accounts' || (a.get('is_system', 0) == b.get('is_system', 0)
-          && (b.get('is_system', 0) != 1 || (a.get('type', '') == b.get('type', '') && a.get('grp', null) == b.get('grp', null)
-            && a.get('deleted_at', null) == b.get('deleted_at', null)))));
+        && (t == 'banks' ? (b.get('opening_halalas', 0) == 0 || (a.get('deleted_at', null) == null) == (b.get('deleted_at', null) == null))
+          : (t != 'accounts' || (a.get('is_system', 0) == b.get('is_system', 0)
+            && (b.get('is_system', 0) != 1 || (a.get('type', '') == b.get('type', '') && a.get('grp', null) == b.get('grp', null)
+              && a.get('deleted_at', null) == b.get('deleted_at', null))))));
     }
 
     // إنشاء العضو (يُستدعى لجداول lockedCreateTables وحدها، وكلٌّ بدالته: القواعد تحسب كل تعبيرٍ مكتوبٍ في الدالة ولو تُرك فرعه):
@@ -508,12 +512,20 @@ service cloud.firestore {
       return isDraft(getAfter(/databases/$(database)/documents/orgs/$(org)/rows/$('invoices__' + id)).data);
     }
     // تعديل العضو: الفاتورة الصادرة لا يتغيّر ما صدرت به ولا رابط قيدها ولا تعود مسودة ولا تُحذف (والتحصيل وحالة التأخر يكتبها التطبيق)،
-    // وإعداد المالك لا يتغيّر ولا يُحذف صفّه، وفاتورة الشراء لا تتغيّر قيمها إلا بقيدها الجديد
+    // وإعداد المالك لا يتغيّر ولا يُحذف صفّه، وفاتورة الشراء لا تتغيّر قيمها إلا بقيدها الجديد، والمحضر المقفل لا يُعدَّل
+    // (وشاهد الحذف هنا: حذف العضو النهائي لهذه الجداول مرفوضٌ قبلها بـ MEMBER_NO_HARD_DELETE)
     function lockedUpdateOk(org, before, after) {
       return after.t.matches('(company)(~pub)?') ? ownerColsKept(before, after)
         : (after.del == true || before.get('d', null) == null ? true
           : (after.t == 'purchases' ? postedPurchaseKept(org, after.k, before.d, after.d)
-            : (isDraft(before) ? true : issuedInvoiceKept(before.d, after.d))));
+            : (after.t == 'handovers' ? handoverLockKept(before.d, after.d)
+              : (isDraft(before) ? true : issuedInvoiceKept(before.d, after.d)))));
+    }
+    // محضر الاستلام والتسليم المقفل في السحابة (d.locked = 1) نهائي (المراجعة الشاملة 2026-11-13 · E-1 · قرار المالك س٢٩ · المراجعة ١٢):
+    // العضو لا يغيّر بنوده ولا يفتح قفله ولا يحذفه حذفاً ناعماً ولا يستعيده، ويعيد رفعه كما هو (نقل الوحدة وإعادة الرفع للرؤية) · وكان
+    // جهاز المالك وحده يرفض التعديل المتأخر (sync/engine.ts: handoverLock) · وغير المقفل يعدّله ويقفله كما كان
+    function handoverLockKept(b, a) {
+      return b.get('locked', 0) != 1 || !a.diff(b).affectedKeys().hasAny(['type', 'employee_name', 'tenant_name', 'id_number', 'phone', 'address', 'unit_floor', 'contract_period', 'date', 'other_notes', 'tenant_sign', 'company_sign', 'sections_json', 'locked', 'deleted_at']);
     }
     function issuedInvoiceKept(b, a) {
       return !a.diff(b).affectedKeys().hasAny(['no', 'customer_name', 'customer_vat', 'issue', 'due', 'notes', 'subtotal_halalas', 'tax_halalas', 'total_halalas']) && a.get('status', '') != 'مسودة'
@@ -675,7 +687,7 @@ service cloud.firestore {
         && (baseT(after.t) != 'vat_filings' || m.all == true)
         // والفاتورة الصادرة مقفلة وإعداد المالك له وحده وفاتورة الشراء المرحّلة بقيدها (المراجعة الشاملة 2026-11-13 · B-1 وB-3): ثلاثيٌّ
         // بتعبيرٍ نمطي واحد لجداولها
-        && (after.t.matches('(invoices|company)(~pub)?|purchases') ? lockedUpdateOk(org, before, after) : true)
+        && (after.t.matches('(invoices|company)(~pub)?|purchases|handovers') ? lockedUpdateOk(org, before, after) : true)
         // مصدر القيد عند التعديل كالإنشاء (المراجعات الخارجية «ثالثاً أ ٤» · المتحقق المستقل: كان يُفحص عند الإنشاء وحده)
         && (after.del == true || baseT(after.t) != 'journal_entries' || srcOk(op, after.d.get('src_type', null), after.d.get('status', '')))
         && (
