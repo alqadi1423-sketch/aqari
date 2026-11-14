@@ -138,11 +138,11 @@ describe('رتبةٌ أخذها جهازٌ آخر للحساب (H٢)', () => {
     db.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('uid', 'U-R')`);
     expect(recordCrashReport(db, { where: 'أول', e: new Error('x'), platform: 'android', at: AT })).toBe(true);
     const row = db.get<Record<string, unknown>>(`SELECT * FROM audit_log WHERE id LIKE 'crash-%'`)!;
-    expect(retry(db, row)).toBe(true);
+    expect(retry(db, row, AT)).toBe(true);
     const ids = db.all<{ id: string }>(`SELECT id FROM audit_log WHERE id LIKE 'crash-%' ORDER BY id`).map((r) => r.id);
     expect(ids).toEqual([`crash-U-R-${crashDay(AT)}-0`, `crash-U-R-${crashDay(AT)}-1`]);
-    for (let i = 2; i < LIMIT; i++) expect(retry(db, row)).toBe(true);
-    expect(retry(db, row)).toBe(false);
+    for (let i = 2; i < LIMIT; i++) expect(retry(db, row, AT)).toBe(true);
+    expect(retry(db, row, AT)).toBe(false);
     expect(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM audit_log WHERE id LIKE 'crash-%'`)!.n).toBe(LIMIT);
   });
 });
