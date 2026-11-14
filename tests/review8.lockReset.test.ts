@@ -182,8 +182,11 @@ test('٥ «حذف حسابي» يؤكد الهوية بخروجٍ من قوقل 
   expect(other.s.current()?.uid).toBe('uid-owner-a');
   // وخدمة الحذف تمرّ بهذا التأكيد لا بالدخول الكامل: إثباتٌ حديث لغرض الحذف من مزوّد الهوية، ومزوّد قوقل يجعله هذا التأكيد (ق٠-٦)
   const del = src('src/services/cloud.ts').match(/export async function deleteMyAccount[^]*?\n}\n/)![0];
-  expect(del).toContain("s.freshProof('deleteAccount')");
+  expect(del).toMatch(/await deleteAccountFlow\(\{\s*auth: s,/);
   expect(del).not.toMatch(/s\.signIn\(\)/);
+  const flow = src('src/cloud/deleteAccountFlow.ts');
+  expect(flow).toContain("auth.freshProof('deleteAccount')");
+  expect(flow).not.toMatch(/\.signIn\(\)/);
   expect(src('src/cloud/googleAuth.ts')).toMatch(/const p = await s\.reauthSameAccount\(\);/);
 });
 

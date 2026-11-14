@@ -661,6 +661,24 @@
   "account": {
     "saveCopyBeforeDelete": "Save a copy outside the app first"
   },
+  "accountDelete": {
+    "needSignIn": "Sign in first",
+    "needOnline": "Deleting the account needs an internet connection",
+    "deviceLock": "The device lock was not opened · nothing was deleted",
+    "confirmGoogle": "Confirming your identity with Google",
+    "confirmDevice": "Confirming your identity with the server",
+    "cancelled": "Identity confirmation was cancelled",
+    "mismatch": "You chose another account · choose the same account to delete it",
+    "mismatchDevice": "The server did not confirm this is the phone linked to your account · nothing was deleted",
+    "revoked": "This phone was removed from your account · the account can't be deleted from it",
+    "reauthFailed": "Couldn't confirm your identity · try again",
+    "wipingCloud": "Deleting your data from the cloud",
+    "wipingDrive": "Deleting your copies on Google Drive",
+    "deleting": "Deleting the account",
+    "resetting": "Clearing this device",
+    "hintDevice": "To keep a copy, export it from Backup before deleting. You will be asked to unlock the device, and the server confirms this is your linked phone.",
+    "whatDevice": "Permanently deleted and not recoverable: your account, all its data in the cloud, and all data on this device. Any other device on the account stops syncing."
+  },
   "org": {
     "leftReason": "You left the organization",
     "memberKeepRefused": "A member device cannot keep its data after the owner wiped · clear this device",

@@ -46,7 +46,7 @@ import { crashReports, type CrashReportView } from '../src/domain/crashReport';
 import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
   pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted,
-  restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
+  restoreAwaitingAdoption, deleteMyAccount, accountProvider, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
   leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything, filesCloudOn, downloadAllFiles, fileCacheUsage, clearFileCacheNow,
   driveRetired, driveExitStatus, exportDriveBackupsNow, deleteDriveBackupsNow,
 } from '../src/services/cloud';
@@ -1115,13 +1115,23 @@ export default function Settings() {
 
       {/* حذف الحساب · كلمة التأكيد تُكتب حرفياً فيظهر الزر */}
       <Sheet visible={delOpen && !!cloud.user} onClose={() => setDelOpen(false)} title="حذف حسابي">
-        <Note tone="danger">
-          {'يُحذف نهائياً ولا يُستعاد: حسابك ' + (cloud.user?.email ?? '') + '، وكل بياناته في السحابة، ونسخ التطبيق على Google Drive، '
-            + 'وكل البيانات على هذا الجهاز. وأي جهاز آخر على الحساب يتوقف عن المزامنة.'}
-        </Note>
-        <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 8 }}>
-          إن أردت الاحتفاظ بنسخة فصدّرها من «النسخ الاحتياطي» قبل الحذف. ويُطلب منك الدخول بقوقل مرة أخرى لتأكيد هويتك.
-        </T>
+        {/* ق٠-٦: النصّ بحسب مزوّد الهوية · قوقل كما كان */}
+        {accountProvider() === 'device' ? (
+          <>
+            <Note tone="danger">{t('accountDelete.whatDevice')}</Note>
+            <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 8 }}>{t('accountDelete.hintDevice')}</T>
+          </>
+        ) : (
+          <>
+            <Note tone="danger">
+              {'يُحذف نهائياً ولا يُستعاد: حسابك ' + (cloud.user?.email ?? '') + '، وكل بياناته في السحابة، ونسخ التطبيق على Google Drive، '
+                + 'وكل البيانات على هذا الجهاز. وأي جهاز آخر على الحساب يتوقف عن المزامنة.'}
+            </Note>
+            <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 8 }}>
+              إن أردت الاحتفاظ بنسخة فصدّرها من «النسخ الاحتياطي» قبل الحذف. ويُطلب منك الدخول بقوقل مرة أخرى لتأكيد هويتك.
+            </T>
+          </>
+        )}
         {/* حفظ نسخة خارج التطبيق قبل الحذف (قرار المالك على #65) */}
         <BtnGhost icon="export" title={t('account.saveCopyBeforeDelete')} disabled={busy} onPress={() => { doBackup(); }} />
         <View style={{ height: 8 }} />

@@ -152,8 +152,11 @@ describe('طبقة الربط تمرّ بالمزوّد وحده', () => {
     const c = src('src/services/cloud.ts');
     expect(c).not.toMatch(/\.(confirmSameAccount|reauthSameAccount)\(\)/);
     expect(c).toMatch(/s\.freshProof\('lockReset'\)/);
-    expect(c).toMatch(/s\.freshProof\('deleteAccount'\)/);
-    expect(c).toMatch(/s\.deleteAccount\(proof\)/);
+    // «حذف حسابي» بمسار الحذف العام (ق٠-٦ الجزء الرابع) بمزوّد هذه الطبقة نفسه
+    expect(c).toMatch(/await deleteAccountFlow\(\{\s*auth: s,/);
+    const flow = src('src/cloud/deleteAccountFlow.ts');
+    expect(flow).toMatch(/auth\.freshProof\('deleteAccount'\)/);
+    expect(flow).toMatch(/auth\.deleteAccount\(proof\)/);
     expect(c).not.toMatch(/deleteFirebaseAccount\(\{/);
     // مزوّد قوقل يربط الغرضين بنداءي الجلسة القائمين
     const g = src('src/cloud/googleAuth.ts');

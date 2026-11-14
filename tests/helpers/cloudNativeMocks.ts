@@ -51,7 +51,12 @@ jest.mock('expo-print', () => ({}));
 jest.mock('expo-sharing', () => ({}));
 jest.mock('expo-sqlite', () => ({}));
 jest.mock('@/services/notifications', () => ({ cancelAllNotifications: async () => {}, rescheduleAllNotifications: async () => {} }));
-jest.mock('@/services/appLockService', () => ({ whilePrompting: (f: () => unknown) => f() }));
+export const mockHolder = { lock: false, opens: true, asked: 0 };
+jest.mock('@/services/appLockService', () => ({
+  whilePrompting: (f: () => unknown) => f(),
+  deviceLockAvailable: async () => mockHolder.lock,
+  askDevice: async () => { mockHolder.asked++; return mockHolder.opens; },
+}));
 jest.mock('@/files/expoFs', () => {
   const nodeFs = jest.requireActual('@/files/nodeFs');
   return { expoFs: nodeFs.nodeFs, expoHasher: nodeFs.nodeHasher, appDataRoot: () => '/doc', expoMd5Base64: async () => '' };

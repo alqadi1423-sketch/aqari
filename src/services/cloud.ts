@@ -24,7 +24,8 @@ import { signInWithGoogleIdToken, refreshIdToken, deleteFirebaseAccount } from '
 import { createSession, type SessionUser, type AccountProof } from '../cloud/session';
 import type { AuthProvider } from '../cloud/authProvider';
 import { googleAuthProvider } from '../cloud/googleAuth';
-import { whilePrompting } from './appLockService';
+import { deleteAccountFlow } from '../cloud/deleteAccountFlow';
+import { whilePrompting, deviceLockAvailable, askDevice } from './appLockService';
 import { FirestoreRemote, FirestoreHttpError } from '../cloud/firestore';
 import { listDriveBackups, uploadBackupToDrive, uploadVisibleCopy, downloadBackupFromDrive, deleteAllAppDataFiles, DriveError, type DriveBackup, type DriveIO } from '../cloud/drive';
 import { exportDriveBackups, deleteDriveBackups, driveExitView, emptyExitState, type DriveExitDeps, type DriveExitState, type ExportReport } from '../cloud/driveExit';
@@ -683,33 +684,23 @@ export function deviceAccount(db: DB): { uid: string; email: string } | null {
 }
 
 /**
- * «حذف حسابي» (الدراسة أ، معتمدة): دخولٌ جديد بقوقل للحساب نفسه ثم بالترتيب ·
- * بيانات السحابة كلها (firestore.rules تأذن ساعةً بطلبٍ بوقت الخادم) · نسخ التطبيق على Drive ·
- * حساب Firebase · ثم الجهاز (resetDeviceData) · ثم الخروج. فشل خطوةٍ يوقف ما بعدها ويُبلَّغ.
+ * «حذف حسابي» (الدراسة أ، معتمدة · ق٠-٦: عبر مزوّد الهوية، cloud/deleteAccountFlow.ts): إثباتٌ حديث لغرض الحذف (قوقل: خروجٌ ثم دخولٌ
+ * جديد للحساب نفسه كما كان · الجهاز: قفل الجهاز ثم إثبات الخادم) ثم بالترتيب · بيانات السحابة كلها (firestore.rules تأذن ساعةً بطلبٍ
+ * بوقت الخادم) · نسخ التطبيق على Drive (لقوقل وحده) · الحساب عند مزوّده · ثم الجهاز (resetDeviceData) · ثم الخروج. فشل خطوةٍ يوقف ما
+ * بعدها ويُبلَّغ.
  */
 export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => void): Promise<void> {
   const s = getSession();
   const cfg = cloudConfig();
-  if (!s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
-  if (!state.online) throw new Error('حذف الحساب يحتاج اتصالاً بالإنترنت');
-  const uid = state.user.uid;
-  // خروجٌ من قوقل ثم دخولٌ جديد للحساب نفسه (المراجعة الشاملة · البند ٥: كان signIn وحده يعيد الحساب الحالي بلا نافذة، وحسابٌ آخر
-  // فيه يُكتب في الجلسة قبل المقارنة)
-  onProgress?.('جاري تأكيد هويتك بقوقل');
-  const proof = await s.freshProof('deleteAccount');
-  if (!proof.ok) {
-    throw new Error(proof.why === 'cancel' ? 'أُلغي تأكيد الهوية'
-      : proof.why === 'mismatch' ? 'اخترت حساباً آخر · اختر الحساب نفسه لحذفه' : t('auth.reauthFailed'));
-  }
-  await pauseSync();
-  try {
-    onProgress?.('جاري حذف بياناتك من السحابة');
-    // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
-    // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
-    const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.accessToken() };
+  const user = state.user;
+  const uid = user?.uid ?? '';
+  // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
+  // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
+  // عضويته في منشأة غيره إن كانت (اسمه وجواله وهويته · محاولة: عضوٌ أُزيل لا مستند له) ثم منشأته هو كاملة: الملفات والمحادثات
+  // والمنشأة والمسار القديم بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨ · والمراجعة الخارجية ٧ · النتيجة ١٥)
+  const wipeFirestore = s && cfg && user ? async () => {
+    const chatS = { projectId: cfg.projectId, uid, email: user.email, idToken: () => s.accessToken() };
     const mem = readMembership(db);
-    // عضويته في منشأة غيره إن كانت (اسمه وجواله وهويته · محاولة: عضوٌ أُزيل لا مستند له) ثم منشأته هو كاملة: الملفات والمحادثات
-    // والمنشأة والمسار القديم بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨ · والمراجعة الخارجية ٧ · النتيجة ١٥)
     const remotes = [
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.accessToken(), org: uid }),
       new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.accessToken() }),
@@ -718,20 +709,24 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
       ? { org: mem.org, uid: mem.uid, remote: new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.accessToken(), org: mem.org }) }
       : null;
     await deleteAccountCloud({ remotes, chat: chatS, org: uid, files: orgFilesTarget(uid), member }, onProgress);
+  } : undefined;
+  await deleteAccountFlow({
+    auth: s,
+    signedIn: !!user,
+    online: state.online,
+    t: (k) => t(k),
+    progress: onProgress,
+    // مزوّد الجهاز: صاحب الجهاز يفتح قفله قبل إثبات الخادم (لا نافذة دخولٍ تشهد به) · وقوقل كما كان بنافذته
+    confirmHolder: async () => !(await deviceLockAvailable()) || (await askDevice()),
+    pause: pauseSync,
+    resume: resumeSync,
+    wipeAccountCloud: wipeFirestore,
     // وبعد الخروج من Drive على هذا الجهاز (حُذفت النسخ وسُحب الإذن · ق٠-١) لا يُطلب Drive ثانيةً فيعود إذنه
-    if (!driveRetired()) {
-      onProgress?.('جاري حذف نسخك على Google Drive');
-      await deleteAllAppDataFiles(driveIO, await driveToken());
-    }
-    onProgress?.('جاري حذف الحساب');
-    await s.deleteAccount(proof);
-    onProgress?.('جاري تفريغ هذا الجهاز');
-    await resetDeviceData(db);
-    await s.signOut();
-    patch({ user: null, sync: syncStatus(db), lastError: null });
-  } finally {
-    resumeSync();
-  }
+    wipeDrive: async (token) => { await deleteAllAppDataFiles(driveIO, token); },
+    driveRetired: driveRetired(),
+    resetDevice: () => resetDeviceData(db),
+    done: () => patch({ user: null, sync: syncStatus(db), lastError: null }),
+  });
 }
 
 /** الخروج: الرموز وحدها تُمسح · بياناتك على الجهاز كما هي والتقاط التغييرات مستمر لحين العودة */
