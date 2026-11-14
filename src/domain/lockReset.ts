@@ -61,17 +61,19 @@ export function jwtClaims(token: string): Record<string, unknown> | null {
 export type ProofCheck = { ok: true; serverMs: number } | { ok: false; why: 'bad' | 'uid' | 'provider' | 'stale' };
 
 /**
- * رمز هوية Firebase من دخولٍ جديد بقوقل للحساب المحفوظ · serverMs وقت إصداره بساعة الخادم (iat) ·
+ * رمز هوية Firebase من دخولٍ جديد للحساب المحفوظ · serverMs وقت إصداره بساعة الخادم (iat) ·
  * auth_time يبقى على وقت الدخول في كل تجديد، فصدورُ الرمز بعد الدخول بأكثر من المهلة رمزٌ مجدَّد لا دخول ·
- * ولا تُقارن ساعة الجهاز (المتحقق المستقل: كانت ترفض المالك إن انحرفت دقائق، والرمز من ردّ signInWithIdp الآن فلا يكون قديماً)
+ * ولا تُقارن ساعة الجهاز (المتحقق المستقل: كانت ترفض المالك إن انحرفت دقائق، والرمز من ردّ signInWithIdp الآن فلا يكون قديماً) ·
+ * provider مزوّد الدخول المنتظر في الرمز: يمرّره مزوّد قوقل (cloud/session.ts: GOOGLE_SIGN_IN) · وإعادة الضبط نفسها لا تمرّ بهذا الفحص
+ * بل بإثباتٍ مجرّد من أي مزوّد (ق٠-٦ · F-3 · cloud/authProvider.ts)، والقيمة الافتراضية لمن ناداه قبل ذلك
  */
-export function checkAccountProof(idToken: string, uid: string): ProofCheck {
+export function checkAccountProof(idToken: string, uid: string, provider = 'google.com'): ProofCheck {
   const c = jwtClaims(idToken);
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v * 1000 : null);
   const at = num(c?.auth_time), iat = num(c?.iat);
   if (!c || at === null || iat === null) return { ok: false, why: 'bad' };
   if ((c.user_id ?? c.sub) !== uid) return { ok: false, why: 'uid' };
-  if ((c.firebase as { sign_in_provider?: unknown } | undefined)?.sign_in_provider !== 'google.com') return { ok: false, why: 'provider' };
+  if ((c.firebase as { sign_in_provider?: unknown } | undefined)?.sign_in_provider !== provider) return { ok: false, why: 'provider' };
   if (iat < at || iat - at > AUTH_FRESH_MS) return { ok: false, why: 'stale' };
   return { ok: true, serverMs: iat };
 }

@@ -21,7 +21,9 @@ import { liveBlobs } from '../files/store';
 import { appFilesEnv } from './filesEnv';
 import { getSetting } from '../repos/settings';
 import { signInWithGoogleIdToken, refreshIdToken, deleteFirebaseAccount } from '../cloud/authRest';
-import { createSession, type Session, type SessionUser, type AccountProof } from '../cloud/session';
+import { createSession, type SessionUser, type AccountProof } from '../cloud/session';
+import type { AuthProvider } from '../cloud/authProvider';
+import { googleAuthProvider } from '../cloud/googleAuth';
 import { whilePrompting } from './appLockService';
 import { FirestoreRemote, FirestoreHttpError } from '../cloud/firestore';
 import { listDriveBackups, uploadBackupToDrive, uploadVisibleCopy, downloadBackupFromDrive, deleteAllAppDataFiles, DriveError, type DriveBackup, type DriveIO } from '../cloud/drive';
@@ -81,16 +83,29 @@ import type { InvoiceInput, CreditNoteInput } from '../domain/invoices';
 
 /* ═══════════ الجلسة ═══════════ */
 
-let session: Session | null = null;
+/**
+ * مزوّد الهوية (ق٠-٦ · cloud/authProvider.ts): كل ما يحتاج الحساب هنا يمرّ به ولا يعرف أنه قوقل · اليوم مزوّد قوقل وحده حين يُهيّأ
+ * الربط · ومزوّدٌ آخر يُعطى بـsetAuthProvider عند التحويل وحده (بإذن المالك) وفي الاختبارات
+ */
+let session: AuthProvider | null = null;
+let chosen: AuthProvider | null = null;
 
-function getSession(): Session | null {
+/** مزوّد الهوية لهذا التشغيل بدل قوقل · null يعيد قوقل · لا يناديه التطبيق قبل التحويل (ق٣ إلى ق٥) */
+export function setAuthProvider(p: AuthProvider | null): void {
+  chosen = p;
+  session = null;
+  patch({ configured: !!getSession(), user: null, restored: false });
+}
+
+function getSession(): AuthProvider | null {
+  if (chosen) return chosen;
   const cfg = cloudConfig();
   if (!cfg) return null;
   if (session) return session;
   // بعد حذف النسخ من Drive وسحب الإذن على هذا الجهاز (ق٠-١) لا يُطلب نطاق Drive في أي دخولٍ بعده
   GoogleSignin.configure(googleConfig(cfg.webClientId));
   const authOpts = { apiKey: cfg.apiKey };
-  session = createSession({
+  const google = createSession({
     google: {
       // نافذة قوقل تُخرج التطبيق إلى الخلفية: لا يُحسب ذلك خروجاً فيُقفل عند العودة (services/appLockService.ts)
       signIn: () => whilePrompting(async () => {
@@ -116,6 +131,7 @@ function getSession(): Session | null {
     signInWithIdp: (t) => signInWithGoogleIdToken(authOpts, t),
     refresh: (r) => refreshIdToken(authOpts, r),
   });
+  session = googleAuthProvider({ session: google, deleteFirebaseAccount: (tok) => deleteFirebaseAccount(authOpts, tok) });
   return session;
 }
 
@@ -270,7 +286,7 @@ export async function syncNow(): Promise<void> {
   // القاعدة قد تكون استُبدلت باستعادة: بلا حالة مزامنة أو بحساب آخر أو بالتقاط متوقف ·
   // enableSync لا يفعل شيئاً للحساب نفسه سوى تشغيل الالتقاط، ولغيره ينضمّ من جديد
   const uid = state.user.uid;
-  const idToken = () => s.idToken();
+  const idToken = () => s.accessToken();
   const member = readMembership(db);
   running = true;
   patch({ syncing: true, lastError: null });
@@ -397,7 +413,7 @@ export async function chatSyncNow(o: { threadId?: string; full?: boolean; force?
   if (getSyncState(db, 'restored_unadopted') === '1' || syncBackoffUntil(db)) return;
   const owner = deviceAccount(db);
   if (owner && owner.uid !== u.uid) return;
-  await runChatSync(db, { projectId: cfg.projectId, uid: u.uid, email: u.email, idToken: () => s.idToken() }, orgNameOf(db), o);
+  await runChatSync(db, { projectId: cfg.projectId, uid: u.uid, email: u.email, idToken: () => s.accessToken() }, orgNameOf(db), o);
 }
 
 /**
@@ -488,7 +504,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
     if (emptyOwn && state.online) {
       try {
         const sess = s;
-        const inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.email);
+        const inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.accessToken() }), u.email);
         if (inv.length) { patch({ invites: inv, gate: null }); return; }
       } catch { /* يكمل بنسخته */ }
     }
@@ -498,7 +514,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
       if (state.online) {
         try {
           const sess = s;
-          inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.email);
+          inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.accessToken() }), u.email);
         } catch (e) {
           inv = null;
           patch({ gateError: gateFailure(GATE_WHERE, true, e) });
@@ -512,7 +528,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
         if (r === 'unbound') { parkActive(env, UNBOUND); onData(); }
         // منشأة الحساب القائمة تُعرض قبل دعوات غيره (مراجعة التثبيت #52)
         const sess = s;
-        const ownOrg = await ownOrgExists(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.uid);
+        const ownOrg = await ownOrgExists(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.accessToken() }), u.uid);
         patch({ invites: inv, ownOrg, gate: null });
         return;
       }
@@ -520,7 +536,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
         // للحساب منشأةٌ قائمة: بيانات الجهاز لا تُدمج فيها (تتكرر أرقامها) · يظهر الركن وحده وسببه (ثالثاً أ ١١)
         const sess2 = s;
         // تعذّر الفحص يُظهر الزر · والربط نفسه يفحص صارماً ويحجز
-        const ownOrg = !(await localBindAllowed(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess2.idToken() }), u.uid, ensureDeviceId(db)).catch(() => true));
+        const ownOrg = !(await localBindAllowed(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess2.accessToken() }), u.uid, ensureDeviceId(db)).catch(() => true));
         patch({ gate: 'unbound', ownOrg });
         return;
       }
@@ -544,12 +560,12 @@ export async function activateAccount(u: SessionUser): Promise<void> {
 export async function confirmSameAccount(): Promise<AccountProof> {
   const s = getSession();
   if (!s || !state.user) return { ok: false, why: 'none' };
-  return s.confirmSameAccount();
+  return s.freshProof('lockReset');
 }
 
 /** على الجهاز حسابٌ يؤكَّد به قفل التطبيق (وإلا لا يُعرض «نسيت الرمز» ولا «تأكيد حسابي»: لا ينجحان) · يتغيّر بـsubscribeCloud */
 export function accountConfirmable(): boolean {
-  return !!cloudConfig() && !!state.user;
+  return !!getSession() && !!state.user;
 }
 
 export async function bindUnboundToAccount(db: AppDB): Promise<void> {
@@ -558,7 +574,7 @@ export async function bindUnboundToAccount(db: AppDB): Promise<void> {
   if (!s || !cfg) throw new Error(t('bind.needConnection'));
   // منشأةٌ قائمة للحساب: لا دمج (تتكرر أرقام الجهاز المحلية فيها) · المراجعات الخارجية «ثالثاً أ ١١» · فحصٌ صارم ثم حجزٌ ذرّي
   // لهذا الجهاز (المتحقق المستقل: خطأ الشبكة كان يفتح الربط، وجهازان معاً كانا يربطان)
-  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => s.idToken() });
+  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => s.accessToken() });
   const dev = ensureDeviceId(db);
   let allowed: boolean;
   try { allowed = (await localBindAllowed(remote, state.user.uid, dev)) && (await claimLocalBind(remote, state.user.uid, dev)); }
@@ -601,7 +617,7 @@ function remoteFor(): FirestoreRemote {
   if (!state.online) throw new Error('لا اتصال بالإنترنت · اعتماد النسخة للسحابة يحتاج اتصالاً لقراءة ما فيها');
   const sess = s;
   if (!appDb) throw new Error('القاعدة غير جاهزة');
-  return remoteOf(appDb, state.user.uid, () => sess.idToken());
+  return remoteOf(appDb, state.user.uid, () => sess.accessToken());
 }
 
 /** لقطة ما في السحابة · تُقرأ مرة والمزامنة متوقفة، فتخدم ضمّ القيود المرحّلة وخطة الاستبدال معاً */
@@ -675,7 +691,7 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
   // خروجٌ من قوقل ثم دخولٌ جديد للحساب نفسه (المراجعة الشاملة · البند ٥: كان signIn وحده يعيد الحساب الحالي بلا نافذة، وحسابٌ آخر
   // فيه يُكتب في الجلسة قبل المقارنة)
   onProgress?.('جاري تأكيد هويتك بقوقل');
-  const proof = await s.reauthSameAccount();
+  const proof = await s.freshProof('deleteAccount');
   if (!proof.ok) {
     throw new Error(proof.why === 'cancel' ? 'أُلغي تأكيد الهوية'
       : proof.why === 'mismatch' ? 'اخترت حساباً آخر · اختر الحساب نفسه لحذفه' : t('auth.reauthFailed'));
@@ -685,25 +701,25 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
     onProgress?.('جاري حذف بياناتك من السحابة');
     // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
     // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
-    const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.idToken() };
+    const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.accessToken() };
     const mem = readMembership(db);
     // عضويته في منشأة غيره إن كانت (اسمه وجواله وهويته · محاولة: عضوٌ أُزيل لا مستند له) ثم منشأته هو كاملة: الملفات والمحادثات
     // والمنشأة والمسار القديم بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨ · والمراجعة الخارجية ٧ · النتيجة ١٥)
     const remotes = [
-      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
-      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() }),
+      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.accessToken(), org: uid }),
+      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.accessToken() }),
     ];
     const member = mem
-      ? { org: mem.org, uid: mem.uid, remote: new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: mem.org }) }
+      ? { org: mem.org, uid: mem.uid, remote: new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.accessToken(), org: mem.org }) }
       : null;
     await deleteAccountCloud({ remotes, chat: chatS, org: uid, files: orgFilesTarget(uid), member }, onProgress);
     // وبعد الخروج من Drive على هذا الجهاز (حُذفت النسخ وسُحب الإذن · ق٠-١) لا يُطلب Drive ثانيةً فيعود إذنه
     if (!driveRetired()) {
       onProgress?.('جاري حذف نسخك على Google Drive');
-      await deleteAllAppDataFiles(driveIO, await s.driveToken());
+      await deleteAllAppDataFiles(driveIO, await driveToken());
     }
     onProgress?.('جاري حذف الحساب');
-    await deleteFirebaseAccount({ apiKey: cfg.apiKey }, await s.idToken());
+    await s.deleteAccount(proof);
     onProgress?.('جاري تفريغ هذا الجهاز');
     await resetDeviceData(db);
     await s.signOut();
@@ -885,9 +901,9 @@ export async function wipeEverything(db: AppDB, onProgress?: (m: string) => void
     let epoch: number | null = null;
     if (cloud) {
       const sess = s!;
-      const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.idToken(), org: user!.uid });
+      const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.accessToken(), org: user!.uid });
       // الصفوف والمحادثات وملفات التخزين بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨ · قرار المالك #28)
-      epoch = await wipeCloud({ remote, chat: { projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.idToken() },
+      epoch = await wipeCloud({ remote, chat: { projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.accessToken() },
         org: user!.uid, files: orgFilesTarget(user!.uid) }, onProgress);
     }
     await wipeLocal(db, onProgress, safety);
@@ -917,7 +933,7 @@ export async function acceptInviteNow(db: AppDB, org: string, doc: MemberDoc): P
     // نسخة الحساب الجديدة فارغة (activateAccount) · وإن لم تكن فلا يُمسح شيء ويُرفض القبول
     // نسخته فارغة (جديدة، أو منشأة فارغة له قبل قراره) · وما فيه بيانات لا يُستبدل بعضوية
     if (hasUserData(db) || (activeAccount(db) && activeAccount(db) !== user.uid)) throw new Error('على الجهاز نسخة فيها بيانات لهذا الحساب · لا تُستبدل بعضوية');
-    const remote = new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: user.uid, idToken: () => sess.idToken() });
+    const remote = new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: user.uid, idToken: () => sess.accessToken() });
     const m = await acceptInvite(db, remote, org, user.uid, doc);
     bindMember(db, m, user.email, doc.orgName || null);
     patch({ invites: null, sync: syncStatus(db) });
@@ -958,8 +974,8 @@ export async function leaveOrgNow(db: AppDB): Promise<void> {
       leaveCloud: async () => {
         // يخرج من مجموعات المحادثة ومن دليلها قبل عضويته (قرار المالك #19)
         const cfgL = cloudConfig();
-        if (cfgL) await chatLeaveOrg({ projectId: cfgL.projectId, uid: user.uid, email: user.email, idToken: () => sess.idToken() }, m.org).catch(() => {});
-        await leaveOrg(remoteOf(db, user.uid, () => sess.idToken()), m.org, m.uid);
+        if (cfgL) await chatLeaveOrg({ projectId: cfgL.projectId, uid: user.uid, email: user.email, idToken: () => sess.accessToken() }, m.org).catch(() => {});
+        await leaveOrg(remoteOf(db, user.uid, () => sess.accessToken()), m.org, m.uid);
       },
       wipe: async (_saved, why) => { out.live = await wipeForRemoval(db, out.saved, why); },
     }, t('org.leftReason', { lng: 'ar' }));
@@ -982,7 +998,7 @@ function teamRemote(): { remote: FirestoreRemote; org: string } {
   if (!s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
   if (!state.online) throw new Error('إدارة الأعضاء تحتاج اتصالاً بالإنترنت');
   const sess = s;
-  return { remote: new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.idToken(), org: state.user.uid }), org: state.user.uid };
+  return { remote: new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.accessToken(), org: state.user.uid }), org: state.user.uid };
 }
 const orgNameOf = (db: DB) => db.get<{ name: string }>('SELECT name FROM company WHERE id = 1')?.name || 'منشأة عقاري';
 
@@ -1032,7 +1048,7 @@ export async function updateMyProfileNow(db: DB, profile: MemberProfile) {
   if (!m || !s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
   if (!state.online) throw new Error('حفظ بياناتك يحتاج اتصالاً بالإنترنت');
   const sess = s;
-  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.idToken(), org: m.org });
+  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.accessToken(), org: m.org });
   const r = await updateMemberProfile(remote, m.org, m.uid, profile);
   db.transaction(() => {
     saveMembership(db, { ...m, profile });
@@ -1049,12 +1065,12 @@ export async function chatSupervisorNow(email: string): Promise<string[]> {
   const s = getSession(); const cfg = cloudConfig();
   if (!s || !cfg || !state.user || !email) return [];
   if (!state.online) throw new Error('offline');
-  return supervisorOf({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email);
+  return supervisorOf({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, state.user.uid, email);
 }
 export async function setChatSupervisorNow(email: string, sections: string[]): Promise<void> {
   const s = getSession(); const cfg = cloudConfig();
   if (!s || !cfg || !state.user) { teamRemote(); return; }
-  await setSupervisor({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email, sections);
+  await setSupervisor({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, state.user.uid, email, sections);
 }
 export async function removeMemberNow(db: DB, uid: string, email = '', before: MemberDoc | null = null) {
   const t = teamRemote();
@@ -1064,7 +1080,7 @@ export async function removeMemberNow(db: DB, uid: string, email = '', before: M
   const s = getSession(); const cfg = cloudConfig();
   // وفشله لا يُظهر الإزالة فاشلةً وقد تمّت (تحقق الدمج ف٥) · والقواعد تمنع المُزال من المحادثة بعضويته أصلاً
   if (s && cfg && state.user) {
-    await chatRemoveMember({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, t.org, uid, email)
+    await chatRemoveMember({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, t.org, uid, email)
       .catch(() => {});
   }
 }
@@ -1074,7 +1090,7 @@ function chatOnline(): { db: DB; s: ChatSession; org: string } {
   const sess = getSession(); const cfg = cloudConfig(); const db = appDb;
   if (!sess || !cfg || !state.user || !db) throw new Error(t('chat.needAccount'));
   if (!state.online) throw new Error(t('chat.needOnline'));
-  return { db, s: { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => sess.idToken() }, org: readMembership(db)?.org ?? state.user.uid };
+  return { db, s: { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => sess.accessToken() }, org: readMembership(db)?.org ?? state.user.uid };
 }
 export async function chatAckNow(threadId: string, msgId: string): Promise<void> {
   const c = chatOnline(); await chatAcknowledge(c.db, c.s, c.org, threadId, msgId);
@@ -1104,7 +1120,7 @@ export async function chatPinNow(threadId: string, msgId: string, on: boolean): 
   if (!s || !cfg || !state.user || !db) throw new Error(t('chat.needAccount'));
   if (!state.online) throw new Error(t('chat.pinOffline'));
   const org = readMembership(db)?.org ?? state.user.uid;
-  await chatSetPin(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, msgId, on);
+  await chatSetPin(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, org, threadId, msgId, on);
 }
 /** تعديل المجموعة: الاسم والإعدادات والأعضاء والمسؤولون (#19 و2026-10-08T05:31Z) · كلٌّ بصلاحيته */
 export async function chatEditGroupNow(threadId: string, change: GroupChange): Promise<void> {
@@ -1112,7 +1128,7 @@ export async function chatEditGroupNow(threadId: string, change: GroupChange): P
   if (!s || !cfg || !state.user || !db) { teamRemote(); return; }
   if (!state.online) teamRemote();
   const org = readMembership(db)?.org ?? state.user.uid;
-  await chatEditGroup(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, change);
+  await chatEditGroup(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, org, threadId, change);
 }
 /* ─── مراجعة المالك محادثةً بسبب، وانضمامه إلى مجموعة (قرارا المالك 2026-10-08T04:11Z) · للمالك وحده، وتحتاج اتصالاً ─── */
 
@@ -1122,7 +1138,7 @@ function ownerChatSession(): { s: ChatSession; db: DB } {
   const cfg = cloudConfig()!;
   const db = appDb;
   if (!db || readMembership(db)) throw new Error('chat: owner only');
-  return { s: { projectId: cfg.projectId, uid: t.org, email: state.user!.email, idToken: () => sess.idToken() }, db };
+  return { s: { projectId: cfg.projectId, uid: t.org, email: state.user!.email, idToken: () => sess.accessToken() }, db };
 }
 export async function chatReviewCandidatesNow(): Promise<RemoteThread[]> {
   const { s } = ownerChatSession();
@@ -1182,7 +1198,7 @@ const driveIO: DriveIO = {
 
 async function driveToken(): Promise<string> {
   const s = getSession();
-  if (!s || !state.user) throw new Error('سجّل الدخول بحساب قوقل أولاً');
+  if (!s || !state.user || !s.driveToken) throw new Error('سجّل الدخول بحساب قوقل أولاً');
   return s.driveToken();
 }
 
@@ -1328,7 +1344,7 @@ function invoiceSource(db: DB): InvoiceNumberSource | null {
     return { takeInvoiceSeq: () => Promise.reject(new Error('لا اتصال')) };
   }
   const sess = s;
-  return remoteOf(db, state.user.uid, () => sess.idToken());
+  return remoteOf(db, state.user.uid, () => sess.accessToken());
 }
 
 /** حفظ فاتورة من الشاشة · الإصدار برقم العدّاد، وبلا اتصال مسودةٌ تصدر عند عودته */
@@ -1391,7 +1407,7 @@ function filesRemote(db: DB): FilesRemote | null {
   const org = readMembership(db)?.org ?? (getSyncState(db, 'org') === state.user.uid ? state.user.uid : null);
   if (!org) return null;
   const sess = s;
-  return { io: storageIO, target: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.idToken() }, access: readAccess(db) };
+  return { io: storageIO, target: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.accessToken() }, access: readAccess(db) };
 }
 
 const cacheLimitOf = (db: DB) => Number(getSetting(db, 'fileCacheMb') || 500) * 1024 * 1024;
@@ -1457,5 +1473,5 @@ function orgFilesTarget(org: string): CloudFiles | null {
   const s = getSession();
   if (!fc || !s) return null;
   const sess = s;
-  return { io: storageIO, t: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.idToken() } };
+  return { io: storageIO, t: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.accessToken() } };
 }

@@ -7,7 +7,11 @@
  */
 import { AuthError, type FirebaseUser } from './authRest';
 import { checkAccountProof } from '../domain/lockReset';
+import type { FreshProof } from './authProvider';
 import { t } from '../i18n';
+
+/** مزوّد الدخول في رمز هوية Firebase حين يُدخل بقوقل · يُنتظر في إثبات الحساب (لا يعرفه غير مزوّد قوقل · cloud/googleAuth.ts) */
+export const GOOGLE_SIGN_IN = 'google.com';
 
 export interface SecureKV {
   get(k: string): Promise<string | null>;
@@ -39,9 +43,10 @@ export interface SessionUser { uid: string; email: string }
 
 /**
  * تأكيد الحساب لقفل التطبيق · serverMs وقت رمز الهوية بساعة الخادم (لحدّ إعادة الضبط) · none: لا حساب محفوظ ·
- * signout: تعذّر الخروج من قوقل قبله · cancel: أُلغيت النافذة · mismatch: حسابٌ آخر · stale: رمزٌ لا يشهد بدخولٍ جديد
+ * signout: تعذّر الخروج من قوقل قبله · cancel: أُلغيت النافذة · mismatch: حسابٌ آخر · stale: رمزٌ لا يشهد بدخولٍ جديد ·
+ * وهو الإثبات الحديث العام لكل مزوّد (cloud/authProvider.ts: FreshProof)
  */
-export type AccountProof = { ok: true; serverMs: number } | { ok: false; why: 'none' | 'signout' | 'cancel' | 'mismatch' | 'stale' | 'error' };
+export type AccountProof = FreshProof;
 
 export function createSession(deps: SessionDeps) {
   const now = deps.now ?? Date.now;
@@ -80,7 +85,7 @@ export function createSession(deps: SessionDeps) {
     const g = await deps.google.signIn();
     if (!g) return { proof: { ok: false, why: 'cancel' } };
     const fb = await deps.signInWithIdp(g.idToken);
-    const proof = fb.uid === uid ? checkAccountProof(fb.idToken, uid) : ({ ok: false, why: 'uid' } as const);
+    const proof = fb.uid === uid ? checkAccountProof(fb.idToken, uid, GOOGLE_SIGN_IN) : ({ ok: false, why: 'uid' } as const);
     if (proof.ok) return { proof, fb };
     if (proof.why !== 'uid') return { proof: { ok: false, why: 'stale' } };
     try { await deps.google.signOut(); } catch { /* يبقى مرفوضاً على كل حال */ }
