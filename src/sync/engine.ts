@@ -534,6 +534,12 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
     : `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, // i18n-exempt: حالة القيد المخزّنة
     base === 'manual' ? [srcId] : [base, srcId]);
   if (!originals.length) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
+  // ولا يعكس عضوٌ ترحيل التأمين (المراجعة الشاملة 2026-11-13 · A1-1 · البيانات القائمة): لا مسار في التطبيق يعكسه لعضو، وعكسه مع تصفير
+  // تأمين العقد المجدَّد أداةٌ للمالك وحده في «فحص المطابقة» (contracts/carryRepair.ts) · وعكسه من جهازٍ لا يمنعه يُعيد التزام العقد السابق
+  // ويترك المجدَّد بلا تأمينه، فيُرفض هنا وتبقى دفاتر المالك
+  if (base === 'deposit_carry' && byMember(db, doc, true)) {
+    throw new Error(tr('mirror.revRejected', { why: tr('mirror.carryOwnerOnly', { lng: 'ar' }), lng: 'ar' }));
+  }
   // وأصلٌ من المصدر نفسه في الوارد لم يُطبَّق بعد وهذا مرآته: يُنتظر ولا يُرفض العاكس (المدقق الخارجي I · L٧: إلغاء التقبيل واستعادته
   // ثم إلغاؤه ثانية، والعاكس الثاني يسبق نسخة الاستعادة بجزءٍ من الثانية، كان يُرفض نهائياً «عواكس أكثر من أصولها»)
   // والعاكس من عضوٍ بلا أصلٍ حرٍّ له هنا ينتظر ولا يُرفض: أصله قد يصل في دفعةٍ بعده (المدقق الخارجي K١ب: العضو يرفع على دفعات، فإن طبّق
@@ -3077,6 +3083,18 @@ function applyOne(
       doc.d = { ...doc.d, deposit_halalas: want };
     }
   }
+  // وتأمين عقدٍ مجدَّد ترحيله حيٌّ هنا لا يغيّره عضو (المراجعة الشاملة 2026-11-13 · A1-1 · البيانات القائمة): التأمين بعد التوثيق لا
+  // يُعدَّل في التطبيق، وإنزاله بعد ترحيلٍ سُوّي سابقُه أداةٌ للمالك وحده مع عكس الترحيل (carryRepair.ts)، وعاكس العضو مرفوض
+  // (memberReversalCheck) · فيُطبَّق باقي الصف بتأمين المالك ويُرفع، ولا يُرفض الصف كله
+  let keptCarryDeposit = false;
+  if (doc.t === 'contracts' && !doc.del && doc.d && !joining && !deadCarry && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && carryLiveHere(db, doc.k)) {
+    const cur = db.get<{ d: number }>(`SELECT deposit_halalas AS d FROM contracts WHERE id = ?`, [doc.k]);
+    if (cur && Number(cur.d) !== Number(doc.d.deposit_halalas)) {
+      doc.d = { ...doc.d, deposit_halalas: Number(cur.d) };
+      keptCarryDeposit = true;
+    }
+  }
 
   // سطر كشفٍ صُحّحت مطابقته هنا يُعاد إلى السحابة مصحَّحاً (وما أبقى فيه هذا الجهاز مطابقته يرفعه تعديلاً منه لا تصحيحاً)
   let relink = false;
@@ -3126,6 +3144,7 @@ function applyOne(
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
         if (deadCarry) noteDeadCarry(db, doc.k, deadCarry.was, deadCarry.want);
+        if (keptCarryDeposit) enqueue(db, 'contracts', doc.k, 'upsert');
         if (doc.t === 'bank_statements') { resetStatementCounts(db, doc.k); statementCascade(db, doc.k, row, theirs0); }
       }
       if (!doc.del) {

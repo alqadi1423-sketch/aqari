@@ -19,6 +19,9 @@ function hasCol(db: DB, table: string, col: string): boolean {
   return db.all<{ name: string }>(`PRAGMA table_info(${table})`).some((c) => c.name === col);
 }
 
+/** اسم الفحص الثالث (التأمينات) · تحته في «فحص المطابقة» أداة ترحيل التأمين المُسوّى (contracts/carryRepair.ts · A1-1) */
+export const DEPOSIT_CHECK_NAME = 'تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة)';
+
 export function integrityChecks(db: DB): IntegrityCheck[] {
   const out: IntegrityCheck[] = [];
 
@@ -62,7 +65,7 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
   const out2400 = markedNetOn(db, '2400');
   const bal2400 = accountBalance(db, '2400') + out2400;
   out.push({
-    name: 'تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة)',
+    name: DEPOSIT_CHECK_NAME,
     ok: bal2400 === Number(dep.s),
     value: fmt(bal2400) + ' / ' + fmt(Number(dep.s)) + (out2400 ? ' · خارجها قيود بلا مستند ' + fmt(-out2400) : ''),
   });

@@ -557,6 +557,22 @@
     "arrearsOtherHolder": "A deposit held by another party never entered the office books, so it cannot pay an installment · record what reached you for installments as a collection",
     "srcLabel": "Installment paid from deposit"
   },
+  "carryRepair": {
+    "title": "Deposit carried to a renewal after it was settled",
+    "explain": "The previous version renewed these contracts carrying the old contract's deposit although it was already settled (refunded or deducted), so the renewal holds a deposit never received and its settlement offers to refund it again. The fix reverses the carry entry with a reversing entry, lowers the renewal's deposit by the carried amount but never below what was actually received for it, and records it in the activity log. Cash does not move.",
+    "label": "Contract {{to}} renewed from {{from}} · {{tenant}}",
+    "detail": "{{carried}} carried while contract {{from}} was settled on {{date}} · deposit of {{to}} is {{deposit}} now and becomes {{target}}",
+    "action": "Reverse the carry and reset the renewal's deposit",
+    "confirm": "Carry entry {{entry}} ({{carried}}) from contract {{from}} to contract {{to}} is reversed, so both contracts' deposit liability returns to zero, and the deposit of contract {{to}} goes from {{deposit}} to {{target}}, which is what was actually received for it. Cash and the earlier settlement do not change, and the reversing entry is dated {{date}}. Apply it?",
+    "done": "Deposit carry reversed · deposit of contract {{to}} is now {{target}}",
+    "renewalSettled": "The deposit of contract {{to}} was settled on {{date}} after this carry, so its settlement paid out {{amount}} never received for it, and reversing the carry now does not bring back what went out. The tool does not apply: if the tenant was refunded what was never received, claim the excess under Claims, then correct the deposits balance with a manual entry with your accountant.",
+    "carriedOn": "The deposit of contract {{to}} was later carried to its renewal {{next}}, so reversing the first carry alone leaves the second holding what was never received. The tool does not apply: correct the chain with a manual entry with your accountant.",
+    "ownerOnly": "Reversing a deposit carry and correcting a contract's deposit is for the owner only",
+    "gone": "The carry entry is no longer live · run the check again",
+    "memo": "Reversal of a carry of a deposit settled on {{date}} · from {{from}} to {{to}} (A1-1)",
+    "auditEntity": "Reversal of a settled deposit carry",
+    "auditName": "{{from}} ← {{to}} · {{tenant}}"
+  },
   "vat": {
     "alreadyFiled": "This period's return is already recorded as filed",
     "fileBeforeEnd": "A quarter cannot be filed before it ends · its last day is {{date}}",
@@ -903,7 +919,8 @@
     "noOriginal": "A member reversal with no original to reverse",
     "revRejected": "Reversal rejected · {{why}}",
     "extra": "More reversals than originals",
-    "transferLive": "The asset transfer still exists with its event, so its entry is not reversed"
+    "transferLive": "The asset transfer still exists with its event, so its entry is not reversed",
+    "carryOwnerOnly": "A deposit carry reversal is for the owner only (the \"Reverse the carry\" tool)"
   },
   "journal": {
     "saveDraft": "Save draft",

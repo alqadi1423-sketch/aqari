@@ -10,7 +10,9 @@ import { useAccess } from '../src/ui/access';
 import { useDialog } from '../src/ui/AppDialog';
 import { useToast } from '../src/ui/Toast';
 import { reportFailure } from '../src/ui/failureDialog';
-import { integrityChecks } from '../src/domain/accounting/integrity';
+import { integrityChecks, DEPOSIT_CHECK_NAME } from '../src/domain/accounting/integrity';
+import { carryAfterSettleItems, reverseCarryAfterSettle, type CarryAfterSettleItem } from '../src/domain/contracts/carryRepair';
+import { fmt } from '../src/domain/money';
 import { previewRepairs, applyRepair, type RepairPreview } from '../src/domain/reviewRepairs';
 import { previewEjarSchedules, applyEjarSchedules, contractsWithLease, type EjarScheduleDiff } from '../src/domain/ejarScheduleRepair';
 import { readLeaseText } from '../src/services/contractScan';
@@ -30,6 +32,10 @@ export default function Integrity() {
   const repairs = useMemo(() => (access.owner ? previewRepairs(db).filter((r) => r.items.length) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, tick, access.owner]);
+  // ترحيل تأمينٍ سُوّي قبل إصلاح A1-1: يُسرد تحت الفحص الثالث للمالك وحده، والموقوف بسببه بلا زرّ
+  const carries = useMemo(() => (access.owner ? carryAfterSettleItems(db) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version, tick, access.owner]);
   const ok = checks.every((c) => c.ok);
   // أقساط عقود إيجار مقابل جدول ملفها (قرار المالك ٢٠٢٦-١٠-٠٥) · القراءة من الملفات بطلب لا عند الفتح
   const leaseCount = useMemo(() => (access.owner ? contractsWithLease(db).length : 0),
@@ -38,6 +44,22 @@ export default function Integrity() {
   const [ejar, setEjar] = useState<EjarScheduleDiff[] | null>(null);
   const { t } = useLang();
   const [reading, setReading] = useState(false);
+
+  const reverseCarry = (x: CarryAfterSettleItem) => dialog({
+    title: t('carryRepair.action'),
+    body: t('carryRepair.confirm', { entry: x.carryNo, carried: fmt(x.carried), from: x.prevNo, to: x.renewalNo,
+      deposit: fmt(x.deposit), target: fmt(x.target), date: dfmt(x.reverseOn) }),
+    actions: [
+      { label: t('common.cancel'), variant: 'ghost' },
+      {
+        label: t('common.confirm'), variant: 'primary',
+        onPress: () => {
+          try { reverseCarryAfterSettle(db, x.renewalId); bump(); toast(t('carryRepair.done', { to: x.renewalNo, target: fmt(x.target) })); }
+          catch (e) { reportFailure({ title: t('common.failed'), e }); }
+        },
+      },
+    ],
+  });
 
   const apply = (r: RepairPreview) => {
     const ready = r.items.filter((i) => !i.blocked).length;
@@ -80,6 +102,22 @@ export default function Integrity() {
               style={{ marginTop: 4, marginStart: 20, textAlign: 'left' }}>
               {c.value}
             </Num>
+            {c.name === DEPOSIT_CHECK_NAME && carries.length ? (
+              <View style={{ marginTop: 8, marginStart: 20 }}>
+                <T size={12.5} bold>{t('carryRepair.title') + ' · ' + carries.length}</T>
+                <T size={11.5} color={C.muted} style={{ marginBottom: 6 }}>{t('carryRepair.explain')}</T>
+                {carries.map((x) => (
+                  <View key={x.renewalId} style={{ paddingVertical: 7, borderTopWidth: 1, borderTopColor: C.line }}>
+                    <T size={12.5}>{t('carryRepair.label', { to: x.renewalNo, from: x.prevNo, tenant: x.tenant })}</T>
+                    <T size={11.5} color={C.muted}>{t('carryRepair.detail', { carried: fmt(x.carried), from: x.prevNo,
+                      date: dfmt(x.settledOn), to: x.renewalNo, deposit: fmt(x.deposit), target: fmt(x.target) })}</T>
+                    {x.blocked ? <T size={11.5} color={C.rose}>{x.blocked}</T> : (
+                      <View style={{ marginTop: 6 }}><BtnGhost title={t('carryRepair.action')} onPress={() => reverseCarry(x)} /></View>
+                    )}
+                  </View>
+                ))}
+              </View>
+            ) : null}
           </View>
         ))}
       </Card>
