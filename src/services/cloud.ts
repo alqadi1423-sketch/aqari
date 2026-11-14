@@ -568,6 +568,11 @@ export function accountConfirmable(): boolean {
   return !!getSession() && !!state.user;
 }
 
+/** مزوّد الحساب الذي يُؤكَّد به (لنصّ الزر والسجل والتنبيه) · null بلا ربط */
+export function accountProvider(): AuthProvider['id'] | null {
+  return getSession()?.id ?? null;
+}
+
 export async function bindUnboundToAccount(db: AppDB): Promise<void> {
   if (!state.user) return;
   const s = getSession(); const cfg = cloudConfig();

@@ -14,6 +14,8 @@
 import * as SecureStore from 'expo-secure-store';
 import { File, Paths } from 'expo-file-system';
 import { getRandomBytes } from 'expo-crypto';
+import { sha256 as sha256Bytes } from '@noble/hashes/sha256';
+import { bytesToHex } from '@noble/hashes/utils';
 import { passwordState, secretForSealing, type PasswordStore } from '../domain/backup/passwordGate';
 import { generateRecoveryKey, isValidRecoveryKey, sealingSecretOf } from '../domain/backup/recoveryKey';
 import { t } from '../i18n';
@@ -85,6 +87,25 @@ export async function backupSecretKind(account: string | null): Promise<SecretKi
 export async function backupSecretForSealing(account: string | null): Promise<string> {
   return secretForSealing(storeOf(slotOf(account)));
 }
+
+/**
+ * «نسيت رمز القفل» بمفتاح الاسترداد (ق٠-٦ · F-3): ما كتبه المالك يُفحص كما تُفتح به النسخ: صحيح الشكل ومحرف التحقق
+ * (isValidRecoveryKey)، ثم بصيغته الموحّدة (sealingSecretOf) هو السرّ الذي تُختم به نسخ هذا الحساب الآن · مفتاح استردادٍ لا كلمة مرورٍ
+ * قديمة، ولا مفتاحٌ سابقٌ استُبدل · والمقارنة ببصمتين بزمنٍ ثابت
+ */
+export async function recoveryKeyMatches(typed: string, account: string | null): Promise<boolean> {
+  if (!isValidRecoveryKey(typed)) return false;
+  if ((await backupSecretKind(account)) !== 'key') return false;
+  let cur: string | null = null;
+  try { cur = (await SecureStore.getItemAsync(keyOf(slotOf(account)))) || null; } catch { cur = null; }
+  if (!cur || !isValidRecoveryKey(cur)) return false;
+  const a = sha256(sealingSecretOf(typed));
+  const b = sha256(sealingSecretOf(cur));
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0 && a.length === b.length;
+}
+const sha256 = (s: string): string => bytesToHex(sha256Bytes(new TextEncoder().encode(s)));
 
 /** مفتاحٌ جديد من مولّد النظام · يُعرض ولا يُحفظ حتى يؤكَّد بـ saveRecoveryKey */
 export const newRecoveryKey = (): string => generateRecoveryKey((n) => getRandomBytes(n));

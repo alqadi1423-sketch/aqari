@@ -859,7 +859,18 @@
     "resetLimit": "PIN reset limit reached · available again in {{n}} h",
     "resetNoticeTitle": "App lock PIN was reset",
     "resetStoreFailed": "Couldn't read or save the PIN reset record",
-    "resetNotice": "The app lock PIN was reset by confirming the Google account on {{when}}"
+    "resetNotice": "The app lock PIN was reset by confirming the Google account on {{when}}",
+    "noDeviceLockAny": "The device lock was removed or the lock setting cannot be read · confirm you own the account and choose an app PIN, or add a device lock.",
+    "confirmDevice": "Confirm this phone",
+    "forgotPinDevice": "Forgot the code · confirm this phone",
+    "forgotPinKey": "Forgot the code · recovery key",
+    "recoveryKeyLabel": "Recovery key (25 characters)",
+    "recoveryKeyHint": "Type the backup recovery key you saved when you created it · with or without dashes.",
+    "useRecoveryKey": "Verify and choose a new PIN",
+    "recoveryKeyWrong": "The key does not match the recovery key saved for this account on the device",
+    "deviceRevoked": "This phone was removed from your account · sign in again with an invite code",
+    "resetNoticeDevice": "The app lock PIN was reset with the server confirming this is your linked phone on {{when}}",
+    "resetNoticeKey": "The app lock PIN was reset with the recovery key on {{when}}"
   },
   "imgMeta": {
     "unstripped": "Could not remove this image's metadata, so it was not attached · To attach it as is, turn off image metadata removal in Settings"
