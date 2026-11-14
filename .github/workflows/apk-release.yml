@@ -1,0 +1,55 @@
+# وسمٌ ونشرة لكل APK (التوجيه الرابع ٤ · ٢ · قرار المالك 2026-11-07 «أرقام إصدارات وسجل تغييرات لكل APK»):
+# فرع apk لا يحمل غير الحزمة، فلا يُشغَّل منه سير عمل · فيُفحص رأسه من هنا: عند الدفع إلى main، ومرةً كل يوم (كان كل ساعة · G-7)، وبالزر · وإن كانت حزمته برقمٍ لم
+# يُوسَم بعد، يُوسَم التزام مصدرها v<الرقم> وتُنشر نشرةٌ بقسمه من سجل التغييرات ومعها الحزمة · ورقمٌ مكرر لحزمةٍ أخرى يُفشل التشغيل.
+name: وسم الحزمة ونشرتها
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apk-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: رأس فرع apk ورقم إصداره
+        id: plan
+        run: |
+          # فرعا apk وci-results ووسومهما جُلبت بـfetch-depth: 0 · ولا جلب هنا: الاعتماد أُزيل بعد الاستخراج (persist-credentials)
+          # والمستودع خاص (مدقق المرحلة ٠ · P0-3)
+          git rev-parse -q --verify origin/apk >/dev/null && git rev-parse -q --verify origin/ci-results >/dev/null
+          node scripts/ci/apkRelease.js "$GITHUB_OUTPUT"
+
+      - name: الوسم والنشرة والحزمة
+        if: steps.plan.outputs.action == 'create'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          SOURCE: ${{ steps.plan.outputs.source }}
+          TITLE: ${{ steps.plan.outputs.title }}
+          NOTES: ${{ steps.plan.outputs.notes }}
+        run: |
+          git show origin/apk:Aqari.apk > "Aqari-${TAG}.apk"
+          sha256sum "Aqari-${TAG}.apk" | tee -a "$NOTES"
+          gh release create "$TAG" "Aqari-${TAG}.apk" --target "$SOURCE" --title "$TITLE" --notes-file "$NOTES"

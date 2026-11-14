@@ -13,6 +13,11 @@ on:
 permissions:
   contents: read
 
+# دفعةٌ تلحقها أخرى على الفرع نفسه تُلغى، فلا تُستهلك دقائق جيت هب على رأسٍ قديم (المراجعة الشاملة 2026-11-13 · G-7)
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   tests:
     runs-on: ubuntu-latest
@@ -44,11 +49,14 @@ jobs:
         run: npx tsc --noEmit
 
       # firebase-tools من package-lock بإصداره المثبَّت لا من الشبكة وقت التشغيل (المراجعة الخارجية ٧ · القرار ١٤ من «رابعاً»)
+      # مهلةٌ للخطوة دون مهلة العمل: التعليق يصير فشلَ خطوةٍ تُكتب خلاصته، لا إلغاءً يُسقطها «!cancelled()» (مدقق المرحلة ٠ · P0-5)
       - name: الاختبارات كاملة مع محاكي Firestore
+        timeout-minutes: 35
         run: npx firebase emulators:exec --only firestore,storage --project demo-aqari "npx jest -i --json --outputFile=jest-results.json"
 
+      # لا خلاصة لتشغيلٍ أُلغي (دفعةٌ لحقته): كانت تُكتب «success false» فتُحسب على التزامٍ لم يُختبر (G-7)
       - name: الخلاصة
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           node -e '
             const fs = require("fs");
@@ -72,7 +80,7 @@ jobs:
           '
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
+        if: ${{ !cancelled() }}
         with:
           name: result
           path: result.txt
@@ -80,7 +88,7 @@ jobs:
   # الكتابة في ci-results وحدها بصلاحية كتابة · لا تثبيت ولا تشغيل لحزمة هنا
   publish:
     needs: tests
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -105,4 +113,6 @@ jobs:
           cp /tmp/result/result.txt latest.txt
           git add runs latest.txt
           git commit -q -m "نتيجة الاختبارات ${GITHUB_SHA}"
-          git push -q origin HEAD:ci-results
+          # دفعتان متقاربتان تتسابقان على ci-results: يُعاد الدفع بعد سحبٍ وإعادة تأسيس كالجوال الافتراضي (مدقق المرحلة ٠ · P0-4)
+          for i in 1 2 3 4; do git push -q origin HEAD:ci-results && exit 0; git pull -q --rebase origin ci-results; done
+          exit 1

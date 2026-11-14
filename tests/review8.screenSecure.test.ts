@@ -9,7 +9,9 @@ const src = (p: string) => fs.readFileSync(path.resolve(__dirname, '..', p), 'ut
 
 test('٢٢ بوابة الترقية تطبّق منع لقطة الشاشة وتجدول التنبيهات حين تصل إلى «جاهز»', () => {
   const g = src('src/ui/UpgradeGate.tsx');
-  const run = g.slice(g.indexOf('const run = useCallback'), g.indexOf('}, []);', g.indexOf('const run = useCallback')));
+  // الوصول إلى «جاهز» في finish وحدها (بعد النسخة مباشرةً، أو بعد «متابعة» حين تُسمّى ملفاتٌ مفقودة · البند ٣ من القرارات المعلّقة)
+  const run = g.slice(g.indexOf('const finish = useCallback'), g.indexOf('}, []);', g.indexOf('const finish = useCallback')));
+  expect(g.match(/setPhase\('ready'\)/g)).toHaveLength(1);
   const ready = run.indexOf("setPhase('ready')");
   expect(ready).toBeGreaterThan(0);
   const before = run.slice(0, ready);

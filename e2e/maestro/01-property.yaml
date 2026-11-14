@@ -1,0 +1,26 @@
+# الجوال الافتراضي · ٠١ · إضافة عقارٍ بوحدتين (التوجيه الرابع ٤ · ١) · أسماء مصطنعة بحروفٍ لاتينية (Maestro لا يكتب غيرها على أندرويد)
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- tapOn: "العقارات"
+- tapOn: "+ عقار جديد"
+- tapOn:
+    id: "field-اسم العقار"
+- inputText: "E2E Tower"
+- tapOn:
+    id: "field-عدد الوحدات"
+- inputText: "2"
+- hideKeyboard
+- takeScreenshot: 01-form
+- tapOn: "إضافة العقار"
+- tapOn:
+    text: "إضافة الوحدات الآن"
+    optional: true
+- extendedWaitUntil:
+    visible: "E2E Tower"
+    timeout: 20000
+- takeScreenshot: 01-saved

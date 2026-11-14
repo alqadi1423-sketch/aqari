@@ -10,7 +10,8 @@
  * ويعمل من داخل React وخارجها (الخدمات والمعالج العام) لأنه يمرّ بالجسر الأمري للحوار.
  */
 import { failureAuditDetail } from '../domain/redact';
-import { Share } from 'react-native';
+import { Share, Platform } from 'react-native';
+import { recordCrashReport, failureWhere, FAILURE_ENTITY_PREFIX } from '../domain/crashReport';
 import * as Clipboard from 'expo-clipboard';
 import { showDialog, type DialogAction } from './AppDialog';
 import { showToast } from './Toast';
@@ -50,14 +51,26 @@ export function arabicMessage(e: unknown): string {
  * التسجيل وحده بلا حوار: سجل العمليات وملف التفاصيل · لخطأٍ يُعرض في موضعه (بطاقة داخل شاشة
  * ملء الشاشة) حيث يتسابق حوارٌ ثانٍ مع نافذتها فيُخفى خلفها. يعيد نصّ التفاصيل واسم الملف لأزرار الموضع.
  */
-export async function recordFailure(args: Pick<FailureArgs, 'title' | 'where' | 'e' | 'db' | 'auditModule' | 'auditAction'>):
+/**
+ * القاعدة لتسجيل العطل وتقريره: الممرَّرة، وإلا المفتوحة على الجهاز (المدقق الخارجي F٥: أكثر مواضع الحوار لا تمرّر قاعدة، فلم يصل المالكَ
+ * تقريرٌ من التحصيل والعقود والمشتريات والفواتير) · ولا تُفتح قاعدةٌ هنا
+ */
+function failureDb(db?: DB): DB | undefined {
+  if (db) return db;
+  try { return (require('../db/expoAdapter') as typeof import('../db/expoAdapter')).openedAppDb() ?? undefined; } catch { return undefined; }
+}
+
+export async function recordFailure(args0: Pick<FailureArgs, 'title' | 'where' | 'e' | 'db' | 'auditModule' | 'auditAction'>):
   Promise<{ full: string; saved: string | null }> {
+  const args = { ...args0, db: failureDb(args0.db) };
   const where = args.where ?? args.title;
   if (args.db) {
     try {
-      logAudit(args.db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', 'فشل ' + where,
+      logAudit(args.db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', FAILURE_ENTITY_PREFIX + failureWhere(where),
         failureAuditDetail(args.e));
     } catch { /* السجل لا يعطّل */ }
+    // وتقريره للمالك (التوجيه الرابع ٤ · ٤): محجوبٌ بحدّ يومه، ولا يرمي
+    recordCrashReport(args.db, { where, e: args.e, platform: Platform.OS });
   }
   return { full: errorReportText(where, args.e), saved: (await saveErrorReport(where, args.e)) || null };
 }
@@ -67,7 +80,8 @@ export const copyFailureDetails = (full: string) => { Clipboard.setStringAsync(f
 export const shareFailureDetails = (full: string) => { Share.share({ message: full }).catch(() => {}); };
 
 export async function reportFailure(args: FailureArgs): Promise<void> {
-  const { title, e, db, before, env, retry } = args;
+  const { title, e, before, env, retry } = args;
+  const db = failureDb(args.db);
   const where = args.where ?? title;
   const full = errorReportText(where, e);
   const lead = args.lead ?? arabicMessage(e);
@@ -78,18 +92,23 @@ export async function reportFailure(args: FailureArgs): Promise<void> {
     return;
   }
 
-  if (db) {
-    try {
-      logAudit(db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', 'فشل ' + where,
-        failureAuditDetail(e));
-    } catch { /* السجل لا يعطّل */ }
-  }
-
+  // الأثر يُقاس قبل أن يكتب الحوار نفسه سطر الفشل وتقرير العطل (المدقق الخارجي H٧: سطراهما وطابورهما كانا يُعدّان «أثراً»، فلا تُقال
+  // «لم يتغيّر شيء» أبداً لمن دخل بحسابه)
   let stateLine = '';
   if (before && env) {
     let residue = '';
     try { residue = describeResidue(env, before); } catch { residue = ''; }
     stateLine = residue ? 'وبقي أثر: ' + residue : 'بياناتك الحالية سليمة ولم يتغيّر شيء.';
+  }
+
+  if (db) {
+    try {
+      logAudit(db, args.auditModule ?? 'الأعطال', args.auditAction ?? 'update', FAILURE_ENTITY_PREFIX + failureWhere(where),
+        failureAuditDetail(e));
+    } catch { /* السجل لا يعطّل */ }
+    // وتقريره للمالك (التوجيه الرابع ٤ · ٤ · قرار المالك 2026-11-07 «نعم توصلني»): محجوبٌ بحدّ يومه، ولا يرمي · والقاعدة المرفوضة
+    // أعلاه ليست عطلاً فلا تقرير لها
+    recordCrashReport(db, { where, e, platform: Platform.OS });
   }
 
   const saved = await saveErrorReport(where, e);

@@ -19,7 +19,7 @@ import { dfmt, today, daysBetween, periodLabel } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
 import { CancelPaymentSheet } from './CancelPaymentPanel';
-import { paidFromDeposit } from '../domain/contracts/cancelPayment';
+import { paidFromDeposit, paidFromSettlement } from '../domain/contracts/cancelPayment';
 import { usePerm } from './access';
 import { useSaveAttempt } from './formAttempt';
 
@@ -76,7 +76,7 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
          AND NOT EXISTS (SELECT 1 FROM payment_allocations x WHERE x.payment_id = p.id)
        ORDER BY date`,
       [installmentId, installmentId]
-    ).map((p) => ({ ...p, fromDeposit: paidFromDeposit(db, p.id) }));
+    ).map((p) => ({ ...p, fromDeposit: paidFromDeposit(db, p.id) || paidFromSettlement(db, p.id) })); // ودفعة التأمين من تسويته تُعدَّل منها (A1-2)
     // خصم القسط · من دفعاته المباشرة وحدها (التخصيصات الجماعية بلا خصم)
     const discount = pays.reduce((s, p) => s + (p.alloc == null && !p.cancelled_at ? Number(p.discount_halalas) : 0), 0);
     const T_ = today();
@@ -166,8 +166,8 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
       {editOpen ? (
         <Sheet visible onClose={() => setEditOpen(false)} title="تعديل الموعد"
           footer={<View style={{ flex: 1 }}><BtnPrimary title="حفظ" onPress={() => attempt.attempt(!!reason.trim(), saveSchedule)} /></View>}>
-          <DateField label="موعد سداد متفق عليه" value={agreed} onChange={setAgreed} />
-          <DateField label="مهلة سداد حتى" value={grace} onChange={setGrace} />
+          <DateField label="موعد سداد متفق عليه" value={agreed} onChange={setAgreed} optional />
+          <DateField label="مهلة سداد حتى" value={grace} onChange={setGrace} optional />
           <Field label="السبب" value={reason} onChange={setReason} error={attempt.missing(reason)} />
           {/* لا اتفاق قائم فلا شيء يُزال */}
           {i.agreed_date || i.grace_until ? (

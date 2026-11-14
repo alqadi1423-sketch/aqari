@@ -7,6 +7,15 @@ import type { DB } from '../db/adapter';
 import { computeSchedule } from '../domain/reminders';
 import { getSetting } from '../repos/settings';
 import { uid } from '../domain/ids';
+import { t } from '../i18n';
+
+/**
+ * هل اختار المستخدم مجلد النسخ على هذا الجهاز · يُحمَّل عند الحاجة: وحدة المجلد تحمل وحدات الملفات الأصلية، والجدولة تُختبر بدونها
+ * (وتعذّر قراءته يُعامل كأن لا مجلد، فيطلب التذكير اختياره)
+ */
+function hasBackupFolder(): boolean {
+  try { return !!(require('./backupFolder') as typeof import('./backupFolder')).backupFolder(); } catch { return false; }
+}
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -108,10 +117,8 @@ async function rescheduleNow(db: DB): Promise<void> {
     try {
       const osId = await Notifications.scheduleNotificationAsync({
         identifier: WEEKLY_ID,
-        content: {
-          title: 'تذكير النسخ الاحتياطي',
-          body: 'صدّر نسخة احتياطية خارج الجهاز · النسخة التي تجلس بجوار البيانات لا تحميك من جوال ضائع.',
-        },
+        // النسخ لم تعد تُرفع إلى Drive (ق٠-١): يذكّر بالحفظ في المجلد المختار، وبلا مجلدٍ يطلب اختياره
+        content: { title: t('folder.reminderTitle'), body: t(hasBackupFolder() ? 'folder.reminderSave' : 'folder.reminderPick') },
         trigger: {
           type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
           weekday: 6, // الجمعة

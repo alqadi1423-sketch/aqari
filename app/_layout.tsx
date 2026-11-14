@@ -5,12 +5,7 @@ import { bootLanguage } from '../src/i18n/device';
 import { Stack, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import {
-  useFonts,
-  IBMPlexSansArabic_400Regular,
-  IBMPlexSansArabic_500Medium,
-  IBMPlexSansArabic_700Bold,
-} from '@expo-google-fonts/ibm-plex-sans-arabic';
+import { useFonts } from 'expo-font';
 import { AppStateProvider } from '../src/ui/store';
 import { UpgradeGate } from '../src/ui/UpgradeGate';
 import { AuthGate } from '../src/ui/AuthGate';
@@ -41,7 +36,10 @@ if (EU && !__DEV__) {
   EU.setGlobalHandler((e, fatal) => {
     try {
       const { reportFailure } = require('../src/ui/failureDialog') as typeof import('../src/ui/failureDialog');
-      reportFailure({ title: 'حدث خطأ غير متوقع', where: 'خطأ عام', e }).catch(() => prev?.(e, fatal));
+      // والقاعدة إن كانت مفتوحة (لا تُفتح هنا): يُسجَّل العطل ويصل تقريره المالك (التوجيه الرابع ٤ · ٤) · وإلا يُعرض بلا تسجيل
+      let db: import('../src/db/adapter').DB | undefined;
+      try { db = (require('../src/db/expoAdapter') as typeof import('../src/db/expoAdapter')).openedAppDb() ?? undefined; } catch { db = undefined; }
+      reportFailure({ title: 'حدث خطأ غير متوقع', where: 'خطأ عام', e, db }).catch(() => prev?.(e, fatal));
     } catch {
       prev?.(e, fatal);
     }
@@ -69,10 +67,12 @@ function PerfPathTracker() {
 }
 
 export default function RootLayout() {
+  // خط IBM Plex Sans Arabic (رخصة OFL في assets/fonts/OFL.txt) من ملفات التطبيق نفسه ·
+  // بأسماء العائلات التي تستعملها السمة (src/ui/theme.ts) · ق٠-٢: لا حزمة خطوط قوقل
   const [fontsLoaded] = useFonts({
-    IBMPlexSansArabic_400Regular,
-    IBMPlexSansArabic_500Medium,
-    IBMPlexSansArabic_700Bold,
+    IBMPlexSansArabic_400Regular: require('../assets/fonts/IBMPlexSansArabic_400Regular.ttf'),
+    IBMPlexSansArabic_500Medium: require('../assets/fonts/IBMPlexSansArabic_500Medium.ttf'),
+    IBMPlexSansArabic_700Bold: require('../assets/fonts/IBMPlexSansArabic_700Bold.ttf'),
   });
 
 

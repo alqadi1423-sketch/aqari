@@ -7,12 +7,13 @@
  */
 import type { DB } from '../db/adapter';
 import type { StatementRow } from './printDocs';
-import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, paymentSurplusSql } from './contracts/installments';
 import { today } from './dates';
 import { t } from '../i18n';
 
 /** الكشف وثيقة عربية كلها كبقية سطورها (التحقق المستقل: لغة الواجهة الإنجليزية كانت تخلطها) */
 const ar = (key: string): string => t(key, { lng: 'ar' });
+const POSTED_ENTRY = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
 
 export function tenantStatementRows(db: DB, contractId: string, asOf: string = today()): StatementRow[] {
   const rows: StatementRow[] = [];
@@ -41,10 +42,22 @@ export function tenantStatementRows(db: DB, contractId: string, asOf: string = t
     const paid = Math.min(Number(i.amount_halalas), Number(i.paid_halalas));
     if (paid > 0) rows.push({ date: i.due_date, descr: ar('statement.installmentCancelledPaid'), debitHalalas: paid, creditHalalas: 0 });
   }
-  for (const p of db.all<{ date: string; period: string; net_halalas: number; method_label: string }>(
-    `SELECT date, period, net_halalas, method_label FROM contract_payments
-     WHERE contract_id = ? AND cancelled_at IS NULL ORDER BY date`, [contractId])) {
-    rows.push({ date: p.date, descr: 'سداد' + (p.period ? ' · ' + p.period : '') + ' · ' + p.method_label, debitHalalas: 0, creditHalalas: Number(p.net_halalas) });
+  // كل كشفٍ يتوازن وحده (المراجعة الشاملة 2026-11-13 · R12-DEP-4): الرصيد الدائن للمستأجر لا للعقد، فقد يُستعمل في عقدٍ آخر (التجديد،
+  // ودمج مستأجرَين) · فالتحصيل بمبلغه كله ومعه سطرٌ مدين بفائضه الذي صار رصيداً (دائن 2410 في قيده)، والسداد من الرصيد بمبلغه في العقد
+  // الذي استُعمل فيه · وفي العقد الواحد يتقابلان فلا يُعدّ الفائض مرتين (A2.1)
+  for (const p of db.all<{ date: string; period: string; net_halalas: number; method_label: string; surplus: number }>(
+    `SELECT p.date, p.period, p.net_halalas, p.method_label, ${paymentSurplusSql('p.')} AS surplus FROM contract_payments p
+     WHERE p.contract_id = ? AND p.cancelled_at IS NULL ORDER BY p.date`, [contractId])) {
+    rows.push({ date: p.date, descr: 'سداد' + (p.period ? ' · ' + p.period : '') + ' · ' + p.method_label, debitHalalas: 0, creditHalalas: Number(p.net_halalas) || 0 });
+    const surplus = Number(p.surplus) || 0;
+    if (surplus > 0) rows.push({ date: p.date, descr: ar('statement.surplusToCredit'), debitHalalas: surplus, creditHalalas: 0 });
+  }
+  // وفائضٌ قديم دخل إيراداً ثم حُوِّل رصيداً بأداة الفائض كذلك
+  for (const e of db.all<{ date: string; n: number }>(
+    `SELECT e.date, SUM(l.credit_halalas - l.debit_halalas) AS n FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type = 'surplus_credit' AND e.src_id = ? AND e.reversed_by IS NULL AND e.deleted_at IS NULL AND e.status = ?
+       AND l.account_code = '2410' GROUP BY e.id ORDER BY e.date`, [contractId, POSTED_ENTRY])) {
+    if (Number(e.n) > 0) rows.push({ date: e.date, descr: ar('statement.surplusToCredit'), debitHalalas: Number(e.n), creditHalalas: 0 });
   }
   for (const cl of db.all<{ date: string; amount_halalas: number; reason: string; status: string; collected_at: string | null }>(
     `SELECT date, amount_halalas, reason, status, collected_at FROM claims WHERE contract_id = ? AND deleted_at IS NULL ORDER BY date`, [contractId])) {

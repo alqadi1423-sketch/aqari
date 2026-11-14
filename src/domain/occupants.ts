@@ -34,11 +34,12 @@ export interface OccupantInput {
   movedIn?: string | null;
 }
 
-export function addOccupant(db: DB, contractId: string, input: OccupantInput): string {
+export function addOccupant(db: DB, contractId: string, input: OccupantInput, seeded = false): string {
   const name = input.name.trim();
   const nat = input.nationalId.trim();
   if (!name) throw new Error('اكتب اسم الساكن');
-  if (!nat) throw new Error('اكتب رقم هوية الساكن · إلزامي لبيان الشاغلين');
+  // والمستأجر نفسه من عقده (seedTenantOccupant) بلا رقم هويةٍ في العقد: خانته خالية يكملها المستخدم
+  if (!nat && !seeded) throw new Error('اكتب رقم هوية الساكن · إلزامي لبيان الشاغلين');
   const c = db.get<{ unit_id: string | null; start: string | null }>(
     `SELECT unit_id, start FROM contracts WHERE id = ?`, [contractId]);
   if (!c) throw new Error('تعذّر العثور على العقد');
@@ -108,6 +109,11 @@ export function occupantsOfUnit(db: DB, unitId: string): OccupantRow[] {
      ORDER BY o.created_at`, [unitId]);
 }
 
+/** ما كان يُخزَّن لرقم هويةٍ غائب قبل البند ٤ (المدقق الخارجي B6) · قيمةٌ مخزّنة يُقارن بها */
+const LEGACY_NO_ID = 'لا يوجد'; // i18n-exempt: قيمة مخزّنة قديمة
+/** رقم هوية الساكن فيما يخرج: القيمة القديمة للغائب خانةٌ خالية */
+export const shownNationalId = (v: string | null | undefined): string => (!v || v === LEGACY_NO_ID ? '' : v);
+
 /** المستأجر نفسه أول ساكن تلقائياً · إن لم يكن هو الساكن يحذفه المستخدم */
 export function seedTenantOccupant(db: DB, contractId: string): void {
   const c = db.get<{ tenant_name: string; id_number: string; phone: string; start: string | null; status: string }>(
@@ -116,9 +122,10 @@ export function seedTenantOccupant(db: DB, contractId: string): void {
   const exists = db.get(`SELECT id FROM occupants WHERE contract_id = ? AND relation = 'نفسه' AND deleted_at IS NULL`, [contractId]);
   if (exists) return;
   addOccupant(db, contractId, {
-    name: c.tenant_name, nationalId: c.id_number || 'لا يوجد', phone: c.phone,
+    // بلا رقم هويةٍ تبقى الخانة خالية (القرارات المعلّقة البند ٤ · المدقق الخارجي B6: كانت «لا يوجد» تُخزَّن فتُطبع في محضر الاستلام)
+    name: c.tenant_name, nationalId: c.id_number || '', phone: c.phone,
     relation: 'نفسه', movedIn: c.start,
-  });
+  }, true);
 }
 
 /** الساكنون الحاليون غير المستأجر نفسه · يُسأل عنهم عند التجديد «هل غادر الساكنون؟» */

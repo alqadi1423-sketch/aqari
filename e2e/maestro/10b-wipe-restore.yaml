@@ -1,0 +1,63 @@
+# الجوال الافتراضي · ١٠ ب · مسح كل البيانات بكتابة «مسح»، ثم «استعادة» نسخة الأمان من «البيانات والمساحة»، فيعود العقار
+# (التوجيه الرابع ٤ · ١ «نسخ ثم مسح ثم استعادة ومطابقة») · يتبع ١٠ أ بلا مسح للحالة
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- tapOn: "المزيد"
+- scrollUntilVisible:
+    element: "الإعدادات"
+    direction: DOWN
+- tapOn: "الإعدادات"
+- scrollUntilVisible:
+    element: "امسح كل البيانات"
+    direction: DOWN
+- tapOn: "امسح كل البيانات"
+- tapOn:
+    id: "field-اكتب «مسح» للتأكيد"
+- inputText: "مسح"
+- hideKeyboard
+- tapOn: "تنفيذ المسح"
+- extendedWaitUntil:
+    notVisible: "تنفيذ المسح"
+    timeout: 60000
+- takeScreenshot: 10b-wiped
+# الإعدادات شاشةٌ فوق التبويبات
+- tapOn: "رجوع"
+- tapOn: "العقارات"
+- assertNotVisible: "E2E Backup"
+- tapOn: "المزيد"
+- scrollUntilVisible:
+    element: "الإعدادات"
+    direction: DOWN
+- tapOn: "الإعدادات"
+- scrollUntilVisible:
+    element: "المساحة"
+    direction: DOWN
+- tapOn: "المساحة"
+- scrollUntilVisible:
+    element: "استعادة"
+    direction: DOWN
+- tapOn: "استعادة"
+- extendedWaitUntil:
+    visible: "النسخة صالحة"
+    timeout: 60000
+- takeScreenshot: 10b-plan
+- tapOn: "متابعة الاستعادة"
+- extendedWaitUntil:
+    notVisible: "متابعة الاستعادة"
+    timeout: 60000
+- tapOn:
+    text: "حسناً"
+    optional: true
+- tapOn:
+    text: "رجوع"
+    optional: true
+- tapOn: "العقارات"
+- extendedWaitUntil:
+    visible: "E2E Backup"
+    timeout: 20000
+- takeScreenshot: 10b-restored

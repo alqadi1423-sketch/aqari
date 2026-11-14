@@ -509,6 +509,53 @@ d('بيانات العضو في القواعد (توجيه المالك ٢٠٢٦
     expect((await write(forged({ ts: now.slice(0, 10) + 'T23:59:59' }))).ok).toBe(true);
     expect((await write(forged({ ts: now.slice(0, 10) + 'T00:00:00.000Z' }))).ok).toBe(true);
   });
+  test('التوجيه الرابع ٤ · ٤: تقرير عطل العضو للمالك وحده · بمعرّفه ويومه ورتبته دون عشرين وحمولته، والإنشاء وحده', async () => {
+    const { memDb } = await import('./helpers/testDb');
+    const { buildDoc } = await import('@/sync/engine');
+    const { recordCrashReport, crashDay } = await import('@/domain/crashReport');
+    const mdb = memDb();
+    mdb.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('uid', 'U-VIEW')`);
+    mdb.run(`INSERT OR REPLACE INTO sync_state (k, v) VALUES ('membership', ?)`, [JSON.stringify({ org: ORG, profile: { name: 'عضو تجريبي' } })]);
+    const e = new Error('عطل مصطنع للاختبار');
+    const make = () => {
+      expect(recordCrashReport(mdb, { where: 'موضع مصطنع', e, platform: 'android' })).toBe(true);
+      const k = mdb.get<{ id: string }>(`SELECT id FROM audit_log ORDER BY rowid DESC LIMIT 1`)!.id;
+      return annotate(mdb, buildDoc(mdb, 'audit_log', k, 'upsert', new Date().toISOString(), 'dev-view'), VIEWER).doc;
+    };
+    const write = async (doc: ReturnType<typeof make>) => (await remoteFor('U-VIEW', VIEWER).write([doc]))[0];
+    const ok = make();
+    expect(ok.op).toBe('self');
+    expect((await write(ok)).ok).toBe(true);
+    // المالك يقرؤه، والعضو كاتبه لا يقرؤه ولا يعدّله
+    expect(await remoteFor(ORG, null).getDoc(`orgs/${ORG}/rows/${ok.id}`)).not.toBeNull();
+    const res = await fetch(`http://${HOST}/v1/projects/${PROJECT}/databases/(default)/documents/orgs/${ORG}/rows/${encodeURIComponent(ok.id)}`,
+      { headers: { Authorization: 'Bearer ' + token('U-VIEW') } });
+    expect(res.status).toBe(403);
+    expect((await write({ ...ok, d: { ...ok.d!, entity_name: 'تعديل مصطنع' } })).ok).toBe(false);
+
+    const day = crashDay(new Date());
+    const forge = (id: string, d: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => {
+      const x = make();
+      return { ...x, ...extra, id: 'audit_log__' + id, k: id, d: { ...x.d!, id, ...d } as typeof x.d };
+    };
+    const old = crashDay(new Date(Date.now() - 10 * 86_400_000));
+    const bad: Array<[string, ReturnType<typeof make>]> = [
+      ['كاتبٌ آخر في المعرّف', forge(`crash-U-OTH-${day}-3`)],
+      ['الرتبة العشرون', forge(`crash-U-VIEW-${day}-20`)],
+      ['يومٌ قبل عشرة أيام', forge(`crash-U-VIEW-${old}-4`)],
+      ['حمولةٌ فوق حدّها', forge(`crash-U-VIEW-${day}-5`, { after_json: 'x'.repeat(5000) })],
+      ['موضعٌ فوق حدّه', forge(`crash-U-VIEW-${day}-6`, { entity_name: 'م'.repeat(200) })],
+      ['حقلٌ ليس من السجل', forge(`crash-U-VIEW-${day}-7`, { note: 'مصطنع' })],
+      ['وحدةٌ أخرى', forge(`crash-U-VIEW-${day}-8`, { module: 'العقود' })],
+      ['رموز رؤيةٍ لقسم', forge(`crash-U-VIEW-${day}-9`, {}, { g: ['audit|*'] })],
+      ['ينتحل المالك', forge(`crash-U-VIEW-${day}-10`, { user_name: 'المالك' })],
+    ];
+    const accepted: string[] = [];
+    for (const [label, doc] of bad) if ((await write(doc)).ok) accepted.push(label);
+    expect(accepted).toEqual([]);
+    // والرتبة التاسعة عشرة في حدّها
+    expect((await write(forge(`crash-U-VIEW-${day}-19`))).ok).toBe(true);
+  });
 });
 
 d('عدّاد الترقيم على الخادم (قرار المالك ٢٠٢٦-١٠-٠٥)', () => {

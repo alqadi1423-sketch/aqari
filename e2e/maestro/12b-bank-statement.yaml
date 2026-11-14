@@ -1,0 +1,65 @@
+# الجوال الافتراضي · ١٢ ب · كشف الحساب والمطابقة (التوجيه الرابع ٦ · ٢): حسابٌ بنكي مصطنع، ثم «قراءة كشف» من ملف CSV في التنزيلات،
+# فأعمدة الكشف المخمَّنة يؤكدها المستخدم أول مرةٍ للبنك (قرار المالك 2026-10-09 أ.٣)، فالمعاينة (الافتتاحي مع الحركات يساوي الختامي)
+# والحفظ، ثم سطور الكشف غير المطابقة · أسماء مصطنعة بحروفٍ لاتينية
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- tapOn: "المزيد"
+- scrollUntilVisible:
+    element: "الحسابات البنكية"
+    direction: DOWN
+- tapOn: "الحسابات البنكية"
+- tapOn: "+ حساب بنكي"
+- tapOn:
+    id: "field-اسم الحساب"
+- inputText: "E2E Bank"
+- hideKeyboard
+- tapOn: "إضافة الحساب"
+- extendedWaitUntil:
+    visible: "E2E Bank"
+    timeout: 15000
+# زر ⋮ في البطاقة يحمل اسم الحساب وصفاً له فيطابقه «E2E Bank» (الجوال الافتراضي على db011e7: فُتحت قائمة الإجراءات) · سطر الافتتاحي
+# في البطاقة يفتح البيانات، و«البيانات وكل العمليات» إن فُتحت القائمة
+- tapOn: "الافتتاحي: .*"
+- tapOn:
+    text: "البيانات وكل العمليات"
+    optional: true
+- extendedWaitUntil:
+    visible: "كشف الحساب والمطابقة"
+    timeout: 15000
+- tapOn: "كشف الحساب والمطابقة"
+- tapOn: "قراءة كشف"
+# منتقي الملفات في النظام: «التنزيلات» من قائمة المصادر إن لم يظهر الملف في «الأخيرة»
+- tapOn:
+    text: "Show roots|إظهار الجذور"
+    optional: true
+- tapOn:
+    text: "Downloads|التنزيلات|Download"
+    optional: true
+- extendedWaitUntil:
+    visible: "aqari-e2e-statement.csv"
+    timeout: 20000
+- takeScreenshot: 12-picker
+- tapOn: "aqari-e2e-statement.csv"
+- extendedWaitUntil:
+    visible: "تأكيد الأعمدة"
+    timeout: 30000
+- assertVisible: "Debit"
+- takeScreenshot: 12-columns
+- tapOn: "تأكيد الأعمدة"
+- extendedWaitUntil:
+    visible: "حفظ الكشف"
+    timeout: 30000
+- assertVisible: ".*الافتتاحي مع الحركات يساوي الختامي.*"
+- takeScreenshot: 12-preview
+- tapOn: "حفظ الكشف"
+- tapOn: "سطور الكشف غير المطابقة"
+- extendedWaitUntil:
+    visible: "E2E Deposit"
+    timeout: 15000
+- assertVisible: "E2E Fee"
+- takeScreenshot: 12-saved

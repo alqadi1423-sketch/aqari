@@ -5,6 +5,7 @@
  *    الفرق دائماً، فيصحّح نفسه بعد التحويل والنقل والاستبعاد ولا يتكرر.
  *  - القيمة الدفترية مشتقة من الدفتر: سطور حساب الفئة للأصل ناقص سطور المجمع 1490 له.
  */
+import { straightLine, depreciationThrough } from '../ledgerCore';
 import type { DB } from '../../db/adapter';
 import { postEntry, type PostedEntry } from '../accounting/post';
 import { GENERAL_COST_CENTER } from '../accounting/dimensions';
@@ -23,7 +24,6 @@ const DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 const leap = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
 export const daysInMonth = (mi: number): number => { const y = Math.floor(mi / 12); const m = mi % 12; return m === 1 && leap(y) ? 29 : DAYS[m]; };
 export const monthEnd = (mi: number): string => monthKey(mi) + '-' + String(daysInMonth(mi)).padStart(2, '0');
-const dayOf = (date: string): number => Number(date.slice(8, 10)) || 1;
 
 /* ═══════════ الجدول ═══════════ */
 
@@ -36,26 +36,16 @@ export interface DepreciableAsset {
 }
 
 /** القسط الشهري وقسط الشهر الأخير (يأخذ فرق الهللات) */
+const coreParts = (a: DepreciableAsset) => ({ cost: a.cost_halalas, salvage: a.salvage_halalas, lifeMonths: a.life_months, purchaseDate: a.purchase_date });
 export function monthlyAmounts(a: DepreciableAsset): { per: number; last: number; base: number; start: number } | null {
-  if (a.cost_halalas == null || !a.purchase_date || a.life_months < 1) return null;
-  const base = Number(a.cost_halalas) - Number(a.salvage_halalas || 0);
-  if (base <= 0) return null;
-  const per = Math.floor(base / a.life_months);
-  return { per, last: base - per * (a.life_months - 1), base, start: monthIndex(a.purchase_date) + 1 };
+  // من المنطق النقي (ledgerCore · التوجيه الرابع ٤ · ٥)
+  return straightLine(coreParts(a));
 }
 
 /** المستحق المتراكم حتى نهاية يوم «date» · والشهر الجاري بنسبة أيامه */
 export function expectedThrough(a: DepreciableAsset, date: string): number {
-  const m = monthlyAmounts(a);
-  if (!m) return 0;
-  const k = monthIndex(date) - m.start;
-  if (k < 0) return 0;
-  if (k >= a.life_months) return m.base;
-  const cur = k === a.life_months - 1 ? m.last : m.per;
-  const dim = daysInMonth(monthIndex(date));
-  const d = Math.min(dayOf(date), dim);
-  const partial = d >= dim ? cur : Math.round((cur * d) / dim);
-  return m.per * k + partial;
+  // من المنطق النقي (ledgerCore · التوجيه الرابع ٤ · ٥)
+  return depreciationThrough(coreParts(a), date);
 }
 
 /** الإهلاك سنة بسنة · لشاشة الأصل ومعاينة التحويل */

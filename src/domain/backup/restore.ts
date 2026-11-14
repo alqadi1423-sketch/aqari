@@ -14,19 +14,22 @@ import { unzipYielding, yieldUi, archiveFailureText } from './zipStream';
 import { currentSchemaVersion, migrate, NewerSchemaError } from '../../db/migrations';
 import { SCHEMA_VERSION } from '../../db/schema';
 import type { DB } from '../../db/adapter';
-import { tableCounts, makeSafetyBackup, ensureFreeSpace } from './create';
+import { tableCounts, makeSafetyBackup, ensureFreeSpace, missingFileLabels } from './create';
 import { reviewData } from './checks';
 import { planLedgerRepair, applyLedgerRepair, type LedgerRepairPlan } from '../ledgerReview';
 import { seed, ensureDeviceId } from '../../db/seed';
 import { recomputeInstallments, type PaidChange } from '../contracts/paid';
-import { planKeepPosted, applyKeepPosted, type KeptEntry } from './keepPosted';
+import { planKeepPosted, applyKeepPosted, keepShortages, type KeptEntry } from './keepPosted';
 import { readBlocks, writeBlocks, mergeBlocks, type Blocks } from '../numbering';
 import { INV_RESERVED_KEY, INV_PENDING_KEY, pendingIssues } from '../invoiceIssue';
 import type { RemoteDoc } from '../../sync/types';
+import { getSyncState, setSyncState } from '../../sync/engine';
 import { isEncryptedArchive, decryptArchive, PasswordRequiredError, WrongPasswordError } from './encryption';
 import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
 
 const dec = new TextDecoder();
+/** رسالة الرجوع الفوري حين رجعت القاعدة السابقة مكانها */
+const ROLLED_BACK = 'تعذّرت الاستعادة ورجعت بياناتك السابقة كما كانت. ';
 
 export interface RestorePlan {
   manifest: BackupManifest;
@@ -52,8 +55,17 @@ export interface RestorePlan {
    * (keepPosted.ts) · تُعرض قبل التأكيد
    */
   kept: KeptEntry[];
+  /** حركات نقل النقد بين المحفظة والبنوك بعد النسخة حُملت مع القيود (R12-BAK-3) · تُعرض بعددها قبل التأكيد */
+  keptCashMoves: number;
+  /** حركات نقل النقد الحيّة في النسخة ولا أثر لها على الجهاز ولا في السحابة · تعود بالاستعادة فتُذكر بعددها قبل التأكيد (مراجعة R12-BAK-3) */
+  keptRevivedMoves: number;
   /** فروق محاسبية في النسخة بعد تجهيزها (checks.ts) · تُعرض في الحوار ولا تمنع، كما في إنشاء النسخة */
   notes: string[];
+  /**
+   * ملفاتٌ ذكرتها النسخة على هذا الجهاز (localFilesOf · نسخة ما قبل الترقية) فلم تُوجد فيه أو تغيّرت بصمتها · بالأسماء التي
+   * يعرفها المستخدم · تُعرض قبل التأكيد ولا تمنع الاستعادة، فالبيانات تعود والملف الغائب لا تحمله النسخة (المراجعة الشاملة 2026-11-13 · C-2)
+   */
+  localMissing: string[];
 }
 
 export interface PrepareOptions {
@@ -83,6 +95,42 @@ export function assertSafeManifestFiles(manifest: BackupManifest): void {
     if (seen.has(name)) throw new RestoreError('النسخة مرفوضة · مرفق مكرر في بيانها');
     seen.add(name);
   }
+  // وملفات الجهاز في نسخة ما قبل الترقية · منها يُبنى مسارٌ في مجلد المرفقات للمطابقة، فبالفحص نفسه (C-2)
+  if (manifest.local_files === undefined) return;
+  if (!Array.isArray(manifest.local_files)) throw new RestoreError(t('restore.badLocalList'));
+  const local = new Set<string>();
+  for (const f of manifest.local_files) {
+    if (!f || !isSafeBlobName(f.sha256, f.ext) || local.has(f.sha256 + '.' + f.ext)) throw new RestoreError(t('restore.badLocalList'));
+    local.add(f.sha256 + '.' + f.ext);
+  }
+  // وما سمّته مفقوداً عند البوابة يُطابَق على الجهاز كذلك، فمنه يُبنى مسارٌ أيضاً (C2-R11-2)
+  const gate: unknown = manifest.missing_files ?? [];
+  if (!Array.isArray(gate) || !gate.every((n) => splitBlobName(n))) throw new RestoreError(t('restore.badLocalList'));
+}
+
+/** «بصمة.امتداد» كما في missing_files إلى جزأيه · أو null لاسمٍ لا يُبنى منه مسار */
+function splitBlobName(name: unknown): { sha256: string; ext: string } | null {
+  if (typeof name !== 'string') return null;
+  const dot = name.indexOf('.');
+  const f = { sha256: name.slice(0, dot), ext: name.slice(dot + 1) };
+  return dot > 0 && isSafeBlobName(f.sha256, f.ext) ? f : null;
+}
+
+/**
+ * ملفات الجهاز التي تذكرها نسخة ما قبل الترقية ولا تحملها: ما في local_files، وما سمّته مفقوداً عند البوابة (missing_files)،
+ * فكلاهما مرفقٌ في قاعدتها ملفه على الجهاز لا في الأرشيف · فارغةٌ لغيرها من النسخ (المراجعة الشاملة 2026-11-13 · C-2 · C2-R11-2) ·
+ * بعد assertSafeManifestFiles
+ */
+export function localFilesOf(manifest: BackupManifest): Array<{ sha256: string; ext: string }> {
+  if (manifest.local_files === undefined) return [];
+  const out: Array<{ sha256: string; ext: string }> = [];
+  const seen = new Set<string>();
+  for (const f of [...manifest.local_files, ...(manifest.missing_files ?? []).map(splitBlobName)]) {
+    if (!f || seen.has(f.sha256 + '.' + f.ext)) continue;
+    seen.add(f.sha256 + '.' + f.ext);
+    out.push({ sha256: f.sha256, ext: f.ext });
+  }
+  return out;
 }
 
 export interface RestoreResult {
@@ -189,6 +237,23 @@ export async function prepareRestore(
         throw new RestoreError('بصمة مرفق لا تطابق بيانها: ' + f.sha256.slice(0, 12));
       if (hi % 8 === 0) await yieldUi();
     }
+    // نسخة ما قبل الترقية بلا ملفاتها (المراجعة الشاملة 2026-11-13 · C-2): ملفاتها في مكانها على الجهاز وتبقى فيه ·
+    // تُطابَق ببصماتها واحداً واحداً، وما غاب أو تغيّر يُسمّى قبل التأكيد لا يُسكت عنه ولا يمنع عودة البيانات ·
+    // ومعها ما كان غائباً أو تالفاً عند البوابة نفسها، فلا يقول الحوار «باقية كما هي» عن ملفٍ لا وجود له (C2-R11-2)
+    const localGone: string[] = [];
+    const localList = localFilesOf(manifest);
+    let li = 0;
+    for (const f of localList) {
+      li += 1;
+      throwIfCancelled(opts.signal);
+      onProgress?.(t('restore.checkingLocal', { i: li, n: localList.length }));
+      const p = joinPath(env.attachmentsDir, `${f.sha256}.${f.ext}`);
+      let same = false;
+      try { same = env.fs.exists(p) && (await hasher(env.fs.read(p))) === f.sha256; } catch { same = false; }
+      if (!same) localGone.push(`${f.sha256}.${f.ext}`);
+      if (li % 8 === 0) await yieldUi();
+    }
+    let localMissing: string[] = [];
     throwIfCancelled(opts.signal);
     const cloudDocs = opts.cloud ? await opts.cloud() : undefined;
     throwIfCancelled(opts.signal);
@@ -199,6 +264,8 @@ export async function prepareRestore(
     let ledgerRepair: LedgerRepairPlan | null = null;
     let paidRecomputed: PaidChange[] = [];
     let kept: KeptEntry[] = [];
+    let keptCashMoves = 0;
+    let keptRevivedMoves = 0;
     let notes: string[] = [];
     {
       let probe: DB | null = null;
@@ -225,6 +292,8 @@ export async function prepareRestore(
         const ic = probe.get<Record<string, string>>(`PRAGMA integrity_check`);
         if (!ic || String(Object.values(ic)[0]) !== 'ok')
           throw new RestoreError('قاعدة النسخة تالفة (integrity_check)');
+        // نسخة جهاز عضوٍ لا تُستعاد إلا على جهازٍ عضوٍ في منشأتها بالعضوية نفسها (المراجعة الشاملة 2026-11-13 · B-4)
+        assertMembershipRestorable(probe, env.db);
         // قراءة من كل جدول أساسي + مطابقة الأعداد بالبيان · قبل أي تصحيح فيُطابَق ما في الملف كما هو
         const counted = tableCounts(probe);
         // حزام: فتحٌ أنشأ قاعدة فارغة بدل المجهَّزة يُرفض ولا يمرّ صامتاً
@@ -259,10 +328,16 @@ export async function prepareRestore(
         onProgress?.('جاري ضمّ القيود المرحّلة بعد تاريخ النسخة');
         carryDeviceLetter(env.db, probe);
         const keep = planKeepPosted(probe, { device: env.db, cloud: cloudDocs });
-        if (keep.entries.length) kept = applyKeepPosted(probe, keep).entries;
+        // ولا يُنزل الضمّ بنكاً ولا المحفظة تحت الصفر (القرار ٥٥ · المراجعة ١٢ · R12-BAK-3): يُسمّى ما ينقص قبل أي كتابة
+        const short = keepShortages(probe, keep);
+        if (short.length) throw new RestoreError(short.join(' · '));
+        // وحركات نقل النقد بعد النسخة تبقى ولو لم يُضمّ قيد (قرار المالك 2026-11-14 · R12-BAK-3) · وما يعود كما في النسخة يُعدّ للحوار
+        kept = applyKeepPosted(probe, keep).entries; keptCashMoves = keep.cashMoves; keptRevivedMoves = keep.revivedMoves;
         // الفحوص نفسها بالحكم نفسه في النسخ (checks.ts): الفرق المحاسبي ملاحظةٌ تُعرض ولا ترفض الاستعادة
         notes = [...notes, ...reviewData(probe).notes];
-        incoming = ledgerRepair || paidRecomputed.length || kept.length ? tableCounts(probe) : counted;
+        // أسماء ملفات الجهاز الغائبة من قاعدة النسخة نفسها · فيُسمّى الملف كما يعرفه المستخدم (C-2)
+        if (localGone.length) localMissing = missingFileLabels(probe, localGone);
+        incoming = ledgerRepair || paidRecomputed.length || kept.length || keptCashMoves ? tableCounts(probe) : counted;
         probe.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
       } finally {
         try { probe?.close(); } catch { /* مغلقة */ }
@@ -273,7 +348,7 @@ export async function prepareRestore(
     // مرفقات البيانات الحالية بالبنود نفسها · فيُرى ما سيُخسر من الجانبين لا من جانب واحد
     const live = liveBlobs(env.db);
     return {
-      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept, notes,
+      manifest, stagingDir, stagedDbPath, migrated, incoming, ledgerRepair, paidRecomputed, kept, keptCashMoves, keptRevivedMoves, notes, localMissing,
       current: tableCounts(env.db),
       attachmentsBytes,
       currentAttachments: { count: live.length, bytes: live.reduce((s, b) => s + Number(b.size_bytes), 0) },
@@ -281,6 +356,32 @@ export async function prepareRestore(
   } catch (e) {
     abortRestore(env, stagingDir);
     throw e;
+  }
+}
+
+/** عضوية القاعدة (sync_state) · null بلا عضوية، و'unreadable' لعضويةٍ مكتوبة لا تُقرأ · وبها تُعرف نسخ الجهاز التي صُنعت وهو عضو (memberExit.ts) */
+export function membershipOf(db: DB): { org: string; uid: string } | 'unreadable' | null {
+  let raw: string | null | undefined;
+  try { raw = db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = 'membership'`)?.v; } catch { return null; }
+  if (!raw) return null;
+  try {
+    const m = JSON.parse(raw) as { org?: unknown; uid?: unknown } | null;
+    if (m && typeof m.org === 'string' && m.org) return { org: m.org, uid: String(m.uid ?? '') };
+  } catch { /* أدناه */ }
+  return 'unreadable';
+}
+
+/**
+ * نسخةٌ صُنعت على جهاز عضو تحمل بيانات منشأة غيره (المراجعة الشاملة 2026-11-13 · B-4 · قرار المالك 2026-11-07 (٢ أ) وس٩ وس١٠ في
+ * 2026-11-13: لا تبقى بيانات المنشأة عند من خرج منها): فلا تُستعاد إلا على جهازٍ عضوٍ في منشأتها بالعضوية نفسها · فمن أُزيل أو غادر لا
+ * يعيدها إلى جواله من نسخةٍ بقيت عليه أو صُدّرت قبل خروجه، ولو صار جهازه «مالكاً» لحسابه بعد التفريغ · ونسخة المالك (بلا عضوية) كما كانت
+ */
+export function assertMembershipRestorable(staged: DB, live: DB): void {
+  const theirs = membershipOf(staged);
+  if (theirs === null) return;
+  const mine = membershipOf(live);
+  if (theirs === 'unreadable' || mine === null || mine === 'unreadable' || mine.org !== theirs.org || mine.uid !== theirs.uid) {
+    throw new RestoreError(t('restore.foreignMembership'));
   }
 }
 
@@ -294,6 +395,37 @@ function carryDeviceLetter(from: DB, to: DB): void {
   else to.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [v]);
   // وكتل أرقام هذا الجهاز لا كتل النسخة (numbering.ts) · فضمّ القيود يرقّم منها ولا يعيد رقماً أُخذ
   writeBlocks(to, readBlocks(from));
+}
+
+/**
+ * ما يخصّ هذا التثبيت لا النسخة يُكتب في المجهَّزة قبل نقلها (المراجعة ١٢ · R12-BAK-4): النسخة تحمل هوية الجهاز الذي صنعها (أو لا هوية)
+ * وهذا الجهاز يبقى هو، وإلا ترك كلٌّ من الجهازين كتابة الآخر ظناً أنها صداه · ونسخة بلا علامة الزرع تأخذ ما ينقصها · وحرف الجهاز وكتل
+ * أرقامه ورقم فاتورته المحجوز وما ينتظر إصداره (carryNumbering) · ثم تُدمج صفحات WAL في الملف قبل إغلاقه، فالنقل ينقل الملف وحده ·
+ * وعلامة «استُعيدت ولم تُعتمد للسحابة» (restored_unadopted) متى كان للحية أو للنسخة حسابٌ في المزامنة (مراجعة R12-BAK-4): الشاشة تكتبها
+ * بعد التبديل أو تعتمد النسخة فتمحوها (adoptAsCloudTruth)، وانقطاعٌ قبل ذلك كان يترك قاعدةً بربط النسخة بالحساب بلا علامة فتمرّ بوابة
+ * syncNow وتُدمج النسخة مع السحابة صامتةً · وبلا حسابٍ في أيهما لا سحابة تُدمج معها، والدخول بعدها يمرّ ببوابة البيانات بلا حساب
+ */
+function stampThisDevice(
+  env: BackupEnv, stagedPath: string,
+  live: { deviceId: string | null; letter: string | undefined; numbering: { blocks: Blocks; reserved: string | null; pending: string[] }; uid: string | null },
+): void {
+  const staged = env.openDb(stagedPath);
+  try {
+    seed(staged);
+    ensureDeviceId(staged, live.deviceId);
+    if (live.letter === undefined) staged.run(`DELETE FROM meta WHERE key = 'device_letter'`);
+    else staged.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [live.letter]);
+    carryNumbering(live.numbering, staged);
+    if (live.uid || getSyncState(staged, 'uid')) setSyncState(staged, 'restored_unadopted', '1');
+    staged.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
+  } finally {
+    staged.close();
+  }
+}
+
+/** حساب المزامنة على القاعدة الحية · null لقاعدةٍ بلا جدول حالة المزامنة */
+function liveUid(db: DB): string | null {
+  try { return getSyncState(db, 'uid'); } catch { return null; }
 }
 
 /** ترقيم هذا التثبيت بعد التبديل: كتله الحية مع ما استهلكه الضمّ، ورقم فاتورته المحجوز، وما ينتظر إصداره */
@@ -368,6 +500,15 @@ export async function commitRestore(
     pending: pendingIssues(env.db),
   };
   const preSwap = env.dbPath + '.pre-restore';
+  // هوية هذا الجهاز وحرفه وترقيمه وعلامة الزرع تُكتب في المجهَّزة **قبل** نقلها مكان الحية (المراجعة ١٢ · R12-BAK-4): فما يصير data.db
+  // بالتبديل يحملها من لحظته، وانقطاعٌ بعده (قتل التطبيق أثناء «جاري الفحص النهائي») لا يترك قاعدةً بهوية الجهاز الذي صنع النسخة ولا
+  // بأرقامه المحجوزة · وفشل الكتابة هنا يلغي الاستعادة قبل أن يُمسّ شيء
+  try {
+    stampThisDevice(env, plan.stagedDbPath, { deviceId, letter, numbering: liveNumbering, uid: liveUid(env.db) });
+  } catch (e) {
+    abortRestore(env, plan.stagingDir);
+    throw new RestoreError(ROLLED_BACK + (e instanceof Error ? e.message : ''));
+  }
   // ما في WAL الحي يُدمج في ملف القاعدة قبل إغلاقها (المراجعة الشاملة · البند ٢٠): حذفُ -wal بعد إغلاقٍ فشل بصمت كان يُضيع آخر ما كُتب ·
   // والإغلاق الذي يفشل يوقف الاستعادة قبل أن يُمسّ ملف
   try {
@@ -381,7 +522,16 @@ export async function commitRestore(
     try { if (env.fs.exists(env.dbPath + suffix)) env.fs.remove(env.dbPath + suffix); } catch { /* تجاهل */ }
   }
   try { if (env.fs.exists(preSwap)) env.fs.remove(preSwap); } catch { /* تجاهل */ }
-  env.fs.rename(env.dbPath, preSwap);
+  // نقل القاعدة الحية جانباً داخل حماية: فشلُه يُعيدها مفتوحةً مكانها، لا مغلقةً والتطبيق بلا قاعدة حية
+  // (المراجعة الشاملة 2026-11-13 · C-3)
+  try {
+    env.fs.rename(env.dbPath, preSwap);
+  } catch (e) {
+    try { if (!env.fs.exists(env.dbPath) && env.fs.exists(preSwap)) env.fs.rename(preSwap, env.dbPath); } catch { /* بقيت مكانها */ }
+    try { env.reopenLive(); } catch { /* تُفتح عند التشغيل التالي */ }
+    abortRestore(env, plan.stagingDir);
+    throw new RestoreError(ROLLED_BACK + (e instanceof Error ? e.message : ''));
+  }
   // ما نُقل فعلاً إلى مجلد المرفقات · يُعكس حرفياً إن فشل ما بعده
   const moved: Array<{ src: string; dest: string }> = [];
   try {
@@ -396,13 +546,7 @@ export async function commitRestore(
     const ic = fresh.get<Record<string, string>>(`PRAGMA integrity_check`);
     if (!ic || String(Object.values(ic)[0]) !== 'ok')
       throw new RestoreError('فشل الفحص بعد التبديل');
-    // النسخة تحمل هوية الجهاز الذي صنعها (أو لا هوية) · وهذا الجهاز يبقى هو، وإلا ترك كلٌّ
-    // من الجهازين كتابة الآخر ظناً أنها صداه. ونسخة بلا علامة الزرع تأخذ ما ينقصها الآن لا عند التشغيل التالي
-    seed(fresh);
-    ensureDeviceId(fresh, deviceId);
-    if (letter === undefined) fresh.run(`DELETE FROM meta WHERE key = 'device_letter'`);
-    else fresh.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('device_letter', ?)`, [letter]);
-    carryNumbering(liveNumbering, fresh);
+    // هوية الجهاز وحرفه وترقيمه وعلامة الزرع كُتبت في المجهَّزة قبل التبديل (stampThisDevice · R12-BAK-4)
 
     // دمج المرفقات من staging بالنقل لا بالقراءة · الذاكرة لا تُحمَّل
     env.fs.mkdirp(env.attachmentsDir);
@@ -415,30 +559,70 @@ export async function commitRestore(
       // وما بقي من نافذة — أن يفشل النقل في منتصفه — يُعكس بالسجل أدناه
       if (!env.fs.exists(dest)) { env.fs.rename(src, dest); moved.push({ src, dest }); }
     }
-    try { env.fs.remove(preSwap); } catch { /* تجاهل */ }
-    // حال الملفات من القرص لا من النسخة: ما هنا «لم يُرفع» حتى يطابقه الخادم، وما في الخادم وحده يُنزَّل عند فتحه
+    // حال الملفات من القرص لا من النسخة: ما هنا «لم يُرفع» حتى يطابقه الخادم، وما في الخادم وحده يُنزَّل عند فتحه ·
+    // وهي داخل الذرّية: تخطّيها يُبقي «رُفع» من النسخة فيُفرَّغ ملفٌ قد لا يكون في الخادم، ففشلُها يُرجع كل شيء
     if (env.hasher) reconcileCache({ db: fresh, fs: env.fs, hasher: env.hasher, attachmentsDir: env.attachmentsDir });
-    // ٧) التنظيف
+    // ٧) التنظيف · والقاعدة السابقة تُحذف بعد آخر خطوة قد تفشل لا قبلها، وإلا لم يبقَ للرجوع ما يرجع إليه (C-3)
+    try { env.fs.remove(preSwap); } catch { /* تجاهل · تُحذف في الاستعادة التالية */ }
     abortRestore(env, plan.stagingDir);
     return { manifest: plan.manifest, safetyBackupPath, db: fresh, migrated: plan.migrated };
   } catch (e) {
-    // رجوع فوري · بياناتك السابقة ترجع كما كانت، وملفاتها كذلك
-    for (let i = moved.length - 1; i >= 0; i--) {
-      try { if (env.fs.exists(moved[i].dest)) env.fs.rename(moved[i].dest, moved[i].src); } catch { /* التالي */ }
+    // رجوع فوري · بياناتك السابقة ترجع كما كانت، وملفاتها كذلك ·
+    // وبغياب السابقة عن القرص لا يُحذف شيء: تبقى المستعادة بملفاتها ولا يبقى الجهاز بلا قاعدة (C-3)
+    let previous = false;
+    try { previous = env.fs.exists(preSwap); } catch { /* لا يُعرف · فلا يُحذف شيء */ }
+    if (previous) {
+      for (let i = moved.length - 1; i >= 0; i--) {
+        try { if (env.fs.exists(moved[i].dest)) env.fs.rename(moved[i].dest, moved[i].src); } catch { /* التالي */ }
+      }
     }
     try { env.closeLive(); } catch { /* مغلقة */ }
-    try { if (env.fs.exists(env.dbPath)) env.fs.remove(env.dbPath); } catch { /* تجاهل */ }
-    // وملفا WAL وذاكرته للقاعدة المستعادة يُحذفان قبل إرجاع السابقة (البند ٢٠): وإلا فُتحت السابقة بسجلّ غيرها فأُعيدت عليها صفحاته
-    for (const suffix of ['-wal', '-shm']) {
-      try { if (env.fs.exists(env.dbPath + suffix)) env.fs.remove(env.dbPath + suffix); } catch { /* تجاهل */ }
+    if (previous) {
+      try { if (env.fs.exists(env.dbPath)) env.fs.remove(env.dbPath); } catch { /* تجاهل */ }
+      // وملفا WAL وذاكرته للقاعدة المستعادة يُحذفان قبل إرجاع السابقة (البند ٢٠): وإلا فُتحت السابقة بسجلّ غيرها فأُعيدت عليها صفحاته
+      for (const suffix of ['-wal', '-shm']) {
+        try { if (env.fs.exists(env.dbPath + suffix)) env.fs.remove(env.dbPath + suffix); } catch { /* تجاهل */ }
+      }
+      env.fs.rename(preSwap, env.dbPath);
     }
-    env.fs.rename(preSwap, env.dbPath);
     env.reopenLive();
     abortRestore(env, plan.stagingDir);
-    throw e instanceof RestoreError ? e
-      : new RestoreError('تعذّرت الاستعادة ورجعت بياناتك السابقة كما كانت. '
-        + (e instanceof Error ? e.message : ''));
+    if (!previous) throw new RestoreError(t('restore.previousMissing') + ' ' + (e instanceof Error ? e.message : ''));
+    throw e instanceof RestoreError ? e : new RestoreError(ROLLED_BACK + (e instanceof Error ? e.message : ''));
   }
+}
+
+/**
+ * إكمال استعادةٍ انقطعت بعد التبديل عند الإقلاع (المراجعة ١٢ · R12-BAK-4): القاعدة المستعادة صارت data.db (فالمجهَّزة خرجت من مجلد
+ * التجهيز) والسابقة باقية بجانبها، ومرفقات النسخة ما زالت في مجلد التجهيز داخل tmp فيكنسها الإقلاع · فتُنقل قبل الكنس إلى مجلد المرفقات
+ * ما لم يكن فيه ملفٌ بالبصمة نفسها، ثم يُطابَق حال الملفات من القرص (reconcileCache) كما في آخر الاستعادة · ومجلد تجهيزٍ ما زالت فيه
+ * المجهَّزة لم يقع تبديله فلا يُمسّ · ويُعاد عدد ما نُقل · وهوية الجهاز وترقيمه وعلامة «لم تُعتمد» كُتبت قبل التبديل (stampThisDevice) ·
+ * والمطابقة تجري متى وُجدت استعادةٌ انقطعت ولو لم يُنقل ملف (مراجعة R12-BAK-4): استعادة نسخة هذا الجهاز ملفاتها في مكانها قبلها، و«رُفع»
+ * من النسخة يبقى بلا مطابقةٍ فيُفرَّغ ملفٌ قد لا يكون في الخادم
+ */
+export function finishInterruptedRestore(env: BackupEnv): number {
+  const preSwap = env.dbPath + '.pre-restore';
+  if (!env.fs.exists(preSwap) || !env.fs.exists(env.tmpDir)) return 0;
+  let moved = 0;
+  let interrupted = false;
+  for (const name of env.fs.list(env.tmpDir)) {
+    if (!name.startsWith('restore-staging-')) continue;
+    const dir = joinPath(env.tmpDir, name);
+    if (env.fs.exists(joinPath(dir, 'data.db'))) continue;
+    interrupted = true;
+    const att = joinPath(dir, 'attachments');
+    if (!env.fs.exists(att)) continue;
+    env.fs.mkdirp(env.attachmentsDir);
+    for (const f of env.fs.list(att)) {
+      const dot = f.indexOf('.');
+      if (dot <= 0 || !isSafeBlobName(f.slice(0, dot), f.slice(dot + 1))) continue;
+      const dest = joinPath(env.attachmentsDir, f);
+      if (env.fs.exists(dest)) continue;
+      try { env.fs.rename(joinPath(att, f), dest); moved += 1; } catch { /* التالي · ويكنسه الإقلاع */ }
+    }
+  }
+  if (interrupted && env.hasher) reconcileCache({ db: env.db, fs: env.fs, hasher: env.hasher, attachmentsDir: env.attachmentsDir });
+  return moved;
 }
 
 /** المسار المركّب (تجهيز ثم تنفيذ مباشرة) · تستعمله الاختبارات والاستدعاءات غير التفاعلية */

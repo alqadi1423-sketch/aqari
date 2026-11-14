@@ -92,14 +92,18 @@
   "dataLabels": {
     "table": {
       "assets": "Assets",
-      "purchase_lines": "Purchase invoice lines"
+      "purchase_lines": "Purchase invoice lines",
+      "bank_statements": "Bank statements",
+      "bank_statement_lines": "Bank statement lines"
     },
     "column": {
       "cost_halalas": "Asset cost",
       "salvage_halalas": "Residual value",
       "sale_halalas": "Sale amount",
       "services_halalas": "Contract services amount",
-      "parking_halalas": "Contract parking amount"
+      "parking_halalas": "Contract parking amount",
+      "closing_halalas": "Closing balance",
+      "balance_halalas": "Balance"
     }
   },
   "assets": {
@@ -327,6 +331,7 @@
   "payment": {
     "cancelTitle": "Cancel payment",
     "cancelFromDeposit": "Paid from the deposit of a reservation converted to this contract · it cannot be cancelled, as cancelling would return the amount to a held deposit that can no longer be refunded or forfeited",
+    "cancelFromSettlement": "Paid from the deposit in its settlement · edit it from the deposit settlement, which reverses this payment with it",
     "cancelBeforePayment": "The cancellation date is before the payment date ({{date}}) · choose that date or later",
     "stuckDepositTitle": "Deposit returned to its liability by cancelling its conversion payment",
     "stuckDepositExplain": "A payment made from the deposit of a reservation converted to a contract was cancelled before cancelling was blocked, so its amount went back to 2450 while a converted reservation can no longer be refunded or forfeited. Applying settles the contract's remaining installments in order with it, using the deposit conversion entry dated {{date}} (today, or the first open day if today falls in a period whose return was filed), and the cancelled payment stays as it is.",
@@ -517,7 +522,8 @@
     "claimCollected": "Claim collected",
     "upcomingTotal": "Upcoming installments not yet due",
     "installmentPrepaid": "Upcoming installment paid in advance",
-    "installmentCancelledPaid": "Cancelled installment · paid portion"
+    "installmentCancelledPaid": "Cancelled installment · paid portion",
+    "surplusToCredit": "Surplus moved to the tenant credit balance"
   },
   "fin": {
     "unclosedEarnings": "Earnings to date (not closed)",
@@ -528,7 +534,9 @@
   },
   "claims": {
     "collectedLocked": "The claim is collected and posted · only its reason can be edited",
-    "collectedNoDelete": "The claim is collected and posted · it cannot be deleted"
+    "collectedNoDelete": "The claim is collected and posted · it cannot be deleted",
+    "bankCollectDescr": "Claim collection · {{reason}}",
+    "bankCollectSource": "Claim collection · bank transfer"
   },
   "deposit": {
     "refundOver": "The refund exceeds the deposit itself",
@@ -540,7 +548,30 @@
     "excessNote": "The excess over the deposit becomes a claim on the tenant",
     "claimFirst": "The settlement has an excess claim · delete it from Claims first, then edit the settlement",
     "alreadySettled": "This contract's deposit is already settled · cancel without settlement and edit the settlement from its screen",
-    "refundOverLeft": "The refund exceeds what is left after the deduction · left {{left}}"
+    "refundOverLeft": "The refund exceeds what is left after the deduction · left {{left}}",
+    "settledNoCarry": "The deposit was settled on {{date}} · it cannot be carried to the renewal",
+    "arrearsLabel": "Of which for overdue installments",
+    "arrearsHint": "Pays the installments due by the settlement date and still unpaid ({{due}}), counted as rent · the rest of the deduction is other income",
+    "arrearsOverDeduction": "The amount for overdue installments exceeds the deduction itself",
+    "arrearsOverDue": "The amount for overdue installments exceeds what is left on the installments due by the settlement date · left {{due}}",
+    "arrearsOtherHolder": "A deposit held by another party never entered the office books, so it cannot pay an installment · record what reached you for installments as a collection",
+    "srcLabel": "Installment paid from deposit"
+  },
+  "carryRepair": {
+    "title": "Deposit carried to a renewal after it was settled",
+    "explain": "The previous version renewed these contracts carrying the old contract's deposit although it was already settled (refunded or deducted), so the renewal holds a deposit never received and its settlement offers to refund it again. The fix reverses the carry entry with a reversing entry, lowers the renewal's deposit by the carried amount but never below what was actually received for it, and records it in the activity log. Cash does not move.",
+    "label": "Contract {{to}} renewed from {{from}} · {{tenant}}",
+    "detail": "{{carried}} carried while contract {{from}} was settled on {{date}} · deposit of {{to}} is {{deposit}} now and becomes {{target}}",
+    "action": "Reverse the carry and reset the renewal's deposit",
+    "confirm": "Carry entry {{entry}} ({{carried}}) from contract {{from}} to contract {{to}} is reversed, so both contracts' deposit liability returns to zero, and the deposit of contract {{to}} goes from {{deposit}} to {{target}}, which is what was actually received for it. Cash and the earlier settlement do not change, and the reversing entry is dated {{date}}. Apply it?",
+    "done": "Deposit carry reversed · deposit of contract {{to}} is now {{target}}",
+    "renewalSettled": "The deposit of contract {{to}} was settled on {{date}} after this carry, so its settlement paid out {{amount}} never received for it, and reversing the carry now does not bring back what went out. The tool does not apply: if the tenant was refunded what was never received, claim the excess under Claims, then correct the deposits balance with a manual entry with your accountant.",
+    "carriedOn": "The deposit of contract {{to}} was later carried to its renewal {{next}}, so reversing the first carry alone leaves the second holding what was never received. The tool does not apply: correct the chain with a manual entry with your accountant.",
+    "ownerOnly": "Reversing a deposit carry and correcting a contract's deposit is for the owner only",
+    "gone": "The carry entry is no longer live · run the check again",
+    "memo": "Reversal of a carry of a deposit settled on {{date}} · from {{from}} to {{to}} (A1-1)",
+    "auditEntity": "Reversal of a settled deposit carry",
+    "auditName": "{{from}} ← {{to}} · {{tenant}}"
   },
   "vat": {
     "alreadyFiled": "This period's return is already recorded as filed",
@@ -561,7 +592,9 @@
     "commercialRentControl": "Commercial rent collected outside item 5 (its VAT comes with commercial leasing)",
     "filedDate": "This date is in a filed VAT period, so no reversal or settlement can be dated in it · choose a date in an open period",
     "commercialRentBlock": "Commercial rent was collected in this period ({{amount}}) and its VAT is not built into the return yet, so the return cannot be filed until it is",
-    "filedEntry": "A VAT return was filed for this date's period, so no payment, cash operation or manual entry can be recorded in it · choose a date in an open period"
+    "filedEntry": "A VAT return was filed for this date's period, so no payment, cash operation or manual entry can be recorded in it · choose a date in an open period",
+    "companyLabel": "Organization",
+    "vatNoLabel": "VAT number"
   },
   "invoice": {
     "locked": "An issued invoice can't be edited, returned to draft or deleted · correct it with a credit note",
@@ -572,6 +605,7 @@
     "creditFor": "for invoice {{no}}",
     "creditOnIssued": "A credit note applies to an issued invoice only",
     "creditPaid": "The invoice is collected · set it back to «due» to reverse the collection, then issue the note",
+    "revertBankShort": "Cannot revert from \"Paid\" now · reversing the collection takes its amount out of its bank · {{reason}} · move the amount back first",
     "creditReason": "Enter the reason for the note",
     "creditAmount": "Enter the note amount before tax",
     "creditOver": "The note exceeds what remains of the invoice",
@@ -604,7 +638,8 @@
     "filedLocked": "This purchase is in a filed VAT return, so it is not edited or deleted · correct it with an entry in an open period from the ledger",
     "filedPeriod": "This date's period has a filed return, so no purchase is recorded in it · use a date in an open period",
     "paidLocked": "This purchase is paid, so it is not edited while its payment stands · undo the payment first so its entry is reversed, then edit it and pay it again",
-    "inTrash": "This purchase is in the trash, so it is not edited · restore it from the trash first, then edit it"
+    "inTrash": "This purchase is in the trash, so it is not edited · restore it from the trash first, then edit it",
+    "negativeAmounts": "A purchase invoice can't have negative amounts, and the tax can't exceed the total · check the net and the tax"
   },
   "bankTx": {
     "descrRequired": "Enter a description",
@@ -616,7 +651,9 @@
     "kind": "Movement type",
     "deleteWhat": "Delete the movement",
     "deleteBankShort": "Deleting this inflow takes the bank balance ({{balance}}) below zero by {{amount}}",
-    "cancelBankShort": "The bank balance ({{balance}}) does not cover reversing an inflow of {{amount}}"
+    "cancelBankShort": "The bank balance ({{balance}}) does not cover reversing an inflow of {{amount}}",
+    "restoreWhat": "restoring the transaction",
+    "restoreBankShort": "The bank balance {{balance}} does not cover restoring an outgoing transaction of {{amount}}"
   },
   "props": {
     "geoSearchNote": "Searching sends the address text to the OpenStreetMap service outside the app, and the map loads from it."
@@ -624,9 +661,43 @@
   "account": {
     "saveCopyBeforeDelete": "Save a copy outside the app first"
   },
+  "accountDelete": {
+    "needSignIn": "Sign in first",
+    "needOnline": "Deleting the account needs an internet connection",
+    "deviceLock": "The device lock was not opened · nothing was deleted",
+    "confirmGoogle": "Confirming your identity with Google",
+    "confirmDevice": "Confirming your identity with the server",
+    "cancelled": "Identity confirmation was cancelled",
+    "mismatch": "You chose another account · choose the same account to delete it",
+    "mismatchDevice": "The server did not confirm this is the phone linked to your account · nothing was deleted",
+    "revoked": "This phone was removed from your account · the account can't be deleted from it",
+    "reauthFailed": "Couldn't confirm your identity · try again",
+    "wipingCloud": "Deleting your data from the cloud",
+    "wipingDrive": "Deleting your copies on Google Drive",
+    "deleting": "Deleting the account",
+    "resetting": "Clearing this device",
+    "hintDevice": "To keep a copy, export it from Backup before deleting. You will be asked to unlock the device, and the server confirms this is your linked phone.",
+    "whatDevice": "Permanently deleted and not recoverable: your account, all its data in the cloud, and all data on this device. Any other device on the account stops syncing."
+  },
   "org": {
     "leftReason": "You left the organization",
-    "memberKeepRefused": "A member device cannot keep its data after the owner wiped · clear this device"
+    "memberKeepRefused": "A member device cannot keep its data after the owner wiped · clear this device",
+    "removedReason": "Your membership in the organization was removed",
+    "permChanged": "Your permissions in the organization changed · syncing again with them",
+    "exit": {
+      "removedTitle": "Your membership in the organization was removed",
+      "leftTitle": "You left the organization",
+      "wiped": "This device was cleared of the organization's data, and no copy of it remains here.",
+      "saved": "Your work that was not uploaded ({{n}}), attachments included, was saved in one file. Send it to the organization's owner to add it.",
+      "share": "Send the file to the organization's owner",
+      "shareTitle": "My work that was not uploaded",
+      "done": "I sent it · delete it from this device",
+      "ok": "OK",
+      "later": "Later",
+      "saveFailed": "Your work that was not uploaded could not be saved · the device was not cleared and it will be retried",
+      "fileGone": "The file of work that was not uploaded is no longer on this device",
+      "shareUnavailable": "Sharing is not available on this device"
+    }
   },
   "accounts": {
     "required": "Enter the account name and code",
@@ -640,7 +711,9 @@
     "auditEntity": "Account",
     "openingDiff": "Opening balances are not balanced: difference {{amount}} ({{side}}). They are saved as entered; complete the missing side to correct them.",
     "openingDebit": "debit is larger",
-    "openingCredit": "credit is larger"
+    "openingCredit": "credit is larger",
+    "openingOwnerOnly": "Only the owner sets an opening balance · not saved",
+    "bankOpeningHint": "Bank opening balances of {{amount}} are added to this (offset in 3300 «Opening balances»); edit them in Banks, not here"
   },
   "tenants": {
     "mergeDifferentIds": "Two different ID numbers are merged only with explicit confirmation",
@@ -710,10 +783,56 @@
     "needConnection": "Linking needs an internet connection"
   },
   "backup": {
+    "keptWasDraft": "was a draft in the backup and was posted after it",
+    "keptAccount": "its account {{code}} {{name}}",
+    "keptDepositRentCancel": "reversal of an installment paid from the deposit · its payment cancellation was carried with it, and its settlement is in the backup as it was before the edit",
+    "keptCashMoves": "Along with them, {{n}} cash movements between the wallet and the banks after the backup date (deposit, withdrawal or transfer) stay as they are, so each bank and the wallet keep their current balance.",
+    "keptRevivedMoves": "And {{n}} cash movements between the wallet and the banks in the backup are not on this device now (deleted permanently after the backup date, or never on it); they come back with the restore as in the backup, so their bank and the wallet change from their current balance.",
+    "keptCashMovesAlone": "{{n}} cash movements between the wallet and the banks after the backup date (deposit, withdrawal or transfer) stay as they are after the restore even though no posted entry is kept with them, because the money really moved, so each bank and the wallet keep their current balance.",
+    "keptRevivedMovesAlone": "{{n}} cash movements between the wallet and the banks in the backup are not on this device now (deleted permanently after the backup date, or never on it); they come back with the restore as in the backup, so their bank and the wallet change from their current balance.",
+    "keptMovesToast": "and {{n}} cash movements between the wallet and the banks stayed from the cloud",
     "cipherChunkSize": "The encryption component returned a chunk of unexpected size · the backup was not encrypted",
-    "passwordLost": "A backup password was set on this device but cannot be read, so no backup is exported or uploaded unencrypted. Set the password again, or remove it if you want unencrypted backups.",
+    "passwordLost": "The backup secret saved on this device cannot be read, so no backup is exported or uploaded. Create a new recovery key to resume backups; earlier backups open with their secret if you type it.",
+    "keyRequired": "No backup leaves the device unencrypted · create the recovery key under “Backup” first, and keep it somewhere safe.",
     "passwordLostShort": "Unreadable",
-    "archiveTooLarge": "The archive's total size exceeds what the device can hold"
+    "archiveTooLarge": "The archive's total size exceeds what the device can hold",
+    "key": {
+      "invalid": "Invalid key · check how it was typed (five groups of five characters)",
+      "title": "Recovery key",
+      "state.key": "Saved on this device",
+      "state.password": "Old password · create the key",
+      "state.off": "Not created",
+      "create": "Create the recovery key",
+      "replace": "New key",
+      "replaceBody": "New backups are encrypted with the new key. Earlier backups open on this device automatically, and elsewhere only with their old key, so keep it.",
+      "replaceConfirm": "Create",
+      "warn": "This key is shown once. Without it your backups can never be opened, not by us or anyone. Write it down or copy it somewhere safe outside the phone.",
+      "copy": "Copy the key",
+      "copied": "Key copied",
+      "confirmLabel": "Type the last five characters of the key",
+      "saved": "I saved it",
+      "savedToast": "Key saved · upcoming backups are encrypted with it",
+      "onDevice": "The key is saved on this device and is not shown again.",
+      "driveNote": "The backup is encrypted with the recovery key before upload, and a copy goes to the “Aqari · Backups” folder in Drive.",
+      "askLabel": "Recovery key or password",
+      "askNote": "This backup is encrypted · type the recovery key or the password it was encrypted with.",
+      "askOther": "This backup is encrypted with a key other than the one saved on this device · type its key.",
+      "askWrong": "Wrong key or password · try again.",
+      "next": "I wrote or copied it · Next",
+      "confirmNote": "The key is now hidden · type the last five characters from what you saved, not from the screen.",
+      "showAgain": "Show the key again",
+      "fromPassword": "Your old password stays on this device and opens your earlier backups; new backups are encrypted with the key."
+    },
+    "device": {
+      "title": "Backups on this device",
+      "gone": "The selected backup is no longer on this device · open the list again",
+      "kind": {
+        "pre-restore": "Safety backup before a restore",
+        "pre-wipe": "Safety backup before a wipe",
+        "pre-upgrade": "Backup before an app upgrade"
+      },
+      "empty": "no data"
+    }
   },
   "wipe": {
     "deletingFiles": "Deleting files from the server · {{n}} of {{total}}",
@@ -758,7 +877,18 @@
     "resetLimit": "PIN reset limit reached · available again in {{n}} h",
     "resetNoticeTitle": "App lock PIN was reset",
     "resetStoreFailed": "Couldn't read or save the PIN reset record",
-    "resetNotice": "The app lock PIN was reset by confirming the Google account on {{when}}"
+    "resetNotice": "The app lock PIN was reset by confirming the Google account on {{when}}",
+    "noDeviceLockAny": "The device lock was removed or the lock setting cannot be read · confirm you own the account and choose an app PIN, or add a device lock.",
+    "confirmDevice": "Confirm this phone",
+    "forgotPinDevice": "Forgot the code · confirm this phone",
+    "forgotPinKey": "Forgot the code · recovery key",
+    "recoveryKeyLabel": "Recovery key (25 characters)",
+    "recoveryKeyHint": "Type the backup recovery key you saved when you created it · with or without dashes.",
+    "useRecoveryKey": "Verify and choose a new PIN",
+    "recoveryKeyWrong": "The key does not match the recovery key saved for this account on the device",
+    "deviceRevoked": "This phone was removed from your account · sign in again with an invite code",
+    "resetNoticeDevice": "The app lock PIN was reset with the server confirming this is your linked phone on {{when}}",
+    "resetNoticeKey": "The app lock PIN was reset with the recovery key on {{when}}"
   },
   "imgMeta": {
     "unstripped": "Could not remove this image's metadata, so it was not attached · To attach it as is, turn off image metadata removal in Settings"
@@ -806,7 +936,10 @@
     "convertSum": "What was converted to assets exceeds what the invoice expensed",
     "assetBasis": "A member cannot change an asset's depreciation basis (cost, life, salvage, purchase date and category) after its cost is posted",
     "future": "A month that has not ended yet on the owner's device: its depreciation is not posted before it ends",
-    "assetPlace": "The asset's unit in the entry is not the unit where its cost sits in the ledger"
+    "assetPlace": "The asset's unit in the entry is not the unit where its cost sits in the ledger",
+    "notRegistered": "The organization is not VAT-registered on the owner's device, so the invoice's input VAT is not deductible",
+    "carryAfterSettle": "Carries a deposit already settled before the renewal",
+    "settleAfterCarry": "Settles a deposit already carried to the renewed contract"
   },
   "mirror": {
     "missing": "The entry or its reversal does not exist",
@@ -817,7 +950,9 @@
     "linkRejected": "Reversal link rejected · {{why}}",
     "noOriginal": "A member reversal with no original to reverse",
     "revRejected": "Reversal rejected · {{why}}",
-    "extra": "More reversals than originals"
+    "extra": "More reversals than originals",
+    "transferLive": "The asset transfer still exists with its event, so its entry is not reversed",
+    "carryOwnerOnly": "A deposit carry reversal is for the owner only (the \"Reverse the carry\" tool)"
   },
   "journal": {
     "saveDraft": "Save draft",
@@ -833,12 +968,49 @@
   },
   "sync": {
     "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded",
-    "olderIncoming": "{{t}} · {{k}} · this device's newer copy ({{seen}}) won over an older incoming one ({{theirs}})"
+    "olderIncoming": "{{t}} · {{k}} · this device's newer copy ({{seen}}) won over an older incoming one ({{theirs}})",
+    "bankTxEntryRejected": "Bank transaction of a rejected entry ({{no}}) · not applied without its entry",
+    "bankTxNoEntry": "A bank transaction without an entry that is not a cash move between the wallet and banks with its source and sign",
+    "bankTxOver": "Bank transactions of entry ({{no}}) exceed its cash amount or have the opposite sign",
+    "assetEventLocked": "An asset event is neither deleted nor edited",
+    "bankTxEntryLocked": "The bank transaction of entry ({{no}}) cannot be deleted, moved or re-amounted · it is cancelled by cancelling its operation",
+    "bankTxShort": "The bank or wallet balance does not cover this transaction yet",
+    "bankTxEdited": "A bank transaction without an entry cannot change its bank, amount or source · delete it and record it again",
+    "accountLocked": "A system account, or one used in an entry, keeps its type and group and is not deleted · it stays as it was",
+    "handoverLocked": "The handover form is locked, so it is not reopened and its items do not change · the late edit from an old copy was rejected; a correction after locking is a separate corrective form",
+    "bankOpeningLocked": "A bank with an opening balance is deleted or restored from the trash by the owner only · it stays as it was",
+    "settleAfterCarry": "Settlement of a contract whose deposit was carried to its renewal · rejected so the deposit is not refunded to the tenant and kept in the renewed contract at once; it is settled when the renewal ends",
+    "deadCarryDeposit": "Deposit of contract {{no}} is now {{to}} instead of {{from}} · the carry from the previous contract was rejected because it was settled before the renewal, so the renewal holds only what was received for it",
+    "collectedTwice": "A second collection of the same claim or invoice while a live one exists · rejected so it is not collected twice",
+    "memberBankShort": "{{why}} · An entry from a member takes more out of the bank than the owner's books hold (cancelling a collection, returning an invoice to due, or restoring a paid purchase) · it was rejected with its bank transaction and what follows it, and the books stay as they were",
+    "issuedInvoiceLocked": "An issued invoice is locked: its lines and what it was issued with do not change, it does not return to draft and is not deleted; it is corrected by a credit note · the member's write was rejected and it stays as issued",
+    "installmentLocked": "A new installment for a contract the member neither wrote nor confirmed · a contract's schedule is generated when it is confirmed and is not added to, so it was rejected and the schedule stays as it was",
+    "companyOwnerOnly": "VAT registration and the company row itself are for the owner alone · the member's write was rejected and it stays as it was",
+    "postedPurchaseLocked": "A posted purchase invoice keeps its net, tax, total, tax status and date unless it is edited in the app (its entry reversed and a new one posted with the new values) · the member's write was rejected and it stays as it was",
+    "pendingDecision": "Pending your decision"
   },
   "restore": {
+    "previousMissing": "Its last step failed and your previous data was not found to return to, so the backup's data stayed in place · the safety backup taken before the restore is kept on this device.",
     "closeLiveFailed": "Your current data could not be closed before the switch, so the restore was cancelled and nothing was changed.",
+    "foreignMembership": "This backup is from a member device of an organization this account is not a member of, so it is not restored. Its data is with the organization's owner.",
     "notInTrash": "Not in the trash · already restored",
-    "filedPeriod": "Its reversal falls in a period whose return was filed, so it cannot be restored into it · record it again with a date in an open period"
+    "filedPeriod": "Its reversal falls in a period whose return was filed, so it cannot be restored into it · record it again with a date in an open period",
+    "allDone": "All items were restored",
+    "partial": "Restored {{n}} of {{total}} · {{left}} remain in the trash: restore each alone to see why",
+    "badLocalList": "Backup rejected · the list of its on-device files in its manifest is invalid, so nothing is written from it",
+    "checkingLocal": "Matching the backup's files on this device · {{i}} of {{n}}",
+    "localFiles": "This is a pre-upgrade backup: it holds your data and the list of its files ({{n}}) with their fingerprints, not the files themselves · the files stay on this device as they are and the restore does not touch them.",
+    "localMissing": "{{n}} of them were not found on this device or have changed; the backup does not carry them, so the restore will not bring them back:",
+    "keptAccountMissing": "Entry {{no}}, posted after the backup date for {{amount}}, has a line on account {{code}}, and that account is not in the backup, on this device or in the cloud · a posted entry is never deleted by a restore, so add account {{code}} to the chart of accounts and then restore the backup",
+    "keptAccountTrashed": "Entry {{no}}, posted after the backup date for {{amount}}, has a line on account {{code}}, and that account is in the trash · a posted entry is never deleted by a restore nor left on a deleted account, so restore account {{code}} from the trash and then restore the backup",
+    "keptBankShort": "Keeping what was posted after the backup date takes the balance of «{{bank}}» to {{balance}}, short by {{short}} · no bank goes below zero, so the backup was not restored and your data is unchanged",
+    "keptWalletShort": "Keeping what was posted after the backup date takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the backup was not restored and your data is unchanged",
+    "keptBankShortAdopt": "Keeping what was posted in the cloud after the backup date takes the balance of «{{bank}}» to {{balance}}, short by {{short}} · no bank goes below zero, so the restored backup on this device was not adopted and nothing from it was uploaded to the cloud; sync is waiting",
+    "keptWalletShortAdopt": "Keeping what was posted in the cloud after the backup date takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the restored backup on this device was not adopted and nothing from it was uploaded to the cloud; sync is waiting",
+    "keptBankShortMoves": "Keeping the cash movements after the backup date (those on a bank created after it are not kept) takes the balance of «{{bank}}» to {{balance}}, short by {{short}} · no bank goes below zero, so the backup was not restored and your data is unchanged",
+    "keptWalletShortMoves": "Keeping the cash movements after the backup date (those on a bank created after it are not kept) takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the backup was not restored and your data is unchanged",
+    "keptBankShortMovesAdopt": "Keeping the cash movements in the cloud after the backup date (those on a bank created after it are not kept) takes the balance of «{{bank}}» to {{balance}}, short by {{short}} · no bank goes below zero, so the restored backup on this device was not adopted and nothing from it was uploaded to the cloud; sync is waiting",
+    "keptWalletShortMovesAdopt": "Keeping the cash movements in the cloud after the backup date (those on a bank created after it are not kept) takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the restored backup on this device was not adopted and nothing from it was uploaded to the cloud; sync is waiting"
   },
   "bank": {
     "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"
@@ -850,5 +1022,280 @@
     "screenshots": "Block screenshots",
     "on": "On",
     "off": "Off"
+  },
+  "drive": {
+    "findFolder": "finding the visible backups folder",
+    "makeFolder": "creating the visible backups folder",
+    "makeFolderFailed": "Could not create the visible backups folder",
+    "visibleFailed": "Could not upload the visible copy",
+    "visibleCancelled": "Uploading the visible copy was cancelled",
+    "visibleNote": "The backup was uploaded encrypted to Google Drive and its fingerprint matched, but it was not saved in the visible folder «Aqari · Backups»: {{why}}. Back up again later, and allow file access if asked."
+  },
+  "upgrade": {
+    "backingUp": "Backing up your data and its file list before the upgrade",
+    "missingTitle": "Backup saved · some files are missing",
+    "missingBody": "Before the upgrade, a backup of your data and the list of its files with their fingerprints was saved (the files themselves stay on the phone and are not in it) · {{count}} attached file(s) were not found on the phone or were damaged:",
+    "missingMore": "and {{count}} more",
+    "missingNote": "The records themselves are saved, and a missing file stays missing after the upgrade just as before it. Backups you make (export and Google Drive) will refuse and name it until you attach it again from elsewhere or delete the attachment; the pre-upgrade backup stays under «Data and storage ← Restore».",
+    "continue": "Continue the upgrade"
+  },
+  "crash": {
+    "row": "Crash reports (30 days)",
+    "title": "Crash reports",
+    "close": "Close",
+    "copy": "Copy details",
+    "share": "Send"
+  },
+  "purchaseQr": {
+    "read": "Read invoice QR",
+    "reading": "Reading the image…",
+    "from": "Invoice image",
+    "camera": "Photograph the invoice",
+    "gallery": "Image from gallery",
+    "unavailable": "Code reading is not available in this app version · update it",
+    "readFailed": "The image could not be read · try a clearer photo of the code",
+    "notRead": "Invoice code not read",
+    "err": {
+      "empty": "No code in the image or file · photograph the QR code at the bottom of the invoice close and sharp, or pick the e-invoice file (XML, or a PDF that embeds it)",
+      "url": "The code in the image is a link, not a tax invoice code · a tax invoice code carries the seller name, VAT number and amount",
+      "format": "The code in the image is not a ZATCA tax invoice code",
+      "missing": "The invoice code is incomplete: it lacks the seller name, VAT number, invoice time, total or VAT"
+    },
+    "filled": "Invoice filled from the code",
+    "review": "Review the supplier, date and amounts before saving · choose the tax status yourself: the code does not say whether the invoice is in the organization's name and number.",
+    "warn": {
+      "vatNo": "The VAT number in the code is not in ZATCA format (15 digits starting and ending with 3), so it was not saved for the supplier",
+      "issuedAt": "The invoice time in the code can't be fully read: the date is the day written in it if readable, otherwise today · review and correct it",
+      "vatOverTotal": "The VAT in the code exceeds the total · check the invoice",
+      "rate": "The VAT in the code is not 15% of the net · the invoice may include exempt or zero-rated items",
+      "supplierVat": "A supplier with the same name is registered under another VAT number · a supplier named with the seller VAT number is proposed, so review the supplier before saving",
+      "supplierArchived": "The supplier “{{name}}” is archived · restore it from Suppliers and pick it; only the amounts were filled"
+    },
+    "newSupplier": "Unregistered supplier",
+    "newSupplierBody": "“{{name}}” with VAT number {{vat}} is not in your suppliers · add it and record the invoice under it?",
+    "noVat": "unreadable",
+    "addSupplier": "Add supplier",
+    "keepSupplier": "Amounts only",
+    "duplicate": "This invoice is already recorded as {{no}} on {{date}} · it cannot be recorded twice",
+    "file": "E-invoice file (PDF or XML)",
+    "creditNote": "The file is a credit note from the supplier, not a purchase invoice · record it as a reduction of its invoice",
+    "maybeDuplicate": "May already be recorded",
+    "maybeDuplicateBody": "Purchase invoice {{no}} dated {{date}} has the same supplier, total and tax, and was recorded without a code · is this a different invoice?",
+    "anotherInvoice": "It's a different invoice",
+    "restoreLookalike": "Purchase invoice {{no}} dated {{date}} may be the same one (day, supplier, total and tax) · it is not restored over it: delete or edit one first"
+  },
+  "bankStatement": {
+    "auditModule": "Bank statement",
+    "auditEntity": "Statement",
+    "duplicateFile": "This file was already read and saved for this bank",
+    "nothingNew": "Every line of this statement is already saved for this bank · nothing new",
+    "lineNotOpen": "This line is not open for matching",
+    "txMissing": "The transaction is not in this bank",
+    "amountDiffers": "The transaction amount differs from the statement line · the difference stays in the reconciliation report",
+    "txTaken": "This transaction is matched to another line",
+    "noteRequired": "Write the reason for excluding it",
+    "title": "Statement & reconciliation",
+    "open": "Statement & reconciliation",
+    "noBank": "The bank account was not found",
+    "read": "Read a statement",
+    "reading": "Reading the statement…",
+    "notRead": "Couldn't read the statement",
+    "err": {
+      "format": "This file isn't a readable statement · a text PDF, Excel, CSV or MT940",
+      "encrypted": "The file is password-protected · export it from the bank without protection",
+      "columns": "The statement's columns weren't recognised (date, and amount or debit and credit)",
+      "empty": "No transactions in the statement",
+      "balance": "Opening plus transactions doesn't equal the printed balances or the closing · nothing was saved",
+      "needBalances": "The statement prints no balances · enter the opening and closing from its header",
+      "ocr": "Reading photos is not available in this app version · update it or choose the statement file",
+      "image": "The photo could not be read · choose a clearer photo or the statement file"
+    },
+    "needTitle": "Opening and closing",
+    "opening": "Opening balance",
+    "closing": "Closing balance",
+    "preview": "{{n}} transactions from {{from}} to {{to}}\nOpening {{opening}} · Closing {{closing}}\nOpening plus transactions equals the closing",
+    "shapeChanged": "The statement's layout changed since this bank's last one · review the transactions before saving",
+    "warn": {
+      "openingPrinted": "The printed previous balance contradicts the balances and totals, so the opening was taken from their chain",
+      "openingDerived": "No opening balance was printed, so it was taken from the first line's balance",
+      "photo": "Read from a photo: figures and dates only (Arabic descriptions cannot be read from a photo) · the balance chain checks out",
+      "unverified": "Unverified statement"
+    },
+    "save": "Save statement",
+    "saved": "Statement saved · {{added}} new transactions",
+    "savedSkipped": "Statement saved · {{added}} new transactions; {{skipped}} already saved were skipped",
+    "suggestions": "Suggested matches",
+    "ready": "Ready to approve",
+    "review": "Needs review",
+    "withTx": "With: {{descr}} · {{date}} · {{no}}",
+    "why": {
+      "amount": "same amount",
+      "sameDay": "same day",
+      "days": "close date",
+      "ref": "shared number",
+      "words": "shared word",
+      "unique": "only candidate",
+      "ambiguous": "two equal candidates",
+      "several": "several installments in one transfer",
+      "name": "name in the description",
+      "date": "near the due date"
+    },
+    "approve": "Approve",
+    "approveAll": "Approve all ready ({{n}})",
+    "approveAllBody": "{{n}} ready matches will be approved, each with the same amount and a close date",
+    "approved": "Match approved",
+    "openLines": "Unmatched statement lines",
+    "record": "Record",
+    "exclude": "Exclude",
+    "excludeReason": "Reason for excluding",
+    "excludedAs": "Excluded: {{note}}",
+    "reopen": "Reopen",
+    "matchedLines": "Matched statement lines",
+    "unmatch": "Unmatch",
+    "matchedWith": "With transaction {{no}} · {{date}}",
+    "unmatched": "Match cancelled",
+    "recordTitle": "Record a transaction from the statement line",
+    "amount": "Amount",
+    "descr": "Description",
+    "kind": {
+      "fee": "Bank fee",
+      "income": "Other income",
+      "withdraw": "Withdraw to wallet",
+      "deposit": "Deposit from wallet",
+      "transfer": "Transfer between accounts"
+    },
+    "report": "Reconciliation report",
+    "prevMonth": "Previous month",
+    "nextMonth": "Next month",
+    "notCovered": "No saved statement for this month",
+    "stmtOpening": "Statement opening",
+    "stmtClosing": "Statement closing",
+    "booksOpening": "Books at month start",
+    "booksClosing": "Books at month end",
+    "matchedN": "Matched: {{n}}",
+    "onlyStatement": "In the statement, not in the books",
+    "onlyBooks": "In the books, not in the statement",
+    "excludedLines": "Excluded with a reason",
+    "unexplained": "Unexplained difference: {{amount}}",
+    "gap": "Gap after {{after}}: closing {{closing}} and next opening {{next}}",
+    "none": "Nothing",
+    "statements": "Saved statements",
+    "stmtRow": "{{from}} to {{to}} · {{n}} transactions",
+    "deleteStmt": "Delete statement",
+    "deleteStmtBody": "The statement and its lines are deleted and stay in the trash",
+    "deleteMatched": "The statement has matched lines · unmatch them first",
+    "otherAccount": "The statement is for another account ({{account}}), not this bank · choose its bank or correct the IBAN",
+    "inTransitBooks": "In transit: in the books, on another month's statement",
+    "inTransitStatement": "In transit: on the statement, booked in another month",
+    "unverifiedOffer": "It can be saved as “unverified” with your confirmation: {{n}} lines, opening {{opening}}, and its lines make the closing {{closing}} · the reconciliation report flags it",
+    "saveUnverified": "Save it unverified and start matching",
+    "unverifiedMonth": "A statement in this month was saved “unverified” with your confirmation: its opening plus its lines does not equal its balances or closing · check its figures with the bank",
+    "mapTitle": "Statement columns",
+    "mapHint": "First statement for this bank or a new layout: confirm or correct each column's role; the mapping is kept for this bank and used for later statements",
+    "mapConfirm": "Confirm columns",
+    "dateOrder": "Date format",
+    "order": {
+      "dmy": "day/month/year",
+      "mdy": "month/day/year"
+    },
+    "role": {
+      "date": "Date",
+      "valueDate": "Value date",
+      "hijri": "Hijri date",
+      "descr": "Description",
+      "debit": "Debit (withdrawal)",
+      "credit": "Credit (deposit)",
+      "amount": "Amount",
+      "balance": "Balance",
+      "ref": "Reference",
+      "type": "Transaction type",
+      "none": "Nothing"
+    },
+    "collect": {
+      "installments": "Installment of {{tenant}} · contract {{no}} · {{period}}",
+      "claim": "Claim: {{reason}} · {{tenant}}",
+      "invoice": "Invoice {{no}} · {{customer}}",
+      "note": "From the bank statement: {{descr}}",
+      "notDeposit": "The line is not a deposit · collections match deposits only",
+      "amountDiffers": "The line amount does not equal what remains on your choice · record the collection from its screen",
+      "auditEntity": "Collection approved from bank statement",
+      "auditName": "{{kind}} · {{descr}}",
+      "title": "Suggested collections for deposits",
+      "approve": "Approve collection",
+      "approved": "Collection recorded and the line matched",
+      "approveAll": "Approve the ready ones ({{n}})",
+      "approveAllBody": "{{n}} deposits are recorded as collections in this bank by their usual path on each line's date, then each line is matched to its transaction",
+      "needPerm": "Approval is for those who record collections and match statements",
+      "someFailed": "{{n}} of {{of}} were not approved: {{why}}"
+    },
+    "asExpense": "Expense (purchase invoice)",
+    "asCollection": "New collection",
+    "transferTo": "To account",
+    "transferFrom": "From account"
+  },
+  "dates": {
+    "invalid": "Invalid date · type it as year-month-day, e.g. 2026-01-15",
+    "invalidValue": "The date \"{{date}}\" is invalid · type it as year-month-day with a real day of the month, e.g. 2026-01-15",
+    "invalidKeeps": "Invalid date · {{date}} stays in effect until you type it as year-month-day, e.g. 2026-01-15",
+    "invalidEmpty": "Invalid date · the field counts as having no date until you type it as year-month-day, e.g. 2026-01-15",
+    "emptyKeeps": "The field is empty · {{date}} stays in effect until you type a date as year-month-day, e.g. 2026-01-15",
+    "required": "The date is empty · pick it from the calendar or type it as year-month-day, e.g. 2026-01-15",
+    "integrityName": "Every date is year-month-day with a real day of the month",
+    "integrityValue": "{{entries}} entries · {{payments}} payments · {{purchases}} purchases · {{bank}} bank transactions · {{invoices}} invoices",
+    "integrityFix": "{{entries}} entries · {{payments}} payments · {{purchases}} purchases · {{bank}} bank transactions · {{invoices}} invoices · they fall in no month or quarter, so reports and the VAT return miss them · correct each from its source: cancel the payment, reverse the entry or edit the purchase with the right date, and replace an invoice with a credit note and a new invoice"
+  },
+  "folder": {
+    "title": "Backups folder",
+    "none": "Not chosen",
+    "pick": "Choose the backups folder",
+    "save": "Save to folder",
+    "share": "Share a backup",
+    "picked": "You chose the folder «{{name}}» · your next backups are saved there",
+    "pickCancelled": "No folder was chosen",
+    "missing": "You have not chosen a backups folder yet · choose a folder once, then save to it.",
+    "lostTitle": "The app cannot reach the backups folder",
+    "lost": "The app can no longer write to the folder you chose: it may have been moved or deleted, the permission may have been removed, or the memory card was taken out. Choose the folder again, then save.",
+    "pickAgain": "Choose the folder again",
+    "back": "Back",
+    "saved": "The backup was saved encrypted in «{{folder}}» and its fingerprint matched",
+    "savedNotes": "The backup was saved to the folder and has notes",
+    "mismatch": "The backup saved in the folder as «{{name}}» does not match the original, so it was deleted and not accepted. Save again, and if it repeats choose another folder.",
+    "writing": "Saving to the folder",
+    "verifying": "Checking the backup saved in the folder",
+    "hint": "The backup is encrypted with the recovery key and is restored from «Restore from a backup» with no internet and no account. If the folder is on the phone itself it does not protect you if the phone is lost, so choose a memory card or a USB drive, or share a backup elsewhere from time to time.",
+    "failedTitle": "Could not save to the folder",
+    "failedLead": "The backup was not saved to the folder.",
+    "cancelled": "Saving to the folder was cancelled · nothing of it was left there",
+    "reminderTitle": "Backup reminder",
+    "reminderPick": "Choose a folder for your backups in «Backup» in Settings and save a backup there. Your backups are no longer uploaded to Google Drive.",
+    "reminderSave": "Save a backup to the backups folder you chose. A backup that stays only on the phone does not protect you from a lost phone."
+  },
+  "driveExit": {
+    "row": "Your backups on Google Drive",
+    "rowValue": "Take them out, then delete",
+    "intro": "Your backups are no longer uploaded to Google Drive. Download your old backups from it into the backups folder, then delete them from Drive and the app's permission is removed from your Google account. The backups stay encrypted with the recovery key and are restored from a file without Google.",
+    "loading": "Reading your backups on Google Drive",
+    "count": "Your backups on Drive: {{count}} · downloaded to the folder: {{done}}",
+    "none": "No Aqari backups on Google Drive",
+    "export": "Download the backups to the folder",
+    "needFolder": "Choose the backups folder first, then download your backups to it.",
+    "exporting": "Downloading backup {{i}} of {{n}} to the folder",
+    "exportDone": "{{saved}} backups were downloaded to the folder and their fingerprints matched",
+    "exportFailedTitle": "Not all backups were downloaded",
+    "exportFailedBody": "{{saved}} backups were downloaded to the folder. {{failed}} could not be, and nothing of them was saved in the folder:\n{{list}}\n\nTry again later. If they keep failing because the fingerprint does not match, the file on Drive is damaged and cannot be restored.",
+    "delete": "Delete Aqari backups from Drive",
+    "deleteTitle": "Delete Aqari backups from Google Drive",
+    "deleteBody": "All Aqari backups ({{count}}) are deleted from Google Drive, with those in the visible folder «Aqari · Backups», then the app's permission is removed from your Google account. All of them were downloaded to the backups folder and their fingerprints matched. This cannot be undone.",
+    "deleteBodyUnexported": "Warning: {{unexported}} of your backups on Drive were not downloaded to the folder, and they are deleted too and never come back.\n\nAll Aqari backups ({{count}}) are deleted from Google Drive, with those in the visible folder «Aqari · Backups», then the app's permission is removed from your Google account. This cannot be undone.",
+    "deleteConfirm": "Delete them",
+    "deleteConfirmUnexported": "Delete them with {{unexported}} not downloaded",
+    "notExported": "{{count}} of your backups on Drive were not downloaded to the folder yet, so nothing was deleted. Download them first, or confirm deleting them while not downloaded.",
+    "deleting": "Deleting Aqari backups from Google Drive",
+    "revoking": "Removing the app's permission from your Google account",
+    "deleted": "{{count}} backups were deleted from Drive and the app's permission was removed from your Google account",
+    "revokeFailed": "The backups were deleted from Drive, but removing the app's permission from your Google account failed. Press «Delete Aqari backups from Drive» again to finish removing the permission.",
+    "failedTitle": "Could not take your backups out of Google Drive",
+    "restore": "Restore from Google Drive",
+    "cancelled": "Downloading was cancelled · what was downloaded before stays in the folder"
   }
 }

@@ -5,7 +5,8 @@
  * الواجهة: عند عدم الكفاية لا يظهر زر الصرف، ومكانه السبب ورابط «إيداع المالك» بالناقص (CashGate).
  */
 import type { DB } from '../db/adapter';
-import { walletCashBalance } from './accounting/ledger';
+import { walletCashBalance, bankBalance } from './accounting/ledger';
+import { t } from '../i18n';
 import { fmt } from './money';
 
 export class CashShortfallError extends Error {
@@ -44,3 +45,35 @@ export function entryCashEffect(db: DB, entryId: string): number {
 
 /** ما يُخرجه عكس قيدٍ من المحفظة · صفر إن لم يكن أدخل نقداً */
 export const reversalCashOut = (db: DB, entryId: string): number => Math.max(0, entryCashEffect(db, entryId));
+
+/** بنكٌ لا يكفي لما يُخرجه منه عكسٌ أو إعادة · رسالته كاملة باسم البنك ورصيده والمبلغ */
+export class BankShortfallError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BankShortfallError';
+  }
+}
+
+/**
+ * ما يُخرجه من كل بنك عكسُ حركات القيد رقم entryNo (reverse: الوارد يصير صادراً) أو إعادةُ نسخها (repost: الصادر يتكرر)،
+ * وما لا يكفيه رصيده · قرار المالك (أ · ٥٥): «السداد من حسابٍ بنكي لا يُنزل رصيده تحت الصفر في كل المسارات»، وحارس المحفظة
+ * لا يرى البنك (المراجعة الشاملة 2026-11-13 · A2.2).
+ */
+export function bankShortages(db: DB, entryNo: string, mode: 'reverse' | 'repost'): string[] {
+  const out: string[] = [];
+  for (const r of db.all<{ bank_id: string; s: number; name: string | null }>(
+    `SELECT t.bank_id, SUM(t.amount_halalas) AS s, b.name FROM bank_tx t LEFT JOIN banks b ON b.id = t.bank_id
+     WHERE t.journal_no = ? AND t.deleted_at IS NULL GROUP BY t.bank_id`, [entryNo])) {
+    const amount = mode === 'reverse' ? Number(r.s) : -Number(r.s);
+    if (!(amount > 0)) continue;
+    const balance = bankBalance(db, r.bank_id);
+    if (balance < amount) out.push(t('bankTx.bankShort', { bank: r.name ?? '', balance: fmt(balance), amount: fmt(amount) }));
+  }
+  return out;
+}
+
+/** يرفض العكس أو الإعادة إن لم يكفِ بنكٌ لما تُخرجه منه · قبل أي كتابة */
+export function requireBanksCover(db: DB, entryNo: string, mode: 'reverse' | 'repost'): void {
+  const short = bankShortages(db, entryNo, mode);
+  if (short.length) throw new BankShortfallError(short[0]);
+}

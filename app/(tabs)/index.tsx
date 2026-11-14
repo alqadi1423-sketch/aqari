@@ -262,7 +262,7 @@ export default function Dashboard() {
       const c = db.get<{ contract_id: string }>(`SELECT contract_id FROM contract_payments WHERE id = ?`, [srcId]);
       if (c) { router.push(`/contracts?detail=${c.contract_id}`); return; }
     }
-    if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', 'key_money'].includes(srcType)) {
+    if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', 'deposit_rent', 'key_money'].includes(srcType)) {
       router.push(`/contracts?detail=${srcId}`); return;
     }
     if (['claim', 'claim_collect'].includes(srcType)) { router.push(`/claims?detail=${srcId}`); return; }
@@ -285,8 +285,8 @@ export default function Dashboard() {
       /> : null}
       {sees('reports') && range === 'custom' && (
         <Row style={{ marginTop: 8 }}>
-          <View style={{ flex: 1 }}><DateField label="من" value={customFrom} onChange={setCustomFrom} /></View>
-          <View style={{ flex: 1 }}><DateField label="إلى" value={customTo} onChange={setCustomTo} /></View>
+          <View style={{ flex: 1 }}><DateField label="من" value={customFrom} onChange={setCustomFrom} optional /></View>
+          <View style={{ flex: 1 }}><DateField label="إلى" value={customTo} onChange={setCustomTo} optional /></View>
         </Row>
       )}
 

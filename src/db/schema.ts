@@ -3,10 +3,10 @@
  * جدول لكل كيان، لا لقطة JSON. المبالغ كلها أعداد صحيحة بالهللات.
  * لا عمود رصيد في أي جدول · الأرصدة مشتقة (docs/DESIGN.md §٤).
  */
-import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
+import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, STATEMENT_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 49;
+export const SCHEMA_VERSION = 62;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -1794,4 +1794,231 @@ export const MIGRATION_49 = `
 ALTER TABLE sync_inbox ADD COLUMN waiting_since TEXT;
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49];
+/**
+ * الترحيلة ٥٠ · فهارس صندوق الوارد (التوجيه الرابع ٣ · ٢ · دراسة التوسع · المرحلة ٠ · «3,000 دفعة عضو في ≤ 3 ث وخطياً»): فحص جهاز
+ * المالك لكتابات الأعضاء يقرأ الصف بمفتاحه (tbl وpk) وأبناءه بمعرّف أبيه (json_extract من الحمولة) في الوارد، ولا فهرس لهما فكان كل
+ * بحثٍ مسحاً للصندوق كله فيكبر الفحص بمربع حجمه · والفهرس بالتعبير نفسه الذي يكتبه المحرّك (sync/engine.ts: rowsHereOrInbox وقارئ
+ * المصادر)، بالجدول أولاً · وفهرس قيد إلغاء الدفعة (cancel_entry_id) لفحص «قيدٌ لدفعةٍ واحدة» · فهارس وحدها: لا يتغيّر صفّ
+ */
+export const MIGRATION_50 = `
+CREATE INDEX IF NOT EXISTS ix_sync_inbox_tbl_pk ON sync_inbox(tbl, pk);
+CREATE INDEX IF NOT EXISTS ix_inbox_d_journal_entry_id ON sync_inbox(tbl, json_extract(payload, '$.d.journal_entry_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_payment_id ON sync_inbox(tbl, json_extract(payload, '$.d.payment_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_asset_id ON sync_inbox(tbl, json_extract(payload, '$.d.asset_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_entry_id ON sync_inbox(tbl, json_extract(payload, '$.d.entry_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_purchase_id ON sync_inbox(tbl, json_extract(payload, '$.d.purchase_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_journal_no ON sync_inbox(tbl, json_extract(payload, '$.d.journal_no'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_unit_id ON sync_inbox(tbl, json_extract(payload, '$.d.unit_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_invoice_id ON sync_inbox(tbl, json_extract(payload, '$.d.invoice_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_ref_invoice_id ON sync_inbox(tbl, json_extract(payload, '$.d.ref_invoice_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_contract_id ON sync_inbox(tbl, json_extract(payload, '$.d.contract_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_no ON sync_inbox(tbl, json_extract(payload, '$.d.no'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_reversed_by ON sync_inbox(tbl, json_extract(payload, '$.d.reversed_by'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_src_type ON sync_inbox(tbl, json_extract(payload, '$.d.src_type'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_status ON sync_inbox(tbl, json_extract(payload, '$.d.status'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_src_id ON sync_inbox(tbl, json_extract(payload, '$.d.src_id'));
+CREATE INDEX IF NOT EXISTS ix_inbox_d_method_label ON sync_inbox(tbl, json_extract(payload, '$.d.method_label'));
+CREATE INDEX IF NOT EXISTS ix_pay_cancel_entry ON contract_payments(cancel_entry_id);
+`;
+
+/**
+ * الترحيلة ٥١ · أبعاد سطر القيد المرحّل تُملأ مرةً ولا تُغيَّر (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩: القرارات المعلّقة القسم ٥ البند ٣،
+ * وقاعدة المالك ٩٠ «سطور القيد المختوم لا تُمسّ»): العقار والوحدة والعقد ومركز التكلفة والأصل يُملأ الفارغ منها (ملء القيود القديمة
+ * بأداة المالك أو بالمزامنة)، وقيمةٌ قائمة لا تُستبدل · فالمحفّز يرفض في القاعدة نفسها ولو أخطأ الكود
+ */
+// i18n-exempt: رسائل محفّزات القاعدة كأخواتها
+export const MIGRATION_51 = `
+CREATE TRIGGER IF NOT EXISTS trg_jl_dims_fill_only
+BEFORE UPDATE OF property_id, unit_id, contract_id, cost_center_id, asset_id ON journal_lines
+WHEN (SELECT status FROM journal_entries WHERE id = OLD.entry_id) = 'مرحّل'
+  AND ((OLD.property_id IS NOT NULL AND NEW.property_id IS NOT OLD.property_id)
+    OR (OLD.unit_id IS NOT NULL AND NEW.unit_id IS NOT OLD.unit_id)
+    OR (OLD.contract_id IS NOT NULL AND NEW.contract_id IS NOT OLD.contract_id)
+    OR (OLD.cost_center_id IS NOT NULL AND NEW.cost_center_id IS NOT OLD.cost_center_id)
+    OR (OLD.asset_id IS NOT NULL AND NEW.asset_id IS NOT OLD.asset_id))
+BEGIN SELECT RAISE(ABORT, 'بُعد سطر القيد المرحّل يُملأ مرة ولا يُغيَّر'); END;
+`;
+
+/**
+ * الهجرة ٥٢ (المدقق الخارجي B1 · التوجيه الرابع ٣ · ٢): ما لم يستعمل فيه المخطِّط فهارس الهجرة ٥٠ · معرّفات سطور القيود في الوارد في
+ * جدولٍ صغير تحفظه المحفّزات (taken: كان يمسح سطور كل قيود الوارد بـ json_each لكل قيد عضو)، وفهرس العاكس في الدفتر (claimants) ·
+ * جدولٌ محلي مشتق لا يُزامَن ولا يُنسخ معناه: يُعاد بناؤه من الوارد
+ */
+export const MIGRATION_52 = `
+CREATE TABLE IF NOT EXISTS sync_inbox_lines (line_id TEXT NOT NULL, doc TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_inbox_lines_line ON sync_inbox_lines(line_id);
+CREATE INDEX IF NOT EXISTS ix_inbox_lines_doc ON sync_inbox_lines(doc);
+CREATE TRIGGER IF NOT EXISTS trg_inbox_lines_ins AFTER INSERT ON sync_inbox
+WHEN NEW.tbl = 'journal_entries' AND NEW.del = 0
+BEGIN
+  INSERT INTO sync_inbox_lines (line_id, doc)
+    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j WHERE j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_inbox_lines_upd AFTER UPDATE OF payload, del ON sync_inbox
+WHEN NEW.tbl = 'journal_entries' OR OLD.tbl = 'journal_entries'
+BEGIN
+  DELETE FROM sync_inbox_lines WHERE doc = OLD.doc;
+  INSERT INTO sync_inbox_lines (line_id, doc)
+    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j
+    WHERE NEW.tbl = 'journal_entries' AND NEW.del = 0 AND j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_inbox_lines_del AFTER DELETE ON sync_inbox
+WHEN OLD.tbl = 'journal_entries'
+BEGIN
+  DELETE FROM sync_inbox_lines WHERE doc = OLD.doc;
+END;
+DELETE FROM sync_inbox_lines;
+INSERT INTO sync_inbox_lines (line_id, doc)
+  SELECT json_extract(j.value, '$.id'), i.doc FROM sync_inbox i, json_each(i.payload, '$.lines') j
+  WHERE i.tbl = 'journal_entries' AND i.del = 0 AND j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_je_reversed_by ON journal_entries(reversed_by) WHERE reversed_by IS NOT NULL;
+`;
+
+/**
+ * الهجرة ٥٣ (المدقق الخارجي ج١ · حرج): محفّزات سطور الوارد بشرط «السطر كائن» · مستند قيدٍ من عضوٍ سطوره نصوص كان يرمي «malformed JSON»
+ * داخل الإدراج في الوارد فيتوقف كل جهازٍ يسحبه · والهجرة ٥٢ صُحّحت بالشرط نفسه، وهذه تعيد بناء المحفّزات لقاعدةٍ جرت عليها قبله
+ */
+export const MIGRATION_53 = `
+DROP TRIGGER IF EXISTS trg_inbox_lines_ins;
+DROP TRIGGER IF EXISTS trg_inbox_lines_upd;
+CREATE TRIGGER trg_inbox_lines_ins AFTER INSERT ON sync_inbox
+WHEN NEW.tbl = 'journal_entries' AND NEW.del = 0
+BEGIN
+  INSERT INTO sync_inbox_lines (line_id, doc)
+    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j WHERE j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
+END;
+CREATE TRIGGER trg_inbox_lines_upd AFTER UPDATE OF payload, del ON sync_inbox
+WHEN NEW.tbl = 'journal_entries' OR OLD.tbl = 'journal_entries'
+BEGIN
+  DELETE FROM sync_inbox_lines WHERE doc = OLD.doc;
+  INSERT INTO sync_inbox_lines (line_id, doc)
+    SELECT json_extract(j.value, '$.id'), NEW.doc FROM json_each(NEW.payload, '$.lines') j
+    WHERE NEW.tbl = 'journal_entries' AND NEW.del = 0 AND j.type = 'object' AND json_extract(j.value, '$.id') IS NOT NULL;
+END;
+`;
+
+/**
+ * الهجرة ٥٤ (التوجيه الرابع ٦ · ١ · «والمكررة تُرفض»): مفتاح رمز QR لفاتورة الشراء المقروءة منه (الرقم الضريبي للبائع ووقت الإصدار
+ * بالثانية والإجمالي والضريبة · zatcaQrKey) · فارغٌ لما أُدخل يدوياً وللقديم · وفهرسٌ لما فيه مفتاح يفحص به الحفظ والاستعادة التكرار ·
+ * لا قيد تفرّد: نسختان من جهازين بلا اتصال تصلان كلتاهما ولا تُسقطان المزامنة، والفحص عند الكتابة
+ */
+export const MIGRATION_54 = `
+ALTER TABLE purchases ADD COLUMN qr_key TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS ix_purchases_qr_key ON purchases(qr_key) WHERE qr_key != '';
+`;
+
+/**
+ * الهجرة ٥٥ (التوجيه الرابع ٦ · ٢ · كشف البنك): الكشف بفترته وافتتاحيه وختاميه وبصمة ملفه، وسطوره ببصمتها (فريدةٌ لكل بنكٍ بين الكشوف
+ * الحية: الكشفان المتداخلان لا يضيفان السطر نفسه) وحالها (مفتوح، مطابَق بحركة بنكٍ واحدة، مستبعَد بسببه) · وربط أعمدة الكشف لكل بنك ·
+ * والكشف لا يمسّ رصيداً: مطابقته ربطٌ بحركاتٍ قائمة
+ */
+export const MIGRATION_55 = `
+CREATE TABLE IF NOT EXISTS bank_statements (
+  id              TEXT PRIMARY KEY,
+  bank_id         TEXT NOT NULL REFERENCES banks(id),
+  period_from     TEXT NOT NULL,
+  period_to       TEXT NOT NULL,
+  opening_halalas INTEGER NOT NULL,
+  closing_halalas INTEGER NOT NULL,
+  file_name       TEXT NOT NULL DEFAULT '',
+  file_hash       TEXT NOT NULL DEFAULT '',
+  line_count      INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL,
+  deleted_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_bstmt_bank ON bank_statements(bank_id, period_from);
+CREATE TABLE IF NOT EXISTS bank_statement_lines (
+  id              TEXT PRIMARY KEY,
+  statement_id    TEXT NOT NULL REFERENCES bank_statements(id),
+  bank_id         TEXT NOT NULL REFERENCES banks(id),
+  line_key        TEXT NOT NULL,
+  date            TEXT NOT NULL,
+  value_date      TEXT,
+  descr           TEXT NOT NULL DEFAULT '',
+  ref             TEXT,
+  amount_halalas  INTEGER NOT NULL,
+  balance_halalas INTEGER,
+  bank_tx_id      TEXT REFERENCES bank_tx(id),
+  status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','matched','excluded')),
+  note            TEXT NOT NULL DEFAULT '',
+  matched_at      TEXT,
+  created_at      TEXT NOT NULL,
+  deleted_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_bsl_bank ON bank_statement_lines(bank_id, line_key);
+CREATE INDEX IF NOT EXISTS ix_bsl_stmt ON bank_statement_lines(statement_id);
+CREATE INDEX IF NOT EXISTS ix_bsl_tx ON bank_statement_lines(bank_tx_id) WHERE bank_tx_id IS NOT NULL;
+ALTER TABLE banks ADD COLUMN stmt_mapping TEXT NOT NULL DEFAULT '';
+${buildSyncTriggers(STATEMENT_SYNC_TABLES)}
+`;
+
+/**
+ * الهجرة ٥٦ (المدقق الخارجي S٥): ربط أعمدة الكشف مع الكشف نفسه لا في صفّ البنك · فحفظ الكشف لا يعدّل صفّ البنك (لا يجيزه «البنوك ٢»)،
+ * والربط المستعمل ربط آخر كشفٍ حيّ للبنك · وعمود banks.stmt_mapping يبقى بلا استعمال
+ */
+export const MIGRATION_56 = `
+ALTER TABLE bank_statements ADD COLUMN mapping TEXT NOT NULL DEFAULT '';
+`;
+
+/**
+ * الهجرة ٥٧ · الكشف «غير المتحقَّق» (قرار المالك 2026-10-09 أ.٤: «يُنبَّه ولا تبدأ المطابقة إلا بتأكيد» · المدقق الخارجي U): كشفٌ لا يساوي
+ * افتتاحيه مع حركاته أرصدته أو ختاميه يُحفظ بتأكيد المستخدم الصريح بـverified = 0، فيُنبَّه به في تقرير المطابقة
+ */
+export const MIGRATION_57 = `
+ALTER TABLE bank_statements ADD COLUMN verified INTEGER NOT NULL DEFAULT 1;
+`;
+
+/**
+ * الهجرة ٥٨ · بصمات سطور الكشف كلها (المدقق الخارجي V١ وV٤، ومنذ X١ كلها لا ما تخطّاه وحده): حذف كشفٍ آخر فيه سطرٌ منها ينقله إلى
+ * هذا لا يحذفه، ولا ينقل غيره · وجهازٌ حذف كشفاً ولم يعرف الكشف المتداخل يعيده حيّاً إليه حين يصله (statementLineCheck)
+ */
+export const MIGRATION_58 = `
+ALTER TABLE bank_statements ADD COLUMN shared_keys TEXT NOT NULL DEFAULT '[]';
+`;
+
+/**
+ * الهجرة ٥٩ · سطر الكشف الذي سُجّل منه التحصيل على قيده (المدقق الخارجي Z٢-١): الإيداع الواحد يسند تحصيلاً واحداً، فقيدٌ ثانٍ حيٌّ من
+ * عضوٍ للسطر نفسه (اعتمده جهازان لهدفين مختلفين) يُرفض على جهاز المالك ويسقط معه دفعته وحركته
+ */
+export const MIGRATION_59 = `
+ALTER TABLE journal_entries ADD COLUMN stmt_line_id TEXT;
+`;
+
+/**
+ * الهجرة ٦٠ · فهرسان لحارس «الإيداع الواحد يسند تحصيلاً واحداً» وحركات البنك برقم قيدها (المدقق الخارجي E٢-٤ وC٢): القيد بسطر الكشف،
+ * وحركة البنك برقم القيد · كان البحث بهما يمسح الجدولين لكل قيدٍ وارد
+ */
+export const MIGRATION_60 = `
+CREATE INDEX IF NOT EXISTS ix_je_stmt_line ON journal_entries(stmt_line_id) WHERE stmt_line_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_banktx_journal_no ON bank_tx(journal_no);
+`;
+
+/**
+ * الهجرة ٦١ · سطور الكشف في الوارد ببصمتها (المدقق الخارجي G٢-٣ وG٢-٤): حارس الإيداع يعدّ ما لم يُطبَّق بعد من سطور اليوم والمبلغ،
+ * فالقيود تُطبَّق قبل سطورها
+ */
+export const MIGRATION_61 = `
+CREATE INDEX IF NOT EXISTS ix_inbox_d_line_key ON sync_inbox(tbl, json_extract(payload, '$.d.line_key'));
+`;
+
+/**
+ * الهجرة ٦٢ · حساب 3300 «أرصدة افتتاحية» (المراجعة الشاملة 2026-11-13 · A2.4 · قرار المالك س٢: يُبنى الآن قبل بقية الأساس المحاسبي):
+ * افتتاحي كل بنكٍ حيّ مدينٌ في 1100 ودائنٌ في 3300، مشتقٌّ من banks.opening_halalas عند كل قراءة رصيد (ledger.ts: allAccounts) فلا يُخزَّن
+ * قيدٌ يتكرر أو يتأخر بين الأجهزة، والبنوك القائمة يشملها الاشتقاق بلا ترحيل · نظاميٌّ بالرقم والاسم والنوع أينما وُجد فلا يتعارض في المزامنة
+ * والالتقاط مطفأ كالهجرة ٤٨: كل جهاز يُنشئ 3300 بهجرته، فلا يُرفع صفٌّ بوقت الترقية يغلب تسميةً أحدث للمالك من جهازه الآخر، ولا يرفعه جهاز
+ * العضو حساباً نظامياً جديداً فترفضه السحابة (openingKept) ويبقى عنده «مرفوضاً» (المراجعة الشاملة 2026-11-13 · R11-A2.4-3)
+ * ورمزٌ 3300 أنشأه المستخدم ثم حذفه (غير نظاميٍّ في السلة بلا سطر قيد) يُحذف ويُدرج حساب النظام مكانه، وإلا بقي الرمز مأخوذاً فلا يُصلَح A2.4
+ * له أبداً · وحسابه الحيّ يُترك كما هو، وافتتاحيات البنوك حينها خارج الدفتر ظاهرةً في الفرق (ledger.ts: ledgerBankOpenings · R11-A2.4-1)
+ */
+// i18n-exempt: اسم حساب النظام ونوعه كما يُخزَّنان في الدليل
+export const MIGRATION_62 = `
+CREATE TEMP TABLE _m62_cap AS SELECT k, v FROM sync_ctl WHERE k = 'capture';
+UPDATE sync_ctl SET v = 0 WHERE k = 'capture';
+DELETE FROM accounts WHERE code = '3300' AND is_system = 0 AND deleted_at IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM journal_lines WHERE account_code = '3300');
+INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES ('3300', 'أرصدة افتتاحية', 'حقوق ملكية', NULL, 0, 1, datetime('now'));
+UPDATE sync_ctl SET v = (SELECT v FROM _m62_cap WHERE _m62_cap.k = sync_ctl.k) WHERE k IN (SELECT k FROM _m62_cap);
+DROP TABLE _m62_cap;
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53, MIGRATION_54, MIGRATION_55, MIGRATION_56, MIGRATION_57, MIGRATION_58, MIGRATION_59, MIGRATION_60, MIGRATION_61, MIGRATION_62];

@@ -140,3 +140,63 @@ export function generateInstallments(
   }
   return out;
 }
+
+/** طريقة سداد القسط من رصيد المستأجر الدائن (applyTenantCredit) */
+export const CREDIT_METHOD = 'من الرصيد الدائن'; // i18n-exempt: طريقة مخزّنة
+
+/**
+ * سداد القسط المتأخر من التأمين في تسويته (applyDepositSettlement · المراجعة الشاملة 2026-11-13 · A1-2 · قرار المالك س١): طريقة
+ * دفعته المخزّنة ومصدر قيدها (مدين 2400 / دائن الإيراد بتقسيمه، ومعرّفه العقد) · والتأمين قُبض نقداً يوم العقد، فالدفعة مقبوضٌ
+ * يُعدّ في المحصَّل وكشف المستأجر كدفعة العربون
+ */
+export const DEPOSIT_RENT_METHOD = 'من التأمين'; // i18n-exempt: طريقة مخزّنة
+export const DEPOSIT_RENT_SRC = 'deposit_rent';
+/**
+ * سبب إلغاء دفعة «من التأمين» المخزَّن حين يعكس تعديلُ التسوية سدادها (reverseDepositRent) · يميّزه جهاز المالك من إلغاء الدفعة وحدها
+ * بإصدارٍ قبل A1-2 (المراجعة الشاملة 2026-11-13 · R12-DEP-3)
+ */
+export const DEPOSIT_RENT_EDIT_REASON = 'تعديل تسوية التأمين'; // i18n-exempt: سبب إلغاءٍ مخزَّن
+/**
+ * سبب إلغاء دفعة «من التأمين» حين يحمل ضمُّ الاستعادة إلغاءها مع عاكسٍ يُراجَع (keepPosted.ts): ألغاها تعديلٌ بعد النسخة ليس في البيانات،
+ * وصفّ التسوية فيها بحاله قبله وهي منه · فتعدّها ورقة التسوية على جهاز العضو، ولا يصله سجل العمليات ولا علامات المراجعة فيه (depositArrearsPaid ·
+ * المراجع المستقل الخامس على R12-BAK-2) · ويعود سبب التعديل بحفظ التسوية بعدها (reverseDepositRent) فيوثّق عاكسها كما يوثّقه سطر الحفظ
+ * على جهاز المالك · ولا يكتبه جهاز عضو، فإلغاءٌ منه بهذا السبب يرفضه جهاز المالك كإلغاء الدفعة وحدها (depositRentEdit)
+ */
+export const DEPOSIT_RENT_KEPT_REASON = 'تعديل تسوية التأمين بعد النسخة المستعادة'; // i18n-exempt: سبب إلغاءٍ مخزَّن
+/**
+ * مصدر المطالبة التلقائية بزيادة تسوية التأمين عليه (applyDepositSettlement) · جزءٌ من التسوية يُرفض معها على جهاز المالك حين يكون
+ * التأمين قد رُحِّل إلى التجديد (المراجعة الشاملة 2026-11-13 · R12-DEP-1)
+ */
+export const SETTLEMENT_CLAIM_SOURCE = 'تسوية تأمين'; // i18n-exempt: مصدر مخزَّن
+
+/**
+ * المقبوض نقداً من دفعة العقد: سداد القسط من الرصيد الدائن لا نقد فيه، لأن الفائض عُدّ مقبوضاً يوم قُبض في دفعته (والدفعة تحمل
+ * المقبوض كله ومنه الفائض) · فالمحصَّل والدخل وكشف المستأجر يجمعون هذا لا net_halalas (المراجعة الشاملة 2026-11-13 · A2.1).
+ * وما سُدّد به القسط (DERIVED_PAID_SQL) يبقى بالصافي: الرصيد الدائن يسدّد القسط فعلاً.
+ */
+export const paymentCashSql = (alias = ''): string =>
+  `(CASE WHEN ${alias}method_label = '${CREDIT_METHOD}' THEN 0 ELSE ${alias}net_halalas END)`;
+export const paymentCash = (p: { method_label?: string | null; net_halalas: number }): number =>
+  (p.method_label === CREDIT_METHOD ? 0 : Number(p.net_halalas) || 0);
+
+/**
+ * فائض الدفعة الذي صار رصيداً دائناً للمستأجر: دائن 2410 في قيدها (التحصيل فوق أقساطه) · الرصيد الدائن للمستأجر لا للعقد، فقد يُستعمل في
+ * عقدٍ آخر (المراجعة الشاملة 2026-11-13 · R12-DEP-4: التجديد، ودمج مستأجرَين)
+ */
+export const paymentSurplusSql = (alias = ''): string =>
+  `COALESCE((SELECT MAX(0, SUM(l.credit_halalas - l.debit_halalas)) FROM journal_lines l
+     WHERE l.entry_id = ${alias}journal_entry_id AND l.account_code = '2410'), 0)`;
+
+/**
+ * ما سدّدته الدفعة من مستحقات عقدها (R12-DEP-4 · كل عقدٍ يتوازن وحده): صافيها ناقصاً فائضها الذي صار رصيداً دائناً، والسداد من الرصيد
+ * الدائن بمبلغه · فالتحصيل فوق الأقساط يُعدّ في عقده بما سدّد منه، والرصيد في العقد الذي استُعمل فيه، ولا يُعدّ مرتين في العقد الواحد
+ * (A2.1) · يقرؤه كشف المستأجر وإجمالي محصَّل العقد ودخله (contractCollectedValue)
+ */
+export const paymentAppliedSql = (alias = ''): string => `(${alias}net_halalas - ${paymentSurplusSql(alias)})`;
+
+/** فائضٌ قديم دخل إيراداً ثم حُوِّل رصيداً دائناً للمستأجر بأداة الفائض (surplus_credit · ledgerReview.ts) لعقدٍ بعينه: دائن 2410 في قيده الحيّ */
+export const surplusCreditSql = (contractExpr: string): string =>
+  `COALESCE((SELECT SUM(l.credit_halalas - l.debit_halalas) FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type = 'surplus_credit' AND e.src_id = ${contractExpr} AND e.reversed_by IS NULL AND e.deleted_at IS NULL
+       AND e.status = '${POSTED_ENTRY}' AND l.account_code = '2410'), 0)`;
+const POSTED_ENTRY = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة

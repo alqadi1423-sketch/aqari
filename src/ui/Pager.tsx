@@ -64,11 +64,15 @@ export function Pager({ pager, total }: { pager: PagerState; total: number }) {
     <View style={{ marginTop: 8, marginBottom: 4 }}>
       {total > pager.size ? (
         <Row style={{ justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-          <BtnGhost small title="التالي" disabled={pager.page >= pages - 1}
-            onPress={() => pager.setPage(pager.page + 1)} />
+          {/* الزر الذي لا يصحّ لا يُعرض، لا معطَّلاً (القاعدة ٩١، والبند ٦ (أ) من القرارات المعلّقة 2026-11-07): «التالي» يغيب في
+              الصفحة الأخيرة و«السابق» في الأولى · ومكانه فارغ فيبقى العدّاد في وسطه */}
+          {pager.page < pages - 1
+            ? <BtnGhost small title="التالي" onPress={() => pager.setPage(pager.page + 1)} />
+            : <View style={{ minWidth: 64 }} />}
           <Num size={TYPE.caption} color={C.muted}>{`${from} إلى ${to} من ${total}`}</Num>
-          <BtnGhost small title="السابق" disabled={pager.page === 0}
-            onPress={() => pager.setPage(pager.page - 1)} />
+          {pager.page > 0
+            ? <BtnGhost small title="السابق" onPress={() => pager.setPage(pager.page - 1)} />
+            : <View style={{ minWidth: 64 }} />}
         </Row>
       ) : null}
       <BtnGhost small title={`عدد العناصر في الصفحة: ${pager.size}`} onPress={() => setPickOpen(true)} />

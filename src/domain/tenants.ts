@@ -5,6 +5,7 @@
  * المتشابهات تُجمع وتُعرض ليقرّر المستخدم دمجها · لا دمج صامت.
  */
 import type { DB } from '../db/adapter';
+import { allIn } from '../db/inList';
 import { t } from '../i18n';
 import { uid } from './ids';
 import { logAudit } from './audit';
@@ -142,9 +143,8 @@ export function similarTenantGroups(db: DB): SimilarGroup[] {
 
 /** هل في الدمج هويتان مختلفتان (كلٌّ له هوية) · يُطلب له تأكيدٌ صريح (دراسة القائم) */
 export function mergeHasDifferentIds(db: DB, keepId: string, dropIds: string[]): boolean {
-  const ids = db.all<{ n: string }>(
-    `SELECT TRIM(national_id) AS n FROM tenants WHERE id IN (${[keepId, ...dropIds].map(() => '?').join(',')}) AND TRIM(national_id) != ''`,
-    [keepId, ...dropIds]).map((r) => r.n);
+  const ids = allIn<{ n: string }>(db,
+    `SELECT TRIM(national_id) AS n FROM tenants WHERE id IN (:list) AND TRIM(national_id) != ''`, [keepId, ...dropIds]).map((r) => r.n);
   return new Set(ids).size > 1;
 }
 

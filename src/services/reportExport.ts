@@ -5,8 +5,9 @@
  */
 import type { DB } from '../db/adapter';
 import { fmt } from '../domain/money';
-import { dfmt } from '../domain/dates';
+import { dfmtOut } from '../domain/dates';
 import { printHtmlDoc, companyHeader, companyInfo } from './print';
+import { shownVatNo, vatReturnVatNo } from '../domain/printDocs';
 import {
   unitReportData, propertyReportData, supplierReportData, invoicesReportData,
 } from '../domain/reportData';
@@ -20,20 +21,20 @@ const esc = (s: unknown): string =>
 
 const M = (h: number): Cell => ({ money: Number(h) });
 const periodLabel = (from: string | null, to: string) =>
-  from ? `عن الفترة من ${dfmt(from)} إلى ${dfmt(to)}` : `حتى ${dfmt(to)} (كل الفترات)`;
+  from ? `عن الفترة من ${dfmtOut(from)} إلى ${dfmtOut(to)}` : `حتى ${dfmtOut(to)} (كل الفترات)`;
 
 /* ═══════════ ترويسة ملفات الإكسل ومعاييرها ═══════════ */
 
 const issuedAt = (): string => {
   const d = new Date();
   const two = (n: number) => String(n).padStart(2, '0');
-  return `${dfmt(`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`)} ${two(d.getHours())}:${two(d.getMinutes())}`;
+  return `${dfmtOut(`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`)} ${two(d.getHours())}:${two(d.getMinutes())}`;
 };
 
 /** معايير الفترة · أول ما يظهر في ورقة «المعايير» بعد بيانات المنشأة */
 const periodCriteria = (from: string | null, to: string): Array<[string, string]> => [
-  ['من تاريخ', from ? dfmt(from) : 'كل الفترات'],
-  ['إلى تاريخ', dfmt(to)],
+  ['من تاريخ', from ? dfmtOut(from) : 'كل الفترات'],
+  ['إلى تاريخ', dfmtOut(to)],
 ];
 
 /** الجهات المشمولة في تقرير متعدد · معيار يوضّح ما دخل الملف وما استُبعد */
@@ -43,11 +44,11 @@ const scopeCriteria = (label: string, blocks: ReportBlock[]): Array<[string, str
 ];
 
 /** ترويسة الملف: المنشأة ورقمها الضريبي من جدول company · واسم التقرير وفترته ووقت إصداره */
-function xlsxDoc(db: DB, report: string, period: string, criteria: Array<[string, string]>): XlsxDoc {
+function xlsxDoc(db: DB, report: string, period: string, criteria: Array<[string, string]>, vatReturn?: { filed: boolean }): XlsxDoc {
   const co = companyInfo(db);
   return {
-    companyName: co.name || 'لا يوجد',
-    companyVatno: co.vatno || 'لا يوجد',
+    companyName: co.name || '',
+    companyVatno: vatReturn ? vatReturnVatNo(co, vatReturn.filed) : shownVatNo(co),
     report, period, issuedAt: issuedAt(), criteria,
   };
 }
@@ -62,20 +63,20 @@ function unitBlock(db: DB, unitId: string, from: string | null, to: string): Rep
     heading: `وحدة ${d.unit.unit_no} · ${d.propertyName}`,
     meta: [
       ['النوع', d.unit.type + (d.unit.subtype ? ' · ' + d.unit.subtype : '')],
-      ['الطابق', d.unit.floor || 'لا يوجد'],
+      ['الطابق', d.unit.floor || ''],
       ['الإيجار الشهري', fmt(d.unit.rent_monthly_halalas)],
       ['نماذج الاستلام', String(d.handoversCount)],
     ],
     sections: [
       // إجمالي العقد، وتفصيله بأعمدة حين يكون في عقد منها خدمات أو مواقف (المراجعة #5)
       { title: `العقود (${d.contracts.length})`, header: [...['رقم العقد', 'المستأجر', 'من', 'إلى'], ...(splitCols ? [t('lease.print.rent'), t('lease.print.services'), t('lease.print.parking')] : []), t('lease.contractTotal'), 'الحالة'],
-        rows: d.contracts.map((c) => [c.contract_no ?? 'لا يوجد', c.tenant_name, c.start ? dfmt(c.start) : 'لا يوجد', c.end ? dfmt(c.end) : 'لا يوجد', ...(splitCols ? [M(c.value_halalas), M(c.services_halalas), M(c.parking_halalas)] : []), M(c.total_halalas), c.status]) },
+        rows: d.contracts.map((c) => [c.contract_no ?? '', c.tenant_name, c.start ? dfmtOut(c.start) : '', c.end ? dfmtOut(c.end) : '', ...(splitCols ? [M(c.value_halalas), M(c.services_halalas), M(c.parking_halalas)] : []), M(c.total_halalas), c.status]) },
       { title: 'الأقساط', header: ['عدد الأقساط', 'المستحق حتى نهاية المدة', 'المحصَّل', 'المتبقي'],
         rows: [[d.installments.count, M(d.installments.due), M(d.installments.collected), M(d.installments.outstanding)]] },
       { title: `المقبوضات خلال المدة (${d.payments.length})`, header: ['التاريخ', 'الفترة', 'المستأجر', 'الطريقة', 'الصافي'],
-        rows: d.payments.map((p) => [dfmt(p.date), p.period || 'لا يوجد', p.tenant_name, p.method_label, M(p.net_halalas)]) },
+        rows: d.payments.map((p) => [dfmtOut(p.date), p.period || '', p.tenant_name, p.method_label, M(p.net_halalas)]) },
       { title: `المصاريف خلال المدة (${d.expenses.length})`, header: ['التاريخ', 'المورد', 'الفئة', 'المبلغ', 'الحالة'],
-        rows: d.expenses.map((e) => [dfmt(e.date), e.supplier_name, e.category, M(e.total_halalas), Number(e.paid) ? 'مسدَّدة' : 'مستحقة']) },
+        rows: d.expenses.map((e) => [dfmtOut(e.date), e.supplier_name, e.category, M(e.total_halalas), Number(e.paid) ? 'مسدَّدة' : 'مستحقة']) },
       ...(d.meters.length ? [{ title: `العدادات (${d.meters.length})`, header: ['النوع', 'رقم العداد', 'المورد'],
         rows: d.meters.map((m) => [m.kind, m.number, m.supplier] as Cell[]) }] : []),
     ],
@@ -95,22 +96,22 @@ function propertyBlock(db: DB, propertyId: string, from: string | null, to: stri
   return {
     heading: `عقار ${d.property.name}`,
     meta: [
-      ['العنوان', d.property.address || 'لا يوجد'],
-      ['الملكية', d.property.ownership || 'لا يوجد'],
-      ['الصك', d.property.deed_no || 'لا يوجد'],
+      ['العنوان', d.property.address || ''],
+      ['الملكية', d.property.ownership || ''],
+      ['الصك', d.property.deed_no || ''],
       ['التشغيل', `${d.occupancy.occupied} من ${d.occupancy.total} (${d.occupancy.pct}٪)`],
     ],
     sections: [
       { title: `الوحدات (${d.units.length})`, header: ['الوحدة', 'الطابق', 'النوع', 'الإيجار الشهري', 'المستأجر الحالي'],
-        rows: d.units.map((u) => [u.unit_no, u.floor || 'لا يوجد', u.type, M(u.rent_monthly_halalas), u.tenant ?? 'شاغرة']) },
+        rows: d.units.map((u) => [u.unit_no, u.floor || '', u.type, M(u.rent_monthly_halalas), u.tenant ?? 'شاغرة']) },
       { title: 'صافي كل وحدة خلال المدة', header: ['الوحدة', 'الدخل', 'المصاريف', 'الصافي'],
         rows: d.perUnit.map((u) => [u.unit_no, M(u.income), M(u.expenses), M(u.net)]) },
       { title: `المقبوضات خلال المدة (${d.payments.length})`, header: ['التاريخ', 'الوحدة', 'المستأجر', 'الفترة', 'الصافي'],
-        rows: d.payments.map((p) => [dfmt(p.date), p.unit_label, p.tenant_name, p.period || 'لا يوجد', M(p.net_halalas)]) },
+        rows: d.payments.map((p) => [dfmtOut(p.date), p.unit_label, p.tenant_name, p.period || '', M(p.net_halalas)]) },
       { title: `المصاريف المشتركة (${d.sharedExpenses.length})`, header: ['التاريخ', 'المورد', 'الفئة', 'المبلغ'],
-        rows: d.sharedExpenses.map((e) => [dfmt(e.date), e.supplier_name, e.category, M(e.total_halalas)]) },
+        rows: d.sharedExpenses.map((e) => [dfmtOut(e.date), e.supplier_name, e.category, M(e.total_halalas)]) },
       { title: `مصاريف الوحدات (${d.unitExpenses.length})`, header: ['التاريخ', 'الوحدة', 'المورد', 'الفئة', 'المبلغ'],
-        rows: d.unitExpenses.map((e) => [dfmt(e.date), e.unit_no, e.supplier_name, e.category, M(e.total_halalas)]) },
+        rows: d.unitExpenses.map((e) => [dfmtOut(e.date), e.unit_no, e.supplier_name, e.category, M(e.total_halalas)]) },
     ],
     totals: [
       ['الدخل المحصَّل', { money: d.totals.income, f: 'SUM({S2C4})' }],
@@ -129,16 +130,16 @@ function supplierBlock(db: DB, supplierId: string, from: string | null, to: stri
   return {
     heading: `مورد ${d.supplier.name}`,
     meta: [
-      ['الرقم الضريبي', d.supplier.vat || 'لا يوجد'],
-      ['الجوال', d.supplier.phone || 'لا يوجد'],
-      ['الفئة', d.supplier.category || 'لا يوجد'],
-      ['نوع الخدمة', d.supplier.utility_type || 'لا يوجد'],
+      ['الرقم الضريبي', d.supplier.vat || ''],
+      ['الجوال', d.supplier.phone || ''],
+      ['الفئة', d.supplier.category || ''],
+      ['نوع الخدمة', d.supplier.utility_type || ''],
     ],
     sections: [
       ...(d.meters.length ? [{ title: `العدادات (${d.meters.length})`, header: ['النوع', 'رقم العداد', 'الموقع'],
         rows: d.meters.map((m) => [m.kind, m.number, m.label] as Cell[]) }] : []),
       { title: `الفواتير خلال المدة (${d.purchases.length})`, header: ['الرقم', 'التاريخ', 'الفئة', 'الجهة', 'المبلغ', 'الحالة'],
-        rows: d.purchases.map((p) => [p.no, dfmt(p.date), p.category, p.target, M(p.total_halalas), Number(p.paid) ? 'مسدَّدة' : 'مستحقة']) },
+        rows: d.purchases.map((p) => [p.no, dfmtOut(p.date), p.category, p.target, M(p.total_halalas), Number(p.paid) ? 'مسدَّدة' : 'مستحقة']) },
       { title: 'حسب الفئة', header: ['الفئة', 'العدد', 'الإجمالي'],
         rows: d.byCategory.map((c) => [c.category, c.count, M(c.total)]) },
     ],
@@ -158,7 +159,7 @@ function invoicesBlock(db: DB, from: string | null, to: string): ReportBlock {
     meta: [],
     sections: [
       { title: `الفواتير (${d.rows.length})`, header: ['الرقم', 'العميل', 'الإصدار', 'الاستحقاق', 'الحالة', 'الإجمالي'],
-        rows: d.rows.map((r) => [r.no, r.customer_name, dfmt(r.issue), dfmt(r.due), r.status, M(r.total_halalas)]) },
+        rows: d.rows.map((r) => [r.no, r.customer_name, dfmtOut(r.issue), dfmtOut(r.due), r.status, M(r.total_halalas)]) },
       { title: 'حسب الحالة', header: ['الحالة', 'العدد', 'الإجمالي'],
         rows: d.byStatus.map((s) => [s.status, s.count, M(s.total)]) },
       { title: 'حسب العميل', header: ['العميل', 'العدد', 'الإجمالي'],
@@ -201,7 +202,7 @@ const htmlTable = (header: string[], rows: Cell[][]) =>
   rows.map((r) => `<tr>${r.map((c) => `<td class="${isNum(c) ? 'num' : ''}">${esc(cellHtml(c))}</td>`).join('')}</tr>`).join('') +
   '</tbody></table>';
 
-function blocksToHtml(db: DB, title: string, sub: string, blocks: ReportBlock[]): string {
+function blocksToHtml(db: DB, title: string, sub: string, blocks: ReportBlock[], vatReturn?: { filed: boolean }): string {
   const inner = blocks.map((b, bi) => {
     const metaHtml = b.meta.length
       ? `<div class="inv-meta"><div class="inv-box">${b.meta.map(([k, v]) => `<b>${esc(k)}:</b> ${esc(v)}`).join('<br>')}</div></div>`
@@ -214,7 +215,7 @@ function blocksToHtml(db: DB, title: string, sub: string, blocks: ReportBlock[])
     const brk = bi < blocks.length - 1 ? '<div style="page-break-after:always"></div>' : '';
     return head + metaHtml + secs + totals + brk;
   }).join('');
-  return `<div class="inv-doc"><div class="inv-top">${companyHeader(db)}
+  return `<div class="inv-doc"><div class="inv-top">${companyHeader(db, vatReturn)}
     <div style="text-align:left"><div class="inv-title">${esc(title)}</div>
     <div style="font-size:11px;color:#77808F">${esc(sub)}</div></div></div>${inner}</div>`;
 }
@@ -306,9 +307,9 @@ export async function exportVatReturn(
   const mainBlock: ReportBlock = {
     heading: 'نموذج الإقرار · ' + d.period,
     meta: [
-      ['الفترة', `${dfmt(d.from)} إلى ${dfmt(d.to)}`],
+      ['الفترة', `${dfmtOut(d.from)} إلى ${dfmtOut(d.to)}`],
       ['أعمدة الإفصاح الذاتي والتعديل وسبب التعديل', 'تُملأ يدوياً في الملف المصدَّر'],
-      ...(filed ? [[t('vat.filedLabel', { lng: 'ar' }), dfmt(filed.filedAt)] as [string, string]] : []),
+      ...(filed ? [[t('vat.filedLabel', { lng: 'ar' }), dfmtOut(filed.filedAt)] as [string, string]] : []),
     ],
     sections: [
       // بنود الإقرار الستة عشر لا تُجمع: كل بند مستقل ولا معنى لمجموعها
@@ -329,22 +330,22 @@ export async function exportVatReturn(
     sections: [
       { title: `١ · المشتريات القابلة للخصم (${d.schedules.deductiblePurchases.length})`, sum: true,
         header: ['الرقم', 'التاريخ', 'المورد', 'رقمه الضريبي', 'قبل الضريبة', 'الضريبة', 'الإجمالي'],
-        rows: d.schedules.deductiblePurchases.map((r) => [r.no, dfmt(r.date), r.supplier, r.supplierVatno || 'لا يوجد', M(r.subtotal), M(r.tax), M(r.total)]) },
+        rows: d.schedules.deductiblePurchases.map((r) => [r.no, dfmtOut(r.date), r.supplier, r.supplierVatno || '', M(r.subtotal), M(r.tax), M(r.total)]) },
       { title: `٢ · غير القابلة للخصم (${d.schedules.excludedPurchases.length})`, sum: true,
         header: ['الرقم', 'التاريخ', 'المورد', 'قبل الضريبة', 'الضريبة (ضمن التكلفة)', 'الإجمالي', 'سبب الاستبعاد'],
-        rows: d.schedules.excludedPurchases.map((r) => [r.no, dfmt(r.date), r.supplier, M(r.subtotal), M(r.tax), M(r.total), r.reason || 'لا يوجد']) },
+        rows: d.schedules.excludedPurchases.map((r) => [r.no, dfmtOut(r.date), r.supplier, M(r.subtotal), M(r.tax), M(r.total), r.reason || '']) },
       { title: `٣ · المبيعات المعفاة · إيرادات الإيجار السكني (${d.schedules.exemptSales.length})`, sum: true,
         header: ['التاريخ', 'المستأجر', 'العقد', 'الوحدة', 'المحصَّل'],
-        rows: d.schedules.exemptSales.map((r) => [dfmt(r.date), r.tenant, r.contractNo, r.unitLabel, M(r.net)]) },
+        rows: d.schedules.exemptSales.map((r) => [dfmtOut(r.date), r.tenant, r.contractNo, r.unitLabel, M(r.net)]) },
       { title: `٤ · بيان الحوالات (${d.schedules.transfers.length})`, sum: true,
         header: ['التاريخ', 'المبلغ', 'الجهة', 'الغرض', 'رقم المرجع البنكي', 'رقم الفاتورة'],
-        rows: d.schedules.transfers.map((r) => [dfmt(r.date), M(r.amount), r.party, r.purpose, r.bankRef, r.invoiceNo]) },
+        rows: d.schedules.transfers.map((r) => [dfmtOut(r.date), M(r.amount), r.party, r.purpose, r.bankRef, r.invoiceNo]) },
     ],
     totals: [],
   };
   const filenameBase = 'vat-return-' + d.period + (approved ? '' : '-draft');
   if (kind === 'pdf') {
-    const html = blocksToHtml(db, title, `${dfmt(d.from)} إلى ${dfmt(d.to)}` + (approved ? '' : ' · مسودة'), [mainBlock, schedules]);
+    const html = blocksToHtml(db, title, `${dfmtOut(d.from)} إلى ${dfmtOut(d.to)}` + (approved ? '' : ' · مسودة'), [mainBlock, schedules], { filed: !!filed });
     await printHtmlDoc(title, (approved ? '' : WATERMARK) + html, filenameBase);
     return;
   }
@@ -364,7 +365,7 @@ export async function exportVatReturn(
         { name: 'الملخص', blocks: [mainBlock] },
         { name: 'الكشوف المساندة', blocks: [schedules] },
         { name: 'البيانات الخام', blocks: [raw] },
-      ], xlsxDoc(db, title, `${dfmt(d.from)} إلى ${dfmt(d.to)}`, [
+      ], xlsxDoc(db, title, `${dfmtOut(d.from)} إلى ${dfmtOut(d.to)}`, [
         ...periodCriteria(d.from, d.to),
         ['السنة', String(year)],
         ['الربع', QUARTER_AR[quarter]],
@@ -374,11 +375,16 @@ export async function exportVatReturn(
         ['غير القابلة للخصم (مستبعدة من البند ٧)', String(d.schedules.excludedPurchases.length) + ' فاتورة'],
         ['المبيعات المعفاة · الإيجار السكني', String(d.schedules.exemptSales.length) + ' مقبوض'],
         ['بيان الحوالات', String(d.schedules.transfers.length) + ' حوالة'],
-      ])), 'xlsx');
+      ], { filed: !!filed })), 'xlsx');
     return;
   }
+  // وورد بلا ترويسة: المنشأة ورقمها في أول بيانات النموذج كما في PDF وإكسل (المدقق الخارجي D٧)
+  const co = companyInfo(db);
+  const vat = vatReturnVatNo(co, !!filed);
+  mainBlock.meta.unshift([t('vat.companyLabel', { lng: 'ar' }), co.name || ''],
+    ...(vat !== undefined ? [[t('vat.vatNoLabel', { lng: 'ar' }), vat] as [string, string]] : []));
   await shareOfficeFile(filenameBase + '.docx',
-    buildDocx(title, `${dfmt(d.from)} إلى ${dfmt(d.to)}`, [mainBlock, schedules],
+    buildDocx(title, `${dfmtOut(d.from)} إلى ${dfmtOut(d.to)}`, [mainBlock, schedules],
       'صدر عبر تطبيق عقاري · أحد حلول منصة رِكز', ['المحاسب', 'المدير']), 'docx');
 }
 

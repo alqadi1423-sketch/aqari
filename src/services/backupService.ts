@@ -9,17 +9,21 @@ import { openExpoDb } from '../db/expoAdapter';
 import { expoFs, expoHasher, appDataRoot } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
 import { createBackup, ensureFreeSpace, safetyBackupsDir } from '../domain/backup/create';
-import { prepareRestore, commitRestore, abortRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
+import { deviceBackupPath, deviceBackups, type DeviceBackup } from '../domain/backup/deviceBackups';
+import { prepareRestore, commitRestore, abortRestore, finishInterruptedRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
 import type { BackupEnv, BackupManifest } from '../domain/backup/types';
 import { setSetting } from '../repos/settings';
 import { toLocalISODate } from '../domain/dates';
 import { openNodeDbCompat } from './openTempDb';
 import { deviceCipher } from './cipher';
-import { backupPasswordForSealing } from './backupPassword';
+import { backupSecretForSealing } from './backupPassword';
+import { getSyncState } from '../sync/engine';
 import { sealBackupFile } from '../domain/backup/seal';
-import type { CancelSignal, ProgressFn } from '../domain/progress';
+import { throwIfCancelled, type CancelSignal, type ProgressFn } from '../domain/progress';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from './appLockService';
+import { APP_VERSION_LABEL } from '../version';
+import { t } from '../i18n';
 
 export function appBackupEnv(db: AppDB): BackupEnv {
   const root = appDataRoot();
@@ -31,7 +35,7 @@ export function appBackupEnv(db: AppDB): BackupEnv {
     hasher: expoHasher,
     attachmentsDir: joinPath(root, 'attachments'),
     tmpDir: joinPath(root, 'tmp'),
-    appVersion: '1.0.0',
+    appVersion: APP_VERSION_LABEL,
     openDb: (path) => openTempSqlite(path),
     // الإغلاق الذي يفشل يُرمى فتتوقف الاستعادة قبل أن تمسّ الملفات (المراجعة الشاملة · البند ٢٠) · ومسار التراجع يبتلعه بنفسه ·
     // وما أغلقته هذه البيئة من قبل لا يُغلق مرتين
@@ -39,6 +43,11 @@ export function appBackupEnv(db: AppDB): BackupEnv {
     reopenLive: () => { db.reopen(); open = true; return db; },
     cipher: deviceCipher,
   };
+}
+
+/** عند الإقلاع وقبل كنس tmp: مرفقات استعادةٍ انقطعت بعد التبديل تُنقل إلى مكانها (R12-BAK-4) · يُعاد عدد ما نُقل */
+export function finishInterruptedRestoreOnBoot(db: AppDB): number {
+  return finishInterruptedRestore(appBackupEnv(db));
 }
 
 /** فتح قاعدة على مسار مطلق عبر expo-sqlite */
@@ -53,12 +62,12 @@ export async function createAndShareBackup(
   signal?: CancelSignal,
 ): Promise<BackupManifest> {
   const env = appBackupEnv(db);
-  const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
+  const name = backupFileName();
   const outPath = joinPath(env.tmpDir, name);
   const manifest = await createBackup(env, outPath, onProgress, { signal });
-  // بكلمة مرور النسخ إن وُضعت · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق · ووُضعت وتعذّرت قراءتها: لا تصدير (ثالثاً أ ٩)
-  const pw = await backupPasswordForSealing();
-  if (pw) await sealBackupFile(env, outPath, pw, onProgress);
+  // مشفّرة دائماً بمفتاح الاسترداد (التوجيه الرابع ٤ · ٣) · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق · وبلا مفتاحٍ أو تعذّرت قراءته: لا تصدير
+  const secret = await backupSecretForSealing(getSyncState(db, 'uid'));
+  await sealBackupFile(env, outPath, secret, onProgress);
   setSetting(db, 'lastBackupAt', new Date().toISOString());
   onProgress?.('جاري فتح نافذة المشاركة');
   // فشل المشاركة بعد نجاح النسخة لا يُحسب فشلاً للنسخة نفسها
@@ -71,29 +80,74 @@ export async function createAndShareBackup(
   return manifest;
 }
 
+/** اسم ملف النسخة كما يراه المستخدم في المشاركة والمجلد */
+export function backupFileName(d: Date = new Date()): string {
+  return `عقاري · نسخة · ${toLocalISODate(d)}.aqbk`;
+}
+
+/**
+ * «احفظ في مجلد» (ق٠-١): نسخةٌ كاملة مشفّرة بمفتاح الاسترداد كالمشاركة تماماً، تُكتب في المجلد الذي اختاره المستخدم وتُطابق بصمتها هناك ·
+ * الإذن يُفحص قبل بناء النسخة (FolderAccessError) · ولا يبقى منها شيء في مجلد التطبيق المؤقت.
+ * تُحسب نسخةً خارج التطبيق (lastExportAt): المجلد خارج مساحة التطبيق ويبقى بعد حذفه أو مسح بياناته (قرار القاعدة ٩٩ في ق٠-١).
+ */
+export async function createAndSaveToFolder(
+  db: AppDB,
+  onProgress?: ProgressFn,
+  signal?: CancelSignal,
+): Promise<BackupManifest & { savedName: string }> {
+  // وحدة المجلد تُحمَّل عند الحاجة: تحمل إطار التخزين الأصلي، والاستعادة ونسخ الأمان تعمل وتُختبر بدونها
+  const { backupFolder, checkFolderAccess, writeToBackupFolder, FolderMissingError } = require('./backupFolder') as typeof import('./backupFolder');
+  const folder = backupFolder();
+  if (!folder) throw new FolderMissingError();
+  await checkFolderAccess(folder);
+  const env = appBackupEnv(db);
+  const outPath = joinPath(env.tmpDir, 'folder-' + Date.now() + '.aqbk');
+  let savedName = '';
+  let manifest: BackupManifest;
+  try {
+    manifest = await createBackup(env, outPath, onProgress, { signal });
+    // مشفّرة دائماً كالمشاركة (التوجيه الرابع ٤ · ٣) · وبلا مفتاحٍ أو تعذّرت قراءته: لا حفظ
+    const secret = await backupSecretForSealing(getSyncState(db, 'uid'));
+    await sealBackupFile(env, outPath, secret, onProgress);
+    throwIfCancelled(signal);
+    if (!env.hasher) throw new Error(t('folder.failedLead'));
+    // البصمة والحجم ثم يُطلق الملف من الذاكرة: الكتابة إلى المجلد تقرؤه قطعاً من القرص
+    let size = 0;
+    let sha256 = '';
+    { const sealed = env.fs.read(outPath); size = sealed.length; sha256 = await env.hasher(sealed); }
+    const saved = await writeToBackupFolder(outPath, backupFileName(), { folder, size, sha256, hasher: env.hasher, onProgress, signal });
+    savedName = saved.name;
+  } finally {
+    try { env.fs.remove(outPath); } catch { /* يكنسه الإقلاع */ }
+  }
+  const now = new Date().toISOString();
+  setSetting(db, 'lastBackupAt', now);
+  setSetting(db, 'lastExportAt', now);
+  return { ...manifest, savedName };
+}
+
 /**
  * المرحلة التفاعلية الأولى: اختيار الملف وتجهيز الاستعادة (تشغيل تجريبي كامل).
  * لا يمسّ البيانات الحية · يعيد الخطة والملخص أو null عند الإلغاء.
  */
 /**
- * نسخة الأمان الأحدث على الجهاز (قبل آخر مسح أو استعادة) · تُستعاد من «البيانات والمساحة» بالمسار المعتاد نفسه.
+ * نسخة من نسخ هذا الجهاز (قبل آخر مسح أو استعادة، أو قبل ترقية) · تُستعاد من «البيانات والمساحة» بالمسار المعتاد نفسه.
  * تُنسخ أولاً إلى المؤقت لأن الاستعادة تصنع نسخة أمان جديدة تحذف ما قبلها.
  */
 export async function prepareRestoreFromSafety(
   db: AppDB,
   onProgress?: ProgressFn,
-  opts?: PrepareOptions
+  opts?: PrepareOptions,
+  name?: string,
 ): Promise<{ env: BackupEnv; plan: RestorePlan; archiveTmp: string } | null> {
   const env = appBackupEnv(db);
-  const dir = safetyBackupsDir(env);
-  const names = (env.fs.exists(dir) ? env.fs.list(dir) : [])
-    .filter((n) => n.endsWith('.aqbk') && (n.startsWith('pre-wipe-') || n.startsWith('pre-restore-'))).sort();
-  const latest = names[names.length - 1];
-  if (!latest) return null;
+  // نسخة الأمان ونسخ ما قبل الترقية (القرارات المعلّقة البند ١٧) · المختارة باسمها من القائمة، وبلا اسمٍ الأحدث
+  const src = deviceBackupPath(env, name);
+  if (!src) return null;
   await ensureFreeSpace(env);
   env.fs.mkdirp(env.tmpDir);
   const archiveTmp = joinPath(env.tmpDir, 'restore-input.aqbk');
-  env.fs.write(archiveTmp, env.fs.read(joinPath(dir, latest)));
+  env.fs.write(archiveTmp, env.fs.read(src));
   const plan = await prepareRestore(env, archiveTmp, onProgress, opts);
   return { env, plan, archiveTmp };
 }
@@ -126,6 +180,15 @@ export async function pickAndPrepareRestore(
   return { env, plan, archiveTmp };
 }
 
+/**
+ * ملفُّ ما لم يُرفع من عمل العضو بعد خروجه من المنشأة يُرسل إلى صاحبها من نافذة المشاركة (المراجعة الشاملة 2026-11-13 · B-4 ·
+ * قرار المالك س٩: «يُفرَّغ جواله عند أول اتصال بعد حفظ ذلك التعديل وحده في ملفٍ صغير يُرسل لك»)
+ */
+export async function shareUnsyncedFile(path: string, title: string): Promise<void> {
+  if (!(await Sharing.isAvailableAsync())) throw new Error(t('org.exit.shareUnavailable'));
+  await whilePrompting(() => Sharing.shareAsync(new File(path).uri, { dialogTitle: title, mimeType: 'application/json' }));
+}
+
 /** المرحلة الثانية بعد موافقة المستخدم على الملخص */
 export async function commitPreparedRestore(
   env: BackupEnv,
@@ -144,4 +207,15 @@ export async function commitPreparedRestore(
 export function abortPreparedRestore(env: BackupEnv, plan: RestorePlan, archiveTmp: string): void {
   abortRestore(env, plan.stagingDir);
   try { env.fs.remove(archiveTmp); } catch { /* يكنسه الإقلاع */ }
+}
+
+/** نسخ هذا الجهاز لزر «استعادة» في «البيانات والمساحة» · الأحدث أولاً (القرارات المعلّقة البند ١٧) */
+export function listDeviceBackups(db: AppDB): Array<DeviceBackup & { size: number }> {
+  const env = appBackupEnv(db);
+  const dir = safetyBackupsDir(env);
+  return deviceBackups(env).map((b) => {
+    let size = 0;
+    try { size = env.fs.size(joinPath(dir, b.name)); } catch { size = 0; }
+    return { ...b, size };
+  });
 }

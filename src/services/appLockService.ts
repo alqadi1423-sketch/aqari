@@ -10,7 +10,7 @@ import { deviceCipher } from './cipher';
 import { hashPin, pinMatches, parseLockConfig, waitLeft, type LockConfig, type LockDelay } from '../domain/appLock';
 import {
   emptyResetLog, parseResetLog, mergeResetLogs, resetWaitMs, serverWaitMs, recordReset, noticePending, ackNotice, auditPending, markAudited,
-  type ResetLog, type ClockNow } from '../domain/lockReset';
+  type ResetLog, type ClockNow, type ResetVia } from '../domain/lockReset';
 import type { AccountProof } from '../cloud/session';
 import { t } from '../i18n';
 
@@ -165,7 +165,7 @@ async function writeResetLog(log: ResetLog): Promise<void> {
 /** للبوابة عند كل فتح بلا قراءةٍ غير متزامنة لمن لم يُعِد ضبطاً قط */
 export const resetLogPresent = (): boolean => { try { return resetFile().exists; } catch { return true; } };
 
-export interface ResetStatus { waitMs: number | null; notice: { at: number } | null }
+export interface ResetStatus { waitMs: number | null; notice: { at: number; via: ResetVia } | null }
 /** waitMs: كم بقي حتى تجوز إعادة ضبط (٠ إن جازت · null: تعذّرت قراءة السجل، لا «بعد ٢٤ ساعة») · notice: إعادة ضبطٍ لم يُقرّ بتنبيهها */
 export async function resetStatus(): Promise<ResetStatus> {
   try {
@@ -174,43 +174,73 @@ export async function resetStatus(): Promise<ResetStatus> {
   } catch { return { waitMs: null, notice: null }; }
 }
 
-export type Recovery = { ok: true } | { ok: false; why: 'limit' | 'device' | 'store' | Extract<AccountProof, { ok: false }>['why']; waitMs?: number };
+/** wrongKey: مفتاح استردادٍ لا يطابق (لا يُحسب) */
+export type Recovery = { ok: true } | { ok: false; why: 'limit' | 'device' | 'store' | 'wrongKey' | Extract<AccountProof, { ok: false }>['why']; waitMs?: number };
+/** سطر سجل العمليات · via بمَ أُعيد الضبط */
+export type ResetAudit = (atMs: number, via: ResetVia) => void;
 
-async function flushAudit(log: ResetLog, audit: (atMs: number) => void): Promise<void> {
+async function flushAudit(log: ResetLog, audit: ResetAudit): Promise<void> {
   if (!auditPending(log)) return;
   const n = log.notice;
-  try { audit(log.noticeAt); } catch { return; }
+  try { audit(log.noticeAt, log.noticeVia ?? 'google'); } catch { return; }
   try { await writeResetLog(markAudited(await readResetLog(), n)); } catch { /* يُعاد عند الفتح التالي فيتكرر السطر وحده */ }
 }
 
 /**
- * إعادة ضبط الرمز بتأكيد الحساب · prove دخولٌ جديد بقوقل (services/cloud.ts: confirmSameAccount) · audit يكتب سطر سجل العمليات
+ * إعادة ضبط الرمز بتأكيد الحساب · prove الإثبات الحديث من مزوّد الهوية (services/cloud.ts: confirmSameAccount · قوقل اليوم: دخولٌ
+ * جديد · ومزوّد الجهاز: شهادة الخادم وحدّه بساعته · ق٠-٦ · F-3) · via مزوّده للسجل والتنبيه · audit يكتب سطر سجل العمليات
  * (تعذّره يُعاد عند الفتح التالي) · الحدّ قبل النافذة بساعتي الجهاز وبعد الدخول بساعة الخادم · وللجهاز قفلٌ أُضيف بعد اختيار
  * الرمز: يُطلب قبل قوقل · ok: يُختار رمزٌ جديد · ولا يُحسب إلا ما بلغ الدخول وصحّ، ويُحفظ قبل أن يُعطى (المتحقق المستقل: المحاولة
  * كانت تُحفظ قبل النافذة فيُحبس المالك يوماً بثلاث نقرات بلا شبكة أو بعد الخروج، وحفظها قبل النافذة لا يحمي شيئاً: النجاح لا
  * يُعطى إلا بعد حفظه) · ورفض الخادم يعطي كم بقي بساعته فيختفي الزر
  */
-export async function recoverByAccount(prove: () => Promise<AccountProof>, audit: (atMs: number) => void): Promise<Recovery> {
+export async function recoverByAccount(prove: () => Promise<AccountProof>, audit: ResetAudit, via: Exclude<ResetVia, 'key'> = 'google'): Promise<Recovery> {
+  return recoverWith(async () => {
+    let proof: AccountProof;
+    try { proof = await prove(); } catch { proof = { ok: false, why: 'error' }; }
+    // رفض الخادم بحدّه يعطي كم بقي بساعته فيختفي الزر (مزوّد الجهاز يعدّ الحدّ في الخادم)
+    if (!proof.ok) return proof.waitMs ? { ok: false, why: proof.why, waitMs: proof.waitMs } : { ok: false, why: proof.why };
+    return { ok: true, serverMs: proof.serverMs };
+  }, audit, via);
+}
+
+/**
+ * «نسيت الرمز» للمالك بمفتاح الاسترداد (ق٠-٦ · F-3 · قرار المالك س٥ (ب)): يكتب المفتاح فيُطابق بالسرّ الذي تُختم به نسخه
+ * (services/lockRecovery.ts) · على الجهاز وحده بلا قوقل ولا خادم، فلا يُحبس المالك إن أُزيل الدخول بقوقل أو بُني التطبيق بلا سحابة ·
+ * الحدّ نفسه (ثلاثٌ في ٢٤ ساعة) بساعتي الجهاز إذ لا خادم يشهد: الرتيبة في التشغيل نفسه، وساعة الجهاز وقتاً للسجل والتنبيه ·
+ * والسجل والتنبيه كما في تأكيد الحساب · ومفتاحٌ لا يطابق لا يُحسب (wrongKey)
+ */
+export async function recoverByKey(verify: () => Promise<boolean>, audit: ResetAudit): Promise<Recovery> {
+  return recoverWith(async () => {
+    let ok = false;
+    try { ok = await verify(); } catch { ok = false; }
+    return ok ? { ok: true, serverMs: Date.now() } : { ok: false, why: 'wrongKey' };
+  }, audit, 'key');
+}
+
+type Proven = { ok: true; serverMs: number } | Exclude<Recovery, { ok: true }>;
+
+/** المسار الواحد لكل طريق: الحدّ قبل الإثبات بساعتي الجهاز، وقفل الجهاز إن وُجد، ثم الإثبات، ثم الحدّ بوقته، ثم الحفظ قبل الإعطاء */
+async function recoverWith(prove: () => Promise<Proven>, audit: ResetAudit, via: ResetVia): Promise<Recovery> {
   let log: ResetLog;
   try { log = await readResetLog(); } catch { return { ok: false, why: 'store' }; }
   const wait = resetWaitMs(log, clockNow());
   if (wait > 0) return { ok: false, why: 'limit', waitMs: wait };
   if ((await deviceLockAvailable()) && !(await askDevice())) return { ok: false, why: 'device' };
-  let proof: AccountProof;
-  try { proof = await prove(); } catch { proof = { ok: false, why: 'error' }; }
-  if (!proof.ok) return { ok: false, why: proof.why };
+  const proof = await prove();
+  if (!proof.ok) return proof;
   // يُقرأ من جديد بعد النافذة: ما كُتب أثناءها لا يُمحى
   try { log = await readResetLog(); } catch { return { ok: false, why: 'store' }; }
   const serverWait = serverWaitMs(log, proof.serverMs);
   if (serverWait > 0) return { ok: false, why: 'limit', waitMs: serverWait };
-  const next = recordReset(log, clockNow(), proof.serverMs);
+  const next = recordReset(log, clockNow(), proof.serverMs, via);
   try { await writeResetLog(next); } catch { return { ok: false, why: 'store' }; }
   await flushAudit(next, audit);
   return { ok: true };
 }
 
 /** سطر سجل العمليات الذي تعذّر عند إعادة الضبط يُكتب عند الفتح التالي */
-export async function flushResetAudit(audit: (atMs: number) => void): Promise<void> {
+export async function flushResetAudit(audit: ResetAudit): Promise<void> {
   let log: ResetLog;
   try { log = await readResetLog(); } catch { return; }
   await flushAudit(log, audit);
@@ -225,19 +255,19 @@ export async function ackResetNotice(): Promise<void> {
  * ما يجري عند فتح البوابة (ui/LockGate.tsx) · recovered: الفتح التالي يلي إعادة الضبط نفسها فلا يُنبَّه فيه · opened: سطر السجل
  * المتعذّر يُكتب، وتنبيه إعادة ضبطٍ لم يُقرّ بها يُعرض بـshow (مرةً حتى يُقرّ به: ack)
  */
-export function resetNotices(audit: (atMs: number) => void) {
+export function resetNotices(audit: ResetAudit) {
   let skip = false;
   let shown = false;
   return {
     recovered(): void { skip = true; },
-    async opened(show: (atMs: number, ack: () => Promise<void>) => void): Promise<void> {
+    async opened(show: (atMs: number, ack: () => Promise<void>, via: ResetVia) => void): Promise<void> {
       if (skip) { skip = false; return; }
       if (shown || (!lockMaybeOn() && !resetLogPresent())) return;
       await flushResetAudit(audit).catch(() => undefined);
       const st = await resetStatus();
       if (!st.notice || shown) return;
       shown = true;
-      show(st.notice.at, async () => { shown = false; await ackResetNotice().catch(() => undefined); });
+      show(st.notice.at, async () => { shown = false; await ackResetNotice().catch(() => undefined); }, st.notice.via);
     },
   };
 }

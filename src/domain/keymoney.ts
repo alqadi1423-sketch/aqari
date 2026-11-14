@@ -10,11 +10,10 @@
  */
 import type { DB } from '../db/adapter';
 import { uid } from './ids';
-import { today } from './dates';
 import { postKeyMoneyCommission } from './accounting/post';
 import { keyMoneyBlockReason, getContract } from './contracts/rules';
 import { logAudit } from './audit';
-import { requireOpenPeriod } from './vatFilings';
+import { requireGivenDate, requireOpenPeriod } from './vatFilings';
 
 export interface KeyMoneyInput {
   unitId: string;
@@ -39,18 +38,29 @@ export function recordKeyMoneyDeal(db: DB, input: KeyMoneyInput): string {
   }
   if (input.commissionHalalas > 0 && input.method === 'bank' && !input.bankId)
     throw new Error('اختر حساباً بنكياً أو بدِّل لنقداً');
-  const date = input.date || today();
+  // ولا صفقة بتاريخٍ فارغ يصير تاريخ اليوم بصمت، ولا بغير صيغته ولو بلا عمولة (المراجعة ١٢ · R12-UI-1)
+  const date = requireGivenDate(input.date);
   if (input.commissionHalalas > 0) requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   return db.transaction(() => {
     const id = uid();
     const u = db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [input.unitId]);
-    let journalId: string | null = null;
+    // صفّ الصفقة أولاً ثم قيد عمولتها (قرار المالك 2026-11-07 «قيد عمولة التقبيل يُرحّل بعد صف الصفقة»): يشتق postEntry أبعاد
+    // سطوره من مستنده (dimsFromSource: عقد الصفقة ووحدته وعقاره، أو وحدتها وعقارها)، ولم يكن يجده حين يُرحَّل قبله فتُكتب بلا أبعاد ·
+    // ثم يُربط القيد بصفّه في المعاملة نفسها، فيُرفع الصف بحاله الأخير
+    db.run(
+      `INSERT INTO key_money_deals (id, unit_id, contract_id, outgoing, incoming, amount_halalas,
+        date, commission_halalas, method, notes, journal_entry_id, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,NULL,?)`,
+      [id, input.unitId, input.contractId ?? null, input.outgoing.trim(), input.incoming.trim(),
+       input.amountHalalas, date, input.commissionHalalas, input.method, input.notes.trim(),
+       new Date().toISOString()]
+    );
     if (input.commissionHalalas > 0) {
       const entry = postKeyMoneyCommission(db, {
         id, unitLabel: u?.unit_no ?? '', outgoing: input.outgoing, incoming: input.incoming,
         commission: input.commissionHalalas, date,
       });
-      journalId = entry ? entry.id : null;
+      if (entry) db.run(`UPDATE key_money_deals SET journal_entry_id = ? WHERE id = ?`, [entry.id, id]);
       if (input.method === 'bank' && input.bankId && entry) {
         db.run(
           `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
@@ -61,14 +71,6 @@ export function recordKeyMoneyDeal(db: DB, input: KeyMoneyInput): string {
         );
       }
     }
-    db.run(
-      `INSERT INTO key_money_deals (id, unit_id, contract_id, outgoing, incoming, amount_halalas,
-        date, commission_halalas, method, notes, journal_entry_id, created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, input.unitId, input.contractId ?? null, input.outgoing.trim(), input.incoming.trim(),
-       input.amountHalalas, date, input.commissionHalalas, input.method, input.notes.trim(),
-       journalId, new Date().toISOString()]
-    );
     logAudit(db, 'العقارات', 'create', 'تقبيل', input.outgoing + ' ← ' + input.incoming);
     return id;
   });

@@ -12,6 +12,7 @@ import { getAllSettings, setSetting, type AppSettings } from '../repos/settings'
 import { backfillHandovers } from '../domain/handover/service';
 import { refreshContractStatuses } from '../domain/contracts/rules';
 import { sweepCache, ensureAppDirs } from '../services/storageOps';
+import { finishInterruptedRestoreOnBoot } from '../services/backupService';
 import { autoDepreciate } from '../domain/assets/auto';
 import { backfillTenantLinks } from '../domain/tenants';
 import { purgeExpiredTrash } from '../domain/trash';
@@ -109,6 +110,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       } catch { /* لا يعطّل الإقلاع */ }
     }, 700);
     const t2 = setTimeout(() => {
+      // مرفقات استعادةٍ انقطعت بعد التبديل تُنقل إلى مكانها قبل كنس tmp (المراجعة ١٢ · R12-BAK-4)
+      try { finishInterruptedRestoreOnBoot(db); } catch { /* لا يعطّل الإقلاع */ }
       try {
         ensureAppDirs();
         sweepCache();

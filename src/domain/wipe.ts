@@ -2,7 +2,9 @@
  * «امسح كل البيانات» (توجيه المالك ٢٠٢٦-١٠-٠٤): بعده يكون التطبيق كأنه مثبَّت جديداً في كل شاشة وتقرير ·
  * لا حركات ولا أرقام ولا دفعات ولا أسماء. فالمسح لا يعكس القيود ولا ينقل إلى السلة (ما يبقى في السلة يبقى
  * أثره في الدفتر)، بل:
- *  ١) نسخة أمان إلزامية في مجلد النسخ الدائم · فشلُها يلغي المسح قبل أن يُمسّ شيء، وهي طريق الاسترجاع.
+ *  ١) نسخة أمان إلزامية في مجلد النسخ الدائم · فشلُها يلغي المسح قبل أن يُمسّ شيء، وهي طريق الاسترجاع · إلا تفريغ جهاز العضو
+ *     بخروجه من المنشأة (أُزيل أو غادر): بلا نسخة أمان، وما لم يُرفع من عمله وحده في ملفٍ صغير قبله (domain/memberExit.ts ·
+ *     المراجعة الشاملة 2026-11-13 · B-4 · قرارا المالك س٩ وس١٠).
  *  ٢) القاعدة تُغلق ويُحذف ملفها والمرفقات، ثم تُفتح قاعدة جديدة بالهجرات والزرع.
  *  ٣) يبقى ما يخص الجهاز والحساب وحده: هوية الجهاز وحرفه، والحساب والمنشأة وعهد المسح.
  * والسحابة تُمسح قبله بمسار المنشأة (services/org.ts wipeOrgCloud) فلا يرجع شيء على جهاز آخر أو تثبيت جديد.
@@ -15,15 +17,21 @@ import { seed } from '../db/seed';
 
 /** ما يبقى بعد المسح: هوية الجهاز وكتل أرقامه ورقم فاتورته المحجوز في meta، والحساب والمنشأة في sync_state */
 const KEEP_META = ['device_id', 'device_letter', 'number_blocks', 'inv_reserved'];
-const KEEP_SYNC = ['uid', 'email', 'org', 'org_name', 'membership', 'wipe_epoch'];
+// ووقت انضمام العضو (memberExit.ts · MEMBER_SINCE_KEY) يبقى بعد تفريغ تغيّر صلاحيته: به تُعرف نسخ الجهاز التي لا تُقرأ عضويتها عند خروجه (B-4)
+// ونسخٌ تعذّر حذفها عند خروجه (memberExit.ts · EXIT_DROP_KEY) يبقى تسجيلها بعد أي تفريغ حتى تُحذف (المراجعة الشاملة 2026-11-13 · R11-B4-2)
+const KEEP_SYNC = ['uid', 'email', 'org', 'org_name', 'membership', 'wipe_epoch', 'member_since', 'exit_drop_backups'];
+
+/** سطر سجل العمليات لتفريغٍ بلا نسخة أمان: خروج العضو من المنشأة (B-4) */
+const NO_SAFETY = 'بلا نسخة أمان: لا تبقى بيانات المنشأة على جوال من خرج منها'; // i18n-exempt: سطر سجل العمليات المخزَّن
 
 /**
  * يعيد مسار نسخة الأمان بعد نجاح المسح · وأي فشل في النسخة يوقف كل شيء والبيانات كما هي.
+ * madeSafety: مسار نسخةٍ صُنعت قبله، أو null لتفريغ جهاز العضو بخروجه بلا نسخة أمان (B-4) فيعيد ''، وبدونه تُصنع هنا.
  * قاعدة الجهاز بعدها جديدة: الاستدعاء يعيد قراءة env.db (القاعدة الحية تبدّلت).
  */
-export async function wipeAllData(env: BackupEnv, onProgress?: (msg: string) => void, madeSafety?: string, reason?: string): Promise<string> {
+export async function wipeAllData(env: BackupEnv, onProgress?: (msg: string) => void, madeSafety?: string | null, reason?: string): Promise<string> {
   let safetyPath = madeSafety ?? '';
-  if (!safetyPath) {
+  if (!safetyPath && madeSafety !== null) {
     await ensureFreeSpace(env); // القرص يسع النسخة · وإلا فلا يبدأ المسح أصلاً
     safetyPath = await makeSafetyBackup(env, 'pre-wipe', onProgress);
   }
@@ -50,7 +58,8 @@ export async function wipeAllData(env: BackupEnv, onProgress?: (msg: string) => 
     for (const r of sync) db.run(`INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [r.k, r.v]);
     db.run(`UPDATE sync_ctl SET v = ? WHERE k = 'capture'`, [capture]);
     // كل تفريغ في سجل العمليات بسببه ونسخة أمانه (قاعدة المالك ٢٠٢٦-١٠-٠٥)
-    logAudit(db, 'الإعدادات', 'delete', 'تفريغ الجهاز', (reason ? reason + ' · ' : 'بأمر المستخدم · ') + 'نسخة الأمان: ' + safetyPath.split('/').pop());
+    logAudit(db, 'الإعدادات', 'delete', 'تفريغ الجهاز', (reason ? reason + ' · ' : 'بأمر المستخدم · ')
+      + (safetyPath ? 'نسخة الأمان: ' + safetyPath.split('/').pop() : NO_SAFETY));
   });
   return safetyPath;
 }

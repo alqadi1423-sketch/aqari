@@ -1,0 +1,68 @@
+# الجوال الافتراضي · ١١ ب · فاتورة شراءٍ من صورة QR الفاتورة (التوجيه الرابع ٦ · ١): موردٌ مصطنع ليُفتح نموذج الفاتورة، ثم «قراءة QR
+# الفاتورة» من المعرض، فموردٌ جديد من الرمز، والمبالغ ١٠٠٠ + ١٥٠ = ١١٥٠، ثم الحفظ · أسماء وأرقام مصطنعة بحروفٍ لاتينية
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+# موردٌ أول (نموذج الفاتورة لا يُفتح بلا مورد)
+- tapOn: "المزيد"
+- scrollUntilVisible:
+    element: "الموردون"
+    direction: DOWN
+- tapOn: "الموردون"
+- tapOn: "+ مورد جديد"
+- tapOn:
+    id: "field-اسم المورد"
+- inputText: "E2E First Supplier"
+- hideKeyboard
+- tapOn: "إضافة المورد"
+- extendedWaitUntil:
+    visible: "E2E First Supplier"
+    timeout: 15000
+- back
+# فاتورة الشراء
+- scrollUntilVisible:
+    element: "فواتير الشراء"
+    direction: UP
+- tapOn: "فواتير الشراء"
+- tapOn: "+ تسجيل فاتورة شراء"
+- tapOn: "قراءة QR الفاتورة"
+- tapOn: "صورة من المعرض"
+# منتقي الصور في النظام: أول صورة (المدفوعة في ١١ أ وحدها) بمعرّف مصغّرها · نصّ «Photos» تبويبٌ لا صورة
+- extendedWaitUntil:
+    visible:
+      id: "com.google.android.providers.media.module:id/icon_thumbnail"
+    timeout: 20000
+- takeScreenshot: 11-picker
+- tapOn:
+    id: "com.google.android.providers.media.module:id/icon_thumbnail"
+    index: 0
+- tapOn:
+    text: "Done|Add|إضافة|تم"
+    optional: true
+- extendedWaitUntil:
+    visible: "موردٌ غير مسجّل"
+    timeout: 30000
+- takeScreenshot: 11-new-supplier
+- tapOn: "إضافة المورد"
+- extendedWaitUntil:
+    visible: "عُبّئت الفاتورة من الرمز"
+    timeout: 15000
+- tapOn: "تم"
+- assertVisible: "E2E QR Supplier"
+- takeScreenshot: 11-filled
+# الصافي ١٠٠٠ ظاهرٌ أسفل النموذج (والإجمالي تحته في نافذةٍ لا يحرّكها تمرير المحاكي) · وزرّ الحفظ في ذيلها الثابت
+- assertVisible: "1000.00|1,000.00"
+- tapOn: "تسجيل الفاتورة"
+- tapOn:
+    text: "متابعة|حفظ|تسجيل"
+    optional: true
+# أُغلق النموذج بالحفظ، والفاتورة في القائمة باسم المورد
+- extendedWaitUntil:
+    notVisible: "تسجيل فاتورة شراء / التزام"
+    timeout: 20000
+- assertVisible: "E2E QR Supplier"
+- takeScreenshot: 11-saved

@@ -8,23 +8,63 @@ export interface AccountRow {
   name: string;
   type: string;
   grp: string | null;
+  /**
+   * الافتتاحي الفعلي بطبيعة الحساب: المزروع، ومعه افتتاحيات البنوك مدينةً في 1100 ودائنةً في 3300 (المراجعة الشاملة 2026-11-13 · A2.4) ·
+   * للأرصدة والعرض وحدهما، ولا يُكتب في الدليل (نموذج الحساب يعدّل seeded_halalas)
+   */
   opening_halalas: number;
+  /** الافتتاحي المزروع كما في الدليل (accounts.opening_halalas) */
+  seeded_halalas: number;
   is_system: number;
 }
 
+/** النقدية والبنوك · وحساب الأرصدة الافتتاحية الذي يقابل افتتاحيات البنوك (الهجرة ٦٢ · قرار المالك س٢ في المراجعة الشاملة 2026-11-13) */
+export const ACC_CASH_BANKS = '1100';
+export const ACC_OPENING_BALANCES = '3300';
+
+/** نوع حساب الأرصدة الافتتاحية كما يُخزَّن في الدليل */
+const EQUITY_TYPE = 'حقوق ملكية'; // i18n-exempt: نوع الحساب المخزّن
+
+/**
+ * افتتاحيات البنوك في الدفتر: مجموع افتتاحيات البنوك الحية (المؤرشف منها رصيده باقٍ) ما دام 3300 قائماً · وقاعدةٌ قبل الهجرة ٦٢ (نسخةٌ تُفحص
+ * بإصدارها) أو بلا جدول البنوك صفر، فتبقى افتتاحياتها خارجه كما كانت · افتتاحي البنك يضعه المالك وحده وتحرسه المزامنة (openingKept)، فاشتقاقه
+ * هنا يتفق عليه كل جهاز بلا قيدٍ يُرحَّل مرتين (المراجعة الشاملة 2026-11-13 · A2.4)
+ * و3300 حساب النظام وحده (نظاميٌّ من حقوق الملكية): رمزٌ أنشأه المستخدم قبل الهجرة (احتياطيٌّ أو عهدة) لا تُقيَّد عليه افتتاحيات البنوك، فتبقى
+ * خارج الدفتر ظاهرةً في الفرق الافتتاحي كما كانت (المراجعة الشاملة 2026-11-13 · R11-A2.4-1)
+ */
+export function ledgerBankOpenings(db: DB): number {
+  try {
+    return Number(db.get<{ s: number }>(
+      `SELECT COALESCE(SUM(opening_halalas), 0) AS s FROM banks
+       WHERE deleted_at IS NULL AND EXISTS (SELECT 1 FROM accounts WHERE code = ? AND deleted_at IS NULL AND is_system = 1 AND type = ?)`,
+      [ACC_OPENING_BALANCES, EQUITY_TYPE])?.s ?? 0);
+  } catch { return 0; }
+}
+
+type RawAccount = Omit<AccountRow, 'seeded_halalas'>;
+/** الافتتاحي الفعلي: افتتاحيات البنوك مدينةٌ في 1100 ودائنةٌ في 3300 بطبيعة كلٍّ منهما (A2.4) */
+function withBankOpening(a: RawAccount, banks: number): AccountRow {
+  const seeded = Number(a.opening_halalas || 0);
+  const signed = a.code === ACC_CASH_BANKS ? banks : a.code === ACC_OPENING_BALANCES ? -banks : 0; // مدينٌ موجب
+  return { ...a, seeded_halalas: seeded, opening_halalas: seeded + (DEBIT_NORMAL_TYPES.has(a.type) ? signed : -signed) };
+}
+
 export function getAccount(db: DB, code: string): AccountRow | undefined {
-  return db.get<AccountRow>(
+  const a = db.get<RawAccount>(
     `SELECT code, name, type, grp, opening_halalas, is_system FROM accounts
      WHERE code = ? AND deleted_at IS NULL`,
     [code]
   );
+  if (!a) return undefined;
+  return withBankOpening(a, a.code === ACC_CASH_BANKS || a.code === ACC_OPENING_BALANCES ? ledgerBankOpenings(db) : 0);
 }
 
 export function allAccounts(db: DB): AccountRow[] {
-  return db.all<AccountRow>(
+  const banks = ledgerBankOpenings(db);
+  return db.all<RawAccount>(
     `SELECT code, name, type, grp, opening_halalas, is_system FROM accounts
      WHERE deleted_at IS NULL ORDER BY code`
-  );
+  ).map((a) => withBankOpening(a, banks));
 }
 
 /** صافي حركة الدفتر (مدين - دائن) على حساب · للقيود المرحّلة الحية فقط */
@@ -226,14 +266,14 @@ export function monthlyRevenue(db: DB, fromMonth: string, toMonth: string): Map<
 /**
  * المحفظة النقدية: ما في اليد فعلاً = رصيد النقدية 1100 - ما استقر في البنوك.
  * حسابياً: 1100 يستقبل كل المقبوضات ويصرف كل المدفوعات، والبنوك تتتبع حركاتها
- * في bank_tx · ففرقهما هو الكاش الحاضر (الافتتاحيات البنكية ليست في 1100).
+ * في bank_tx · ففرقهما هو الكاش الحاضر · وافتتاحيات البنوك في 1100 منذ الهجرة ٦٢ فتُطرح معها (المراجعة الشاملة 2026-11-13 · A2.4)
  */
 export function walletCashBalance(db: DB): number {
-  const cash = accountBalance(db, '1100');
+  const cash = accountBalance(db, ACC_CASH_BANKS);
   const bankFlow = Number(db.get<{ s: number }>(
     `SELECT COALESCE(SUM(amount_halalas),0) AS s FROM bank_tx WHERE deleted_at IS NULL`
   )!.s);
-  return cash - bankFlow;
+  return cash - bankFlow - ledgerBankOpenings(db);
 }
 
 export function cashOnHand(db: DB): number {

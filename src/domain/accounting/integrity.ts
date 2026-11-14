@@ -2,6 +2,7 @@ import type { DB } from '../../db/adapter';
 import { accountBalance, allAccounts, ledgerNet } from './ledger';
 import { markedNetOn, unmarkedOrphans, memberDevice } from './orphans';
 import { fmt } from '../money';
+import { t } from '../../i18n';
 
 export interface IntegrityCheck {
   name: string;
@@ -17,6 +18,9 @@ export interface IntegrityCheck {
 function hasCol(db: DB, table: string, col: string): boolean {
   return db.all<{ name: string }>(`PRAGMA table_info(${table})`).some((c) => c.name === col);
 }
+
+/** اسم الفحص الثالث (التأمينات) · تحته في «فحص المطابقة» أداة ترحيل التأمين المُسوّى (contracts/carryRepair.ts · A1-1) */
+export const DEPOSIT_CHECK_NAME = 'تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة)';
 
 export function integrityChecks(db: DB): IntegrityCheck[] {
   const out: IntegrityCheck[] = [];
@@ -51,14 +55,17 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     `SELECT COALESCE(SUM(c.deposit_halalas),0) AS s FROM contracts c
      WHERE c.status IN ('سارٍ','منتهٍ','ملغى') AND c.deleted_at IS NULL
        AND COALESCE(c.deposit_holder,'المكتب') != 'طرف آخر'
-       AND c.renewed_to IS NULL -- المجدَّد رُحِّل تأمينه إلى عقده الجديد
+       -- المجدَّد يُستثنى حين رُحِّل تأمينه فعلاً (قيد deposit_carry حيٌّ من خلفه)، لا لمجرد أن له خلفاً: التجديد بلا ترحيل يُبقي
+       -- التأمين القديم محتجزاً حتى يُسوّى (المراجعة الشاملة 2026-11-13 · A1-3 · منطق depositCarried نفسه)
+       AND NOT EXISTS (SELECT 1 FROM contracts n JOIN journal_entries je ON je.src_type = 'deposit_carry' AND je.src_id = n.id
+                       WHERE n.renewed_from = c.id AND n.deleted_at IS NULL AND je.reversed_by IS NULL AND je.deleted_at IS NULL)
        AND NOT EXISTS (SELECT 1 FROM deposit_settlements ds WHERE ds.contract_id = c.id)`
   )!;
   // القيد غائب المستند (orphans.ts) لا مستند يطابقه · يُطرح أثره قبل المطابقة ويُذكر
   const out2400 = markedNetOn(db, '2400');
   const bal2400 = accountBalance(db, '2400') + out2400;
   out.push({
-    name: 'تأمينات المستأجرين = التأمينات المحتجزة (غير المُسوَّاة)',
+    name: DEPOSIT_CHECK_NAME,
     ok: bal2400 === Number(dep.s),
     value: fmt(bal2400) + ' / ' + fmt(Number(dep.s)) + (out2400 ? ' · خارجها قيود بلا مستند ' + fmt(-out2400) : ''),
   });
@@ -132,7 +139,11 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     });
   }
 
-  // ٨) كل دفعة إيجار محصَّلة لها قيدها المرحّل (الربط بين التحصيل والدفتر)
+  // ٨) كل دفعة إيجار محصَّلة لها قيدها المرحّل (الربط بين التحصيل والدفتر) · وقيدها غير معكوس، ولو بعاكسٍ معلَّمٍ للمراجعة: الدفعة التي عُكس
+  //    قيدها ملغاةٌ بعاكسه، فالاستعادة تحمل إلغاءها مع عاكسها (keepPosted.ts) · والمزامنة تلغيها على جهاز المالك حين تصل الدفعة وقيدها
+  //    معكوسٌ هنا (Z١-١ وZ٢-٢)، ودفعة «من التأمين» حين يُقبل عاكس قيدها من عضوٍ لا يراها (sync/engine.ts: cancelReversedDepositRent) ·
+  //    وما سواهما (عاكس دفعةٍ عادية بلا إلغائها) يبقى أحمر هنا: لا يُصلح بلا سبب الإلغاء وتاريخه
+  //    (المراجع المعاكس الثاني والثالث على تعارض R12-DEP-2 مع R12-BAK-2)
   const unposted = db.get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM contract_payments p
      WHERE p.net_halalas > 0 ${hasCol(db, 'contract_payments', 'cancelled_at') ? 'AND p.cancelled_at IS NULL' : ''} AND NOT EXISTS (
@@ -229,7 +240,36 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     value: strays.payments + ' دفعة · ' + strays.installments + ' قسط · ' + strays.contracts + ' عقد',
   });
 
+  // تاريخٌ بغير صيغته كتبه حقل التاريخ قبل إصلاحه «2026-3-15» أو «2026-02-31»: لا يقع في شهرٍ ولا ربع فيغيب من التقارير والإقرار
+  // وهو في الرصيد (المراجعة الشاملة 2026-11-13 · D-2 · الخطة ٣ · D2-R11-2) · الحيّ منه وحده: ما عُكس قيده أو أُلغيت دفعته صُحّح ·
+  // واللحظة القديمة «2026-01-15T…» بيومها كما يقرؤها correctionDate
+  const odd = badDateCounts(db);
+  const oddTotal = odd.entries + odd.payments + odd.purchases + odd.bank + odd.invoices;
+  out.push({
+    name: t('dates.integrityName'),
+    ok: oddTotal === 0,
+    value: t(oddTotal ? 'dates.integrityFix' : 'dates.integrityValue', odd),
+  });
+
   return out;
+}
+
+/** صفوفٌ حيّة بتاريخٍ ليس بصيغة سنة-شهر-يوم ويومٍ قائم · date() في SQLite يعيد غير المكتوب لـ«2026-02-31» ولا شيء لـ«2026-3-15» */
+export function badDateCounts(db: DB): { entries: number; payments: number; purchases: number; bank: number; invoices: number } {
+  const bad = (c: string) => `(${c} IS NOT NULL AND ${c} <> '' AND date(substr(${c}, 1, 10)) IS NOT substr(${c}, 1, 10))`;
+  const n = (sql: string) => Number(db.get<{ n: number }>(sql)!.n);
+  return {
+    // i18n-exempt: حالة القيد المخزّنة
+    entries: n(`SELECT COUNT(*) AS n FROM journal_entries WHERE status = 'مرحّل' AND deleted_at IS NULL AND reversed_by IS NULL AND ${bad('date')}`),
+    payments: n(`SELECT COUNT(*) AS n FROM contract_payments WHERE ${bad('date')}
+      ${hasCol(db, 'contract_payments', 'cancelled_at') ? 'AND cancelled_at IS NULL' : ''}`),
+    purchases: n(`SELECT COUNT(*) AS n FROM purchases WHERE deleted_at IS NULL AND ${bad('date')}`),
+    // وحركة البنك التي عُكس قيدها (إلغاء دفعتها) صُحّحت بالعاكس
+    bank: n(`SELECT COUNT(*) AS n FROM bank_tx t WHERE t.deleted_at IS NULL AND ${bad('t.date')}
+      AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE t.journal_no <> '' AND e.no = t.journal_no AND e.reversed_by IS NOT NULL)`),
+    // i18n-exempt: حالة الفاتورة المخزّنة
+    invoices: n(`SELECT COUNT(*) AS n FROM invoices WHERE deleted_at IS NULL AND status <> 'مسودة' AND ${bad('issue')}`),
+  };
 }
 
 /** السجلات اليتيمة: أبوها غائب أو في السلة وهي قائمة */

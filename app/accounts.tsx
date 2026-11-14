@@ -20,7 +20,7 @@ import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
 import { logAudit } from '../src/domain/audit';
 import { reportFailure } from '../src/ui/failureDialog';
-import { usePerm } from '../src/ui/access';
+import { usePerm, useAccess } from '../src/ui/access';
 
 const GROUPS = ['أصل', 'خصم', 'حقوق ملكية', 'إيراد', 'مصروف'];
 const GROUP_LABEL: Record<string, string> = {
@@ -32,6 +32,8 @@ type PeriodKey = 'month' | 'quarter' | 'year' | 'all';
 interface AccountItem {
   code: string; name: string; type: string; grp: string | null;
   opening: number; balance: number; debit: number; credit: number;
+  /** الافتتاحي المزروع في الدليل · يعدّله النموذج (opening معه افتتاحيات البنوك في 1100 و3300 · المراجعة الشاملة 2026-11-13 · A2.4) */
+  seeded: number;
 }
 
 interface StmtLine {
@@ -106,6 +108,8 @@ export default function Accounts() {
   const toast = useToast();
   const dialog = useDialog();
   const perm = usePerm('ledger');
+  // الرصيد الافتتاحي يضعه المالك وحده (القاعدة ٩٩ · المدقق الخارجي M٧): جهاز المالك يرفض تعديل العضو له
+  const owner = useAccess().owner;
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
   const [period, setPeriod] = useState<PeriodKey>('all');
@@ -154,6 +158,7 @@ export default function Accounts() {
       return {
         code: a.code, name: a.name, type: a.type, grp: a.grp,
         opening: Number(a.opening_halalas || 0),
+        seeded: Number(a.seeded_halalas || 0),
         balance: balances.get(a.code) ?? 0,
         debit: m.debit, credit: m.credit,
       };
@@ -229,8 +234,12 @@ export default function Accounts() {
     const a = base.find((x) => x.code === accCode);
     if (!a) return;
     setEditingCode(a.code); setName(a.name); setCode(a.code); setType(a.type);
-    setOpening(fmt(a.opening).replace(/,/g, '')); setFormOpen(true);
+    setOpening(fmt(a.seeded).replace(/,/g, '')); setFormOpen(true);
   }, [base]);
+  const editingBanks = useMemo(() => {
+    const a = editingCode ? base.find((x) => x.code === editingCode) : undefined;
+    return a ? Math.abs(a.opening - a.seeded) : 0;
+  }, [base, editingCode]);
   const save = () => {
     if (!name.trim() || !code.trim()) { toast('الرجاء تعبئة اسم ورمز الحساب'); return; }
     try {
@@ -375,7 +384,9 @@ export default function Accounts() {
               : <SelectField label="النوع" value={type} options={GROUPS.map((g) => ({ value: g, label: g }))} onPick={setType} />}
           </View>
         </Row>
-        <Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr />
+        <Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr disabled={!owner} />
+        {/* افتتاحيات البنوك تُضاف إلى 1100 و3300 ولا تُكتب هنا، فلا يُعاد إدخالها فتتضاعف (المراجعة الشاملة 2026-11-13 · A2.4) */}
+        {editingBanks ? <T size={11} color={C.muted}>{t('accounts.bankOpeningHint', { amount: fmt(editingBanks) })}</T> : null}
       </Sheet>
 
       {/* كشف حركة الحساب · كل سطر يفتح ورقة تفاصيل قيده */}

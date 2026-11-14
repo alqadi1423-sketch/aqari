@@ -14,6 +14,8 @@ const DEDUCTIBLE = 'فاتورة ضريبية · قابلة للخصم'; // i18n
 
 async function setup() {
   const p = await pair();
+  // المنشأة مسجّلة على الجهازين: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
+  for (const db of [p.owner, p.dev]) db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`);
   const pa = addProperty(p.owner, { name: 'عقار شراء أ مصطنع' });
   const pb = addProperty(p.owner, { name: 'عقار شراء ب مصطنع' });
   const ua = addUnit(p.owner, pa, { unit_no: 'PU-A' });

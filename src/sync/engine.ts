@@ -15,28 +15,39 @@
  *    الحفظ فلا يبقى من الصف أثر، ويُحفظ في sync_rejects ويُسجَّل، ولا يكسر بقية الدفعة.
  *  - المبالغ أعداد صحيحة بالهللات كما هي في القاعدة.
  */
+import { SAME_KEY_SQL, sameKeyParams, keepInOrder, lineKeyBase, sameLineKey, statementsNeed, statementsKnown, statementWithRoom, resetStatementCounts } from '../domain/bankStatement/dedupe';
 import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
-import { nextPurchaseNo } from '../domain/purchases';
+import { nextPurchaseNo, PAY_LABEL } from '../domain/purchases';
 import { postedAccum } from '../domain/assets/depreciation';
 import { t as tr } from '../i18n';
-import type { DB, SqlValue } from '../db/adapter';
+import { isDbFault, TransactionAbortedError, type DB, type SqlValue } from '../db/adapter';
 import { SYNC_TABLES, SYNC_RANK, LATER_SYNC_TABLES, syncTable } from '../db/syncTables';
 import { logAudit } from '../domain/audit';
 import { moneyColumns, semanticIssues, type SemanticScope } from '../domain/backup/semantic';
-import { DISCOUNT_ENTRY_SRC } from '../domain/contracts/installments';
+import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, DEPOSIT_RENT_EDIT_REASON, DEPOSIT_RENT_KEPT_REASON, SETTLEMENT_CLAIM_SOURCE } from '../domain/contracts/installments';
 import { recomputeInstallments, installmentsOfPayment } from '../domain/contracts/paid';
-import { paidFromDeposit } from '../domain/contracts/cancelPayment';
+import { paidFromDeposit, paidFromSettlement } from '../domain/contracts/cancelPayment';
+import { depositCarryChain } from '../domain/contracts/depositChain';
 import { blockRequests, addBlock } from '../domain/numbering';
-import { markOrphans } from '../domain/accounting/orphans';
+import { markOrphans, recordForeignReview, foreignReviewRows, reviewState } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
-import { memberSourceIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
+import { isISODate } from '../domain/dates';
+import { TS_DEDUCTIBLE } from '../domain/purchases';
+import { walletCashBalance, bankBalance, ACC_OPENING_BALANCES } from '../domain/accounting/ledger';
+import { MIGRATED_SYSTEM_ACCOUNTS } from '../db/seed';
+import { CASH_DEPOSIT_SOURCE, CASH_WITHDRAW_SOURCE, TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE } from '../domain/cashOps';
+import { CRASH_ENTITY, FAILURE_ENTITY_PREFIX, retryCrashRank } from '../domain/crashReport';
+import { memberSourceIssue, deductibleIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
 import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 import { isoCmp, isoNorm } from './isoTime';
 import { redactForReport } from '../domain/redact';
+import { mulQty, pctOf, fmt } from '../domain/money';
+import { OWNER_ONLY_COLS, POSTED_PURCHASE_COLS, HANDOVER_FORM_COLS } from '../domain/access/opWrites';
+import { READ_TABLE } from '../domain/access/readSections';
 
 const nowIso = () => new Date().toISOString();
 
@@ -215,6 +226,8 @@ export function buildDoc(db: DB, table: string, key: string, op: 'upsert' | 'del
   }
   const doc: RemoteDoc = { ...base, d: stripDerived(table, row), del: false };
   if (table === 'journal_entries') doc.lines = readLines(db, key);
+  // والقيد نفسه برقمٍ آخر في السحابة يُرفع برقمه هناك (المدقق الخارجي Y٥: عكسه برقمه هنا كان يُرفض «نهائياً» كل مرة)
+  if (table === 'journal_entries' && typeof doc.d!.no === 'string' && doc.d!.no) doc.d!.no = cloudJournalNo(db, doc.d!.no);
   if (table === 'bank_tx' && typeof doc.d!.journal_no === 'string' && doc.d!.journal_no) doc.d!.journal_no = cloudJournalNo(db, doc.d!.journal_no);
   return doc;
 }
@@ -243,6 +256,14 @@ const SCHEMA_REJECT = /CHECK constraint failed|has no column named|no such colum
  */
 const PERMANENT_PUSH_CODES = new Set(['INVALID_ARGUMENT', 'DOC_TOO_LARGE']);
 const PERMANENT_PUSH_REASON = 'رفضته السحابة رفضاً دائماً'; // i18n-exempt: بادئة سبب الرفض المخزَّن
+
+/**
+ * مرفوضٌ مما كتبه هذا الجهاز ولم يبلغ السحابة: لصلاحيته، أو رفضاً دائماً، أو قيدٌ نسخته في السحابة نهائية · لا ما رُفض تطبيقه من الوارد ·
+ * فهو من «ما لم يُرفع من عمله» حين يخرج العضو من المنشأة (المراجعة الشاملة 2026-11-13 · B-4 · domain/memberExit.ts)
+ */
+export function isUploadReject(reason: string): boolean {
+  return reason.startsWith('خارج صلاحيتك') || reason.startsWith(PERMANENT_PUSH_REASON) || reason === FINAL_IN_CLOUD; // i18n-exempt: بادئة سبب الرفض المخزَّن
+}
 
 /** مفتاح آخر إصدارٍ أُعيد فيه المرفوض */
 export const REJECTS_REPLAYED_KEY = 'rejects_replayed_sv';
@@ -315,6 +336,19 @@ const MAX_ATTEMPTS = 20;
 const WAIT_LIMIT_MS = 30 * 24 * 3600 * 1000;
 /** سبب رفض الانتظار الطويل · ويُعاد واردُه حين يصل أبوه */
 const WAIT_REJECT = 'سجل أب غير موجود بعد محاولات متكررة';
+
+/**
+ * سطور مستند القيد كائناتٌ وحدها (المدقق الخارجي هـ٨: عنصرٌ null في سطور قيد عضوٍ كان يرمي خارج الحماية فتسقط دورة التطبيق كلها على كل
+ * جهاز) · ومستندٌ سطوره ليست قائمة كائنات يُرفض وحده في applyOne
+ */
+const docLines = (doc: RemoteDoc | null | undefined): Array<Record<string, unknown>> =>
+  (Array.isArray(doc?.lines) ? doc!.lines : []).filter((l): l is NonNullable<typeof l> => !!l && typeof l === 'object' && !Array.isArray(l)) as never;
+// والسطر الذي في حقلٍ منه كائنٌ أو قائمة مشوَّهٌ كذلك (المدقق الخارجي G · M١: كان ينتظر ثلاثين يوماً ثم يرمي ربطه في إعادة الانتظار
+// خارج الحماية فيتوقف التطبيق كله على جهاز المالك في كل دورة)
+const scalar = (v: unknown) => v == null || typeof v !== 'object';
+const linesMalformed = (doc: RemoteDoc): boolean =>
+  doc.lines != null && (!Array.isArray(doc.lines) || doc.lines.some((l) => !l || typeof l !== 'object' || Array.isArray(l)
+    || !Object.values(l as Record<string, unknown>).every(scalar)));
 
 function stable(v: unknown): string {
   if (v === null || typeof v !== 'object') return JSON.stringify(v);
@@ -392,6 +426,26 @@ const linkRejected = (db: DB, entryId: string, why: string, doc?: RemoteDoc) =>
  */
 const GUESSED_REV = 'guessed_reversal_links';
 const guessesOf = (db: DB) => JSON.parse(getSyncState(db, GUESSED_REV) ?? '{}') as Record<string, string>;
+
+/**
+ * الأصول المربوطة بالعاكس في خريطة ربطٍ محفوظة (المعلَّق والمخمَّن) · بفهرسٍ عكسي يُبنى مرةً لكل نصٍّ محفوظ (المدقق الخارجي B1: كانت
+ * الخريطة تُحلَّل كاملةً لكل قيد عضو، ونصّها يكبر مع العواكس المنتظرة فيصير الفحص تربيعياً)
+ */
+const linkIndex = new Map<string, { raw: string; byRev: Map<string, string[]> }>();
+function linksTo(key: string, raw: string | null, revId: string): string[] {
+  const text = raw ?? '{}';
+  let c = linkIndex.get(key);
+  if (!c || c.raw !== text) {
+    const byRev = new Map<string, string[]>();
+    for (const [e, r] of Object.entries(JSON.parse(text) as Record<string, string>)) {
+      const a = byRev.get(r);
+      if (a) a.push(e); else byRev.set(r, [e]);
+    }
+    c = { raw: text, byRev };
+    linkIndex.set(key, c);
+  }
+  return c.byRev.get(revId) ?? [];
+}
 const saveGuesses = (db: DB, g: Record<string, string>) => setSyncState(db, GUESSED_REV, Object.keys(g).length ? JSON.stringify(g) : null);
 
 /**
@@ -447,6 +501,21 @@ export function resolvePendingReversals(db: DB): number {
 class AwaitOriginal extends Error {}
 
 /**
+ * عكس سداد قسطٍ من التأمين أو إلغاء دفعته من عضو (المراجعة الشاملة 2026-11-13 · R12-DEP-3 · قرار A1-2: «لا تُلغى وحدها بل بتعديل
+ * التسوية»): تعديل التسوية (reverseDepositRent) يكتب صفّ تسوية العقد صاحب التأمين في المعاملة نفسها، فشاهده نسخةٌ من الصف مكتوبةٌ معه أو
+ * بعده هنا أو في الوارد ('ok') · وإلغاءٌ سببه غير سبب التعديل إلغاءٌ للدفعة وحدها (إصدارٌ قبل A1-2) فيُرفض ('no') · وما سواه ينتظر صفّ
+ * التسوية ('await': يُرفع بعد القيود والدفعات وقد يصل في دفعةٍ بعدها، والمزوَّر يُرفض بطول انتظاره ولا أثر له قبل ذلك)
+ */
+function depositRentEdit(db: DB, depositContract: string, doc: RemoteDoc, reason: string | null | undefined): 'ok' | 'await' | 'no' {
+  const at = incomingAt(doc);
+  const inbox = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'deposit_settlements' AND pk = ? AND del = 0`, [depositContract]);
+  if (inbox && isoCmp(incomingAt(JSON.parse(inbox.payload) as RemoteDoc), at) >= 0) return 'ok';
+  const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = 'deposit_settlements' AND pk = ?`, [depositContract])?.u;
+  if (seen && isoCmp(seen, at) >= 0) return 'ok';
+  return reason != null && reason !== DEPOSIT_RENT_EDIT_REASON ? 'no' : 'await';
+}
+
+/**
  * العاكس المرحّل الوارد (المراجعة الخارجية ٧ · النتيجة ١ · المتحقق المستقل، الجولتان العاشرة والحادية عشرة): القواعد تقبل «_rev»
  * من الأعضاء بأي سطور وأي مصدر، والعضو بـ«كامل» يعدّل مسودة غيره فيبقى كاتبها · فجهاز المالك يفحص كل عاكسٍ مرحّل يصله أياً كان
  * كاتبه: مرآةً لأصلٍ قائم عنده (mirror.ts)، ولا عواكس أكثر من أصولها (كانت المرآة المكررة تضاعف أثر العكس) · وإلا رُفض المستند
@@ -465,21 +534,331 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
     : `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, // i18n-exempt: حالة القيد المخزّنة
     base === 'manual' ? [srcId] : [base, srcId]);
   if (!originals.length) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
+  // ولا يعكس عضوٌ ترحيل التأمين (المراجعة الشاملة 2026-11-13 · A1-1 · البيانات القائمة): لا مسار في التطبيق يعكسه لعضو، وعكسه مع تصفير
+  // تأمين العقد المجدَّد أداةٌ للمالك وحده في «فحص المطابقة» (contracts/carryRepair.ts) · وعكسه من جهازٍ لا يمنعه يُعيد التزام العقد السابق
+  // ويترك المجدَّد بلا تأمينه، فيُرفض هنا وتبقى دفاتر المالك
+  if (base === 'deposit_carry' && byMember(db, doc, true)) {
+    throw new Error(tr('mirror.revRejected', { why: tr('mirror.carryOwnerOnly', { lng: 'ar' }), lng: 'ar' }));
+  }
+  // وأصلٌ من المصدر نفسه في الوارد لم يُطبَّق بعد وهذا مرآته: يُنتظر ولا يُرفض العاكس (المدقق الخارجي I · L٧: إلغاء التقبيل واستعادته
+  // ثم إلغاؤه ثانية، والعاكس الثاني يسبق نسخة الاستعادة بجزءٍ من الثانية، كان يُرفض نهائياً «عواكس أكثر من أصولها»)
+  // والعاكس من عضوٍ بلا أصلٍ حرٍّ له هنا ينتظر ولا يُرفض: أصله قد يصل في دفعةٍ بعده (المدقق الخارجي K١ب: العضو يرفع على دفعات، فإن طبّق
+  // المالك بينهما رُفض العاكس نهائياً) · والمزوَّر يُرفض بطول انتظاره ولا أثر له قبل ذلك
+  const awaitPending = (extra: boolean) => {
+    if (pendingOriginalOf(db, doc, base, srcId) || (extra && byMember(db, doc, true))) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
+  };
+  // وأصلٌ في الوارد يسمّي هذا العاكس يُنتظر قبل أي تخمين، فلا يُقرن العاكس بغيره (K١)
+  // (من مصدره نفسه، ولم يُرفض لطول انتظاره · المدقق الخارجي M٥: قيدٌ مزوَّر بمصدرٍ آخر ينتظر أبداً كان يحبس العاكس المشروع)
+  if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.reversed_by') = ?
+       AND json_extract(payload, '$.d.src_type') = ? AND json_extract(payload, '$.d.src_id') = ?
+       AND pk NOT IN (SELECT id FROM journal_entries) AND doc NOT IN (SELECT doc FROM sync_rejects WHERE reason = ?)`, [doc.k, base, srcId, WAIT_REJECT])) {
+    throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
+  }
   const issues = originals.map((o) => mirrorIssue(db, o.id, doc.k));
-  if (!issues.includes('')) throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' }));
+  if (!issues.includes('')) { awaitPending(false); throw new Error(tr('mirror.revRejected', { why: issues[0], lng: 'ar' })); }
   // ولا يعكس عضوٌ قيد دفعةٍ سُدّدت من عربون الحجز (المراجعة الشاملة · البند ٢٧ · المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها،
   // و«الدفتر» يجيز له كل عكس) · وعكس المالك يُقبل كما كتبه، ورصيده العالق يُحمّر فحص عربون الحجوزات
   if (base === 'reservation_convert' && byMember(db, doc, true)
     && originals.some((o, i) => issues[i] === '' && db.get(`SELECT 1 FROM contract_payments /* تشمل الملغاة: ربط القيد بمستنده */ WHERE journal_entry_id = ?`, [o.id]))) { // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
     throw new Error(tr('mirror.revRejected', { why: tr('payment.cancelFromDeposit', { lng: 'ar' }), lng: 'ar' }));
   }
+  // ولا يعكس عضوٌ سداد قسطٍ من التأمين وحده (المراجعة الشاملة 2026-11-13 · R12-DEP-3 · كدفعة العربون أعلاه): يُعكس مع تعديل التسوية
+  // وحده (depositRentEdit) · وإلغاء الدفعة وحدها من جهازٍ بإصدارٍ قبل A1-2 يُرفض فلا يعود القسط مستحقاً وقد سُدّد من التأمين
+  if (base === DEPOSIT_RENT_SRC && byMember(db, doc, true)) {
+    const matched = originals.filter((_, i) => issues[i] === '').map((o) => o.id);
+    const pays = db.all<{ id: string }>(`SELECT id FROM contract_payments /* تشمل الملغاة: الدفعة التي يُلغيها هذا العاكس، ونسختها الواردة تحمل إلغاءه */ WHERE journal_entry_id IN (SELECT value FROM json_each(?))`, [JSON.stringify(matched)]); // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
+    const reason = pays.map((p) => latestRowByKey<{ cancel_entry_id?: string | null; cancel_reason?: string | null }>(db, 'contract_payments', p.id))
+      .find((p) => p?.cancel_entry_id === doc.k)?.cancel_reason;
+    const edit = depositRentEdit(db, srcId, doc, reason);
+    if (edit === 'await') throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
+    if (edit === 'no') throw new Error(tr('mirror.revRejected', { why: tr('payment.cancelFromSettlement', { lng: 'ar' }), lng: 'ar' }));
+  }
+  // ولا يعكس عضوٌ قيد نقل أصلٍ ما دام حدث نقله قائماً (المدقق الخارجي ج٦): لا مسار في التطبيق يعكسه، وعكسه يعيد تكلفة الأصل في الدفتر
+  // إلى وحدته القديمة وصفُّه وحدثه في الجديدة، فيُقبل به إهلاكٌ بالوحدة القديمة · وقيد النقل اليتيم (بلا حدثه) يُعكس كغيره
+  // والحدث في الوارد لم يُطبَّق بعد كالقائم (المدقق الخارجي G · R١: أحداث الأصل تُطبَّق بعد القيود، فالنقل وحدثه وعاكسٌ مزوَّر في سحبٍ
+  // واحد كانت تمرّر العاكس قبل الحدث)
+  if (base === 'asset_transfer' && byMember(db, doc, true)
+    && originals.some((o, i) => issues[i] === '' && (db.get(`SELECT 1 FROM asset_events WHERE entry_id = ?`, [o.id])
+      // وجدول الأحداث بلا عمود حذف، فحقل «deleted_at» في مستنده لا يجعله محذوفاً (المدقق الخارجي I · R١ب)
+      || db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'asset_events' AND del = 0 AND json_extract(payload, '$.d.entry_id') = ?`, [o.id])))) {
+    throw new Error(tr('mirror.revRejected', { why: tr('mirror.transferLive', { lng: 'ar' }), lng: 'ar' }));
+  }
   if (!freeOriginals(db, doc.k, src, srcId, originals.map((o) => o.id)).length) {
+    awaitPending(true);
+    // وعاكس المالك لأصلٍ يحجزه عاكسٌ في الوارد لم يُطبَّق بعد ينتظره ولا يُرفض: إن رُفض ذاك لطول انتظاره قُبل هذا (المدقق الخارجي O٣:
+    // كان يُرفض نهائياً فيبقى أصل المالك حياً على جهازه الثاني وحده)
+    if (originals.some((o) => inboxHeld(db, o.id, doc.k))) throw new AwaitOriginal(tr('mirror.noOriginal', { lng: 'ar' }));
     throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
   }
   guessLink(db, doc.k);
   const revs = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل'`, [src, srcId]).length; // i18n-exempt: حالة القيد المخزّنة
-  if (revs > originals.length) throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' }));
+  if (revs > originals.length) { awaitPending(true); throw new Error(tr('mirror.revRejected', { why: tr('mirror.extra', { lng: 'ar' }), lng: 'ar' })); }
+}
+
+/**
+ * قيدٌ جديد من عضو لا يُنزل بنكاً تحت الصفر في دفاتر المالك (قرار المالك ٥٥ · المراجعة الشاملة 2026-11-13 · R12-SYN-3): عضو التحصيل
+ * أو الفواتير أو المشتريات لا يقرأ حركات البنك (readSections.ts) فيرى رصيده افتتاحيّه وما كتبه هو، فحدّ A2.2 على جهازه (bankShortages)
+ * يجيز إلغاء تحصيلٍ أو إعادة فاتورةٍ إلى «مستحقة» أو استعادة فاتورة شراءٍ مسدَّدة من بنكٍ سحب منه المالك · وجهاز المالك يرى كل حركة،
+ * فيُرفض القيد نفسه قبل أن يدخل الدفتر، وتُرفض حركته البنكية معه (bankTxEntryRejected) وما يتبعه (bankShortFollowerIssue)، والفاتورة
+ * المحصَّلة بقيدٍ حيّ تبقى (keepLocal) · وكان يُطبَّق كله لأن حركةً كُتبت مع قيدها لا تُفحص (Q٣ في memberBankTxCheck: فحصها وحدها
+ * يُطبّق القيد ويمسك حركته فيختلف الجهازان)، والحكم هنا على القيد قبل حركته فلا نصف عملية · وما كتبه المالك من جهازه الآخر، أو عضوٌ
+ * بقسمٍ يقرأ حركات البنك (البنوك والتقارير والدفتر: op المستند)، لا يُفحص هنا: حدّ A2.2 على جهازه رأى البنك كله، فلا يبقى إلا سدادٌ
+ * متزامنٌ مع سحبٍ بلا اتصال، وهو مقبولٌ كما وثّقه Q٣ب (العملية حقيقية والبنك السالب ظاهرٌ للمالك، ورفضها يُسقط سداداً تمّ)
+ */
+function memberBankOutCheck(db: DB, doc: RemoteDoc): void {
+  if (getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
+  if (typeof doc.op === 'string' && READ_TABLE.bank_tx.includes(doc.op as never)) return;
+  const total = new Map<string, number>();
+  const add = (m: Map<string, number>) => { for (const [b, a] of m) total.set(b, (total.get(b) ?? 0) + a); };
+  add(entryBankEffect(db, doc));
+  // حركات هذا القيد ونُسخ أخواته في الوارد محسوبةٌ في أثره، فلا تُحسب ثانيةً فيما ينتظر
+  const own = new Set<string>([String(doc.d!.no ?? '')].filter(Boolean));
+  // والاستعادة عمليةٌ واحدة: نُسخ قيود المستند نفسه (فاتورة الشراء وسدادها) تُقبل معاً أو تُرفض معاً، فلا تُستعاد الفاتورة بلا سدادها
+  if (!String(doc.d!.src_type ?? '').endsWith('_rev') && repostSourceOf(db, doc)) {
+    const sibs = siblingCopies(db, doc).filter((sib) => sib.k !== doc.k);
+    for (const sib of sibs) {
+      const why = bankShortRejectOf(db, sib.k);
+      if (why) throw new Error(why);
+      if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [sib.k])) { add(entryBankEffect(db, sib)); if (sib.d!.no) own.add(String(sib.d!.no)); }
+    }
+    // ونسخة الفاتورة التي تنتظر نسخة سدادها في الطريق لا يُحكم عليها وحدها (مراجعة إصلاح R12-SYN-3)
+    if (!sibs.some((sib) => sib.d!.src_type === 'purchase_pay') && payCopyAwaited(db, doc)) {
+      throw new AwaitOriginal('purchase_pay copy in transit');
+    }
+  }
+  for (const [bank, a] of total) {
+    if (a >= 0) continue;
+    const balance = bankBalance(db, bank) + pendingBankMoves(db, doc, bank, own);
+    if (balance + a >= 0) continue;
+    const name = db.get<{ n: string }>(`SELECT name AS n FROM banks WHERE id = ?`, [bank])?.n ?? '';
+    const why = tr('bankTx.bankShort', { bank: name, balance: fmt(balance), amount: fmt(-a), lng: 'ar' });
+    throw new Error(tr('sync.memberBankShort', { why, lng: 'ar' }));
+  }
+}
+
+/**
+ * أثر قيدٍ وارد في كل بنك: حركاته التي كُتبت معه وتنتظر في الوارد، وما لم يصل منها: العاكس حركات أصله معكوسةً، ونسخة الاستعادة حركات
+ * القيد المعكوس الذي تنسخه · بالأشدّ منهما لكل بنك (ما يصل منها في دفعةٍ لاحقة لا يفوت الحكم)
+ */
+function entryBankEffect(db: DB, doc: RemoteDoc): Map<string, number> {
+  const d = doc.d!;
+  const out = new Map<string, number>();
+  const take = (rows: Array<{ b: unknown; a: unknown }>, sign: number) => {
+    const per = new Map<string, number>();
+    for (const r of rows) if (r.b != null && r.b !== '') per.set(String(r.b), (per.get(String(r.b)) ?? 0) + sign * (Number(r.a) || 0));
+    for (const [b, a] of per) out.set(b, Math.min(out.get(b) ?? 0, a));
+  };
+  const movesOf = (entryId: string, sign: number) => {
+    const e = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [entryId]);
+    if (e) take(db.all(`SELECT bank_id AS b, amount_halalas AS a FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL`, [e.no]), sign);
+  };
+  if (typeof d.no === 'string' && d.no) {
+    take(db.all(`SELECT json_extract(payload, '$.d.bank_id') AS b, json_extract(payload, '$.d.amount_halalas') AS a FROM sync_inbox
+      WHERE tbl = 'bank_tx' AND del = 0 AND json_extract(payload, '$.d.journal_no') = ? AND json_extract(payload, '$.d.deleted_at') IS NULL`, [d.no]), 1);
+  }
+  if (String(d.src_type ?? '').endsWith('_rev')) for (const o of sourceReader(db).claimants(doc.k)) movesOf(o, -1);
+  else {
+    const copied = repostSourceOf(db, doc);
+    if (copied) movesOf(copied, 1);
+  }
+  return out;
+}
+
+/**
+ * ما ينتظر في الوارد من حركات البنك الجديدة مما يسبق هذا القيد (حركات البنك تُطبَّق بعد القيود، فما سبقه في السحابة لم يدخل الرصيد بعد):
+ * حركات قيدٍ طُبّق هنا (تحصيلٌ وإلغاؤه وصلا معاً، وجهازٌ للمالك جديد يسحب الحساب كله)، أو قيدٍ في الوارد كُتب في السحابة قبله (بوقت
+ * الخادم: ينتظر أباه)، ونقل النقد بلا قيد (السحب إلى المحفظة والإيداع والتحويل بين البنوك · cashOps.ts) كُتب قبله · وما كتبه المالك
+ * أياً كان وقته: جهازه طبّقه قبل أن يصله قيد العضو، أو كتبه بعده في حدّ ما أبقاه · بالداخل والخارج معاً، فيُحكم بترتيب الكتابة في
+ * السحابة لا بتوقيت السحب: كان الداخل وحده يُحسب، فجهاز المالك الذي يسحب في دورةٍ واحدة سحبَ المالك من جهازه الآخر (أو سحب عضو البنوك)
+ * وإلغاءَ العضو بعده يرى البنك قبل السحب فيقبل ما رفضه جهازٌ سحب السحب قبله، وينزل البنك تحت الصفر (مراجعة إصلاح R12-SYN-3) · وما
+ * كتبه عضوٌ بعد هذا القيد يُحكم عليه بعده بما يُبقيه هذا · own: أرقام القيد وأخواته المحسوبة في أثره
+ * (لا يُطلب إلا حين لا يكفي البنك، فيُصفّى البنك هنا لا بفهرس)
+ */
+function pendingBankMoves(db: DB, doc: RemoteDoc, bank: string, own: Set<string>): number {
+  const alias = noAliases(db);
+  const at = db.get<{ u: string }>(`SELECT updated_at AS u FROM sync_inbox WHERE doc = ?`, [doc.id])?.u ?? '';
+  /** كُتب في السحابة قبل هذا القيد، أو كتبه المالك */
+  const counts = (x: { by?: unknown; op?: unknown }, before: unknown) => !!before || !byMember(db, x as RemoteDoc, true);
+  const sure = new Map<string, boolean>();
+  const entryCounts = (no: string): boolean => {
+    let v = sure.get(no);
+    if (v !== undefined) return v;
+    v = !!db.get(`SELECT 1 FROM journal_entries WHERE no = ? AND status = ? AND deleted_at IS NULL`, [alias[no] ?? no, POSTED_ENTRY])
+      || db.all<{ p: string; before: number }>(`SELECT payload AS p, (updated_at, doc) < (?, ?) AS before FROM sync_inbox
+          WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.no') = ?`, [at, doc.id, no])
+        .some((r) => {
+          try {
+            const e = JSON.parse(r.p) as RemoteDoc;
+            return e.d?.status === POSTED_ENTRY && e.d.deleted_at == null && counts(e, r.before);
+          } catch { return false; }
+        });
+    sure.set(no, v);
+    return v;
+  };
+  let n = 0;
+  for (const r of db.all<{ b: unknown; a: unknown; x: unknown; no: unknown; by: unknown; op: unknown; before: number }>(`SELECT
+      json_extract(payload, '$.d.bank_id') AS b, json_extract(payload, '$.d.amount_halalas') AS a, json_extract(payload, '$.d.deleted_at') AS x,
+      json_extract(payload, '$.d.journal_no') AS no, json_extract(payload, '$.by') AS by, json_extract(payload, '$.op') AS op,
+      (updated_at, doc) < (?, ?) AS before
+    FROM sync_inbox WHERE tbl = 'bank_tx' AND del = 0 AND pk NOT IN (SELECT id FROM bank_tx)`, [at, doc.id])) {
+    const no = r.no == null ? '' : String(r.no);
+    if (String(r.b ?? '') !== bank || r.x != null || own.has(no)) continue;
+    if (no ? entryCounts(no) : counts(r, r.before)) n += Number(r.a) || 0;
+  }
+  return n;
+}
+
+/**
+ * نسخة قيد فاتورة شراءٍ تستعيدها من السلة تنتظر نسخة قيد سدادها (مراجعة إصلاح R12-SYN-3): الاستعادة عمليةٌ واحدة يُحكم على نسختيها
+ * معاً، فإن وصلت نسخة الفاتورة في سحبٍ ونسخة السداد في سحبٍ بعده قُبلت الأولى ورُفضت الثانية لنقص البنك، فاستُعيدت الفاتورة بلا سدادها
+ * وبقيت ذمّة المورد حيّة · فتنتظر ما دامت نسخة السداد في الطريق: صفّ الفاتورة الوارد يسمّي قيد سدادٍ لم يصل ولم يُرفض، أو (إن لم يصل
+ * صفّها) فاتورتها هنا في السلة مسدَّدةٌ بقيدٍ معكوس فتعيده الاستعادة (restorePurchase) ولا نسخة سدادٍ حيّة له هنا · ساعةً بوقت الخادم
+ * من كتابتها (LATE_LINK_MS كالربط المتأخر) ثم يُحكم عليها وحدها
+ */
+function payCopyAwaited(db: DB, doc: RemoteDoc): boolean {
+  const d = doc.d!;
+  if (d.src_type !== 'purchase' || d.src_id == null) return false;
+  const pid = String(d.src_id);
+  const row = db.get<{ e: unknown; p: unknown }>(`SELECT json_extract(payload, '$.d.journal_entry_id') AS e,
+    json_extract(payload, '$.d.payment_journal_entry_id') AS p FROM sync_inbox WHERE tbl = 'purchases' AND del = 0 AND pk = ?`, [pid]);
+  let missing: boolean;
+  if (row && String(row.e ?? '') === doc.k) {
+    const pay = row.p == null ? '' : String(row.p);
+    missing = !!pay && !db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [pay])
+      && !db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ?`, [pay]);
+  } else {
+    const here = db.get<{ x: unknown; paid: unknown; p: unknown }>(
+      `SELECT deleted_at AS x, paid, payment_journal_entry_id AS p FROM purchases WHERE id = ?`, [pid]);
+    missing = !!here && here.x != null && Number(here.paid) === 1 && here.p != null
+      && !!db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND status = ? AND reversed_by IS NOT NULL`, [String(here.p), POSTED_ENTRY])
+      && !db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'purchase_pay' AND src_id = ? AND status = ? AND reversed_by IS NULL
+        AND deleted_at IS NULL`, [pid, POSTED_ENTRY]);
+  }
+  return missing && withinLateLink(db, doc);
+}
+
+/** كُتب المستند في السحابة منذ ساعةٍ أو أقل بوقت الخادم (LATE_LINK_MS) · وما لا يُعرف وقته لا ينتظر */
+function withinLateLink(db: DB, doc: RemoteDoc): boolean {
+  const at = Date.parse(isoNorm(doc.ts ?? doc.u));
+  return Number.isFinite(at) && Date.parse(toServerClock(db, nowIso())) - at <= LATE_LINK_MS;
+}
+
+/** القيد المعكوس هنا الذي يعيده هذا القيد نسخةً (repostCopy: مصدره نفسه وسطوره نفسها) · أحدثه */
+function repostSourceOf(db: DB, doc: RemoteDoc): string | null {
+  const d = doc.d!;
+  if (typeof d.src_type !== 'string' || d.src_id == null) return null;
+  const want = netByAccount((doc.lines ?? []) as Array<Record<string, unknown>>);
+  const same = (id: string) => {
+    const got = netByAccount(db.all<Record<string, unknown>>(`SELECT account_code, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`, [id]));
+    return got.size === want.size && [...want].every(([k, v]) => got.get(k) === v);
+  };
+  return db.all<{ id: string }>(`SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND id != ? AND status = ?
+    AND reversed_by IS NOT NULL AND deleted_at IS NULL ORDER BY created_at DESC`, [d.src_type, String(d.src_id), doc.k, POSTED_ENTRY])
+    .map((x) => x.id).find(same) ?? null;
+}
+
+/** نُسخ الاستعادة الأخرى من عضو لقيود المستند نفسه (مصدره وسداده: «purchase» و«purchase_pay») · في الوارد أو مرفوضة */
+function siblingCopies(db: DB, doc: RemoteDoc): RemoteDoc[] {
+  const base = String(doc.d!.src_type).replace(/_pay$/, '');
+  const srcId = String(doc.d!.src_id);
+  const out: RemoteDoc[] = [];
+  for (const r of db.all<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0
+      AND json_extract(payload, '$.d.src_id') = ? AND json_extract(payload, '$.d.src_type') IN (?, ?)
+    UNION ALL SELECT payload AS p FROM sync_rejects WHERE tbl = 'journal_entries'
+      AND json_extract(payload, '$.d.src_id') = ? AND json_extract(payload, '$.d.src_type') IN (?, ?)`,
+  [srcId, base, base + '_pay', srcId, base, base + '_pay'])) {
+    try {
+      const sib = JSON.parse(r.p) as RemoteDoc;
+      if (sib.d && sib.d.status === POSTED_ENTRY && byMember(db, sib, true) && repostSourceOf(db, sib)) out.push(sib);
+    } catch { /* مستندٌ تالف لا يشهد */ }
+  }
+  return out;
+}
+
+/** سبب رفض القيد هنا لأنه يُنزل البنك تحت الصفر (memberBankOutCheck) · أو '' */
+function bankShortRejectOf(db: DB, entryId: string): string {
+  if (db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [entryId])) return '';
+  const tail = tr('sync.memberBankShort', { why: '', lng: 'ar' });
+  return db.all<{ r: string }>(`SELECT reason AS r FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ? ORDER BY id DESC`, [entryId])
+    .map((x) => x.r).find((r) => r.endsWith(tail)) ?? '';
+}
+
+/**
+ * ما يتبع قيداً من عضو رُفض هنا لأنه يُنزل البنك تحت الصفر (memberBankOutCheck · R12-SYN-3): وسم إلغاء الدفعة بعاكسه، وفاتورة الشراء
+ * المستعادة بنسخ قيودها · يُرفض بالسبب نفسه وتُعاد نسخة المالك (فلا ينتظر قيداً لا يُطبَّق ثلاثين يوماً، ولا تُستعاد الفاتورة بلا سدادها)
+ * · والفاتورة المعادة إلى «مستحقة» يُبقيها keepLocal محصَّلةً بقيدها الحيّ · سببُ الرفض أو ''
+ */
+function bankShortFollowerIssue(db: DB, doc: RemoteDoc): string {
+  if (doc.del || !doc.d || getSyncState(db, 'membership') || !byMember(db, doc, false)) return '';
+  const d = doc.d;
+  const named = doc.t === 'contract_payments' ? (d.cancelled_at != null ? [d.cancel_entry_id] : [])
+    : doc.t === 'purchases' ? [d.journal_entry_id, d.payment_journal_entry_id] : [];
+  for (const id of named) {
+    if (id == null || id === '') continue;
+    const why = bankShortRejectOf(db, String(id));
+    if (why) return why;
+  }
+  // وفاتورة الشراء المستعادة من السلة تنتظر قيديها: ما يسمّيه صفّها ولم يصل ولم يُرفض، في الوارد ينتظر أو في طريقه ساعةً بوقت الخادم ·
+  // كانت تُطبَّق قبل أن يُحكم على نسخة سدادها فتخرج من السلة ولو رُفض سدادها بعدها (مراجعة إصلاح R12-SYN-3)
+  if (doc.t === 'purchases' && d.deleted_at == null
+    && db.get(`SELECT 1 FROM purchases WHERE id = ? AND deleted_at IS NOT NULL`, [doc.k])) {
+    for (const id of named) {
+      if (id == null || id === '' || db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [String(id)])) continue;
+      if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ?`, [String(id)])) continue;
+      if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ?`, [String(id)]) || withinLateLink(db, doc)) return LOCK_AWAIT;
+    }
+  }
+  return '';
+}
+
+/** صافي كل حسابٍ في سطور قيد (مدينه ناقص دائنه) */
+function netByAccount(ls: Array<Record<string, unknown>>): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const l of ls) m.set(String(l.account_code ?? ''), (m.get(String(l.account_code ?? '')) ?? 0) + (Number(l.debit_halalas) || 0) - (Number(l.credit_halalas) || 0));
+  return m;
+}
+
+/** عاكسٌ في الوارد لم يُطبَّق بعد، سطوره مرآة سطور الأصل المطبَّق هنا (صافي كل حسابٍ بعكس إشارته) */
+function inboxMirror(db: DB, originalId: string, revId: string): boolean {
+  if (db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [revId])) return false;
+  const p = db.get<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [revId])?.payload;
+  if (!p) return false;
+  let rev: RemoteDoc;
+  try { rev = JSON.parse(p) as RemoteDoc; } catch { return false; }
+  if (linesMalformed(rev)) return false;
+  const mine = netByAccount(db.all<Record<string, unknown>>(`SELECT account_code, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`, [originalId]));
+  const theirs = netByAccount(docLines(rev));
+  return mine.size > 0 && theirs.size === mine.size && [...mine].every(([k, v]) => v !== 0 && (theirs.get(k) ?? 0) === -v);
+}
+
+/** أصلٌ يحجزه عاكسٌ مرآته في الوارد لم يُطبَّق بعد غير revId: بربطه هنا، أو بربطه المعلَّق، أو بنسخته الواردة */
+function inboxHeld(db: DB, originalId: string, revId: string): boolean {
+  const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
+  const by = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [originalId])?.r;
+  const named = db.get<{ r: string | null }>(
+    `SELECT json_extract(payload, '$.d.reversed_by') AS r FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [originalId])?.r;
+  return [by, pending[originalId], named].some((x) => !!x && x !== revId && inboxMirror(db, originalId, x));
+}
+
+/** أصلٌ مرحّل من المصدر في الوارد لم يُطبَّق بعد، يسمّي هذا العاكس أو سطوره مرآة سطوره (صافي كل حسابٍ بعكس إشارته) */
+function pendingOriginalOf(db: DB, rev: RemoteDoc, base: string, srcId: string): boolean {
+  const net = (ls: Array<Record<string, unknown>>) => {
+    const m = new Map<string, number>();
+    for (const l of ls) m.set(String(l.account_code ?? ''), (m.get(String(l.account_code ?? '')) ?? 0) + (Number(l.debit_halalas) || 0) - (Number(l.credit_halalas) || 0));
+    return m;
+  };
+  const mine = net(docLines(rev));
+  return db.all<{ payload: string }>(
+    `SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.src_type') = ? AND json_extract(payload, '$.d.src_id') = ? AND pk != ?`,
+    [base, srcId, rev.k]).some((p) => {
+    let o: RemoteDoc;
+    try { o = JSON.parse(p.payload) as RemoteDoc; } catch { return false; }
+    if (!o.d || o.d.status !== POSTED || linesMalformed(o) || db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [o.k])) return false;
+    if (o.d.reversed_by === rev.k) return true;
+    const theirs = net(docLines(o));
+    return theirs.size === mine.size && [...theirs].every(([k, v]) => v !== 0 && (mine.get(k) ?? 0) === -v);
+  });
 }
 
 /**
@@ -490,10 +869,21 @@ function memberReversalCheck(db: DB, doc: RemoteDoc): void {
 function freeOriginals(db: DB, revId: string, src: string, srcId: string, originals: string[]): string[] {
   const others = db.all<{ id: string }>(
     `SELECT id FROM journal_entries WHERE src_type = ? AND src_id = ? AND status = 'مرحّل' AND id != ?`, [src, srcId, revId]); // i18n-exempt: حالة القيد المخزّنة
+  const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
   return originals.filter((o) => {
     if (mirrorIssue(db, o, revId) !== '') return false;
+    // وربطٌ بعاكسٍ لا وجود له هنا ولا في الوارد لا يحجز الأصل (المدقق الخارجي M١٠: عضوٌ ربط قيد المالك بعاكسٍ وهمي فرُفض عكس المالك
+    // نفسه على جهازه الثاني) · ولا بعاكسٍ في الوارد ليس مرآته (O٣: قاعدة السحابة تجيز الربط بعاكسٍ قائمٍ فيها، فالمزوَّر يصل الوارد
+    // وينتظر فيه ثلاثين يوماً بسطرٍ على حسابٍ لا وجود له)
+    const exists = (id: string) => !!db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [id]) || inboxMirror(db, o, id);
     const by = db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [o])!.r;
-    if (by && by !== revId) return false;
+    if (by && by !== revId && exists(by)) return false;
+    // ولا أصلٌ ربطُه المعلَّق أو نسخته الواردة تسمّي عاكساً آخر (المدقق الخارجي K١: كان يُخمَّن للعاكس أصلٌ خطأ فيُرفض الحقيقي بعده
+    // «عاكسه طُبِّق قبله»)
+    if (pending[o] && pending[o] !== revId && exists(pending[o])) return false;
+    const named = db.get<{ r: string | null }>(
+      `SELECT json_extract(payload, '$.d.reversed_by') AS r FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [o])?.r;
+    if (named && named !== revId && exists(named)) return false;
     return !others.some((r2) => mirrorIssue(db, o, r2.id) === ''
       && !db.get(`SELECT 1 FROM journal_entries WHERE reversed_by = ? AND id != ?`, [r2.id, o]));
   });
@@ -542,6 +932,158 @@ function noteJournalNoAlias(db: DB, remoteNo: string, localNo: string): void {
   // وما رُفع منها برقمه هنا يُرفع ثانيةً برقمه في السحابة (buildDoc)
   for (const t of db.all<{ id: string }>(`SELECT id FROM bank_tx WHERE journal_no = ?`, [localNo])) enqueue(db, 'bank_tx', t.id, 'upsert');
 }
+/** عاكسٌ لهذا القيد في الوارد لم يُطبَّق بعد، أو ربطه معلَّق: القيد في طريقه إلى العكس (A٢-٣ وB٢-٣) */
+function reversalPending(db: DB, entryId: string, srcType: string, srcId: string): boolean {
+  if (linksTo(PENDING_REV, getSyncState(db, PENDING_REV), entryId).length) return true;
+  return !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.src_type') = ?
+    AND json_extract(payload, '$.d.src_id') = ?`, [srcType + '_rev', srcId]);
+}
+/**
+ * التحصيل الحيّ الحقيقي هنا للإيداع الذي يسمّيه سطر الكشف (بالبصمة لا بالمعرّف · B٢-٤): قيدٌ يحمل سطراً بالبصمة نفسها في البنك نفسه وله
+ * حركةٌ في ذلك البنك بمبلغ السطر ويومه (B٢-١ وB٢-٢) · 'pending' إن كان عاكسه في الطريق · null إن لم يكن
+ */
+function liveDepositCollection(db: DB, lineId: string, exceptId: string): string | 'pending' | null {
+  // والسطر الذي لم يُطبَّق بعد يُقرأ من الوارد: القيود تُطبَّق قبل سطور الكشف (المدقق الخارجي E٢-٤) · ولا ينتظره القيد (السطر ينتظر حركة
+  // البنك، وحركة البنك تنتظر القيد)
+  type L = { id: string; bank: string; key: string; amount: number; date: string; st: string; live: boolean; status: string; tx: string | null; c: string };
+  const parse = (pk: string, p: string): L | null => {
+    try {
+      const d = JSON.parse(p)?.d;
+      return d?.bank_id && d.line_key ? { id: pk, bank: String(d.bank_id), key: String(d.line_key), amount: Number(d.amount_halalas), date: String(d.date),
+        st: String(d.statement_id ?? ''), live: d.deleted_at == null, status: String(d.status ?? 'open'), tx: d.bank_tx_id ?? null, c: String(d.created_at ?? '') } : null;
+    } catch { return null; }
+  };
+  const SEL = `SELECT id, bank_id AS bank, line_key AS key, amount_halalas AS amount, date, COALESCE(statement_id, '') AS st, deleted_at IS NULL AS live,
+    status, bank_tx_id AS tx, created_at AS c FROM bank_statement_lines`;
+  let ln: L | null = db.get<L>(`${SEL} WHERE id = ?`, [lineId]) ?? null;
+  if (!ln) {
+    const p = db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'bank_statement_lines' AND pk = ? AND del = 0`, [lineId])?.p;
+    ln = p ? parse(lineId, p) : null;
+  }
+  if (!ln) return null;
+  // وسطور اليوم والمبلغ هنا وفي الوارد (G٢-٣ وG٢-٤: سطرٌ لم يصل كان لا يُعدّ إيداعاً ولا يُعدّ تحصيله)
+  const base = lineKeyBase(ln.key);
+  const lines = new Map<string, L>();
+  // (والنسختان معاً لما طوبق يدوياً: هنا وفي الوارد · G٢-٢ وI٢-١)
+  const versions: L[] = [];
+  for (const x of db.all<L>(`${SEL} WHERE bank_id = ? AND line_key BETWEEN ? AND ?`, [ln.bank, base, base + '~'])) { lines.set(x.id, { ...x, live: !!x.live }); versions.push({ ...x, live: !!x.live }); }
+  for (const r of db.all<{ pk: string; p: string }>(`SELECT pk, payload AS p FROM sync_inbox WHERE tbl = 'bank_statement_lines' AND del = 0
+      AND json_extract(payload, '$.d.line_key') BETWEEN ? AND ?`, [base, base + '~'])) {
+    // (ونسخة الوارد أحدث مما هنا: سطرٌ طابقه عضوٌ يدوياً ولم يُطبَّق بعد · المدقق الخارجي I٢-١)
+    const x = parse(r.pk, r.p);
+    if (x && x.bank === ln.bank) { lines.set(x.id, x); versions.push(x); }
+  }
+  if (!lines.has(ln.id)) lines.set(ln.id, ln);
+  const genuine = (no: string) => txsOfNo(db, no).some((t) => t.bank === ln!.bank && t.amount === Number(ln!.amount) && t.date === ln!.date);
+  const rows = db.all<{ id: string; no: string; src: string; sid: string; lid: string }>(
+    `SELECT id, no, COALESCE(src_type, '') AS src, COALESCE(src_id, '') AS sid, stmt_line_id AS lid FROM journal_entries
+     WHERE stmt_line_id IN (SELECT value FROM json_each(?)) AND id != ? AND reversed_by IS NULL AND status = ?`,
+    [JSON.stringify([...lines.keys()]), exceptId, POSTED_ENTRY])
+    .filter((e) => genuine(e.no))
+    .map((e) => ({ ...e, k: lines.get(e.lid)?.key ?? '' }));
+  // وما طابقه المالك هنا بحركة تحصيلٍ حيٍّ سجّله بنفسه (G٢-٢: الإيداع مطابَقٌ بتحصيلٍ يدوي فلا يسنده تحصيلٌ آخر من الكشف)
+  const held = new Set(rows.map((e) => e.no));
+  // (وحركة المطابقة اليدوية هنا أو في الوارد: الحركات تُطبَّق بعد القيود · I٢-١)
+  // (بأحدث نسخها: نسخة الوارد قبل ما هنا، محذوفةً أو مستعادة · المدقق الخارجي Q٢-١ وQ٢-٢)
+  const txNo = (id: string): string | null => {
+    const inb = db.get<{ p: string; del: number }>(`SELECT payload AS p, del FROM sync_inbox WHERE tbl = 'bank_tx' AND pk = ?`, [id]);
+    if (inb) {
+      if (Number(inb.del)) return null;
+      try {
+        const d = JSON.parse(inb.p ?? 'null')?.d;
+        return d && d.deleted_at == null ? String(d.journal_no ?? '') : null;
+      } catch { return null; }
+    }
+    const t0 = db.get<{ n: string; del: string | null }>(`SELECT journal_no AS n, deleted_at AS del FROM bank_tx WHERE id = ?`, [id]);
+    return t0 && t0.del == null ? String(t0.n ?? '') : null;
+  };
+  // (وكل حركةٍ حيّة في بنكها تحجز ما طابقته: بلا رقم قيد (إيداع نقدٍ من المحفظة · O٢-٢)، أو قيدها هنا أو في الوارد (O٢-١) · إلا حركة
+  // القيد الوارد نفسه، وما عُكس قيده)
+  let incomingNo = '';
+  try { incomingNo = String(JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ?`, [exceptId])?.p ?? 'null')?.d?.no ?? ''); } catch { incomingNo = ''; }
+  const manualBy = new Map<string, L>();
+  for (const x of versions) {
+    if (!x.live || x.status !== 'matched' || !x.tx || manualBy.has(x.id)) continue;
+    const no = txNo(x.tx);
+    if (no == null || held.has(no) || (no && no === incomingNo)) continue;
+    if (!no) { manualBy.set(x.id, x); continue; }
+    const e = db.get<{ id: string; src: string; sid: string; r: string | null }>(`SELECT id, COALESCE(src_type, '') AS src, COALESCE(src_id, '') AS sid, reversed_by AS r
+      FROM journal_entries WHERE no = ? AND status = ? AND id != ?`, [no, POSTED_ENTRY, exceptId]);
+    // (ومطابقةٌ يدوية عكسُ قيدها في الوارد تُنتظر ولا تحجز · المدقق الخارجي K٢-٣)
+    if (e && !e.r) manualBy.set(x.id, { ...x, pending: reversalPending(db, e.id, e.src, e.sid) } as L & { pending: boolean });
+    else if (!e && db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.no') = ?`, [no])) manualBy.set(x.id, x);
+  }
+  const manual = [...manualBy.values()] as Array<L & { pending?: boolean }>;
+  const manualLive = manual.filter((x) => !x.pending);
+  const live = rows.filter((e) => !reversalPending(db, e.id, e.src, e.sid));
+  if (rows.some((e) => e.k === ln!.key)) return live.find((e) => e.k === ln!.key)?.id ?? 'pending';
+  const same = manual.find((x) => x.key === ln!.key);
+  if (same) return same.pending ? 'pending' : same.tx ?? 'manual';
+  // والإيداعات بعدّ التوائم نفسه (keepInOrder) وبصمات الكشوف هنا وفي الوارد
+  const rankOf = (x: L) => lineRank({ id: x.id, status: x.status, c: x.c, k: x.key, st: x.st });
+  const liveLines = [...lines.values()].filter((x) => x.live).sort((a, b) => (rankOf(a) < rankOf(b) ? -1 : 1));
+  // (وكشوف البنك في الوارد كلها، ولو لم يُطبَّق لها سطرٌ في القاعدة · K٢-٢) · والمحذوف منها في الوارد لا يُعدّ، ولا نسخته الحيّة هنا
+  // (المدقق الخارجي M٢-١: كشفٌ حذفه كاتبه لأنه خطأ كان يجيز تحصيلاً ثانياً) · وكلٌّ منها يُفكّ مرةً
+  const inboxKeys = new Map<string, string[]>();
+  const deletedIn = new Set<string>();
+  for (const r of db.all<{ pk: string; p: string }>(`SELECT pk, payload AS p FROM sync_inbox WHERE tbl = 'bank_statements' AND del = 0`)) {
+    try {
+      const d = JSON.parse(r.p)?.d;
+      if (String(d?.bank_id ?? '') !== ln.bank) continue;
+      if (d.deleted_at != null) { deletedIn.add(r.pk); continue; }
+      const keys = JSON.parse(String(d.shared_keys ?? '[]'));
+      inboxKeys.set(r.pk, Array.isArray(keys) ? keys.map(String).filter((k: string) => lineKeyBase(k) === base) : []);
+    } catch { /* مستندٌ تالف لا يشهد */ }
+  }
+  for (const r of db.all<{ pk: string }>(`SELECT pk FROM sync_inbox WHERE tbl = 'bank_statements' AND del = 1`)) deletedIn.add(r.pk);
+  const stIds = [...liveLines.map((x) => x.st), ...bankStatementIds(db, ln.bank)].filter((id) => !deletedIn.has(id) && !inboxKeys.has(id));
+  const known = statementsKnown(db, stIds, ln.key);
+  let need = known.need;
+  const bal = new Set(known.bal);
+  for (const mine of inboxKeys.values()) {
+    need = Math.max(need, mine.length);
+    for (const k of mine) if (!k.includes('#')) bal.add(k);
+  }
+  need = Math.max(need, bal.size);
+  const cap = Math.max(1, keepInOrder(liveLines.map((x) => x.key), () => need).filter(Boolean).length);
+  const taken = rows.length + manual.length;
+  if (taken < cap) return null;
+  return live.length + manualLive.length >= cap ? (live[0]?.id ?? manualLive[0]?.tx ?? 'manual') : 'pending';
+}
+
+/** حركات البنك الحيّة برقم القيد، هنا وفي الوارد (البحث بالرقم المفهرس وحده، والباقي يُقارن هنا) */
+function txsOfNo(db: DB, no: string): Array<{ bank: string; amount: number; date: string }> {
+  const out = db.all<{ bank: string; amount: number; date: string }>(
+    `SELECT bank_id AS bank, amount_halalas AS amount, date FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL`, [no])
+    .map((t) => ({ bank: t.bank, amount: Number(t.amount), date: t.date }));
+  for (const r of db.all<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'bank_tx' AND del = 0 AND json_extract(payload, '$.d.journal_no') = ?`, [no])) {
+    try {
+      const d = JSON.parse(r.p)?.d;
+      if (d && !d.deleted_at) out.push({ bank: String(d.bank_id), amount: Number(d.amount_halalas), date: String(d.date) });
+    } catch { /* مستندٌ تالف لا يشهد */ }
+  }
+  return out;
+}
+
+/** النسخة المفتوحة فكٌّ للمطابقة: السطر نفسه إنشاءً، وعُدّلت بعد المطابقة · وإلا فهي قراءةٌ أخرى للكشف لا تمحو المطابقة */
+function lineUndoes(openCreated: string, openAt: string, matchedCreated: string, matchedAt: string | null): boolean {
+  return openCreated === matchedCreated && !!matchedAt && isoCmp(openAt, matchedAt) > 0;
+}
+
+/** سبب رفض القيد المرحّل الذي نسخته في السحابة نهائية */
+const FINAL_IN_CLOUD = 'نهائي في السحابة · نسخة هذا الجهاز تختلف عنها ولم تُرفع'; // i18n-exempt: سبب الرفض المخزَّن
+const PAID_INVOICE = 'مدفوعة'; // i18n-exempt: حالة الفاتورة المخزّنة
+const COLLECTED_CLAIM = 'محصَّلة'; // i18n-exempt: حالة المطالبة المخزّنة
+const POSTED_ENTRY = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
+/** سطور القيد الوارد سطور القيد هنا نفسها (الحساب والمدين والدائن) */
+function sameEntryLines(db: DB, doc: RemoteDoc): boolean {
+  const key = (a: unknown, d: unknown, c: unknown) => `${String(a)}|${Number(d) || 0}|${Number(c) || 0}`;
+  const here = db.all<{ a: string; d: number; c: number }>(`SELECT account_code AS a, debit_halalas AS d, credit_halalas AS c FROM journal_lines WHERE entry_id = ?`, [doc.k])
+    .map((l) => key(l.a, l.d, l.c)).sort();
+  const there = (doc.lines ?? []).map((l) => key(l.account_code, l.debit_halalas, l.credit_halalas)).sort();
+  return here.length === there.length && here.every((x, i) => x === there[i]);
+}
+
 /** رقم القيد في السحابة لرقمه هنا (صادراً) */
 function cloudJournalNo(db: DB, localNo: string): string {
   for (const [remote, local] of Object.entries(noAliases(db))) if (local === localNo) return remote;
@@ -613,10 +1155,26 @@ function memberRentCheck(db: DB, doc: RemoteDoc): void {
   }, pay, doc.ts);
 }
 
+/**
+ * تاريخ قيد العضو بصيغة سنة-شهر-يوم ويومٍ قائم على جهاز المالك (المراجعة الشاملة 2026-11-13 · D2-R11-1): «2026-2-01» لا يعرفه قفل
+ * الربع المقدَّم (quarterId) فكان يدخل ربعاً قُدِّم إقراره ويغيب من التقارير · من عضوٍ بإصدارٍ أقدم يمرّر حقلُه المكتوب، أو عابث ·
+ * وما وصل الخادم قبل يوم هذا الإصلاح يُقبل كما قبله جهاز المالك القديم، فلا يرفضه وحده هاتفٌ بديل يسحب كل شيء (يظهر في «فحص
+ * المطابقة» ويُصحَّح بعكسه) · فالحدّ ثابتٌ واحد على كل جهاز لا وقت ترقيته · واللحظة القديمة «2026-02-01T…» بيومها
+ */
+const MEMBER_ISO_DATE_SINCE = '2026-11-13T00:00:00.000Z';
+function memberDateIssue(date: string, ts: string | undefined): string {
+  if (isISODate(String(date ?? '').slice(0, 10))) return '';
+  if (ts && isoCmp(ts, MEMBER_ISO_DATE_SINCE) < 0) return '';
+  return tr('dates.invalidValue', { date, lng: 'ar' });
+}
+
 /** قيد التحصيل ودفعته: الفترة المقدَّمة، والتخصيص، ورصيد المستأجر الدائن، ثم السطور من الدفعة · يرمي بالسبب أو بالانتظار */
 function rentCheckAgainst(db: DB, e: { srcId: string; date: string; lines: Array<{ account: string; debit: number; credit: number }> },
   pay: RentPaymentSrc, ts: string | undefined): void {
   const no = (why: string) => new Error(tr('derive.rejected', { why, lng: 'ar' }));
+  // والتاريخ بغير صيغته قبل القفل: لا ربع له فلا يُرفض به (D2-R11-1)
+  const dateWhy = memberDateIssue(e.date, ts);
+  if (dateWhy) throw no(dateWhy);
   // القرار ٦ عبر المزامنة: ما وصل الخادم بعد تسجيل تقديم ربعه يُرفض (المتحقق المستقل، الجولة ٣٥ (أ٤))
   const filed = filingRecordedAt(db, e.date);
   if (filed && (!ts || isoCmp(ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
@@ -676,9 +1234,14 @@ function sourceReader(db: DB): SourceReader {
       const pk = syncTable(table)?.pkCols[0] ?? 'id';
       const out = new Map<string, T>();
       for (const x of db.all<Record<string, unknown>>(`SELECT * FROM "${table}" WHERE "${col}" = ?`, [value])) out.set(String(x[pk]), x as T);
-      for (const i of db.all<{ pk: string; payload: string; del: number }>(
-        `SELECT pk, payload, del FROM sync_inbox WHERE tbl = ? AND (json_extract(payload, '$.d.${col}') = ? OR pk IN (SELECT value FROM json_each(?)))`,
-        [table, value, JSON.stringify([...out.keys()])])) {
+      // عبارتان مفهرستان لا «OR» واحدة (المدقق الخارجي B1: الـOR يُسقط فهرس العمود فيُمسح الوارد كله لكل قيد عضو)
+      const byCol = db.all<{ pk: string; payload: string; del: number }>(
+        `SELECT pk, payload, del FROM sync_inbox WHERE tbl = ? AND json_extract(payload, '$.d.${col}') = ?`, [table, value]);
+      const seenPk = new Set(byCol.map((x) => x.pk));
+      const byPk = out.size ? db.all<{ pk: string; payload: string; del: number }>(
+        `SELECT pk, payload, del FROM sync_inbox WHERE tbl = ? AND pk IN (SELECT value FROM json_each(?))`,
+        [table, JSON.stringify([...out.keys()])]).filter((x) => !seenPk.has(x.pk)) : [];
+      for (const i of [...byCol, ...byPk]) {
         const d = (JSON.parse(i.payload) as RemoteDoc).d;
         if (i.del || !d || String(d[col] ?? '') !== value) out.delete(i.pk);
         else out.set(i.pk, d as T);
@@ -697,24 +1260,31 @@ function sourceReader(db: DB): SourceReader {
       const doc = p ? JSON.parse(p.payload) as RemoteDoc : null;
       const d = (doc?.d ?? null) as Partial<Record<keyof Head, unknown>> | null;
       if (!d || d.status !== POSTED) return null;
+      // ومستندٌ مشوَّه السطور يُرفض حين يأتي دوره، فلا يُعدّ قيداً هنا (المدقق الخارجي I · K٢: أصلٌ مزوَّر «يصل معكوساً» كان يُقبل بعاكسٍ
+      // مشوَّه في الوارد، ثم يُرفض العاكس ويبقى الأصل نقداً وإيراداً بلا مستند)
+      if (linesMalformed(doc!)) return null;
       const s = (v: unknown) => (v == null || v === '' ? null : String(v));
       return { id, here: false, key: s(d.id), src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), no: s(d.no),
-        status: s(d.status), date: s(d.date), created_at: s(d.created_at), deleted_at: s(d.deleted_at), lines: (doc!.lines ?? []) as SrcLine[] };
+        status: s(d.status), date: s(d.date), created_at: s(d.created_at), deleted_at: s(d.deleted_at), lines: docLines(doc) as unknown as SrcLine[] };
     },
     claimants: (revId) => {
-      const ids = new Set(db.all<{ id: string }>(
-        `SELECT id FROM journal_entries WHERE reversed_by = ?
-         UNION SELECT pk AS id FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.reversed_by') = ?`,
-        [revId, revId]).map((x) => x.id));
-      const pending = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
-      for (const [e, r] of [...Object.entries(pending), ...Object.entries(guessesOf(db))]) if (r === revId) ids.add(e);
+      // عبارتان مفهرستان لا «UNION» (B1: الدمج المرتَّب كان يختار فهرس (tbl, pk) فيمسح قيود الوارد كلها، والدفتر بلا فهرسٍ للعاكس)
+      const ids = new Set([
+        ...db.all<{ id: string }>(`SELECT id FROM journal_entries WHERE reversed_by = ?`, [revId]).map((x) => x.id),
+        ...db.all<{ id: string }>(`SELECT pk AS id FROM sync_inbox WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.reversed_by') = ? AND del = 0`,
+          [revId]).map((x) => x.id),
+      ]);
+      for (const k of [PENDING_REV, GUESSED_REV]) for (const e of linksTo(k, getSyncState(db, k), revId)) ids.add(e);
       return [...ids];
     },
     taken: (no, lineIds, exceptId) => !!db.get(`SELECT 1 FROM journal_entries WHERE no = ? AND id != ?`, [no, exceptId])
       || !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND pk != ? AND json_extract(payload, '$.d.no') = ?`, [exceptId, no])
       || !!db.get(`SELECT 1 FROM journal_lines WHERE entry_id != ? AND id IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)])
-      || !!db.get(`SELECT 1 FROM sync_inbox i, json_each(i.payload, '$.lines') j WHERE i.tbl = 'journal_entries' AND i.del = 0 AND i.pk != ?
-           AND json_extract(j.value, '$.id') IN (SELECT value FROM json_each(?))`, [exceptId, JSON.stringify(lineIds)]),
+      // سطور قيود الوارد من جدولها المفهرس (الهجرة ٥٢ · B1) لا بمسح كل حمولةٍ في الوارد
+      // CROSS JOIN يُلزم المخطِّط بالبدء من معرّفات السطور (كان يبدأ من قيود الوارد كلها)
+      || !!db.get(`SELECT 1 FROM sync_inbox_lines l CROSS JOIN sync_inbox i ON i.doc = l.doc
+           WHERE l.line_id IN (SELECT value FROM json_each(?)) AND i.tbl = 'journal_entries' AND i.del = 0 AND i.pk != ?`,
+           [JSON.stringify(lineIds), exceptId]),
     assetEntries: (assetId) => {
       const here = db.all<{ id: string; src_type: string | null; src_id: string | null; reversed_by: string | null; date: string | null }>(
         `SELECT id, src_type, src_id, reversed_by, date FROM journal_entries WHERE status = ? AND deleted_at IS NULL
@@ -723,11 +1293,11 @@ function sourceReader(db: DB): SourceReader {
       const s = (v: unknown) => (v == null || v === '' ? null : String(v));
       const inbox = db.all<{ pk: string; payload: string }>(
         `SELECT i.pk, i.payload FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.status') = ?
-           AND EXISTS (SELECT 1 FROM json_each(i.payload, '$.lines') j WHERE json_extract(j.value, '$.asset_id') = ?)`, [POSTED, assetId])
+           AND EXISTS (SELECT 1 FROM json_each(i.payload, '$.lines') j WHERE j.type = 'object' AND json_extract(j.value, '$.asset_id') = ?)`, [POSTED, assetId])
         .filter((x) => !ids.has(x.pk)).map((x) => {
           const doc = JSON.parse(x.payload) as RemoteDoc;
           const d = doc.d ?? {};
-          return { id: x.pk, here: false, src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), date: s(d.date), lines: (doc.lines ?? []) as SrcLine[] };
+          return { id: x.pk, here: false, src_type: s(d.src_type), src_id: s(d.src_id), reversed_by: s(d.reversed_by), date: s(d.date), lines: docLines(doc) as unknown as SrcLine[] };
         });
       return [...here, ...inbox];
     },
@@ -749,14 +1319,501 @@ function memberSourceCheck(db: DB, doc: RemoteDoc): void {
   if (!DERIVED_SOURCES[src] || getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
   const no = (why: string) => new Error(tr('deriveSrc.rejected', { source: src, why, lng: 'ar' }));
   const date = String(doc.d!.date ?? '');
+  // والتاريخ بغير صيغته قبل القفل (D2-R11-1)
+  const dateWhy = memberDateIssue(date, doc.ts);
+  if (dateWhy) throw no(dateWhy);
   const filed = filingRecordedAt(db, date);
   if (filed && (!doc.ts || isoCmp(doc.ts, filed) > 0)) throw no(tr('vat.filedEntry', { lng: 'ar' }));
-  const why = memberSourceIssue(db, sourceReader(db), {
+  const reader = sourceReader(db);
+  const issue = (reversedBy: string | null) => memberSourceIssue(db, reader, {
     id: doc.k, src_type: src, src_id: (doc.d!.src_id as string | null) ?? null, no: (doc.d!.no as string | null) ?? null, date,
-    reversed_by: (doc.d!.reversed_by as string | null) ?? null, lines: (doc.lines ?? []) as SrcLine[],
+    reversed_by: reversedBy, lines: (doc.lines ?? []) as SrcLine[],
   });
+  const reversedBy = (doc.d!.reversed_by as string | null) ?? null;
+  let why = issue(reversedBy);
+  // والواصل معكوساً بعاكسٍ لا يُقبل (ليس مرآته، أو محجوزٌ لغيره) يُحكم عليه غير معكوس كما على الجهاز الذي سبق إليه: يُطبَّق إن طابق مستنده،
+  // والربط معلَّقٌ كما هو هناك (المدقق الخارجي O٤: عضوٌ ربط قيد المالك بعاكسٍ مزوَّر فرفضه هاتف المالك البديل وحده نهائياً)
+  if (why && why !== 'await' && reversedBy) why = issue(null) === '' ? '' : why;
   if (why === 'await') throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
   if (why) throw no(why);
+}
+
+/** قيد ترحيل تأمينٍ حيٌّ هنا للعقد المجدَّد (منطق depositCarried في الخدمة) */
+const carryLiveHere = (db: DB, contractId: string): boolean => !!db.get(
+  `SELECT 1 FROM journal_entries WHERE src_type = 'deposit_carry' AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL AND status = ?`,
+  [contractId, POSTED]);
+
+/** تأمين العقد رُحِّل هنا إلى خلفٍ قائم بقيد ترحيلٍ حيّ (منطق depositCarried في الخدمة · deriveSources: carriedOn) */
+const carriedOnHere = (db: DB, prevId: string): boolean => !!db.get(
+  `SELECT 1 FROM contracts n JOIN journal_entries e ON e.src_type = 'deposit_carry' AND e.src_id = n.id
+   WHERE n.renewed_from = ? AND n.deleted_at IS NULL AND e.reversed_by IS NULL AND e.deleted_at IS NULL AND e.status = ? LIMIT 1`, [prevId, POSTED]);
+
+/** المصدر الحيّ هنا ومعه ما في الوارد مرحّلاً لم يُطبَّق بعد: مجموع دائن قيوده ناقصاً عواكسه */
+function liveOrPendingTotal(db: DB, src: string, srcId: string): number {
+  const here = (s: string) => Number(db.get<{ n: number }>(
+    `SELECT COALESCE(SUM(l.credit_halalas), 0) AS n FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type = ? AND e.src_id = ? AND e.status = ? AND e.deleted_at IS NULL`, [s, srcId, POSTED])!.n);
+  const inbox = (s: string) => db.all<{ payload: string }>(
+    `SELECT i.payload FROM sync_inbox i WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(i.payload, '$.d.src_type') = ?
+       AND json_extract(i.payload, '$.d.src_id') = ? AND json_extract(i.payload, '$.d.status') = ?
+       AND NOT EXISTS (SELECT 1 FROM journal_entries e WHERE e.id = i.pk)`, [s, srcId, POSTED])
+    .reduce((sum, r) => sum + docLines(JSON.parse(r.payload) as RemoteDoc).reduce((x, l) => x + (Number(l.credit_halalas) || 0), 0), 0);
+  return here(src) + inbox(src) - here(src + '_rev') - inbox(src + '_rev');
+}
+
+/**
+ * ترحيل تأمينٍ رفضه جهاز المالك لأن تأمين العقد السابق سُوّي (deriveSources: carryAfterSettle · المراجعة الشاملة 2026-11-13 · R12-DEP-1):
+ * قيد deposit_carry للعقد المجدَّد في سجل المرفوض أو في الوارد ينتظر، وتسوية السابق هنا أو في الوارد، ولا ترحيل حيّاً هنا · فتأمين
+ * العقد المجدَّد في صفّه (المرحَّل وزيادته في renewContract) يحمل ما لم يحتجزه له الدفتر، وتسويته تعرض ردّه ثانية · يعيد التأمين الذي
+ * يحتجزه الدفتر له، أو null إن لم يكن ترحيلٌ ميت:
+ *  - التأمين لدى المكتب أو المنصة: ما قُبض له فعلاً (قيود contract_deposit الحيّة هنا وما في الوارد منها، وهي الزيادة وحدها)، فالحساب
+ *    واحدٌ من الصف المنفوخ أو المصحَّح (يُرفع المصحَّح ويعود من السحابة إلى كل جهاز، ولا يُطرح المرحَّل منه مرتين)
+ *  - لدى طرف آخر (لم يدخل الدفتر): صفّه ناقصاً المرحَّل مرةً واحدة، يحفظها جهاز المالك (DEAD_CARRY)
+ */
+const DEAD_CARRY = 'dead_carry:';
+function deadCarryDeposit(db: DB, contractId: string, row: Record<string, unknown>): number | null {
+  const prevId = row.renewed_from == null ? '' : String(row.renewed_from);
+  if (!prevId || getSyncState(db, 'membership') || carryLiveHere(db, contractId)) return null;
+  if (!latestRowByKey(db, 'deposit_settlements', prevId)) return null;
+  const docs = [
+    ...db.all<{ payload: string }>(`SELECT payload FROM sync_rejects WHERE tbl = 'journal_entries'
+      AND json_extract(payload, '$.d.src_type') = 'deposit_carry' AND json_extract(payload, '$.d.src_id') = ?`, [contractId]),
+    ...db.all<{ payload: string }>(`SELECT payload FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0
+      AND json_extract(payload, '$.d.src_type') = 'deposit_carry' AND json_extract(payload, '$.d.src_id') = ?`, [contractId]),
+  ].map((x) => JSON.parse(x.payload) as RemoteDoc);
+  const carried = Math.max(0, ...docs.map((d) => docLines(d).reduce((s, l) => s + (Number(l.credit_halalas) || 0), 0)));
+  if (!(carried > 0)) return null;
+  const deposit = Number(row.deposit_halalas) || 0;
+  if (String(row.deposit_holder ?? '') !== 'طرف آخر') return Math.max(0, liveOrPendingTotal(db, 'contract_deposit', contractId)); // i18n-exempt: جهة مخزّنة
+  const seen = getSyncState(db, DEAD_CARRY + contractId);
+  return seen != null && Number.isFinite(Number(seen)) ? Number(seen) : Math.max(0, deposit - carried);
+}
+
+/** يصحّح تأمين العقد المجدَّد هنا إن كان ترحيله ميتاً · ويُرفع صفّه فيعود إلى السحابة وكل جهاز (بعد التطبيق: ترحيلٌ رُفض بعد صفّه) */
+function fixDeadCarries(db: DB): void {
+  if (getSyncState(db, 'membership')) return;
+  const ids = db.all<{ k: string }>(`SELECT DISTINCT json_extract(payload, '$.d.src_id') AS k FROM sync_rejects WHERE tbl = 'journal_entries'
+    AND json_extract(payload, '$.d.src_type') = 'deposit_carry'`).map((x) => String(x.k ?? '')).filter(Boolean);
+  for (const id of ids) {
+    const row = db.get<Record<string, unknown>>(`SELECT * FROM contracts WHERE id = ?`, [id]);
+    if (!row) continue;
+    const want = deadCarryDeposit(db, id, row);
+    if (want === null || want === Number(row.deposit_halalas)) continue;
+    db.run(`UPDATE contracts SET deposit_halalas = ? WHERE id = ?`, [want, id]);
+    noteDeadCarry(db, id, row, want);
+  }
+}
+
+/**
+ * دفعة «من التأمين» حيّةٌ هنا وقيدها معكوسٌ بعاكسٍ مرحّل قُبل وربط: ملغاةٌ بعاكسه، قاعدة الدفعة الواردة نفسها (Z١-١ وZ٢-٢ في applyOne) ·
+ * يُلغيها جهاز المالك بعد التطبيق ويرفعها: عضوٌ لا يرى الدفعة يعكس قيدها في تعديل التسوية ولا يلغيها (قسم «التأمينات» وحده لا يقرأ
+ * الدفعات، أو وصله القيد قبل دفعته · service.ts: reverseDepositRent)، وإصلاح الدفعة الواردة لا يجري إلا حين تصل، والعضو لم يكتبها ·
+ * وكانت تبقى حيّةً بقيدٍ معكوس فالقسط «مدفوع» من تأمينٍ رُدّ، ويحمرّ فحص «كل دفعة محصَّلة لها قيد مرحّل» ويفترق جهاز المالك وجهاز العضو
+ * (المراجع المعاكس الثالث على R12-BAK-2) · بسبب تعديل التسوية وتاريخ العاكس كما يكتبهما الحفظ نفسه، فتطابق نسخة العضو إن كانت له ·
+ * ونسختها في الوارد لم تُطبَّق بعد تُصلح حين تُطبَّق · والدفعة العادية لا: إلغاؤها يكتبه جهاز العاكس معه بسببه وتاريخه (cancelPayment)
+ */
+function cancelReversedDepositRent(db: DB, touched: Set<string>): void {
+  if (getSyncState(db, 'membership')) return;
+  for (const p of db.all<{ id: string; rev: string; d: string }>(
+    `SELECT p.id, r.id AS rev, r.date AS d FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+       JOIN journal_entries r ON r.id = e.reversed_by
+     WHERE p.method_label = ? AND p.cancelled_at IS NULL AND r.status = ? AND r.deleted_at IS NULL
+       AND NOT EXISTS (SELECT 1 FROM sync_inbox i WHERE i.tbl = 'contract_payments' AND i.pk = p.id AND i.del = 0)`,
+    [DEPOSIT_RENT_METHOD, POSTED_ENTRY])) {
+    db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`,
+      [p.d, DEPOSIT_RENT_EDIT_REASON, p.rev, p.id]);
+    for (const i of installmentsOfPayment(db, p.id)) touched.add(i);
+    enqueue(db, 'contract_payments', p.id, 'upsert');
+  }
+}
+
+/**
+ * دفعة «من التأمين» ملغاةٌ بسبب الضمّ (DEPOSIT_RENT_KEPT_REASON) وعاكسها لم يعد خارج المطابقة على جهاز المالك: يعيد سببها سبب التعديل
+ * ويرفعها، فتتفق ورقة التسوية على جهاز العضو (بالسبب) وعلى جهاز المالك (بالعلامات · depositArrearsPaid) · وذلك حين يحفظ التسوية عضوٌ
+ * لا يرى الدفعات (قسم «التأمينات» وحده) فلا يعيده هو (reverseDepositRent)، وسطر حفظه يوثّق العاكس هنا (المراجع المستقل الخامس على R12-BAK-2) ·
+ * ولا يعيده إلا بدليلٍ هنا: علامةٌ نافذة على عاكسها صار له مستند، أو أصلها نفسه خارج المطابقة · فجهاز مالكٍ آخر وصلته الدفعة قبل علامتها
+ * لا يمسّها · والحساب مرةً حين توجد دفعةٌ بهذا السبب، وهي نادرة
+ */
+function unkeepDocumentedDepositRent(db: DB): void {
+  if (getSyncState(db, 'membership')) return;
+  const kept = db.all<{ id: string; je: string; ce: string }>(
+    `SELECT id, journal_entry_id AS je, cancel_entry_id AS ce FROM contract_payments
+     WHERE cancel_reason = ? AND method_label = ? AND cancelled_at IS NOT NULL`, [DEPOSIT_RENT_KEPT_REASON, DEPOSIT_RENT_METHOD]);
+  if (!kept.length) return;
+  const { out, marked } = reviewState(db);
+  for (const p of kept) {
+    if (!((marked.has(p.ce) && !out.has(p.ce)) || out.has(p.je))) continue;
+    db.run(`UPDATE contract_payments SET cancel_reason = ? WHERE id = ?`, [DEPOSIT_RENT_EDIT_REASON, p.id]);
+    enqueue(db, 'contract_payments', p.id, 'upsert');
+  }
+}
+
+/** صفّ العقد صُحّح تأمينه هنا: يُذكر ويُرفع */
+function noteDeadCarry(db: DB, id: string, row: Record<string, unknown>, want: number): void {
+  if (String(row.deposit_holder ?? '') === 'طرف آخر') setSyncState(db, DEAD_CARRY + id, String(want)); // i18n-exempt: جهة مخزّنة
+  enqueue(db, 'contracts', id, 'upsert');
+  try {
+    logAudit(db, 'المزامنة', 'update', 'تصحيح تأمين عقدٍ مجدَّد', // i18n-exempt: وحدة السجل ونوعه المخزّنان
+      tr('sync.deadCarryDeposit', { no: String(row.contract_no ?? ''), from: fmt(Number(row.deposit_halalas) || 0), to: fmt(want), lng: 'ar' }));
+  } catch { /* السجل لا يعطّل */ }
+}
+
+/**
+ * حركة بنكٍ كتبها عضوٌ برقم قيد (المدقق الخارجي ك٢): لا تُطبَّق على جهاز المالك قبل قيدها · فرصيد البنك يُحسب من الحركات، وقيدٌ
+ * مرفوض (عمولة تقبيلٍ بلا أبعاد من إصدارٍ أقدم مثلاً) كانت حركته تُطبَّق فيرتفع رصيد البنك بلا قيد · قيدها هنا تُطبَّق، وفي الوارد أو
+ * لم يصل بعد تُنتظر، ومرفوضٌ تُرفض معه بسببه · والمحذوفة تُطبَّق (حذفها لا يُدخل مالاً)
+ */
+/** نقل النقد بلا قيد بين المحفظة والبنوك: مصدره وإشارته كما يكتبها التطبيق (cashOps.ts) */
+const INTERNAL_BANK_SOURCES = new Map<string, number>([
+  [CASH_DEPOSIT_SOURCE, 1], [CASH_WITHDRAW_SOURCE, -1], [TRANSFER_OUT_SOURCE, -1], [TRANSFER_IN_SOURCE, 1],
+]);
+
+interface BankTxState { bank: string; amount: number; no: string; source: string; live: boolean; date: string }
+
+/**
+ * سطر كشفٍ وارد «مطابَق» بشروط approveMatch نفسها على كل جهاز (المدقق الخارجي U٢٣): حركةٌ حيّة من بنك السطر بمبلغه، ولا يمسكها
+ * سطرٌ آخر · وإلا عاد السطر مفتوحاً ويُعاد مصحَّحاً إلى السحابة (true) · وسطران يمسكان الحركة نفسها (جهازان بلا اتصال): الأصغر
+ * معرّفاً يبقى، والآخر يعود مفتوحاً هنا أو في الوارد، فتتفق الأجهزة بالقاعدة نفسها · والتصحيح يرفعه جهاز المالك وحده (جهاز العضو
+ * يصحّح نسخته، وقد لا تجيز له القواعد الكتابة)
+ */
+function statementLineCheck(db: DB, row: Record<string, unknown>, member = false): { changed: boolean; own: boolean } {
+  const r = statementLineFix(db, row, member);
+  const fixed = restoredFacts.delete(String(row.id));
+  return { changed: r || fixed || ownMatch.has(String(row.id)), own: ownMatch.delete(String(row.id)) };
+}
+/** سطورٌ أبقى هذا الجهاز مطابقتها في الوارد المحيا: يرفعها ولو كان جهاز عضو (مطابقته هو · Y٧) */
+const ownMatch = new Set<string>();
+/** سطورٌ أعاد جهاز المالك وقائعها (E٢-٥): يرفع نسخته */
+const restoredFacts = new Set<string>();
+function statementLineFix(db: DB, row: Record<string, unknown>, member = false): boolean {
+  let changed = false;
+  // والسطر حيٌّ ما احتاجه كشفٌ حيّ (تخطّاه عند حفظه لأنه هنا · الهجرة ٥٨ · المدقق الخارجي V٤): جهازٌ حذف كشفه ولم يعرف ذاك يعيده إليه ·
+  // وسطرٌ حيٌّ في كشفٍ محذوف (اعتُمد على جهازٍ آخر بعد الحذف · V٥) يُحذف معه
+  const stmt = row.statement_id == null ? undefined
+    : db.get<{ del: string | null }>(`SELECT deleted_at AS del FROM bank_statements WHERE id = ?`, [String(row.statement_id)]);
+  if (row.deleted_at != null || stmt?.del != null) {
+    const to = sharingStatement(db, String(row.bank_id ?? ''), String(row.line_key ?? ''), String(row.statement_id ?? ''), String(row.id));
+    // ولا يُحيا وللبصمة سطرٌ حيٌّ آخر (المدقق الخارجي X١: قراءة الكشف ثانيةً بمعرّفاتٍ جديدة)
+    const twin = to && dupOfLive(db, String(row.bank_id ?? ''), String(row.line_key ?? ''), String(row.id), to);
+    if (to && twin) {
+      if (row.deleted_at == null) { row.deleted_at = stmt?.del ?? new Date().toISOString(); changed = true; }
+    } else if (to) {
+      row.deleted_at = null; row.statement_id = to; changed = true;
+      // والحذف تبعاً لكشفه لا يمحو مطابقةً حيّةً هنا للسطر نفسه (المدقق الخارجي Y٧: حذف المالك الأحدث كان يغلب اعتماد العضو)
+      const here = db.get<{ status: string; tx: string | null; at: string | null; note: string; del: string | null }>(
+        `SELECT status, bank_tx_id AS tx, matched_at AS at, note, deleted_at AS del FROM bank_statement_lines WHERE id = ?`, [String(row.id)]);
+      // (تعديلٌ هنا لم يُرفع وحده: نسخةٌ قديمة من السحابة ألغى المالك مطابقتها بعدها لا تعود · Z١-٣)
+      if (here && here.del == null && here.status !== 'open' && row.status === 'open'
+        && db.get(`SELECT 1 FROM sync_outbox WHERE tbl = 'bank_statement_lines' AND pk = ?`, [String(row.id)])) {
+        row.status = here.status; row.bank_tx_id = here.tx; row.matched_at = here.at; row.note = here.note;
+        ownMatch.add(String(row.id));
+      }
+    } else if (row.deleted_at == null) { row.deleted_at = stmt!.del; changed = true; }
+  }
+  // وسطران حيّان بالبصمة نفسها (حُذف كشفٌ وأُعيدت قراءته بمعرّفاتٍ جديدة على جهاز، وأُحيي سطره القديم في كشفٍ متداخل على آخر · X١):
+  // يبقى المطابَق أو المستبعَد، ثم الأقدم إنشاءً، ثم الأصغر معرّفاً، ويُحذف الآخر على كل جهاز
+  // (بعدّ الحفظ نفسه بترتيب الأولوية، لا بالأزواج: حوالاتٌ بلا رصيد في يومٍ واحد حركاتٌ مختلفة · المدقق الخارجي C٢-١)
+  if (row.deleted_at == null) {
+    const me: LiveLine = { id: String(row.id), status: String(row.status ?? 'open'), c: String(row.created_at ?? ''), k: String(row.line_key ?? ''), st: String(row.statement_id ?? '') };
+    const others = liveOfBase(db, String(row.bank_id ?? ''), me.k, me.id);
+    const all = [...others, me].sort((a, b) => (lineRank(a) < lineRank(b) ? -1 : 1));
+    const need = statementsNeed(db, [...all.map((x) => x.st), ...bankStatementIds(db, String(row.bank_id ?? ''))], me.k);
+    const keep = keepInOrder(all.map((x) => x.k), () => need);
+    // ووقائع الإيداع بأول ما قُرئ به هنا: سطرٌ جديدٌ من عضوٍ بالبصمة نفسها يحمل بيان السطر القائم ومرجعه (المدقق الخارجي E٢-٢: توأمٌ
+    // مزوَّر بوقت إنشاءٍ أقدم وبيانٍ يسمّي مستأجراً آخر كان يغلب ويقلب الاقتراح)
+    // (وكذلك سطرٌ قد يكون الإيداع نفسه بصيغةٍ أخرى: «@الرصيد» من العضو مكان «#1» للمالك يحمل بيانه ومرجعه ومطابقته · G٢-٥)
+    const local = others.find((x) => x.k === me.k && !keep[all.indexOf(x)]) ?? others.find((x) => sameLineKey(x.k, me.k) && !keep[all.indexOf(x)]);
+    if (member && local && keep[all.indexOf(me)]) {
+      const f = db.get<{ descr: string; ref: string | null; vd: string | null; status: string; tx: string | null; at: string | null; note: string }>(
+        `SELECT descr, ref, value_date AS vd, status, bank_tx_id AS tx, matched_at AS at, note FROM bank_statement_lines WHERE id = ?`, [local.id]);
+      if (f && (f.descr !== row.descr || (f.ref ?? null) !== (row.ref ?? null) || (f.vd ?? null) !== (row.value_date ?? null))) {
+        row.descr = f.descr; row.ref = f.ref; row.value_date = f.vd; changed = true;
+      }
+      // (ومطابقة سطر المالك الحيّة تنتقل إن كان الوارد مفتوحاً أو مطابقته لم تثبت: حركتها ليست هنا أو رُفضت · I٢-٤)
+      const unproven = (row.status ?? 'open') === 'open' || !row.bank_tx_id
+        || !db.get(`SELECT 1 FROM bank_tx WHERE id = ? AND deleted_at IS NULL`, [String(row.bank_tx_id)]);
+      if (f && f.status !== 'open' && unproven
+        && (f.status !== 'matched' || db.get(`SELECT 1 FROM bank_tx WHERE id = ? AND deleted_at IS NULL`, [f.tx ?? '']))) {
+        row.status = f.status; row.bank_tx_id = f.tx; row.matched_at = f.at; row.note = f.note; changed = true;
+      }
+    }
+    all.forEach((x, i) => {
+      if (keep[i]) return;
+      if (x.id === me.id) { row.deleted_at = new Date().toISOString(); changed = true; return; }
+      db.run(`UPDATE bank_statement_lines SET deleted_at = ?, status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [new Date().toISOString(), x.id]);
+      enqueueStmtFix(db, x.id);
+    });
+  }
+  const demote = () => { row.status = 'open'; row.bank_tx_id = null; row.matched_at = null; return true; };
+  if (row.deleted_at != null && (row.status !== 'open' || row.bank_tx_id != null)) return demote();
+  if (row.status !== 'matched') return row.bank_tx_id != null ? demote() : changed;
+  // والمحذوف لا يمسك حركة · ولا حركة: لا مطابقة
+  const txId = row.bank_tx_id == null ? '' : String(row.bank_tx_id);
+  if (row.deleted_at != null || !txId) return demote();
+  const tx = db.get<{ b: string; a: number; del: string | null }>(`SELECT bank_id AS b, amount_halalas AS a, deleted_at AS del FROM bank_tx WHERE id = ?`, [txId]);
+  // والسطر لحركةٍ ليست هنا وللسطر تحصيلٌ حيٌّ بقيده هنا: يُطابَق بحركة ذلك التحصيل (الإيداع الواحد اعتمده جهازان لهدفين فقُبل أحدهما ·
+  // Z٢-١) · وحركةٌ رُفضت لا يُطابَق بها · وما لم يصل بعد يُرجئه المفتاح الأجنبي
+  // ومطابقةٌ واردة لا تثبت (حركتها رُفضت أو من بنكٍ آخر) لا تمحو مطابقةً حيّةً هنا (G٢-٢: تحصيل المالك اليدوي)
+  const keepHere = (): boolean => {
+    const h = db.get<{ s: string; tx: string | null; at: string | null; note: string }>(
+      `SELECT l.status AS s, l.bank_tx_id AS tx, l.matched_at AS at, l.note FROM bank_statement_lines l JOIN bank_tx t ON t.id = l.bank_tx_id
+       WHERE l.id = ? AND l.deleted_at IS NULL AND l.status = 'matched' AND t.deleted_at IS NULL AND l.bank_tx_id != ?`, [String(row.id), txId]);
+    if (!h) return demote();
+    row.status = h.s; row.bank_tx_id = h.tx; row.matched_at = h.at; row.note = h.note;
+    return true;
+  };
+  if (!tx) {
+    // (بيوم السطر، ولا تمسكها سطرٌ آخر · B٢-٢)
+    const alt = db.get<{ id: string }>(
+      `SELECT t.id FROM journal_entries e JOIN bank_tx t ON t.journal_no = e.no AND t.bank_id = ? AND t.amount_halalas = ? AND t.date = ? AND t.deleted_at IS NULL
+       WHERE e.stmt_line_id = ? AND e.reversed_by IS NULL AND e.status = ?
+         AND NOT EXISTS (SELECT 1 FROM bank_statement_lines o WHERE o.bank_tx_id = t.id AND o.id != ? AND o.status = 'matched' AND o.deleted_at IS NULL) LIMIT 1`,
+      [String(row.bank_id), Number(row.amount_halalas), String(row.date), String(row.id), POSTED_ENTRY, String(row.id)]);
+    if (alt) { row.bank_tx_id = alt.id; return true; }
+    if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'bank_tx' AND pk = ?`, [txId])) return keepHere();
+    return changed;
+  }
+  if (tx.del != null || String(tx.b) !== String(row.bank_id) || Number(tx.a) !== Number(row.amount_halalas)) return keepHere();
+  // ولا مطابقة بحركة قيدٍ عُكس (C٢-٢)
+  if (db.get(`SELECT 1 FROM bank_tx t JOIN journal_entries e ON e.no = t.journal_no WHERE t.id = ? AND e.reversed_by IS NOT NULL`, [txId])) return demote();
+  const rivals = db.all<{ id: string }>(
+    `SELECT id FROM bank_statement_lines WHERE bank_tx_id = ? AND status = 'matched' AND deleted_at IS NULL AND id != ? ORDER BY id`, [txId, String(row.id)]);
+  if (!rivals.length) return changed;
+  if (rivals.some((r) => r.id < String(row.id))) return demote();
+  for (const r of rivals) {
+    db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [r.id]);
+    enqueueStmtFix(db, r.id);
+  }
+  return changed;
+}
+
+/** سطور الكشف التي صحّحها جهاز المالك ولم تُرفع بعد: تصحيحٌ يغلبه أي تعديلٍ حقيقي وارد (Y٧) */
+const STMT_FIXES = 'stmt_line_fixes';
+// والعلامة بوقت صفّ الطابور الذي كتبه التصحيح: تعديلٌ لاحق هنا وقته غيره فلا يُعدّ تصحيحاً، والعلامة بلا صفٍّ في الطابور تُحذف
+// (Z١-٦ وZ٢-٧: علامةٌ باقية كانت تجعل اعتماداً حقيقياً للمالك «تصحيحاً» يغلبه وارد أقدم)
+function stmtFixes(db: DB): Map<string, string> {
+  let raw: Record<string, string> = {};
+  try { raw = JSON.parse(getSyncState(db, STMT_FIXES) ?? '{}') as Record<string, string>; } catch { raw = {}; }
+  if (Array.isArray(raw)) raw = {};
+  return new Map(Object.entries(raw));
+}
+function saveStmtFixes(db: DB, m: Map<string, string>): void {
+  for (const k of [...m.keys()]) if (!db.get(`SELECT 1 FROM sync_outbox WHERE tbl = 'bank_statement_lines' AND pk = ? AND changed_at = ?`, [k, m.get(k)!])) m.delete(k);
+  setSyncState(db, STMT_FIXES, m.size ? JSON.stringify(Object.fromEntries(m)) : null);
+}
+function markStmtFix(db: DB, id: string, on: boolean): void {
+  const m = stmtFixes(db);
+  if (on) {
+    const at = db.get<{ c: string }>(`SELECT changed_at AS c FROM sync_outbox WHERE tbl = 'bank_statement_lines' AND pk = ?`, [id])?.c;
+    if (at) m.set(id, at);
+  } else m.delete(id);
+  saveStmtFixes(db, m);
+}
+/** تصحيح سطر كشفٍ يرفعه جهاز المالك وحده، معلَّماً تصحيحاً */
+function enqueueStmtFix(db: DB, id: string, at?: string): void {
+  if (getSyncState(db, 'membership')) return;
+  enqueue(db, 'bank_statement_lines', id, 'upsert', at);
+  markStmtFix(db, id, true);
+}
+
+type LiveLine = { id: string; status: string; c: string; k: string; st: string };
+/** كشوف البنك الحيّة كلها: المزامنة تعدّ بها كما يعدّ الحفظ (المدقق الخارجي K٢-١ وK٢-٢: كانت كشوف السطور الحيّة وحدها) */
+const bankStatementIds = (db: DB, bankId: string): string[] =>
+  db.all<{ id: string }>(`SELECT id FROM bank_statements WHERE bank_id = ? AND deleted_at IS NULL`, [bankId]).map((x) => x.id);
+/** أولوية سطر الكشف بين سطور قاعدته: المطابَق أو المستبعَد، ثم الأقدم إنشاءً، ثم الأصغر معرّفاً */
+const lineRank = (x: LiveLine): string => [x.status === 'open' ? 1 : 0, x.c, x.id].join('|');
+/** السطور الحيّة للبنك بقاعدة البصمة (اليوم والمبلغ) بمدى الفهرس */
+function liveOfBase(db: DB, bankId: string, key: string, exceptId: string): LiveLine[] {
+  const base = lineKeyBase(key);
+  return db.all<LiveLine>(
+    `SELECT id, status, created_at AS c, line_key AS k, COALESCE(statement_id, '') AS st FROM bank_statement_lines
+     WHERE bank_id = ? AND line_key BETWEEN ? AND ? AND id != ? AND deleted_at IS NULL`, [bankId, base, base + '~', exceptId]);
+}
+/** سطرٌ بهذه البصمة تكرارٌ لما هو حيٌّ هنا (لو أُحيي آخرَ سطور قاعدته) */
+function dupOfLive(db: DB, bankId: string, key: string, exceptId: string, statementId: string): boolean {
+  const others = liveOfBase(db, bankId, key, exceptId).sort((a, b) => (lineRank(a) < lineRank(b) ? -1 : 1));
+  const need = statementsNeed(db, [...others.map((x) => x.st), statementId, ...bankStatementIds(db, bankId)], key);
+  return !keepInOrder([...others.map((x) => x.k), key], () => need)[others.length];
+}
+
+/** كشفٌ حيٌّ آخر للبنك تخطّى سطراً ببصمته عند حفظه (الهجرة ٥٨) وما زال ينقصه (E٢-٣)، أو null */
+function sharingStatement(db: DB, bankId: string, lineKey: string, exceptStatementId: string, exceptLineId = ''): string | null {
+  return statementWithRoom(db, bankId, lineKey, exceptStatementId, exceptLineId);
+}
+
+/**
+ * كشفٌ وارد وسطوره هنا (المدقق الخارجي V٤ وV٥): الحيّ يعيد إليه ما تخطّاه من سطورٍ حُذفت مع كشفها هنا، والمحذوف تُحذف معه سطوره الحيّة
+ * هنا إلا ما احتاجه كشفٌ حيٌّ آخر فيُنقل إليه · ويرفع جهاز المالك ما صحّحه
+ */
+function statementCascade(db: DB, statementId: string, row: Record<string, unknown>, at: string): void {
+  // بوقت الكشف الوارد لا بوقت الآن: نسخة سطرٍ أحدث منه (مطابقةٌ على جهازٍ آخر) تغلب الإحياء (المدقق الخارجي Y٧)
+  const fix = (id: string) => enqueueStmtFix(db, id, at);
+  const bankId = String(row.bank_id ?? '');
+  if (row.deleted_at == null) {
+    let keys: string[] = [];
+    try { keys = JSON.parse(String(row.shared_keys ?? '[]')); } catch { keys = []; }
+    for (const k of keys) {
+      if (dupOfLive(db, bankId, k, '', statementId)) continue;
+      const dead = db.get<{ id: string; k: string }>(`SELECT id, line_key AS k FROM bank_statement_lines WHERE bank_id = ? AND ${SAME_KEY_SQL('line_key')} AND deleted_at IS NOT NULL
+        ORDER BY line_key = ? DESC, deleted_at DESC, id LIMIT 1`, [bankId, ...sameKeyParams(k), k]);
+      // (والسطر المحيا ببصمته هو لا ببصمة الكشف: «#n» من قراءةٍ محذوفة قد يكون تكراراً لما هنا · المدقق الخارجي I٢-٥)
+      if (!dead || (dead.k !== k && dupOfLive(db, bankId, dead.k, dead.id, statementId))) continue;
+      db.run(`UPDATE bank_statement_lines SET deleted_at = NULL, statement_id = ? WHERE id = ?`, [statementId, dead.id]);
+      fix(dead.id);
+    }
+    return;
+  }
+  for (const l of db.all<{ id: string; k: string }>(`SELECT id, line_key AS k FROM bank_statement_lines WHERE statement_id = ? AND deleted_at IS NULL`, [statementId])) {
+    const to = sharingStatement(db, bankId, l.k, statementId, l.id);
+    if (to) db.run(`UPDATE bank_statement_lines SET statement_id = ? WHERE id = ?`, [to, l.id]);
+    else db.run(`UPDATE bank_statement_lines SET deleted_at = ?, status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [String(row.deleted_at), l.id]);
+    fix(l.id);
+  }
+}
+
+/**
+ * حركة البنك من عضو على جهاز المالك (المدقق الخارجي هـ٩، ثم G١ إلى G٦ في الجولة الرابعة): رصيد البنك مجموع حركاته، والمحفظة نقد 1100
+ * ناقصاً حركات البنوك كلها · فالحركة تُفحص بأثرها لا بنوعها:
+ *  - حركة قيدٍ قائم لا تُحذف ولا تُنقل ولا يتغيّر مبلغها (التطبيق يُلغيها بعكس عمليتها) · والجديدة منها بإشارة نقد القيد كلها، ومجموعها
+ *    لا يتجاوزه (G٦: حركاتٌ بإشارتين على بنكين كانت تضخّم بنكاً بلا حد)
+ *  - وبلا قيد: نقل النقد بين المحفظة والبنوك وحده بمصدره وإشارته (الإيداع والسحب والتحويل بين بنكين · G١)
+ *  - وكل تغييرٍ بلا قيد (إنشاءً أو حذفاً أو استعادةً أو نقلاً إلى بنكٍ آخر · G٣ وG٤ وG٥) لا يُنزل بنكاً ولا المحفظة تحت الصفر، وإلا
+ *    انتظر: سحبٌ وإيداعه في رفعٍ واحد يُطبَّقان بأي ترتيب (G٢)، والمزوَّر لا يكفيه رصيدٌ أبداً فيُرفض بطول انتظاره
+ * row فارغٌ لشاهد حذفٍ نهائي
+ */
+function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> | null): void {
+  if (getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
+  const old = db.get<{ b: string; a: number; n: string | null; s: string | null; del: string | null; d: string }>(
+    `SELECT bank_id AS b, amount_halalas AS a, journal_no AS n, source AS s, deleted_at AS del, date AS d FROM bank_tx WHERE id = ?`, [doc.k]);
+  const was: BankTxState | null = old
+    ? { bank: String(old.b ?? ''), amount: Number(old.a) || 0, no: String(old.n ?? ''), source: String(old.s ?? ''), live: old.del == null, date: String(old.d ?? '') } : null;
+  const now: BankTxState | null = row
+    // والحذف قيمةٌ غير فارغة كما يعدّها الرصيد والسلة (deleted_at IS NOT NULL) · فالنص الفارغ حذف (المدقق الخارجي I٣: كان الحارس
+    // يعدّه حيّاً فيمرّره «تعديلاً لا يمسّ شيئاً»، والرصيد يعدّه محذوفاً)
+    ? { bank: String(row.bank_id ?? ''), amount: Number(row.amount_halalas) || 0, no: String(row.journal_no ?? ''), source: String(row.source ?? ''), live: row.deleted_at == null, date: String(row.date ?? '') }
+    : null;
+  // تعديلٌ لا يمسّ البنك ولا المبلغ ولا القيد ولا المصدر ولا الحذف (البيان أو المطابقة) يمرّ
+  if (was && now && was.bank === now.bank && was.amount === now.amount && was.no === now.no && was.source === now.source && was.live === now.live && was.date === now.date) return;
+  const wasLive = was?.live ? was : null;
+  const nowLive = now?.live ? now : null;
+  // ما في السلة يبقى فيها: لا أثر له في رصيد
+  if (!wasLive && !nowLive) return;
+  const entryOf = (no: string) => (no ? db.get<{ id: string }>(`SELECT id FROM journal_entries WHERE no = ?`, [no]) : undefined);
+  if (wasLive?.no && entryOf(wasLive.no)) {
+    // حركة قيدٍ قائم: البيان والمصدر وحدهما (ولا تاريخها: إلغاءٌ ثانٍ بتاريخٍ آخر التقى في المعرّف · A٢-٦)
+    if (!nowLive || nowLive.no !== wasLive.no || nowLive.bank !== wasLive.bank || nowLive.amount !== wasLive.amount || nowLive.date !== wasLive.date) {
+      throw new Error(tr('sync.bankTxEntryLocked', { no: wasLive.no, lng: 'ar' }));
+    }
+    return;
+  }
+  if (nowLive?.no) {
+    if (wasLive && wasLive.no !== nowLive.no) throw new Error(tr('sync.bankTxEntryLocked', { no: nowLive.no, lng: 'ar' }));
+    const entry = entryOf(nowLive.no);
+    if (entry) {
+      const cash = Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(debit_halalas - credit_halalas), 0) AS n FROM journal_lines WHERE entry_id = ? AND account_code = '1100'`, [entry.id])?.n ?? 0);
+      const amounts = [...db.all<{ a: number }>(`SELECT amount_halalas AS a FROM bank_tx WHERE journal_no = ? AND id != ? AND deleted_at IS NULL`, [nowLive.no, doc.k]).map((r) => Number(r.a) || 0), nowLive.amount];
+      const sum = amounts.reduce((x, y) => x + y, 0);
+      if (!cash || amounts.some((x) => Math.sign(x) !== Math.sign(cash)) || Math.abs(sum) > Math.abs(cash)) {
+        throw new Error(tr('sync.bankTxOver', { no: nowLive.no, lng: 'ar' }));
+      }
+      // والعملية النقدية لا حركة بنكٍ لها إلا الوارد البنكي والرسوم (cashOps.ts · المدقق الخارجي I٢: حركةٌ مزوَّرة برقم «إيداع المالك
+      // نقداً» كانت تُدخل البنك نقداً صُرف) · وفحص المحفظة لحركة القيد أُزيل لأنه أوقف تدفقاً مشروعاً (K٢: القيود تُطبَّق قبل حركاتها)
+      const head = db.get<{ s: string | null }>(`SELECT src_type AS s FROM journal_entries WHERE id = ?`, [entry.id]);
+      if (head?.s === 'cash_op' && !db.get(`SELECT 1 FROM journal_lines WHERE entry_id = ? AND account_code IN ('4300', '5400')`, [entry.id])) {
+        throw new Error(tr('sync.bankTxOver', { no: nowLive.no, lng: 'ar' }));
+      }
+      // وحركة القيد السالبة لا تُنزل بنكها تحت الصفر إن كانت ربطاً متأخراً بقيدٍ صُرف نقده (المدقق الخارجي O٢: حركةٌ برقم مصروفٍ نثري أو
+      // سدادٍ نقداً من بنكٍ فارغ كانت تُدخل المحفظة نقداً لا وجود له) · والربط المتأخر: حركةٌ كُتبت بعد قيدها بأكثر من ساعة، أو لقيدٍ معكوسٍ
+      // هنا، أو لعمليةٍ نقدية (والتطبيق يفحص كفاية الرسوم) · فتنتظر ما يكفيها، والمزوَّر لا يكفيه رصيدٌ فيُرفض بطول انتظاره · وما كُتب مع
+      // قيده لا يُفحص: البنك يصير سالباً بشيكٍ مرتجع، أو بسدادٍ متزامنٍ مع سحب، أو باستعادة فاتورةٍ مسدَّدة (المدقق الخارجي Q٣: كان فحصه
+      // يُطبّق القيد ويمسك حركته فيختلف الجهازان) · ومع رصيدٍ يكفي أثر المزوَّر نقلُ نقدٍ من البنك إلى المحفظة بلا قيد كالسحب (حدٌّ موثَّق)
+      // وسداد فاتورة الشراء بطريقة سدادها في الفاتورة: لا حركة بنكٍ لسدادٍ نقداً (O٢)
+      if (head?.s === 'purchase_pay') purchasePaidByBank(db, entry.id, nowLive.no);
+      if (!wasLive && nowLive.amount < 0 && bankBalance(db, nowLive.bank) + nowLive.amount < 0
+        && (head?.s === 'cash_op' || lateLink(db, entry.id, doc))) {
+        throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+      }
+      return;
+    }
+    // ورفضُ قيدها لطول انتظاره (WAIT_REJECT) مؤقتٌ يُعاد على التجربة، فتنتظر معه ولا تُرفض (المدقق الخارجي ج٣: كانت تُرفض نهائياً
+    // ثم يعود القيد ويُطبَّق وحركته مرفوضة)
+    const no = nowLive.no;
+    if (db.get(`SELECT 1 FROM sync_rejects WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.no') = ? AND reason != ?
+         AND NOT EXISTS (SELECT 1 FROM sync_rejects w WHERE w.tbl = 'journal_entries' AND w.reason = ? AND json_extract(w.payload, '$.d.no') = ?)
+         AND NOT EXISTS (SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND json_extract(payload, '$.d.no') = ?)`, [no, WAIT_REJECT, WAIT_REJECT, no, no])) {
+      throw new Error(tr('sync.bankTxEntryRejected', { no, lng: 'ar' }));
+    }
+    throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
+  }
+  if (nowLive && Math.sign(nowLive.amount) !== INTERNAL_BANK_SOURCES.get(nowLive.source)) throw new Error(tr('sync.bankTxNoEntry', { lng: 'ar' }));
+  // والتطبيق لا يغيّر بنك حركةٍ بلا قيد ولا مبلغها ولا مصدرها (البيان والمطابقة وحدهما · G٥: نقل السحب إلى بنكٍ آخر)
+  if (wasLive && nowLive && (wasLive.bank !== nowLive.bank || wasLive.amount !== nowLive.amount || wasLive.source !== nowLive.source)) {
+    throw new Error(tr('sync.bankTxEdited', { lng: 'ar' }));
+  }
+  // أثر التغيير في كل بنكٍ وفي المحفظة · والمحفظة نقدٌ في اليد لا ينزل تحت الصفر، فما يُنقصها ينتظر
+  const delta = new Map<string, number>();
+  if (wasLive) delta.set(wasLive.bank, (delta.get(wasLive.bank) ?? 0) - wasLive.amount);
+  if (nowLive) delta.set(nowLive.bank, (delta.get(nowLive.bank) ?? 0) + nowLive.amount);
+  let wallet = 0;
+  for (const [bank, d] of delta) {
+    wallet -= d;
+    // والبنك لا ينزل تحت الصفر بنقلٍ بلا قيد، كما في التطبيق (السحب والتحويل وحذف الإيداع واستعادة السحب) · فسحبٌ من بنكٍ فارغ لا يُدخل
+    // المحفظة نقداً لا وجود له (G٥ وG٦) · وحدٌّ معروف: سحب عضوٍ بلا اتصال من بنكٍ سدّد منه غيره في الوقت نفسه ينتظر ثم يُرفض (L٦)،
+    // فالجهاز لا يعرف ما رآه العضو · يُعالج بشاشة التعارضات في القسم ٥
+    if (d < 0 && bankBalance(db, bank) + d < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+  }
+  // ووارد التحويل بين بنكين نصفُ نقلٍ صادره هنا: لا يمسّ المحفظة (L٥: كان يُفحص وحده أمامها فينتظر إن كانت سالبة)
+  // (للإنشاء وحده: استعادة الوارد من السلة تُنقص المحفظة وتُفحص · المدقق الخارجي M٦)
+  if (nowLive?.source === TRANSFER_IN_SOURCE && !was && transferPaired(db, doc.k, row!)) return;
+  if (wallet < 0 && walletCashBalance(db) + wallet < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+}
+
+
+/**
+ * فاتورة شراءٍ هذا القيدُ سدادُها القائم بطريقةٍ غير النقد · والفاتورة بمصدر القيد هنا أو في الوارد، وإلا انتظرت الحركة · وقيدُ سدادٍ
+ * سابقٍ (عُكس أو بُدّل) يحكم عليه فحص الربط المتأخر لا طريقة السداد القائمة
+ */
+function purchasePaidByBank(db: DB, entryId: string, no: string): void {
+  const pid = db.get<{ s: string | null }>(`SELECT src_id AS s FROM journal_entries WHERE id = ?`, [entryId])?.s ?? '';
+  const here = db.get<{ e: string | null; m: string | null }>(`SELECT payment_journal_entry_id AS e, payment_method AS m FROM purchases WHERE id = ?`, [pid]);
+  const p = here ?? db.get<{ e: string | null; m: string | null }>(
+    `SELECT json_extract(payload, '$.d.payment_journal_entry_id') AS e, json_extract(payload, '$.d.payment_method') AS m
+     FROM sync_inbox WHERE tbl = 'purchases' AND del = 0 AND pk = ?`, [pid]);
+  if (!p) throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
+  if (p.e === entryId && (!p.m || p.m === PAY_LABEL.cash)) throw new Error(tr('sync.bankTxOver', { no, lng: 'ar' }));
+}
+
+/** ساعةٌ بين كتابة القيد وحركته في السحابة: ما كُتب معه يُرفع في الدورة نفسها ولو على دفعات */
+const LATE_LINK_MS = 60 * 60 * 1000;
+
+/** حركة قيدٍ كُتبت بعد قيدها بأكثر من ساعة (بوقت الخادم)، أو لقيدٍ معكوسٍ هنا، أو لقيدٍ لم يُعرف وقته في السحابة */
+function lateLink(db: DB, entryId: string, doc: RemoteDoc): boolean {
+  if (db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NOT NULL`, [entryId])) return true;
+  // وربطٌ معلَّق بعاكسٍ لم يُطبَّق يجدّد وقت القيد، فهو كالمعكوس (المدقق الخارجي S١ب)
+  const pendingLinks = JSON.parse(getSyncState(db, PENDING_REV) ?? '{}') as Record<string, string>;
+  if (pendingLinks[entryId]) return true;
+  // وكاتب الحركة غير كاتب القيد ربطٌ متأخر أياً كان وقته (S١: وقت «u» يكتبه العضو) · وقيدٌ بلا كاتبٍ وارد كتبه هذا الجهاز (المالك)
+  const rb = db.get<{ uid: string }>(`SELECT uid FROM row_by WHERE tbl = 'journal_entries' AND pk = ?`, [entryId]);
+  const creator = rb ? rb.uid : ownerUid(db) ?? '';
+  if (creator && (doc.by ?? '') !== creator) return true;
+  const at = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = 'journal_entries' AND pk = ?`, [entryId])?.u;
+  if (!at) return true;
+  // وبوقت الخادم وحده (ts تفرضه القاعدة)، لا بـ«u» الذي يكتبه العضو
+  return Date.parse(isoNorm(doc.ts ?? doc.u)) - Date.parse(at) > LATE_LINK_MS;
+}
+
+/** صادرٌ مطبَّق للتحويل نفسه (التاريخ والبيان والمبلغ، ببنكٍ آخر) لم يُقابَل بواردٍ قبل هذا */
+function transferPaired(db: DB, id: string, row: Record<string, unknown>): boolean {
+  const amount = Number(row.amount_halalas) || 0;
+  const args = [String(row.date ?? ''), String(row.descr ?? '')];
+  // صادرٌ ببنكٍ آخر لهذا الوارد · والعدّ في البنوك كلها: الصادر الواحد يقابل وارداً واحداً لا وارداً في كل بنكٍ آخر (المدقق الخارجي K٣)
+  const outs = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_tx WHERE source = ? AND amount_halalas = ? AND date = ? AND descr = ?
+     AND deleted_at IS NULL AND journal_no = ''`, [TRANSFER_OUT_SOURCE, -amount, ...args])?.n ?? 0);
+  const outOther = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_tx WHERE source = ? AND amount_halalas = ? AND date = ? AND descr = ? AND bank_id != ?
+     AND deleted_at IS NULL AND journal_no = ''`, [TRANSFER_OUT_SOURCE, -amount, ...args, String(row.bank_id ?? '')])?.n ?? 0);
+  const ins = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM bank_tx WHERE source = ? AND amount_halalas = ? AND date = ? AND descr = ?
+     AND deleted_at IS NULL AND journal_no = '' AND id != ?`, [TRANSFER_IN_SOURCE, amount, ...args, id])?.n ?? 0);
+  return outOther > 0 && outs > ins;
 }
 
 /**
@@ -851,11 +1908,30 @@ function reservationConvertCheck(db: DB, je: string, row: RowData): void {
 }
 
 /**
+ * دفعة القسط المسدَّد من التأمين في تسويته (المراجعة الشاملة 2026-11-13 · A1-2) وقيدها: طريقتها «من التأمين»، وقيدها من عقدها، مدين
+ * 2400 بمبلغها ودائن الإيراد به، ولا سطر غيرهما · وسقفه بالمخصوم في صفّ التسوية يفحصه اشتقاق القيد نفسه (deriveSources.ts)
+ */
+function depositRentCheck(db: DB, je: string, srcId: string | null, row: RowData): void {
+  const bad = () => new Error(tr('derive.rejected', { why: tr('derive.entryType', { lng: 'ar' }), lng: 'ar' }));
+  if (row.method_label !== DEPOSIT_RENT_METHOD || row.installment_id == null) throw bad();
+  // وعقد الدفعة عقد القيد صاحب التأمين، أو عقدٌ رُحِّل تأمينه إليه بترحيلٍ حيٍّ هنا (R12-DEP-2)
+  if (srcId !== row.contract_id && !depositCarryChain(db, srcId ?? '').includes(String(row.contract_id ?? ''))) throw bad();
+  const net = Number(row.net_halalas) || 0;
+  const lines = db.all<{ a: string; n: number }>(
+    `SELECT account_code AS a, SUM(debit_halalas - credit_halalas) AS n FROM journal_lines WHERE entry_id = ? GROUP BY account_code`, [je]);
+  const revenue = lines.filter((l) => RENT_REVENUE_GROUP.includes(l.a)).reduce((sum, l) => sum - Number(l.n), 0);
+  const others = lines.filter((l) => l.a !== '2400' && !RENT_REVENUE_GROUP.includes(l.a) && Number(l.n) !== 0);
+  if (net <= 0 || Number(lines.find((l) => l.a === '2400')?.n ?? 0) !== net || revenue !== net || others.length) throw bad();
+}
+
+/**
  * صفوف التحصيل على جهاز المالك (المتحقق المستقل، الجولة ٣٥ (أ٢ وأ٣ وأ٥)): الدفعة وسطورها وتخصيصها لا تتغير مبالغها ولا روابطها
  * بعد إنشائها أياً كان كاتبها (الإلغاء بـ cancelled_at، والتطبيق لا يعدّلها) · ودفعة العضو الجديدة: قيدٌ واحد لها، وقيدها
  * المرحّل يُعاد اشتقاقه منها · وسطورها وتخصيصها لا يتجاوزان المقبوض ولا المتبقي على أقساط عقدها
  */
 const FROZEN_COLS: Record<string, string[]> = {
+  // وحقائق سطر كشف البنك كما قُرئت: العضو يطابق ويستبعد ولا يغيّر بنكه ولا يومه ولا مبلغه ولا رصيده ولا بصمته (المدقق الخارجي B٢-٩)
+  bank_statement_lines: ['bank_id', 'line_key', 'date', 'value_date', 'amount_halalas', 'balance_halalas', 'descr', 'ref'],
   contract_payments: ['contract_id', 'installment_id', 'date', 'gross_halalas', 'discount_halalas', 'net_halalas'],
   payment_lines: ['payment_id', 'method', 'bank_id', 'amount_halalas'],
   payment_allocations: ['payment_id', 'installment_id', 'amount_halalas'],
@@ -865,8 +1941,23 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
   if (!frozen || getSyncState(db, 'membership')) return;
   const no = (why: string) => new Error(tr('derive.rejected', { why, lng: 'ar' }));
   const cur = db.get<Record<string, unknown>>(`SELECT * FROM "${doc.t}" WHERE id = ?`, [doc.k]);
+  // (وحقائق سطر الكشف يجمّدها تعديل العضو وحده: قراءة الملف نفسه على جهازٍ للمالك تكتب الحقائق نفسها)
+  if (cur && doc.t === 'bank_statement_lines' && !byMember(db, doc, true)) return;
+  // ونسخة العضو بوقائع أخرى (تصديرٌ آخر للشهر نفسه ببيانٍ أطول، أو تعديلٌ لها) تُطبَّق بوقائع السطر هنا ويرفعها جهاز المالك، ولا تُرفض
+  // فتضيع مطابقتها (المدقق الخارجي E٢-٥ · وتبقى B٢-٩: البنك والمبلغ لا يتغيّران، فمطابقته بحركة بنكٍ آخر تُفكّ)
+  if (cur && doc.t === 'bank_statement_lines') {
+    let restored = false;
+    for (const c of frozen) if (c in row && String(cur[c] ?? '') !== String(row[c] ?? '')) { row[c] = cur[c] as never; restored = true; }
+    if (restored) restoredFacts.add(doc.k);
+    return;
+  }
   if (cur) {
     if (frozen.some((c) => c in row && String(cur[c] ?? '') !== String(row[c] ?? ''))) throw no(tr('derive.frozen', { lng: 'ar' }));
+    // والإلغاء نهائيٌّ بتاريخه وعاكسه: لا يغيّرهما إلغاءٌ ثانٍ من جهازٍ آخر (A٢-٦)
+    if (doc.t === 'contract_payments' && cur.cancelled_at && row.cancelled_at
+      && (String(row.cancelled_at) !== String(cur.cancelled_at) || String(row.cancel_entry_id ?? '') !== String(cur.cancel_entry_id ?? ''))) {
+      throw no(tr('derive.frozen', { lng: 'ar' }));
+    }
     // وقيد الدفعة لا يُستبدل بغيره (فكّه عند حذف قيده من السلة يبقى)
     if (doc.t === 'contract_payments' && row.journal_entry_id && cur.journal_entry_id && row.journal_entry_id !== cur.journal_entry_id) {
       throw no(tr('derive.frozen', { lng: 'ar' }));
@@ -876,6 +1967,13 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
       // ودفعة العربون لا يلغيها عضو (المراجعة الشاملة · البند ٢٧ · المتحقق المستقل: جهاز العضو بنسخة قديمة يلغيها فيعود مبلغها
       // عالقاً في 2450) · وإلغاء المالك من جهازه الآخر يُقبل كما كتبه، فلا تفترق أجهزته، ورصيده العالق يُحمّر فحص عربون الحجوزات
       if (byMember(db, doc, false) && paidFromDeposit(db, doc.k)) throw no(tr('payment.cancelFromDeposit', { lng: 'ar' }));
+      // ودفعة «من التأمين» لا يلغيها عضوٌ وحدها: تُلغى مع تعديل التسوية وحده (R12-DEP-3 · depositRentEdit)
+      if (byMember(db, doc, false) && paidFromSettlement(db, doc.k)) {
+        const holder = db.get<{ s: string | null }>(`SELECT src_id AS s FROM journal_entries WHERE id = ?`, [cur.journal_entry_id as string])?.s ?? '';
+        const edit = depositRentEdit(db, holder, doc, (row.cancel_reason as string | null | undefined) ?? '');
+        if (edit === 'await') throw new AwaitOriginal(tr('derive.noPayment', { lng: 'ar' }));
+        if (edit === 'no') throw no(tr('payment.cancelFromSettlement', { lng: 'ar' }));
+      }
       const rev = (row.cancel_entry_id as string | null) ?? null;
       const orig = db.get<{ t: string | null; s: string | null }>(`SELECT src_type AS t, src_id AS s FROM journal_entries WHERE id = ?`, [cur.journal_entry_id as string]);
       if (!rev || !orig) throw no(tr('derive.cancelNoReversal', { lng: 'ar' }));
@@ -899,6 +1997,7 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
     // المتحقق المستقل، الجولة ٣٦ (ع١ وع٢): كانت دفعة العضو تُقبل بقيدٍ مرحّل من غير التحصيل (يدوي، أو عكس دفعةٍ ملغاة) فيُسدَّد
     // القسط بلا نقد
     if (e?.src_type === 'reservation_convert') { reservationConvertCheck(db, je, row); return; }
+    if (e?.src_type === DEPOSIT_RENT_SRC) { depositRentCheck(db, je, e.src_id, row); return; }
     if (e?.src_type !== 'rent') throw no(tr('derive.entryType', { lng: 'ar' }));
     const lines = db.all<{ account_code: string; debit_halalas: number; credit_halalas: number }>(
       `SELECT account_code, debit_halalas, credit_halalas FROM journal_lines WHERE entry_id = ?`, [je]);
@@ -911,9 +2010,12 @@ function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
   if (!pay) return; // الأب الناقص يُنتظر بالمفتاح الأجنبي
   if (doc.t === 'payment_lines') {
     const sum = Number(db.get<{ n: number }>(`SELECT COALESCE(SUM(amount_halalas), 0) AS n FROM payment_lines WHERE payment_id = ?`, [pay.id])!.n);
-    if (pay.method_label === CREDIT_METHOD || sum + (Number(row.amount_halalas) || 0) > (Number(pay.net_halalas) || 0)) throw no(tr('derive.method', { lng: 'ar' }));
+    if (pay.method_label === CREDIT_METHOD || pay.method_label === DEPOSIT_RENT_METHOD
+      || sum + (Number(row.amount_halalas) || 0) > (Number(pay.net_halalas) || 0)) throw no(tr('derive.method', { lng: 'ar' }));
     return;
   }
+  // ودفعة التأمين من تسويته على قسطها وحده: لا سطور طرق سدادٍ لها ولا تخصيص ينقلها إلى قسطٍ آخر (A1-2)
+  if (pay.method_label === DEPOSIT_RENT_METHOD) throw no(tr('derive.method', { lng: 'ar' }));
   // التخصيص: بمتبقي أقساط العقد، ومجموعه بما خصّصه قيدها (المقبوض ناقصاً الرصيد الدائن)
   const credit = pay.journal_entry_id ? Number(db.get<{ n: number }>(
     `SELECT COALESCE(SUM(credit_halalas - debit_halalas), 0) AS n FROM journal_lines WHERE entry_id = ? AND account_code = '2410'`, [pay.journal_entry_id])!.n) : 0;
@@ -969,6 +2071,51 @@ const ownerUid = (db: DB): string | null => (getSyncState(db, 'membership') ? ge
  * (acl.ts: annotate) وكتابته كاملة تمحوه · و«by» كاتب الصف الأول: يدل على العضو في إنشاء الصف وحده، ويبقى على تعديله بعده
  * فلا يدل على من عدّل (من ألغى دفعةً أنشأها غيره) · created: المستند ينشئ الصف
  */
+/**
+ * العضو: بنكٌ أو حسابٌ في الطابور لم يصل السحابة بعد (لا وقت صفٍّ له) يُرفع بافتتاحيٍّ صفر كما تقضي قاعدتها (openingKept)، ويُصفَّر هنا معه
+ * فيتفق الجهازان · نموذج ما قبل e8d6c19 كان يجيز للعضو افتتاحياً (المدقق الخارجي K٥، ثم O٥: القاعدة صارت ترفضه فكانت حركاته تعلق)
+ */
+export function prepareMemberUpload(db: DB): void {
+  // (ولا كاتب له: صفوف ما قبل الهجرة ٤٣ بلا وقتٍ ولها كاتبها من الهجرة ٤٢ أو من الوارد · المدقق الخارجي Q٤)
+  for (const [tbl, key] of [['banks', 'id'], ['accounts', 'code']] as const) {
+    db.run(`UPDATE ${tbl} SET opening_halalas = 0 WHERE opening_halalas != 0
+      AND ${key} IN (SELECT pk FROM sync_outbox WHERE tbl = '${tbl}') AND ${key} NOT IN (SELECT pk FROM sync_rowtime WHERE tbl = '${tbl}')
+      AND ${key} NOT IN (SELECT pk FROM row_by WHERE tbl = '${tbl}')`);
+  }
+}
+
+/** الجدولان اللذان افتتاحيّهما للمالك وحده (openingKept) */
+const OPENING_TABLES = new Set(['banks', 'accounts']);
+const keyCol = (t: string) => (t === 'accounts' ? 'code' : 'id');
+/**
+ * آخر افتتاحيٍّ عرفه هذا الجهاز في السحابة للصف (طبّقه أو رفعه) · فيُعرف هل غيّر المالك الافتتاحي هنا منذ ذلك (المدقق الخارجي S٢: كل تعديلٍ
+ * معلَّق على الصف كان يُعدّ تعديلاً للافتتاحي، فيمحو افتتاحيّه القديمُ أحدثَ وضعه المالك من جهازه الآخر)
+ */
+const SEEN_OPENING = 'opening_seen:';
+function noteSeenOpening(db: DB, t: string, k: string, o: unknown): void {
+  setSyncState(db, SEEN_OPENING + t + ':' + k, String(Number(o) || 0));
+}
+/** افتتاحيّ هذا الجهاز غيّره المالك هنا منذ آخر ما عرفه من السحابة (وبلا معرفةٍ سابقة: له تعديلٌ معلَّق) */
+function openingChangedHere(db: DB, t: string, k: string, hasPending: boolean): boolean {
+  const seen = getSyncState(db, SEEN_OPENING + t + ':' + k);
+  if (seen === null) return hasPending;
+  const mine = db.get<{ o: number }>(`SELECT opening_halalas AS o FROM "${t}" WHERE ${keyCol(t)} = ?`, [k]);
+  return !!mine && (Number(mine.o) || 0) !== Number(seen);
+}
+/** جهاز العضو: الافتتاحي من الوارد (حقل المالك)، فتحمله كل نسخةٍ يعيدها كما في السحابة (Q٢ وS٤) */
+function adoptCloudOpening(db: DB, doc: RemoteDoc): void {
+  if (!getSyncState(db, 'membership') || !OPENING_TABLES.has(doc.t) || !doc.d || doc.del) return;
+  db.run(`UPDATE "${doc.t}" SET opening_halalas = ? WHERE ${keyCol(doc.t)} = ?`, [Number(doc.d.opening_halalas) || 0, doc.k]);
+  noteSeenOpening(db, doc.t, doc.k, doc.d.opening_halalas);
+}
+
+/** حسابٌ عليه سطر قيدٍ هنا أو في قيدٍ وارد لم يُطبَّق بعد (الهاتف البديل يسحب الدليل والقيود في دورةٍ واحدة) */
+function accountUsed(db: DB, code: string): boolean {
+  return !!db.get(`SELECT 1 FROM journal_lines WHERE account_code = ? LIMIT 1`, [code])
+    || !!db.get(`SELECT 1 FROM sync_inbox i, json_each(i.payload, '$.lines') l
+         WHERE i.tbl = 'journal_entries' AND i.del = 0 AND json_extract(l.value, '$.account_code') = ? LIMIT 1`, [code]);
+}
+
 function byMember(db: DB, doc: RemoteDoc, created: boolean): boolean {
   if (typeof doc.op === 'string' && doc.op !== '') return true;
   return created && !!doc.by && doc.by !== ownerUid(db);
@@ -986,7 +2133,9 @@ function applyLineDims(db: DB, entryId: string, lines: RowData[]): number {
     const cur = db.get<Record<string, string | null>>(
       `SELECT ${DIM_COLS.join(', ')} FROM journal_lines WHERE id = ? AND entry_id = ?`, [l.id as string, entryId]);
     if (!cur) continue;
-    const next = DIM_COLS.map((c) => (l[c] as string | null | undefined) ?? null);
+    // تُملأ الفارغة وحدها، والقائمة لا تُستبدل (الترحيلة ٥١ · القاعدة ٩٩: القرارات المعلّقة القسم ٥ البند ٣): نسخةٌ تحمل بُعداً
+    // آخر لسطرٍ مرحّل لا تغيّره ولا تُرفض به
+    const next = DIM_COLS.map((c) => cur[c] ?? (l[c] as string | null | undefined) ?? null);
     if (DIM_COLS.every((c, i) => (cur[c] ?? null) === next[i])) continue;
     db.run(`UPDATE journal_lines SET ${DIM_COLS.map((c) => c + ' = ?').join(', ')} WHERE id = ?`, [...next, l.id as string]);
     n++;
@@ -1023,6 +2172,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   }
   if (posted) db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [doc.k]);
   if (posted) memberReversalCheck(db, doc);
+  if (posted) memberBankOutCheck(db, doc);
   if (remoteRev) linkReversal(db, doc.k, remoteRev, doc);
   return 'applied';
 }
@@ -1190,6 +2340,275 @@ function childTime(db: DB, table: string, key: string, at: string): string {
   return seen && isoCmp(seen, at) < 0 ? seen : at;
 }
 
+/*
+ * الأب المقفل أمام كتابة العضو (المراجعة الشاملة 2026-11-13 · B-1): «الفاتورة الصادرة مقفلة: لا تُعدَّل ولا تعود مسودة ولا تُحذف» (قرار
+ * المالك 2026-10-07 على #30 · DESIGN §١٣.١٣)، وجدول أقساط العقد المؤكَّد «يُولَّد آلياً عند الإنشاء ولا يُعاد توليده» · والقفل كان في
+ * الشاشة وحدها (saveInvoice وconfirmContract)، فسطرٌ يكتبه عضوٌ في السحابة لفاتورةٍ صادرة، أو قسطٌ لعقدٍ مؤكَّد لغيره، كان يطبّقه جهاز
+ * المالك كما هو فيتغيّر الإقرار والفاتورة المطبوعة وجدول المستأجر بعد إصدارها · وما يكتبه التطبيق نفسه يصل على دفعات (دفعة العضو ثمانية
+ * صفوف: MEMBER_PUSH_BATCH) بعد رأسه في ترتيب الرفع، فالأب الصادر في الطريق لم تكتمل أبناؤه بعد، وما بعد اكتمالها مزوَّر
+ */
+const DRAFT_INVOICE = 'مسودة'; // i18n-exempt: حالة الفاتورة المخزّنة
+const KIND_CREDIT_NOTE = 'credit_note';
+/** حالات الفاتورة الصادرة التي يكتبها التطبيق بعد إصدارها: التأخر والتحصيل وعكسه (setInvoiceStatus وpayInvoice) */
+const ISSUED_INVOICE_STATUSES = new Set(['مستحقة', 'متأخرة', PAID_INVOICE]); // i18n-exempt: حالات الفاتورة المخزّنة
+/**
+ * ما يغيّره التطبيق في الفاتورة الصادرة (المراجعة الشاملة 2026-11-13 · B-1 ب · المدقق المستقل R11-B1-2: كانت قائمة منعٍ فاتها رابط قيد
+ * الإصدار، فمحاه «كامل» فرحّل تعليمُها «متأخرة» عند المالك قيد إصدارٍ ثانياً) · قائمة سماح: الحالة (ISSUED_INVOICE_STATUSES)، وحقول
+ * التحصيل، وعقارها بنقل وحدتها (unitMove.ts) · وما سواها لا يتغيّر من عضو، إلا قيد الإصدار في حالتيه (namedEntryIssue) والإخراج من السلة
+ */
+const ISSUED_INVOICE_OPEN = new Set(['status', 'paid_date', 'payment_method', 'payment_bank_id', 'payment_journal_entry_id', 'property_id']);
+/** حقول سطر الفاتورة كما يكتبها saveInvoice · تغيّر أيٍّ منها تعديلٌ للسطر */
+const INVOICE_LINE_COLS = ['invoice_id', 'descr', 'qty', 'price_halalas', 'tax_pct', 'sort', 'tax_code'];
+/** حكم الأب المقفل: ينتظر ما في الوارد (قيدٌ أو تأكيدٌ أو جدولٌ في الطريق) ولا يُرفض بعد */
+const LOCK_AWAIT = '\u0000await';
+
+/** كاتب الصف الأول إن كان عضواً (row_by) · وما كتبه المالك هنا أو بلا كاتبٍ معروف (ما قبل الهجرة ٤٢) null */
+function memberWriterOf(db: DB, table: string, key: string): string | null {
+  const w = db.get<{ uid: string }>(`SELECT uid FROM row_by WHERE tbl = ? AND pk = ?`, [table, key])?.uid ?? '';
+  return w && w !== ownerUid(db) ? w : null;
+}
+
+/**
+ * الأب المقفل صار صادراً أو مؤكَّداً هنا بمستند عضو (المراجعة الشاملة 2026-11-13 · المدقق المستقل R11-B1-4 وR11-B1-5) · فأبناؤه من
+ * عضوٍ قد تكون في الطريق بعده: الفاتورة التي كتبها المالك وأصدرها «كامل» الفواتير (فحص الاكتمال لا القفل التام)، ومسودة عضوٍ أكّدها
+ * عضوٌ آخر («كامل» العقود يكتب جدولها لا كاتبها) · ويُعلَّم ما لا يُعرف بكاتبه وحده: فاتورة المالك، وعقد العضو الذي كان هنا مسودة
+ */
+const VIA_MEMBER = 'locked_via_member:';
+const viaMember = (db: DB, t: string, k: string): boolean => getSyncState(db, VIA_MEMBER + t + ':' + k) != null;
+function noteViaMember(db: DB, doc: RemoteDoc, row: RowData): void {
+  if ((doc.t !== 'invoices' && doc.t !== 'contracts') || getSyncState(db, 'membership') || !byMember(db, doc, false)) return;
+  if (row.status == null || row.status === DRAFT_INVOICE) return;
+  const cur = db.get<{ s: string }>(`SELECT status AS s FROM "${doc.t}" WHERE id = ?`, [doc.k]);
+  const member = memberWriterOf(db, doc.t, doc.k) != null;
+  // (حالة المسودة في الجدولين «مسودة»: DRAFT_INVOICE وDRAFT_CONTRACT)
+  const mark = doc.t === 'invoices' ? !member && (!cur || cur.s === DRAFT_INVOICE) : member && cur?.s === DRAFT_CONTRACT;
+  if (mark) setSyncState(db, VIA_MEMBER + doc.t + ':' + doc.k, '1');
+}
+
+/**
+ * فاتورةٌ صادرة هنا مقفلةٌ أمام سطور العضو (المراجعة الشاملة 2026-11-13 · B-1): ما صدر هنا لا بمستند عضو (كتبها المالك وأصدرها هو)
+ * لا سطور له في الطريق، فهي مقفلة كيفما كانت سطورها (المدقق المستقل R11-B1-5: فاتورةٌ قديمة بلا سطور كان «كامل» يضيف لها سطوراً
+ * يُحسب بها البند ١) · وما أصدره عضو (فاتورته، أو فاتورة المالك أصدرها «كامل» · noteViaMember) مقفلٌ متى اكتملت سطوره: سطوره هنا تعيد
+ * رأسه كما صدر (صافيه، وضريبته بنسبة كل سطر كما يحسبها invoiceTotals، والإشعار الدائن بصافيه: ضريبته من باقي فاتورته لا من سطوره ·
+ * creditNoteAmounts) · وقبل اكتمالها يُقبل ما يكتبه التطبيق مع إصدارها: فاتورةٌ جديدة صادرة، ومسودةٌ عُدّلت وصدرت في حفظٍ واحد فحُذفت
+ * سطورها القديمة، والإشعار الدائن
+ */
+function issuedInvoiceSealed(db: DB, id: string): boolean {
+  const v = db.get<Record<string, unknown>>(`SELECT * FROM invoices WHERE id = ?`, [id]);
+  if (!v || v.status === DRAFT_INVOICE) return false;
+  if (!memberIssued(db, id)) return true;
+  const lines = db.all<InvLine>(`SELECT qty, price_halalas, tax_pct FROM invoice_lines WHERE invoice_id = ?`, [id]);
+  return lines.length > 0 && linesMatchHeader(v, lines);
+}
+
+type InvLine = { qty: unknown; price_halalas: unknown; tax_pct: unknown };
+/** أصدرها عضو: فاتورته، أو فاتورة المالك أصدرها «كامل» (noteViaMember) · فلسطورها ما في الطريق */
+const memberIssued = (db: DB, id: string): boolean => !!memberWriterOf(db, 'invoices', id) || viaMember(db, 'invoices', id);
+/** السطور تعيد رأس الفاتورة كما صدر: صافيه، وضريبته بنسبة كل سطر كما يحسبها invoiceTotals (والإشعار الدائن بصافيه) */
+function linesMatchHeader(v: Record<string, unknown>, lines: InvLine[]): boolean {
+  let net = 0, tax = 0;
+  for (const l of lines) {
+    const n = mulQty(Number(l.qty), Number(l.price_halalas));
+    net += n;
+    tax += pctOf(n, Number(l.tax_pct));
+  }
+  return net === Number(v.subtotal_halalas) && (v.kind === KIND_CREDIT_NOTE || tax === Number(v.tax_halalas));
+}
+
+/**
+ * وقت إصدار فاتورة العضو كما عرفه جهاز المالك: وقت الخادم لمستند رأسها الذي وصلها صادرةً وهي هنا غائبةٌ أو مسودة (المراجعة الشاملة
+ * 2026-11-13 · R12-SYN-2) · لا يتقدّم بما يُكتب في رأسها بعد الإصدار (التأخر والتحصيل)
+ */
+const INVOICE_ISSUED = 'invoice_issued:';
+function noteInvoiceIssued(db: DB, doc: RemoteDoc, row: RowData): void {
+  if (doc.t !== 'invoices' || getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
+  if (row.status == null || row.status === DRAFT_INVOICE) return;
+  const cur = db.get<{ s: string }>(`SELECT status AS s FROM invoices WHERE id = ?`, [doc.k]);
+  if (!cur || cur.s === DRAFT_INVOICE) setSyncState(db, INVOICE_ISSUED + doc.k, serverAt(doc));
+}
+/** وقت المستند بساعة الخادم (ts تفرضه القاعدة) · لا «u» الذي يكتبه العضو فيقدّمه أو يؤخّره */
+const serverAt = (doc: RemoteDoc): string => isoNorm(doc.ts ?? doc.u);
+
+/**
+ * سطرٌ يُنشأ أو يُعدَّل أو يُحذف لفاتورةٍ صادرة (المراجعة الشاملة 2026-11-13 · B-1 · R12-SYN-2) · سببُ الرفض أو '' أو LOCK_AWAIT:
+ * قبل اكتمال سطورها يُقبل (ما يكتبه التطبيق مع إصدارها في الطريق) · وبعد اكتمالها كان يُرفض كل سطر، فسطرٌ بسعرٍ صفر (بندٌ مجاني أو سطرٌ
+ * تُرك فارغاً) أو سطرا إضافةٍ وخصمٍ بالمبلغ نفسه، كُتبت مع الإصدار ووصلت بعد ما اكتمل به المجموع، كانت تُرفض وتُحذف من السحابة ومن جهاز
+ * العضو · فما كُتب في ساعة إصدار فاتورة العضو (LATE_LINK_MS بوقت الخادم، كأقساط العقد) يُقبل إن بقيت السطور بعده، مع ما في الوارد من
+ * سطورها، تعيد رأسها كما صدر، وإلا انتظر بقيتها حتى تمضي الساعة · وما بعد الساعة، أو ما يغيّر مبالغها، مرفوض كما كان · ويبقى أن سطراً
+ * لا يغيّر المبالغ يُكتب في ساعة الإصدار يُقبل: لا عدد سطورٍ ولا بصمةَ لها في رأسها بلا تغيير المخطط
+ */
+function issuedLineIssue(db: DB, invoiceId: string, doc: RemoteDoc): string {
+  if (!issuedInvoiceSealed(db, invoiceId)) return '';
+  const locked = tr('sync.issuedInvoiceLocked', { lng: 'ar' });
+  const at = memberIssued(db, invoiceId) ? getSyncState(db, INVOICE_ISSUED + invoiceId) : null;
+  const end = at ? Date.parse(at) + LATE_LINK_MS : NaN;
+  if (!Number.isFinite(end) || Date.parse(serverAt(doc)) > end) return locked;
+  // السطور بعد هذا المستند وما في الوارد من سطورها (غيره): ما هنا، ثم نسخ الوارد، ثم هو
+  const lines = new Map<string, InvLine>();
+  for (const l of db.all<InvLine & { id: string }>(`SELECT id, qty, price_halalas, tax_pct FROM invoice_lines WHERE invoice_id = ?`, [invoiceId])) lines.set(l.id, l);
+  const put = (d: RemoteDoc) => {
+    if (!d.del && d.d && String(d.d.invoice_id ?? '') === invoiceId) lines.set(d.k, d.d as InvLine);
+    else lines.delete(d.k);
+  };
+  for (const r of db.all<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'invoice_lines' AND doc != ?
+      AND (json_extract(payload, '$.d.invoice_id') = ? OR (del = 1 AND pk IN (SELECT id FROM invoice_lines WHERE invoice_id = ?)))`,
+    [doc.id, invoiceId, invoiceId])) {
+    try { put(JSON.parse(r.p) as RemoteDoc); } catch { /* مستندٌ تالف لا يشهد */ }
+  }
+  put(doc);
+  const v = db.get<Record<string, unknown>>(`SELECT * FROM invoices WHERE id = ?`, [invoiceId])!;
+  if (linesMatchHeader(v, [...lines.values()])) return '';
+  return Date.parse(toServerClock(db, nowIso())) <= end ? LOCK_AWAIT : locked;
+}
+
+/** قيدٌ مرحّلٌ حيٌّ هنا (لم يُعكس ولم يُحذف) */
+const liveEntry = (db: DB, id: unknown): boolean => id != null && id !== ''
+  && !!db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND status = ? AND reversed_by IS NULL AND deleted_at IS NULL`, [String(id), POSTED_ENTRY]);
+/** قيدٌ ينتظر في الوارد */
+const entryInbox = (db: DB, id: string): boolean =>
+  !!db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [id]);
+/**
+ * القيد الذي يسمّيه رأس المصدر الوارد بدل قيده هنا (قيد إصدار الفاتورة · قيد فاتورة الشراء): قيدُ المصدر نفسه مرحّلٌ حيٌّ هنا (وقد طابق
+ * رأسه الوارد في إعادة الاشتقاق: memberSourceCheck)، وقيده القديم ليس حيّاً هنا · وما في الوارد منهما ينتظر · سببُ الرفض أو '' أو LOCK_AWAIT
+ */
+function namedEntryIssue(db: DB, src: string, srcId: string, oldId: unknown, newId: unknown, why: string): string {
+  const next = newId == null ? '' : String(newId);
+  if (!next || next === String(oldId ?? '')) return why;
+  if (!db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND status = ? AND src_type = ? AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL`,
+    [next, POSTED_ENTRY, src, srcId])) return entryInbox(db, next) ? LOCK_AWAIT : why;
+  if (!liveEntry(db, oldId)) return '';
+  // وقيده القديم في طريقه إلى العكس: عاكسه أو نسخته المعكوسة في الوارد
+  return reversalPending(db, String(oldId), src, srcId)
+    || db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0 AND json_extract(payload, '$.d.reversed_by') IS NOT NULL`, [String(oldId)])
+    ? LOCK_AWAIT : why;
+}
+
+/**
+ * حارس الأب المقفل على جهاز المالك (المراجعة الشاملة 2026-11-13 · B-1) · سببُ الرفض أو '' أو LOCK_AWAIT · والمرفوض تُعاد نسخة المالك منه
+ * إلى الطابور (وما ليس عنده شاهدُ حذف: buildDoc) فتعود السحابة وكل جهازٍ إليها · والقواعد ترفض منه ما يسعه حدّ الألف تعبير (rulesGen.ts:
+ * سطر «إدخال» لفاتورةٍ غير مسودة، وما صدرت به الفاتورة من «كامل» ورابط قيد إصدارها)، وما لا يسعه هنا وحده: سطر «كامل» وتعديله وحذفه
+ * (حذف السطور القديمة لمسودةٍ صدرت في حفظٍ واحد يصل بعد رأسها الصادر)، وأعمدة الصادرة التي أُضيفت بعد المخطط الأول، وقسط العقد كله
+ * (إنشاء العقد أثقل كتابات العضو: اختبار الميزانية)، وفاتورة الشراء المرحّلة
+ */
+const LOCKED_PARENT_TABLES = new Set(['invoices', 'invoice_lines', 'contract_installments', 'purchases']);
+function lockedParentIssue(db: DB, doc: RemoteDoc): string {
+  // الجدول أولاً: ما سواها لا يدفع قراءةً لكل وارد (فحص المالك خطيٌّ في حجم الوارد · tests/d4.memberScale.test.ts)
+  if (!LOCKED_PARENT_TABLES.has(doc.t) || getSyncState(db, 'membership')) return '';
+  const d = (doc.d ?? {}) as Record<string, unknown>;
+  // ١) رأس الفاتورة الصادرة: لا تعود مسودة ولا تُحذف، ولا يتغيّر منها إلا ما يكتبه التطبيق (ISSUED_INVOICE_OPEN)
+  if (doc.t === 'invoices' && (doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, false))) {
+    const cur = db.get<Record<string, unknown>>(`SELECT * FROM invoices WHERE id = ?`, [doc.k]);
+    if (!cur || cur.status === DRAFT_INVOICE) return '';
+    const locked = tr('sync.issuedInvoiceLocked', { lng: 'ar' });
+    if (doc.del || ('status' in d && !ISSUED_INVOICE_STATUSES.has(String(d.status)))) return locked;
+    const trashed = cur.deleted_at != null;
+    // الحقل الغائب عن المستند لا يمسّه التطبيق (upsertRow)، فيُقارن الحاضر وحده (مستندٌ من إصدارٍ أقدم بلا عمودٍ أُضيف بعده)
+    for (const c of Object.keys(cur)) {
+      if (!(c in d) || String(cur[c] ?? '') === String(d[c] ?? '') || ISSUED_INVOICE_OPEN.has(c)) continue;
+      // والمحذوفة قبل القفل تخرج من السلة (restoreInvoice) ولا تدخلها صادرةٌ حيّة
+      if (c === 'deleted_at' && trashed && d.deleted_at == null) continue;
+      // وقيد الإصدار يتغيّر في حالتين يكتبهما التطبيق: صادرةٌ بلا قيدٍ حيّ (setInvoiceStatus لصادرةٍ قديمة بلا قيد)، والإخراج من السلة
+      // بقيدٍ جديد · وقيدها الجديد قيدُ إصدارها هنا (طابق رأسها)
+      if (c === 'journal_entry_id') {
+        const why = namedEntryIssue(db, 'invoice', doc.k, cur.journal_entry_id, d.journal_entry_id, locked);
+        if (why) return why;
+        continue;
+      }
+      return locked;
+    }
+    return '';
+  }
+  // ٢) سطر الفاتورة: إنشاؤه أو تعديله أو حذفه لفاتورةٍ صادرة مقفلة هنا (قبلها وبعدها: invoice_id هنا وفي المستند)
+  if (doc.t === 'invoice_lines') {
+    const cur = db.get<Record<string, unknown>>(`SELECT ${INVOICE_LINE_COLS.join(', ')} FROM invoice_lines WHERE id = ?`, [doc.k]);
+    if (!(doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, !cur))) return '';
+    // ونسخةٌ مطابقة لما هنا ليست تعديلاً (إعادة رفعٍ بلا تغيير)
+    const changed = doc.del ? !!cur : !cur || INVOICE_LINE_COLS.some((c) => String(cur[c] ?? '') !== String(d[c] ?? ''));
+    if (!changed) return '';
+    const parents = new Set([cur?.invoice_id, doc.del ? null : d.invoice_id].filter((x) => x != null && x !== '').map(String));
+    const whys = [...parents].map((p) => issuedLineIssue(db, p, doc));
+    return whys.find((w) => w && w !== LOCK_AWAIT) ?? whys.find((w) => w === LOCK_AWAIT) ?? '';
+  }
+  // ٣) قسطٌ جديد من عضو: جدول العقد يكتبه من أكّده مع تأكيده (confirmContract وrenewContract)، والمسودة بلا أقساط
+  if (doc.t === 'contract_installments' && !doc.del && doc.d && !db.get(`SELECT 1 FROM contract_installments WHERE id = ?`, [doc.k])
+    && byMember(db, doc, true)) {
+    return installmentIssue(db, doc, String(d.contract_id ?? ''));
+  }
+  // ٤) فاتورة الشراء المرحّلة: صافيها وضريبتها وإجماليها ووضعها الضريبي وتاريخها لا تتغيّر من عضوٍ إلا بقيدها الجديد وعكس القديم
+  // (المدقق المستقل R11-B1-3: كان «كامل» المشتريات يضاعف البند ٧ من رأسها والدفتر كما هو)
+  if (doc.t === 'purchases' && !doc.del && doc.d && byMember(db, doc, false)) {
+    const cur = db.get<Record<string, unknown>>(`SELECT * FROM purchases WHERE id = ?`, [doc.k]);
+    if (!cur || !POSTED_PURCHASE_COLS.some((c) => c in d && c in cur && String(cur[c] ?? '') !== String(d[c] ?? ''))) return '';
+    return namedEntryIssue(db, 'purchase', doc.k, cur.journal_entry_id, d.journal_entry_id, tr('sync.postedPurchaseLocked', { lng: 'ar' }));
+  }
+  return '';
+}
+
+/**
+ * قسطٌ جديد من عضو (المراجعة الشاملة 2026-11-13 · B-1 ب · المدقق المستقل R11-B1-1 وR11-B1-4) · سببُ الرفض أو '' أو LOCK_AWAIT:
+ *  - المسودة: لا أقساط لها في التطبيق (يولّدها التأكيد في معاملته)، فقسطٌ لها ينتظر تأكيدها الوارد، ولا يُقبل إلا من كاتبها (قرار المالك
+ *    2026-10-04: «صاحب إدخال يعدّل مسودته هو فقط») · كان يُقبل من أي عضو، فيصير قسطه المزروع جدول العقد كله حين يؤكّده المالك
+ *    (confirmContract لا يولّد جدولاً لعقدٍ له أقساط).
+ *  - عقدٌ كاتبه عضو (row_by): جدوله لكاتبه، فلا يُقبل قسطُ غيره ما دام لكاتبه قسطٌ هنا أو في الوارد · وغيرُه يكتبه حين أكّد مسودته
+ *    («كامل» العقود)، فيُقبل من أول كاتبٍ لأقساطه إن كان العقد هنا مسودةً حين وصل تأكيده (noteViaMember) · وإلا (عقدٌ وصل مؤكَّداً)
+ *    ينتظر أقساط كاتبه ساعةً بوقت الخادم من آخر نسخةٍ لرأسه (LATE_LINK_MS: ما كُتب معه يُرفع في دورته ولو على دفعات)، ثم أول كاتب ·
+ *    كان «أول كاتب» وحده، فقسطٌ يسبق به عضوٌ أقساطَ صاحب العقد يملك جدوله وتُرفض أقساط صاحبه كلها.
+ *  - عقدٌ بلا كاتبٍ عضو (مسودة المالك أكّدها «كامل» العقود، أو ما قبل الهجرة ٤٢): أول كاتبٍ لأقساطه، أو أقساطه هنا كلها من كاتب هذا
+ *    القسط.
+ * ويبقى في «أول كاتب» ما لا يعرفه جهاز المالك: عضوٌ يسبق مؤكِّد المسودة بقسطٍ وهو في الطريق، أو يسبق صاحب العقد بعد أن انقطع رفعه
+ * أكثر من ساعة · وسدّه حقلُ «آخر كاتب» تفرضه القاعدة (الكاتب «by» لا يتغيّر بعد الإنشاء)، أو صلاحية كل عضوٍ على جهاز المالك
+ */
+function installmentIssue(db: DB, doc: RemoteDoc, cid: string): string {
+  const c = db.get<{ s: string }>(`SELECT status AS s FROM contracts WHERE id = ?`, [cid]);
+  // العقد لم يصل بعد: ينتظره القسط بمفتاحه الأجنبي
+  if (!c) return '';
+  const locked = tr('sync.installmentLocked', { lng: 'ar' });
+  const by = String(doc.by ?? '');
+  const writer = memberWriterOf(db, 'contracts', cid);
+  if (!by) return locked;
+  if (c.s === DRAFT_CONTRACT) {
+    // تأكيدها في الوارد لم يُطبَّق بعد (ينتظر أباً): ينتظره قسطه
+    if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'contracts' AND pk = ? AND del = 0 AND json_extract(payload, '$.d.status') != ?`,
+      [cid, DRAFT_CONTRACT])) return LOCK_AWAIT;
+    return writer && by === writer ? '' : locked;
+  }
+  // كاتب كل قسطٍ هنا: من وصل بالمزامنة بكاتبه (stageInbox)، وما أنشأه المالك هنا بلا كاتب
+  const writers = db.all<{ w: string }>(`SELECT COALESCE(b.uid, '') AS w FROM contract_installments i
+    LEFT JOIN row_by b ON b.tbl = 'contract_installments' AND b.pk = i.id WHERE i.contract_id = ?`, [cid]).map((x) => x.w);
+  const firstWriter = writers.every((w) => w === by) ? '' : locked;
+  if (!writer || by === writer) return firstWriter;
+  if (writers.includes(writer) || db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'contract_installments' AND del = 0
+    AND json_extract(payload, '$.d.contract_id') = ? AND json_extract(payload, '$.by') = ?`, [cid, writer])) return locked;
+  if (viaMember(db, 'contracts', cid)) return firstWriter;
+  const at = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = 'contracts' AND pk = ?`, [cid])?.u;
+  return at && Date.parse(toServerClock(db, nowIso())) - Date.parse(at) <= LATE_LINK_MS ? LOCK_AWAIT : firstWriter;
+}
+
+/**
+ * إعدادات المالك وحده في صفّ المنشأة (المراجعة الشاملة 2026-11-13 · B-3): تسجيل ضريبة القيمة المضافة في «المالية» للمالك وحده
+ * (app/settings.tsx · admin)، لكنه عمودٌ في جدولٍ يملكه قسم «المنشأة والقوالب»، فعضوٌ له «كامل» فيه كان يطفئه من السحابة فيسقط البند ١
+ * من الإقرار على كل جهاز · ولا يحذف العضو صفّ المنشأة · والقاعدة ترفضهما (rulesGen.ts)، وجهاز المالك يرفضهما ويعيد نسخته · والأعمدة
+ * في OWNER_ONLY_COLS (opWrites.ts) · سببُ الرفض أو ''
+ */
+function ownerColsIssue(db: DB, doc: RemoteDoc): string {
+  const cols = OWNER_ONLY_COLS[doc.t];
+  if (!cols || getSyncState(db, 'membership')) return '';
+  if (!(doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, false))) return '';
+  if (doc.del) return tr('sync.companyOwnerOnly', { lng: 'ar' });
+  const cur = readRow(db, doc.t, doc.k);
+  const d = (doc.d ?? {}) as Record<string, unknown>;
+  return cur && cols.some((c) => c in d && String(d[c] ?? '') !== String(cur[c] ?? ''))
+    ? tr('sync.companyOwnerOnly', { lng: 'ar' }) : '';
+}
+/** جهاز العضو: إعداد المالك في صفّه من الوارد ولو غلب تعديله، فلا يرفع قيمةً قديمة ترفضها القاعدة (B-3 · كالافتتاحي adoptCloudOpening) */
+function adoptOwnerCols(db: DB, doc: RemoteDoc): void {
+  const cols = OWNER_ONLY_COLS[doc.t];
+  if (!cols || !getSyncState(db, 'membership') || !doc.d || doc.del) return;
+  for (const c of cols) {
+    if (c in doc.d) db.run(`UPDATE "${doc.t}" SET "${c}" = ? WHERE ${pkWhere(doc.t)}`, [doc.d[c] as SqlValue, ...pkParams(doc.t, doc.k)]);
+  }
+}
+
 type ApplyOutcome = 'applied' | 'skipped' | 'conflict-local' | 'conflict-remote' | 'retry' | 'rejected';
 
 function reject(db: DB, doc: RemoteDoc, reason: string): void {
@@ -1199,7 +2618,63 @@ function reject(db: DB, doc: RemoteDoc, reason: string): void {
   db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
     [doc.id, doc.t, doc.k, reason, payload, nowIso()]);
   // سبب الرفض كاملاً في sync_rejects على الجهاز، وفي سجل العمليات المزامَن محجوباً كنص العطل (المراجعة الشاملة · البند ١٧ ونظيره)
-  try { logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${redactForReport(reason)}`.slice(0, 300)); } catch { /* السجل لا يعطّل */ }
+  // والسجل لا يعطّل إلا إن ألغت SQLite المعاملة عنده (قرصٌ ممتلئ): كان يُبتلع فيذهب سطر الرفض مع الإلغاء ويُحذف المستند من الصندوق
+  // خارج أي معاملة فيضيع بلا أثر · فيُكتب في معاملةٍ متداخلة يكشف مديرها الإلغاء، ويُعاد رمي عطل القاعدة (مراجعة إصلاح R12-SYN-1)
+  try {
+    db.transaction(() => logAudit(db, 'المزامنة', 'update', 'رفض وارد', `${doc.t} · ${doc.k} · ${redactForReport(reason)}`.slice(0, 300)));
+  } catch (e) { if (isDbFault(e)) throw e; /* السجل لا يعطّل */ }
+}
+
+/** بنود محضر الاستلام والتسليم (HANDOVER_FORM_COLS في opWrites.ts) · وما سواها (السلة ونقل الوحدة) يمضي بالحسم المعتاد هنا، والقاعدة لا تجيز للعضو السلة في المقفل */
+const handoverForm = (row: Record<string, unknown>): string => stable(HANDOVER_FORM_COLS.map((c) => {
+  const v = row[c];
+  if (c === 'sections_json' && typeof v === 'string') { try { return JSON.parse(v) as unknown; } catch { return v; } }
+  return v ?? '';
+}));
+
+/**
+ * أول ما عرف هذا الجهاز نسخته المقفلة من المحضر في السحابة (رفعها أو طبّقها) بساعة الخادم، وهل رفعها هو فأقفله هنا · لا يتقدّم بما
+ * يمضي على المقفَل بعده (نقل الوحدة والسلة وإعادة الرفع للرؤية) فيُرتَّب به قفلان مختلفان (المراجعة الشاملة 2026-11-13 · E-1/R11-3:
+ * وقت الصف ووقت الطابور كانا يتقدّمان بنقل الوحدة فيغلب الإقفالُ الثاني الأول) · ويبقى حتى يغلب قفلٌ آخر فيُستبدل
+ */
+const LOCK_SEEN = 'handover_lock:';
+function lockSeen(db: DB, k: string): { at: string; own: boolean } | null {
+  try {
+    const o = JSON.parse(getSyncState(db, LOCK_SEEN + k) ?? 'null') as { at?: unknown; own?: unknown } | null;
+    return o && typeof o.at === 'string' ? { at: o.at, own: o.own === true } : null;
+  } catch { return null; }
+}
+function noteLockSeen(db: DB, k: string, at: string, own: boolean, replace: boolean): void {
+  if (!replace && lockSeen(db, k)) return;
+  setSyncState(db, LOCK_SEEN + k, JSON.stringify({ at: isoNorm(at), own }));
+}
+
+/**
+ * المحضر المُقفَل نهائي والقفل باتجاهٍ واحد (المراجعة الشاملة 2026-11-13 · E-1 · قرار المالك س٢٩): حسم الصف كله بالأحدث كان يجعل
+ * تعديلاً متأخراً من نسخةٍ غير مقفلة (جهازٌ بلا اتصال) يفتح القفل ويغيّر البنود على الأجهزة كلها · فالمقفلة تغلب غير المقفلة أياً كان
+ * وقتها · وبين مقفلتين مختلفتين يغلب ما بلغ السحابة أولاً: قفلٌ هنا لم يُرفع بعد تعديلٌ متأخر لمحضرٍ أُقفل هناك، وقفلان رُفعا (سباق
+ * الرفع) يُرتَّبان بأول ما عرفه كل جهاز (lockSeen) لا بوقت الصف · وقبل القفل الحسم المعتاد
+ * act 'keep': يبقى ما هنا · 'take': يغلب الوارد ولو كان أقدم أو لهذا الجهاز تعديلٌ معلَّق · null: الحسم المعتاد
+ * late: البنود مختلفة فالساقط تعديلٌ متأخر يُسجَّل مرفوضاً · وغير المقفلة ببنود المقفلة نفسها نسخةُ ما قبل القفل (نافذة أمان السحب
+ * تعيدها) لا تعديل (E-1/R11-2) · at: وقت ما هنا يُعاد به إلى السحابة إن بقي
+ */
+function handoverLock(db: DB, doc: RemoteDoc, pending: OutRow | undefined, deviceId: string, joining: boolean): { act: 'keep' | 'take'; late: boolean; at?: string } | null {
+  if (doc.t !== 'handovers' || doc.del || !doc.d) return null;
+  const here = readRow(db, doc.t, doc.k);
+  if (!here) return null;
+  const mineLocked = Number(here.locked) === 1;
+  const theirsLocked = Number(doc.d.locked) === 1;
+  if (!mineLocked && !theirsLocked) return null;
+  const differ = handoverForm(here) !== handoverForm(doc.d);
+  if (!theirsLocked) return { act: 'keep', late: differ };
+  // (ونسخة هذا الجهاز غير المقفلة بلا تعديلٍ معلَّق هي ما عرفه من السحابة: لا يسقط منه شيء · ولا بذرة الانضمام: ليست تعديلاً)
+  if (!mineLocked) return { act: 'take', late: differ && !!pending && !joining };
+  if (!differ) return null;
+  const mine = lockSeen(db, doc.k)?.at
+    ?? (pending ? undefined : db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u);
+  if (!mine) return pending ? { act: 'take', late: true } : null;
+  const order = isoCmp(mine, incomingAt(doc));
+  return order < 0 || (order === 0 && deviceId < doc.dev) ? { act: 'keep', late: true, at: mine } : { act: 'take', late: true };
 }
 
 function applyOne(
@@ -1207,13 +2682,23 @@ function applyOne(
 ): ApplyOutcome {
   const t = syncTable(doc.t);
   if (!t) { reject(db, doc, 'جدول خارج المزامنة'); return 'rejected'; }
-  // صدى ما كتبه هذا الجهاز · بمحتواه لا بمعرّف الجهاز وحده: العضو يكتب «dev» فينتحل الجهاز (مراجعة التثبيت #56)
-  if (doc.dev === deviceId && isEcho(db, doc, deviceId)) return 'skipped';
+  // حذف رمز 3300 الذي أنشأه المستخدم (غير نظاميٍّ محذوف، أو شاهد حذفه) · حارسه أدناه
+  const stale3300 = doc.t === 'accounts' && doc.k === ACC_OPENING_BALANCES
+    && (doc.del || (!!doc.d && Number(doc.d.is_system) !== 1 && doc.d.deleted_at != null));
+  // صدى ما كتبه هذا الجهاز · بمحتواه لا بمعرّف الجهاز وحده: العضو يكتب «dev» فينتحل الجهاز (مراجعة التثبيت #56) · إلا صدى حذفه رمز 3300
+  // ولا تعديل له هنا لم يُرفع: الكاتب نفسه يمرّ بحارس 3300 كمن استقبل الحذف، فيحلّ محلّه حساب النظام عنده أيضاً ولا يفترق دفتره عن
+  // أجهزة المنشأة (مراجعة R12-BAK-5: كان الحارس على المستقبِل وحده، فالجهاز الذي حذف يبقى بلا حساب النظام وأخوه عليه)
+  if (doc.dev === deviceId && isEcho(db, doc, deviceId)
+    && !(stale3300 && !db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]))) return 'skipped';
   // مفتاح الصف داخل المستند هو مفتاحه (المراجعة #20): وإلا استبدل مستندٌ صفاً آخر
   if (!doc.del && doc.d) {
     const want = pkParams(doc.t, doc.k);
     if (t.pkCols.some((c, i) => String((doc.d as Record<string, unknown>)[c] ?? '') !== want[i])) {
       reject(db, doc, 'مفتاح الصف لا يطابق مفتاح المستند'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض كأسبابه الأخرى
+      return 'rejected';
+    }
+    if (doc.t === 'journal_entries' && linesMalformed(doc)) {
+      reject(db, doc, 'سطور القيد ليست سطوراً'); // i18n-exempt: سببٌ يُخزَّن في سجل المرفوض
       return 'rejected';
     }
     // سطور القيد الواردة لقيدها وحده: سطرٌ يحمل قيداً آخر يُدرَج في ذلك القيد (التحقق المستقل، نظير #20 للسطور)
@@ -1229,11 +2714,154 @@ function applyOne(
     }
   }
 
+  // حساب النظام 3300 «أرصدة افتتاحية» (الهجرة ٦٢ · A2.4 · قرار المالك س٢) يحلّ على كل جهاز محلّ رمزٍ 3300 أنشأه المستخدم ثم حذفه، والهجرة
+  // لا ترفع شيئاً (R11-A2.4-3) · فمستند السحابة لذلك الرمز (غير نظاميٍّ محذوف، أو شاهد حذفه إن كُنس من السلة) قديمٌ أبداً: لا يُكتب فوق
+  // حساب النظام الحيّ هنا (جوالٌ بدأ من السحابة بعد الترقية، أو جهازٌ ترقّى قبل صدى حذفه) · وحسابٌ غير نظاميٍّ هنا (ترقّى وهو حيّ) يصله
+  // حذفه بلا سطر قيدٍ عليه يحلّ محلّه حساب النظام بقاعدة الهجرة نفسها · فأجهزة المنشأة كلها على دفترٍ واحد (المراجعة ١٢ · R12-BAK-5) ·
+  // والجهاز الذي كتب الحذف (مالكاً أو عضواً) يمرّ هنا بصداه، فيتحوّل عند أول مزامنةٍ بعد الحذف كغيره، ولا يُرفع شيء (R11-A2.4-3)
+  if (stale3300) {
+    const here = db.get<{ s: number; del: string | null }>(`SELECT is_system AS s, deleted_at AS del FROM accounts WHERE code = ?`, [doc.k]);
+    if (here && Number(here.s) === 1) return 'skipped';
+    const sys = MIGRATED_SYSTEM_ACCOUNTS.find((a) => a.code === doc.k);
+    if (sys && !db.get(`SELECT 1 FROM journal_lines WHERE account_code = ?`, [doc.k])) {
+      db.run(`DELETE FROM accounts WHERE code = ? AND is_system = 0`, [doc.k]);
+      db.run(`INSERT OR IGNORE INTO accounts (code, name, type, grp, opening_halalas, is_system, created_at) VALUES (?,?,?,?,0,1,?)`,
+        [sys.code, sys.name, sys.type, sys.grp, nowIso()]);
+      return 'applied';
+    }
+  }
+
   // القيد نفسه برقمٍ آخر في السحابة (استعادةٌ على جهازين بمعرّفٍ حتمي · المتحقق المستقل على bea2251): رقم المرحّل لا يتغير، فرقمه
   // في السحابة اسمٌ لرقمه هنا تُترجَم به حركات البنك المربوطة برقم القيد · ويُعرف قبل التعارض فمسار التعارض لا يفوته
+  // والاسم من قيدٍ هو هو وحده: سطوره سطور القيد هنا، ورقمه ليس رقم قيدٍ آخر هنا (المدقق الخارجي Y٦: مستند عضوٍ بالمعرّف نفسه ورقم قيدٍ آخر
+  // كان يعيد ربط حركات ذلك القيد بهذا قبل أي فحص) · وما رُفض «نهائياً» من نسخة هذا الجهاز للقيد نفسه ليس رفضاً (Y٥)
   if (doc.t === 'journal_entries' && doc.d && typeof doc.d.no === 'string') {
     const here = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ? AND status = 'مرحّل'`, [doc.k]); // i18n-exempt: حالة القيد المخزّنة
-    if (here && here.no !== doc.d.no) noteJournalNoAlias(db, doc.d.no, here.no);
+    // (وبتاريخه نفسه: إلغاءان بتاريخين التقيا في المعرّف ليسا القيد نفسه · A٢-٦)
+    const sameDate = String(db.get<{ d: string }>(`SELECT date AS d FROM journal_entries WHERE id = ?`, [doc.k])?.d ?? '').slice(0, 10) === String(doc.d.date ?? '').slice(0, 10);
+    if (here && here.no !== doc.d.no && sameDate && !db.get(`SELECT 1 FROM journal_entries WHERE no = ? AND id != ?`, [doc.d.no, doc.k]) && sameEntryLines(db, doc)) {
+      noteJournalNoAlias(db, doc.d.no, here.no);
+      db.run(`DELETE FROM sync_rejects WHERE tbl = 'journal_entries' AND pk = ? AND reason = ?`, [doc.k, FINAL_IN_CLOUD]);
+    }
+  }
+
+  // والإلغاء لا رجعة فيه (المدقق الخارجي Y١): نسخةٌ تُحيي دفعةً ملغاة هنا (اعتمادٌ على جهازٍ آخر بالمعرّفات نفسها بعد الإلغاء) لا تُطبَّق،
+  // ويرفع جهاز المالك نسخته · والفاتورة «مدفوعة» بقيد تحصيلٍ معكوسٍ هنا كذلك (Y٢)
+  // والتحصيل نهائيٌّ كذلك: مطالبةٌ محصَّلة هنا بقيدٍ حيّ لا تعود مفتوحةً ولا تُحذف ولا يتغيّر مبلغها، وفاتورةٌ مدفوعة هنا بقيدٍ حيّ لا تعود
+  // مستحقة إلا بعكس قيدها (Z٢-٣ وZ٢-٤: نسخة عضوٍ بلا اتصال كانت تغلب التحصيل) · وصفّ الكشف أو سطره المنشأ ثانيةً بالمعرّف نفسه (قراءة
+  // الكشف على جهازٍ آخر) لا يغلب الأقدم إنشاءً وما عُدّل فيه (Z١-٤: كان يمحو اعتماداً واستبعاداً)
+  const keepLocal = (): boolean => {
+    const d = (doc.d ?? {}) as Record<string, unknown>;
+    if (doc.t === 'contract_payments' && !doc.del && d.cancelled_at == null) {
+      return !!db.get(`SELECT 1 FROM contract_payments WHERE id = ? AND cancelled_at IS NOT NULL`, [doc.k]);
+    }
+    if (doc.t === 'invoices' && !doc.del && d.status === PAID_INVOICE && d.payment_journal_entry_id) {
+      return !!db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NOT NULL`, [String(d.payment_journal_entry_id)]);
+    }
+    if (doc.t === 'invoices' && (doc.del || d.status !== PAID_INVOICE)) {
+      return !!db.get(`SELECT 1 FROM invoices v JOIN journal_entries e ON e.id = v.payment_journal_entry_id
+        WHERE v.id = ? AND v.status = ? AND e.reversed_by IS NULL`, [doc.k, PAID_INVOICE]);
+    }
+    if (doc.t === 'claims') {
+      const cur = db.get<{ a: number; del: string | null }>(`SELECT amount_halalas AS a, deleted_at AS del FROM claims WHERE id = ? AND status = ?
+        AND EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'claim_collect' AND e.src_id = claims.id AND e.reversed_by IS NULL)`, [doc.k, COLLECTED_CLAIM]);
+      return !!cur && (doc.del || d.status !== COLLECTED_CLAIM || d.deleted_at != null || Number(d.amount_halalas) !== Number(cur.a));
+    }
+    if (doc.t === 'bank_statements' && !doc.del && d.created_at) {
+      const cur = db.get<{ c: string }>(`SELECT created_at AS c FROM "${doc.t}" WHERE id = ?`, [doc.k]);
+      return !!cur && String(d.created_at) > String(cur.c);
+    }
+    // وسطر الكشف: المطابَق أو المستبعَد هنا يغلب نسخةً واردة مفتوحة إلا أن تكون فكّاً له (السطر نفسه إنشاءً، عُدّل بعد مطابقته) ·
+    // فقراءة الكشف على جهازٍ آخر قبل الاعتماد أو بعده لا تمحوه (Z١-٤ وA٢-٤ وB٢-٨)
+    if (doc.t === 'bank_statement_lines' && !doc.del && d.deleted_at == null && d.status === 'open') {
+      const cur = db.get<{ s: string; c: string; at: string | null; del: string | null }>(
+        `SELECT status AS s, created_at AS c, matched_at AS at, deleted_at AS del FROM bank_statement_lines WHERE id = ?`, [doc.k]);
+      return !!cur && cur.del == null && cur.s !== 'open' && !lineUndoes(String(d.created_at ?? ''), incomingAt(doc), cur.c, cur.at);
+    }
+    return false;
+  };
+  if (keepLocal()) {
+    if (!getSyncState(db, 'membership')) enqueue(db, doc.t, doc.k, 'upsert');
+    return 'conflict-local';
+  }
+  // ودفعةٌ تصل حيّةً وقيدها معكوسٌ هنا ملغاةٌ بعاكسه (Z١-١ وZ٢-٢: عضوٌ اعتمد الإيداع نفسه بعد إلغاء عضوٍ آخر فغلبت نسخته في السحابة) ·
+  // تُصلح هنا ويرفعها جهاز المالك
+  let repaired = false;
+  // (وكذلك دفعةٌ ملغاة بعاكسٍ ليس عاكس قيدها هنا: إلغاءٌ ثانٍ من جهازٍ آخر بتاريخٍ آخر رُفض عاكسه هنا · A٢-٦)
+  if (doc.t === 'contract_payments' && !doc.del && doc.d && doc.d.journal_entry_id) {
+    const rev = db.get<{ id: string; date: string }>(`SELECT r.id, r.date FROM journal_entries e JOIN journal_entries r ON r.id = e.reversed_by WHERE e.id = ?`,
+      [String(doc.d.journal_entry_id)]);
+    if (rev && (doc.d.cancelled_at == null || String(doc.d.cancel_entry_id ?? '') !== rev.id)) {
+      doc.d = { ...doc.d, cancelled_at: rev.date, cancel_entry_id: rev.id };
+      repaired = true;
+    }
+  }
+  // وعكس قيد مطالبةٍ محصَّلةٍ هنا أو قيدٌ ثانٍ لها من عضو (حذفها أو تعديل مبلغها على جهازٍ لم يعرف التحصيل · Z٢-٣) مرفوض: الذمة تبقى كما حُصّلت
+  if (doc.t === 'journal_entries' && !doc.del && doc.d && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && (doc.d.src_type === 'claim_rev' || doc.d.src_type === 'claim') && !db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [doc.k])
+    && db.get(`SELECT 1 FROM claims c WHERE c.id = ? AND c.status = ? AND EXISTS (SELECT 1 FROM journal_entries e WHERE e.src_type = 'claim_collect'
+         AND e.src_id = c.id AND e.reversed_by IS NULL)`, [String(doc.d.src_id ?? ''), COLLECTED_CLAIM])
+    && (doc.d.src_type === 'claim_rev'
+      || db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'claim' AND src_id = ? AND reversed_by IS NULL`, [String(doc.d.src_id ?? '')]))) {
+    reject(db, doc, tr('sync.collectedTwice', { lng: 'ar' }));
+    return 'rejected';
+  }
+  // وفاتورةٌ يصل صفّها من عضوٍ «مدفوعة» بقيد تحصيلٍ ليس هنا: تنتظره إن كان في الوارد، وإلا (رُفض) تبقى كما هي هنا ويُرفع صفّها (A٢-١)
+  if (doc.t === 'invoices' && !doc.del && doc.d?.status === PAID_INVOICE && doc.d.payment_journal_entry_id && !getSyncState(db, 'membership')
+    && byMember(db, doc, true) && !db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [String(doc.d.payment_journal_entry_id)])) {
+    if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ? AND del = 0`, [String(doc.d.payment_journal_entry_id)])) return 'retry';
+    if (db.get(`SELECT 1 FROM invoices WHERE id = ?`, [doc.k])) enqueue(db, doc.t, doc.k, 'upsert');
+    reject(db, doc, tr('sync.collectedTwice', { lng: 'ar' }));
+    return 'rejected';
+  }
+  // ومطالبةٌ يصل صفّها «محصَّلة» من عضوٍ بلا قيد تحصيلٍ حيٍّ لها هنا: تنتظر قيدها إن كان في الوارد، وإلا (رُفض تحصيلاً ثانياً لإيداعٍ
+  // واحد · Z٢-١) تبقى كما هي هنا ويُرفع صفّها
+  if (doc.t === 'claims' && !doc.del && doc.d?.status === COLLECTED_CLAIM && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && !db.get(`SELECT 1 FROM claims WHERE id = ? AND status = ?`, [doc.k, COLLECTED_CLAIM])
+    && !db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'claim_collect' AND src_id = ? AND reversed_by IS NULL AND status = ?`, [doc.k, POSTED_ENTRY])) {
+    if (db.get(`SELECT 1 FROM sync_inbox WHERE tbl = 'journal_entries' AND del = 0 AND json_extract(payload, '$.d.src_type') = 'claim_collect'
+         AND json_extract(payload, '$.d.src_id') = ?`, [doc.k])) return 'retry';
+    if (db.get(`SELECT 1 FROM claims WHERE id = ?`, [doc.k])) enqueue(db, doc.t, doc.k, 'upsert');
+    reject(db, doc, tr('sync.collectedTwice', { lng: 'ar' }));
+    return 'rejected';
+  }
+  // وعاكس العضو لتحصيلٍ من الكشف لا يُقبل بلا عكس ماله: ينتظر حركات البنك السالبة برقمه هنا أو في الوارد (الإلغاء الحقيقي يكتبها)، فعاكسٌ
+  // وحيد مزوَّر يُرفض بطول انتظاره ولا يُلغي الدفعة وإيداعها في البنك (B٢-٥) · وكذلك ربط أصله به، فالعاكس وأصله يُطبَّقان معاً
+  if (doc.t === 'journal_entries' && !doc.del && doc.d && !getSyncState(db, 'membership') && byMember(db, doc, true)) {
+    const d = doc.d;
+    const pairOf = (origId: string, revId: string, revNo: string | null): boolean => {
+      const orig = db.get<{ no: string; s: string | null }>(`SELECT no, stmt_line_id AS s FROM journal_entries WHERE id = ?`, [origId]);
+      if (!orig?.s) return true;
+      const txs = db.all<{ b: string; a: number }>(`SELECT bank_id AS b, amount_halalas AS a FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL`, [orig.no]);
+      const no = revNo ?? db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [revId])?.no
+        ?? String(JSON.parse(db.get<{ p: string }>(`SELECT payload AS p FROM sync_inbox WHERE tbl = 'journal_entries' AND pk = ?`, [revId])?.p ?? '{}')?.d?.no ?? '');
+      const back = no ? txsOfNo(db, no) : [];
+      return txs.every((t) => back.some((x) => x.bank === t.b && x.amount === -Number(t.a)));
+    };
+    if (typeof d.src_type === 'string' && d.src_type.endsWith('_rev') && !db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [doc.k])) {
+      const origs = sourceReader(db).claimants(doc.k);
+      if (origs.some((o) => !pairOf(o, doc.k, typeof d.no === 'string' ? d.no : null))) return 'retry';
+    }
+    if (d.reversed_by && db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NULL AND stmt_line_id IS NOT NULL`, [doc.k])
+      && !pairOf(doc.k, String(d.reversed_by), null)) return 'retry';
+  }
+  // والإيداع الواحد يسند تحصيلاً واحداً: قيدٌ حيٌّ من عضوٍ لسطر كشفٍ له هنا قيدٌ حيٌّ آخر مرفوض (Z٢-١: جهازان اعتمداه لهدفين مختلفين)
+  // (والتحصيل القائم تحصيلٌ حقيقي من الإيداع: له حركةٌ في بنك السطر بمبلغه ويومه، فمعرّف سطرٍ مكتوبٌ على قيدٍ آخر لا يحجزه · B٢-١ وB٢-٢ ·
+  // والسطر بالبصمة لا بالمعرّف: كشفٌ أُعيدت قراءته بسطرٍ جديد للإيداع نفسه · B٢-٤ · وقيدٌ عاكسه في الوارد ينتظر ولا يُرفض · A٢-٣ وB٢-٣)
+  if (doc.t === 'journal_entries' && !doc.del && doc.d?.stmt_line_id && doc.d.reversed_by == null && !getSyncState(db, 'membership')
+    && byMember(db, doc, true) && !db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [doc.k])) {
+    const held = liveDepositCollection(db, String(doc.d.stmt_line_id), doc.k);
+    if (held === 'pending') return 'retry';
+    if (held) { reject(db, doc, tr('sync.collectedTwice', { lng: 'ar' })); return 'rejected'; }
+  }
+  // والتحصيل الثاني الحيّ للمطالبة نفسها أو الفاتورة نفسها من عضوٍ مرفوض (Z٢-٦: تحصيلان بطريقتين على جهازين كانا ينتظر كلٌّ منهما الآخر)
+  if (doc.t === 'journal_entries' && !doc.del && doc.d && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && (doc.d.src_type === 'claim_collect' || doc.d.src_type === 'invoice_pay') && doc.d.reversed_by == null
+    && !db.get(`SELECT 1 FROM journal_entries WHERE id = ?`, [doc.k])) {
+    const live = db.all<{ id: string; no: string }>(`SELECT id, no FROM journal_entries WHERE src_type = ? AND src_id = ? AND id != ? AND reversed_by IS NULL AND status = ?`,
+      [String(doc.d.src_type), String(doc.d.src_id ?? ''), doc.k, POSTED_ENTRY]);
+    if (live.some((e) => reversalPending(db, e.id, String(doc.d!.src_type), String(doc.d!.src_id ?? '')))) return 'retry';
+    if (live.length) { reject(db, doc, tr('sync.collectedTwice', { lng: 'ar' })); return 'rejected'; }
   }
 
   const cols = (name: string) => {
@@ -1249,7 +2877,29 @@ function applyOne(
   }
   // التعارض على مستوى الصف · الأحدث تغييراً يغلب
   const pending = db.get<OutRow>(`SELECT tbl, pk, op, changed_at FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
+  // والمحضر المُقفَل لا يُفتح ولا يغلبه تعديلٌ متأخر (E-1 · س٢٩): الوارد المرفوض في سجل المرفوض فيظهر في «حالة المزامنة»، وتُرفع
+  // النسخة المقفلة بوقتها فتعود إلى السحابة · وما يغلبه القفل الوارد من تعديلٍ معلَّق هنا أو قفلٍ لاحق يُسجَّل مرفوضاً كذلك ·
+  // والتصحيح بعد القفل بنموذجٍ تصحيحي منفصل
+  const lock = handoverLock(db, doc, pending, deviceId, joining);
+  /** نسخة هذا الجهاز التي يُسقطها القفل الوارد · تُسجَّل مرفوضةً بعد أن يُطبَّق */
+  let dropped: RemoteDoc | null = null;
+  if (lock) {
+    const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u;
+    if (lock.act === 'keep') {
+      // يرفعها جهاز المالك، وجهاز العضو إن كان هو مُقفلها فرفع قفله (E-1/R11-1: قفل المندوب يكتب فوقه في السحابة رفعٌ متسابق من
+      // جوال المالك فلا يعرفه المالك ليعيده، ولا كان العضو يعيده فيبقى مقفلاً عنده وحده)
+      if (!pending && (!getSyncState(db, 'membership') || lockSeen(db, doc.k)?.own)) enqueue(db, doc.t, doc.k, 'upsert', lock.at ?? seen);
+      if (!lock.late) return 'conflict-local';
+      reject(db, doc, tr('sync.handoverLocked', { lng: 'ar' }));
+      return 'rejected';
+    }
+    if (lock.late) dropped = buildDoc(db, doc.t, doc.k, 'upsert', pending?.changed_at ?? (seen ? fromServerClock(db, seen) : nowIso()), deviceId);
+  }
   let conflict: 'conflict-remote' | null = null;
+  // ما يُبقيه جهاز المالك من قيمه في الصف الوارد (الافتتاحي وإعداد المالك) فيُعاد الصف مدموجاً إلى السحابة
+  let keepOwnerValue = false;
+  // افتتاحيّ السحابة كما وصل (قبل أن يُبقي جهاز المالك افتتاحيّه) · يُذكر بعد التطبيق
+  const cloudOpening = OPENING_TABLES.has(doc.t) && doc.d && !doc.del ? Number(doc.d.opening_halalas) || 0 : null;
   if (pending) {
     const localDoc = buildDoc(db, doc.t, doc.k, pending.op, pending.changed_at, deviceId);
     if (sameContent(localDoc, doc)) {
@@ -1262,20 +2912,55 @@ function applyOne(
     const theirs = doc.ts && isoCmp(doc.ts, doc.u) < 0 ? doc.ts : doc.u;
     // باللحظة لا بالنص (المراجعة الشاملة · البند ١٦): «…00.995Z» أحدث من «…00.99Z» ونصّه أصغر
     const order = isoCmp(mine, theirs);
-    const localWins = !joining && (order > 0 || (order === 0 && deviceId > doc.dev));
+    // وتصحيح سطر الكشف الذي رفعه جهاز المالك (إحياءٌ أو حذفٌ تبعاً لكشفه) يغلبه أي تعديلٍ حقيقي وارد ولو تساوى الوقت (المدقق الخارجي Y٧)
+    const correction = doc.t === 'bank_statement_lines' && stmtFixes(db).get(doc.k) === pending.changed_at;
+    // والأقدم إنشاءً من صفّ الكشف أو سطره يغلب ما أُنشئ ثانيةً هنا بالمعرّف نفسه (Z١-٤)
+    const recreated = doc.t === 'bank_statements' && !doc.del && doc.d?.created_at != null
+      && String(doc.d.created_at) < String(db.get<{ c: string }>(`SELECT created_at AS c FROM "${doc.t}" WHERE id = ?`, [doc.k])?.c ?? '');
+    // والسطر الوارد مطابَقاً أو مستبعَداً يغلب نسخته هنا المفتوحة إلا أن تكون فكّاً له (A٢-٤ وB٢-٨)
+    const lineHere = doc.t === 'bank_statement_lines' && !doc.del && doc.d && doc.d.deleted_at == null && doc.d.status !== 'open'
+      ? db.get<{ s: string; c: string }>(`SELECT status AS s, created_at AS c FROM bank_statement_lines WHERE id = ? AND deleted_at IS NULL`, [doc.k]) : undefined;
+    const advanced = !!lineHere && lineHere.s === 'open'
+      && !lineUndoes(lineHere.c, toServerClock(db, pending.changed_at), String(doc.d!.created_at ?? ''), (doc.d!.matched_at as string | null) ?? null);
+    // والعكس نهائي: القيد الوارد معكوساً يغلب نسخته هنا بلا عاكس (Z١-١: جهازٌ اعتمد الإيداع نفسه بعد إلغاء غيره كان يبقى قيده بلا عاكسه)
+    const reversed = doc.t === 'journal_entries' && !doc.del && doc.d?.reversed_by != null
+      && !db.get<{ r: string | null }>(`SELECT reversed_by AS r FROM journal_entries WHERE id = ?`, [doc.k])?.r;
+    const localWins = !joining && !correction && !recreated && !reversed && !advanced && lock?.act !== 'take' && (order > 0 || (order === 0 && deviceId > doc.dev));
     if (localWins) {
+      // والافتتاحي للمالك وحده (openingKept): جهاز العضو يأخذه من الوارد ولو غلب تعديله، فتحمله نسخته المرفوعة كما في السحابة
+      // (المدقق الخارجي Q٢: كان يبقى بالافتتاحي القديم فتُرفض كل تسميةٍ منه ويخطئ رصيد البنك عنده)
+      adoptCloudOpening(db, doc);
+      adoptOwnerCols(db, doc);
       logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', `${doc.t} · ${doc.k} · غلب تعديل هذا الجهاز (${mine}) على الوارد (${doc.u})`);
       return 'conflict-local';
     }
     conflict = 'conflict-remote';
+    // وجهاز المالك: تعديل افتتاحيّه المعلَّق يبقى ولو غلب الوارد من عضوٍ بقية الصف، ويُعاد إلى السحابة (المدقق الخارجي Q١: كان يضيع
+    // تعديل المالك من جهازه ومن السحابة إن سمّى عضوٌ الصفّ بعده وقتاً)
+    // (لا في الانضمام: المعلَّق حينها الدليل المزروع لا تعديل المالك)
+    if (!joining && OPENING_TABLES.has(doc.t) && doc.d && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)
+      && openingChangedHere(db, doc.t, doc.k, true)) {
+      const mineOpening = db.get<{ o: number }>(`SELECT opening_halalas AS o FROM "${doc.t}" WHERE ${doc.t === 'accounts' ? 'code' : 'id'} = ?`, [doc.k]);
+      if (mineOpening) { doc.d = { ...doc.d, opening_halalas: Number(mineOpening.o) || 0 }; keepOwnerValue = true; }
+    }
+    // وإعداد المالك في صفّ المنشأة كذلك (المراجعة الشاملة 2026-11-13 · B-3 · المدقق المستقل R11-B3-1): تعديله المعلَّق هنا يبقى ولو
+    // غلب الوارد من عضوٍ بقية الصف، ويُطبَّق الباقي ويُعاد الصف مدموجاً · كان الصف كله يُرفض (ownerColsIssue) فيضيع تعديل العضو المشروع
+    // لاسم المنشأة · ونسخة عضوٍ بقيمةٍ مزوَّرة لا تغلب هنا على حالٍ، فقيمة المالك هي الباقية
+    if (!joining && OWNER_ONLY_COLS[doc.t] && doc.d && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)) {
+      const mineRow = readRow(db, doc.t, doc.k);
+      const kept = mineRow ? OWNER_ONLY_COLS[doc.t].filter((c) => c in doc.d! && c in mineRow && String(doc.d![c] ?? '') !== String(mineRow[c] ?? '')) : [];
+      if (kept.length) { doc.d = { ...doc.d, ...Object.fromEntries(kept.map((c) => [c, mineRow![c]])) }; keepOwnerValue = true; }
+    }
   }
   // الوقت الوارد لا يتجاوز وقت كتابته في الخادم (#56)
   const theirs0 = incomingAt(doc);
   // ولا طابور: الوارد أقدم مما عرفه الجهاز للصف (رفعه أو طبّقه) لا يكتب فوقه، ويُرفع ما عنده فيتفق الأجهزة (المراجعة الخارجية ٧ ·
   // النتيجة ٨: دورة جهازٍ سحبت قبل تعديل غيره ودفعت بعده فكان الأقدم يغلب بلا أثر) · وأول دورةٍ للجهاز ما في الحساب يغلب
-  if (!pending && !joining && !t.appendOnly) {
+  // (والقفل الوارد يغلب ولو كان أقدم مما عرفه الجهاز · E-1)
+  if (!pending && !joining && !t.appendOnly && lock?.act !== 'take') {
     const seen = db.get<{ u: string }>(`SELECT u FROM sync_rowtime WHERE tbl = ? AND pk = ?`, [doc.t, doc.k])?.u;
     if (seen && isoCmp(theirs0, seen) < 0) {
+      adoptCloudOpening(db, doc);
       // بوقت النسخة المعروفة لا بوقت الآن (المراجعة الشاملة · البند ١٣): إعادة التأكيد لا تجعل النسخة أحدث مما هي، فلا تغلب تعديلاً
       // أحدث منها من جهازٍ آخر يصل بعدها في الدفعة نفسها أو بعدها
       enqueue(db, doc.t, doc.k, readRow(db, doc.t, doc.k) ? 'upsert' : 'delete', seen);
@@ -1283,6 +2968,78 @@ function applyOne(
         tr('sync.olderIncoming', { t: doc.t, k: doc.k, seen, theirs: theirs0, lng: 'ar' }));
       return 'conflict-local';
     }
+  }
+
+  // وأحداث الأصل لا يحذفها التطبيق ولا يعدّلها (المدقق الخارجي هـ٥: عضوٌ يحذف حدث النقل ويعكس قيده في دفعةٍ واحدة كان يتخطى حارس العكس
+  // فيُقبل بعده إهلاكٌ بالوحدة القديمة) · فحذف العضو أو تعديله لحدثٍ قائم يُرفض على جهاز المالك
+  if (doc.t === 'asset_events' && !getSyncState(db, 'membership') && (doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, true))) {
+    const cur = db.get<Record<string, unknown>>(`SELECT asset_id, kind, date, entry_id, from_unit_id, to_unit_id FROM asset_events WHERE id = ?`, [doc.k]);
+    const changed = cur && !doc.del && ['asset_id', 'kind', 'date', 'entry_id', 'from_unit_id', 'to_unit_id']
+      .some((c) => String(cur[c] ?? '') !== String((doc.d as Record<string, unknown> | undefined)?.[c] ?? ''));
+    if (cur && (doc.del || changed)) {
+      // ونسخة المالك تُعاد إلى السحابة فلا تبقى محذوفةً أو معدَّلةً فيها
+      enqueue(db, doc.t, doc.k, 'upsert');
+      reject(db, doc, tr('sync.assetEventLocked', { lng: 'ar' }));
+      return 'rejected';
+    }
+  }
+
+  // والرصيد الافتتاحي للبنك ولحسابات الدليل يضعه المالك وحده (المدقق الخارجي I١ وM٧ · القاعدة ٩٩)، وحارسه قاعدة السحابة (openingKept في
+  // rulesGen.ts): العضو ينشئ بافتتاحيٍّ صفر ويحمل في كل تعديلٍ افتتاحيّ النسخة السابقة كما هو · فافتتاحيّ نسخة العضو افتتاحيّ المالك
+  // الأخير، ويُطبَّق كما هو كما يُوثق بكاتبها (op وby) · وكان جهاز المالك يقارنه بما عنده فيرفضه أو يصفّره ثم يعيد نسخته، فجهازٌ لم يرَ
+  // افتتاحيّ المالك بعد (غائبٌ عن الشبكة أو هاتفٌ بديل) يمحوه من السحابة ومن أجهزته كلها (المدقق الخارجي O٥)
+  // والحساب النظامي أو المستعمل في قيد (هنا أو في الوارد) لا يغيّر العضو نوعه ولا يحذفه، ولا مجموعة حسابٍ ولا كونه نظامياً (التطبيق لا
+  // يغيّرهما) · كما يمنعه saveAccount وdeleteBlocker (O١: نوع 1100 «خصم» أو حذفه الناعم كان يُدخل المحفظة مالاً بلا قيد) · فتُعاد
+  // نسخة هذا الجهاز وفيها افتتاحيّ نسخة العضو، فلا تمحو إعادتُها افتتاحياً لم يصل هذا الجهاز بعد
+  if (doc.t === 'accounts' && !doc.del && !getSyncState(db, 'membership') && byMember(db, doc, false)) {
+    const d = (doc.d ?? {}) as Record<string, unknown>;
+    const cur = db.get<{ type: string; grp: string | null; s: number; del: string | null }>(
+      `SELECT type, grp, is_system AS s, deleted_at AS del FROM accounts WHERE code = ?`, [doc.k]);
+    const locked = !!cur && (Number(cur.s) === 1 || accountUsed(db, doc.k));
+    const forged = cur
+      ? String(d.grp ?? '') !== String(cur.grp ?? '') || (Number(d.is_system) || 0) !== (Number(cur.s) || 0)
+        || (locked && (String(d.type ?? '') !== cur.type || (d.deleted_at == null) !== (cur.del == null)))
+      : (Number(d.is_system) || 0) !== 0;
+    if (forged) {
+      if (cur) {
+        // إلا أن يكون للصف تعديلٌ معلَّق هنا: افتتاحيّه أحدث (المدقق الخارجي Q١ب)
+        if (!openingChangedHere(db, doc.t, doc.k, !!db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]))) {
+          db.run(`UPDATE accounts SET opening_halalas = ? WHERE code = ?`, [Number(d.opening_halalas) || 0, doc.k]);
+          noteSeenOpening(db, doc.t, doc.k, d.opening_halalas);
+        }
+        enqueue(db, doc.t, doc.k, 'upsert');
+      }
+      reject(db, doc, tr('sync.accountLocked', { lng: 'ar' }));
+      return 'rejected';
+    }
+  }
+  // وافتتاحي البنك في الدفتر منذ الهجرة ٦٢ (مدين 1100 ودائن 3300 من البنوك الحية): حذف العضو بنكاً افتتاحيه غير صفر أو استعادته من السلة
+  // يغيّر المال بلا قيد، والافتتاحي للمالك وحده (القاعدة ٩٩ · I١ وM٧ وO٥، وكحذف الحساب النظامي في O١) · فيُرفض على جهاز المالك وتُعاد
+  // نسخته وفيها افتتاحيّ نسخة العضو كفرع الحساب أعلاه (المراجعة الشاملة 2026-11-13 · R11-A2.4-2)
+  if (doc.t === 'banks' && !getSyncState(db, 'membership') && (doc.del ? doc.dby !== ownerUid(db) : byMember(db, doc, false))) {
+    const d = (doc.d ?? {}) as Record<string, unknown>;
+    const cur = db.get<{ o: number; del: string | null }>(`SELECT opening_halalas AS o, deleted_at AS del FROM banks WHERE id = ?`, [doc.k]);
+    const moved = !!cur && (doc.del ? cur.del == null : (d.deleted_at == null) !== (cur.del == null));
+    if (cur && moved && ((Number(cur.o) || 0) !== 0 || (Number(d.opening_halalas) || 0) !== 0)) {
+      if (doc.d && !openingChangedHere(db, doc.t, doc.k, !!db.get(`SELECT 1 FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]))) {
+        db.run(`UPDATE banks SET opening_halalas = ? WHERE id = ?`, [Number(d.opening_halalas) || 0, doc.k]);
+        noteSeenOpening(db, doc.t, doc.k, d.opening_halalas);
+      }
+      enqueue(db, doc.t, doc.k, 'upsert');
+      reject(db, doc, tr('sync.bankOpeningLocked', { lng: 'ar' }));
+      return 'rejected';
+    }
+  }
+
+  // الأب المقفل (الفاتورة الصادرة وسطورها، وأقساط العقد المؤكَّد · المراجعة الشاملة 2026-11-13 · B-1) وإعداد المالك في صفّ المنشأة (B-3):
+  // كتابة العضو تُرفض وتُعاد نسخة المالك إلى الطابور (وما ليس عنده شاهدُ حذف) فتعود السحابة وكل جهازٍ إليها، ويظهر الرفض في حالة المزامنة
+  const lockedWhy = lockedParentIssue(db, doc) || ownerColsIssue(db, doc) || bankShortFollowerIssue(db, doc);
+  // (وما في طريقه إليه قيدٌ أو تأكيدٌ أو جدولٌ في الوارد ينتظر كالأب الناقص)
+  if (lockedWhy === LOCK_AWAIT) return 'retry';
+  if (lockedWhy) {
+    enqueue(db, doc.t, doc.k, 'upsert');
+    reject(db, doc, lockedWhy);
+    return 'rejected';
   }
 
   if (doc.del && doc.t === 'contract_installments' && !getSyncState(db, 'membership') && doc.dby !== ownerUid(db)) {
@@ -1295,10 +3052,59 @@ function applyOne(
     }
   }
 
+  // وتسوية تأمينٍ رُحِّل إلى التجديد من عضو (المراجعة الشاملة 2026-11-13 · R12-DEP-1 · مرآة carryAfterSettle): صفّ التسوية لعقدٍ له
+  // قيد ترحيلٍ حيٌّ هنا لخلفه يُرفض كقيود تسويته (deriveSources: settleAfterCarry)، فلا يبدو العقد مُسوّى بلا قيد ولا يُردّ التأمين مرتين ·
+  // ونسخة المالك تُعاد إن كانت له هنا تسوية (قرارا المالك ٦٢ و٦٣: دفاتر المالك تغلب ويظهر الرفض في حالة المزامنة)
+  if (doc.t === 'deposit_settlements' && !doc.del && doc.d && !joining && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && carriedOnHere(db, doc.k)) {
+    const cur = db.get<Record<string, unknown>>(`SELECT * FROM deposit_settlements WHERE contract_id = ?`, [doc.k]);
+    const d = doc.d;
+    const same = !!cur && ['date', 'deduction_halalas', 'refund_halalas'].every((c) => String(cur[c] ?? '') === String(d[c] ?? ''));
+    if (!same) {
+      if (cur) enqueue(db, doc.t, doc.k, 'upsert');
+      reject(db, doc, tr('sync.settleAfterCarry', { lng: 'ar' }));
+      return 'rejected';
+    }
+  }
+  // ومطالبة زيادة تلك التسوية (applyDepositSettlement: مصدرها «تسوية تأمين») جزءٌ منها تُرفض معها، فلا تبقى على العقد ذمةً لتسويةٍ
+  // مرفوضة يطالَب بها المستأجر في كشفه وتنشأ ثانيةً حين يُسوّى المجدَّد (المراجع المعاكس على R12-DEP-1) · والقائمة هنا قبلها تمرّ كما هي
+  if (doc.t === 'claims' && !doc.del && doc.d && !joining && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && doc.d.source === SETTLEMENT_CLAIM_SOURCE && doc.d.contract_id != null && !db.get(`SELECT 1 FROM claims WHERE id = ?`, [doc.k])
+    && carriedOnHere(db, String(doc.d.contract_id))) {
+    reject(db, doc, tr('sync.settleAfterCarry', { lng: 'ar' }));
+    return 'rejected';
+  }
+  // وتأمين العقد المجدَّد بقدر ما يحتجزه له الدفتر حين رُفض ترحيله (R12-DEP-1 · deadCarryDeposit): يُطبَّق الصف به ويُرفع
+  let deadCarry: { want: number; was: Record<string, unknown> } | null = null;
+  if (doc.t === 'contracts' && !doc.del && doc.d && !joining) {
+    const want = deadCarryDeposit(db, doc.k, doc.d);
+    if (want !== null && want !== Number(doc.d.deposit_halalas)) {
+      deadCarry = { want, was: doc.d };
+      doc.d = { ...doc.d, deposit_halalas: want };
+    }
+  }
+  // وتأمين عقدٍ مجدَّد ترحيله حيٌّ هنا لا يغيّره عضو (المراجعة الشاملة 2026-11-13 · A1-1 · البيانات القائمة): التأمين بعد التوثيق لا
+  // يُعدَّل في التطبيق، وإنزاله بعد ترحيلٍ سُوّي سابقُه أداةٌ للمالك وحده مع عكس الترحيل (carryRepair.ts)، وعاكس العضو مرفوض
+  // (memberReversalCheck) · فيُطبَّق باقي الصف بتأمين المالك ويُرفع، ولا يُرفض الصف كله
+  let keptCarryDeposit = false;
+  if (doc.t === 'contracts' && !doc.del && doc.d && !joining && !deadCarry && !getSyncState(db, 'membership') && byMember(db, doc, true)
+    && carryLiveHere(db, doc.k)) {
+    const cur = db.get<{ d: number }>(`SELECT deposit_halalas AS d FROM contracts WHERE id = ?`, [doc.k]);
+    if (cur && Number(cur.d) !== Number(doc.d.deposit_halalas)) {
+      doc.d = { ...doc.d, deposit_halalas: Number(cur.d) };
+      keptCarryDeposit = true;
+    }
+  }
+
+  // سطر كشفٍ صُحّحت مطابقته هنا يُعاد إلى السحابة مصحَّحاً (وما أبقى فيه هذا الجهاز مطابقته يرفعه تعديلاً منه لا تصحيحاً)
+  let relink = false;
+  let relinkOwn = false;
   try {
     db.transaction(() => {
       if (doc.del) {
         if (t.appendOnly) throw new Error('سجل لا يُحذف');
+        // وحذف حركة بنكٍ حيّة نهائياً بأثره كحذفها إلى السلة (التطبيق لا يحذف نهائياً إلا ما في السلة)
+        if (doc.t === 'bank_tx') memberBankTxCheck(db, doc, null);
         try { deleteRow(db, doc.t, doc.k); } catch (e) {
           if (!isMissingParent(errText(e))) throw e;
           // حذفٌ له هنا أبناء يُسلسل من المالك وحده، بحاذفه (المراجعة الخارجية ٧ · النتيجة ٢ · قرار المالك «رابعاً ٢»): حذف العضو
@@ -1320,14 +3126,26 @@ function applyOne(
         if (doc.t === 'purchases') renumberJoiningCollision(db, 'purchases', doc.k, row.no);
         collectionRowCheck(db, doc, row);
         assetBasisCheck(db, doc, row);
+        // وصفّ فاتورة الشراء «قابلة للخصم» من عضوٍ والمنشأة غير مسجّلة (المدقق الخارجي ض١): الإقرار يقرأ الوضع المخزّن، فلا يُطبَّق
+        if (doc.t === 'purchases' && !getSyncState(db, 'membership') && byMember(db, doc, true) && row.tax_status === TS_DEDUCTIBLE
+          && deductibleIssue(db, doc.k)) throw new Error(tr('deriveSrc.rejected', { source: 'purchases', why: tr('deriveSrc.notRegistered', { lng: 'ar' }), lng: 'ar' }));
         // حركة البنك برقم قيدها على هذا الجهاز (noteJournalNoAlias)
-        if (doc.t === 'bank_tx' && typeof row.journal_no === 'string') {
-          const alias = noAliases(db)[row.journal_no];
+        // ويُفحص كل صفّ حركة، برقم قيده نصاً (كان رقمٌ غير نصيٍّ يتخطى الفحص)
+        if (doc.t === 'bank_tx') {
+          row.journal_no = row.journal_no == null ? '' : String(row.journal_no);
+          const alias = noAliases(db)[row.journal_no as string];
           if (alias) row.journal_no = alias;
+          memberBankTxCheck(db, doc, row);
         }
+        if (doc.t === 'bank_statement_lines') { const c = statementLineCheck(db, row, !getSyncState(db, 'membership') && byMember(db, doc, true)); relink = c.changed && (c.own || !getSyncState(db, 'membership')); relinkOwn = c.own; }
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
+        noteViaMember(db, doc, row);
+        noteInvoiceIssued(db, doc, row);
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
+        if (deadCarry) noteDeadCarry(db, doc.k, deadCarry.was, deadCarry.want);
+        if (keptCarryDeposit) enqueue(db, 'contracts', doc.k, 'upsert');
+        if (doc.t === 'bank_statements') { resetStatementCounts(db, doc.k); statementCascade(db, doc.k, row, theirs0); }
       }
       if (!doc.del) {
         // فحص الاستعادة نفسه على ما كُتب للتو · إخفاقه يُرجع نقطة الحفظ كلها ·
@@ -1344,12 +3162,16 @@ function applyOne(
               if (db.get(`SELECT 1 FROM contract_installments WHERE id IN (SELECT value FROM json_each(?)) AND paid_halalas < 0`, [JSON.stringify([...insts])]))
                 throw new Error('مسدَّد سالب');
             });
-          } catch { /* المخزَّن كما هو */ }
+          } catch (e) { if (isDbFault(e)) throw e; /* المخزَّن كما هو */ }
         }
         const issues = semanticIssues(db, scope, money);
         if (issues.length) throw new Error('الوارد مرفوض · ' + issues.join(' · '));
       }
       if (pending) db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ?`, [doc.t, doc.k]);
+      if (keepOwnerValue || (repaired && !getSyncState(db, 'membership'))) enqueue(db, doc.t, doc.k, 'upsert');
+      if (relink && relinkOwn) enqueue(db, doc.t, doc.k, 'upsert');
+      // (بوقت النسخة الواردة لا بوقت الآن: تعديلٌ حقيقي للعضو بعدها يغلب التصحيح · المدقق الخارجي G٢-٧ كـY٧)
+      else if (relink) enqueueStmtFix(db, doc.k, theirs0);
       if (conflict) {
         logAudit(db, 'المزامنة', 'update', 'تعارض مزامنة', joining
           ? `${doc.t} · ${doc.k} · غلب ما في الحساب على نسخة هذا الجهاز عند انضمامه`
@@ -1357,8 +3179,15 @@ function applyOne(
       }
     });
     noteRowTime(db, doc.t, doc.k, theirs0);
+    if (cloudOpening !== null) noteSeenOpening(db, doc.t, doc.k, cloudOpening);
+    // والقفل الوارد أول ما عرفه الجهاز في السحابة · ويستبدل ما قبله إن غلب (E-1/R11-3)
+    if (doc.t === 'handovers' && !doc.del && Number(doc.d?.locked) === 1) noteLockSeen(db, doc.k, theirs0, false, lock?.act === 'take');
+    if (dropped) reject(db, dropped, tr('sync.handoverLocked', { lng: 'ar' }));
     return conflict ?? 'applied';
   } catch (e) {
+    // عطل القاعدة لا المستند (قرصٌ ممتلئ، خطأ إدخال وإخراج، معاملةٌ ألغتها SQLite بنفسها) لا يُرفض به المستند: يُرمى فتُلغى الصفحة كلها
+    // ويبقى ما فيها في الصندوق للدورة التالية · وإلا كُتب رفضه وحُذف من الصندوق خارج أي معاملة فضاع إلى الأبد (R12-SYN-1)
+    if (isDbFault(e)) throw e;
     const msg = errText(e);
     if (isMissingParent(msg) || e instanceof AwaitOriginal || e instanceof AwaitChildren || uniqueHolderLeaving(db, doc, msg)) return 'retry';
     reject(db, doc, msg);
@@ -1373,6 +3202,8 @@ type FkRow = { table: string; from: string; to: string | null };
  * أجنبي يُضاف إليها كمراكز التكلفة) لا جدوله وحده (المراجعة الشاملة · البند ١٤ · المراجعة الأخيرة: مفتاحه الوحيد reversed_by، فقيدٌ انتظر حساباً
  * في سطوره لم يكن يعود أبداً) · والقيد لا ينتظر قيداً: عاكسه يُربط معلّقاً حتى يصل (linkReversal)، والسطر لقيده نفسه
  */
+/** قيمةٌ لا يصل أصلها أبداً (مفتاحٌ ليس قيمة) */
+const NEVER = '\u0000never';
 function awaitedRefs(doc: RemoteDoc, fkOf: (t: string) => FkRow[]): Array<{ table: string; to: string; value: SqlValue }> {
   const out: Array<{ table: string; to: string; value: SqlValue }> = [];
   const add = (table: string, row: RowData) => {
@@ -1380,11 +3211,12 @@ function awaitedRefs(doc: RemoteDoc, fkOf: (t: string) => FkRow[]): Array<{ tabl
       if ((table === 'journal_entries' || table === 'journal_lines') && k.table === 'journal_entries') continue;
       const v = row[k.from];
       if (v == null || v === '') continue;
-      out.push({ table: k.table, to: k.to ?? syncTable(k.table)?.pkCols[0] ?? 'id', value: v });
+      // ومفتاحٌ ليس قيمةً لا يصل أصله أبداً: يُعدّ منتظراً فلا يُربط في استعلام (G · M١)
+      out.push({ table: k.table, to: k.to ?? syncTable(k.table)?.pkCols[0] ?? 'id', value: scalar(v) ? v : (NEVER as SqlValue) });
     }
   };
   add(doc.t, doc.d!);
-  if (doc.t === 'journal_entries') for (const l of doc.lines ?? []) add('journal_lines', l);
+  if (doc.t === 'journal_entries') for (const l of docLines(doc)) add('journal_lines', l as never);
   return out;
 }
 
@@ -1429,10 +3261,13 @@ function restageArrivedParents(db: DB, waitRejected?: Set<string>): number {
     let doc: RemoteDoc | null = null;
     try { doc = JSON.parse(r.payload) as RemoteDoc; } catch { doc = null; }
     if (!doc || !doc.id || !syncTable(doc.t)) continue;
-    if (doc.d) {
-      const arrived = awaitedRefs(doc, fkOf).every((k) => !!db.get(`SELECT 1 FROM "${k.table}" WHERE "${k.to}" = ?`, [k.value]));
-      if (!arrived) continue;
-    } else if (!doc.del || kidWaitRejected(db, doc.t, doc.k)) continue;
+    // ومستندٌ واحدٌ يرمي فحصه لا يوقف الإعادة كلها (G · M١)
+    try {
+      if (doc.d) {
+        const arrived = awaitedRefs(doc, fkOf).every((k) => k.value !== NEVER && !!db.get(`SELECT 1 FROM "${k.table}" WHERE "${k.to}" = ?`, [k.value]));
+        if (!arrived) continue;
+      } else if (!doc.del || kidWaitRejected(db, doc.t, doc.k)) continue;
+    } catch { continue; }
     stageInbox(db, [doc]);
     // ونسخةٌ أحدث منه في الصندوق تبقى على انتظارها
     db.run(`UPDATE sync_inbox SET attempts = ?, waiting_since = ? WHERE doc = ? AND payload = ?`,
@@ -1474,17 +3309,23 @@ export interface ApplyResult { applied: number; conflicts: number; rejected: num
  */
 function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: number): Generator<number, void> {
   const cache = new Map<string, Set<string>>();
+  resetStatementCounts(db);
   const money = moneyColumns(db); // مرة لكل تطبيق لا لكل صف
   const joining = getSyncState(db, 'joining') === '1';
   const touched = new Set<string>();
   /** ما له رفضُ انتظار (يملؤه restageArrivedParents في كل مرور) · فلا يُبحث في سجل المرفوض لكل صفٍّ يُطبَّق */
   const waitRejected = new Set<string>();
-  /** معاملةٌ والوارد لا يرتدّ صداه إلى الطابور، ودفعةٌ سُجّلت على جهاز آخر لا يرفضها فحص «المتبقي» المحلي */
+  /**
+   * معاملةٌ والوارد لا يرتدّ صداه إلى الطابور، ودفعةٌ سُجّلت على جهاز آخر لا يرفضها فحص «المتبقي» المحلي · وإن رمى ما فيها أعاد إلغاؤها
+   * العلامتين كما كانتا، فلا تُكتبان بعده: إن ألغتها SQLite بنفسها (قرصٌ ممتلئ) وقعت كتابتهما خارج أي معاملة (R12-SYN-1)
+   */
   const quiet = (fn: () => void) => db.transaction(() => {
     const wasOn = captureOn(db);
     setCapture(db, false);
     setApplying(db, true);
-    try { fn(); } finally { setApplying(db, false); setCapture(db, wasOn); }
+    fn();
+    setApplying(db, false);
+    setCapture(db, wasOn);
   });
   for (let pass = 0; pass < 4; pass++) {
     let progress = 0;
@@ -1507,6 +3348,9 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
           for (const r of page) {
             const doc = JSON.parse(r.payload) as RemoteDoc;
             const res = applyOne(db, doc, deviceId, cache, money, joining);
+            // معاملة الصفحة ما زالت قائمة: إلغاءٌ من SQLite ابتلعه مستدعٍ في الطريق لا يُحذف بعده المستند من الصندوق خارج أي معاملة
+            // فيضيع، ولا يُطبَّق ما بعده والالتقاط عاد مفعّلاً (مراجعة إصلاح R12-SYN-1)
+            if (db.inTransaction?.() === false) throw new TransactionAbortedError(new Error('no transaction is active'));
             if (res === 'retry') {
               // بالزمن لا بالمرور (البند ١٤): المرور الواحد قد يتكرر أربع مرات في الدورة
               const since = r.waiting_since ? Date.parse(r.waiting_since) : NaN;
@@ -1548,13 +3392,34 @@ function* applySteps(db: DB, deviceId: string, out: ApplyResult, pageSize: numbe
   // المسدَّد والحالة من الدفعات للأقساط التي مسّها الوارد · وما حُسب لا يرتدّ إلى الطابور
   quiet(() => {
     resolvePendingReversals(db);
+    // وترحيل تأمينٍ رُفض بعد أن طُبِّق صفّ عقده المجدَّد (R12-DEP-1): يُصحَّح تأمينه هنا ويُرفع
+    fixDeadCarries(db);
+    // ودفعة «من التأمين» عُكس قيدها بعاكسٍ قُبل هنا ولم تُلغَ: تُلغى بعاكسها وتُرفع (قبل حساب المسدَّد)
+    cancelReversedDepositRent(db, touched);
+    // وإلغاءٌ حمله ضمّ استعادةٍ وصار عاكسه موثَّقاً هنا: يعود سببه سبب التعديل ويُرفع (سببٌ لا مبلغ، فلا يمسّ المسدَّد)
+    unkeepDocumentedDepositRent(db);
     recomputeInstallments(db, touched.has(ALL_INSTALLMENTS) ? undefined : [...touched]);
+    if (out.applied) reopenReversedMatches(db);
   });
   out.waiting = Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_inbox`)!.n);
   // قيدٌ وصل ومستنده لا يصل (حذفته استعادة على جهاز آخر) يبقى ويُعلَّم للمراجعة (orphans.ts) ·
   // بعد اكتمال الوارد لا قبله، فالقيد يسبق مستنده في ترتيب التطبيق
   // جهاز العضو يحمل جزءاً من الدفتر بصلاحيته · فلا يُعلَّم ما غاب مصدره عنه يتيماً
   if ((out.applied || out.rejected) && !out.waiting && !getSyncState(db, 'membership')) markOrphans(db, 'وصل بالمزامنة');
+}
+
+/**
+ * سطر كشفٍ مطابَق بحركة قيدٍ عُكس (وصل عكسه من جهازٍ آخر، أو أصلحه هذا الجهاز) يعود مفتوحاً، ويرفعه جهاز المالك (المدقق الخارجي C٢-٢:
+ * المحصِّل بلا صلاحية البنوك يلغي الدفعة فلا يُقبل تصحيح السطر منه، وجهاز المالك كان يُبقيه مطابَقاً بتحصيلٍ أُلغي)
+ */
+function reopenReversedMatches(db: DB): void {
+  const ids = db.all<{ id: string }>(
+    `SELECT l.id FROM bank_statement_lines l JOIN bank_tx t ON t.id = l.bank_tx_id JOIN journal_entries e ON e.no = t.journal_no
+     WHERE l.status = 'matched' AND l.deleted_at IS NULL AND e.reversed_by IS NOT NULL`).map((r) => r.id);
+  for (const id of ids) {
+    db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL WHERE id = ?`, [id]);
+    enqueueStmtFix(db, id);
+  }
 }
 
 /** التطبيق كله في نداءٍ واحد · للاختبارات والأدوات */
@@ -1596,9 +3461,13 @@ export interface CloudSnapshot {
   docs: RemoteDoc[];
 }
 
-/** الجداول التي يُحفظ مستندها كاملاً في اللقطة · ما يُضمّ مع القيد المرحّل */
+/**
+ * الجداول التي يُحفظ مستندها كاملاً في اللقطة · ما يُضمّ مع القيد المرحّل · ومنها الحسابات: حسابٌ أُضيف بعد النسخة يُحمل صفّه مع
+ * قيده، وإلا رفض مفتاح الحساب سطره (المراجعة ١٢ · R12-BAK-1) · والدليل صغير فلا يثقل اللقطة · وصفوف التسوية: بها يُعرف أن دفعة
+ * «من التأمين» سُدّدت بالتسوية التي في النسخة (R12-BAK-2)
+ */
 export const SNAPSHOT_FULL = new Set(['journal_entries', 'contract_payments', 'payment_lines', 'payment_allocations', 'bank_tx', 'audit_log',
-  'contract_installments', 'tenants']);
+  'contract_installments', 'tenants', 'accounts', 'deposit_settlements']);
 
 const PLAN_PAGE = 500;
 
@@ -1698,6 +3567,10 @@ export function adoptAsCloudTruth(db: DB, uid: string, plan: CloudReplacePlan, e
       db.run(`INSERT OR IGNORE INTO audit_log (${keys.map((c) => `"${c}"`).join(',')}) VALUES (${keys.map(() => '?').join(',')})`,
         keys.map((c) => d.d![c] as SqlValue));
     }
+    // وما ضُمّ منه ويُبنى عليه حكم المراجعة (علامةٌ، وحفظ مستندٍ أعاد ترحيل قيوده، وسطر اعتمادٍ سابق) كُتب في خطٍّ لم تَعُد إليه
+    // البيانات: يُسمّى في سطرٍ واحد فلا يعمل هنا، والاستعادة حكمت من جديد على ما بعد النسخة (المراجع المعاكس الرابع على R12-BAK-2) ·
+    // قبل رفع ما في القاعدة فيُرفع معه
+    recordForeignReview(db, foreignReviewRows(plan.absorb));
     db.run(`DELETE FROM sync_inbox`);
     db.run(`DELETE FROM sync_outbox`);
     setSyncState(db, 'uid', uid);
@@ -1880,6 +3753,7 @@ export async function syncOnce(
   let pushed = 0;
   const total = outboxCount(db);
   let size = remote.memberMode ? MEMBER_PUSH_BATCH : PUSH_BATCH;
+  if (remote.memberMode) prepareMemberUpload(db);
   let failures = 0;
   for (;;) {
     const batch = pendingOutbox(db, size);
@@ -1923,17 +3797,26 @@ export async function syncOnce(
         const r = batch[i];
         // العضو: المرفوض لصلاحيته لا تفيده الإعادة · يخرج من الطابور ويُسجَّل
         const memberDenied = remote.memberMode && res.code === 'PERMISSION_DENIED';
-        if (memberDenied) {
+        // وتقرير العطل المرفوض (حدّ يومه، أو قواعدُ لم تُنشر بعد) يخرج من الطابور بلا سطرٍ في المرفوض: تشخيصٌ لا عملٌ للمستخدم
+        // وتقرير العطل وسطر الفشل المرافق له لا يُعدّان «مرفوضاً» للعضو: كتبهما حوار الفشل لا هو (المدقق الخارجي H٨)
+        const failureRow = docs[i].t === 'audit_log' && (docs[i].d?.entity_type === CRASH_ENTITY
+          || String(docs[i].d?.entity_type ?? '').startsWith(FAILURE_ENTITY_PREFIX));
+        // ورتبةٌ أخذها جهازٌ آخر للحساب نفسه تُعاد بالتالية (H٢)
+        if (memberDenied && docs[i].t === 'audit_log' && docs[i].d?.entity_type === CRASH_ENTITY) retryCrashRank(db, docs[i].d as Record<string, unknown>);
+        if (memberDenied && !failureRow) {
           db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
             [docs[i].id, r.tbl, r.pk, 'خارج صلاحيتك · بقي على هذا الجهاز ولم يُرفع', JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
         }
         // رفض القيد المرحّل لأن نسخته في السحابة نهائية يُسجَّل للمالك فلا يتباين جهازه صامتاً (المراجعة الخارجية ٧ · النتيجة ٢١) ·
         // وسطر السجل المرفوض لا يُسجَّل (يقع في مسارات سليمة · المتحقق المستقل، الجولة ٣٠ على ٤٠٠ بذرة)
         const finalDenied = !memberDenied && immutableDenied(docs[i], res.code);
-        if (finalDenied && r.tbl === 'journal_entries') {
+        // والقيد الذي عرف الجهاز رقمه في السحابة (القيد نفسه هناك برقمٍ آخر) ليس مرفوضاً: نسخة السحابة تصله (Z٢-٨)
+        const knownInCloud = r.tbl === 'journal_entries' && typeof docs[i].d?.no === 'string'
+          && Object.keys(noAliases(db)).includes(String(docs[i].d!.no));
+        if (finalDenied && r.tbl === 'journal_entries' && !knownInCloud) {
           db.run(`INSERT INTO sync_rejects (doc, tbl, pk, reason, payload, at) VALUES (?,?,?,?,?,?)`,
             // i18n-exempt: سبب الرفض المخزَّن
-            [docs[i].id, r.tbl, r.pk, 'نهائي في السحابة · نسخة هذا الجهاز تختلف عنها ولم تُرفع', JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
+            [docs[i].id, r.tbl, r.pk, FINAL_IN_CLOUD, JSON.stringify({ ...docs[i], companions: undefined }), nowIso()]);
         }
         // الرفض الدائم لصفٍّ بعينه يخرج من الطابور إلى سجل المرفوض (البند ١٥)
         const permanent = !res.ok && !memberDenied && !finalDenied && PERMANENT_PUSH_CODES.has(res.code ?? '');
@@ -1946,10 +3829,16 @@ export async function syncOnce(
         if (res.ok || memberDenied || finalDenied || permanent) {
           // لا يُحذف إن تغيّر الصف أثناء الرفع · يبقى للدفعة التالية بوقته الجديد
           db.run(`DELETE FROM sync_outbox WHERE tbl = ? AND pk = ? AND changed_at = ?`, [r.tbl, r.pk, r.changed_at]);
+          if (r.tbl === 'bank_statement_lines') markStmtFix(db, r.pk, false);
           if (res.ok) {
             pushed++;
             // بوقت الالتزام في الخادم إن عُرف، ولا يتجاوز وقت المستند · وبلا وقت الخادم لا يُحفظ (الوارد يغلب كما كان)
             if (commitIso) noteRowTime(db, r.tbl, r.pk, isoCmp(docs[i].u, commitIso) < 0 ? docs[i].u : commitIso);
+            if (OPENING_TABLES.has(r.tbl) && docs[i].d && !docs[i].del) noteSeenOpening(db, r.tbl, r.pk, docs[i].d!.opening_halalas);
+            // والمحضر المقفل: أول ما بلغ قفله السحابة من هذا الجهاز، وهو مُقفله إن لم يعرفه قبلُ (E-1/R11-1 وR11-3)
+            if (r.tbl === 'handovers' && !docs[i].del && Number(docs[i].d?.locked) === 1) {
+              noteLockSeen(db, r.pk, commitIso && isoCmp(commitIso, docs[i].u) < 0 ? commitIso : docs[i].u, true, false);
+            }
           }
           progressed++;
         } else {

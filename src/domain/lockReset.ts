@@ -61,17 +61,19 @@ export function jwtClaims(token: string): Record<string, unknown> | null {
 export type ProofCheck = { ok: true; serverMs: number } | { ok: false; why: 'bad' | 'uid' | 'provider' | 'stale' };
 
 /**
- * رمز هوية Firebase من دخولٍ جديد بقوقل للحساب المحفوظ · serverMs وقت إصداره بساعة الخادم (iat) ·
+ * رمز هوية Firebase من دخولٍ جديد للحساب المحفوظ · serverMs وقت إصداره بساعة الخادم (iat) ·
  * auth_time يبقى على وقت الدخول في كل تجديد، فصدورُ الرمز بعد الدخول بأكثر من المهلة رمزٌ مجدَّد لا دخول ·
- * ولا تُقارن ساعة الجهاز (المتحقق المستقل: كانت ترفض المالك إن انحرفت دقائق، والرمز من ردّ signInWithIdp الآن فلا يكون قديماً)
+ * ولا تُقارن ساعة الجهاز (المتحقق المستقل: كانت ترفض المالك إن انحرفت دقائق، والرمز من ردّ signInWithIdp الآن فلا يكون قديماً) ·
+ * provider مزوّد الدخول المنتظر في الرمز: يمرّره مزوّد قوقل (cloud/session.ts: GOOGLE_SIGN_IN) · وإعادة الضبط نفسها لا تمرّ بهذا الفحص
+ * بل بإثباتٍ مجرّد من أي مزوّد (ق٠-٦ · F-3 · cloud/authProvider.ts)، والقيمة الافتراضية لمن ناداه قبل ذلك
  */
-export function checkAccountProof(idToken: string, uid: string): ProofCheck {
+export function checkAccountProof(idToken: string, uid: string, provider = 'google.com'): ProofCheck {
   const c = jwtClaims(idToken);
   const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v * 1000 : null);
   const at = num(c?.auth_time), iat = num(c?.iat);
   if (!c || at === null || iat === null) return { ok: false, why: 'bad' };
   if ((c.user_id ?? c.sub) !== uid) return { ok: false, why: 'uid' };
-  if ((c.firebase as { sign_in_provider?: unknown } | undefined)?.sign_in_provider !== 'google.com') return { ok: false, why: 'provider' };
+  if ((c.firebase as { sign_in_provider?: unknown } | undefined)?.sign_in_provider !== provider) return { ok: false, why: 'provider' };
   if (iat < at || iat - at > AUTH_FRESH_MS) return { ok: false, why: 'stale' };
   return { ok: true, serverMs: iat };
 }
@@ -80,13 +82,24 @@ export function checkAccountProof(idToken: string, uid: string): ProofCheck {
 
 /** الآن بساعتي الجهاز · trusted: الرتيبة الأصلية حاضرة (منذ الإقلاع وتعدّ النوم · services/appLockService.ts) */
 export interface ClockNow { wall: number; mono: number; trusted: boolean }
-/** إعادة ضبطٍ تمّت · n تسلسلها على الجهاز · server وقت رمز هويتها بساعة الخادم · وساعتا الجهاز عندها */
-export interface ResetAttempt extends ClockNow { n: number; server: number }
 /**
- * سجلّ إعادة الضبط على الجهاز · notice: تسلسل آخر إعادة ضبطٍ (noticeAt وقتها بساعة الخادم) · seen: ما أُقرّ بتنبيهه ·
+ * بمَ أُعيد الضبط (ق٠-٦ · F-3): google تأكيد حساب قوقل (اليوم) · device شهادة خادم الهوية أنه الجوال المربوط (بعد التحويل) ·
+ * key مفتاح الاسترداد يكتبه المالك (على الجهاز وحده، بلا خادم)
+ */
+export type ResetVia = 'google' | 'device' | 'key';
+const VIAS: readonly ResetVia[] = ['google', 'device', 'key'];
+/**
+ * إعادة ضبطٍ تمّت · n تسلسلها على الجهاز · server وقتها بساعة الخادم (ولمفتاح الاسترداد ساعة الجهاز: لا خادم يشهد) · وساعتا
+ * الجهاز عندها · via بمَ أُعيد (بلا قيمة: قوقل، كما حُفظ قبل ق٠-٦)
+ */
+export interface ResetAttempt extends ClockNow { n: number; server: number; via?: ResetVia }
+/**
+ * سجلّ إعادة الضبط على الجهاز · notice: تسلسل آخر إعادة ضبطٍ (noticeAt وقتها، noticeVia بمَ) · seen: ما أُقرّ بتنبيهه ·
  * audited: ما كُتب سطره في سجل العمليات
  */
-export interface ResetLog { attempts: ResetAttempt[]; notice: number; noticeAt: number; seen: number; audited: number }
+export interface ResetLog { attempts: ResetAttempt[]; notice: number; noticeAt: number; noticeVia?: ResetVia; seen: number; audited: number }
+
+const viaOf = (v: unknown): ResetVia | undefined => (VIAS.includes(v as ResetVia) ? (v as ResetVia) : undefined);
 
 export const emptyResetLog = (): ResetLog => ({ attempts: [], notice: 0, noticeAt: 0, seen: 0, audited: 0 });
 
@@ -99,9 +112,13 @@ export function parseResetLog(raw: string | null): ResetLog | null {
   try { v = JSON.parse(raw) as Partial<ResetLog>; } catch { return null; }
   if (!v || typeof v !== 'object' || !Array.isArray(v.attempts)) return null;
   const attempts = v.attempts.filter((a): a is ResetAttempt => !!a && finite(a.n) && finite(a.wall) && finite(a.mono) && finite(a.server))
-    .map((a) => ({ n: a.n, wall: a.wall, mono: a.mono, trusted: a.trusted === true, server: a.server }));
+    .map((a) => {
+      const via = viaOf(a.via);
+      return { n: a.n, wall: a.wall, mono: a.mono, trusted: a.trusted === true, server: a.server, ...(via ? { via } : {}) };
+    });
   const n = (x: unknown) => (finite(x) ? x : 0);
-  return { attempts, notice: n(v.notice), noticeAt: n(v.noticeAt), seen: n(v.seen), audited: n(v.audited) };
+  const noticeVia = viaOf(v.noticeVia);
+  return { attempts, notice: n(v.notice), noticeAt: n(v.noticeAt), ...(noticeVia ? { noticeVia } : {}), seen: n(v.seen), audited: n(v.audited) };
 }
 
 /** نسختا السجل (المخزن الآمن والملف) تُدمجان: مسح إحداهما لا يُسقط ما في الأخرى */
@@ -110,7 +127,10 @@ export function mergeResetLogs(a: ResetLog, b: ResetLog): ResetLog {
   for (const x of [...a.attempts, ...b.attempts]) if (!byN.has(x.n)) byN.set(x.n, x);
   const attempts = [...byN.values()].sort((x, y) => x.n - y.n).slice(-KEEP);
   const last = a.notice >= b.notice ? a : b;
-  return { attempts, notice: last.notice, noticeAt: last.noticeAt, seen: Math.max(a.seen, b.seen), audited: Math.max(a.audited, b.audited) };
+  return {
+    attempts, notice: last.notice, noticeAt: last.noticeAt, ...(last.noticeVia ? { noticeVia: last.noticeVia } : {}),
+    seen: Math.max(a.seen, b.seen), audited: Math.max(a.audited, b.audited),
+  };
 }
 
 /**
@@ -152,13 +172,14 @@ export function serverWaitMs(log: ResetLog, serverMs: number): number {
   return waitFrom(log.attempts.map((a) => serverMs - a.server));
 }
 
-/** إعادة ضبطٍ تمّت تُحفظ قبل أن تُعطى · وتنبيهها بساعة الخادم (ساعة الجهاز تُغيَّر) */
-export function recordReset(log: ResetLog, now: ClockNow, serverMs: number): ResetLog {
+/** إعادة ضبطٍ تمّت تُحفظ قبل أن تُعطى · وتنبيهها بساعة الخادم (ساعة الجهاز تُغيَّر) · via بمَ أُعيدت (قوقل إن لم يُذكر) */
+export function recordReset(log: ResetLog, now: ClockNow, serverMs: number, via: ResetVia = 'google'): ResetLog {
   const n = log.attempts.reduce((m, a) => Math.max(m, a.n), Math.max(log.notice, log.seen, log.audited)) + 1;
-  return { ...log, attempts: [...log.attempts, { n, ...now, server: serverMs }].slice(-KEEP), notice: n, noticeAt: serverMs };
+  return { ...log, attempts: [...log.attempts, { n, ...now, server: serverMs, via }].slice(-KEEP), notice: n, noticeAt: serverMs, noticeVia: via };
 }
 
-export const noticePending = (log: ResetLog): { at: number } | null => (log.notice > log.seen ? { at: log.noticeAt } : null);
+export const noticePending = (log: ResetLog): { at: number; via: ResetVia } | null =>
+  (log.notice > log.seen ? { at: log.noticeAt, via: log.noticeVia ?? 'google' } : null);
 export const ackNotice = (log: ResetLog): ResetLog => ({ ...log, seen: log.notice });
 export const auditPending = (log: ResetLog): boolean => log.notice > log.audited;
 export const markAudited = (log: ResetLog, n: number): ResetLog => ({ ...log, audited: Math.max(log.audited, n) });
@@ -170,14 +191,31 @@ export function resetWhen(ms: number): string {
   return `${dfmt(toLocalISODate(d))} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
+/** نصّ سطر السجل لكل طريق (مخزَّنٌ كما هو) */
+const RESET_WHAT: Record<ResetVia, string> = {
+  google: 'قفل التطبيق · أُعيد ضبط رمزه بتأكيد حساب قوقل', // i18n-exempt: سطر سجل العمليات المخزَّن
+  device: 'قفل التطبيق · أُعيد ضبط رمزه بشهادة الخادم أنه الجوال المربوط', // i18n-exempt: سطر سجل العمليات المخزَّن
+  key: 'قفل التطبيق · أُعيد ضبط رمزه بمفتاح الاسترداد', // i18n-exempt: سطر سجل العمليات المخزَّن
+};
+
+/** عضوٌ في منشأة غيره على هذا الجهاز (لا مالك) · تعذّر القراءة: عضو (لا يُعطى طريق المالك بالشك) */
+export function memberOnDevice(db: DB): boolean {
+  try { return !!db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = 'membership'`)?.v; } catch { return true; }
+}
+
+/** حساب البيانات على هذا الجهاز (لسرّ النسخ ومفتاح استردادها · services/backupPassword.ts) · null: بلا حساب (البناء المحلي) */
+export function deviceAccountOf(db: DB): string | null {
+  try { return db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = 'uid'`)?.v || null; } catch { return null; }
+}
+
 /**
  * سطر إعادة الضبط في سجل العمليات (يُزامَن) · العضو يكتبه بنوع «بيانات عضو» الذي تجيزه القواعد لكل عضو بلا قسمٍ مُجاز
- * (rulesGen: memberSelfAudit) فيبلغ المالك · والهوية لا تُكتب
+ * (rulesGen: memberSelfAudit) فيبلغ المالك · والهوية لا تُكتب · via بمَ أُعيد الضبط
  */
-export function logLockReset(db: DB, atMs: number): void {
+export function logLockReset(db: DB, atMs: number, via: ResetVia = 'google'): void {
   let member = false;
   try { member = !!db.get<{ v: string | null }>(`SELECT v FROM sync_state WHERE k = 'membership'`)?.v; } catch { member = false; }
-  const what = 'قفل التطبيق · أُعيد ضبط رمزه بتأكيد حساب قوقل'; // i18n-exempt: سطر سجل العمليات المخزَّن
+  const what = RESET_WHAT[via] ?? RESET_WHAT.google;
   const at = { الوقت: resetWhen(atMs) };
   if (member) logAudit(db, SELF_AUDIT_MODULE, 'update', SELF_AUDIT_ENTITY, what, null, at);
   else logAudit(db, 'قفل التطبيق', 'update', 'رمز القفل', what, null, at); // i18n-exempt: سطر سجل العمليات المخزَّن

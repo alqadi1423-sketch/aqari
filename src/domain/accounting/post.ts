@@ -1,14 +1,15 @@
 import type { DB } from '../../db/adapter';
+import { keyMoneyLinesOf, invoiceLinesOf, purchaseLinesOf, depositLinesOf } from '../ledgerCore';
 import { requireCash } from '../cashGuard';
 import { t } from '../../i18n';
 import { uid, rowId } from '../ids';
 import { today } from '../dates';
-import { correctionDate, isFiledDate, requireOpenPeriod } from '../vatFilings';
+import { correctionDate, isFiledDate, requireISODate, requireOpenPeriod } from '../vatFilings';
 import { fmt } from '../money';
-import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, type DiscountKind } from '../contracts/installments';
+import { DISCOUNT_ACCOUNT, DISCOUNT_AFTER_DUE, DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_SRC, type DiscountKind } from '../contracts/installments';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber, peekNumber } from '../numbering';
 import { rentRevenueLines } from './rentSplit';
-import { splitVatInclusive, vatRegistered } from '../taxCode';
+import { vatRegistered } from '../taxCode';
 import { dimsFromSource, hasDimColumns, lineDims, ambientCostCenter, inheritedCostCenter, GENERAL_COST_CENTER, type Dims } from './dimensions';
 
 export interface EntryLine {
@@ -63,6 +64,13 @@ export function peekJournalNo(db: DB): string {
  * مسار الترحيل الواحد: يُدرج القيد «قيد الإنشاء»، يضيف سطوره،
  * ثم يرقّيه «مرحّل» · والمحفّز في القاعدة يرفض غير المتوازن.
  */
+/** سطر كشف البنك الذي تُرحَّل منه القيود داخل fn (اعتماد التحصيل من الكشف · الهجرة ٥٩) */
+const stmtLineStack: Array<string | null> = [];
+export function withStatementLine<T>(lineId: string, fn: () => T): T {
+  stmtLineStack.push(lineId);
+  try { return fn(); } finally { stmtLineStack.pop(); }
+}
+
 export function postEntry(
   db: DB,
   args: {
@@ -85,6 +93,8 @@ export function postEntry(
 ): PostedEntry | null {
   const rows = args.lines.filter((l) => Math.abs(l.debit || 0) > 0 || Math.abs(l.credit || 0) > 0);
   if (!rows.length) return null;
+  // ولا قيد بتاريخٍ بغير صيغته من أي مسار ترحيل (المراجعة الشاملة 2026-11-13 · D-2)
+  requireISODate(args.date);
   const D = rows.reduce((s, r) => s + (r.debit || 0), 0);
   const C = rows.reduce((s, r) => s + (r.credit || 0), 0);
   if (D !== C) throw new UnbalancedEntryError();
@@ -104,6 +114,10 @@ export function postEntry(
        VALUES (?,?,?,?,'قيد الإنشاء',?,?,?,?)`,
       [id, no, args.date, args.memo, args.auto === false ? 0 : 1, args.srcType ?? null, args.srcId ?? null, now]
     );
+    // وسطر الكشف الذي يُسجَّل منه التحصيل (الهجرة ٥٩)
+    if (stmtLineStack.length && stmtLineStack[stmtLineStack.length - 1]) {
+      db.run(`UPDATE journal_entries SET stmt_line_id = ? WHERE id = ?`, [stmtLineStack[stmtLineStack.length - 1], id]);
+    }
     // أبعاد كل سطر: من مصدر القيد، والصريح يغلب، ومركز التكلفة من العملية الجارية (قرار المالك ٢٠٢٦-١٠-٠٤) ·
     // وقاعدةٌ قبل الهجرة ٢٨ (نسخة تُصحَّح قبل ترقيتها) تُرحَّل سطورها بلا أبعاد كما كانت
     if (!hasDimColumns(db)) {
@@ -227,14 +241,27 @@ export function reverseEntryById(db: DB, entryId: string, memo?: string, date?: 
       })),
       srcType: (e.src_type ?? 'manual') + '_rev',
       srcId: e.src_id ?? e.id,
-      // والفارغ من أبعاد الأصل يبقى فارغاً (المتحقق المستقل): قيد عمولة التقبيل يُرحَّل قبل صفّ صفقته فتُكتب سطوره بلا أبعاد، وكان
-      // العاكس يملؤها من الصفقة فيرفضه جهاز المالك (mirrorIssue يطابق الأبعاد) ويبقى إيراد التقبيل الملغى · كما يعكس
-      // reverseAllPostedEntries
+      // والفارغ من أبعاد الأصل يبقى فارغاً (المتحقق المستقل): قيد عمولة التقبيل كان يُرحَّل قبل صفّ صفقته فتُكتب سطوره بلا أبعاد
+      // (رُتّب بعده في التوجيه الرابع ٣ · ١، وتبقى القيود القديمة كما رُحّلت)، وكان العاكس يملؤها من الصفقة فيرفضه جهاز المالك
+      // (mirrorIssue يطابق الأبعاد) ويبقى إيراد التقبيل الملغى · كما يعكس reverseAllPostedEntries
       exactDims: true,
     });
-    if (posted) db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [posted.id, e.id]);
+    if (posted) {
+      db.run(`UPDATE journal_entries SET reversed_by = ? WHERE id = ?`, [posted.id, e.id]);
+      reopenStatementLines(db, e.no);
+    }
     return posted;
   });
+}
+
+/**
+ * سطر كشف البنك المطابَق بحركة قيدٍ عُكس يعود مفتوحاً، أياً كان ما عكسه (إلغاء دفعة أو تحصيل فاتورة أو عملية نقد): الإيداع يُقترح من
+ * جديد ويظهر «في الكشف وحده» (المدقق الخارجي B٢-٧ ثم C٢-٣: كان في إلغاء الدفعة وحده)
+ */
+export function reopenStatementLines(db: DB, entryNo: string): void {
+  if (!db.get(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'bank_statement_lines'`)) return;
+  db.run(`UPDATE bank_statement_lines SET status = 'open', bank_tx_id = NULL, matched_at = NULL
+          WHERE deleted_at IS NULL AND status = 'matched' AND bank_tx_id IN (SELECT id FROM bank_tx WHERE journal_no = ?)`, [entryNo]);
 }
 
 /** حذف قيد آلي (بمصدره) حذفاً ناعماً · لإعادة الترحيل عند تعديل فاتورة ونحوه */
@@ -302,13 +329,8 @@ const HELD_BY_OTHERS = '1260';
  * عقده (التوجيه الثالث · ١ · إعادة الاشتقاق: قرار المالك 2026-10-15 «١» و2026-11-07)
  */
 export function contractDepositLines(deposit: number, holder?: string | null): EntryLine[] | null {
-  if (deposit <= 0) return null;
-  const h = holder || 'المكتب';
-  if (h === 'طرف آخر') return null;
-  return [
-    { account: h === 'منصة إيجار' ? HELD_BY_OTHERS : CASH, descr: 'تأمين مستلم', debit: deposit, credit: 0 },
-    { account: '2400', descr: 'التزام تأمين المستأجر', debit: 0, credit: deposit },
-  ];
+  // من المنطق النقي (ledgerCore · التوجيه الرابع ٤ · ٥)
+  return depositLinesOf(deposit, holder);
 }
 
 export const postContractDeposit = (
@@ -334,7 +356,8 @@ export const postContractDeposit = (
  * مصادر 4300 غير عمولة التقبيل بلا ضريبة مخرجات ولو كانت المنشأة مسجّلة (المراجعة الشاملة ٨ · البند ١١ · قرارٌ بسببه كالوارد
  * البنكي اليدوي في cashOps.ts): عمولة التقبيل وحدها مقابلُ خدمةٍ يقدّمها المكتب، وهذه ليست كذلك بطبيعتها ولا مدخل فيها يقول إنها
  * خاضعة، فلا تُفرض عليها ضريبةٌ تلقائياً:
- *  - الخصم من التأمين: تعويضٌ عن ضررٍ أو متأخراتٍ لا مقابل توريد، أو تابعٌ لإيجارٍ سكني معفى.
+ *  - الخصم من التأمين: تعويضٌ عن ضررٍ لا مقابل توريد، أو تابعٌ لإيجارٍ سكني معفى · وما كان منه مقابل أقساطٍ متأخرة يسدّدها
+ *    إيجاراً لا هنا (depositRentLines · المراجعة الشاملة 2026-11-13 · A1-2).
  *  - مصادرة العربون (postReservationForfeit): تتبع طبيعة العقد الذي لم يتمّ.
  *  - المطالبة (postClaim): تعويض ضررٍ أو استرداد تكلفة.
  * وما كان منها لوحدةٍ تجارية يتبع ضريبة الإيجار التجاري حين تُبنى في الإقرار (قرار المالك «رابعاً ٤» 2026-10-10).
@@ -365,6 +388,41 @@ export const postDepositDeduct = (db: DB, c: { id: string; contract_no: string; 
         lines,
         srcType: 'deposit_deduct',
         srcId: c.id,
+      })
+    : null;
+};
+
+/**
+ * ما خُصم من التأمين مقابل قسطٍ متأخر إيجارٌ لا «إيراد آخر» (المراجعة الشاملة 2026-11-13 · A1-2 · قرار المالك س١): يُطفأ به التزام
+ * التأمين ويُسدَّد القسط نفسه بدفعةٍ «من التأمين» · مدين 2400 / دائن إيراد العقد بتقسيمه · وما بقي من الخصم (الأضرار) 4300 كما هو ·
+ * بها يرحّل الجهاز القيد وبها يعيد جهاز المالك اشتقاق قيد العضو (deriveSources.ts)
+ */
+export function depositRentLines(db: DB, contractId: string, amount: number, installmentContractId?: string | null): EntryLine[] | null {
+  // وقسطٌ من عقدٍ رُحِّل تأمينه إلى هذا (R12-DEP-2): الإيراد إيراد عقد القسط بتقسيمه وبُعده، والالتزام التزام هذا العقد
+  const own = installmentContractId && installmentContractId !== contractId ? installmentContractId : null;
+  return amount > 0 ? [
+    { account: '2400', descr: 'إطفاء التزام التأمين بقسطٍ متأخر', debit: amount, credit: 0 }, // i18n-exempt: نص قيد مخزَّن
+    ...rentRevenueLines(db, own ?? contractId, amount, 'إيراد إيجار من التأمين', 'credit') // i18n-exempt: نص قيد مخزَّن
+      .map((l) => (own ? { ...l, dims: { contractId: own } } : l)),
+  ] : null;
+}
+
+/**
+ * قيد سداد قسطٍ واحد من التأمين · مصدره العقد صاحب التأمين (DEPOSIT_RENT_SRC) فأبعاده أبعاده، ولكل قسطٍ قيده ودفعته كتحويل العربون ·
+ * وقسط عقدٍ رُحِّل تأمينه إليه بإيراده على عقد القسط (installmentContractId · R12-DEP-2)
+ */
+export const postDepositRent = (
+  db: DB,
+  a: { contractId: string; contractNo: string; tenant: string; amount: number; date: string; period: string; installmentContractId?: string }
+) => {
+  const lines = depositRentLines(db, a.contractId, a.amount, a.installmentContractId);
+  return lines
+    ? postEntry(db, {
+        date: a.date,
+        memo: 'سداد قسط من التأمين · عقد ' + a.contractNo + ' · ' + a.tenant + ' · ' + a.period, // i18n-exempt: نص قيد مخزَّن
+        lines,
+        srcType: DEPOSIT_RENT_SRC,
+        srcId: a.contractId,
       })
     : null;
 };
@@ -674,13 +732,8 @@ export const postKeyMoneyCommission = (
 
 /** سطور قيد عمولة التقبيل من مقبوضها وتسجيل المنشأة في الضريبة · null بلا عمولة · بها يعيد جهاز المالك اشتقاق قيد العضو من صفقته */
 export function keyMoneyLines(db: DB, commission: number): EntryLine[] | null {
-  if (!(commission > 0)) return null;
-  const { net, tax } = vatRegistered(db) ? splitVatInclusive(commission) : { net: commission, tax: 0 };
-  return [
-    { account: CASH, descr: 'عمولة مستلمة', debit: commission, credit: 0 },
-    { account: '4300', descr: 'إيراد عمولة تقبيل', debit: 0, credit: net },
-    ...(tax ? [{ account: '2200', descr: 'ضريبة مخرجات عمولة تقبيل', debit: 0, credit: tax }] : []), // i18n-exempt: بيان القيد المخزَّن
-  ];
+  // من المنطق النقي (ledgerCore · التوجيه الرابع ٤ · ٥) بتسجيل المنشأة في الضريبة
+  return keyMoneyLinesOf(commission, vatRegistered(db));
 }
 
 /* ─── قيود الفواتير والمشتريات (كما في النموذج حرفياً) ─── */
@@ -713,11 +766,7 @@ export const postInvoiceToLedger = (
   });
 
 /** سطور قيد فاتورة المبيعات من صافيها وضريبتها وإجماليها · بها يعيد جهاز المالك اشتقاق قيد العضو من فاتورته */
-export const invoiceLedgerLines = (v: { subtotal: number; tax: number; total: number }): EntryLine[] => [
-  { account: '1200', debit: v.total, credit: 0 },
-  ...(v.subtotal ? [{ account: '4100', debit: 0, credit: v.subtotal }] : []),
-  ...(v.tax ? [{ account: '2200', debit: 0, credit: v.tax }] : []),
-];
+export const invoiceLedgerLines = (v: { subtotal: number; tax: number; total: number }): EntryLine[] => invoiceLinesOf(v);
 
 /**
  * إشعار دائن على فاتورة مبيعات (قرار المالك على #30): عكس جزءٍ منها أو كلها بتاريخه · مدين 4100 بالصافي ومدين 2200
@@ -767,18 +816,8 @@ export function purchaseLedgerLines(
   p: { category: string; subtotal: number; tax: number; total: number; roundingDiff?: number; deductible?: boolean },
   assetLines: EntryLine[] = [],
 ): EntryLine[] {
-  const diff = p.roundingDiff ?? 0;
-  const assetSum = assetLines.reduce((s, l) => s + (l.debit || 0), 0);
-  // «خاضعة باسمنا» وحدها تفصل ضريبتها أصلاً قابلاً للاسترداد (1270) · الباقي بالتكلفة الكاملة
-  const dedTax = p.deductible ? p.tax : 0;
-  return [
-    { account: purchaseExpenseAccount(p.category), debit: p.subtotal + p.tax - dedTax - assetSum, credit: 0 },
-    ...assetLines,
-    ...(dedTax ? [{ account: '1270', descr: 'ضريبة مدخلات قابلة للاسترداد', debit: dedTax, credit: 0 }] : []),
-    ...(diff > 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: diff, credit: 0 }] : []),
-    { account: '2100', debit: 0, credit: p.total },
-    ...(diff < 0 ? [{ account: '5900', descr: 'فرق تقريب مقبول', debit: 0, credit: -diff }] : []),
-  ];
+  // «خاضعة باسمنا» وحدها تفصل ضريبتها أصلاً قابلاً للاسترداد (1270) · الباقي بالتكلفة الكاملة · من المنطق النقي (ledgerCore)
+  return purchaseLinesOf({ ...p, expenseAccount: purchaseExpenseAccount(p.category) }, assetLines);
 }
 
 /** تحصيل فاتورة مبيعات (المراجعة ٤.٢): مدين 1100 / دائن 1200 بالإجمالي */

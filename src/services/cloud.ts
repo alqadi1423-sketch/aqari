@@ -11,20 +11,25 @@ import { SCHEMA_VERSION } from '../db/schema';
 import * as SecureStore from 'expo-secure-store';
 import * as Network from 'expo-network';
 import * as LegacyFS from 'expo-file-system/legacy';
-import { File } from 'expo-file-system';
+import { File, Paths } from 'expo-file-system';
 import { GoogleSignin, isSuccessResponse } from '@react-native-google-signin/google-signin';
 import type { AppDB } from '../db/expoAdapter';
-import { cloudConfig, filesCloudConfig, DRIVE_SCOPE } from '../cloud/config';
+import { cloudConfig, filesCloudConfig, DRIVE_SCOPE, DRIVE_FILE_SCOPE } from '../cloud/config';
 import { type StorageIO } from '../cloud/storage';
 import { pumpUploads, ensureLocal, fileState, cacheUsage, clearCache, reconcileOwnerFiles, type FilesRemote } from '../files/cloudFiles';
 import { liveBlobs } from '../files/store';
 import { appFilesEnv } from './filesEnv';
 import { getSetting } from '../repos/settings';
 import { signInWithGoogleIdToken, refreshIdToken, deleteFirebaseAccount } from '../cloud/authRest';
-import { createSession, type Session, type SessionUser, type AccountProof } from '../cloud/session';
-import { whilePrompting } from './appLockService';
-import { FirestoreRemote } from '../cloud/firestore';
-import { listDriveBackups, uploadBackupToDrive, downloadBackupFromDrive, deleteAllAppDataFiles, type DriveBackup, type DriveIO } from '../cloud/drive';
+import { createSession, type SessionUser, type AccountProof } from '../cloud/session';
+import type { AuthProvider } from '../cloud/authProvider';
+import { googleAuthProvider } from '../cloud/googleAuth';
+import { deleteAccountFlow } from '../cloud/deleteAccountFlow';
+import { whilePrompting, deviceLockAvailable, askDevice } from './appLockService';
+import { FirestoreRemote, FirestoreHttpError } from '../cloud/firestore';
+import { listDriveBackups, uploadBackupToDrive, uploadVisibleCopy, downloadBackupFromDrive, deleteAllAppDataFiles, DriveError, type DriveBackup, type DriveIO } from '../cloud/drive';
+import { exportDriveBackups, deleteDriveBackups, driveExitView, emptyExitState, type DriveExitDeps, type DriveExitState, type ExportReport } from '../cloud/driveExit';
+import { writeToBackupFolder, backupFolder } from './backupFolder';
 import { resetDeviceData } from './deviceReset';
 import { profileForAudit } from '../domain/access/profile';
 import { cancelAllNotifications } from './notifications';
@@ -39,10 +44,10 @@ import { joinPath } from '../files/fsAdapter';
 import { createBackup, ensureFreeSpace } from '../domain/backup/create';
 import { prepareRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
 import type { BackupEnv } from '../domain/backup/types';
-import { planKeepPosted, applyKeepPosted, type KeepPlan } from '../domain/backup/keepPosted';
+import { planKeepPosted, applyKeepPosted, keepShortages, type KeepPlan } from '../domain/backup/keepPosted';
 import { toLocalISODate } from '../domain/dates';
-import { appBackupEnv } from './backupService';
-import { backupPasswordForSealing } from './backupPassword';
+import { appBackupEnv, shareUnsyncedFile } from './backupService';
+import { backupSecretForSealing } from './backupPassword';
 import { sealBackupFile } from '../domain/backup/seal';
 import { SYNC_TABLES } from '../db/syncTables';
 import { memberTokens, fullReadTables } from '../sync/acl';
@@ -60,6 +65,8 @@ import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';
 import { makeSafetyBackup } from '../domain/backup/create';
 import { leaveSafely } from '../domain/leaveOrg';
+import { saveUnsyncedWork, unsyncedAuditNote, dropMemberBackups, noteDropPending, retryDropMemberBackups, readExitNotice, writeExitNotice,
+  clearExitNotice, unsyncedPath, MEMBER_SINCE_KEY, type UnsyncedSaved, type ExitWhy } from '../domain/memberExit';
 import { wipeCloud, deleteAccountCloud, type CloudFiles } from './cloudWipe';
 import { logMemberAccess } from '../domain/memberAudit';
 import { appDataRoot } from '../files/expoFs';
@@ -71,21 +78,35 @@ import {
   updateMemberProfile, publishUnitMoves, checkUnitMoves, type MemberDoc, type MemberSpec, permWipeDue, notePermWipe, PERM_WIPE_KEY } from './org';
 import type { MemberProfile } from '../domain/access/profile';
 import { logAudit } from '../domain/audit';
-import { throwIfCancelled, CancelledError, type CancelSignal, type ProgressFn } from '../domain/progress';
+import { throwIfCancelled, isCancelled, CancelledError, type CancelSignal, type ProgressFn } from '../domain/progress';
 import { saveInvoiceIssued, setInvoiceStatusIssued, issuePendingInvoices, issueCreditNote, type InvoiceNumberSource, type IssueResult } from '../domain/invoiceIssue';
 import type { InvoiceInput, CreditNoteInput } from '../domain/invoices';
 
 /* ═══════════ الجلسة ═══════════ */
 
-let session: Session | null = null;
+/**
+ * مزوّد الهوية (ق٠-٦ · cloud/authProvider.ts): كل ما يحتاج الحساب هنا يمرّ به ولا يعرف أنه قوقل · اليوم مزوّد قوقل وحده حين يُهيّأ
+ * الربط · ومزوّدٌ آخر يُعطى بـsetAuthProvider عند التحويل وحده (بإذن المالك) وفي الاختبارات
+ */
+let session: AuthProvider | null = null;
+let chosen: AuthProvider | null = null;
 
-function getSession(): Session | null {
+/** مزوّد الهوية لهذا التشغيل بدل قوقل · null يعيد قوقل · لا يناديه التطبيق قبل التحويل (ق٣ إلى ق٥) */
+export function setAuthProvider(p: AuthProvider | null): void {
+  chosen = p;
+  session = null;
+  patch({ configured: !!getSession(), user: null, restored: false });
+}
+
+function getSession(): AuthProvider | null {
+  if (chosen) return chosen;
   const cfg = cloudConfig();
   if (!cfg) return null;
   if (session) return session;
-  GoogleSignin.configure({ webClientId: cfg.webClientId, scopes: [DRIVE_SCOPE], offlineAccess: false });
+  // بعد حذف النسخ من Drive وسحب الإذن على هذا الجهاز (ق٠-١) لا يُطلب نطاق Drive في أي دخولٍ بعده
+  GoogleSignin.configure(googleConfig(cfg.webClientId));
   const authOpts = { apiKey: cfg.apiKey };
-  session = createSession({
+  const google = createSession({
     google: {
       // نافذة قوقل تُخرج التطبيق إلى الخلفية: لا يُحسب ذلك خروجاً فيُقفل عند العودة (services/appLockService.ts)
       signIn: () => whilePrompting(async () => {
@@ -111,6 +132,7 @@ function getSession(): Session | null {
     signInWithIdp: (t) => signInWithGoogleIdToken(authOpts, t),
     refresh: (r) => refreshIdToken(authOpts, r),
   });
+  session = googleAuthProvider({ session: google, deleteFirebaseAccount: (tok) => deleteFirebaseAccount(authOpts, tok) });
   return session;
 }
 
@@ -139,9 +161,11 @@ export interface CloudState {
   gateError?: { lead: string; full: string } | null;
   /**
    * ما ينتظر قرار المستخدم ولا يُنفَّذ بدونه (قاعدة المالك ٢٠٢٦-١٠-٠٥): 'epoch' مُسحت المنشأة من جهاز آخر
-   * وعلى هذا الجهاز بيانات · 'removed' أُزيلت عضويته وفي طابوره ما لم يُرفع. والمزامنة متوقفة حتى يقرر.
+   * وعلى هذا الجهاز بيانات · 'removed' أُزيلت عضويته (أو غادر: left) ففُرّغ الجهاز عند أول اتصال بلا نسخةٍ كاملة، وما يبقى
+   * إشعارٌ بذلك وملفُّ ما لم يُرفع من عمله (pending عدد ما فيه) يرسله إلى صاحب المنشأة (المراجعة الشاملة 2026-11-13 · B-4 · س٩ وس١٠).
+   * والمزامنة متوقفة حتى يقرر.
    */
-  decision: { kind: 'epoch' | 'removed'; pending: number } | null;
+  decision: { kind: 'epoch' | 'removed'; pending: number; left?: boolean } | null;
 }
 
 let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null, restored: false, invites: null, gate: null, decision: null };
@@ -236,9 +260,11 @@ export function resumeSync(): void {
 
 export async function syncNow(): Promise<void> {
   const s = getSession();
-  const db = appDb;
+  const db0 = appDb;
   const cfg = cloudConfig();
-  if (!s || !db || !cfg || running || paused || !state.user || !state.online) return;
+  if (!s || !db0 || !cfg || running || paused || !state.user || !state.online) return;
+  // القاعدة الحية قد تتبدّل بتفريغٍ في أثناء الدورة (wipe.ts: «الاستدعاء يعيد قراءة env.db») · فتُقرأ من جديد بعده
+  let db: AppDB = db0;
   // قرارٌ معلّق (دعوة، أو بيانات بلا حساب، أو تحقق لم يتمّ) · لا مزامنة فلا تُنشأ منشأة قبله
   if (state.gate || state.invites?.length || activating) return;
   if (activeAccount(db) !== state.user.uid) return;
@@ -250,30 +276,49 @@ export async function syncNow(): Promise<void> {
   // بيانات الجهاز لحساب آخر · لا تُرفع إلى الداخل ولا يُنضمّ بها حتى يختار في بوابة الدخول
   const owner = deviceAccount(db);
   if (owner && owner.uid !== state.user.uid) return;
+  // خرج من المنشأة (أُزيل أو غادر) وفُرّغ الجهاز: إشعاره وملفُّ ما لم يُرفع من عمله يبقيان حتى يقرأه، والمزامنة متوقفة حتى ذلك
+  // (المراجعة الشاملة 2026-11-13 · B-4 · س٩ وس١٠)
+  // ونسخ الجهاز التي تعذّر حذفها عند خروجه يُعاد حذفها (R11-B4-2) · لا تُنتظر
+  retryExitDrop(db).catch(() => {});
+  const exit = readExitNotice(db);
+  if (exit) { patch({ decision: { kind: 'removed', pending: exit.count, ...(exit.why === 'left' ? { left: true } : {}) } }); return; }
   // رفضٌ متكرر من الخادم (حصة أو انشغال) · تُؤجَّل الدورات ثم تُستأنف من الطابور نفسه
   if (syncBackoffUntil(db)) return;
+  // القاعدة قد تكون استُبدلت باستعادة: بلا حالة مزامنة أو بحساب آخر أو بالتقاط متوقف ·
+  // enableSync لا يفعل شيئاً للحساب نفسه سوى تشغيل الالتقاط، ولغيره ينضمّ من جديد
+  const uid = state.user.uid;
+  const idToken = () => s.accessToken();
+  const member = readMembership(db);
   running = true;
   patch({ syncing: true, lastError: null });
   try {
-    // القاعدة قد تكون استُبدلت باستعادة: بلا حالة مزامنة أو بحساب آخر أو بالتقاط متوقف ·
-    // enableSync لا يفعل شيئاً للحساب نفسه سوى تشغيل الالتقاط، ولغيره ينضمّ من جديد
-    const uid = state.user.uid;
-    const idToken = () => s.idToken();
     // لغة المستخدم تتبعه على أجهزته وتُزامَن مع حسابه (قرار المالك ٢٠٢٦-١٠-٠٧) · فشلها لا يعطّل المزامنة
     const prefsAt = { projectId: cfg.projectId, uid, idToken };
     syncLanguageWithAccount(uid, { get: () => getCloudLang(prefsAt), put: (c) => putCloudLang(prefsAt, c) }).catch(() => {});
     // صفوف المرفقات تُزامَن حين يعمل تخزين الملفات وحده (النموذج المختلط) · وأول تشغيل يرفعها كلها
     setFilesSync(db, filesCloudOn());
-    const member = readMembership(db);
     if (!member) {
       enableSync(db, uid);
       // المالك ينتقل إلى منشأته مرة (صلاحيات الأقسام) · حروف أجهزته تنتقل كما هي
       await moveOwnerToOrg(db, remoteOf(db, uid, idToken, true), new FirestoreRemote({ projectId: cfg.projectId, uid, idToken, org: uid }), uid);
     }
+    // العضوية في الخادم أول الدورة، قبل كل قراءةٍ تشترطها (المراجعة الشاملة 2026-11-13 · B-2): مستند العضو يقرؤه صاحبه دائماً ولو حُذف
+    // (firestore.rules · members/{uid})، وعهد المسح والحد الأدنى للإصدار والسحب برموزه المحفوظة يرفضها الخادم (403) لمن أُزيل أو أُنقصت
+    // صلاحيته · فكانت الدورة ترمي قبل أن تعرف، ويبقى جواله يعرض ما كان يراه · أُزيلت ← يُفرَّغ الآن · تغيّرت ← تُحفظ ويُسحب بها في
+    // هذه الدورة، والتفريغ المنتظر في آخرها · ونُقلت وحدةٌ من عقاراته إلى عقار ليس له ← كتغيّرها · وعلى جهاز المالك لا طلب
+    // (سجل النقل يُرفض لمن أُزيل فلا يحجب فحص عضويته بعده، ورفضه هو الدليل الثاني على الإزالة مع غياب مستند العضوية · R11-B2-1)
+    const seen = { denied: false };
+    const moved = await checkUnitMoves(db, remoteOf(db, uid, idToken)).catch((e: unknown) => deniedAsNone(e, seen));
+    // مؤشر النقل تقدّم · فيُسجَّل التفريغ الآن قبل طلب العضوية، فلا يضيع بفشله
+    if (moved === 'lost') notePermWipe(db, 'moved');
+    const r0 = await refreshMembership(db, remoteOf(db, uid, idToken), seen.denied);
+    const r = r0 === 'same' && moved === 'lost' ? 'changed' : r0;
+    if (r === 'removed') { db = await exitRemoved(db); return; }
+    // والتغيّر يُسجَّل تفريغه المنتظر الآن (حُفظت العضوية الجديدة) فلا يضيع بفشلٍ بعده في الدورة
+    if (r === 'changed') notePermWipe(db, moved === 'lost' ? 'moved' : 'changed');
     // عهد المسح: مُسحت المنشأة من جهاز آخر وعلى هذا الجهاز بيانات ← يُسأل المستخدم ولا يُفرَّغ، والمزامنة
     // متوقفة حتى يقرر (قاعدة المالك ٢٠٢٦-١٠-٠٥) · وما ينتظر قراراً يبقى كذلك في الدورات التالية
     const org = member?.org ?? (getSyncState(db, 'org') === uid ? uid : null);
-    if (getSyncState(db, 'removal_pending') === '1') { patch({ decision: { kind: 'removed', pending: outboxCount(db) } }); return; }
     if (org) {
       const chatBase = chatEpochBaseline(db);
       const act = pendingEpoch(db) !== null ? 'ask' : await checkEpoch(db, remoteOf(db, uid, idToken), org);
@@ -315,38 +360,33 @@ export async function syncNow(): Promise<void> {
     pumpFilesInBackground(db, rep.applied + rep.pushed > 0).catch(() => {});
     // المالك ينشر نقل الوحدات بعد رفع صفوفها بوسمها الجديد (ملاحظة المالك على ٤.١٢)
     if (!member && org === uid) await publishUnitMoves(db, remoteOf(db, uid, idToken), org);
-    if (member) {
-      // العضوية في الخادم: أُزيلت فيُفرَّغ الجهاز · تغيّرت فيُعاد السحب من أوله بصلاحيته الجديدة،
-      // وكذلك إن نُقلت وحدةٌ من عقاراته إلى عقار ليس له
-      const moved = await checkUnitMoves(db, remoteOf(db, uid, idToken));
-      // مؤشر النقل تقدّم · فيُسجَّل التفريغ الآن قبل طلب العضوية، فلا يضيع بفشله
-      if (moved === 'lost') notePermWipe(db, 'moved');
-      const r0 = await refreshMembership(db, remoteOf(db, uid, idToken));
-      const r = r0 === 'same' && moved === 'lost' ? 'changed' : r0;
-      // لا تفريغ وفي الطابور ما لم يُرفع (قاعدة المالك ٢٠٢٦-١٠-٠٥): المُزال يُسأل، وتغيّر الصلاحية ينتظر الرفع
+    if (member && (r === 'changed' || r === 'same')) {
+      // تغيّر الصلاحية (عُرف أول الدورة): لا تفريغ وفي الطابور ما لم يُرفع (قاعدة المالك ٢٠٢٦-١٠-٠٥) · التفريغ منتظرٌ محفوظ حتى يُرفع
+      // الطابور وما لم يُرسل من المحادثة (في هذه الدورة)، ثم يقع في أول دورة بعدها، ويُعاد السحب من أوله بصلاحيته الجديدة (تحقق الدمج ف٢)
       const queued = outboxCount(db);
-      if (r === 'removed') {
-        if (queued > 0) {
-          setSyncState(db, 'removal_pending', '1');
-          patch({ decision: { kind: 'removed', pending: queued } });
-        } else {
-          await wipeForRemoval(db as AppDB);
-          patch({ lastError: 'أُزيلت عضويتك من المنشأة · فُرّغ هذا الجهاز من بياناتها بعد نسخة أمان' });
-          onData();
-        }
-      } else if (r === 'changed' || r === 'same') {
-        // التفريغ منتظرٌ محفوظ حتى يُرفع الطابور وما لم يُرسل من المحادثة (في آخر هذه الدورة)، ثم يقع في أول دورة بعدها (تحقق الدمج ف٢)
-        const due = permWipeDue(db, r, moved, queued + chatUnsentCount(db));
-        if (due) {
-          const next = readMembership(db)!;
-          await wipeLocal(db as AppDB, undefined, undefined, due === 'moved' ? 'نُقلت وحدةٌ من عقاراتك إلى عقار ليس لك' : 'تغيّرت صلاحيتك في المنشأة');
-          setSyncState(db, PERM_WIPE_KEY, null);
-          bindMember(db, next, state.user.email, getSyncState(db, 'org_name'));
-          onData();
-        }
+      const due = permWipeDue(db, r, moved, queued + chatUnsentCount(db));
+      if (due) {
+        const next = readMembership(db)!;
+        await wipeLocal(db, undefined, undefined, due === 'moved' ? 'نُقلت وحدةٌ من عقاراتك إلى عقار ليس لك' : 'تغيّرت صلاحيتك في المنشأة');
+        db = liveAfterWipe(db);
+        setSyncState(db, PERM_WIPE_KEY, null);
+        bindMember(db, next, state.user.email, getSyncState(db, 'org_name'));
+        onData();
       }
     }
-  } catch (e) {
+  } catch (e0) {
+    let e = e0;
+    // رفضٌ (403) على جهاز عضو بعد فحص العضوية أول الدورة: أُزيل أو تغيّرت صلاحيته في أثنائها · تُفحص من جديد قبل أن يُعرض «تعذّر
+    // الاتصال» (المراجعة الشاملة 2026-11-13 · B-2)
+    if (member && e instanceof FirestoreHttpError && e.status === 403) {
+      try {
+        const again = await refreshMembership(db, remoteOf(db, uid, idToken));
+        if (again === 'removed') { db = await exitRemoved(db); return; }
+        if (again === 'changed') { notePermWipe(db, 'changed'); e = new Error(t('org.permChanged')); }
+      } catch (e2) {
+        e = e2;
+      }
+    }
     const msg = arabic(e);
     try { setSyncState(db, 'last_error', msg); } catch { /* القاعدة مشغولة · يظهر في الحالة وحدها */ }
     patch({ lastError: msg });
@@ -374,7 +414,7 @@ export async function chatSyncNow(o: { threadId?: string; full?: boolean; force?
   if (getSyncState(db, 'restored_unadopted') === '1' || syncBackoffUntil(db)) return;
   const owner = deviceAccount(db);
   if (owner && owner.uid !== u.uid) return;
-  await runChatSync(db, { projectId: cfg.projectId, uid: u.uid, email: u.email, idToken: () => s.idToken() }, orgNameOf(db), o);
+  await runChatSync(db, { projectId: cfg.projectId, uid: u.uid, email: u.email, idToken: () => s.accessToken() }, orgNameOf(db), o);
 }
 
 /**
@@ -395,6 +435,8 @@ export function primeSession(): void {
 export function startCloud(db: AppDB, onRemoteData?: () => void): () => void {
   appDb = db;
   onData = onRemoteData ?? (() => {});
+  // نسخ الجهاز التي تعذّر حذفها عند خروج العضو تُحذف عند الإقلاع ولو خرج من حسابه بعد المغادرة (R11-B4-2)
+  retryExitDrop(db).catch(() => {});
   const s = getSession();
   patch({ configured: !!s, sync: syncStatus(db) });
   if (!s) { patch({ restored: true }); return () => {}; }
@@ -463,7 +505,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
     if (emptyOwn && state.online) {
       try {
         const sess = s;
-        const inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.email);
+        const inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.accessToken() }), u.email);
         if (inv.length) { patch({ invites: inv, gate: null }); return; }
       } catch { /* يكمل بنسخته */ }
     }
@@ -473,7 +515,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
       if (state.online) {
         try {
           const sess = s;
-          inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.email);
+          inv = await findInvites(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.accessToken() }), u.email);
         } catch (e) {
           inv = null;
           patch({ gateError: gateFailure(GATE_WHERE, true, e) });
@@ -487,7 +529,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
         if (r === 'unbound') { parkActive(env, UNBOUND); onData(); }
         // منشأة الحساب القائمة تُعرض قبل دعوات غيره (مراجعة التثبيت #52)
         const sess = s;
-        const ownOrg = await ownOrgExists(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.idToken() }), u.uid);
+        const ownOrg = await ownOrgExists(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.accessToken() }), u.uid);
         patch({ invites: inv, ownOrg, gate: null });
         return;
       }
@@ -495,7 +537,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
         // للحساب منشأةٌ قائمة: بيانات الجهاز لا تُدمج فيها (تتكرر أرقامها) · يظهر الركن وحده وسببه (ثالثاً أ ١١)
         const sess2 = s;
         // تعذّر الفحص يُظهر الزر · والربط نفسه يفحص صارماً ويحجز
-        const ownOrg = !(await localBindAllowed(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess2.idToken() }), u.uid, ensureDeviceId(db)).catch(() => true));
+        const ownOrg = !(await localBindAllowed(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess2.accessToken() }), u.uid, ensureDeviceId(db)).catch(() => true));
         patch({ gate: 'unbound', ownOrg });
         return;
       }
@@ -519,12 +561,17 @@ export async function activateAccount(u: SessionUser): Promise<void> {
 export async function confirmSameAccount(): Promise<AccountProof> {
   const s = getSession();
   if (!s || !state.user) return { ok: false, why: 'none' };
-  return s.confirmSameAccount();
+  return s.freshProof('lockReset');
 }
 
 /** على الجهاز حسابٌ يؤكَّد به قفل التطبيق (وإلا لا يُعرض «نسيت الرمز» ولا «تأكيد حسابي»: لا ينجحان) · يتغيّر بـsubscribeCloud */
 export function accountConfirmable(): boolean {
-  return !!cloudConfig() && !!state.user;
+  return !!getSession() && !!state.user;
+}
+
+/** مزوّد الحساب الذي يُؤكَّد به (لنصّ الزر والسجل والتنبيه) · null بلا ربط */
+export function accountProvider(): AuthProvider['id'] | null {
+  return getSession()?.id ?? null;
 }
 
 export async function bindUnboundToAccount(db: AppDB): Promise<void> {
@@ -533,7 +580,7 @@ export async function bindUnboundToAccount(db: AppDB): Promise<void> {
   if (!s || !cfg) throw new Error(t('bind.needConnection'));
   // منشأةٌ قائمة للحساب: لا دمج (تتكرر أرقام الجهاز المحلية فيها) · المراجعات الخارجية «ثالثاً أ ١١» · فحصٌ صارم ثم حجزٌ ذرّي
   // لهذا الجهاز (المتحقق المستقل: خطأ الشبكة كان يفتح الربط، وجهازان معاً كانا يربطان)
-  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => s.idToken() });
+  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => s.accessToken() });
   const dev = ensureDeviceId(db);
   let allowed: boolean;
   try { allowed = (await localBindAllowed(remote, state.user.uid, dev)) && (await claimLocalBind(remote, state.user.uid, dev)); }
@@ -569,20 +616,6 @@ function orgOfAccount(db: DB): string {
   return readMembership(db)?.org ?? state.user!.uid;
 }
 
-/**
- * «دمج مع السحابة» بقرار المستخدم · تُرفع العلامة وتعمل المزامنة بقاعدتها المعتادة (الأحدث يغلب) ·
- * وعهد المسح الحالي يُسجَّل معه، فالنسخة المستعادة لا تُفرَّغ بعهدٍ قديم (قاعدة المالك ٢٠٢٦-١٠-٠٥)
- */
-export async function clearRestoredUnadopted(db: AppDB, uid: string): Promise<void> {
-  const epoch = state.online ? await readEpoch(remoteFor(), orgOfAccount(db)).catch(() => null) : null;
-  db.transaction(() => {
-    setSyncState(db, 'restored_unadopted', null);
-    if (epoch !== null) { setSyncState(db, 'wipe_epoch', String(epoch)); setSyncState(db, 'epoch_pending', null); }
-  });
-  enableSync(db, uid);
-  patch({ sync: syncStatus(db), lastError: null });
-}
-
 function remoteFor(): FirestoreRemote {
   const s = getSession();
   const cfg = cloudConfig();
@@ -590,7 +623,7 @@ function remoteFor(): FirestoreRemote {
   if (!state.online) throw new Error('لا اتصال بالإنترنت · اعتماد النسخة للسحابة يحتاج اتصالاً لقراءة ما فيها');
   const sess = s;
   if (!appDb) throw new Error('القاعدة غير جاهزة');
-  return remoteOf(appDb, state.user.uid, () => sess.idToken());
+  return remoteOf(appDb, state.user.uid, () => sess.accessToken());
 }
 
 /** لقطة ما في السحابة · تُقرأ مرة والمزامنة متوقفة، فتخدم ضمّ القيود المرحّلة وخطة الاستبدال معاً */
@@ -626,15 +659,22 @@ export async function planAdoptPending(
   db: AppDB, onProgress?: (m: string) => void
 ): Promise<{ snap: CloudSnapshot; keep: KeepPlan; plan: CloudReplacePlan }> {
   const snap = await readCloud(remoteFor(), onProgress, await readEpoch(remoteFor(), orgOfAccount(db)));
-  return { snap, keep: planKeepPosted(db, { cloud: snap.docs }), plan: planFromSnapshot(db, snap) };
+  const keep = planKeepPosted(db, { cloud: snap.docs });
+  // ولا يُنزل الضمّ بنكاً ولا المحفظة تحت الصفر (القرار ٥٥ · R12-BAK-3) · يُسمّى قبل أي كتابة · والنسخة هنا مستعادةٌ تنتظر الاعتماد،
+  // فالرسالة تقول إنها لم تُعتمد لا إنها لم تُستعد (مراجعة R12-BAK-3)
+  const short = keepShortages(db, keep, 'adopt');
+  if (short.length) throw new Error(short.join(' · '));
+  return { snap, keep, plan: planFromSnapshot(db, snap) };
 }
 
 export async function adoptPendingWithKeep(
   db: AppDB, ready: { snap: CloudSnapshot; keep: KeepPlan }
-): Promise<{ queued: number; kept: number }> {
-  const kept = ready.keep.entries.length ? applyKeepPosted(db, ready.keep).entries.length : 0;
+): Promise<{ queued: number; kept: number; moves: number }> {
+  // وحركات نقل النقد في السحابة بعد النسخة تُحمل ولو لم يُضمّ قيد (قرار المالك 2026-11-14 · R12-BAK-3): applyKeepPosted لا يكتب شيئاً
+  // حين لا قيد ولا حركة
+  const kept = applyKeepPosted(db, ready.keep).entries.length;
   const { queued } = await adoptForCloud(db, planFromSnapshot(db, ready.snap));
-  return { queued, kept };
+  return { queued, kept, moves: ready.keep.cashMoves };
 }
 
 /** حساب البيانات على هذا الجهاز (uid وإيميل) · آخر من دخل وارتبطت به المزامنة */
@@ -644,52 +684,49 @@ export function deviceAccount(db: DB): { uid: string; email: string } | null {
 }
 
 /**
- * «حذف حسابي» (الدراسة أ، معتمدة): دخولٌ جديد بقوقل للحساب نفسه ثم بالترتيب ·
- * بيانات السحابة كلها (firestore.rules تأذن ساعةً بطلبٍ بوقت الخادم) · نسخ التطبيق على Drive ·
- * حساب Firebase · ثم الجهاز (resetDeviceData) · ثم الخروج. فشل خطوةٍ يوقف ما بعدها ويُبلَّغ.
+ * «حذف حسابي» (الدراسة أ، معتمدة · ق٠-٦: عبر مزوّد الهوية، cloud/deleteAccountFlow.ts): إثباتٌ حديث لغرض الحذف (قوقل: خروجٌ ثم دخولٌ
+ * جديد للحساب نفسه كما كان · الجهاز: قفل الجهاز ثم إثبات الخادم) ثم بالترتيب · بيانات السحابة كلها (firestore.rules تأذن ساعةً بطلبٍ
+ * بوقت الخادم) · نسخ التطبيق على Drive (لقوقل وحده) · الحساب عند مزوّده · ثم الجهاز (resetDeviceData) · ثم الخروج. فشل خطوةٍ يوقف ما
+ * بعدها ويُبلَّغ.
  */
 export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => void): Promise<void> {
   const s = getSession();
   const cfg = cloudConfig();
-  if (!s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
-  if (!state.online) throw new Error('حذف الحساب يحتاج اتصالاً بالإنترنت');
-  const uid = state.user.uid;
-  // خروجٌ من قوقل ثم دخولٌ جديد للحساب نفسه (المراجعة الشاملة · البند ٥: كان signIn وحده يعيد الحساب الحالي بلا نافذة، وحسابٌ آخر
-  // فيه يُكتب في الجلسة قبل المقارنة)
-  onProgress?.('جاري تأكيد هويتك بقوقل');
-  const proof = await s.reauthSameAccount();
-  if (!proof.ok) {
-    throw new Error(proof.why === 'cancel' ? 'أُلغي تأكيد الهوية'
-      : proof.why === 'mismatch' ? 'اخترت حساباً آخر · اختر الحساب نفسه لحذفه' : t('auth.reauthFailed'));
-  }
-  await pauseSync();
-  try {
-    onProgress?.('جاري حذف بياناتك من السحابة');
-    // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
-    // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
-    const chatS = { projectId: cfg.projectId, uid, email: state.user.email, idToken: () => s.idToken() };
+  const user = state.user;
+  const uid = user?.uid ?? '';
+  // المنشأة (وأعضاؤها ودعواتها) ثم المسار القديم · كلٌّ بنافذة حذفه
+  // المحادثة (قرار المالك 2026-10-07: #2): العضو يصير «عضواً سابقاً» في رسائله · والمالك تُحذف محادثات منشأته كلها
+  // عضويته في منشأة غيره إن كانت (اسمه وجواله وهويته · محاولة: عضوٌ أُزيل لا مستند له) ثم منشأته هو كاملة: الملفات والمحادثات
+  // والمنشأة والمسار القديم بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨ · والمراجعة الخارجية ٧ · النتيجة ١٥)
+  const wipeFirestore = s && cfg && user ? async () => {
+    const chatS = { projectId: cfg.projectId, uid, email: user.email, idToken: () => s.accessToken() };
     const mem = readMembership(db);
-    // عضويته في منشأة غيره إن كانت (اسمه وجواله وهويته · محاولة: عضوٌ أُزيل لا مستند له) ثم منشأته هو كاملة: الملفات والمحادثات
-    // والمنشأة والمسار القديم بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨ · والمراجعة الخارجية ٧ · النتيجة ١٥)
     const remotes = [
-      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: uid }),
-      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken() }),
+      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.accessToken(), org: uid }),
+      new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.accessToken() }),
     ];
     const member = mem
-      ? { org: mem.org, uid: mem.uid, remote: new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: mem.org }) }
+      ? { org: mem.org, uid: mem.uid, remote: new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.accessToken(), org: mem.org }) }
       : null;
     await deleteAccountCloud({ remotes, chat: chatS, org: uid, files: orgFilesTarget(uid), member }, onProgress);
-    onProgress?.('جاري حذف نسخك على Google Drive');
-    await deleteAllAppDataFiles(driveIO, await s.driveToken());
-    onProgress?.('جاري حذف الحساب');
-    await deleteFirebaseAccount({ apiKey: cfg.apiKey }, await s.idToken());
-    onProgress?.('جاري تفريغ هذا الجهاز');
-    await resetDeviceData(db);
-    await s.signOut();
-    patch({ user: null, sync: syncStatus(db), lastError: null });
-  } finally {
-    resumeSync();
-  }
+  } : undefined;
+  await deleteAccountFlow({
+    auth: s,
+    signedIn: !!user,
+    online: state.online,
+    t: (k) => t(k),
+    progress: onProgress,
+    // مزوّد الجهاز: صاحب الجهاز يفتح قفله قبل إثبات الخادم (لا نافذة دخولٍ تشهد به) · وقوقل كما كان بنافذته
+    confirmHolder: async () => !(await deviceLockAvailable()) || (await askDevice()),
+    pause: pauseSync,
+    resume: resumeSync,
+    wipeAccountCloud: wipeFirestore,
+    // وبعد الخروج من Drive على هذا الجهاز (حُذفت النسخ وسُحب الإذن · ق٠-١) لا يُطلب Drive ثانيةً فيعود إذنه
+    wipeDrive: async (token) => { await deleteAllAppDataFiles(driveIO, token); },
+    driveRetired: driveRetired(),
+    resetDevice: () => resetDeviceData(db),
+    done: () => patch({ user: null, sync: syncStatus(db), lastError: null }),
+  });
 }
 
 /** الخروج: الرموز وحدها تُمسح · بياناتك على الجهاز كما هي والتقاط التغييرات مستمر لحين العودة */
@@ -726,28 +763,97 @@ export function bindRestoredToCurrentAccount(db: AppDB): void {
   setSyncState(db, 'email', state.user.email);
 }
 
-/** أُزيلت العضوية: تفريغ بنسخة أمان وسجل، ثم يعود الجهاز لحساب صاحبه بلا منشأة غيره */
-async function wipeForRemoval(db: AppDB): Promise<void> {
-  await wipeLocal(db, undefined, undefined, 'أُزيلت عضويتك من المنشأة');
-  db.transaction(() => {
-    saveMembership(db, null);
-    for (const k of ['org', 'org_name', 'wipe_epoch', 'epoch_pending', 'removal_pending', 'cursor', 'moves_seen']) setSyncState(db, k, null);
+/** القاعدة الحية بعد التفريغ (wipe.ts: «الاستدعاء يعيد قراءة env.db») · على الجهاز هي نفسها مفتوحةً من جديد، فلا يُكتب في قاعدةٍ أُغلقت */
+function liveAfterWipe(db: AppDB): AppDB {
+  const live = appBackupEnv(db).db as AppDB;
+  if (appDb === db) appDb = live;
+  return live;
+}
+
+/**
+ * رفض سجل النقل (403) لا يحجب فحص العضوية بعده: من أُزيل لا يقرؤه، ومستند عضويته يقرؤه (B-2) · ويُحفظ الرفض: هو مع غياب مستند العضوية
+ * دليلا الإزالة (المراجعة الشاملة 2026-11-13 · R11-B2-1 · refreshMembership)
+ */
+function deniedAsNone(e: unknown, seen: { denied: boolean }): 'none' {
+  if (e instanceof FirestoreHttpError && e.status === 403) { seen.denied = true; return 'none'; }
+  throw e;
+}
+
+/** ما لم يُرفع من عمل العضو في ملفٍ صغير قبل تفريغ جهازه (B-4) · null إن لم يبقَ له شيء · وتعذّر الكتابة يرمي فلا يقع التفريغ ولا يضيع عمله */
+function saveUnsynced(db: AppDB, why: ExitWhy): UnsyncedSaved | null {
+  const m = readMembership(db);
+  return saveUnsyncedWork(appBackupEnv(db), db, {
+    reason: why, org: m?.org ?? getSyncState(db, 'org') ?? '', orgName: getSyncState(db, 'org_name'),
+    uid: m?.uid ?? state.user?.uid ?? '', email: state.user?.email ?? getSyncState(db, 'email'), name: m?.profile?.name ?? '',
+    deviceId: ensureDeviceId(db),
   });
 }
 
 /**
- * قرار المستخدم فيما ينتظره (state.decision) · 'keep' يُبقي بياناته: في عهد المسح تُرفع كلها إلى المنشأة من جديد،
- * وفي الإزالة يبقى الجهاز كما هو والمزامنة متوقفة · 'wipe' تفريغٌ بأمره بنسخة أمان وسجل بسببه.
+ * خروج العضو من المنشأة، أُزيل أو غادر (المراجعة الشاملة 2026-11-13 · B-4 · قرارا المالك س٩ وس١٠ تطبيقاً لقرار 2026-11-07 (٢ أ)):
+ * تُحذف أولاً نسخ الجهاز التي صُنعت وهو عضو، تُعرف بما فيها لا بساعته، قبل التفريغ ومحو العضوية ووقت انضمامه (R11-B4-2) · ثم تفريغٌ بلا
+ * نسخة أمان كاملة (كانت تبقى على جواله غير مشفّرة ويستعيدها من «البيانات والمساحة» بعد أن يصير جهازه «مالكاً» لحسابه)، وسببه وما حُفظ مما
+ * لم يُرفع في سجل العمليات · ثم تُمحى العضوية وما يخص المنشأة فيعود الجهاز لحساب صاحبه بلا منشأة غيره، وما تعذّر حذفه من النسخ يُسجَّل
+ * فيُعاد حذفه في كل دورة وإقلاع حتى يتمّ · يعيد القاعدة الحية بعده
  */
-export async function resolveDecision(choice: 'keep' | 'wipe', onProgress?: (m: string) => void): Promise<void> {
+async function wipeForRemoval(db: AppDB, saved: UnsyncedSaved | null, reason: string): Promise<AppDB> {
+  const since = getSyncState(db, MEMBER_SINCE_KEY);
+  const org = readMembership(db)?.org ?? getSyncState(db, 'org');
+  const dropped = await dropMemberBackups(appBackupEnv(db), org, since);
+  await wipeLocal(db, undefined, null, reason + unsyncedAuditNote(saved));
+  const live = liveAfterWipe(db);
+  live.transaction(() => {
+    saveMembership(live, null);
+    for (const k of ['org', 'org_name', 'wipe_epoch', 'epoch_pending', 'removal_pending', 'cursor', 'moves_seen', MEMBER_SINCE_KEY, PERM_WIPE_KEY]) setSyncState(live, k, null);
+    if (dropped.failed.length) noteDropPending(live, org, since);
+  });
+  return live;
+}
+
+/** نسخٌ تعذّر حذفها عند خروج العضو يُعاد حذفها (R11-B4-2) · دورةٌ واحدة في المرة، وفشلها لا يمسّ المزامنة */
+let droppingBackups = false;
+async function retryExitDrop(db: AppDB): Promise<void> {
+  if (droppingBackups) return;
+  droppingBackups = true;
+  try { await retryDropMemberBackups(appBackupEnv(db), db); } catch { /* يُعاد في الدورة التالية */ } finally { droppingBackups = false; }
+}
+
+/**
+ * أُزيلت العضوية (B-2 وB-4 · س٩): «يُفرَّغ جواله عند أول اتصال بعد حفظ ذلك التعديل وحده في ملفٍ صغير يُرسل لك، بلا خيار «أبقِ بياناتي»» ·
+ * ما في طابوره ورفضته السحابة من عمله يُحفظ في الملف أولاً (وفشلُه يوقف التفريغ فيُعاد في الدورة التالية) · ثم يبقى إشعارٌ بذلك حتى يقرأه
+ */
+async function exitRemoved(db: AppDB): Promise<AppDB> {
+  const saved = saveUnsynced(db, 'removed');
+  const live = await wipeForRemoval(db, saved, t('org.removedReason', { lng: 'ar' }));
+  writeExitNotice(live, { why: 'removed', count: saved?.count ?? 0, file: saved?.name ?? null, at: new Date().toISOString() });
+  patch({ decision: { kind: 'removed', pending: saved?.count ?? 0 }, lastError: null });
+  onData();
+  return live;
+}
+
+/** إرسال ملفّ ما لم يُرفع إلى صاحب المنشأة من نافذة المشاركة (B-4) · وبلا ملفٍ لا شيء */
+export async function shareUnsyncedNow(): Promise<void> {
+  const db = appDb;
+  const n = db ? readExitNotice(db) : null;
+  if (!db || !n?.file) return;
+  await shareUnsyncedFile(unsyncedPath(appBackupEnv(db), n.file), t('org.exit.shareTitle'));
+}
+
+/**
+ * قرار المستخدم فيما ينتظره (state.decision) · في عهد المسح: 'keep' يُبقي بياناته وتُرفع كلها إلى المنشأة من جديد (للمالك وحده)،
+ * و'wipe' تفريغٌ بأمره بنسخة أمان وسجل بسببه · وفي الإزالة والمغادرة لا قرار: فُرّغ الجهاز عند أول اتصال بلا «أبقِ بياناتي» (B-4 · س٩)،
+ * و'done' أنه قرأ الإشعار فيُمحى ويُحذف ملفُّ ما لم يُرفع من الجهاز بأمره، وتُستأنف المزامنة.
+ */
+export async function resolveDecision(choice: 'keep' | 'wipe' | 'done', onProgress?: (m: string) => void): Promise<void> {
   if (!appDb || !state.decision) return;
   const db = appDb;
   if (state.decision.kind === 'epoch') {
+    if (choice === 'done') return;
     await resolveEpoch(db, choice, () => wipeLocal(db, onProgress, undefined, 'مُسحت بيانات المنشأة من جهاز آخر · بأمر المستخدم').then(() => db));
-  } else if (choice === 'wipe') {
-    await wipeForRemoval(db);
+  } else if (choice === 'done') {
+    clearExitNotice(appBackupEnv(db), db);
   } else {
-    return; // يبقى منتظراً · لا رفع ولا تفريغ
+    return; // لا «أبقِ بياناتي» ولا تفريغ ينتظر بعد الإزالة · فُرّغ الجهاز عند أول اتصال
   }
   patch({ decision: null, sync: syncStatus(db) });
   onData();
@@ -756,8 +862,11 @@ export async function resolveDecision(choice: 'keep' | 'wipe', onProgress?: (m: 
 
 /* ═══════════ مسح كل البيانات ═══════════ */
 
-/** تفريغ الجهاز: القاعدة والمرفقات والمصغّرات ولقطة الودجت · بنسخة أمان، ويبقى الحساب وهوية الجهاز */
-async function wipeLocal(db: AppDB, onProgress?: (m: string) => void, safety?: string, reason?: string): Promise<string> {
+/**
+ * تفريغ الجهاز: القاعدة والمرفقات والمصغّرات ولقطة الودجت · بنسخة أمان، ويبقى الحساب وهوية الجهاز · وsafety = null لخروج العضو من
+ * المنشأة: بلا نسخة أمان (B-4 · wipeForRemoval)
+ */
+async function wipeLocal(db: AppDB, onProgress?: (m: string) => void, safety?: string | null, reason?: string): Promise<string> {
   return holdChat(async () => {
     const env = appBackupEnv(db);
     const path = await wipeAllData(env, onProgress, safety, reason);
@@ -792,9 +901,9 @@ export async function wipeEverything(db: AppDB, onProgress?: (m: string) => void
     let epoch: number | null = null;
     if (cloud) {
       const sess = s!;
-      const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.idToken(), org: user!.uid });
+      const remote = new FirestoreRemote({ projectId: cfg!.projectId, uid: user!.uid, idToken: () => sess.accessToken(), org: user!.uid });
       // الصفوف والمحادثات وملفات التخزين بخطواتٍ يختبرها المحاكي كما تجري (cloudWipe.ts · ثالثاً أ ٨ · قرار المالك #28)
-      epoch = await wipeCloud({ remote, chat: { projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.idToken() },
+      epoch = await wipeCloud({ remote, chat: { projectId: cfg!.projectId, uid: user!.uid, email: user!.email, idToken: () => sess.accessToken() },
         org: user!.uid, files: orgFilesTarget(user!.uid) }, onProgress);
     }
     await wipeLocal(db, onProgress, safety);
@@ -824,7 +933,7 @@ export async function acceptInviteNow(db: AppDB, org: string, doc: MemberDoc): P
     // نسخة الحساب الجديدة فارغة (activateAccount) · وإن لم تكن فلا يُمسح شيء ويُرفض القبول
     // نسخته فارغة (جديدة، أو منشأة فارغة له قبل قراره) · وما فيه بيانات لا يُستبدل بعضوية
     if (hasUserData(db) || (activeAccount(db) && activeAccount(db) !== user.uid)) throw new Error('على الجهاز نسخة فيها بيانات لهذا الحساب · لا تُستبدل بعضوية');
-    const remote = new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: user.uid, idToken: () => sess.idToken() });
+    const remote = new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: user.uid, idToken: () => sess.accessToken() });
     const m = await acceptInvite(db, remote, org, user.uid, doc);
     bindMember(db, m, user.email, doc.orgName || null);
     patch({ invites: null, sync: syncStatus(db) });
@@ -844,7 +953,10 @@ export function declineInvites(db: AppDB): void {
   syncNow();
 }
 
-/** مغادرة العضو المنشأة · تُحذف عضويته ويُفرَّغ الجهاز ويخرج · ولا مغادرة قبل رفع تغييراته */
+/**
+ * مغادرة العضو المنشأة · تُحذف عضويته ويُفرَّغ الجهاز ويخرج · ولا مغادرة قبل رفع تغييراته · وكالإزالة (س١٠ · 2026-11-13 · B-4): لا نسخة
+ * أمان كاملة، وما لم يُرفع من عمله (ما رفضته السحابة) وحده في ملفٍ صغير تُفتح نافذة إرساله إلى صاحب المنشأة، ويبقى إشعاره حتى يقرأه
+ */
 export async function leaveOrgNow(db: AppDB): Promise<void> {
   const m = readMembership(db);
   const s = getSession();
@@ -855,25 +967,26 @@ export async function leaveOrgNow(db: AppDB): Promise<void> {
   await pauseSync();
   try {
     const user = state.user;
-    // نسخة أمان أولاً، ثم الخروج، ثم التفريغ بها وبسببه في سجل العمليات كالإزالة (#65)
+    const out: { saved: UnsyncedSaved | null; live: AppDB } = { saved: null, live: db };
+    // ما لم يُرفع أولاً (وفشله يوقف كل شيء)، ثم الخروج، ثم التفريغ بلا نسخة أمان وبسببه في سجل العمليات كالإزالة (#65 · B-4)
     await leaveSafely({
-      backup: () => makeSafetyBackup(appBackupEnv(db), 'pre-wipe'),
+      backup: async () => { out.saved = saveUnsynced(db, 'left'); return out.saved?.name ?? null; },
       leaveCloud: async () => {
         // يخرج من مجموعات المحادثة ومن دليلها قبل عضويته (قرار المالك #19)
         const cfgL = cloudConfig();
-        if (cfgL) await chatLeaveOrg({ projectId: cfgL.projectId, uid: user.uid, email: user.email, idToken: () => sess.idToken() }, m.org).catch(() => {});
-        await leaveOrg(remoteOf(db, user.uid, () => sess.idToken()), m.org, m.uid);
+        if (cfgL) await chatLeaveOrg({ projectId: cfgL.projectId, uid: user.uid, email: user.email, idToken: () => sess.accessToken() }, m.org).catch(() => {});
+        await leaveOrg(remoteOf(db, user.uid, () => sess.accessToken()), m.org, m.uid);
       },
-      wipe: async (safety, why) => {
-        await wipeLocal(db, undefined, safety, why);
-        db.transaction(() => {
-          saveMembership(db, null);
-          for (const k of ['org', 'org_name', 'wipe_epoch', 'epoch_pending', 'removal_pending', 'cursor', 'moves_seen']) setSyncState(db, k, null);
-        });
-      },
+      wipe: async (_saved, why) => { out.live = await wipeForRemoval(db, out.saved, why); },
     }, t('org.leftReason', { lng: 'ar' }));
+    const saved = out.saved;
+    if (saved) {
+      writeExitNotice(out.live, { why: 'left', count: saved.count, file: saved.name, at: new Date().toISOString() });
+      // نافذة الإرسال الآن، وتعذّرها لا يُفشل المغادرة وقد تمّت: الإشعار والملف باقيان حتى يقرأه عند دخوله التالي
+      await shareUnsyncedFile(unsyncedPath(appBackupEnv(out.live), saved.name), t('org.exit.shareTitle')).catch(() => {});
+    }
     await sess.signOut();
-    patch({ user: null, sync: syncStatus(db) });
+    patch({ user: null, sync: syncStatus(out.live) });
   } finally {
     resumeSync();
   }
@@ -885,7 +998,7 @@ function teamRemote(): { remote: FirestoreRemote; org: string } {
   if (!s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
   if (!state.online) throw new Error('إدارة الأعضاء تحتاج اتصالاً بالإنترنت');
   const sess = s;
-  return { remote: new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.idToken(), org: state.user.uid }), org: state.user.uid };
+  return { remote: new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.accessToken(), org: state.user.uid }), org: state.user.uid };
 }
 const orgNameOf = (db: DB) => db.get<{ name: string }>('SELECT name FROM company WHERE id = 1')?.name || 'منشأة عقاري';
 
@@ -935,7 +1048,7 @@ export async function updateMyProfileNow(db: DB, profile: MemberProfile) {
   if (!m || !s || !cfg || !state.user) throw new Error('سجّل الدخول أولاً');
   if (!state.online) throw new Error('حفظ بياناتك يحتاج اتصالاً بالإنترنت');
   const sess = s;
-  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.idToken(), org: m.org });
+  const remote = new FirestoreRemote({ projectId: cfg.projectId, uid: state.user.uid, idToken: () => sess.accessToken(), org: m.org });
   const r = await updateMemberProfile(remote, m.org, m.uid, profile);
   db.transaction(() => {
     saveMembership(db, { ...m, profile });
@@ -952,12 +1065,12 @@ export async function chatSupervisorNow(email: string): Promise<string[]> {
   const s = getSession(); const cfg = cloudConfig();
   if (!s || !cfg || !state.user || !email) return [];
   if (!state.online) throw new Error('offline');
-  return supervisorOf({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email);
+  return supervisorOf({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, state.user.uid, email);
 }
 export async function setChatSupervisorNow(email: string, sections: string[]): Promise<void> {
   const s = getSession(); const cfg = cloudConfig();
   if (!s || !cfg || !state.user) { teamRemote(); return; }
-  await setSupervisor({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, state.user.uid, email, sections);
+  await setSupervisor({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, state.user.uid, email, sections);
 }
 export async function removeMemberNow(db: DB, uid: string, email = '', before: MemberDoc | null = null) {
   const t = teamRemote();
@@ -967,7 +1080,7 @@ export async function removeMemberNow(db: DB, uid: string, email = '', before: M
   const s = getSession(); const cfg = cloudConfig();
   // وفشله لا يُظهر الإزالة فاشلةً وقد تمّت (تحقق الدمج ف٥) · والقواعد تمنع المُزال من المحادثة بعضويته أصلاً
   if (s && cfg && state.user) {
-    await chatRemoveMember({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, t.org, uid, email)
+    await chatRemoveMember({ projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, t.org, uid, email)
       .catch(() => {});
   }
 }
@@ -977,7 +1090,7 @@ function chatOnline(): { db: DB; s: ChatSession; org: string } {
   const sess = getSession(); const cfg = cloudConfig(); const db = appDb;
   if (!sess || !cfg || !state.user || !db) throw new Error(t('chat.needAccount'));
   if (!state.online) throw new Error(t('chat.needOnline'));
-  return { db, s: { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => sess.idToken() }, org: readMembership(db)?.org ?? state.user.uid };
+  return { db, s: { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => sess.accessToken() }, org: readMembership(db)?.org ?? state.user.uid };
 }
 export async function chatAckNow(threadId: string, msgId: string): Promise<void> {
   const c = chatOnline(); await chatAcknowledge(c.db, c.s, c.org, threadId, msgId);
@@ -1007,7 +1120,7 @@ export async function chatPinNow(threadId: string, msgId: string, on: boolean): 
   if (!s || !cfg || !state.user || !db) throw new Error(t('chat.needAccount'));
   if (!state.online) throw new Error(t('chat.pinOffline'));
   const org = readMembership(db)?.org ?? state.user.uid;
-  await chatSetPin(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, msgId, on);
+  await chatSetPin(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, org, threadId, msgId, on);
 }
 /** تعديل المجموعة: الاسم والإعدادات والأعضاء والمسؤولون (#19 و2026-10-08T05:31Z) · كلٌّ بصلاحيته */
 export async function chatEditGroupNow(threadId: string, change: GroupChange): Promise<void> {
@@ -1015,7 +1128,7 @@ export async function chatEditGroupNow(threadId: string, change: GroupChange): P
   if (!s || !cfg || !state.user || !db) { teamRemote(); return; }
   if (!state.online) teamRemote();
   const org = readMembership(db)?.org ?? state.user.uid;
-  await chatEditGroup(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.idToken() }, org, threadId, change);
+  await chatEditGroup(db, { projectId: cfg.projectId, uid: state.user.uid, email: state.user.email, idToken: () => s.accessToken() }, org, threadId, change);
 }
 /* ─── مراجعة المالك محادثةً بسبب، وانضمامه إلى مجموعة (قرارا المالك 2026-10-08T04:11Z) · للمالك وحده، وتحتاج اتصالاً ─── */
 
@@ -1025,7 +1138,7 @@ function ownerChatSession(): { s: ChatSession; db: DB } {
   const cfg = cloudConfig()!;
   const db = appDb;
   if (!db || readMembership(db)) throw new Error('chat: owner only');
-  return { s: { projectId: cfg.projectId, uid: t.org, email: state.user!.email, idToken: () => sess.idToken() }, db };
+  return { s: { projectId: cfg.projectId, uid: t.org, email: state.user!.email, idToken: () => sess.accessToken() }, db };
 }
 export async function chatReviewCandidatesNow(): Promise<RemoteThread[]> {
   const { s } = ownerChatSession();
@@ -1085,10 +1198,15 @@ const driveIO: DriveIO = {
 
 async function driveToken(): Promise<string> {
   const s = getSession();
-  if (!s || !state.user) throw new Error('سجّل الدخول بحساب قوقل أولاً');
+  if (!s || !state.user || !s.driveToken) throw new Error('سجّل الدخول بحساب قوقل أولاً');
   return s.driveToken();
 }
 
+/*
+ * النسخ الجديدة لا تُرفع إلى Drive (ق٠-١ · قرار المالك «مابي التطبيق يرتبط بقوقل»): أُزيل زرّ «نسخ إلى Google Drive» فلا يناديه شيء،
+ * وتُحفظ النسخ في المجلد الذي يختاره المستخدم (backupFolder.ts) · ويبقى الرفع أدناه بلا نداءٍ مع اختباراته حتى خطوة إزالة شاشة Drive،
+ * بعد أن يُخرج المالك نسخه ويحذفها (driveExit.ts).
+ */
 /** نسخة جديدة تجتاز كل تحققات الإنشاء ثم تُرفع وتُطابق بصمتها على Drive */
 export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?: CancelSignal): Promise<DriveBackup> {
   const env = appBackupEnv(db);
@@ -1097,12 +1215,31 @@ export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?:
   // الملفات في الخادم: نسخة Drive للبيانات وقائمة الملفات وبصماتها، ومعها ما لم يُرفع بعد · فتصير صغيرة وسريعة
   const manifest = await createBackup(env, out, onProgress, { signal, dataOnly: filesCloudOn() });
   try {
-    // نسخة Drive تُشفَّر أيضاً إن وُضعت كلمة مرور النسخ · ووُضعت وتعذّرت قراءتها: لا رفع (ثالثاً أ ٩)
-    const pw = await backupPasswordForSealing();
-    if (pw) await sealBackupFile(env, out, pw, onProgress);
+    // نسخة Drive مشفّرة دائماً بمفتاح الاسترداد (التوجيه الرابع ٤ · ٣) · وبلا مفتاحٍ أو تعذّرت قراءته: لا رفع
+    // سرّ الحساب الداخل لا سرّ الجهاز (المدقق الخارجي D١)
+    const secret = await backupSecretForSealing(getSyncState(db, 'uid'));
+    await sealBackupFile(env, out, secret, onProgress);
     throwIfCancelled(signal);
     const token = await driveToken();
-    return await uploadBackupToDrive(driveIO, token, out, name, { encrypted: !!pw, notes: !!manifest.notes?.length, onProgress, signal });
+    const meta = { encrypted: true, notes: !!manifest.notes?.length, onProgress, signal };
+    const b = await uploadBackupToDrive(driveIO, token, out, name, meta);
+    // ونسخةٌ في المجلد الظاهر (التوجيه الرابع ٤ · ٣) · حسابٌ دخل قبل نطاقه يُسأل عنه مرةً ثم يُعاد الرفع · وتعذّرها بعد أن رُفعت المخفية
+    // وطابقت لا يُعلن فشل النسخ كله (المدقق الخارجي D٤: كان يقال «تعذّر النسخ» والنسخة في Drive، ومن رفض النطاق لا تنجح له نسخةٌ أبداً)،
+    // بل يُذكر للمستخدم مع النجاح
+    try {
+      throwIfCancelled(signal);
+      try {
+        await uploadVisibleCopy(driveIO, token, out, name, meta);
+      } catch (e) {
+        if (!(e instanceof DriveError) || e.status !== 403) throw e;
+        await whilePrompting(() => GoogleSignin.addScopes({ scopes: [DRIVE_FILE_SCOPE] }));
+        await uploadVisibleCopy(driveIO, await driveToken(), out, name, meta);
+      }
+    } catch (e) {
+      const m = e instanceof Error ? e.message : '';
+      return { ...b, visibleFailed: isCancelled(e) ? t('drive.visibleCancelled') : (/[؀-ۿ]/.test(m) ? m : t('drive.visibleFailed')) };
+    }
+    return b;
   } finally {
     try { env.fs.remove(out); } catch { /* يكنسه الإقلاع */ }
   }
@@ -1135,6 +1272,67 @@ export async function prepareRestoreFromDrive(
   }
 }
 
+/* ═══════════ الخروج من Drive (ق٠-١ · F-الاستقلال-عن-قوقل ٧.٤) ═══════════ */
+
+/** سجل الخروج على هذا الجهاز: ما خرج من نسخ Drive إلى المجلد، ووقت انتهاء الخروج (حُذفت وسُحب الإذن) */
+const exitFile = () => new File(Paths.document, 'drive-exit.json');
+function loadExit(): DriveExitState {
+  try {
+    const f = exitFile();
+    if (!f.exists) return emptyExitState();
+    const j = JSON.parse(f.textSync()) as Partial<DriveExitState>;
+    return { exported: j.exported && typeof j.exported === 'object' ? j.exported : {}, ...(j.retiredAt ? { retiredAt: j.retiredAt } : {}) };
+  } catch { return emptyExitState(); }
+}
+function storeExit(st: DriveExitState): void {
+  const f = exitFile();
+  if (!f.exists) f.create();
+  f.write(JSON.stringify(st));
+}
+
+/** انتهى الخروج من Drive على هذا الجهاز: لا شاشة، ولا نطاق Drive في الدخول، و«حذف حسابي» لا يطلب Drive */
+export function driveRetired(): boolean { return !!loadExit().retiredAt; }
+
+function googleConfig(webClientId: string) {
+  const withDrive = { webClientId, scopes: [DRIVE_SCOPE, DRIVE_FILE_SCOPE], offlineAccess: false };
+  return driveRetired() ? { ...withDrive, scopes: [] } : withDrive;
+}
+
+function exitDeps(db: AppDB): DriveExitDeps {
+  const env = appBackupEnv(db);
+  return {
+    io: driveIO,
+    token: driveToken,
+    tmpPath: (b) => { env.fs.mkdirp(env.tmpDir); return joinPath(env.tmpDir, 'drive-exit-' + b.id.replace(/[^A-Za-z0-9_-]/g, '') + '.aqbk'); },
+    removeTmp: (p) => { try { env.fs.remove(p); } catch { /* يكنسه الإقلاع */ } },
+    // مطابقةٌ في المجلد ببصمة Drive نفسها (التي طابقها التنزيل)
+    save: async (p, b) => (await writeToBackupFolder(p, b.name, { size: driveIO.sizeOf(p), sha256: b.sha256, hasher: expoHasher })).name,
+    load: loadExit,
+    store: storeExit,
+    revoke: async () => {
+      await GoogleSignin.revokeAccess();
+      const cfg = cloudConfig();
+      if (cfg) GoogleSignin.configure({ webClientId: cfg.webClientId, scopes: [], offlineAccess: false });
+    },
+  };
+}
+
+/** شاشة «نسخك على Google Drive»: النسخ وما يظهر من أزرارها */
+export async function driveExitStatus(triedExport = false) {
+  const list = await listDriveBackups(driveIO, await driveToken());
+  return { list, view: driveExitView(list, loadExit(), { folder: !!backupFolder(), triedExport }) };
+}
+
+/** «نزّل النسخ إلى المجلد» */
+export async function exportDriveBackupsNow(db: AppDB, onProgress?: ProgressFn, signal?: CancelSignal): Promise<ExportReport> {
+  return exportDriveBackups(exitDeps(db), { onProgress, signal });
+}
+
+/** «احذف نسخ عقاري من Drive» ثم سحب الإذن · unexportedConfirmed: عدد ما لم يخرج كما أكّده المستخدم */
+export async function deleteDriveBackupsNow(db: AppDB, unexportedConfirmed?: number, onProgress?: ProgressFn): Promise<{ deleted: number }> {
+  return deleteDriveBackups(exitDeps(db), { unexportedConfirmed, onProgress });
+}
+
 /**
  * مصدر رقم الفاتورة الضريبية (invoiceIssue.ts) · جهازٌ يزامن يأخذه من عدّاد السحابة، وبلا اتصال أو جلسة
  * يُرفض الطلب فتبقى الفاتورة مسودةً بانتظار الإصدار · وجهازٌ لا يزامن: null فيُرقِّم من تسلسله.
@@ -1146,7 +1344,7 @@ function invoiceSource(db: DB): InvoiceNumberSource | null {
     return { takeInvoiceSeq: () => Promise.reject(new Error('لا اتصال')) };
   }
   const sess = s;
-  return remoteOf(db, state.user.uid, () => sess.idToken());
+  return remoteOf(db, state.user.uid, () => sess.accessToken());
 }
 
 /** حفظ فاتورة من الشاشة · الإصدار برقم العدّاد، وبلا اتصال مسودةٌ تصدر عند عودته */
@@ -1209,7 +1407,7 @@ function filesRemote(db: DB): FilesRemote | null {
   const org = readMembership(db)?.org ?? (getSyncState(db, 'org') === state.user.uid ? state.user.uid : null);
   if (!org) return null;
   const sess = s;
-  return { io: storageIO, target: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.idToken() }, access: readAccess(db) };
+  return { io: storageIO, target: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.accessToken() }, access: readAccess(db) };
 }
 
 const cacheLimitOf = (db: DB) => Number(getSetting(db, 'fileCacheMb') || 500) * 1024 * 1024;
@@ -1275,5 +1473,5 @@ function orgFilesTarget(org: string): CloudFiles | null {
   const s = getSession();
   if (!fc || !s) return null;
   const sess = s;
-  return { io: storageIO, t: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.idToken() } };
+  return { io: storageIO, t: { base: fc.base, bucket: fc.bucket, org, idToken: () => sess.accessToken() } };
 }

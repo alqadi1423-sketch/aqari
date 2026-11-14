@@ -4,6 +4,7 @@
  * الجدول يُقرأ لقسمه ولما يحتاجه من الأقسام سياقاً، لا لكل قسم.
  */
 import { SECTION_KEYS, type SectionKey } from './sections';
+import { DEPOSIT_RENT_SRC } from '../contracts/installments';
 
 /** أقسام تحتاج اسم العقار والوحدة سياقاً لعملها */
 const NEEDS_UNITS: SectionKey[] = [
@@ -46,6 +47,9 @@ export const READ_TABLE: Record<string, SectionKey[]> = {
   invoice_lines: ['invoices', 'reports', 'ledger'],
   purchases: ['purchases', 'reports', 'ledger', 'banks'],
   bank_tx: ['banks', 'reports', 'ledger'],
+  // كشوف البنك وسطورها (الهجرة ٥٥): لمن يرى حركات البنك
+  bank_statements: ['banks', 'reports', 'ledger'],
+  bank_statement_lines: ['banks', 'reports', 'ledger'],
   handovers: ['handover', 'contracts'],
   audit_log: ['audit'],
   journal_entries: MONEY_BOOKS,
@@ -136,7 +140,7 @@ const JOURNAL_SOURCE: Partial<Record<SectionKey, string>> = {
  * صفوف سجل العمليات التي لا يقرؤها إلا المالك: مراجعته محادثةً بسببها (قرار المالك 2026-10-08T05:31Z: «صف
  * المراجعة في سجل العمليات يُحجب كله عن غير المالك») · مطابقة لـ REVIEW_ENTITY في src/chat/types.ts
  */
-export const OWNER_ONLY_AUDIT = new Set(['مراجعة محادثة']); // i18n-exempt: قيمة مخزّنة
+export const OWNER_ONLY_AUDIT = new Set(['مراجعة محادثة', 'تقرير عطل']); // i18n-exempt: قيمة مخزّنة · والثاني CRASH_ENTITY (التوجيه الرابع ٤ · ٤)
 
 export function readSectionsOf(table: string, row: Record<string, unknown> | null): SectionKey[] {
   if (table === 'audit_log' && OWNER_ONLY_AUDIT.has(String(row?.entity_type ?? ''))) return [];
@@ -150,7 +154,11 @@ export function readSectionsOf(table: string, row: Record<string, unknown> | nul
     const own = journalSection(row?.src_type as string | null);
     const src = JOURNAL_SOURCE[own];
     const viaSource = src ? (READ_TABLE[src] ?? []).filter((x) => MONEY_SECTIONS.has(x)) : [];
-    return [...new Set<SectionKey>([...MONEY_BOOKS, own, ...viaSource])];
+    // وقيد سداد القسط من التأمين (وعكسه) مستنده دفعته «من التأمين» أيضاً: فقارئها (التحصيل) يقرؤه، وإلا انتظرت أباها على جهازه
+    // وبقي القسط مستحقاً يطالَب به المستأجر (المراجعة الشاملة 2026-11-13 · A1-2) · والكتابة بـ OP_JOURNAL_SRC لا تتغير
+    const viaPayment = String(row?.src_type ?? '').replace(/_rev$/, '') === DEPOSIT_RENT_SRC
+      ? READ_TABLE.contract_payments.filter((x) => MONEY_SECTIONS.has(x)) : [];
+    return [...new Set<SectionKey>([...MONEY_BOOKS, own, ...viaSource, ...viaPayment])];
   }
   return READ_TABLE[table] ?? [];
 }

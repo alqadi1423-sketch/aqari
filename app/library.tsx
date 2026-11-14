@@ -32,6 +32,8 @@ import { usePager, Pager } from '../src/ui/Pager';
 import { useDeferredReady } from '../src/ui/useDeferredReady';
 import { Skeleton } from '../src/ui/Skeleton';
 import { reportFailure } from '../src/ui/failureDialog';
+
+const LIBRARY_UPLOAD_WHERE = 'تعذّر رفع ملف إلى المكتبة'; // i18n-exempt: موضع تقرير العطل ثابتٌ في سجل العمليات
 import { usePerm } from '../src/ui/access';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from '../src/services/appLockService';
@@ -277,7 +279,8 @@ export default function Library() {
         });
         n++;
       } catch (e) {
-        reportFailure({ title: 'تعذّر حفظ ' + (a.name ?? 'ملف'), e });
+        // والموضع ثابتٌ من الكود: اسم الملف يحمل غالباً اسم المستأجر ورقمه، فلا يصل تقرير العطل ولا سطر الفشل (المدقق الخارجي H٣ وL٧)
+        reportFailure({ title: 'تعذّر حفظ ' + (a.name ?? 'ملف'), where: LIBRARY_UPLOAD_WHERE, e });
       }
     }
     logAudit(db, 'المكتبة', 'create', 'رفع ملفات', n + ' ملف');

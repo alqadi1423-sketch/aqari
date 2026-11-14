@@ -159,6 +159,26 @@ function extractStreams(bytes: Uint8Array, raw: string): RawStream[] {
   return out;
 }
 
+/**
+ * الملفات المضمّنة في PDF (مجاري /Type /EmbeddedFile) مفكوكةً بسقوف المستخرج نفسها · لفاتورة PDF/A-3 تضمّن XML الفاتورة الإلكترونية
+ * (التوجيه الرابع ٦ · ١) · المشفّر والتالف بلا ملفات
+ */
+export function pdfEmbeddedFiles(bytes: Uint8Array): Uint8Array[] {
+  const raw = latin1(bytes);
+  if (/\/Encrypt\s+\d+\s+\d+\s+R/.test(raw) || /\/Encrypt\s*<</.test(raw)) return [];
+  try {
+    // و«/Type /EmbeddedFile» اختياريٌّ في المواصفة (المدقق الخارجي J٧): يُعرف أيضاً بنوعه XML أو بأن محتواه XML
+    const xmlStart = (d: Uint8Array) => {
+      let i = 0;
+      while (i < d.length && i < 8 && (d[i] === 0xef || d[i] === 0xbb || d[i] === 0xbf || d[i] <= 0x20)) i++;
+      return d[i] === 0x3c;
+    };
+    return extractStreams(bytes, raw).filter((s) => /\/Type\s*\/EmbeddedFile\b/.test(s.dict)
+      || /\/Subtype\s*\/(?:text|application)#2Fxml\b/i.test(s.dict)
+      || (!/\/Type\s*\/(?:XObject|ObjStm|XRef|Metadata)\b/.test(s.dict) && xmlStart(s.data))).map((s) => s.data);
+  } catch { return []; }
+}
+
 /** فك مجرى كائنات ObjStm إلى نص كائناته */
 function expandObjStm(s: RawStream): string {
   const n = parseInt(/\/N\s+(\d+)/.exec(s.dict)?.[1] ?? '0', 10);

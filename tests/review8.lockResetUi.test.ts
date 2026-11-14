@@ -23,6 +23,11 @@ const mockUi = {
   appListeners: new Set<(s: string) => void>(),
   dialogs: [] as Array<{ title: string; body?: string; actions: Array<{ label: string; onPress?: () => void | Promise<void> }> }>,
   db: null as DB | null,
+  // ق٠-٦: مزوّد الحساب، ومفتاح الاسترداد للمالك (services/lockRecovery.ts)
+  provider: 'google' as 'google' | 'device' | null,
+  keyOffer: false,
+  keyChecks: [] as string[],
+  keyOk: (_k: string): boolean => false,
 };
 
 jest.mock('react', () => {
@@ -97,9 +102,14 @@ jest.mock('@/ui/theme', () => ({ C: { paper: '#fff' }, TYPE: { screenTitle: 20 }
 jest.mock('@/ui/AppDialog', () => ({ showDialog: (d: (typeof mockUi.dialogs)[number]) => { mockUi.dialogs.push(d); } }));
 jest.mock('@/ui/lockState', () => ({ setAppLocked: () => undefined }));
 jest.mock('@/db/expoAdapter', () => ({ appDb: () => { if (!mockUi.db) throw new Error('db closed'); return mockUi.db; } }));
+jest.mock('@/services/lockRecovery', () => ({
+  keyResetOffered: async () => mockUi.keyOffer,
+  checkRecoveryKey: async (k: string) => { mockUi.keyChecks.push(k); return mockUi.keyOk(k); },
+}));
 jest.mock('@/services/cloud', () => ({
   confirmSameAccount: () => mockUi.prove(),
   accountConfirmable: () => mockUi.account,
+  accountProvider: () => mockUi.provider,
   subscribeCloud: (l: () => void) => { mockUi.cloudListeners.add(l); return () => { mockUi.cloudListeners.delete(l); }; },
 }));
 
@@ -202,6 +212,7 @@ beforeEach(async () => {
   kv.clear(); files.clear(); fsFail.read = false;
   nativeClock.ms += 10_000_000; device.level = 0; device.pass = false;
   mockUi.account = true; mockUi.prove = proveOk; mockUi.dialogs = []; mockUi.cloudListeners.clear();
+  mockUi.provider = 'google'; mockUi.keyOffer = false; mockUi.keyChecks = []; mockUi.keyOk = () => false;
   mockUi.db = memDb();
 });
 afterAll(() => unmount());
@@ -331,4 +342,102 @@ test('٥ الواجهة: بلا قفل للجهاز «تأكيد حسابي» ي
   await until(lockShown, 'شاشة القفل');
   await settle();
   expect(button('lock.confirmAccount')).toBeUndefined();
+});
+
+/* ═══ ق٠-٦ · F-3: «نسيت الرمز» بلا قوقل ═══ */
+
+import { generateRecoveryKey, formatRecoveryKey } from '@/domain/backup/recoveryKey';
+
+const auditTexts = (): string[] =>
+  mockUi.db!.all<{ entity_name: string }>(`SELECT entity_name FROM audit_log WHERE entity_name LIKE '%أُعيد ضبط رمزه%'`).map((r) => r.entity_name);
+const KEY = generateRecoveryKey(() => new Uint8Array(15).fill(7));
+const OTHER_KEY = generateRecoveryKey(() => new Uint8Array(15).fill(9));
+
+test('ق٠-٦ الواجهة: بلا حسابٍ ولا قوقل (البناء المحلي) والمالك له مفتاح استرداد: «نسيت الرمز · مفتاح الاسترداد» · الخاطئ يُقال ولا يُحسب · والصحيح يعطي رمزاً جديداً بالسجل والتنبيه', async () => {
+  await svc.enablePinLock('4826', 0);
+  mockUi.account = false; mockUi.provider = null; mockUi.keyOffer = true;
+  mockUi.keyOk = (k) => k.replace(/[\s-]/g, '').toUpperCase() === KEY;
+  mount();
+  await until(() => !!button('lock.forgotPinKey'), 'زر مفتاح الاسترداد');
+  expect(button('lock.forgotPin')).toBeUndefined();
+  press(button('lock.forgotPinKey'));
+  await until(() => !!field('lock.recoveryKeyLabel'), 'حقل المفتاح');
+  // لا يُرسل حتى يصحّ شكله ومحرف تحققه
+  type('lock.recoveryKeyLabel', 'ABC');
+  await round();
+  expect(button('lock.useRecoveryKey')!.props.disabled).toBe(true);
+  type('lock.recoveryKeyLabel', OTHER_KEY);
+  await round();
+  await press(button('lock.useRecoveryKey'));
+  await until(() => notes().includes('lock.recoveryKeyWrong'), 'رسالة المفتاح الخاطئ');
+  expect((await svc.resetStatus()).notice).toBeNull();
+  expect((await svc.resetStatus()).waitMs).toBe(0);
+  const typed = formatRecoveryKey(KEY).toLowerCase();
+  type('lock.recoveryKeyLabel', typed);
+  await round();
+  expect(button('lock.useRecoveryKey')!.props.disabled).toBe(false);
+  await press(button('lock.useRecoveryKey'));
+  await newPin('2468');
+  expect(mockUi.keyChecks).toEqual([OTHER_KEY, typed]);
+  expect(auditTexts()).toEqual(['قفل التطبيق · أُعيد ضبط رمزه بمفتاح الاسترداد']);
+  leaveAndReturn();
+  await until(lockShown, 'القفل عند العودة');
+  const at = (await svc.resetStatus()).notice!.at;
+  await until(() => notes().includes('lock.resetNoticeKey ' + JSON.stringify({ when: resetWhen(at) })), 'تنبيه المفتاح على شاشة القفل');
+  type('lock.pinLabel', '2468');
+  await round();
+  press(button('lock.open'));
+  await until(() => mockUi.dialogs.length === 1, 'حوار التنبيه');
+  expect(mockUi.dialogs[0].body).toBe('lock.resetNoticeKey ' + JSON.stringify({ when: resetWhen(at) }));
+});
+
+test('ق٠-٦ الواجهة: بلا قفلٍ للجهاز ولا حساب: المفتاح طريق المالك · ونصّ الشاشة لا يطلب قوقل', async () => {
+  await svc.enableDeviceLock(0);
+  mockUi.account = false; mockUi.provider = null; mockUi.keyOffer = true; mockUi.keyOk = () => true;
+  mount();
+  await until(() => !!button('lock.forgotPinKey'), 'زر المفتاح');
+  expect(notes()).toContain('lock.noDeviceLockAny');
+  expect(button('lock.confirmAccount')).toBeUndefined();
+  press(button('lock.forgotPinKey'));
+  await until(() => !!field('lock.recoveryKeyLabel'), 'حقل المفتاح');
+  type('lock.recoveryKeyLabel', KEY);
+  await round();
+  await press(button('lock.useRecoveryKey'));
+  await newPin('1357');
+  expect((await svc.loadLock()).method).toBe('pin');
+});
+
+test('ق٠-٦ الواجهة: مزوّد الجهاز: «تأكيد هذا الجوال» · والجوال المسحوب يُقال · وحدّ الخادم يُخفي الزر بكم بقي بساعته', async () => {
+  await svc.enablePinLock('4826', 0);
+  mockUi.provider = 'device';
+  mockUi.prove = () => Promise.resolve({ ok: false, why: 'revoked' });
+  mount();
+  await until(() => !!button('lock.forgotPinDevice'), 'زر تأكيد هذا الجوال');
+  expect(button('lock.forgotPin')).toBeUndefined();
+  await press(button('lock.forgotPinDevice'));
+  await until(() => notes().includes('lock.deviceRevoked'), 'رسالة السحب');
+  expect((await svc.resetStatus()).waitMs).toBe(0);
+  mockUi.prove = () => Promise.resolve({ ok: false, why: 'limit', waitMs: 5 * 3_600_000 });
+  await press(button('lock.forgotPinDevice'));
+  await until(() => notes().includes('lock.resetLimit {"n":5}'), 'كم بقي بساعة الخادم');
+  expect(button('lock.forgotPinDevice')).toBeUndefined();
+  await unmount();
+  // ونجاحه يكتب سطر الجهاز ويُنبَّه بنصّه
+  mockUi.prove = proveOk;
+  mount();
+  await until(() => !!button('lock.forgotPinDevice'), 'الزر من جديد');
+  await press(button('lock.forgotPinDevice'));
+  await newPin('2468');
+  expect(auditTexts()).toEqual(['قفل التطبيق · أُعيد ضبط رمزه بشهادة الخادم أنه الجوال المربوط']);
+  expect((await svc.resetStatus()).notice).toMatchObject({ via: 'device' });
+});
+
+test('ق٠-٦ الواجهة: بقوقل ولا مفتاح يُعرض (العضو): كما كان · ولا زرّ مفتاح', async () => {
+  await svc.enablePinLock('4826', 0);
+  mount();
+  await until(() => !!button('lock.forgotPin'), 'زر قوقل');
+  expect(button('lock.forgotPinKey')).toBeUndefined();
+  await press(button('lock.forgotPin'));
+  await newPin('2468');
+  expect(auditTexts()).toEqual(['قفل التطبيق · أُعيد ضبط رمزه بتأكيد حساب قوقل']);
 });

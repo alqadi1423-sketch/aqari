@@ -24,8 +24,10 @@ import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import { exportStatus } from '../src/domain/reminders';
 import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash, restoreCashOut, restoreIntoFiledPeriod } from '../src/domain/trash';
-import { createAndShareBackup, pickAndPrepareRestore, prepareRestoreFromSafety, commitPreparedRestore, abortPreparedRestore, appBackupEnv } from '../src/services/backupService';
+import { createAndShareBackup, createAndSaveToFolder, pickAndPrepareRestore, prepareRestoreFromSafety, commitPreparedRestore, abortPreparedRestore, appBackupEnv, listDeviceBackups } from '../src/services/backupService';
 import { fingerprintData } from '../src/domain/backup/create';
+import { backupFolder, pickBackupFolder, folderLabel, FolderAccessError, FolderMissingError } from '../src/services/backupFolder';
+import { driveExitVisible } from '../src/cloud/driveExit';
 import {
   planLedgerRepair, applyLedgerRepair, unbookedDiscounts, bookDiscount, contractSurpluses, settleSurplus,
   type UnbookedDiscount, type ContractSurplus,
@@ -39,20 +41,22 @@ import { storageBreakdown, sweepCache, reclaimStorage } from '../src/services/st
 import { libSizeLabel } from '../src/domain/library';
 import { useLongTask } from '../src/ui/LongTask';
 import { isCancelled } from '../src/domain/progress';
-import { reportFailure, arabicMessage } from '../src/ui/failureDialog';
+import { reportFailure, arabicMessage, copyFailureDetails, shareFailureDetails } from '../src/ui/failureDialog';
+import { crashReports, type CrashReportView } from '../src/domain/crashReport';
 import {
   cloudState, subscribeCloud, cloudSignIn, cloudSignOut, backupToDrive, listBackupsOnDrive, prepareRestoreFromDrive,
-  pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted, clearRestoredUnadopted,
-  restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
+  pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted,
+  restoreAwaitingAdoption, deleteMyAccount, accountProvider, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
   leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything, filesCloudOn, downloadAllFiles, fileCacheUsage, clearFileCacheNow,
+  driveRetired, driveExitStatus, exportDriveBackupsNow, deleteDriveBackupsNow,
 } from '../src/services/cloud';
 import { TeamSheet } from '../src/ui/TeamSheet';
 import { MyProfileSheet } from '../src/ui/ProfileForm';
 import { readMembership } from '../src/services/access';
 import { getSyncState } from '../src/sync/engine';
 import type { CloudReplacePlan, CloudSnapshot } from '../src/sync/engine';
-import type { PrepareOptions } from '../src/domain/backup/restore';
-import type { KeptEntry } from '../src/domain/backup/keepPosted';
+import { localFilesOf, type PrepareOptions } from '../src/domain/backup/restore';
+import { keptMovesText, type KeptEntry } from '../src/domain/backup/keepPosted';
 import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orphans';
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
@@ -68,13 +72,16 @@ import { useAccess } from '../src/ui/access';
 import { canView, isAdmin } from '../src/domain/access/access';
 import { LEAFLET_VERSION, LEAFLET_LICENSE } from '../src/ui/leafletBundle';
 import { useAppLockSetting } from '../src/ui/AppLockSettings';
-import { getBackupPassword, backupPasswordState, setBackupPassword, clearBackupPassword, MIN_PASSWORD } from '../src/services/backupPassword';
+import { getBackupPasswords, backupSecretKind, newRecoveryKey, saveRecoveryKey, type SecretKind } from '../src/services/backupPassword';
+import { formatRecoveryKey, confirmsRecoveryKey, isValidRecoveryKey, sealingSecretOf } from '../src/domain/backup/recoveryKey';
+import { RecoveryKeyRequiredError } from '../src/domain/backup/passwordGate';
+import * as Clipboard from 'expo-clipboard';
 import { PasswordRequiredError } from '../src/domain/backup/encryption';
 import { pinWidget } from '../src/services/intents';
 import type { DriveBackup } from '../src/cloud/drive';
-import { dfmt, toLocalISODate, today } from '../src/domain/dates';
+import { dfmt, toLocalISODate, today, localDateOf, localTimeOf } from '../src/domain/dates';
+import { APP_VERSION, APP_VERSION_LABEL } from '../src/version';
 
-const APP_VERSION = '1.0.0';
 
 /** خيارات مهل التنبيه · القيمة بالأيام */
 const PAYMENT_LEADS = [[1, 'بيوم'], [3, 'بثلاثة أيام'], [7, 'بأسبوع'], [14, 'بأسبوعين']] as const;
@@ -145,6 +152,11 @@ export default function Settings() {
     } catch (e) { reportFailure({ title: t('language.title'), e }); }
   };
   const [driveOpen, setDriveOpen] = useState(false);
+  // «احفظ في مجلد» (ق٠-١): المجلد المختار على هذا الجهاز · و«نسخك على Google Drive»: العدد وما خرج وأي زرّ يعمل
+  const [folderUri, setFolderUri] = useState<string | null>(() => backupFolder());
+  const [driveExit, setDriveExit] = useState<Awaited<ReturnType<typeof driveExitStatus>> | null>(null);
+  const [driveTried, setDriveTried] = useState(false);
+  const [retired, setRetired] = useState(() => { try { return driveRetired(); } catch { return false; } });
   const [displayOpen, setDisplayOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [teamOpen, setTeamOpen] = useState(false);
@@ -194,39 +206,46 @@ export default function Settings() {
   // قيدٌ من قائمة المراجعة مفتوحٌ بتفاصيله
   const [keptEntry, setKeptEntry] = useState<string | null>(null);
   const [keptCancel, setKeptCancel] = useState<{ id: string; no: string } | null>(null);
-  // كلمة مرور النسخ · مفعّلة أم لا (القيمة نفسها لا تُقرأ إلى الواجهة)
-  const [pwOn, setPwOn] = useState(false);
-  // وُضعت وتعذّرت قراءتها: تظهر كذلك، ولا تصدير ولا رفع حتى تُوضع من جديد أو تُزال (ثالثاً أ ٩)
-  const [pwLost, setPwLost] = useState(false);
+  // مفتاح الاسترداد (التوجيه الرابع ٤ · ٣): نوع السرّ المحفوظ وحده، والقيمة لا تُقرأ إلى الواجهة · وتعذّرت قراءته: لا تصدير ولا رفع
+  const [secretKind, setSecretKind] = useState<SecretKind>('off');
   // قفل التطبيق (#51)
   const lock = useAppLockSetting();
-  useEffect(() => { backupPasswordState().then((st) => { setPwOn(st !== 'off'); setPwLost(st === 'lost'); }).catch(() => {}); }, []);
-  const [pwEdit, setPwEdit] = useState(false);
-  const [pw1, setPw1] = useState('');
-  const [pw2, setPw2] = useState('');
+  // سرّ الحساب الداخل (لكل حسابٍ سرّه · المدقق الخارجي D١)
+  const account = getSyncState(db, 'uid');
+  useEffect(() => { backupSecretKind(account).then(setSecretKind).catch(() => {}); }, [account]);
+  const [keyOpen, setKeyOpen] = useState(false);
+  // المفتاح الجديد يُعرض مرةً في الورقة حتى يُؤكَّد حفظه، ثم يُنسى من الواجهة
+  const [newKey, setNewKey] = useState<string | null>(null);
+  const [keyTail, setKeyTail] = useState('');
+  const [keyStep, setKeyStep] = useState<'show' | 'confirm'>('show');
+  const openKey = () => { setNewKey(null); setKeyTail(''); setKeyOpen(true); };
   // سؤال كلمة مرور نسخةٍ مشفّرة أثناء الاستعادة · يُجاب بوعد
   const [pwAsk, setPwAsk] = useState<{ note: string; resolve: (v: string | null) => void } | null>(null);
   const [pwTyped, setPwTyped] = useState('');
   const askPassword = (note: string) => new Promise<string | null>((resolve) => { setPwTyped(''); setPwAsk({ note, resolve }); });
-  /** كلمة المحفوظة أولاً بلا سؤال، ثم السؤال · ورسالة الخطأ بحسب من أخطأ */
+  /** أسرار الحساب المحفوظة أولاً بلا سؤال (الحالي ثم السابقة · المدقق الخارجي D٢)، ثم السؤال · ورسالة الخطأ بحسب من أخطأ */
   const restorePassword = () => {
     let last: 'stored' | 'typed' | null = null;
+    let stored: string[] | null = null;
     return async (wrong: boolean) => {
-      if (!last) {
-        const stored = await getBackupPassword();
-        if (stored) { last = 'stored'; return stored; }
+      if (last !== 'typed') {
+        if (!stored) stored = await getBackupPasswords(account);
+        const next = stored.shift();
+        if (next) { last = 'stored'; return next; }
       }
-      const note = !wrong ? 'هذه النسخة مشفّرة · اكتب كلمة المرور التي شُفّرت بها.'
-        : last === 'stored' ? 'هذه النسخة مشفّرة بكلمة مرور غير المحفوظة على هذا الجهاز · اكتب كلمتها.'
-        : 'كلمة المرور غير صحيحة · حاول مرة أخرى.';
+      const note = !wrong ? t('backup.key.askNote') : last === 'stored' ? t('backup.key.askOther') : t('backup.key.askWrong');
       last = 'typed';
-      return askPassword(note);
+      // مفتاح الاسترداد يُكتب بأي شكل (شرطات وحالة حروف) فيُوحَّد · وكلمة المرور القديمة كما كُتبت
+      const typed = await askPassword(note);
+      return typed && isValidRecoveryKey(typed) ? sealingSecretOf(typed) : typed;
     };
   };
   // الحساب والمزامنة · حالة حيّة من طبقة الربط
   const [cloud, setCloud] = useState(cloudState());
   useEffect(() => subscribeCloud(() => setCloud(cloudState())), []);
   const [driveList, setDriveList] = useState<DriveBackup[] | null>(null);
+  const [deviceList, setDeviceList] = useState<ReturnType<typeof listDeviceBackups> | null>(null);
+  const [crashList, setCrashList] = useState<CrashReportView[] | null>(null);
 
   const data = useMemo(() => {
     const exp = exportStatus(db);
@@ -269,14 +288,144 @@ export default function Settings() {
       bump();
       // الفرق المحاسبي لا يمنع حفظ البيانات (checks.ts) · تُنشأ النسخة وتُوسم «فيها ملاحظات» وتُسمّى
       if (m.notes?.length) notesDialog('أُنشئت النسخة وفيها ملاحظات', m.notes);
-      else toast(pwOn ? 'أُنشئت النسخة مشفّرة وتُحقّق منها بنجاح' : 'أُنشئت النسخة وتُحقّق منها بنجاح');
+      else toast('أُنشئت النسخة مشفّرة وتُحقّق منها بنجاح');
     } catch (e) {
       if (isCancelled(e)) { endCancelled('أُلغي إنشاء النسخة · لم يُكتب منها شيء', () => { doBackup(); }); return; }
+      // لا نسخة بلا تشفير: بلا مفتاحٍ تُفتح ورقة إنشائه (التوجيه الرابع ٤ · ٣)
+      if (e instanceof RecoveryKeyRequiredError) { setProgress(null); setBusy(false); toast(e.message); openKey(); return; }
       await reportFailure({
         title: 'تعذّر إنشاء النسخة الاحتياطية', where: 'إنشاء نسخة', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
         // سبب الرفض كما كتبه التحقق: اسم الملف أو الفحص الذي فشل · والجملة العامة لما لم يُسمَّ
         lead: arabicMessage(e) || 'لم يكتمل تجهيز النسخة.', before, env: appBackupEnv(db), e, retry: () => { doBackup(); },
       });
+    }
+    setProgress(null);
+    setBusy(false);
+  };
+
+  /** اختيار مجلد النسخ أو تغييره (ق٠-١) · يعيد عنوانه أو null */
+  const chooseFolder = async (): Promise<string | null> => {
+    try {
+      const uri = await pickBackupFolder();
+      if (!uri) { toast(t('folder.pickCancelled')); return null; }
+      setFolderUri(uri);
+      toast(t('folder.picked', { name: folderLabel(uri) }));
+      // نصّ التذكير الأسبوعي يتبع المجلد
+      rescheduleAllNotifications(db).catch(() => {});
+      return uri;
+    } catch (e) {
+      await reportFailure({ title: t('folder.failedTitle'), where: t('folder.title'), db, e });
+      return null;
+    }
+  };
+  /** لا يصل التطبيق إلى المجلد: يُقال بالعربية ويُعرض اختياره من جديد ثم يُعاد ما كان */
+  const folderLost = (again: () => void) => dialog({
+    title: t('folder.lostTitle'), body: t('folder.lost'), tone: 'normal',
+    actions: [
+      { label: t('folder.back'), variant: 'ghost' },
+      { label: t('folder.pickAgain'), variant: 'primary', onPress: async () => { if (await chooseFolder()) again(); } },
+    ],
+  });
+  /** «احفظ في المجلد»: نسخة كاملة مشفّرة كالمشاركة تُكتب في المجلد المختار وتُطابق هناك · وبلا مجلدٍ يُختار أولاً */
+  const doSaveToFolder = async () => {
+    if (!folderUri && !(await chooseFolder())) return;
+    setBusy(true);
+    const before = fingerprintData(appBackupEnv(db));
+    const signal = task.begin({ onRetry: () => { doSaveToFolder(); } });
+    try {
+      if (filesCloudOn()) await downloadAllFiles(db, setProgress, signal);
+      const m = await createAndSaveToFolder(db, setProgress, signal);
+      bump();
+      if (m.notes?.length) notesDialog(t('folder.savedNotes'), m.notes);
+      else toast(t('folder.saved', { folder: folderLabel(backupFolder()) }));
+    } catch (e) {
+      setProgress(null);
+      setBusy(false);
+      if (isCancelled(e)) { endCancelled(t('folder.cancelled'), () => { doSaveToFolder(); }); return; }
+      if (e instanceof RecoveryKeyRequiredError) { toast(e.message); openKey(); return; }
+      if (e instanceof FolderMissingError) { if (await chooseFolder()) doSaveToFolder(); return; }
+      if (e instanceof FolderAccessError) { folderLost(() => { doSaveToFolder(); }); return; }
+      await reportFailure({
+        title: t('folder.failedTitle'), where: t('folder.title'), db,
+        auditModule: 'النسخ الاحتياطي', // i18n-exempt: اسم الوحدة المخزّن في سجل العمليات
+        auditAction: 'create', lead: arabicMessage(e) || t('folder.failedLead'), before, env: appBackupEnv(db), e, retry: () => { doSaveToFolder(); },
+      });
+      return;
+    }
+    setProgress(null);
+    setBusy(false);
+  };
+
+  /* «نسخك على Google Drive» (ق٠-١ · F-الاستقلال-عن-قوقل ٧.٤): العدد، ثم التنزيل إلى المجلد، ثم الحذف وسحب الإذن بزرّ المستخدم */
+  const openDriveExit = async (tried = driveTried) => {
+    setBusy(true);
+    setProgress(t('driveExit.loading'));
+    try {
+      setDriveExit(await driveExitStatus(tried));
+      setDriveOpen(true);
+    } catch (e) {
+      await reportFailure({ title: t('driveExit.failedTitle'), where: t('driveExit.row'), db, e });
+    }
+    setProgress(null);
+    setBusy(false);
+  };
+  const doDriveExport = async () => {
+    setDriveOpen(false);
+    if (!folderUri && !(await chooseFolder())) return;
+    setBusy(true);
+    const signal = task.begin({ onRetry: () => { doDriveExport(); } });
+    let reopen = false;
+    try {
+      const r = await exportDriveBackupsNow(db, setProgress, signal);
+      setDriveTried(true);
+      reopen = true;
+      const saved = r.saved.length + r.already;
+      if (r.failed.length) {
+        dialog({
+          title: t('driveExit.exportFailedTitle'),
+          body: t('driveExit.exportFailedBody', { saved, failed: r.failed.length, list: r.failed.map((f) => '· ' + f.name + ': ' + f.why).join('\n') }),
+          actions: [{ label: t('crash.close'), variant: 'ghost' }],
+        });
+      } else toast(t('driveExit.exportDone', { saved }));
+    } catch (e) {
+      setProgress(null);
+      setBusy(false);
+      if (isCancelled(e)) { endCancelled(t('driveExit.cancelled'), () => { doDriveExport(); }); return; }
+      if (e instanceof FolderMissingError) { if (await chooseFolder()) doDriveExport(); return; }
+      if (e instanceof FolderAccessError) { folderLost(() => { doDriveExport(); }); return; }
+      await reportFailure({ title: t('driveExit.failedTitle'), where: t('driveExit.row'), db, e });
+      return;
+    }
+    setProgress(null);
+    setBusy(false);
+    if (reopen) await openDriveExit(true);
+  };
+  /** حذف بعد إخراج الكل · وما لم يخرج بعد محاولةٍ تعذّر فيها يُسمّى عدده في التأكيد ويُمرَّر فيطابقه الحذف ساعته (القاعدة ٩٩) */
+  const confirmDriveDelete = () => {
+    const v = driveExit?.view;
+    if (!v) return;
+    const extra = v.unexported;
+    dialog({
+      title: t('driveExit.deleteTitle'),
+      body: extra ? t('driveExit.deleteBodyUnexported', { count: v.count, unexported: extra }) : t('driveExit.deleteBody', { count: v.count }),
+      tone: 'danger',
+      actions: [
+        { label: t('folder.back'), variant: 'ghost' },
+        { label: extra ? t('driveExit.deleteConfirmUnexported', { unexported: extra }) : t('driveExit.deleteConfirm'), variant: 'danger',
+          onPress: () => { doDriveDelete(extra || undefined); } },
+      ],
+    });
+  };
+  const doDriveDelete = async (unexported?: number) => {
+    setDriveOpen(false);
+    setBusy(true);
+    try {
+      const r = await deleteDriveBackupsNow(db, unexported, setProgress);
+      setRetired(true);
+      setDriveExit(null);
+      toast(t('driveExit.deleted', { count: r.deleted }));
+    } catch (e) {
+      await reportFailure({ title: t('driveExit.failedTitle'), where: t('driveExit.row'), db, e });
     }
     setProgress(null);
     setBusy(false);
@@ -295,7 +444,13 @@ export default function Settings() {
 
   // الاستعادة لا تنهار أبداً · كل المسار ملفوف، والفشل رسالة عربية مبنيّة على فحص
   const doRestore = () => runRestore((opts) => pickAndPrepareRestore(db, setProgress, opts));
-  const doRestoreSafety = () => runRestore((opts) => prepareRestoreFromSafety(db, setProgress, opts));
+  /** زر «استعادة» في «البيانات والمساحة»: نسخة واحدة تُستعاد كما كانت، وأكثر تُعرض بتاريخ كلٍّ ونوعها (القرارات المعلّقة البند ١٧) */
+  const doRestoreSafety = () => {
+    let list: ReturnType<typeof listDeviceBackups> = [];
+    try { list = listDeviceBackups(db); } catch { list = []; }
+    if (list.length > 1) { setDeviceList(list); return; }
+    runRestore((opts) => prepareRestoreFromSafety(db, setProgress, opts));
+  };
 
   /** ما في السحابة وما يصير إليه · سطور الحوار قبل الاعتماد */
   const cloudReplaceText = (p: CloudReplacePlan) =>
@@ -309,19 +464,29 @@ export default function Settings() {
 
   /** القيود المرحّلة بعد تاريخ النسخة · تبقى وتُضمّ إليها · سطور الحوار قبل التأكيد */
   const fromLabel = (k: KeptEntry) => (k.from === 'device' ? 'من هذا الجهاز' : k.from === 'cloud' ? 'من السحابة' : 'من الجهاز والسحابة');
-  const keptText = (kept: KeptEntry[]) => {
-    if (!kept.length) return '';
+  const keptText = (kept: KeptEntry[], cashMoves = 0, revivedMoves = 0) => {
+    // ولا قيد يُضمّ: حركات نقل النقد بعد النسخة تبقى وحدها ويُذكر عددها (قرار المالك 2026-11-14 · R12-BAK-3)
+    if (!kept.length) { const moves = keptMovesText(cashMoves, revivedMoves, false); return moves ? '\n\n' + moves : ''; }
     const shown = kept.slice(0, 8).map((k) => '· ' + (k.newNo ? k.newNo + ' (كان ' + k.no + ')' : k.no) + ' · ' + k.date + ' · ' + fmt(k.amount)
-      + ' · ' + fromLabel(k) + (k.carried.length ? ' · ومعه ' + k.carried.join(' و') : '') + (k.review ? ' · للمراجعة' : ''));
+      + ' · ' + fromLabel(k) + (k.wasDraft ? ' · ' + t('backup.keptWasDraft') : '') + (k.carried.length ? ' · ومعه ' + k.carried.join(' و') : '') + (k.review ? ' · للمراجعة' : ''));
     const toReview = kept.filter((k) => k.review).length;
     const renamed = kept.filter((k) => k.newNo).length;
     return '\n\nقيود مرحّلة بعد تاريخ النسخة تبقى (' + kept.length + '):\n' + shown.join('\n')
       + (kept.length > shown.length ? '\nو' + (kept.length - shown.length) + ' غيرها' : '')
       + '\nالقيد المرحّل لا يُحذف بالاستعادة · يُضمّ إلى النسخة برقمه وسطوره، ومعه دفعته وتوزيعها وحركة بنكه متى كان عقدها وبنكها في النسخة.'
       + (renamed ? '\n' + renamed + ' منها رقمه مستعمل في النسخة لقيد آخر فيأخذ رقماً جديداً، ويُذكر القديم في بيانه.' : '')
-      + (toReview ? '\n' + toReview + ' منها مستنده لم يُحمل · تجدها في «مراجعة الدفتر» لتراجعها.' : '');
+      + (toReview ? '\n' + toReview + ' منها مستنده لم يُحمل · تجدها في «مراجعة الدفتر» لتراجعها.' : '')
+      + (cashMoves || revivedMoves ? '\n' + keptMovesText(cashMoves, revivedMoves, true) : '');
   };
   const paidText = (n: number) => (n ? '\n\nمسدَّد ' + n + ' قسط حُسب من دفعات النسخة وتوزيعها بدل الرقم المخزّن فيها.' : '');
+  // نسخة ما قبل الترقية بلا ملفاتها (المراجعة الشاملة 2026-11-13 · C-2): ملفاتها باقية على الجهاز، وما غاب منها يُسمّى قبل التأكيد ·
+  // والعدد يشمل ما سمّته البوابة مفقوداً، فـ«منها N» جزءٌ منه (C2-R11-2)
+  const localText = (listed: number, gone: string[]) => {
+    if (!listed) return '';
+    const more = gone.length > 8 ? '\n' + t('upgrade.missingMore', { count: gone.length - 8 }) : '';
+    return '\n\n' + t('restore.localFiles', { n: listed })
+      + (gone.length ? '\n' + t('restore.localMissing', { n: gone.length }) + '\n· ' + gone.slice(0, 8).join('\n· ') + more : '');
+  };
 
   // المسار الواحد للاستعادة من أي مصدر: التجهيز (فك وبصمات وفحص دلالي) ثم الملخص ثم التنفيذ ·
   // ومع الدخول بحساب: المزامنة تتوقف قبل كل شيء، ولا يُكتب إلى السحابة إلا بالاعتماد صراحةً
@@ -363,10 +528,11 @@ export default function Settings() {
         'عقارات ' + cN('properties') + ' · وحدات ' + cN('units') + ' · عقود ' + cN('contracts') + '\n' +
         'قيود ' + cN('journal_entries') + ' · مرفقات ' + plan.currentAttachments.count
           + ' (' + (plan.currentAttachments.bytes / (1024 * 1024)).toFixed(1) + ' ميغا)'
+          + localText(localFilesOf(plan.manifest).length, plan.localMissing)
           + (plan.ledgerRepair ? repairSummary(plan.ledgerRepair) : '')
           + paidText(plan.paidRecomputed.length)
           + (plan.notes.length ? '\n\nفي النسخة فروق محاسبية لا تمنع استعادتها، وتظهر بعدها في «مراجعة الدفتر»:\n· ' + plan.notes.join('\n· ') : '')
-          + keptText(plan.kept)
+          + keptText(plan.kept, plan.keptCashMoves, plan.keptRevivedMoves)
           + (cloudPlan ? '\n\nأنت داخل بحساب ' + (cloudState().user?.email ?? '') + ' · المزامنة متوقفة الآن.\n' + cloudReplaceText(cloudPlan) : ''),
         tone: 'normal',
         locked: true,
@@ -443,7 +609,10 @@ export default function Settings() {
     setBusy(false);
   };
 
-  /** نسخة استُعيدت خارج الحساب · تُعتمد للسحابة أو تُدمج معها بقرار صريح */
+  /**
+   * نسخة استُعيدت خارج الحساب · تُعتمد للسحابة بقرار صريح، أو يُلغى فتبقى المزامنة منتظرة · ولا «دمج» (قرار المالك 2026-10-03:
+   * «اعتماد هذه النسخة واستبدال بيانات السحابة بها» أو «إلغاء»، والبند ١ (أ) من القرارات المعلّقة 2026-11-07)
+   */
   const doAdoptPending = async () => {
     setBusy(true);
     try {
@@ -454,20 +623,16 @@ export default function Settings() {
       dialog({
         title: 'اعتماد بيانات هذا الجهاز',
         body: 'استُعيدت على هذا الجهاز نسخة ولم يُكتب منها شيء إلى السحابة.\n' + cloudReplaceText({ ...p, immutable: { ...p.immutable, entries: 0 } })
-          + keptText(ready.keep.entries)
-          + '\n\nأو «دمج مع السحابة»: يغلب في كل سجل الأحدثُ تعديلاً بين الجهاز والسحابة.',
+          + keptText(ready.keep.entries, ready.keep.cashMoves, ready.keep.revivedMoves),
         tone: 'normal',
         locked: true,
         actions: [
           { label: 'إلغاء', variant: 'ghost', onPress: () => resumeSync() },
-          { label: 'دمج مع السحابة', variant: 'ghost', onPress: () => {
-            const uid = cloudState().user?.uid;
-            if (uid) clearRestoredUnadopted(db, uid).then(() => { resumeSync(); syncNow(); bump(); }).catch((e) => reportFailure({ title: 'تعذّر الدمج', e }));
-          } },
           { label: 'اعتماد بيانات هذا الجهاز واستبدال بيانات السحابة بها', variant: 'primary', onPress: async () => {
             try {
-              const { queued, kept } = await adoptPendingWithKeep(db, ready);
-              toast(queued + ' سجل في طريقه إلى السحابة' + (kept ? ' · وضُمّ ' + kept + ' قيد مرحّل من السحابة' : ''));
+              const { queued, kept, moves } = await adoptPendingWithKeep(db, ready);
+              toast(queued + ' سجل في طريقه إلى السحابة' + (kept ? ' · وضُمّ ' + kept + ' قيد مرحّل من السحابة' : '')
+                + (moves ? ' · ' + t('backup.keptMovesToast', { n: moves }) : ''));
             } catch (e) {
               await reportFailure({ title: 'تعذّر الاعتماد', where: 'اعتماد النسخة للسحابة', db, e });
             }
@@ -553,16 +718,23 @@ export default function Settings() {
       } },
     ],
   });
+  // لا زرّ يناديه بعد ق٠-١ (النسخ لا تُرفع إلى Drive) · يبقى مع اختباراته حتى خطوة إزالة شاشة Drive
   const doDriveBackup = async () => {
     setBusy(true);
     const signal = task.begin({ onRetry: () => { doDriveBackup(); } });
     try {
       const b = await backupToDrive(db, setProgress, signal);
       bump();
-      if (b.notes) notesDialog('رُفعت النسخة إلى Google Drive وفيها ملاحظات', reviewData(db).notes);
-      else toast('رُفعت النسخة' + (pwOn ? ' مشفّرة' : '') + ' إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
+      // ونسخةٌ فيها ملاحظات وتعذّرت نسختها الظاهرة يُقال فيها الأمران (المدقق الخارجي H٩)
+      if (b.notes) {
+        const notes = reviewData(db).notes;
+        notesDialog(b.visibleFailed ? t('drive.visibleFailed') : 'رُفعت النسخة إلى Google Drive وفيها ملاحظات',
+          b.visibleFailed ? [...notes, t('drive.visibleNote', { why: b.visibleFailed })] : notes);
+      } else if (b.visibleFailed) dialog({ title: t('drive.visibleFailed'), body: t('drive.visibleNote', { why: b.visibleFailed }), actions: [{ label: t('crash.close'), variant: 'ghost' }] });
+      else toast('رُفعت النسخة مشفّرة إلى Google Drive وطابقت بصمتها · ' + libSizeLabel(b.size));
     } catch (e) {
       if (isCancelled(e)) { endCancelled('أُلغي النسخ على Google Drive', () => { doDriveBackup(); }); return; }
+      if (e instanceof RecoveryKeyRequiredError) { setProgress(null); setBusy(false); toast(e.message); openKey(); return; }
       await reportFailure({
         title: 'تعذّر النسخ على Google Drive', where: 'نسخ على Drive', db, auditModule: 'النسخ الاحتياطي', auditAction: 'create',
         lead: arabicMessage(e) || 'لم يكتمل رفع النسخة.', e,
@@ -680,8 +852,9 @@ export default function Settings() {
                 ],
               })} />
             ) : null}
-            {admin && cloud.online ? (
-              <ValueRow icon="export" title="النسخ على Drive" value="نسخ أو استعادة" onPress={() => setDriveOpen(true)} />
+            {/* نسخ Drive القديمة: تُخرج إلى المجلد ثم تُحذف بزرّك (ق٠-١) · وبعد السحب لا تظهر */}
+            {driveExitVisible({ admin, signedIn: !!cloud.user, online: cloud.online, retired }) ? (
+              <ValueRow icon="export" title={t('driveExit.row')} value={t('driveExit.rowValue')} onPress={() => { openDriveExit(); }} />
             ) : null}
             {admin && cloud.online ? (
               <ValueRow icon="trash" title="حذف حسابي" value="الحساب وبياناته" tone="danger" onPress={() => { setDelTyped(''); setDelOpen(true); }} />
@@ -689,7 +862,7 @@ export default function Settings() {
             {admin && restoreAwaitingAdoption(db) ? (
               <View style={{ marginTop: 6 }}>
                 <Note tone="danger">استُعيدت على هذا الجهاز نسخة ولم تُعتمد للسحابة · المزامنة متوقفة حتى تقرّر</Note>
-                {cloud.online ? <BtnPrimary title="اعتماد النسخة أو دمجها" onPress={doAdoptPending} loading={busy} /> : null}
+                {cloud.online ? <BtnPrimary title="اعتماد النسخة" onPress={doAdoptPending} loading={busy} /> : null}
               </View>
             ) : null}
           </>
@@ -714,12 +887,19 @@ export default function Settings() {
             : data.exp.daysSinceExport === 0 ? 'اليوم' : 'قبل ' + data.exp.daysSinceExport + ' يوماً')
             + ' · ' + (data.exp.warn ? 'تحتاج انتباهك' : 'محمية')}
           tone={data.exp.warn ? 'danger' : 'ok'} />
+        {/* «احفظ في مجلد» تختاره مرة (ق٠-١): النسخ لا تُرفع إلى Drive · والمشاركة كما هي */}
+        <ValueRow icon="archive" title={t('folder.title')} value={folderUri ? folderLabel(folderUri) : t('folder.none')}
+          tone={folderUri ? undefined : 'danger'} onPress={() => { chooseFolder(); }} />
         <Row style={{ marginTop: 8 }}>
-          <View style={{ flex: 1 }}><BtnPrimary title="النسخ الاحتياطي" onPress={doBackup} loading={busy} /></View>
+          <View style={{ flex: 1 }}><BtnPrimary title={folderUri ? t('folder.save') : t('folder.pick')} onPress={doSaveToFolder} loading={busy} /></View>
           <View style={{ flex: 1 }}><BtnGhost title="استعادة من نسخة" onPress={doRestore} disabled={busy} /></View>
         </Row>
-        <ValueRow icon="lock" title="كلمة مرور النسخ" value={pwLost ? t('backup.passwordLostShort') : pwOn ? 'مفعّلة' : 'غير مفعّلة'}
-          onPress={() => { setPw1(''); setPw2(''); setPwEdit(true); }} />
+        <View style={{ marginTop: 8 }}>
+          <BtnGhost icon="export" title={t('folder.share')} onPress={doBackup} disabled={busy} />
+        </View>
+        <T size={TYPE.caption} color={C.muted} style={{ marginTop: 6 }}>{t('folder.hint')}</T>
+        <ValueRow icon="lock" title={t('backup.key.title')} value={secretKind === 'lost' ? t('backup.passwordLostShort') : t('backup.key.state.' + secretKind)}
+          tone={secretKind === 'key' ? undefined : 'danger'} onPress={openKey} />
         <ValueRow icon="bell" title="التذكير الأسبوعي" value={settings.backupWeekly ? 'مفعّل' : 'مطفأ'}
           onPress={() => openChoice('التذكير الأسبوعي بالتصدير', [[1, 'مفعّل'], [0, 'مطفأ']], settings.backupWeekly ? 1 : 0,
             (v) => { updateSetting('backupWeekly', !!v); rescheduleAllNotifications(db).catch(() => {}); })} />
@@ -728,7 +908,6 @@ export default function Settings() {
       {/* ٣ · المالية */}
       {admin ? <Card>
         <CardTitle>المالية</CardTitle>
-        <ValueRow icon="wallet" title="العملة ودليل الحسابات" value={(data.counts.find(([k]) => k === 'حسابات')?.[1] ?? 0) + ' حساباً'} onPress={() => router.push('/accounts')} />
         <ValueRow icon="invoice" title="ضريبة القيمة المضافة" value={vatOn ? 'مفعّلة' : 'مطفأة · لا تُحتسب'}
           onPress={() => openChoice('ضريبة القيمة المضافة', [[0, 'مطفأة · لا تُحتسب'], [1, 'مفعّلة']], vatOn,
             (v) => { db.transaction(() => db.run(`UPDATE company SET vat_enabled = ? WHERE id = 1`, [v])); bump(); })} />
@@ -783,7 +962,7 @@ export default function Settings() {
           {storageRow('قاعدة البيانات', storage.dbBytes)}
           {storageRow('سلة المحذوفات', storage.trashBytes, storage.trashCount + ' ملف')}
           {/* طريق الاسترجاع بعد «مسح كل البيانات» · للمالك وحده كسائر الاستعادة */}
-          {storageRow('نسخة الأمان قبل آخر استيراد أو مسح', storage.safetyBytes, storage.safetyCount + ' ملف',
+          {storageRow('نسخ الأمان', storage.safetyBytes, storage.safetyCount + ' ملف',
             admin && storage.safetyCount > 0 ? <BtnGhost small title="استعادة" onPress={doRestoreSafety} disabled={busy} /> : undefined)}
         </Fold>
         <Fold icon="chart" title="بياناتك بالأرقام" value={String(data.total) + ' سجل'}>
@@ -837,7 +1016,7 @@ export default function Settings() {
       <Card>
         <CardTitle>عن التطبيق</CardTitle>
         <Fold icon="home" title="عقاري · أحد حلول منصة رِكز" value={'الإصدار ' + APP_VERSION}>
-          {([['الإصدار', APP_VERSION], ['إصدار قاعدة البيانات', String(SCHEMA_VERSION)]] as Array<[string, string]>).map(([k, v]) => (
+          {([['الإصدار', APP_VERSION_LABEL], ['إصدار قاعدة البيانات', String(SCHEMA_VERSION)]] as Array<[string, string]>).map(([k, v]) => (
             <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 5 }}>
               <T size={TYPE.body}>{k}</T>
               <Num size={TYPE.body} bold>{v}</Num>
@@ -885,6 +1064,19 @@ export default function Settings() {
             <T size={TYPE.body} bold>{v}</T>
           </Row>
         ))}
+        {/* تقارير أعطال الأجهزة للمالك وحده (التوجيه الرابع ٤ · ٤ · قرار المالك 2026-11-07 «نعم توصلني») */}
+        {admin ? (() => {
+          let n = 0;
+          try { n = crashReports(db).length; } catch { n = 0; }
+          return (
+            <Pressable onPress={() => { if (n) { setSyncOpen(false); setCrashList(crashReports(db)); } }} accessibilityRole="button">
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
+                <T size={TYPE.body}>{t('crash.row')}</T>
+                <T size={TYPE.body} bold color={n ? C.rose : undefined}>{String(n)}</T>
+              </Row>
+            </Pressable>
+          );
+        })() : null}
         {cloud.lastError ? <Note tone="danger">{cloud.lastError}</Note> : null}
         {cloud.online && !cloud.syncing ? (
           <View style={{ marginTop: 10 }}><BtnPrimary icon="reload" title="زامِن الآن" onPress={() => { syncNow(); setSyncOpen(false); }} /></View>
@@ -892,25 +1084,54 @@ export default function Settings() {
       </Sheet>
 
       {/* النسخ على Drive */}
-      <Sheet visible={driveOpen && !!cloud.user && cloud.online} onClose={() => setDriveOpen(false)} title="النسخ على Google Drive">
-        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 10 }}>
-          {pwOn ? 'النسخة تُشفَّر بكلمة مرور النسخ قبل رفعها.' : 'النسخة تُرفع كما هي · ضع كلمة مرور النسخ من «النسخ الاحتياطي» لتُشفَّر.'}
-        </T>
-        <BtnPrimary icon="export" title="نسخ إلى Google Drive" onPress={() => { setDriveOpen(false); doDriveBackup(); }} loading={busy} />
-        <View style={{ marginTop: 8 }}>
-          <BtnGhost icon="undo" title="استعادة من Google Drive" onPress={() => { setDriveOpen(false); openDriveRestore(); }} />
-        </View>
+      {/* «نسخك على Google Drive» (ق٠-١): لا رفع بعد اليوم · العدد، ثم التنزيل إلى المجلد، ثم الحذف وسحب الإذن · الزرّ الذي لا يعمل لا يظهر */}
+      <Sheet visible={driveOpen && !!cloud.user && cloud.online && !!driveExit} onClose={() => setDriveOpen(false)} title={t('driveExit.row')}>
+        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 10 }}>{t('driveExit.intro')}</T>
+        {driveExit ? (
+          <T size={TYPE.body} med style={{ marginBottom: 10 }}>
+            {driveExit.view.count ? t('driveExit.count', { count: driveExit.view.count, done: driveExit.view.exported }) : t('driveExit.none')}
+          </T>
+        ) : null}
+        {driveExit && !folderUri && driveExit.view.unexported > 0 ? (
+          <View style={{ marginBottom: 8 }}>
+            <Note tone="danger">{t('driveExit.needFolder')}</Note>
+            <BtnGhost icon="export" title={t('folder.pick')} onPress={() => { chooseFolder().then((u) => { if (u) openDriveExit(); }); }} />
+          </View>
+        ) : null}
+        {driveExit?.view.canExport ? (
+          <BtnPrimary icon="export" title={t('driveExit.export')} onPress={() => { doDriveExport(); }} loading={busy} />
+        ) : null}
+        {driveExit?.view.canDelete ? (
+          <View style={{ marginTop: 8 }}>
+            <BtnPrimary danger icon="trash" title={t('driveExit.delete')} onPress={confirmDriveDelete} disabled={busy} />
+          </View>
+        ) : null}
+        {driveExit?.view.count ? (
+          <View style={{ marginTop: 8 }}>
+            <BtnGhost icon="undo" title={t('driveExit.restore')} onPress={() => { setDriveOpen(false); openDriveRestore(); }} />
+          </View>
+        ) : null}
       </Sheet>
 
       {/* حذف الحساب · كلمة التأكيد تُكتب حرفياً فيظهر الزر */}
       <Sheet visible={delOpen && !!cloud.user} onClose={() => setDelOpen(false)} title="حذف حسابي">
-        <Note tone="danger">
-          {'يُحذف نهائياً ولا يُستعاد: حسابك ' + (cloud.user?.email ?? '') + '، وكل بياناته في السحابة، ونسخ التطبيق على Google Drive، '
-            + 'وكل البيانات على هذا الجهاز. وأي جهاز آخر على الحساب يتوقف عن المزامنة.'}
-        </Note>
-        <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 8 }}>
-          إن أردت الاحتفاظ بنسخة فصدّرها من «النسخ الاحتياطي» قبل الحذف. ويُطلب منك الدخول بقوقل مرة أخرى لتأكيد هويتك.
-        </T>
+        {/* ق٠-٦: النصّ بحسب مزوّد الهوية · قوقل كما كان */}
+        {accountProvider() === 'device' ? (
+          <>
+            <Note tone="danger">{t('accountDelete.whatDevice')}</Note>
+            <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 8 }}>{t('accountDelete.hintDevice')}</T>
+          </>
+        ) : (
+          <>
+            <Note tone="danger">
+              {'يُحذف نهائياً ولا يُستعاد: حسابك ' + (cloud.user?.email ?? '') + '، وكل بياناته في السحابة، ونسخ التطبيق على Google Drive، '
+                + 'وكل البيانات على هذا الجهاز. وأي جهاز آخر على الحساب يتوقف عن المزامنة.'}
+            </Note>
+            <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 8 }}>
+              إن أردت الاحتفاظ بنسخة فصدّرها من «النسخ الاحتياطي» قبل الحذف. ويُطلب منك الدخول بقوقل مرة أخرى لتأكيد هويتك.
+            </T>
+          </>
+        )}
         {/* حفظ نسخة خارج التطبيق قبل الحذف (قرار المالك على #65) */}
         <BtnGhost icon="export" title={t('account.saveCopyBeforeDelete')} disabled={busy} onPress={() => { doBackup(); }} />
         <View style={{ height: 8 }} />
@@ -993,40 +1214,99 @@ export default function Settings() {
         }}
       />
 
-      <Sheet visible={pwEdit} onClose={() => setPwEdit(false)} title={pwOn ? 'تغيير كلمة مرور النسخ' : 'كلمة مرور النسخ'}>
-        {pwLost ? <Note tone="danger">{t('backup.passwordLost')}</Note> : null}
-        <Note tone="danger">
-          إن نسيت كلمة المرور فلا تُفتح النسخ المشفّرة بها أبداً · لا منّا ولا من غيرنا، فلا مفتاح خلفي. اكتبها في مكان آمن خارج الهاتف.
-        </Note>
-        <T size={TYPE.caption} color={C.muted} style={{ marginVertical: 6 }}>
-          تُحفظ في المخزن الآمن على هذا الجهاز وحده، وتُشفَّر بها النسخ بمعيار AES-256-GCM.{pwOn ? ' والنسخ السابقة تبقى بكلمتها القديمة.' : ''}
-        </T>
-        <Field label={'كلمة المرور (' + MIN_PASSWORD + ' أحرف على الأقل)'} value={pw1} onChange={setPw1} secure ltr />
-        <Field label="أعد كتابتها" value={pw2} onChange={setPw2} secure ltr error={!!pw2 && pw2 !== pw1} />
-        {pw1.length >= MIN_PASSWORD && pw1 === pw2 ? (
-          <BtnPrimary title="احفظ كلمة المرور" onPress={async () => {
-            try { await setBackupPassword(pw1); setPwOn(true); setPwLost(false); setPwEdit(false); toast('حُفظت · النسخ القادمة مشفّرة'); }
-            catch (e) { reportFailure({ title: 'تعذّر حفظ كلمة المرور', e }); }
-          }} />
-        ) : null}
-        {pwOn ? (
-          <View style={{ marginTop: 10 }}>
-            <BtnGhost danger title="إزالة كلمة المرور" onPress={() => dialog({
-              title: 'إزالة كلمة مرور النسخ',
-              body: 'النسخ القادمة لا تُشفَّر. والنسخ المشفّرة من قبل تبقى تحتاج كلمتها نفسها لتُفتح، فاحتفظ بها.',
-              tone: 'danger',
+      {/* تقارير الأعطال: الأحدث أولاً، وكلٌّ بتفصيله المحجوب ونسخه وإرساله (التوجيه الرابع ٤ · ٤) */}
+      <PickerSheet
+        visible={!!crashList}
+        onClose={() => setCrashList(null)}
+        title={t('crash.title')}
+        options={(crashList ?? []).map((c) => ({
+          value: c.id,
+          label: dfmt(localDateOf(c.ts)) + ' · ' + localTimeOf(c.ts) + ' · ' + c.who,
+          sub: c.where + ' · ' + c.version,
+        }))}
+        value={''}
+        onPick={(id) => {
+          const c = (crashList ?? []).find((x) => x.id === id);
+          setCrashList(null);
+          if (!c) return;
+          const full = [t('crash.title') + ' · ' + c.who, c.ts, c.where, c.version + ' · ' + c.platform + ' · ' + c.kind, '────────', c.stack].join('\n');
+          dialog({
+            title: c.where, body: c.version + ' · ' + c.kind + '\n\n' + c.stack.slice(0, 1200),
+            actions: [
+              { label: t('crash.close'), variant: 'ghost' },
+              { label: t('crash.copy'), variant: 'ghost', onPress: () => copyFailureDetails(full) },
+              { label: t('crash.share'), variant: 'primary', onPress: () => shareFailureDetails(full) },
+            ],
+          });
+        }}
+      />
+
+      {/* نسخ هذا الجهاز: الأمان وما قبل الترقية · اختيار نسخة ثم مسار الاستعادة نفسه (القرارات المعلّقة البند ١٧) */}
+      <PickerSheet
+        visible={!!deviceList}
+        onClose={() => setDeviceList(null)}
+        title={t('backup.device.title')}
+        options={(deviceList ?? []).map((b) => ({
+          value: b.name,
+          label: dfmt(localDateOf(b.at)) + ' · ' + localTimeOf(b.at) + ' · ' + libSizeLabel(b.size),
+          sub: t('backup.device.kind.' + b.kind) + (b.empty ? ' · ' + t('backup.device.empty') : ''),
+        }))}
+        value={''}
+        onPick={(name) => {
+          setDeviceList(null);
+          runRestore((opts) => prepareRestoreFromSafety(db, setProgress, opts, name));
+        }}
+      />
+
+      {/* مفتاح الاسترداد (التوجيه الرابع ٤ · ٣): يُعرض مرة، ولا يُحفظ حتى تُكتب آخر مجموعةٍ منه */}
+      <Sheet visible={keyOpen} onClose={() => { setKeyOpen(false); setNewKey(null); }} title={t('backup.key.title')}>
+        {secretKind === 'lost' ? <Note tone="danger">{t('backup.passwordLost')}</Note> : null}
+        {/* خطوتان (المدقق الخارجي D٦): المفتاح ظاهرٌ ونسخه، ثم يُخفى ويُطلب آخر مجموعةٍ منه · فالتأكيد من المحفوظ لا من الشاشة */}
+        {newKey && keyStep === 'show' ? (
+          <>
+            <Note tone="danger">{t('backup.key.warn')}</Note>
+            <T testID="recovery-key" size={TYPE.screenTitle} bold style={{ textAlign: 'center', marginVertical: 12, writingDirection: 'ltr', letterSpacing: 1 }}>{formatRecoveryKey(newKey)}</T>
+            <BtnGhost icon="clipboard" title={t('backup.key.copy')} onPress={async () => { await Clipboard.setStringAsync(formatRecoveryKey(newKey)); toast(t('backup.key.copied')); }} />
+            <View style={{ height: 8 }} />
+            <BtnPrimary title={t('backup.key.next')} onPress={() => { setKeyTail(''); setKeyStep('confirm'); }} />
+          </>
+        ) : newKey ? (
+          <>
+            <T size={TYPE.body} style={{ marginBottom: 8 }}>{t('backup.key.confirmNote')}</T>
+            <Field label={t('backup.key.confirmLabel')} value={keyTail} onChange={setKeyTail} ltr />
+            <BtnGhost title={t('backup.key.showAgain')} onPress={() => setKeyStep('show')} />
+            {confirmsRecoveryKey(newKey, keyTail) ? (
+              <BtnPrimary title={t('backup.key.saved')} onPress={async () => {
+                try {
+                  await saveRecoveryKey(newKey, account);
+                  setSecretKind('key'); setNewKey(null); setKeyOpen(false); toast(t('backup.key.savedToast'));
+                } catch (e) { reportFailure({ title: t('backup.key.title'), e }); }
+              }} />
+            ) : null}
+          </>
+        ) : secretKind === 'key' ? (
+          <>
+            <T size={TYPE.body} style={{ marginBottom: 10 }}>{t('backup.key.onDevice')}</T>
+            <BtnGhost title={t('backup.key.replace')} onPress={() => dialog({
+              title: t('backup.key.replace'), body: t('backup.key.replaceBody'), tone: 'danger',
               actions: [
-                { label: 'تراجع', variant: 'ghost' },
-                { label: 'أزل', variant: 'primary', onPress: async () => { await clearBackupPassword(); setPwOn(false); setPwLost(false); setPwEdit(false); toast('أُزيلت كلمة مرور النسخ'); } },
+                { label: t('common.cancel'), variant: 'ghost' },
+                { label: t('backup.key.replaceConfirm'), variant: 'primary', onPress: () => { setKeyTail(''); setKeyStep('show'); setNewKey(newRecoveryKey()); } },
               ],
             })} />
-          </View>
-        ) : null}
+          </>
+        ) : (
+          <>
+            {/* وكلمة المرور القديمة تبقى سرّاً سابقاً يفتح النسخ السابقة على هذا الجهاز (المدقق الخارجي D٢) */}
+            {secretKind === 'password' ? <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>{t('backup.key.fromPassword')}</T> : null}
+            <BtnPrimary title={t('backup.key.create')} onPress={() => { setKeyTail(''); setKeyStep('show'); setNewKey(newRecoveryKey()); }} />
+          </>
+        )}
       </Sheet>
 
       <Sheet visible={!!pwAsk} onClose={() => { pwAsk?.resolve(null); setPwAsk(null); }} title="نسخة مشفّرة">
         <T size={TYPE.body} style={{ marginBottom: 8 }}>{pwAsk?.note ?? ''}</T>
-        <Field label="كلمة المرور" value={pwTyped} onChange={setPwTyped} secure ltr />
+        <Field label={t('backup.key.askLabel')} value={pwTyped} onChange={setPwTyped} secure ltr />
         <Row>
           <View style={{ flex: 1 }}><BtnGhost title="إلغاء" onPress={() => { pwAsk?.resolve(null); setPwAsk(null); }} /></View>
           {pwTyped ? (
@@ -1273,8 +1553,10 @@ export default function Settings() {
                       { label: 'تراجع', variant: 'ghost' },
                       { label: 'استعادة الكل', variant: 'primary', onPress: async () => {
                         try {
-                          await restoreAllFromTrash(db, (d2, t2) => setProgress('جاري الاستعادة · ' + d2 + ' من ' + t2));
-                          toast('تمت استعادة جميع العناصر بنجاح');
+                          const total = data.trash.length;
+                          const back = await restoreAllFromTrash(db, (d2, t2) => setProgress('جاري الاستعادة · ' + d2 + ' من ' + t2));
+                          // وما بقي في السلة يُقال عدده، وسببه يظهر حين يُستعاد وحده (المدقق الخارجي N٤: كانت «جميع العناصر بنجاح» وبعضها باقٍ)
+                          toast(back >= total ? t('restore.allDone') : t('restore.partial', { n: back, total, left: total - back }));
                         } catch (e2) {
                           reportFailure({ title: 'تعذّرت الاستعادة', e: e2 });
                         }

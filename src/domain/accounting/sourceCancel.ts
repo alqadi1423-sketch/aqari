@@ -9,18 +9,19 @@
  *  - ردّ فائض أو تحويله رصيداً ← «إلغاء الرد»: يُعكس، وحركة البنك بمثلها، والرصيد الدائن يُطرح إن لم يُستعمل.
  *  - قيدٌ غاب مستنده (بقي بعد استعادة · orphans.ts) ← «عكس القيد»: لا مستند يُلغى منه.
  *  - قيد دفعةٍ سُدّدت من عربون الحجز ← لا إلغاء له، فلا زرّ (المراجعة الشاملة · البند ٢٧ · sourceCancelLocked).
+ *  - قيد قسطٍ سُدّد من التأمين في تسويته ← التسوية في شاشة العقد تُعدَّل فيُعكس معها (المراجعة الشاملة 2026-11-13 · A1-2).
  *  - وما له عملية في شاشة مستنده (فاتورة · مشتريات · مطالبة · تأمين · حجز) يُفتح مستنده ليُلغى منه.
  * كلٌّ ذرّي بتاريخ وسبب، وفي سجل العمليات · والقيد اليدوي يُعكس من الدفتر كما هو.
  */
 import { t } from '../../i18n';
 import type { DB } from '../../db/adapter';
-import { cashShortfall, reversalCashOut, CashShortfallError } from '../cashGuard';
+import { cashShortfall, reversalCashOut, CashShortfallError, bankShortages } from '../cashGuard';
 import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { reverseEntryById } from './post';
 import { walletCashBalance, bankBalance } from './ledger';
 import { RuleViolation } from '../contracts/service';
-import { DISCOUNT_ENTRY_SRC } from '../contracts/installments';
+import { DISCOUNT_ENTRY_SRC, DEPOSIT_RENT_SRC } from '../contracts/installments';
 import { fmt } from '../money';
 import { isOrphanEntry } from './orphans';
 import { paidFromDeposit } from '../contracts/cancelPayment';
@@ -33,8 +34,9 @@ export type SourceAction =
 
 interface EntryRow { id: string; no: string; date: string; auto: number; src_type: string | null; src_id: string | null; status: string; reversed_by: string | null }
 
+// وسداد القسط من التأمين (deposit_rent · المراجعة الشاملة 2026-11-13 · A1-2) يُلغى من تسويته لا من دفعته وحدها
 const DOCUMENT_SOURCES = ['invoice', 'purchase', 'purchase_pay', 'claim', 'claim_collect', 'contract_deposit',
-  'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', 'reservation', 'reservation_convert', 'reservation_forfeit', 'reservation_refund'];
+  'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', 'deposit_rent', 'reservation', 'reservation_convert', 'reservation_forfeit', 'reservation_refund'];
 
 /** خطوط القيد على حساب · موجبها مدين */
 const net = (db: DB, entryId: string, account: string) => Number(db.get<{ s: number }>(
@@ -83,6 +85,9 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
   if (!e || e.status !== 'مرحّل' || e.reversed_by || !e.src_type || Number(e.auto) !== 1) return null;
   if (e.src_type.endsWith('_rev')) return null; // مرآة قيد · لا يُلغى المُلغي
   if (sourceCancelLocked(db, e.id, e.src_type)) return null;
+  // دفعة التأمين من تسويته: مستندها التسوية في شاشة العقد، لا «إلغاء الدفعة» (A1-2) · إلا أن يغيب عقدها فيُعكس من الدفتر كأخواته
+  // («عكس القيد» أدناه · المراجعة الشاملة 2026-11-13 · A1-2: كان «من مستنده» ولا مستند يُفتح)
+  if (e.src_type === DEPOSIT_RENT_SRC && !isOrphanEntry(db, e.id)) return { kind: 'document' };
 
   const pay = db.get<{ id: string }>(`SELECT id FROM contract_payments WHERE journal_entry_id = ? AND cancelled_at IS NULL`, [e.id]);
   if (pay) return { kind: 'payment', paymentId: pay.id };
@@ -135,7 +140,9 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
   }
 
   if (e.src_type === 'key_money') {
-    return op('إلغاء التقبيل', ['يُعكس قيد العمولة ' + e.no, 'وحركة البنك بمثلها إن كانت', 'والصفقة تدخل سلة المحذوفات'], [], (date, reason) => {
+    // العمولة الواردة إلى بنكٍ يُخرجها عكسُها منه: مانعٌ برصيده كإلغاء العملية أعلاه (المراجعة الشاملة · A2.2)
+    return op('إلغاء التقبيل', ['يُعكس قيد العمولة ' + e.no, 'وحركة البنك بمثلها إن كانت', 'والصفقة تدخل سلة المحذوفات'],
+      bankShortages(db, e.no, 'reverse'), (date, reason) => {
       const revNo = reverse(db, e, date, 'إلغاء تقبيل · ' + reason);
       reverseBankTx(db, e.no, revNo, date, 'إلغاء عمولة تقبيل');
       db.run(`UPDATE key_money_deals SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), e.src_id]);

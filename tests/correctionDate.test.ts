@@ -18,6 +18,7 @@ import { restoreFromTrash } from '@/domain/trash';
 import { savePurchase, type PurchaseInput } from '@/domain/purchases';
 import { recordBulkRentPayment } from '@/domain/contracts/service';
 import { vatReturnData } from '@/domain/vatReturn';
+import { asLegacyDims } from './helpers/legacyDims';
 
 const entryDate = (db: ReturnType<typeof memDb>, id: string) =>
   db.get<{ date: string }>(`SELECT date FROM journal_entries WHERE id = ?`, [id])!.date;
@@ -68,8 +69,8 @@ test('#34 العكس من المصدر ينسخ أبعاد أصله · وتعد�
   expect(live().every((l) => l.contract_id === c2 && l.property_id === p2)).toBe(true);
   // مركز تكلفة أصلٍ اختير في شاشته يُنسخ في عكسه
   db.run(`INSERT INTO cost_centers (id, name, created_at) VALUES ('CC-T', 'مركز مصطنع', '2026-01-01')`);
-  db.run(`UPDATE journal_lines SET cost_center_id = 'CC-T' WHERE entry_id IN
-          (SELECT id FROM journal_entries WHERE src_type = 'claim' AND src_id = ? AND reversed_by IS NULL)`, [id]);
+  asLegacyDims(db, () => db.run(`UPDATE journal_lines SET cost_center_id = 'CC-T' WHERE entry_id IN
+          (SELECT id FROM journal_entries WHERE src_type = 'claim' AND src_id = ? AND reversed_by IS NULL)`, [id]));
   deleteClaim(db, id);
   const rev = db.all<{ cc: string | null; contract_id: string }>(
     `SELECT l.cost_center_id AS cc, l.contract_id FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id

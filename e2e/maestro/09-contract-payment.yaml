@@ -1,0 +1,96 @@
+# الجوال الافتراضي · ٠٩ · عقارٌ بوحدة، ثم عقد إيجارٍ شهري لسنة يبدأ اليوم، ثم تحصيل أول دفعة نقداً (التوجيه الرابع ٤ · ١) ·
+# أسماء وأرقام مصطنعة بحروفٍ لاتينية
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- tapOn: "العقارات"
+- tapOn: "+ عقار جديد"
+- tapOn:
+    id: "field-اسم العقار"
+- inputText: "E2E Lease Tower"
+- tapOn:
+    id: "field-عدد الوحدات"
+- inputText: "1"
+- hideKeyboard
+- tapOn: "إضافة العقار"
+- tapOn:
+    text: "إضافة الوحدات الآن"
+    optional: true
+- extendedWaitUntil:
+    visible: "E2E Lease Tower"
+    timeout: 20000
+# العقد
+- tapOn: "العقود"
+- tapOn: "+ عقد جديد"
+- tapOn:
+    id: "field-اسم المستأجر"
+- inputText: "E2E Tenant"
+- tapOn:
+    id: "field-رقم الجوال"
+- inputText: "0500000001"
+- tapOn:
+    id: "field-رقم الهوية / السجل"
+- inputText: "1000000001"
+- hideKeyboard
+- tapOn:
+    id: "select-العقار"
+- tapOn: "E2E Lease Tower"
+- tapOn:
+    id: "select-الوحدة"
+- tapOn:
+    id: "option-0"
+- scrollUntilVisible:
+    element:
+      id: "field-قيمة الإيجار الإجمالية"
+    direction: DOWN
+- tapOn:
+    id: "field-قيمة الإيجار الإجمالية"
+- inputText: "12000"
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: "date-تاريخ البداية"
+    direction: DOWN
+- tapOn:
+    id: "date-تاريخ البداية"
+- tapOn: "OK|حسناً|موافق"
+- tapOn:
+    id: "select-مدة العقد"
+- tapOn: "سنة"
+- takeScreenshot: 09-form
+- tapOn: "مراجعة قبل الإنشاء"
+- extendedWaitUntil:
+    visible: "تأكيد وإنشاء العقد"
+    timeout: 15000
+- takeScreenshot: 09-review
+- tapOn: "تأكيد وإنشاء العقد"
+# «تم توثيق العقد» يعرض نموذج الاستلام · لاحقاً
+- tapOn:
+    text: "لاحقاً"
+    optional: true
+- extendedWaitUntil:
+    visible: "E2E Tenant"
+    timeout: 20000
+- takeScreenshot: 09-contract
+# التحصيل
+- tapOn: "التحصيل"
+- extendedWaitUntil:
+    visible: "E2E Tenant"
+    timeout: 20000
+# جسم البطاقة يفتح التحصيل (اسم المستأجر يفتح قائمة الاتصال)
+- tapOn:
+    text: "المتبقي"
+    index: 0
+- extendedWaitUntil:
+    visible: "تأكيد التحصيل"
+    timeout: 15000
+- takeScreenshot: 09-pay
+- tapOn: "تأكيد التحصيل"
+- extendedWaitUntil:
+    notVisible: "تأكيد التحصيل"
+    timeout: 15000
+- takeScreenshot: 09-paid

@@ -23,6 +23,7 @@ const pur = (over: Partial<PurchaseInput> = {}): PurchaseInput => ({
 
 test('#32 المسترَدة ضريبتها لا تُحذف ولا تُعدَّل ولا تُرفض · وبعد إلغاء قيد الاسترداد تُحذف', () => {
   const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('S1', 'مورد ضريبي مصطنع', '300000000000003', '2026-01-01')`);
   const id = savePurchase(db, pur());
   markVatRefunded(db, id, '2026-04-20');
@@ -41,6 +42,7 @@ test('#32 المسترَدة ضريبتها لا تُحذف ولا تُعدَّ�
 
 test('#32 المرفوض استرداده لا يُسترد', () => {
   const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('S1', 'مورد ضريبي مصطنع', '300000000000003', '2026-01-01')`);
   const id = savePurchase(db, pur());
   markVatRejected(db, id, '2026-04-20');
@@ -52,6 +54,7 @@ test('#32 المرفوض استرداده لا يُسترد', () => {
 
 test('#33 الحركة اليدوية بنوعها وقيدها وكفايتها · والمحفظة والبنك لا يصيران سالبين', () => {
   const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   const bank = addBank(db, 'بنك يدوي مصطنع');
   // من المحفظة إلى البنك بلا نقد: يُرفض
   expect(() => recordManualBankTx(db, { kind: 'deposit', bankId: bank, amountHalalas: 5000, date: '2026-03-01', descr: 'إيداع مصطنع' })).toThrow();
@@ -73,6 +76,7 @@ test('#33 الحركة اليدوية بنوعها وقيدها وكفايتها
 
 test('#33 حذف حركةٍ يدوية قديمة بلا قيد لا يُنزل المحفظة أو البنك تحت الصفر', () => {
   const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   const bank = addBank(db, 'بنك قديم مصطنع');
   // حركتان يدويتان من نسخة سابقة: سحبٌ إلى المحفظة، ووارد
   const out = uid(), inn = uid();
@@ -89,6 +93,7 @@ test('#33 حذف حركةٍ يدوية قديمة بلا قيد لا يُنزل 
 
 test('#33 (التحقق المستقل) إلغاء رسومٍ أو واردٍ يدويّ من الدفتر يعكس حركة بنكه · والوارد يُفحص برصيد البنك لا المحفظة', () => {
   const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   const bank = addBank(db, 'بنك إلغاء مصطنع');
   ownerCashIn(db, { amountHalalas: 10000, date: '2026-03-01' });
   recordManualBankTx(db, { kind: 'deposit', bankId: bank, amountHalalas: 10000, date: '2026-03-02', descr: 'إيداع مصطنع' });
@@ -114,6 +119,7 @@ test('#33 (التحقق المستقل) إلغاء رسومٍ أو واردٍ ي
 
 test('#32 (التحقق المستقل) لا استرداد ولا رفض لفاتورة شراء محذوفة', () => {
   const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('S1', 'مورد ضريبي مصطنع', '300000000000003', '2026-01-01')`);
   const id = savePurchase(db, pur());
   deletePurchase(db, id);
@@ -125,6 +131,7 @@ test('#32 (التحقق المستقل) لا استرداد ولا رفض لفا
 
 test('قرار المالك 2026-10-09: فاتورة الشراء المقدَّمة في إقرار تُقفل · والسداد باقٍ', () => {
   const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   db.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('S1', 'مورد ضريبي مصطنع', '300000000000003', '2026-01-01')`);
   // «مُقدَّمة في الإقرار» بحالتها
   const a = savePurchase(db, pur());
@@ -149,6 +156,7 @@ test('قرار المالك 2026-10-09: فاتورة الشراء المقدَّ
 
 test('(التحقق المستقل) فاتورة شراء حُذفت قبل التقديم لا تُستعاد إلى فترةٍ قُدِّم إقرارها', () => {
   const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   const id = savePurchase(db, pur({ taxStatus: 'غير قابلة للخصم' as never, date: '2026-02-10' }));
   deletePurchase(db, id);
   fileVatReturn(db, 2026, 1, '2026-04-15');

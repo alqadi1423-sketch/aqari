@@ -283,9 +283,11 @@ export function PickerSheet<Tv extends string>({
   const fs = useFs();
   return (
     <Sheet visible={visible} onClose={onClose} title={title}>
-      {options.map((o) => (
+      {options.map((o, i) => (
         <Pressable
           key={o.value}
+          // معرّف الخيار بترتيبه لاختبار الجوال الافتراضي (التوجيه الرابع ٤ · ١) · لا يظهر
+          testID={'option-' + i}
           onPress={() => { onPick(o.value); onClose(); }}
           style={({ pressed }) => [pk.row, pressed && { backgroundColor: C.paper },
             value === o.value && { backgroundColor: C.emeraldSoft }]}
@@ -338,6 +340,9 @@ export function SelectField<Tv extends string>({
       <Text style={{ fontSize: fs(11.5), color: error ? C.rose : C.muted, marginBottom: 5, textAlign: 'right' }}>{label}</Text>
       <Pressable
         onPress={() => setOpen(true)}
+        // معرّف الحقل باسمه لاختبار الجوال الافتراضي كحقل الكتابة (field-) · لا يظهر
+        testID={'select-' + label}
+        accessibilityLabel={label}
         style={{
           borderWidth: error ? 1.6 : 1, borderColor: error ? C.rose : C.line, borderRadius: 8, minHeight: 44,
           paddingHorizontal: 11, justifyContent: 'center', backgroundColor: error ? C.roseSoft : '#FAFAF7',

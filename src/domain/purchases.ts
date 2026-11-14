@@ -3,18 +3,23 @@
  * التسجيل: مصروف الفئة + ضريبة / ذمم دائنة. السداد: 2100 / 1100 + حركة بنكية.
  */
 import type { DB } from '../db/adapter';
+import { RuleViolation } from './contracts/service';
 import { requireCash, entryCashEffect } from './cashGuard';
 import { uid } from './ids';
 import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
+import { bankBalance } from './accounting/ledger';
 import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount, vatRefundLines, vatRejectLines } from './accounting/post';
 import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseAssetsMoved, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
-import { correctionDate, isFiledDate, requireOpenPeriod } from './vatFilings';
+import { correctionDate, isFiledDate, requireISODate, requireOpenPeriod } from './vatFilings';
 import { t } from '../i18n';
+import { cardHasVat, normName } from './purchaseQr';
+import { qrKeyFacts, qrKeysAlike, qrKeysExact } from './zatcaQr';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter, takeNumber } from './numbering';
+import { vatRegistered } from './taxCode';
 
 export interface PurchaseInput {
   supplier: string;
@@ -45,6 +50,76 @@ export interface PurchaseInput {
   meterReading?: number | null;
   /** بنود الفاتورة (الهجرة ٢٩) · ما يصير منها أصلاً يُقيَّد على حساب فئته · وبلا بنود تبقى الفاتورة كما كانت */
   lines?: PurchaseLineInput[];
+  /** مفتاح رمز QR إن قُرئت منه (zatcaQrKey · الهجرة ٥٤): يُكتب عند الإنشاء وحده، ولا تُسجَّل فاتورةٌ حيّة بالمفتاح نفسه مرتين */
+  qrKey?: string;
+}
+
+export interface QrDuplicate { id: string; no: string; date: string; exact: boolean }
+
+/**
+ * الفاتورة الحيّة نفسها بحقائق مفتاح رمزها (exact) · وإلا فاتورةٌ حيّة قد تكون هي (exact: false): بمفتاحٍ يشبهه (اليوم والبائع والمبلغان،
+ * ولا تفرّقهما لحظةٌ ولا بصمة)، أو بلا مفتاح (سُجّلت يدوياً أو قبل الهجرة ٥٤) · بحقائق المفتاح لا بنصّه، فمفاتيح الإصدارات السابقة تُرى
+ * (المدقق الخارجي T١) · null إن لم تُسجَّل (أو كانت في السلة)
+ */
+export function purchaseByQrKey(db: DB, key: string, exceptId = ''): QrDuplicate | null {
+  const facts = qrKeyFacts(key);
+  if (!facts) return null;
+  const rows = db.all<{ id: string; no: string; date: string; k: string }>(
+    `SELECT id, no, date, qr_key AS k FROM purchases WHERE deleted_at IS NULL AND id != ? AND qr_key LIKE ? ORDER BY created_at`,
+    [exceptId, facts.vat + '|%']);
+  let alike: QrDuplicate | null = null;
+  for (const r of rows) {
+    const f = qrKeyFacts(r.k);
+    if (!f) continue;
+    if (qrKeysExact(facts, f)) return { id: r.id, no: r.no, date: r.date, exact: true };
+    if (!alike && qrKeysAlike(facts, f)) alike = { id: r.id, no: r.no, date: r.date, exact: false };
+  }
+  if (alike || !facts.day) return alike;
+  return purchaseLookalike(db, { vat: facts.vat, seller: '', date: facts.day, total: facts.total, tax: facts.tax }, exceptId);
+}
+
+/**
+ * فاتورةٌ حيّة بلا مفتاح رمز (يدوية أو قبل الهجرة ٥٤) قد تكون فاتورة الرمز: اليوم نفسه والإجمالي والضريبة نفسهما، ومورد بطاقتُه تحمل رقم
+ * البائع أو اسمُه اسمه أو بلا رقمٍ يُعرف به (T٢: الاسم التجاري ببطاقةٍ بلا رقم) · وبطاقةٌ برقمٍ آخر موردٌ آخر · يُسأل المستخدم قبل التعبئة
+ * ولا تُرفض (قد تكون فاتورةً أخرى) · المدقق الخارجي R٣
+ */
+export function purchaseLookalike(db: DB, q: { vat: string; seller: string; date: string; total: number; tax: number }, exceptId = ''): QrDuplicate | null {
+  const rows = db.all<{ id: string; no: string; date: string; name: string; card: string | null }>(
+    `SELECT p.id, p.no, p.date, p.supplier_name AS name,
+       (SELECT s.vat FROM suppliers s WHERE s.name = p.supplier_name AND s.deleted_at IS NULL ORDER BY s.archived LIMIT 1) AS card
+     FROM purchases p WHERE p.deleted_at IS NULL AND p.qr_key = '' AND p.id != ? AND p.total_halalas = ? AND p.tax_halalas = ? AND p.date = ?
+     ORDER BY p.created_at`, [exceptId, q.total, q.tax, q.date]);
+  const seller = normName(q.seller);
+  const vat = q.vat.replace(/\D/g, '');
+  const hit = rows.find((r) => (vat && cardHasVat(r.card, vat)) || (seller && normName(r.name) === seller) || !String(r.card ?? '').replace(/\D/g, ''));
+  return hit ? { id: hit.id, no: hit.no, date: hit.date, exact: false } : null;
+}
+
+/** عند الحفظ: الفاتورة نفسها يقيناً تُرفض (والشبيهة سأل عنها النموذج قبل التعبئة) · وعند الاستعادة من السلة الشبيهة كذلك، فلا شاشة تسأل فيها (T٣) */
+function rejectDuplicateQr(db: DB, key: string, exceptId = '', restoring = false): void {
+  const dup = purchaseByQrKey(db, key, exceptId);
+  if (dup && !dup.exact && !restoring) return;
+  // رفضٌ مقصود لا عطل: تعرضه الواجهة رسالةً ولا تكتبه تقرير عطل (المدقق الخارجي N٤)
+  if (dup) throw new RuleViolation(t(dup.exact ? 'purchaseQr.duplicate' : 'purchaseQr.restoreLookalike', { no: dup.no, date: dup.date }));
+}
+
+/** عند استعادة فاتورةٍ بلا مفتاح: فاتورة رمزٍ حيّة قد تكون هي (اليوم والمبلغان، والمورد برقمه في بطاقتها أو باسمه أو بلا رقم) تمنعها (T٣) */
+function rejectKeyedTwin(db: DB, id: string): void {
+  const p = db.get<{ date: string; total: number; tax: number; name: string; card: string | null }>(
+    `SELECT p.date, p.total_halalas AS total, p.tax_halalas AS tax, p.supplier_name AS name,
+       (SELECT s.vat FROM suppliers s WHERE s.name = p.supplier_name AND s.deleted_at IS NULL ORDER BY s.archived LIMIT 1) AS card
+     FROM purchases p WHERE p.id = ?`, [id]);
+  if (!p) return;
+  const rows = db.all<{ id: string; no: string; date: string; k: string; name: string }>(
+    `SELECT id, no, date, qr_key AS k, supplier_name AS name FROM purchases
+     WHERE deleted_at IS NULL AND id != ? AND qr_key != '' AND total_halalas = ? AND tax_halalas = ? ORDER BY created_at`, [id, p.total, p.tax]);
+  const cardVat = String(p.card ?? '').replace(/\D/g, '');
+  const hit = rows.find((r) => {
+    const f = qrKeyFacts(r.k);
+    if (!f || (f.day && f.day !== p.date)) return false;
+    return (cardVat && cardHasVat(p.card, f.vat)) || normName(r.name) === normName(p.name) || !cardVat;
+  });
+  if (hit) throw new RuleViolation(t('purchaseQr.restoreLookalike', { no: hit.no, date: hit.date }));
 }
 
 // بلغة الهيئة: «قابلة للخصم» المصطلح الرسمي · الاسم وحده يكفي بلا شرح
@@ -54,6 +129,14 @@ export const TS_EXCLUDED: TaxStatus = 'غير قابلة للخصم';
 export const TS_EXEMPT: TaxStatus = 'معفاة من الضريبة';
 export const TS_ZERO: TaxStatus = 'خاضعة بنسبة صفرية';
 export const TAX_STATUSES: TaxStatus[] = [TS_EXCLUDED, TS_DEDUCTIBLE, TS_EXEMPT, TS_ZERO];
+
+/**
+ * الأوضاع المتاحة لفاتورة شراء (القاعدة ٩٩ · القرارات المعلّقة القسم ٥ البند ١٣): «قابلة للخصم» للمنشأة المسجّلة في ضريبة القيمة
+ * المضافة وحدها، فغير المسجّلة لا تُقدّم إقراراً تخصم فيه ضريبة مدخلاتها · ويبقى لفاتورةٍ هي كذلك أصلاً (keep) من زمن التسجيل
+ */
+export function taxStatusesFor(db: DB, keep?: TaxStatus | string | null): TaxStatus[] {
+  return vatRegistered(db) || keep === TS_DEDUCTIBLE ? TAX_STATUSES : TAX_STATUSES.filter((s) => s !== TS_DEDUCTIBLE);
+}
 export const EXCLUDE_REASONS = [
   'الفاتورة باسم المالك',
   'الفاتورة باسم المستأجر',
@@ -86,18 +169,30 @@ export function nextPurchaseNo(db: DB): string {
 
 export function savePurchase(db: DB, input: PurchaseInput, existingId?: string): string {
   if (!input.subtotalHalalas && !input.totalHalalas) throw new Error('الرجاء إدخال مبالغ الفاتورة');
+  // ولا مبلغ سالب في فاتورة الشراء (المدقق الخارجي R٢: رمزٌ بوسمَي الإجمالي والضريبة مقلوبين كان يحفظ صافياً سالباً، أو يسقط بقيد القاعدة
+  // نصّاً إنجليزياً يُعرض عطلاً) · والإرجاع إشعارٌ دائن لا فاتورةٌ سالبة
+  // (والضريبة لا تزيد على الإجمالي ولو بفرق تقريب · المدقق الخارجي T٧)
+  if (input.subtotalHalalas < 0 || input.taxHalalas < 0 || input.totalHalalas < 0 || input.taxHalalas > input.totalHalalas) {
+    throw new RuleViolation(t('purchase.negativeAmounts'));
+  }
   if (existingId) {
     // ما يمنع التعديل يُرفض قبل أي كتابة، وهو نفسه ما تُخفي به الواجهة «تعديل» (المراجعة الشاملة · البند ٤)
     const block = purchaseEditBlock(db, existingId);
     if (block) throw new Error(block);
   }
-  // لا شراء جديد ولا نقلُ تاريخٍ إلى فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم)
+  // لا شراء جديد ولا نقلُ تاريخٍ إلى فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم) · ولا تاريخٌ بغير صيغته يتجاوز القفل (D-2)
+  if (input.date) requireISODate(input.date);
   if (isFiledDate(db, input.date)) throw new Error(t('purchase.filedPeriod'));
   return db.transaction(() => {
     // الافتراض مستبعدة ما لم يُثبَت العكس · و«خاضعة باسمنا» تشترط الرقم الضريبي للمورد
     const taxStatus: TaxStatus = input.taxStatus ?? (input.exempt ? TS_EXEMPT : TS_EXCLUDED);
     // الرقم الضريبي يأتي من بطاقة المورد · مصدر واحد للحقيقة، ويُلتقط لقطةً في الفاتورة
     let supplierVat = '';
+    // «قابلة للخصم» للمسجّلة وحدها، إلا فاتورةً كانت كذلك قبل إلغاء التسجيل تُعدَّل بوضعها نفسه
+    if (taxStatus === TS_DEDUCTIBLE && !taxStatusesFor(db, existingId
+      ? db.get<{ s: string }>(`SELECT tax_status AS s FROM purchases WHERE id = ?`, [existingId])?.s : null).includes(TS_DEDUCTIBLE)) {
+      throw new Error('المنشأة غير مسجّلة في ضريبة القيمة المضافة · لا تُخصم ضريبة المدخلات، فاختر «' + TS_EXCLUDED + '»');
+    }
     if (taxStatus === TS_DEDUCTIBLE) {
       supplierVat = (db.get<{ vat: string }>(
         `SELECT vat FROM suppliers WHERE name = ? AND deleted_at IS NULL`, [input.supplier]
@@ -153,17 +248,19 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
          taxStatus, input.excludeReason ?? '', supplierVat, existingId]
       );
     } else {
+      const qrKey = (input.qrKey ?? '').trim();
+      rejectDuplicateQr(db, qrKey);
       no = nextPurchaseNo(db);
       db.run(
         `INSERT INTO purchases (id, no, supplier_name, date, due, category, incorp_item, amortize,
           amortize_months, exempt, exclude_from_vat, tax_status, exclude_reason, supplier_vatno, unit_id, property_id,
-          subtotal_halalas, tax_halalas, total_halalas, meter_id, meter_reading, created_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          subtotal_halalas, tax_halalas, total_halalas, meter_id, meter_reading, created_at, qr_key)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [id, no, input.supplier, input.date, input.due, input.category, input.incorpItem,
          input.amortize ? 1 : 0, input.amortizeMonths, taxStatus === TS_EXEMPT ? 1 : 0,
          taxStatus === TS_EXCLUDED ? 1 : 0, taxStatus, input.excludeReason ?? '', supplierVat, input.unitId ?? null, input.propertyId ?? null,
          input.subtotalHalalas, tax, total, input.meterId ?? null, input.meterReading ?? null,
-         new Date().toISOString()]
+         new Date().toISOString(), qrKey]
       );
       if (input.meterId) {
         addMeterReading(db, input.meterId, input.meterReading ?? null, total, input.date, no);
@@ -200,6 +297,17 @@ export function priorPaymentCashOut(db: DB, id: string): number {
   const p = db.get<{ paid: number; pj: string | null }>(`SELECT paid, payment_journal_entry_id AS pj FROM purchases WHERE id = ?`, [id]);
   if (!p || !Number(p.paid) || !p.pj) return 0;
   return Math.max(0, -entryCashEffect(db, p.pj));
+}
+
+/**
+ * السداد من حسابٍ بنكي لا يُنزل رصيده تحت الصفر، كالرسوم والسحب والتحويل (القاعدة ٩٩ · سجل القرارات ٥٥ · المدقق الخارجي O٢: جهاز المالك
+ * ينتظر حركة القيد السالبة حتى يكفيها رصيد البنك، فسدادٌ يتجاوزه من جهاز عضوٍ كان يعلق ثم يُرفض) · بعد عكس السداد السابق، فما أخرجه يعود
+ */
+function requireBankCovers(db: DB, bankId: string, amount: number): void {
+  const balance = bankBalance(db, bankId);
+  if (amount <= balance) return;
+  const bank = db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ?`, [bankId])?.name ?? '';
+  throw new RuleViolation(t('bankTx.bankShort', { bank, balance: fmtH(balance), amount: fmtH(amount) }));
 }
 
 export function reversePurchasePayment(db: DB, id: string, keepTerms = false): void {
@@ -239,7 +347,7 @@ export function reversePurchasePayment(db: DB, id: string, keepTerms = false): v
 
 /** تسديد فاتورة شراء (أو تعديل بيانات سداد قائم) */
 export type PurchasePayMethod = 'bank' | 'cash' | 'cheque' | 'card';
-const PAY_LABEL: Record<PurchasePayMethod, string> = {
+export const PAY_LABEL: Record<PurchasePayMethod, string> = {
   cash: 'نقداً', bank: 'تحويل بنكي', cheque: 'شيك', card: 'بطاقة',
 };
 
@@ -267,6 +375,7 @@ export function payPurchase(
       method === 'cash'
     );
     if (method !== 'cash' && bankId) {
+      requireBankCovers(db, bankId, Number(p.total_halalas));
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,
@@ -321,6 +430,7 @@ export function payPurchaseSplit(db: DB, id: string, lines: PurchasePayLine[], p
     );
     for (const l of valid) {
       if (l.method === 'cash') continue;
+      requireBankCovers(db, l.bankId!, l.amountHalalas);
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,
@@ -422,11 +532,13 @@ const reversedEntry = (db: DB, entryId: string | null) => entryId
  */
 export function restorePurchase(db: DB, id: string): void {
   db.transaction(() => {
-    const p = db.get<{ no: string; journal_entry_id: string | null; payment_journal_entry_id: string | null; paid: number; deleted_at: string | null }>(
-      `SELECT no, journal_entry_id, payment_journal_entry_id, paid, deleted_at FROM purchases WHERE id = ?`, [id]);
+    const p = db.get<{ no: string; journal_entry_id: string | null; payment_journal_entry_id: string | null; paid: number; deleted_at: string | null; qr_key: string }>(
+      `SELECT no, journal_entry_id, payment_journal_entry_id, paid, deleted_at, qr_key FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
     // الحية لا «تُستعاد» (المراجعة الخارجية ٧ · النتيجة ٤)
     if (!p.deleted_at) throw new Error(t('restore.notInTrash'));
+    // ولا تعود فوق نسختها الحيّة المسجّلة من الرمز نفسه بعد حذفها (الهجرة ٥٤)
+    if (p.qr_key) rejectDuplicateQr(db, p.qr_key, id, true); else rejectKeyedTwin(db, id);
     // لا تعود إلى فترةٍ قُدِّم إقرارها (التحقق المستقل · قرار المالك 2026-10-09)
     if (isPurchaseFiled(db, id)) throw new Error(t('purchase.filedPeriod'));
     const reg = reversedEntry(db, p.journal_entry_id);

@@ -3,7 +3,8 @@
  * دوال خالصة تعمل على القاعدة وتعيد رسالة الخطأ العربية أو null عند السلامة.
  */
 import type { DB } from '../../db/adapter';
-import { dfmt, today, daysBetween } from '../dates';
+import { dfmt, today, daysBetween, isISODate } from '../dates';
+import { t } from '../../i18n';
 import { normalizePhone } from '../phone';
 import { deviceLetter, withLetter, takeNumber } from '../numbering';
 
@@ -311,6 +312,10 @@ export function validateConfirmedContract(
   if (!start) return fail('start', 'أدخل تاريخ بداية العقد، أو احفظه كمسودة إن لم يكتمل بعد');
   if (!end) return fail('end', 'أدخل تاريخ نهاية العقد، أو احفظه كمسودة إن لم يكتمل بعد');
   if (!valueHalalas) return fail('value', 'أدخل قيمة العقد، أو احفظه كمسودة إن لم يكتمل بعد');
+  // والتاريخان بصيغة سنة-شهر-يوم ويومٍ قائم: «2026-1-15» كان يُنشئ عقداً بلا قسطٍ واحد وبرقم «EJ-NaN-001» وتأمينه بتاريخ اليوم
+  // (المراجعة الشاملة 2026-11-13 · D2-R11-4)
+  if (!isISODate(start)) return fail('start', t('dates.invalidValue', { date: start }));
+  if (!isISODate(end)) return fail('end', t('dates.invalidValue', { date: end }));
   if (start > end) return fail('end', `تاريخ البداية (${dfmt(start)}) يجب أن يسبق تاريخ النهاية (${dfmt(end)})`);
   const ph = input.phone.trim();
   if (ph && !normalizePhone(ph)) return fail('phone', `رقم الجوال "${ph}" ليس رقم جوال سعودي صحيح · تُقبل الصيغ: 05XXXXXXXX أو +9665XXXXXXXX أو 009665XXXXXXXX`);

@@ -196,15 +196,23 @@ export function planDimsBackfill(db: DB): DimsBackfillPlan {
 
 /** ملء أبعاد ما عُرف مصدره بكلمة المالك · ومركز تكلفته «عام» · يعيد عدد القيود */
 export function applyDimsBackfill(db: DB, plan: DimsBackfillPlan): number {
+  let filled = 0;
   db.transaction(() => {
     for (const k of plan.known) {
+      // السطر الذي مُلئ بعد عرض الخطة (ملءٌ من جهاز مالكٍ آخر وصل بالمزامنة) يُتخطى: أبعاد المرحّل تُملأ مرة ولا تُغيَّر (الترحيلة ٥١)،
+      // وكانت الخطة القديمة تكتب فوقها فيرفضها المحفّز ويُرمى الملء كله (المدقق الخارجي ب١)
+      const open = (db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM journal_lines WHERE entry_id = ? AND property_id IS NULL AND unit_id IS NULL AND contract_id IS NULL`,
+        [k.entryId])?.n ?? 0) > 0;
+      if (!open) continue;
       db.run(
         `UPDATE journal_lines SET property_id = ?, unit_id = ?, contract_id = ?, cost_center_id = COALESCE(cost_center_id, ?)
-         WHERE entry_id = ?`,
+         WHERE entry_id = ? AND property_id IS NULL AND unit_id IS NULL AND contract_id IS NULL`,
         [k.dims.propertyId ?? null, k.dims.unitId ?? null, k.dims.contractId ?? null, GENERAL_COST_CENTER, k.entryId]);
+      filled += 1;
     }
   });
-  return plan.known.length;
+  return filled;
 }
 
 /** ما لا يُعرف مصدره يبقى بلا عقار ولا وحدة ولا عقد بإقرار المالك · ويُعلَّم بمركز «عام» فيخرج من المراجعة */

@@ -1,0 +1,160 @@
+# الجوال الافتراضي (التوجيه الرابع ٤ · ١ · قرار المالك 2026-11-07 «اختبار آلي على جوال أندرويد افتراضي في جيت هب»):
+# تُبنى حزمة الإصدار نفسها (الشيفرة مضمّنة، بلا Metro) لمعالج x86_64، موقّعةً بمفتاح اختبارٍ يُولَّد في التشغيل ويُحذف معه
+# (لا مفتاح المالك ولا أي سر)، ثم تُشغَّل تدفقات Maestro في e2e/maestro على محاكي أندرويد · بلا ربطٍ بقوقل: التطبيق محلي كاملاً.
+# والخلاصة ولقطات الشاشة تُكتب في فرع ci-results (مجلد e2e/<الالتزام>) في عملٍ مستقل بصلاحية الكتابة وحدها، كخط الاختبارات.
+name: الجوال الافتراضي
+
+on:
+  push:
+    branches-ignore: [ci-results, apk]
+    paths: ['app/**', 'src/**', 'android/**', 'assets/**', 'e2e/**', 'package.json', 'package-lock.json', 'app.json', 'babel.config.js',
+      'metro.config.js', '.github/workflows/android-e2e.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      TZ: Asia/Riyadh
+      MAESTRO_VERSION: 2.11.0
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: تثبيت الحزم
+        run: npm ci
+
+      - name: ذاكرة Gradle
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('android/**/*.gradle', 'android/gradle/wrapper/gradle-wrapper.properties', 'package-lock.json') }}
+
+      # مفتاح اختبارٍ يُولَّد هنا بكلمة مرورٍ عشوائية لكل تشغيل، ويُمرَّر بمتغيرات الإصدار نفسها (build.gradle يرفض الإصدار بلا مفتاح)،
+      # ويُحذف بعد البناء
+      - name: مفتاح اختبارٍ مؤقت
+        run: |
+          ks="$RUNNER_TEMP/e2e.keystore"
+          pw="e2e-$(openssl rand -hex 8)"
+          echo "::add-mask::$pw"
+          keytool -genkeypair -keystore "$ks" -storepass "$pw" -keypass "$pw" -alias aqari-upload -keyalg RSA -keysize 2048 \
+            -validity 2 -dname "CN=aqari-e2e" >/dev/null
+          {
+            echo "AQARI_UPLOAD_STORE_FILE=$ks"
+            echo "AQARI_UPLOAD_STORE_PASSWORD=$pw"
+            echo "AQARI_UPLOAD_KEY_PASSWORD=$pw"
+          } >> "$GITHUB_ENV"
+
+      # مهلتا الخطوتين دون مهلة العمل (١٢٠): التعليق فشلُ خطوةٍ تُكتب خلاصته، لا إلغاء (P0-5)
+      - name: بناء حزمة الاختبار (x86_64)
+        timeout-minutes: 40
+        working-directory: android
+        run: |
+          bash ./gradlew :app:assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 \
+            "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
+          ls -l app/build/outputs/apk/release/
+          apk="$(ls "$PWD"/app/build/outputs/apk/release/*.apk | head -1)"
+          echo "E2E_APK=$apk" >> "$GITHUB_ENV"
+
+      - name: حذف مفتاح الاختبار
+        if: always()
+        run: rm -f "$RUNNER_TEMP/e2e.keystore"
+
+      # قرص المشغّل امتلأ وهو ينزّل صورة المحاكي («No space left on device» على 3dff115): تُحذف أدواتٌ لا يستعملها هذا العمل
+      # ووسائط البناء بعد خروج الحزمة (الحزمة نفسها في outputs باقية، وذاكرة Gradle باقية لحفظها)
+      - name: إفساح القرص للمحاكي
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/powershell /usr/local/share/chromium /usr/local/lib/android/sdk/ndk || true
+          rm -rf android/app/build/intermediates android/app/build/tmp android/app/.cxx android/build node_modules/.cache || true
+          ls -l "$E2E_APK"
+          df -h / | tail -1
+
+      - name: تفعيل KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: تثبيت Maestro
+        run: |
+          curl -fsSL "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: التدفقات على المحاكي
+        timeout-minutes: 60
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: bash e2e/run.sh
+
+      # لا خلاصة لتشغيلٍ أُلغي (دفعةٌ لحقته): لا يُحسب فشلاً على التزامٍ لم يُختبر (G-7)
+      - name: الخلاصة
+        if: ${{ !cancelled() }}
+        run: node e2e/summary.js
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e
+          path: e2e-out/
+
+  # الكتابة في ci-results وحدها بصلاحية كتابة · لا تثبيت ولا تشغيل لحزمة هنا
+  publish:
+    needs: e2e
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: e2e
+          path: /tmp/e2e
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ci-results
+          path: ci
+
+      - name: نشر الخلاصة واللقطات في فرع ci-results
+        working-directory: ci
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          mkdir -p "e2e/${GITHUB_SHA}"
+          cp -r /tmp/e2e/. "e2e/${GITHUB_SHA}/"
+          cp /tmp/e2e/summary.txt e2e/latest.txt 2>/dev/null || true
+          git add e2e
+          git commit -q -m "الجوال الافتراضي ${GITHUB_SHA}" || exit 0
+          for i in 1 2 3; do git push -q origin HEAD:ci-results && break; git pull -q --rebase origin ci-results; done

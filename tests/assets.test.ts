@@ -89,6 +89,7 @@ test('فاتورة ببنود: الأصل بتكلفته ونصيبه من ال�
   expect(assets.every((a) => a.purchase_id === id && a.source === 'purchase' && a.room === 'الصالة')).toBe(true);
   // القابلة للخصم: ضريبتها في 1270 والأصل بأساسه
   const { db: db2, u1: v1 } = world();
+  db2.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
   db2.run(`INSERT INTO suppliers (id, name, vat, created_at) VALUES ('s1', 'مورد ضريبي تجريبي', '300000000000003', '2026-01-01')`);
   savePurchase(db2, purchase({
     supplier: 'مورد ضريبي تجريبي', date: today(), taxStatus: 'فاتورة ضريبية · قابلة للخصم', subtotalHalalas: 200000, taxHalalas: 30000, totalHalalas: 230000,

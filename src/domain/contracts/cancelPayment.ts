@@ -11,14 +11,17 @@
  * والمعاينة planCancelPayment تُعرض قبل التنفيذ: القيود ومبالغها، وكل قسط بمسدَّده قبل وبعد، والبنك والرصيد.
  */
 import type { DB } from '../../db/adapter';
+import { allIn } from '../../db/inList';
 import { cashShortfall, CashShortfallError } from '../cashGuard';
-import { uid } from '../ids';
-import { today, dfmt } from '../dates';
+import { rowId, withDeterministicIds } from '../ids';
+import { fmt } from '../money';
+import { today, dfmt, isISODate } from '../dates';
 import { logAudit } from '../audit';
 import { reverseEntryById } from '../accounting/post';
+import { bankBalance } from '../accounting/ledger';
 import { RuleViolation } from './service';
 import { t } from '../../i18n';
-import { DISCOUNT_ENTRY_SRC, DISCOUNT_REDUCES_INSTALLMENT } from './installments';
+import { DISCOUNT_ENTRY_SRC, DISCOUNT_REDUCES_INSTALLMENT, DEPOSIT_RENT_SRC } from './installments';
 import { recomputeInstallments, installmentsOfPayment, DERIVED_PAID_SQL } from './paid';
 
 export interface CancelPaymentPlan {
@@ -93,8 +96,24 @@ export function paidFromDeposit(db: DB, paymentId: string): boolean {
      WHERE p.id = ? AND e.src_type = 'reservation_convert'`, [paymentId]);
 }
 
-/** يوم الدفعة · المخزَّن تاريخٌ، والقديم قد يكون لحظة */
-const payDay = (p: PaymentRow): string => String(p.date ?? '').slice(0, 10);
+/**
+ * الدفعة سدّدت قسطاً متأخراً من التأمين في تسويته (المراجعة الشاملة 2026-11-13 · A1-2): لا تُلغى وحدها، فإلغاؤها يعيد مبلغها التزاماً
+ * في 2400 والتسوية تقول إنه خُصم · تُعدَّل التسوية فيُعكس سدادها معها في معاملةٍ واحدة (applyDepositSettlement)
+ */
+export function paidFromSettlement(db: DB, paymentId: string): boolean {
+  return !!db.get(
+    `SELECT 1 FROM contract_payments p JOIN journal_entries e ON e.id = p.journal_entry_id
+     WHERE p.id = ? AND e.src_type = ?`, [paymentId, DEPOSIT_RENT_SRC]);
+}
+
+/**
+ * يوم الدفعة · المخزَّن تاريخٌ، والقديم قد يكون لحظة · وما كتبه الحقل القديم بغير صيغته «2026-3-15» لا يومَ له: يُقارن حرفاً فيعلو كل
+ * تاريخٍ صحيح في سنته، فكان تاريخ الإلغاء الافتراضي المعيبَ نفسه ويُرفض كل صحيحٍ «قبل الدفعة» (المراجعة الشاملة 2026-11-13 · D2-R11-2)
+ */
+const payDay = (p: PaymentRow): string => {
+  const day = String(p.date ?? '').slice(0, 10);
+  return isISODate(day) ? day : '';
+};
 
 /**
  * تاريخ الإلغاء لا يسبق تاريخ الدفعة (المراجعة الشاملة · البند ١٠ · تتمة المراجعة الأخيرة): الدفعة تبقى في ربعها ما لم تُلغَ فيه،
@@ -124,12 +143,12 @@ export function planCancelPayment(db: DB, paymentId: string, date?: string): Can
   const paymentDate = payDay(p);
   const dateError = cancelDateError(p, date);
   if (p.cancelled_at) blockers.push('الدفعة ملغاة من قبل');
-  else if (paidFromDeposit(db, p.id)) {
-    // منعٌ دائم: المعاينة سببه وحده، فلا أثرٌ يُعرض لإلغاءٍ لن يقع (المتحقق المستقل على البند ٢٧)
+  else if (paidFromDeposit(db, p.id) || paidFromSettlement(db, p.id)) {
+    // منعٌ دائم: المعاينة سببه وحده، فلا أثرٌ يُعرض لإلغاءٍ لن يقع (المتحقق المستقل على البند ٢٧) · ودفعة التأمين من تسويته (A1-2)
     return {
       paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, paymentDate, dateError, net: Number(p.net_halalas),
       entries: [], installments: [], bank: [], creditReversal: 0, restoreAmount: null,
-      blockers: [t('payment.cancelFromDeposit')], cashShort: 0,
+      blockers: [t(paidFromDeposit(db, p.id) ? 'payment.cancelFromDeposit' : 'payment.cancelFromSettlement')], cashShort: 0,
     };
   }
 
@@ -154,13 +173,15 @@ export function planCancelPayment(db: DB, paymentId: string, date?: string): Can
   const restoreAmount = p.discount_kind === DISCOUNT_REDUCES_INSTALLMENT && p.installment_id
     ? { installmentId: p.installment_id, by: Number(p.discount_halalas) } : null;
   // المسدَّد بعد الإلغاء: المحسوب من الدفعات بلا هذه الدفعة · محدوداً بالمبلغ بعد رجوع التنزيل
-  const installments = instIds.length ? db.all<{ id: string; due: string; paid: number; amount: number; mine: number; derived: number }>(
-    `SELECT i.id, i.due_date AS due, i.paid_halalas AS paid, i.amount_halalas AS amount,
+  // والمتساويات في الاستحقاق بترتيبها في الجدول ثم بمعرّفها بعد القطع (المدقق الخارجي B4)
+  const installments = instIds.length ? allIn<{ id: string; due: string; sort: number; paid: number; amount: number; mine: number; derived: number }>(db,
+    `SELECT i.id, i.due_date AS due, i.sort, i.paid_halalas AS paid, i.amount_halalas AS amount,
             ${DERIVED_PAID_SQL} AS derived,
             COALESCE((SELECT SUM(a.amount_halalas) FROM payment_allocations a WHERE a.payment_id = ? AND a.installment_id = i.id), 0)
             + (CASE WHEN ? = i.id AND NOT EXISTS (SELECT 1 FROM payment_allocations a WHERE a.payment_id = ?) THEN ? ELSE 0 END) AS mine
-     FROM contract_installments i WHERE i.id IN (${instIds.map(() => '?').join(',')}) ORDER BY i.due_date`,
-    [p.id, p.installment_id ?? '', p.id, Number(p.net_halalas), ...instIds]).map((r) => {
+     FROM contract_installments i WHERE i.id IN (:list) ORDER BY i.due_date, i.sort, i.id`,
+    instIds, [p.id, p.installment_id ?? '', p.id, Number(p.net_halalas)])
+    .sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : Number(a.sort) - Number(b.sort) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))).map((r) => {
       const amount = Number(r.amount) + (restoreAmount && restoreAmount.installmentId === r.id ? restoreAmount.by : 0);
       return { id: r.id, due: r.due, fromPaid: Number(r.paid), toPaid: Math.min(Math.max(0, Number(r.derived) - Number(r.mine)), amount) };
     }) : [];
@@ -170,6 +191,19 @@ export function planCancelPayment(db: DB, paymentId: string, date?: string): Can
      FROM payment_lines pl LEFT JOIN banks b ON b.id = pl.bank_id
      WHERE pl.payment_id = ? AND pl.method != 'cash' AND pl.bank_id IS NOT NULL`, [p.id])
     .map((x) => ({ bankId: x.bank_id, bankName: x.name, amount: Number(x.amount) }));
+  // ما دخل البنك بهذه الدفعة يخرج منه بإلغائها: لا تحت الصفر (قرار ٥٥ · المراجعة الشاملة · A2.2، أشار إليه المراجع A2 هنا)
+  if (!p.cancelled_at) {
+    const perBank = new Map<string, { name: string; amount: number }>();
+    for (const b of bank) {
+      const cur = perBank.get(b.bankId) ?? { name: b.bankName, amount: 0 };
+      cur.amount += b.amount;
+      perBank.set(b.bankId, cur);
+    }
+    for (const [bankId, x] of perBank) {
+      const balance = bankBalance(db, bankId);
+      if (x.amount > 0 && balance < x.amount) blockers.push(t('bankTx.bankShort', { bank: x.name, balance: fmt(balance), amount: fmt(x.amount) }));
+    }
+  }
 
   return {
     paymentId: p.id, contractId: p.contract_id, tenant: c?.tenant_name ?? '', date, paymentDate, dateError, net: Number(p.net_halalas),
@@ -184,7 +218,17 @@ export function receiptBlocked(db: DB, paymentId: string): string | null {
 }
 
 /** التنفيذ · ذرّي كله أو لا شيء · يعيد معاينة ما جرى */
+/**
+ * إلغاء الدفعة بمعرّفاتٍ حتمية من معرّفها (المدقق الخارجي Z٢-٢): جهازان يلغيان الدفعة نفسها (دفعة تحصيلٍ من الكشف التقت عليهما) يكتبان
+ * العاكس نفسه وحركته، فلا عاكسان لقيدٍ واحد
+ */
 export function cancelPayment(db: DB, paymentId: string, input: { date?: string; reason: string }): CancelPaymentPlan {
+  // (وبتاريخ الإلغاء: إلغاءان بتاريخين لا يلتقيان بمعرّفٍ واحدٍ ومحتويين فتختلط صفوفهما في السحابة، بل يُقبل أولهما على جهاز المالك
+  // ويُرفض الثاني عاكساً ثانياً ظاهراً، وتاريخ الإلغاء وعاكسه نهائيان · المدقق الخارجي A٢-٦)
+  return withDeterministicIds('cancel:' + paymentId + ':' + (input.date || defaultCancelDate(db, paymentId)), () => cancelPaymentNow(db, paymentId, input));
+}
+
+function cancelPaymentNow(db: DB, paymentId: string, input: { date?: string; reason: string }): CancelPaymentPlan {
   const date = input.date || defaultCancelDate(db, paymentId);
   const reason = input.reason.trim();
   if (!reason) throw new RuleViolation('اكتب سبب إلغاء الدفعة');
@@ -211,13 +255,14 @@ export function cancelPayment(db: DB, paymentId: string, input: { date?: string;
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,
-        [uid(), b.bankId, date, 'إلغاء دفعة إيجار · ' + plan.tenant, -b.amount, cancelNo, 'إلغاء دفعة إيجار', new Date().toISOString()]);
+        [rowId(), b.bankId, date, 'إلغاء دفعة إيجار · ' + plan.tenant, -b.amount, cancelNo, 'إلغاء دفعة إيجار', new Date().toISOString()]);
     }
     // الفائض يُطرح من الرصيد، والمستعمَل منه (دفعة من الرصيد الدائن · قيمته سالبة) يعود إليه (مراجعة التثبيت #63)
     if (plan.creditReversal !== 0) {
       db.run(`UPDATE tenants SET credit_halalas = credit_halalas - ?
               WHERE id = (SELECT tenant_id FROM contracts WHERE id = ?)`, [plan.creditReversal, plan.contractId]);
     }
+    // (وسطر كشف البنك المطابَق بحركة الدفعة يعود مفتوحاً بعكس قيدها · reopenStatementLines · B٢-٧)
     // ٥) الوسم ثم ٢) المسدَّد من الدفعات
     db.run(`UPDATE contract_payments SET cancelled_at = ?, cancel_reason = ?, cancel_entry_id = ? WHERE id = ?`,
       [date, reason, cancelEntry, paymentId]);

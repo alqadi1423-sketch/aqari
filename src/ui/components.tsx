@@ -62,15 +62,18 @@ export function CardTitle({ children, action }: { children: React.ReactNode; act
 }
 
 export function T({
-  children, size = TYPE.body, bold, med, color = C.charcoal, style, center, numberOfLines,
+  children, size = TYPE.body, bold, med, color = C.charcoal, style, center, numberOfLines, testID,
 }: {
   children: React.ReactNode; size?: number; bold?: boolean; med?: boolean;
   color?: string; style?: StyleProp<TextStyle>; center?: boolean; numberOfLines?: number;
+  /** معرّفٌ لاختبار الجوال الافتراضي · لا يظهر */
+  testID?: string;
 }) {
   const fs = useFs();
   const dir = useTextAlign();
   return (
     <Text
+      testID={testID}
       ellipsizeMode="tail"
       numberOfLines={numberOfLines}
       style={[
@@ -246,6 +249,9 @@ export function Field({
     <View style={st.field}>
       <Text style={{ fontFamily: FONT_MED, fontSize: fs(TYPE.caption), color: error ? C.rose : C.muted, marginBottom: 5 }}>{label}</Text>
       <TextInput
+        // اسم الحقل لقارئ الشاشة، ومعرّفه لاختبار الجوال الافتراضي (e2e/maestro · التوجيه الرابع ٤ · ١)
+        accessibilityLabel={label || placeholder}
+        testID={'field-' + (label || placeholder || '')}
         value={value}
         onChangeText={(v) => { markDirty(); onChange?.(v); }}
         placeholder={placeholder}
