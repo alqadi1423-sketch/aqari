@@ -644,10 +644,12 @@ export async function planAdoptPending(
 
 export async function adoptPendingWithKeep(
   db: AppDB, ready: { snap: CloudSnapshot; keep: KeepPlan }
-): Promise<{ queued: number; kept: number }> {
-  const kept = ready.keep.entries.length ? applyKeepPosted(db, ready.keep).entries.length : 0;
+): Promise<{ queued: number; kept: number; moves: number }> {
+  // وحركات نقل النقد في السحابة بعد النسخة تُحمل ولو لم يُضمّ قيد (قرار المالك 2026-11-14 · R12-BAK-3): applyKeepPosted لا يكتب شيئاً
+  // حين لا قيد ولا حركة
+  const kept = applyKeepPosted(db, ready.keep).entries.length;
   const { queued } = await adoptForCloud(db, planFromSnapshot(db, ready.snap));
-  return { queued, kept };
+  return { queued, kept, moves: ready.keep.cashMoves };
 }
 
 /** حساب البيانات على هذا الجهاز (uid وإيميل) · آخر من دخل وارتبطت به المزامنة */

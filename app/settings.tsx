@@ -53,7 +53,7 @@ import { readMembership } from '../src/services/access';
 import { getSyncState } from '../src/sync/engine';
 import type { CloudReplacePlan, CloudSnapshot } from '../src/sync/engine';
 import { localFilesOf, type PrepareOptions } from '../src/domain/backup/restore';
-import type { KeptEntry } from '../src/domain/backup/keepPosted';
+import { keptMovesText, type KeptEntry } from '../src/domain/backup/keepPosted';
 import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orphans';
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
@@ -329,7 +329,8 @@ export default function Settings() {
   /** القيود المرحّلة بعد تاريخ النسخة · تبقى وتُضمّ إليها · سطور الحوار قبل التأكيد */
   const fromLabel = (k: KeptEntry) => (k.from === 'device' ? 'من هذا الجهاز' : k.from === 'cloud' ? 'من السحابة' : 'من الجهاز والسحابة');
   const keptText = (kept: KeptEntry[], cashMoves = 0, revivedMoves = 0) => {
-    if (!kept.length) return '';
+    // ولا قيد يُضمّ: حركات نقل النقد بعد النسخة تبقى وحدها ويُذكر عددها (قرار المالك 2026-11-14 · R12-BAK-3)
+    if (!kept.length) { const moves = keptMovesText(cashMoves, revivedMoves, false); return moves ? '\n\n' + moves : ''; }
     const shown = kept.slice(0, 8).map((k) => '· ' + (k.newNo ? k.newNo + ' (كان ' + k.no + ')' : k.no) + ' · ' + k.date + ' · ' + fmt(k.amount)
       + ' · ' + fromLabel(k) + (k.wasDraft ? ' · ' + t('backup.keptWasDraft') : '') + (k.carried.length ? ' · ومعه ' + k.carried.join(' و') : '') + (k.review ? ' · للمراجعة' : ''));
     const toReview = kept.filter((k) => k.review).length;
@@ -339,8 +340,7 @@ export default function Settings() {
       + '\nالقيد المرحّل لا يُحذف بالاستعادة · يُضمّ إلى النسخة برقمه وسطوره، ومعه دفعته وتوزيعها وحركة بنكه متى كان عقدها وبنكها في النسخة.'
       + (renamed ? '\n' + renamed + ' منها رقمه مستعمل في النسخة لقيد آخر فيأخذ رقماً جديداً، ويُذكر القديم في بيانه.' : '')
       + (toReview ? '\n' + toReview + ' منها مستنده لم يُحمل · تجدها في «مراجعة الدفتر» لتراجعها.' : '')
-      + (cashMoves ? '\n' + t('backup.keptCashMoves', { n: cashMoves }) : '')
-      + (revivedMoves ? '\n' + t('backup.keptRevivedMoves', { n: revivedMoves }) : '');
+      + (cashMoves || revivedMoves ? '\n' + keptMovesText(cashMoves, revivedMoves, true) : '');
   };
   const paidText = (n: number) => (n ? '\n\nمسدَّد ' + n + ' قسط حُسب من دفعات النسخة وتوزيعها بدل الرقم المخزّن فيها.' : '');
   // نسخة ما قبل الترقية بلا ملفاتها (المراجعة الشاملة 2026-11-13 · C-2): ملفاتها باقية على الجهاز، وما غاب منها يُسمّى قبل التأكيد ·
@@ -487,15 +487,16 @@ export default function Settings() {
       dialog({
         title: 'اعتماد بيانات هذا الجهاز',
         body: 'استُعيدت على هذا الجهاز نسخة ولم يُكتب منها شيء إلى السحابة.\n' + cloudReplaceText({ ...p, immutable: { ...p.immutable, entries: 0 } })
-          + keptText(ready.keep.entries, ready.keep.cashMoves),
+          + keptText(ready.keep.entries, ready.keep.cashMoves, ready.keep.revivedMoves),
         tone: 'normal',
         locked: true,
         actions: [
           { label: 'إلغاء', variant: 'ghost', onPress: () => resumeSync() },
           { label: 'اعتماد بيانات هذا الجهاز واستبدال بيانات السحابة بها', variant: 'primary', onPress: async () => {
             try {
-              const { queued, kept } = await adoptPendingWithKeep(db, ready);
-              toast(queued + ' سجل في طريقه إلى السحابة' + (kept ? ' · وضُمّ ' + kept + ' قيد مرحّل من السحابة' : ''));
+              const { queued, kept, moves } = await adoptPendingWithKeep(db, ready);
+              toast(queued + ' سجل في طريقه إلى السحابة' + (kept ? ' · وضُمّ ' + kept + ' قيد مرحّل من السحابة' : '')
+                + (moves ? ' · ' + t('backup.keptMovesToast', { n: moves }) : ''));
             } catch (e) {
               await reportFailure({ title: 'تعذّر الاعتماد', where: 'اعتماد النسخة للسحابة', db, e });
             }

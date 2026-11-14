@@ -331,12 +331,13 @@ export async function prepareRestore(
         // ولا يُنزل الضمّ بنكاً ولا المحفظة تحت الصفر (القرار ٥٥ · المراجعة ١٢ · R12-BAK-3): يُسمّى ما ينقص قبل أي كتابة
         const short = keepShortages(probe, keep);
         if (short.length) throw new RestoreError(short.join(' · '));
-        if (keep.entries.length) { kept = applyKeepPosted(probe, keep).entries; keptCashMoves = keep.cashMoves; keptRevivedMoves = keep.revivedMoves; }
+        // وحركات نقل النقد بعد النسخة تبقى ولو لم يُضمّ قيد (قرار المالك 2026-11-14 · R12-BAK-3) · وما يعود كما في النسخة يُعدّ للحوار
+        kept = applyKeepPosted(probe, keep).entries; keptCashMoves = keep.cashMoves; keptRevivedMoves = keep.revivedMoves;
         // الفحوص نفسها بالحكم نفسه في النسخ (checks.ts): الفرق المحاسبي ملاحظةٌ تُعرض ولا ترفض الاستعادة
         notes = [...notes, ...reviewData(probe).notes];
         // أسماء ملفات الجهاز الغائبة من قاعدة النسخة نفسها · فيُسمّى الملف كما يعرفه المستخدم (C-2)
         if (localGone.length) localMissing = missingFileLabels(probe, localGone);
-        incoming = ledgerRepair || paidRecomputed.length || kept.length ? tableCounts(probe) : counted;
+        incoming = ledgerRepair || paidRecomputed.length || kept.length || keptCashMoves ? tableCounts(probe) : counted;
         probe.exec(`PRAGMA wal_checkpoint(TRUNCATE)`);
       } finally {
         try { probe?.close(); } catch { /* مغلقة */ }

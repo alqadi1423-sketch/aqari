@@ -25,6 +25,8 @@
  * المصدر نهائياً (شاهد حذفه في السحابة) يُنقل إلى السلة · فالقيد المضموم الذي صرف من بنكٍ لا يجده بلا الإيداع الذي موّله · وما بقي
  * يُنزل بنكاً أو المحفظة تحت الصفر بعد الضمّ يُسمّى ويمنع الاستعادة (keepShortages · القرار ٥٥ · المراجعة ١٢ · R12-BAK-3) · وحركةٌ حيّة
  * في النسخة لا أثر لها على الجهاز ولا في السحابة تُعدّ وتُذكر في الحوار، فلا تعود بصمت.
+ * وحركات نقل النقد بعد النسخة تُحمل بالقواعد نفسها ولو لم يُضمّ معها قيدٌ مرحّل، في الاستعادة وفي اعتمادها بعد الدخول، لأنها مالٌ نُقل فعلاً
+ * (قرار المالك 2026-11-14 · «اختار توصيتك» على R12-BAK-3) · وكان ما لا قيد معه يرجع إلى حال النسخة.
  */
 import type { DB, SqlValue } from '../../db/adapter';
 import type { RemoteDoc, RowData } from '../../sync/types';
@@ -149,9 +151,13 @@ export function planKeepPosted(target: DB, src: KeepSources): KeepPlan {
     if (have) { have.from.add('cloud'); if (!have.row.reversed_by && d.d.reversed_by) have.row = { ...have.row, reversed_by: d.d.reversed_by }; continue; }
     byId.set(d.k, { row: { ...d.d }, lines: d.lines ?? [], from: new Set(['cloud']) });
   }
-  const empty: KeepPlan = { entries: [], cashMoves: 0, revivedMoves: 0,
-    docs: { entries: [], payments: [], paymentLines: [], allocations: [], bankTx: [], installments: [], links: [], accounts: [], trashedMoves: [], untrashedMoves: [] } };
-  if (!byId.size) return empty;
+  // ولا قيد يُضمّ: حركات نقل النقد بعد النسخة تبقى وحدها بالقواعد نفسها، فهي مالٌ نُقل فعلاً (قرار المالك 2026-11-14 · R12-BAK-3)
+  if (!byId.size) {
+    const alone = planCashMoves(target, src, new Set());
+    return { entries: [], cashMoves: alone.add.length + alone.trashed.length + alone.untrashed.length, revivedMoves: alone.revived,
+      docs: { entries: [], payments: [], paymentLines: [], allocations: [], bankTx: alone.add, installments: [], links: [], accounts: [],
+        trashedMoves: alone.trashed, untrashedMoves: alone.untrashed } };
+  }
 
   const docs = [...byId.values()].sort((a, b) => String(a.row.date).localeCompare(String(b.row.date)) || String(a.row.no).localeCompare(String(b.row.no)));
   const keptIds = new Set(byId.keys());
@@ -385,14 +391,15 @@ function planCashMoves(target: DB, src: KeepSources, seen: Set<string>): {
     if (i >= 0) add.splice(i, 1);
   }
   for (const r of add) seen.add(String(r.id));
-  // الحيّ في الهدف بلا صفٍّ في أي مصدر: شاهد حذفه في السحابة ينقله إلى السلة · وبلا شاهدٍ يُعدّ للحوار متى كان الجهاز مصدراً
+  // الحيّ في الهدف بلا صفٍّ في أي مصدر: شاهد حذفه في السحابة ينقله إلى السلة · وبلا شاهدٍ يُعدّ للحوار متى كان الجهاز مصدراً يعرف
+  // بنكها: جهازٌ لا يعرف بنكها (جوالٌ جديد تُستعاد عليه النسخة) ليس خطّها الزمني، فلا يُقال إن حركاتها كلها تعود (قرار المالك 2026-11-14)
   let revived = 0;
-  for (const m of target.all<{ id: string }>(
-    `SELECT id FROM bank_tx WHERE journal_no = '' AND deleted_at IS NULL AND ${sqlIn('source')}`, [sources])) {
+  for (const m of target.all<{ id: string; b: string }>(
+    `SELECT id, bank_id AS b FROM bank_tx WHERE journal_no = '' AND deleted_at IS NULL AND ${sqlIn('source')}`, [sources])) {
     if (byId.has(m.id) || seen.has(m.id)) continue;
     const at = purged.get(m.id);
     if (at) trashed.push({ id: m.id, deletedAt: at });
-    else if (src.device) revived += 1;
+    else if (src.device && exists(src.device, 'banks', m.b)) revived += 1;
   }
   return { add, trashed, untrashed, revived };
 }
@@ -415,8 +422,12 @@ export function keepShortages(target: DB, plan: KeepPlan, mode: 'restore' | 'ado
   for (const m of plan.docs.trashedMoves) move(m.id, -1);
   // ما يخرج من سلة الهدف: الإيداع يزيد بنكه وينقص المحفظة، والسحب عكسه (مراجعة R12-BAK-3)
   for (const id of plan.docs.untrashedMoves ?? []) move(id, 1);
-  const bankKey = mode === 'adopt' ? 'restore.keptBankShortAdopt' : 'restore.keptBankShort';
-  const walletKey = mode === 'adopt' ? 'restore.keptWalletShortAdopt' : 'restore.keptWalletShort';
+  // ولا قيد يُضمّ: الناقص سببه حمل حركات نقل النقد وحدها (قرار المالك 2026-11-14)، فتقول الرسالة ذلك لا «ضمّ ما رُحّل»
+  const alone = !plan.entries.length;
+  const bankKey = mode === 'adopt' ? (alone ? 'restore.keptBankShortMovesAdopt' : 'restore.keptBankShortAdopt')
+    : alone ? 'restore.keptBankShortMoves' : 'restore.keptBankShort';
+  const walletKey = mode === 'adopt' ? (alone ? 'restore.keptWalletShortMovesAdopt' : 'restore.keptWalletShortAdopt')
+    : alone ? 'restore.keptWalletShortMoves' : 'restore.keptWalletShort';
   let cashDelta = 0;
   for (const d of plan.docs.entries) {
     // مسودة النسخة لا رصيد لها قبل الضمّ · فسطور مرحّلها كلها أثر
@@ -501,7 +512,8 @@ function insertRow(db: DB, table: string, data: RowData, cols: Set<string>, upse
  * يُعيد الخطة بأرقامها الجديدة إن رُقّم شيء.
  */
 export function applyKeepPosted(target: DB, plan: KeepPlan): KeepPlan {
-  if (!plan.entries.length) return plan;
+  // وحركات نقل النقد تُكتب ولو لم يُضمّ قيد (قرار المالك 2026-11-14 · R12-BAK-3)
+  if (!plan.entries.length && !plan.cashMoves) return plan;
   const ec = columnsOf(target, 'journal_entries');
   const lc = columnsOf(target, 'journal_lines');
   const entries = plan.entries.map((e) => ({ ...e }));
@@ -573,9 +585,26 @@ export function applyKeepPosted(target: DB, plan: KeepPlan): KeepPlan {
 
     const add = entries.filter((e) => e.review).map((e) => ({ id: e.id, no: e.newNo || e.no, reason: e.review! }));
     for (const x of add) markForReview(target, x, x.reason);
-    logAudit(target, 'النسخ الاحتياطي', 'update', 'ضمّ قيود بعد النسخة',
-      entries.length + ' قيد مرحّل بقي مع الاستعادة: ' + entries.map((e) => e.newNo ? e.no + '←' + e.newNo : e.no).join('، ').slice(0, 220)
-      + (add.length ? ' · للمراجعة ' + add.length : ''));
+    const moves = plan.cashMoves ? ' · ' + plan.cashMoves + ' حركة نقل نقد بقيت بحالها' : ''; // i18n-exempt: سجلٌّ فني بالعربية كأخيه
+    if (entries.length) {
+      logAudit(target, 'النسخ الاحتياطي', 'update', 'ضمّ قيود بعد النسخة',
+        entries.length + ' قيد مرحّل بقي مع الاستعادة: ' + entries.map((e) => e.newNo ? e.no + '←' + e.newNo : e.no).join('، ').slice(0, 220)
+        + (add.length ? ' · للمراجعة ' + add.length : '') + moves);
+    } else {
+      logAudit(target, 'النسخ الاحتياطي', 'update', 'حركات نقل النقد بعد النسخة', // i18n-exempt: سجلٌّ فني بالعربية كأخيه
+        plan.cashMoves + ' حركة نقل نقد بين المحفظة والبنوك بقيت بحالها مع الاستعادة بلا قيدٍ يُضمّ (قرار المالك 2026-11-14)'); // i18n-exempt: سجلٌّ فني
+    }
   });
   return { ...plan, entries };
+}
+
+/**
+ * سطور الحوار لحركات نقل النقد قبل تأكيد الاستعادة أو الاعتماد: كم حركةً تبقى بحالها وكم تعود كما في النسخة · مع قيودٍ مضمومة تُكمل
+ * سطورها («ومعها»)، وبلا قيد تقوم وحدها (قرار المالك 2026-11-14 · R12-BAK-3) · نصٌّ فارغ حين لا حركة
+ */
+export function keptMovesText(cashMoves: number, revivedMoves: number, withEntries: boolean): string {
+  const lines: string[] = [];
+  if (cashMoves) lines.push(t(withEntries ? 'backup.keptCashMoves' : 'backup.keptCashMovesAlone', { n: cashMoves }));
+  if (revivedMoves) lines.push(t(withEntries || cashMoves ? 'backup.keptRevivedMoves' : 'backup.keptRevivedMovesAlone', { n: revivedMoves }));
+  return lines.join('\n');
 }
