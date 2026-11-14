@@ -5,12 +5,7 @@ import { bootLanguage } from '../src/i18n/device';
 import { Stack, usePathname } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import {
-  useFonts,
-  IBMPlexSansArabic_400Regular,
-  IBMPlexSansArabic_500Medium,
-  IBMPlexSansArabic_700Bold,
-} from '@expo-google-fonts/ibm-plex-sans-arabic';
+import { useFonts } from 'expo-font';
 import { AppStateProvider } from '../src/ui/store';
 import { UpgradeGate } from '../src/ui/UpgradeGate';
 import { AuthGate } from '../src/ui/AuthGate';
@@ -72,10 +67,12 @@ function PerfPathTracker() {
 }
 
 export default function RootLayout() {
+  // خط IBM Plex Sans Arabic (رخصة OFL في assets/fonts/OFL.txt) من ملفات التطبيق نفسه ·
+  // بأسماء العائلات التي تستعملها السمة (src/ui/theme.ts) · ق٠-٢: لا حزمة خطوط قوقل
   const [fontsLoaded] = useFonts({
-    IBMPlexSansArabic_400Regular,
-    IBMPlexSansArabic_500Medium,
-    IBMPlexSansArabic_700Bold,
+    IBMPlexSansArabic_400Regular: require('../assets/fonts/IBMPlexSansArabic_400Regular.ttf'),
+    IBMPlexSansArabic_500Medium: require('../assets/fonts/IBMPlexSansArabic_500Medium.ttf'),
+    IBMPlexSansArabic_700Bold: require('../assets/fonts/IBMPlexSansArabic_700Bold.ttf'),
   });
 
 
