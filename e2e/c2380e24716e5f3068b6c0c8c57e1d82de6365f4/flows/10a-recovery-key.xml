@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<testsuites>
+  <testsuite name="Test Suite" device="test" tests="1" failures="1" time="81.616" timestamp="2026-11-14T11:08:02">
+    <testcase id="10a-recovery-key" name="10a-recovery-key" classname="10a-recovery-key" file="e2e/maestro/10a-recovery-key.yaml" time="81.596" timestamp="2026-11-14T11:08:02" status="ERROR">
+      <failure>Element not found: Text matching regex: النسخ الاحتياطي, Index: 1</failure>
+    </testcase>
+  </testsuite>
+</testsuites>
