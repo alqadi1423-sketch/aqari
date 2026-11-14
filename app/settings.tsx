@@ -24,8 +24,10 @@ import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import { exportStatus } from '../src/domain/reminders';
 import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash, restoreCashOut, restoreIntoFiledPeriod } from '../src/domain/trash';
-import { createAndShareBackup, pickAndPrepareRestore, prepareRestoreFromSafety, commitPreparedRestore, abortPreparedRestore, appBackupEnv, listDeviceBackups } from '../src/services/backupService';
+import { createAndShareBackup, createAndSaveToFolder, pickAndPrepareRestore, prepareRestoreFromSafety, commitPreparedRestore, abortPreparedRestore, appBackupEnv, listDeviceBackups } from '../src/services/backupService';
 import { fingerprintData } from '../src/domain/backup/create';
+import { backupFolder, pickBackupFolder, folderLabel, FolderAccessError, FolderMissingError } from '../src/services/backupFolder';
+import { driveExitVisible } from '../src/cloud/driveExit';
 import {
   planLedgerRepair, applyLedgerRepair, unbookedDiscounts, bookDiscount, contractSurpluses, settleSurplus,
   type UnbookedDiscount, type ContractSurplus,
@@ -46,6 +48,7 @@ import {
   pauseSync, resumeSync, syncNow, adoptForCloud, markRestoredUnadopted,
   restoreAwaitingAdoption, deleteMyAccount, readCloudSnapshot, planReplaceFromSnapshot, planAdoptPending, adoptPendingWithKeep,
   leaveOrgNow, bindRestoredToCurrentAccount, wipeEverything, filesCloudOn, downloadAllFiles, fileCacheUsage, clearFileCacheNow,
+  driveRetired, driveExitStatus, exportDriveBackupsNow, deleteDriveBackupsNow,
 } from '../src/services/cloud';
 import { TeamSheet } from '../src/ui/TeamSheet';
 import { MyProfileSheet } from '../src/ui/ProfileForm';
@@ -149,6 +152,11 @@ export default function Settings() {
     } catch (e) { reportFailure({ title: t('language.title'), e }); }
   };
   const [driveOpen, setDriveOpen] = useState(false);
+  // «احفظ في مجلد» (ق٠-١): المجلد المختار على هذا الجهاز · و«نسخك على Google Drive»: العدد وما خرج وأي زرّ يعمل
+  const [folderUri, setFolderUri] = useState<string | null>(() => backupFolder());
+  const [driveExit, setDriveExit] = useState<Awaited<ReturnType<typeof driveExitStatus>> | null>(null);
+  const [driveTried, setDriveTried] = useState(false);
+  const [retired, setRetired] = useState(() => { try { return driveRetired(); } catch { return false; } });
   const [displayOpen, setDisplayOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [teamOpen, setTeamOpen] = useState(false);
@@ -290,6 +298,134 @@ export default function Settings() {
         // سبب الرفض كما كتبه التحقق: اسم الملف أو الفحص الذي فشل · والجملة العامة لما لم يُسمَّ
         lead: arabicMessage(e) || 'لم يكتمل تجهيز النسخة.', before, env: appBackupEnv(db), e, retry: () => { doBackup(); },
       });
+    }
+    setProgress(null);
+    setBusy(false);
+  };
+
+  /** اختيار مجلد النسخ أو تغييره (ق٠-١) · يعيد عنوانه أو null */
+  const chooseFolder = async (): Promise<string | null> => {
+    try {
+      const uri = await pickBackupFolder();
+      if (!uri) { toast(t('folder.pickCancelled')); return null; }
+      setFolderUri(uri);
+      toast(t('folder.picked', { name: folderLabel(uri) }));
+      // نصّ التذكير الأسبوعي يتبع المجلد
+      rescheduleAllNotifications(db).catch(() => {});
+      return uri;
+    } catch (e) {
+      await reportFailure({ title: t('folder.failedTitle'), where: t('folder.title'), db, e });
+      return null;
+    }
+  };
+  /** لا يصل التطبيق إلى المجلد: يُقال بالعربية ويُعرض اختياره من جديد ثم يُعاد ما كان */
+  const folderLost = (again: () => void) => dialog({
+    title: t('folder.lostTitle'), body: t('folder.lost'), tone: 'normal',
+    actions: [
+      { label: t('folder.back'), variant: 'ghost' },
+      { label: t('folder.pickAgain'), variant: 'primary', onPress: async () => { if (await chooseFolder()) again(); } },
+    ],
+  });
+  /** «احفظ في المجلد»: نسخة كاملة مشفّرة كالمشاركة تُكتب في المجلد المختار وتُطابق هناك · وبلا مجلدٍ يُختار أولاً */
+  const doSaveToFolder = async () => {
+    if (!folderUri && !(await chooseFolder())) return;
+    setBusy(true);
+    const before = fingerprintData(appBackupEnv(db));
+    const signal = task.begin({ onRetry: () => { doSaveToFolder(); } });
+    try {
+      if (filesCloudOn()) await downloadAllFiles(db, setProgress, signal);
+      const m = await createAndSaveToFolder(db, setProgress, signal);
+      bump();
+      if (m.notes?.length) notesDialog(t('folder.savedNotes'), m.notes);
+      else toast(t('folder.saved', { folder: folderLabel(backupFolder()) }));
+    } catch (e) {
+      setProgress(null);
+      setBusy(false);
+      if (isCancelled(e)) { endCancelled(t('folder.cancelled'), () => { doSaveToFolder(); }); return; }
+      if (e instanceof RecoveryKeyRequiredError) { toast(e.message); openKey(); return; }
+      if (e instanceof FolderMissingError) { if (await chooseFolder()) doSaveToFolder(); return; }
+      if (e instanceof FolderAccessError) { folderLost(() => { doSaveToFolder(); }); return; }
+      await reportFailure({
+        title: t('folder.failedTitle'), where: t('folder.title'), db,
+        auditModule: 'النسخ الاحتياطي', // i18n-exempt: اسم الوحدة المخزّن في سجل العمليات
+        auditAction: 'create', lead: arabicMessage(e) || t('folder.failedLead'), before, env: appBackupEnv(db), e, retry: () => { doSaveToFolder(); },
+      });
+      return;
+    }
+    setProgress(null);
+    setBusy(false);
+  };
+
+  /* «نسخك على Google Drive» (ق٠-١ · F-الاستقلال-عن-قوقل ٧.٤): العدد، ثم التنزيل إلى المجلد، ثم الحذف وسحب الإذن بزرّ المستخدم */
+  const openDriveExit = async (tried = driveTried) => {
+    setBusy(true);
+    setProgress(t('driveExit.loading'));
+    try {
+      setDriveExit(await driveExitStatus(tried));
+      setDriveOpen(true);
+    } catch (e) {
+      await reportFailure({ title: t('driveExit.failedTitle'), where: t('driveExit.row'), db, e });
+    }
+    setProgress(null);
+    setBusy(false);
+  };
+  const doDriveExport = async () => {
+    setDriveOpen(false);
+    if (!folderUri && !(await chooseFolder())) return;
+    setBusy(true);
+    const signal = task.begin({ onRetry: () => { doDriveExport(); } });
+    let reopen = false;
+    try {
+      const r = await exportDriveBackupsNow(db, setProgress, signal);
+      setDriveTried(true);
+      reopen = true;
+      const saved = r.saved.length + r.already;
+      if (r.failed.length) {
+        dialog({
+          title: t('driveExit.exportFailedTitle'),
+          body: t('driveExit.exportFailedBody', { saved, failed: r.failed.length, list: r.failed.map((f) => '· ' + f.name + ': ' + f.why).join('\n') }),
+          actions: [{ label: t('crash.close'), variant: 'ghost' }],
+        });
+      } else toast(t('driveExit.exportDone', { saved }));
+    } catch (e) {
+      setProgress(null);
+      setBusy(false);
+      if (isCancelled(e)) { endCancelled(t('driveExit.cancelled'), () => { doDriveExport(); }); return; }
+      if (e instanceof FolderMissingError) { if (await chooseFolder()) doDriveExport(); return; }
+      if (e instanceof FolderAccessError) { folderLost(() => { doDriveExport(); }); return; }
+      await reportFailure({ title: t('driveExit.failedTitle'), where: t('driveExit.row'), db, e });
+      return;
+    }
+    setProgress(null);
+    setBusy(false);
+    if (reopen) await openDriveExit(true);
+  };
+  /** حذف بعد إخراج الكل · وما لم يخرج بعد محاولةٍ تعذّر فيها يُسمّى عدده في التأكيد ويُمرَّر فيطابقه الحذف ساعته (القاعدة ٩٩) */
+  const confirmDriveDelete = () => {
+    const v = driveExit?.view;
+    if (!v) return;
+    const extra = v.unexported;
+    dialog({
+      title: t('driveExit.deleteTitle'),
+      body: extra ? t('driveExit.deleteBodyUnexported', { count: v.count, unexported: extra }) : t('driveExit.deleteBody', { count: v.count }),
+      tone: 'danger',
+      actions: [
+        { label: t('folder.back'), variant: 'ghost' },
+        { label: extra ? t('driveExit.deleteConfirmUnexported', { unexported: extra }) : t('driveExit.deleteConfirm'), variant: 'danger',
+          onPress: () => { doDriveDelete(extra || undefined); } },
+      ],
+    });
+  };
+  const doDriveDelete = async (unexported?: number) => {
+    setDriveOpen(false);
+    setBusy(true);
+    try {
+      const r = await deleteDriveBackupsNow(db, unexported, setProgress);
+      setRetired(true);
+      setDriveExit(null);
+      toast(t('driveExit.deleted', { count: r.deleted }));
+    } catch (e) {
+      await reportFailure({ title: t('driveExit.failedTitle'), where: t('driveExit.row'), db, e });
     }
     setProgress(null);
     setBusy(false);
@@ -582,6 +718,7 @@ export default function Settings() {
       } },
     ],
   });
+  // لا زرّ يناديه بعد ق٠-١ (النسخ لا تُرفع إلى Drive) · يبقى مع اختباراته حتى خطوة إزالة شاشة Drive
   const doDriveBackup = async () => {
     setBusy(true);
     const signal = task.begin({ onRetry: () => { doDriveBackup(); } });
@@ -715,8 +852,9 @@ export default function Settings() {
                 ],
               })} />
             ) : null}
-            {admin && cloud.online ? (
-              <ValueRow icon="export" title="النسخ على Drive" value="نسخ أو استعادة" onPress={() => setDriveOpen(true)} />
+            {/* نسخ Drive القديمة: تُخرج إلى المجلد ثم تُحذف بزرّك (ق٠-١) · وبعد السحب لا تظهر */}
+            {driveExitVisible({ admin, signedIn: !!cloud.user, online: cloud.online, retired }) ? (
+              <ValueRow icon="export" title={t('driveExit.row')} value={t('driveExit.rowValue')} onPress={() => { openDriveExit(); }} />
             ) : null}
             {admin && cloud.online ? (
               <ValueRow icon="trash" title="حذف حسابي" value="الحساب وبياناته" tone="danger" onPress={() => { setDelTyped(''); setDelOpen(true); }} />
@@ -749,10 +887,17 @@ export default function Settings() {
             : data.exp.daysSinceExport === 0 ? 'اليوم' : 'قبل ' + data.exp.daysSinceExport + ' يوماً')
             + ' · ' + (data.exp.warn ? 'تحتاج انتباهك' : 'محمية')}
           tone={data.exp.warn ? 'danger' : 'ok'} />
+        {/* «احفظ في مجلد» تختاره مرة (ق٠-١): النسخ لا تُرفع إلى Drive · والمشاركة كما هي */}
+        <ValueRow icon="archive" title={t('folder.title')} value={folderUri ? folderLabel(folderUri) : t('folder.none')}
+          tone={folderUri ? undefined : 'danger'} onPress={() => { chooseFolder(); }} />
         <Row style={{ marginTop: 8 }}>
-          <View style={{ flex: 1 }}><BtnPrimary title="النسخ الاحتياطي" onPress={doBackup} loading={busy} /></View>
+          <View style={{ flex: 1 }}><BtnPrimary title={folderUri ? t('folder.save') : t('folder.pick')} onPress={doSaveToFolder} loading={busy} /></View>
           <View style={{ flex: 1 }}><BtnGhost title="استعادة من نسخة" onPress={doRestore} disabled={busy} /></View>
         </Row>
+        <View style={{ marginTop: 8 }}>
+          <BtnGhost icon="export" title={t('folder.share')} onPress={doBackup} disabled={busy} />
+        </View>
+        <T size={TYPE.caption} color={C.muted} style={{ marginTop: 6 }}>{t('folder.hint')}</T>
         <ValueRow icon="lock" title={t('backup.key.title')} value={secretKind === 'lost' ? t('backup.passwordLostShort') : t('backup.key.state.' + secretKind)}
           tone={secretKind === 'key' ? undefined : 'danger'} onPress={openKey} />
         <ValueRow icon="bell" title="التذكير الأسبوعي" value={settings.backupWeekly ? 'مفعّل' : 'مطفأ'}
@@ -939,14 +1084,33 @@ export default function Settings() {
       </Sheet>
 
       {/* النسخ على Drive */}
-      <Sheet visible={driveOpen && !!cloud.user && cloud.online} onClose={() => setDriveOpen(false)} title="النسخ على Google Drive">
-        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 10 }}>
-          {t('backup.key.driveNote')}
-        </T>
-        <BtnPrimary icon="export" title="نسخ إلى Google Drive" onPress={() => { setDriveOpen(false); doDriveBackup(); }} loading={busy} />
-        <View style={{ marginTop: 8 }}>
-          <BtnGhost icon="undo" title="استعادة من Google Drive" onPress={() => { setDriveOpen(false); openDriveRestore(); }} />
-        </View>
+      {/* «نسخك على Google Drive» (ق٠-١): لا رفع بعد اليوم · العدد، ثم التنزيل إلى المجلد، ثم الحذف وسحب الإذن · الزرّ الذي لا يعمل لا يظهر */}
+      <Sheet visible={driveOpen && !!cloud.user && cloud.online && !!driveExit} onClose={() => setDriveOpen(false)} title={t('driveExit.row')}>
+        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 10 }}>{t('driveExit.intro')}</T>
+        {driveExit ? (
+          <T size={TYPE.body} med style={{ marginBottom: 10 }}>
+            {driveExit.view.count ? t('driveExit.count', { count: driveExit.view.count, done: driveExit.view.exported }) : t('driveExit.none')}
+          </T>
+        ) : null}
+        {driveExit && !folderUri && driveExit.view.unexported > 0 ? (
+          <View style={{ marginBottom: 8 }}>
+            <Note tone="danger">{t('driveExit.needFolder')}</Note>
+            <BtnGhost icon="export" title={t('folder.pick')} onPress={() => { chooseFolder().then((u) => { if (u) openDriveExit(); }); }} />
+          </View>
+        ) : null}
+        {driveExit?.view.canExport ? (
+          <BtnPrimary icon="export" title={t('driveExit.export')} onPress={() => { doDriveExport(); }} loading={busy} />
+        ) : null}
+        {driveExit?.view.canDelete ? (
+          <View style={{ marginTop: 8 }}>
+            <BtnPrimary danger icon="trash" title={t('driveExit.delete')} onPress={confirmDriveDelete} disabled={busy} />
+          </View>
+        ) : null}
+        {driveExit?.view.count ? (
+          <View style={{ marginTop: 8 }}>
+            <BtnGhost icon="undo" title={t('driveExit.restore')} onPress={() => { setDriveOpen(false); openDriveRestore(); }} />
+          </View>
+        ) : null}
       </Sheet>
 
       {/* حذف الحساب · كلمة التأكيد تُكتب حرفياً فيظهر الزر */}

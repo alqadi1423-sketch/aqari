@@ -19,7 +19,7 @@ import { deviceCipher } from './cipher';
 import { backupSecretForSealing } from './backupPassword';
 import { getSyncState } from '../sync/engine';
 import { sealBackupFile } from '../domain/backup/seal';
-import type { CancelSignal, ProgressFn } from '../domain/progress';
+import { throwIfCancelled, type CancelSignal, type ProgressFn } from '../domain/progress';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from './appLockService';
 import { APP_VERSION_LABEL } from '../version';
@@ -62,7 +62,7 @@ export async function createAndShareBackup(
   signal?: CancelSignal,
 ): Promise<BackupManifest> {
   const env = appBackupEnv(db);
-  const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
+  const name = backupFileName();
   const outPath = joinPath(env.tmpDir, name);
   const manifest = await createBackup(env, outPath, onProgress, { signal });
   // مشفّرة دائماً بمفتاح الاسترداد (التوجيه الرابع ٤ · ٣) · ولا يُسلَّم المشفّر قبل أن يُفكّ ويطابق · وبلا مفتاحٍ أو تعذّرت قراءته: لا تصدير
@@ -78,6 +78,52 @@ export async function createAndShareBackup(
     }
   } catch { /* أُنشئت النسخة وسلِمت · المشاركة وحدها أُلغيت */ }
   return manifest;
+}
+
+/** اسم ملف النسخة كما يراه المستخدم في المشاركة والمجلد */
+export function backupFileName(d: Date = new Date()): string {
+  return `عقاري · نسخة · ${toLocalISODate(d)}.aqbk`;
+}
+
+/**
+ * «احفظ في مجلد» (ق٠-١): نسخةٌ كاملة مشفّرة بمفتاح الاسترداد كالمشاركة تماماً، تُكتب في المجلد الذي اختاره المستخدم وتُطابق بصمتها هناك ·
+ * الإذن يُفحص قبل بناء النسخة (FolderAccessError) · ولا يبقى منها شيء في مجلد التطبيق المؤقت.
+ * تُحسب نسخةً خارج التطبيق (lastExportAt): المجلد خارج مساحة التطبيق ويبقى بعد حذفه أو مسح بياناته (قرار القاعدة ٩٩ في ق٠-١).
+ */
+export async function createAndSaveToFolder(
+  db: AppDB,
+  onProgress?: ProgressFn,
+  signal?: CancelSignal,
+): Promise<BackupManifest & { savedName: string }> {
+  // وحدة المجلد تُحمَّل عند الحاجة: تحمل إطار التخزين الأصلي، والاستعادة ونسخ الأمان تعمل وتُختبر بدونها
+  const { backupFolder, checkFolderAccess, writeToBackupFolder, FolderMissingError } = require('./backupFolder') as typeof import('./backupFolder');
+  const folder = backupFolder();
+  if (!folder) throw new FolderMissingError();
+  await checkFolderAccess(folder);
+  const env = appBackupEnv(db);
+  const outPath = joinPath(env.tmpDir, 'folder-' + Date.now() + '.aqbk');
+  let savedName = '';
+  let manifest: BackupManifest;
+  try {
+    manifest = await createBackup(env, outPath, onProgress, { signal });
+    // مشفّرة دائماً كالمشاركة (التوجيه الرابع ٤ · ٣) · وبلا مفتاحٍ أو تعذّرت قراءته: لا حفظ
+    const secret = await backupSecretForSealing(getSyncState(db, 'uid'));
+    await sealBackupFile(env, outPath, secret, onProgress);
+    throwIfCancelled(signal);
+    if (!env.hasher) throw new Error(t('folder.failedLead'));
+    // البصمة والحجم ثم يُطلق الملف من الذاكرة: الكتابة إلى المجلد تقرؤه قطعاً من القرص
+    let size = 0;
+    let sha256 = '';
+    { const sealed = env.fs.read(outPath); size = sealed.length; sha256 = await env.hasher(sealed); }
+    const saved = await writeToBackupFolder(outPath, backupFileName(), { folder, size, sha256, hasher: env.hasher, onProgress, signal });
+    savedName = saved.name;
+  } finally {
+    try { env.fs.remove(outPath); } catch { /* يكنسه الإقلاع */ }
+  }
+  const now = new Date().toISOString();
+  setSetting(db, 'lastBackupAt', now);
+  setSetting(db, 'lastExportAt', now);
+  return { ...manifest, savedName };
 }
 
 /**

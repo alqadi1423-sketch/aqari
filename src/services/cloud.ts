@@ -11,7 +11,7 @@ import { SCHEMA_VERSION } from '../db/schema';
 import * as SecureStore from 'expo-secure-store';
 import * as Network from 'expo-network';
 import * as LegacyFS from 'expo-file-system/legacy';
-import { File } from 'expo-file-system';
+import { File, Paths } from 'expo-file-system';
 import { GoogleSignin, isSuccessResponse } from '@react-native-google-signin/google-signin';
 import type { AppDB } from '../db/expoAdapter';
 import { cloudConfig, filesCloudConfig, DRIVE_SCOPE, DRIVE_FILE_SCOPE } from '../cloud/config';
@@ -25,6 +25,8 @@ import { createSession, type Session, type SessionUser, type AccountProof } from
 import { whilePrompting } from './appLockService';
 import { FirestoreRemote, FirestoreHttpError } from '../cloud/firestore';
 import { listDriveBackups, uploadBackupToDrive, uploadVisibleCopy, downloadBackupFromDrive, deleteAllAppDataFiles, DriveError, type DriveBackup, type DriveIO } from '../cloud/drive';
+import { exportDriveBackups, deleteDriveBackups, driveExitView, emptyExitState, type DriveExitDeps, type DriveExitState, type ExportReport } from '../cloud/driveExit';
+import { writeToBackupFolder, backupFolder } from './backupFolder';
 import { resetDeviceData } from './deviceReset';
 import { profileForAudit } from '../domain/access/profile';
 import { cancelAllNotifications } from './notifications';
@@ -85,7 +87,8 @@ function getSession(): Session | null {
   const cfg = cloudConfig();
   if (!cfg) return null;
   if (session) return session;
-  GoogleSignin.configure({ webClientId: cfg.webClientId, scopes: [DRIVE_SCOPE, DRIVE_FILE_SCOPE], offlineAccess: false });
+  // بعد حذف النسخ من Drive وسحب الإذن على هذا الجهاز (ق٠-١) لا يُطلب نطاق Drive في أي دخولٍ بعده
+  GoogleSignin.configure(googleConfig(cfg.webClientId));
   const authOpts = { apiKey: cfg.apiKey };
   session = createSession({
     google: {
@@ -694,8 +697,11 @@ export async function deleteMyAccount(db: AppDB, onProgress?: (m: string) => voi
       ? { org: mem.org, uid: mem.uid, remote: new FirestoreRemote({ projectId: cfg.projectId, uid, idToken: () => s.idToken(), org: mem.org }) }
       : null;
     await deleteAccountCloud({ remotes, chat: chatS, org: uid, files: orgFilesTarget(uid), member }, onProgress);
-    onProgress?.('جاري حذف نسخك على Google Drive');
-    await deleteAllAppDataFiles(driveIO, await s.driveToken());
+    // وبعد الخروج من Drive على هذا الجهاز (حُذفت النسخ وسُحب الإذن · ق٠-١) لا يُطلب Drive ثانيةً فيعود إذنه
+    if (!driveRetired()) {
+      onProgress?.('جاري حذف نسخك على Google Drive');
+      await deleteAllAppDataFiles(driveIO, await s.driveToken());
+    }
     onProgress?.('جاري حذف الحساب');
     await deleteFirebaseAccount({ apiKey: cfg.apiKey }, await s.idToken());
     onProgress?.('جاري تفريغ هذا الجهاز');
@@ -1180,6 +1186,11 @@ async function driveToken(): Promise<string> {
   return s.driveToken();
 }
 
+/*
+ * النسخ الجديدة لا تُرفع إلى Drive (ق٠-١ · قرار المالك «مابي التطبيق يرتبط بقوقل»): أُزيل زرّ «نسخ إلى Google Drive» فلا يناديه شيء،
+ * وتُحفظ النسخ في المجلد الذي يختاره المستخدم (backupFolder.ts) · ويبقى الرفع أدناه بلا نداءٍ مع اختباراته حتى خطوة إزالة شاشة Drive،
+ * بعد أن يُخرج المالك نسخه ويحذفها (driveExit.ts).
+ */
 /** نسخة جديدة تجتاز كل تحققات الإنشاء ثم تُرفع وتُطابق بصمتها على Drive */
 export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?: CancelSignal): Promise<DriveBackup> {
   const env = appBackupEnv(db);
@@ -1243,6 +1254,67 @@ export async function prepareRestoreFromDrive(
     try { env.fs.remove(archiveTmp); } catch { /* يكنسه الإقلاع */ }
     throw e;
   }
+}
+
+/* ═══════════ الخروج من Drive (ق٠-١ · F-الاستقلال-عن-قوقل ٧.٤) ═══════════ */
+
+/** سجل الخروج على هذا الجهاز: ما خرج من نسخ Drive إلى المجلد، ووقت انتهاء الخروج (حُذفت وسُحب الإذن) */
+const exitFile = () => new File(Paths.document, 'drive-exit.json');
+function loadExit(): DriveExitState {
+  try {
+    const f = exitFile();
+    if (!f.exists) return emptyExitState();
+    const j = JSON.parse(f.textSync()) as Partial<DriveExitState>;
+    return { exported: j.exported && typeof j.exported === 'object' ? j.exported : {}, ...(j.retiredAt ? { retiredAt: j.retiredAt } : {}) };
+  } catch { return emptyExitState(); }
+}
+function storeExit(st: DriveExitState): void {
+  const f = exitFile();
+  if (!f.exists) f.create();
+  f.write(JSON.stringify(st));
+}
+
+/** انتهى الخروج من Drive على هذا الجهاز: لا شاشة، ولا نطاق Drive في الدخول، و«حذف حسابي» لا يطلب Drive */
+export function driveRetired(): boolean { return !!loadExit().retiredAt; }
+
+function googleConfig(webClientId: string) {
+  const withDrive = { webClientId, scopes: [DRIVE_SCOPE, DRIVE_FILE_SCOPE], offlineAccess: false };
+  return driveRetired() ? { ...withDrive, scopes: [] } : withDrive;
+}
+
+function exitDeps(db: AppDB): DriveExitDeps {
+  const env = appBackupEnv(db);
+  return {
+    io: driveIO,
+    token: driveToken,
+    tmpPath: (b) => { env.fs.mkdirp(env.tmpDir); return joinPath(env.tmpDir, 'drive-exit-' + b.id.replace(/[^A-Za-z0-9_-]/g, '') + '.aqbk'); },
+    removeTmp: (p) => { try { env.fs.remove(p); } catch { /* يكنسه الإقلاع */ } },
+    // مطابقةٌ في المجلد ببصمة Drive نفسها (التي طابقها التنزيل)
+    save: async (p, b) => (await writeToBackupFolder(p, b.name, { size: driveIO.sizeOf(p), sha256: b.sha256, hasher: expoHasher })).name,
+    load: loadExit,
+    store: storeExit,
+    revoke: async () => {
+      await GoogleSignin.revokeAccess();
+      const cfg = cloudConfig();
+      if (cfg) GoogleSignin.configure({ webClientId: cfg.webClientId, scopes: [], offlineAccess: false });
+    },
+  };
+}
+
+/** شاشة «نسخك على Google Drive»: النسخ وما يظهر من أزرارها */
+export async function driveExitStatus(triedExport = false) {
+  const list = await listDriveBackups(driveIO, await driveToken());
+  return { list, view: driveExitView(list, loadExit(), { folder: !!backupFolder(), triedExport }) };
+}
+
+/** «نزّل النسخ إلى المجلد» */
+export async function exportDriveBackupsNow(db: AppDB, onProgress?: ProgressFn, signal?: CancelSignal): Promise<ExportReport> {
+  return exportDriveBackups(exitDeps(db), { onProgress, signal });
+}
+
+/** «احذف نسخ عقاري من Drive» ثم سحب الإذن · unexportedConfirmed: عدد ما لم يخرج كما أكّده المستخدم */
+export async function deleteDriveBackupsNow(db: AppDB, unexportedConfirmed?: number, onProgress?: ProgressFn): Promise<{ deleted: number }> {
+  return deleteDriveBackups(exitDeps(db), { unexportedConfirmed, onProgress });
 }
 
 /**
