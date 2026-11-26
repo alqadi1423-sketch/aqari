@@ -639,7 +639,19 @@
     "filedPeriod": "This date's period has a filed return, so no purchase is recorded in it · use a date in an open period",
     "paidLocked": "This purchase is paid, so it is not edited while its payment stands · undo the payment first so its entry is reversed, then edit it and pay it again",
     "inTrash": "This purchase is in the trash, so it is not edited · restore it from the trash first, then edit it",
-    "negativeAmounts": "A purchase invoice can't have negative amounts, and the tax can't exceed the total · check the net and the tax"
+    "negativeAmounts": "A purchase invoice can't have negative amounts, and the tax can't exceed the total · check the net and the tax",
+    "vatRefundBankDescr": "Input VAT refund · purchase {{no}}",
+    "vatRefundBankSource": "VAT refund from the Authority",
+    "refundTitle": "Record VAT refund",
+    "refundAmount": "Refunded VAT {{amount}} · purchase {{no}}",
+    "refundDate": "Refund date",
+    "refundMethod": "Refund method",
+    "refundBank": "Bank account credited",
+    "refundSave": "Record refund",
+    "refundDone": "Refund recorded and 1270 closed",
+    "refundAction": "VAT: refunded",
+    "refundCancelBank": "and the bank movement is reversed in kind",
+    "refundCancelDescr": "VAT refund cancelled"
   },
   "bankTx": {
     "descrRequired": "Enter a description",

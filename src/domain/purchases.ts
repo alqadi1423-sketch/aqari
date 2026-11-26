@@ -570,8 +570,12 @@ export function markVatFiled(db: DB, purchaseId: string): void {
   });
 }
 
-/** استرداد الضريبة نقداً: مدين 1100 / دائن 1270 · يُقفَل رصيد الفاتورة في 1270 */
-export function markVatRefunded(db: DB, purchaseId: string, date: string): void {
+/**
+ * استرداد الضريبة بتاريخه: مدين 1100 / دائن 1270 · يُقفَل رصيد الفاتورة في 1270 · وبحسابٍ بنكي (bankId) حركة بنكٍ بالضريبة مربوطة برقم
+ * القيد، فيستقر في البنك لا في المحفظة كتحصيل المطالبة (collectClaim) · والهيئة تردّ بتحويلٍ بنكي (المراجعة الشاملة 2026-11-13 · A2.9) ·
+ * وجهاز المالك يفحص الحركة بقيدها (memberBankTxCheck: بإشارة نقده ولا تتجاوزه)
+ */
+export function markVatRefunded(db: DB, purchaseId: string, date: string, bankId?: string | null): void {
   requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   const p = db.get<{ no: string; supplier_name: string; tax_halalas: number; tax_status: string; refund_status: string }>(
     `SELECT no, supplier_name, tax_halalas, tax_status, refund_status FROM purchases WHERE id = ? AND deleted_at IS NULL`, [purchaseId]);
@@ -579,13 +583,19 @@ export function markVatRefunded(db: DB, purchaseId: string, date: string): void 
   if (p.tax_status !== TS_DEDUCTIBLE) throw new Error('الاسترداد لفواتير «' + TS_DEDUCTIBLE + '» وحدها · هذه ' + p.tax_status);
   if (p.refund_status.startsWith('مسترَد')) throw new Error('ضريبة الفاتورة ' + p.no + ' مسترَدة من قبل');
   if (isVatSettled(p.refund_status)) throw new Error(t('purchase.vatSettled'));
+  if (bankId && !db.get(`SELECT 1 FROM banks WHERE id = ? AND deleted_at IS NULL`, [bankId])) throw new Error(t('bankStatement.txMissing'));
   db.transaction(() => {
-    postEntry(db, {
+    const entry = postEntry(db, {
       date,
       memo: 'استرداد ضريبة مدخلات · فاتورة ' + p.no + ' · ' + p.supplier_name,
       srcType: 'vat_refund', srcId: purchaseId,
       lines: vatRefundLines(p.no, Number(p.tax_halalas)),
     });
+    if (bankId && entry) {
+      db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at) VALUES (?,?,?,?,?,1,?,?,?)`,
+        [uid(), bankId, date, t('purchase.vatRefundBankDescr', { no: p.no, lng: 'ar' }), Number(p.tax_halalas), entry.no,
+          t('purchase.vatRefundBankSource', { lng: 'ar' }), new Date().toISOString()]);
+    }
     db.run(`UPDATE purchases SET refund_status = ?, refund_date = ? WHERE id = ?`,
       ['مسترَد بتاريخ ' + date, date, purchaseId]);
     logAudit(db, 'فواتير الشراء', 'update', 'استرداد ضريبة', p.no);

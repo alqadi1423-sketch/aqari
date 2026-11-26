@@ -151,8 +151,12 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
   }
 
   if (e.src_type === 'vat_refund') {
-    return op('إلغاء الاسترداد', ['يُعكس القيد ' + e.no, 'وترجع الفاتورة «لم يُطلب»'], [], (date, reason) => {
-      reverse(db, e, date, 'إلغاء استرداد ضريبة · ' + reason);
+    // والاسترداد إلى بنكٍ يُخرجه عكسُه من البنك: مانعٌ برصيده، وحركته تُعكس بمثلها (المراجعة الشاملة 2026-11-13 · A2.9)
+    const banked = !!db.get(`SELECT 1 FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL`, [e.no]);
+    return op('إلغاء الاسترداد', ['يُعكس القيد ' + e.no, ...(banked ? [t('purchase.refundCancelBank')] : []), 'وترجع الفاتورة «لم يُطلب»'],
+      bankShortages(db, e.no, 'reverse'), (date, reason) => {
+      const revNo = reverse(db, e, date, 'إلغاء استرداد ضريبة · ' + reason);
+      reverseBankTx(db, e.no, revNo, date, t('purchase.refundCancelDescr', { lng: 'ar' }));
       db.run(`UPDATE purchases SET refund_status = 'لم يُطلب', refund_date = NULL WHERE id = ?`, [e.src_id]);
       logAudit(db, 'فواتير الشراء', 'update', 'إلغاء استرداد ضريبة', e.no + ' · ' + reason);
     });

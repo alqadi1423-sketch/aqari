@@ -114,6 +114,7 @@ const PurchaseCard = React.memo(function PurchaseCard({
   onVatRefunded: (id: string) => void;
   onVatRejected: (id: string) => void;
 }) {
+  const { t } = useLang();
   // الضريبة إذا استُردت أو رُفضت فقد انتهت قصتها · لا يُعرض لها فعل استرداد بعدها
   const vatSettled = isVatSettled(refundStatus);
   const contentLocked = vatSettled || filedLocked;
@@ -121,7 +122,7 @@ const PurchaseCard = React.memo(function PurchaseCard({
     ...(refundStatus.startsWith('مُقدَّم') ? [] : [
       { icon: 'reload' as const, label: 'الضريبة: مُقدَّمة في الإقرار', onPress: () => onVatFiled(id) },
     ]),
-    { icon: 'cash' as const, label: 'الضريبة: مسترَدة نقداً اليوم', onPress: () => onVatRefunded(id) },
+    { icon: 'cash' as const, label: t('purchase.refundAction'), onPress: () => onVatRefunded(id) },
     { icon: 'cancel' as const, label: 'الضريبة: مرفوضة (تصير تكلفة)', onPress: () => onVatRejected(id) },
   ] : [];
   return (
@@ -221,6 +222,11 @@ export default function Purchases() {
   // نافذة السداد
   const [payLines, setPayLines] = useState<Array<{ method: PurchasePayMethod; bankId: string; amount: string }>>([]);
   const [payDate, setPayDate] = useState(today());
+  // نافذة استرداد الضريبة · بتاريخٍ وطريقة (نقداً أو إلى بنك) لا نقداً اليوم دائماً (المراجعة الشاملة 2026-11-13 · A2.9)
+  const [refundFor, setRefundFor] = useState<{ id: string; no: string; tax: number } | null>(null);
+  const [refundDate, setRefundDate] = useState(today());
+  const [refundMethod, setRefundMethod] = useState<'bank' | 'cash'>('bank');
+  const [refundBank, setRefundBank] = useState('');
 
   // شرط WHERE الواحد: البحث والمرشِّحات كلها في SQL
   const filter = useMemo(() => {
@@ -634,9 +640,20 @@ export default function Purchases() {
     catch (e) { reportFailure({ title: 'تعذّر تحديث حالة الاسترداد', e }); }
   }, [db, bump, toast, dialog]);
   const vatRefunded = useCallback((id: string) => {
-    try { markVatRefunded(db, id, todayFn()); bump(); toast('سُجّل الاسترداد وأُقفل 1270'); }
-    catch (e) { reportFailure({ title: 'تعذّر تسجيل الاسترداد', e }); }
-  }, [db, bump, toast, dialog]);
+    const p = db.get<{ no: string; tax: number }>(`SELECT no, tax_halalas AS tax FROM purchases WHERE id = ?`, [id]);
+    if (!p) return;
+    setRefundFor({ id, no: p.no, tax: Number(p.tax) });
+    setRefundDate(todayFn());
+    setRefundMethod(banks.length ? 'bank' : 'cash');
+    setRefundBank(banks[0]?.id ?? '');
+  }, [db, banks]);
+  const saveRefund = () => {
+    if (!refundFor) return;
+    try {
+      markVatRefunded(db, refundFor.id, refundDate, refundMethod === 'bank' ? refundBank : null);
+      setRefundFor(null); bump(); toast(t('purchase.refundDone'));
+    } catch (e) { reportFailure({ title: 'تعذّر تسجيل الاسترداد', e }); }
+  };
   const vatRejected = useCallback((id: string) => {
     try { markVatRejected(db, id, todayFn()); bump(); toast('حُمّلت الضريبة على المصروف'); }
     catch (e) { reportFailure({ title: 'تعذّر تسجيل الرفض', e }); }
@@ -1101,6 +1118,29 @@ export default function Purchases() {
         </Sheet>
         );
       })()}
+
+      {refundFor && (
+        <Sheet visible onClose={() => setRefundFor(null)} title={t('purchase.refundTitle')}
+          footer={
+            // بنكٌ لم يُختر فلا تسجيل · الزر لا يُعرض بدل أن يُعرض معطَّلاً
+            refundMethod === 'cash' || refundBank ? (
+              <View style={{ flex: 1 }}><BtnPrimary title={t('purchase.refundSave')} onPress={saveRefund} /></View>
+            ) : undefined
+          }>
+          <T size={12.5} style={{ marginBottom: 8 }}>{t('purchase.refundAmount', { amount: fmt(refundFor.tax), no: refundFor.no })}</T>
+          <DateField label={t('purchase.refundDate')} value={refundDate} onChange={setRefundDate} />
+          {/* بلا حساب بنكي فالاسترداد نقداً وحده · فلا يُعرض اختيار الطريقة */}
+          {banks.length ? (
+            <SelectField label={t('purchase.refundMethod')} value={refundMethod}
+              options={[{ value: 'bank', icon: 'bank', label: t('common.bank') }, { value: 'cash', icon: 'cash', label: t('common.cash') }]}
+              onPick={(v) => setRefundMethod(v as 'bank' | 'cash')} />
+          ) : null}
+          {refundMethod === 'bank' && banks.length ? (
+            <SelectField label={t('purchase.refundBank')} value={refundBank}
+              options={banks.map((b) => ({ value: b.id, label: b.name }))} onPick={setRefundBank} />
+          ) : null}
+        </Sheet>
+      )}
     </Screen>
   );
 }
