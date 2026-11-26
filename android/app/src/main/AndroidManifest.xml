@@ -44,19 +44,20 @@
     <!-- داخليتان لا غير · تناديهما AqariIntents.kt بقصد صريح، فلا مرشّح قصد ولا كشف -->
     <activity android:name=".PinWidgetActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true"/>
     <activity android:name=".SaveErrorLogActivity" android:exported="false" android:theme="@android:style/Theme.NoDisplay" android:excludeFromRecents="true" android:noHistory="true"/>
-    <receiver android:name=".TodayStripWidget" android:exported="false">
+    <!-- الودجت مخفية بقرار المالك 2026-11-26 («اخفها حاليا واجل العمل عليها»): تُظهر بحذف android:enabled="false" ومع WIDGETS_ENABLED في src/domain/features.ts -->
+    <receiver android:name=".TodayStripWidget" android:exported="false" android:enabled="false">
       <intent-filter>
         <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
       </intent-filter>
       <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_today_strip_info"/>
     </receiver>
-    <receiver android:name=".QuickActionsWidget" android:exported="false">
+    <receiver android:name=".QuickActionsWidget" android:exported="false" android:enabled="false">
       <intent-filter>
         <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
       </intent-filter>
       <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_quick_actions_info"/>
     </receiver>
-    <receiver android:name=".CollectionPanelWidget" android:exported="false">
+    <receiver android:name=".CollectionPanelWidget" android:exported="false" android:enabled="false">
       <intent-filter>
         <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
       </intent-filter>

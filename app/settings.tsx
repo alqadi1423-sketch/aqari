@@ -78,6 +78,7 @@ import { RecoveryKeyRequiredError } from '../src/domain/backup/passwordGate';
 import * as Clipboard from 'expo-clipboard';
 import { PasswordRequiredError } from '../src/domain/backup/encryption';
 import { pinWidget } from '../src/services/intents';
+import { WIDGETS_ENABLED } from '../src/domain/features';
 import type { DriveBackup } from '../src/cloud/drive';
 import { dfmt, toLocalISODate, today, localDateOf, localTimeOf } from '../src/domain/dates';
 import { APP_VERSION, APP_VERSION_LABEL } from '../src/version';
@@ -945,8 +946,8 @@ export default function Settings() {
         ))}
       </Card>
 
-      {/* ٥ · ودجت الشاشة · أندرويد وحده يثبّتها من داخل التطبيق · أرقامها من التحصيل */}
-      {canView(access, 'collect') ? <Card>
+      {/* ٥ · ودجت الشاشة · أندرويد وحده يثبّتها من داخل التطبيق · أرقامها من التحصيل · مخفية بقرار المالك 2026-11-26 (features.ts) */}
+      {WIDGETS_ENABLED && canView(access, 'collect') ? <Card>
         <CardTitle>ودجت الشاشة</CardTitle>
         {([
           ['strip', 'collect', 'شريط اليوم · كم متأخرة وبكم'],
