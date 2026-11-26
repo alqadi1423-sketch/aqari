@@ -381,11 +381,11 @@ export default function Collect() {
 
   // كل نص يُرسل قالبٌ من الإعدادات · لا نص مكتوباً في الكود
   const [waFor, setWaFor] = useState<{ x: (typeof data.rows)[number]; via: 'wa' | 'sms' } | null>(null);
-  // مراسلة مستأجر: قوالب المستأجرين والعامة فقط · لا قوالب الموردين ولا الموظفين
+  // مراسلة مستأجر: قوالب جمهور المستأجرين وحده · «عام» تصنيفٌ لا جمهور (E-17) · لا قوالب العملاء ولا الموظفين
   const scripts = useMemo(() =>
     db.all<{ id: string; title: string; body: string }>(
       `SELECT id, title, body FROM message_scripts
-       WHERE deleted_at IS NULL AND audience IN ('مستأجرون','عام') ORDER BY title`),
+       WHERE deleted_at IS NULL AND audience = 'مستأجرون' ORDER BY title`),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   // القالب يُملأ بالدالة نفسها التي تعرض المعاينة، فلا يصل رمزٌ إلى المستأجر حرفياً (دراسة القائم)

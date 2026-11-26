@@ -16,7 +16,8 @@ export const TEMPLATE_TOKENS: Array<{ k: string; d: string }> = [
   { k: '{رقم_العقد}', d: 'رقم العقد' },
   { k: '{بداية_العقد}', d: 'تاريخ بداية العقد' },
   { k: '{نهاية_العقد}', d: 'تاريخ نهاية العقد' },
-  { k: '{قيمة_العقد}', d: 'القيمة السنوية للعقد' },
+  // كامل قيمة الإيجار للمدة (value_halalas · قرار المالك 2026-10-07) لا السنوية (E-17)
+  { k: '{قيمة_العقد}', d: 'قيمة الإيجار لكامل المدة' },
   { k: '{التأمين}', d: 'مبلغ التأمين' },
   { k: '{المبلغ}', d: 'مبلغ الدفعة المستحقة' },
   { k: '{المتبقي}', d: 'المتبقي غير المسدَّد' },
@@ -105,7 +106,13 @@ export function resolveTemplateTokens(text: string, ctx: Record<string, string>)
     out = out.split(k).join(v);
     out = out.split(k.replace('{', '[').replace('}', ']')).join(v);
   }
-  return out.replace(/\{الاسم\}|\[الاسم\]/g, ctx['{المستأجر}'] || '');
+  out = out.replace(/\{الاسم\}|\[الاسم\]/g, ctx['{المستأجر}'] || '');
+  // رمزٌ معروف لا قيمة له في هذا السياق (المعاينة بلا عقد) يُفرغ ولا يبقى حرفياً (E-17)
+  for (const { k } of TEMPLATE_TOKENS) {
+    if (k in ctx) continue;
+    out = out.split(k).join('').split(k.replace('{', '[').replace('}', ']')).join('');
+  }
+  return out;
 }
 
 /**
