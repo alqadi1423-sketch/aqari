@@ -21,6 +21,8 @@ const EASTERN_DIGITS = /[٠-٩۰-۹]+/g;
 const LATIN_RUN = /[A-Za-z][\w\-.]*(?:\s+[A-Za-z][\w\-.]*)*/g;
 /** كلمةٌ لاتينية في السطر غير العربي · والنقطة داخلها لا في آخرها (آخر الجملة ليس معرّفاً) */
 const LATIN_WORD = /[A-Za-z][\w\-]*(?:\.[\w\-]+)*/g;
+/** البريد اسمٌ ولو بدا معرّفاً بنقطته (المدقق المستقل للمرحلة ٣ · C-10) */
+const EMAIL = /[\w.+\-]+@[\w\-]+(?:\.[\w\-]+)*/g;
 /** نوع الخطأ في أول السطر (TypeError: · java.io.IOException:) يبقى */
 const ERROR_HEAD = /^\s*(?:[\w$]+\.)*[\w$]*(?:Error|Exception)\b:?\s*/;
 /**
@@ -78,6 +80,7 @@ export function redactForReport(text: string): string {
     // سطرٌ عربي رسالةُ دومين كُتبت للمستخدم · كل كلمة فيه قد تكون اسماً (ولو بحرف لاتيني) فتُحجب كلها
     const domain = /[؀-ۿ]/.test(line);
     let out = line
+      .replace(EMAIL, '…')
       .replace(/«[^»]*»/g, '«…»')
       .replace(/"[^"\n]*"/g, '"…"')
       // والتنصيص المنحني كما في نصوص en.json (C-10)

@@ -55,6 +55,14 @@ test('C-10 تقرير العطل لا يحمل اسماً لاتينياً بي�
   expect(out.filter((s) => s.includes('ZQPROBE'))).toEqual([]);
 });
 
+test('C-10 (المدقق المستقل) البريد في سطرٍ إنجليزي يُحجب كله ولو فيه نقطة', () => {
+  const out = redactForReport('FirebaseError: Member john.smith@gmail.com was not found for Sara Ahmed');
+  expect(out).not.toMatch(/john|smith|gmail|Sara|Ahmed/);
+  expect(out).toMatch(/^FirebaseError: /);
+  // والمعرّف التقني بنقطة يبقى
+  expect(redactForReport('UNIQUE constraint failed: purchases.supplier_name')).toContain('purchases.supplier_name');
+});
+
 test('C-11 امتلاء القرص أثناء كتابة مرفق لا يترك ملفاً يتيماً في مجلد المرفقات', async () => {
   const d = tempDir('aq-r9c-enospc-');
   dirs.push(d);
