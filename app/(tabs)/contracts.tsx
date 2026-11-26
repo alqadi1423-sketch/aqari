@@ -12,8 +12,8 @@ import { useReturnLayer } from '../../src/ui/returnLayer';
 import { View, Pressable, FlatList } from 'react-native';
 import { Screen, BackButton } from '../../src/ui/Screen';
 import {
-  Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, Field, Divider, Note,
-  Sar, ChipGroup,
+  Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, Field, Note,
+  ChipGroup,
 } from '../../src/ui/components';
 import { Sheet, SelectField } from '../../src/ui/Sheet';
 import { DateField } from '../../src/ui/DateField';
@@ -47,28 +47,27 @@ import {
   depositArrearsDue, depositArrearsPaid,
 } from '../../src/domain/contracts/service';
 import {
-  contractDisplayId, contractDisplayStatus, contractStatusKind, contractStatusLabel, refreshContractStatuses,
+  contractDisplayId, contractStatusKind, contractStatusLabel,
   canRenewContract, contractEnded, renewBlockReason,
-  type ContractRow, RENEW_WINDOW_DAYS, contractUnitLabelSql, contractUnitLabel,
+  type ContractRow, contractUnitLabelSql, contractUnitLabel,
 } from '../../src/domain/contracts/rules';
-/** العقد بمعرّفه ومعه اسم وحدته الآن (A1-13) */
-const CONTRACT_BY_ID = `SELECT c.*, ${contractUnitLabelSql('c.')} AS unit_label_now FROM contracts c WHERE c.id = ?`;
 import { keyMoneyBlockReason } from '../../src/domain/contracts/rules';
 import { recordKeyMoneyDeal } from '../../src/domain/keymoney';
 import { generateInstallments } from '../../src/domain/contracts/installments';
-import { today, dfmt, addDays, approxMonths, periodLabel, daysBetween, contractEndFromDuration, periodBounds, isISODate } from '../../src/domain/dates';
+import { today, dfmt, addDays, approxMonths, periodLabel, contractEndFromDuration, periodBounds, isISODate } from '../../src/domain/dates';
 import { prepaidUnearned } from '../../src/domain/accrual';
 import { DepositBankField } from '../../src/ui/DepositBankField';
 import { fmt, toHalalas } from '../../src/domain/money';
-import { naturalCompare } from '../../src/domain/sortKey';
 import { HandoverSheet } from '../../src/ui/HandoverSheet';
 import { attachPicked, pickFile } from '../../src/ui/attach';
 import { attachmentsFor } from '../../src/files/store';
-import { logAudit } from '../../src/domain/audit';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../../src/ui/FilterSheet';
 import { usePerm, useAccess } from '../../src/ui/access';
 import { rowBy } from '../../src/services/access';
 import { routeAllowed } from '../../src/domain/access/routes';
+
+/** العقد بمعرّفه ومعه اسم وحدته الآن (A1-13) */
+const CONTRACT_BY_ID = `SELECT c.*, ${contractUnitLabelSql('c.')} AS unit_label_now FROM contracts c WHERE c.id = ?`;
 
 type SortKey = 'start' | 'contract_no' | 'value_halalas' | 'tenant_name';
 
@@ -127,7 +126,7 @@ export default function Contracts() {
 
   // خيارات المرشِّحات والقائمة المقسّمة · الاستعلام يجلب صفحة واحدة
   const filterOpts = useMemo(() => {
-    if (!ready) return { props: [] as Array<{ id: string; name: string }>, units: [] as Array<{ id: string; unit_no: string }>, wallet1265: new Set<string>() };
+    if (!ready) return { props: [] as { id: string; name: string }[], units: [] as { id: string; unit_no: string }[], wallet1265: new Set<string>() };
     const props = db.all<{ id: string; name: string }>(
       `SELECT id, name FROM properties WHERE deleted_at IS NULL ORDER BY name`);
     const units = fProp
@@ -152,7 +151,7 @@ export default function Contracts() {
     if (!ready) return { rows: [] as ContractRow[], totalRows: 0, allRows: 0 };
     const T0 = today();
     const where: string[] = ['c.deleted_at IS NULL', 'c.archived = ?'];
-    const args: Array<string | number> = [showArchived ? 1 : 0];
+    const args: (string | number)[] = [showArchived ? 1 : 0];
     const needle = q.trim();
     if (needle) {
       where.push(`(c.contract_no LIKE '%'||?||'%' OR c.tenant_name LIKE '%'||?||'%' OR c.phone LIKE '%'||?||'%' OR ${contractUnitLabelSql('c.')} LIKE '%'||?||'%' OR c.ejar_no LIKE '%'||?||'%')`);
@@ -572,7 +571,7 @@ function ReviewSheet({
     totalHalalas: toHalalas(form.value) + (sp?.servicesHalalas ?? 0) + (sp?.parkingHalalas ?? 0) })?.rows ?? [];
   const first = sched.length ? sched[0].amount : 0;
   const last = sched.length ? sched[sched.length - 1].amount : 0;
-  const rows: Array<[string, React.ReactNode]> = [
+  const rows: [string, React.ReactNode][] = [
     ['المستأجر', form.tenant], ['الجوال', form.phone], ['الهوية / السجل', form.idNumber],
     ['العقار', p?.name ?? ''], ['الوحدة', u?.unit_no ?? ''],
     ['قيمة العقد', fmt(toHalalas(form.value))], ['الدورية', form.cycle],
@@ -1158,7 +1157,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
           ['أول دفعة', ins.length ? fmt(ins[0].amountHalalas) + ' · ' + dfmt(ins[0].dueDate) : ''],
           ['آخر دفعة', ins.length ? fmt(ins[ins.length - 1].amountHalalas) + ' · ' + dfmt(ins[ins.length - 1].dueDate) : ''],
           ['التأمين', fmt(totalDep) + (carry && toHalalas(extraDeposit) ? ' (مرحَّل + إضافي)' : carry ? ' (مرحَّل)' : toHalalas(extraDeposit) ? ' (جديد)' : '')],
-        ] as Array<[string, React.ReactNode]>).filter(([, v]) => v != null && v !== '').map(([k, v]) => (
+        ] as [string, React.ReactNode][]).filter(([, v]) => v != null && v !== '').map(([k, v]) => (
           <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
             <T size={12} color={C.muted}>{k}</T>
             <Num size={12} bold>{v}</Num>

@@ -20,7 +20,7 @@ export interface WidgetNumbers {
 export interface WidgetDaySource extends WidgetNumbers {
   day: string;
   validUntil?: string;
-  ahead?: ReadonlyArray<WidgetNumbers & { day: string }>;
+  ahead?: readonly (WidgetNumbers & { day: string })[];
 }
 
 /**

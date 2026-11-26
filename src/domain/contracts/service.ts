@@ -127,7 +127,7 @@ export const SOURCE_COMPUTED = 'محسوبة';
  * لا استبدال صامت إن خالف مجموعها إجمالي العقد (قرار المالك 2026-10-07)، بل تنبيه أحمر بالفرق ولا توثيق حتى يتطابقا.
  */
 export function scheduleInstallments(schedule: ScheduleRow[] | null | undefined, start: string, end: string, _totalHalalas?: number):
-  Array<{ dueDate: string; deadline: string | null; amountHalalas: number }> | null {
+  { dueDate: string; deadline: string | null; amountHalalas: number }[] | null {
   if (!schedule || !schedule.length || !start || !end) return null;
   for (let i = 0; i < schedule.length; i++) {
     const d = schedule[i].dueDate;
@@ -143,7 +143,7 @@ export function scheduleInstallments(schedule: ScheduleRow[] | null | undefined,
  * منها يُعرض جدول المراجعة وملخصها «عدد الدفعات» معاً (المراجعة الشاملة 2026-11-13 · A1-10: كان الملخص يُحسب بطريقةٍ ثانية)
  */
 export function reviewScheduleRows(a: { start: string; end: string; totalHalalas: number; cycle: string; schedule?: ScheduleRow[] | null }):
-  { read: boolean; rows: Array<{ due: string; deadline: string | null; amount: number }> } | null {
+  { read: boolean; rows: { due: string; deadline: string | null; amount: number }[] } | null {
   if (!a.start || !a.end) return null;
   const read = scheduleInstallments(a.schedule ?? null, a.start, a.end, a.totalHalalas);
   if (read) return { read: true, rows: read.map((r) => ({ due: r.dueDate, deadline: r.deadline, amount: r.amountHalalas })) };
@@ -343,7 +343,7 @@ export function confirmContract(db: DB, inputRaw: ContractDraftInput, draftId?: 
           throw new RuleViolation(t('lease.scheduleSumMismatch', { lng: 'ar', sum: fmt(sum), total: fmt(draftTotal(input)) }), 'value');
         }
       }
-      const insts: Array<{ id: string; dueDate: string; amountHalalas: number; deadline?: string | null }> = fromFile
+      const insts: { id: string; dueDate: string; amountHalalas: number; deadline?: string | null }[] = fromFile
         ? fromFile.map((x) => ({ id: uid(), ...x }))
         : generateInstallments(input.start, input.end, draftTotal(input), input.cycle);
       insts.forEach((inst, i) => {
@@ -671,7 +671,7 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
       const sum = fromFile.reduce((x, r) => x + r.amountHalalas, 0);
       if (sum !== total) throw new RuleViolation(t('lease.scheduleSumMismatch', { lng: 'ar', sum: fmt(sum), total: fmt(total) }), 'value');
     }
-    const insts: Array<{ id: string; dueDate: string; amountHalalas: number; deadline?: string | null }> = fromFile
+    const insts: { id: string; dueDate: string; amountHalalas: number; deadline?: string | null }[] = fromFile
       ? fromFile.map((x) => ({ id: uid(), ...x }))
       : generateInstallments(input.start, input.end, total, input.cycle);
     insts.forEach((inst, i) => {
@@ -1222,7 +1222,7 @@ export function recordBulkRentPayment(
 
     // التوزيع بترتيب الاستحقاق · الفائض رصيد للمستأجر · والمتبقّي يطرح الخصم كما في كل موضع
     let left = net;
-    const allocations: Array<{ installmentId: string; amount: number }> = [];
+    const allocations: { installmentId: string; amount: number }[] = [];
     for (const i of insts) {
       if (left <= 0) break;
       const remaining = installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount));
