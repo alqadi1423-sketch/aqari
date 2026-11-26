@@ -1,0 +1,9 @@
+no-google pass · mode enforce
+capture /home/runner/work/_temp/emu-net.pcap · packets 1414
+window from packet 112 (marker aqari-e2e-window.example.com)
+window end at packet 1412 (marker aqari-e2e-window-end.example.com)
+webview clientservices.googleapis.com (dns,sni) · بذرة تجارب WebView في النظام (variations) عند أول خريطة
+webview update.googleapis.com (dns,sni) · محدّث مكوّنات WebView في النظام عند أول خريطة
+boot connectivitycheck.gstatic.com (dns,http)
+boot remoteprovisioning.googleapis.com (dns,sni)
+boot www.google.com (dns,sni)

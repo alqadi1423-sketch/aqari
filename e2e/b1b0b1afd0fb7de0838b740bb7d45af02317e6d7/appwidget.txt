@@ -1,0 +1,40 @@
+Providers:
+  [0] provider ProviderId{user:0, app:10101, cmp:ComponentInfo{com.android.calendar/com.android.calendar.widget.CalendarAppWidgetProvider}}
+    min=(28161x46081)   minResize=(28161x28161) updatePeriodMillis=0 resizeMode=3 widgetCategory=3 autoAdvanceViewId=-1 initialLayout=#7f0b000d initialKeyguardLayout=#0   zombie=false
+  [1] provider ProviderId{user:0, app:10105, cmp:ComponentInfo{com.android.deskclock/com.android.alarmclock.AnalogAppWidgetProvider}}
+    min=(28161x28161)   minResize=(14081x14081) updatePeriodMillis=0 resizeMode=3 widgetCategory=1 autoAdvanceViewId=-1 initialLayout=#7f0d0023 initialKeyguardLayout=#0   zombie=false
+  [2] provider ProviderId{user:0, app:10105, cmp:ComponentInfo{com.android.deskclock/com.android.alarmclock.DigitalAppWidgetProvider}}
+    min=(52737x33025)   minResize=(34817x15105) updatePeriodMillis=0 resizeMode=3 widgetCategory=3 autoAdvanceViewId=-1 initialLayout=#7f0d0046 initialKeyguardLayout=#0   zombie=false
+  [3] provider ProviderId{user:0, app:10106, cmp:ComponentInfo{com.android.gallery3d/com.android.gallery3d.gadget.PhotoAppWidgetProvider}}
+    min=(46081x46081)   minResize=(46081x46081) updatePeriodMillis=86400000 resizeMode=0 widgetCategory=1 autoAdvanceViewId=-1 initialLayout=#7f0c0007 initialKeyguardLayout=#0   zombie=false
+  [4] provider ProviderId{user:0, app:10108, cmp:ComponentInfo{com.android.messaging/com.android.messaging.widget.BugleWidgetProvider}}
+    min=(64001x46081)   minResize=(28161x28161) updatePeriodMillis=0 resizeMode=3 widgetCategory=3 autoAdvanceViewId=-1 initialLayout=#7f0d0092 initialKeyguardLayout=#0   zombie=false
+  [5] provider ProviderId{user:0, app:10108, cmp:ComponentInfo{com.android.messaging/com.android.messaging.widget.WidgetConversationProvider}}
+    min=(46081x46081)   minResize=(28161x28161) updatePeriodMillis=0 resizeMode=3 widgetCategory=3 autoAdvanceViewId=-1 initialLayout=#7f0d0091 initialKeyguardLayout=#0   zombie=false
+  [6] provider ProviderId{user:0, app:10107, cmp:ComponentInfo{com.android.quicksearchbox/com.android.quicksearchbox.SearchWidgetProvider}}
+    min=(66561x10241)   minResize=(66561x10241) updatePeriodMillis=0 resizeMode=0 widgetCategory=1 autoAdvanceViewId=-1 initialLayout=#7f0a000d initialKeyguardLayout=#0   zombie=false
+  [7] provider ProviderId{user:0, app:10117, cmp:ComponentInfo{com.android.systemui/com.android.systemui.people.widget.PeopleSpaceWidgetProvider}}
+    min=(34817x0)   minResize=(15361x12801) updatePeriodMillis=60000 resizeMode=3 widgetCategory=1 autoAdvanceViewId=-1 initialLayout=#7f0d01be initialKeyguardLayout=#0   zombie=false
+  [8] provider ProviderId{user:0, app:10141, cmp:ComponentInfo{com.aqari.app/com.aqari.app.TodayStripWidget}}
+    min=(64001x10241)   minResize=(64001x10241) updatePeriodMillis=1800000 resizeMode=1 widgetCategory=1 autoAdvanceViewId=-1 initialLayout=#7f0d0099 initialKeyguardLayout=#0   zombie=false
+  [9] provider ProviderId{user:0, app:10141, cmp:ComponentInfo{com.aqari.app/com.aqari.app.QuickActionsWidget}}
+    min=(64001x10241)   minResize=(64001x10241) updatePeriodMillis=0 resizeMode=1 widgetCategory=1 autoAdvanceViewId=-1 initialLayout=#7f0d0098 initialKeyguardLayout=#0   zombie=false
+  [10] provider ProviderId{user:0, app:10141, cmp:ComponentInfo{com.aqari.app/com.aqari.app.CollectionPanelWidget}}
+    min=(64001x28161)   minResize=(64001x28161) updatePeriodMillis=1800000 resizeMode=3 widgetCategory=1 autoAdvanceViewId=-1 initialLayout=#7f0d0097 initialKeyguardLayout=#0   zombie=false
+ 
+Widgets:
+  [0] id=2
+    host=HostId{user:0, app:10112, hostId:1026, pkg:com.android.launcher3}
+    provider=ProviderId{user:0, app:10107, cmp:ComponentInfo{com.android.quicksearchbox/com.android.quicksearchbox.SearchWidgetProvider}}
+    host.callbacks=com.android.internal.appwidget.IAppWidgetHost$Stub$Proxy@d2a42dc
+    views=android.widget.RemoteViews@d85afe5
+ 
+Hosts:
+  [0] hostId=HostId{user:0, app:10112, hostId:1026, pkg:com.android.launcher3}
+    callbacks=com.android.internal.appwidget.IAppWidgetHost$Stub$Proxy@d2a42dc
+    widgets.size=1 zombie=false
+  [1] hostId=HostId{user:0, app:10112, hostId:1024, pkg:com.android.launcher3}
+    callbacks=com.android.internal.appwidget.IAppWidgetHost$Stub$Proxy@da1daba
+    widgets.size=0 zombie=false
+ 
+Grants:
