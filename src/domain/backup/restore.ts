@@ -25,7 +25,8 @@ import { INV_RESERVED_KEY, INV_PENDING_KEY, pendingIssues } from '../invoiceIssu
 import type { RemoteDoc } from '../../sync/types';
 import { getSyncState, setSyncState } from '../../sync/engine';
 import { isEncryptedArchive, decryptArchive, PasswordRequiredError, WrongPasswordError } from './encryption';
-import { BACKUP_FORMAT, RestoreError, type BackupEnv, type BackupManifest } from './types';
+import { BACKUP_FORMAT, BACKUP_FORMAT_VERSION, RestoreError, type BackupEnv, type BackupManifest } from './types';
+import { fkViolationCount } from '../fkCheck';
 
 const dec = new TextDecoder();
 /** رسالة الرجوع الفوري حين رجعت القاعدة السابقة مكانها */
@@ -195,6 +196,9 @@ export async function prepareRestore(
       throw new RestoreError('هذا الملف ليس نسخة احتياطية من عقاري');
     if (manifest.schema_version > SCHEMA_VERSION)
       throw new NewerSchemaError(manifest.schema_version, SCHEMA_VERSION);
+    // وصيغة الأرشيف الأحدث تُرفض بأدب كالبنية الأحدث (المراجعة الشاملة 2026-11-13 · C-8): كانت تُقرأ بالصيغة الأولى
+    if (Number(manifest.format_version) > BACKUP_FORMAT_VERSION)
+      throw new RestoreError(t('restore.newerFormat', { found: Number(manifest.format_version), supported: BACKUP_FORMAT_VERSION }));
     // اسم كل مرفق يُبنى من بيان النسخة · فيُفحص شكله قبل أن يُكتب بايت: بصمة وامتداد لا غير،
     // وإلا كتبت نسخةٌ مصنوعة باسم فيه «../» أيَّ ملف في مساحة التطبيق قبل أن يبدأ التحقق
     assertSafeManifestFiles(manifest);
@@ -337,6 +341,9 @@ export async function prepareRestore(
         kept = applyKeepPosted(probe, keep).entries; keptCashMoves = keep.cashMoves; keptRevivedMoves = keep.revivedMoves;
         // الفحوص نفسها بالحكم نفسه في النسخ (checks.ts): الفرق المحاسبي ملاحظةٌ تُعرض ولا ترفض الاستعادة
         notes = [...notes, ...reviewData(probe).notes];
+        // والارتباط المكسور بين الجداول ملاحظةٌ بعدده كذلك، فلا يمرّ صامتاً ثم يظهر بالإنجليزية عند حذفٍ أو كنس (C-8)
+        const fkBad = fkViolationCount(probe);
+        if (fkBad) notes = [...notes, t('fk.restoreNote', { n: fkBad })];
         // أسماء ملفات الجهاز الغائبة من قاعدة النسخة نفسها · فيُسمّى الملف كما يعرفه المستخدم (C-2)
         if (localGone.length) localMissing = missingFileLabels(probe, localGone);
         incoming = ledgerRepair || paidRecomputed.length || kept.length || keptCashMoves ? tableCounts(probe) : counted;

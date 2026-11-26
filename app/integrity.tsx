@@ -18,6 +18,7 @@ import { previewEjarSchedules, applyEjarSchedules, contractsWithLease, type Ejar
 import { readLeaseText } from '../src/services/contractScan';
 import { dfmt } from '../src/domain/dates';
 import { invoiceSeqGaps } from '../src/domain/invoiceGaps';
+import { fkIntegrityCheck } from '../src/domain/fkCheck';
 import { useLang } from '../src/i18n';
 
 /** ما يُعرض من أرقام الفجوات · والباقي عدداً */
@@ -29,7 +30,8 @@ export default function Integrity() {
   const dialog = useDialog();
   const toast = useToast();
   const [tick, setTick] = useState(0);
-  const checks = useMemo(() => integrityChecks(db),
+  // ومعها الارتباطات المكسورة بين الجداول (المراجعة الشاملة 2026-11-13 · C-8)
+  const checks = useMemo(() => [...integrityChecks(db), fkIntegrityCheck(db)],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, tick]);
   // المعاينة قراءة فقط · والتطبيق للمالك وحده، فالأداة لا تظهر لغيره

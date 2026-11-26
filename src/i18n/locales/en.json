@@ -1066,7 +1066,8 @@
     "keptBankShortMoves": "Keeping the cash movements after the backup date (those on a bank created after it are not kept) takes the balance of «{{bank}}» to {{balance}}, short by {{short}} · no bank goes below zero, so the backup was not restored and your data is unchanged",
     "keptWalletShortMoves": "Keeping the cash movements after the backup date (those on a bank created after it are not kept) takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the backup was not restored and your data is unchanged",
     "keptBankShortMovesAdopt": "Keeping the cash movements in the cloud after the backup date (those on a bank created after it are not kept) takes the balance of «{{bank}}» to {{balance}}, short by {{short}} · no bank goes below zero, so the restored backup on this device was not adopted and nothing from it was uploaded to the cloud; sync is waiting",
-    "keptWalletShortMovesAdopt": "Keeping the cash movements in the cloud after the backup date (those on a bank created after it are not kept) takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the restored backup on this device was not adopted and nothing from it was uploaded to the cloud; sync is waiting"
+    "keptWalletShortMovesAdopt": "Keeping the cash movements in the cloud after the backup date (those on a bank created after it are not kept) takes the cash in the wallet to {{balance}}, short by {{short}} · cash never goes negative, so the restored backup on this device was not adopted and nothing from it was uploaded to the cloud; sync is waiting",
+    "newerFormat": "This backup uses a newer format ({{found}}) than this app reads ({{supported}}) · update the app first, then try again."
   },
   "bank": {
     "insufficient": "The balance of {{bank}} is {{balance}}, not enough to transfer {{amount}}"
@@ -1459,5 +1460,10 @@
     "title": "Tax invoice numbers without an invoice",
     "detail": "No invoice or credit note was issued with these numbers, so they are gaps in the sequence. A number may still be reserved on a device that has not synced yet",
     "more": "and {{n}} more"
+  },
+  "fk": {
+    "integrityName": "Every record points to an existing parent (no broken links between tables)",
+    "integrityValue": "{{n}} broken links",
+    "restoreNote": "The backup has {{n}} broken links between tables (a record pointing to a missing parent) · it is restored as is, and the count shows in the integrity check"
   }
 }

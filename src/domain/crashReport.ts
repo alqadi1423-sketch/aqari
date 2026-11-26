@@ -11,6 +11,7 @@ import type { DB } from '../db/adapter';
 import { redactForReport } from './redact';
 import { auditActor, auditWriter, AUDIT_WRITER_SQL } from './audit';
 import { APP_VERSION_LABEL } from '../version';
+import { fkAfterMigrate, FK_AFTER_MIGRATE_KEY } from './fkCheck';
 import ar from '../i18n/locales/ar.json';
 import en from '../i18n/locales/en.json';
 import titlesList from './failureTitles.json';
@@ -45,12 +46,16 @@ export interface CrashBody {
   s: string;
 }
 
-/** حمولة التقرير دون حدّها: الأثر يُقصّ من آخره (أوله رسالة الخطأ وأقرب المواضع، وهي أنفعه) */
-export function crashReportBody(e: unknown, platform: string): CrashBody {
+/**
+ * حمولة التقرير دون حدّها: الأثر يُقصّ من آخره (أوله رسالة الخطأ وأقرب المواضع، وهي أنفعه) · ومخالفات المفاتيح الأجنبية بعد آخر ترقية
+ * سطرٌ تقنيٌ قبله إن وُجدت (المراجعة الشاملة 2026-11-13 · C-8: كانت تُكتب ولا يقرؤها أحد) · عددٌ لا اسم فيه
+ */
+export function crashReportBody(e: unknown, platform: string, fkViolations: number | null = null): CrashBody {
   const stack = e instanceof Error ? (e.stack ?? (e.name + ': ' + e.message)) : String(e);
+  const fk = fkViolations ? `${FK_AFTER_MIGRATE_KEY}=${fkViolations}\n` : '';
   const body: CrashBody = {
     v: APP_VERSION_LABEL, p: String(platform).slice(0, 20),
-    k: (e instanceof Error ? e.name : typeof e).slice(0, 60), s: redactForReport(stack),
+    k: (e instanceof Error ? e.name : typeof e).slice(0, 60), s: fk + redactForReport(stack),
   };
   let over = JSON.stringify(body).length - CRASH_BODY_MAX;
   while (over > 0) {
@@ -150,7 +155,7 @@ export function recordCrashReport(db: DB, args: { where: string; e: unknown; pla
       `INSERT INTO audit_log (id, ts, user_name, module, action_type, entity_type, entity_name, before_json, after_json)
        VALUES (?,?,?,?,?,?,?,?,?)`,
       [prefix + n, at.toISOString().slice(0, 19), auditActor(db), CRASH_MODULE, 'update', CRASH_ENTITY, whereLabel(args.where),
-        null, JSON.stringify(crashReportBody(args.e, args.platform))],
+        null, JSON.stringify(crashReportBody(args.e, args.platform, fkAfterMigrate(db)))],
     );
     return true;
   } catch {
