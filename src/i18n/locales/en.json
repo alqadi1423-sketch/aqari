@@ -713,7 +713,10 @@
     "openingDebit": "debit is larger",
     "openingCredit": "credit is larger",
     "openingOwnerOnly": "Only the owner sets an opening balance · not saved",
-    "bankOpeningHint": "Bank opening balances of {{amount}} are added to this (offset in 3300 «Opening balances»); edit them in Banks, not here"
+    "bankOpeningHint": "Bank opening balances of {{amount}} are added to this (offset in 3300 «Opening balances»); edit them in Banks, not here",
+    "stmtCarried": "Balance brought forward",
+    "stmtCarriedPage": "Balance brought forward from the previous page",
+    "stmtClosing": "Closing balance for the period"
   },
   "tenants": {
     "mergeDifferentIds": "Two different ID numbers are merged only with explicit confirmation",

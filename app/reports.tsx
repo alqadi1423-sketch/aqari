@@ -17,7 +17,7 @@ import { useApp, useFs } from '../src/ui/store';
 import { EntrySheet, srcTypeLabel } from '../src/ui/EntrySheet';
 import { useToast } from '../src/ui/Toast';
 import { C } from '../src/ui/theme';
-import { allAccounts, accountMovement, allAccountMovements, accountPeriodChange, trialBalance, costCenterReport, dimConds, hasDimFilter, type DimFilter } from '../src/domain/accounting/ledger';
+import { allAccounts, accountMovement, allAccountMovements, accountPeriodChange, trialBalance, costCenterReport, accountStatement, hasDimFilter, type DimFilter } from '../src/domain/accounting/ledger';
 import { costCenters, dimsLabel } from '../src/domain/accounting/dimensions';
 import { cashFlowFigures } from '../src/domain/finStatements';
 import { useLang } from '../src/i18n';
@@ -572,37 +572,35 @@ export default function Reports() {
       {stmtAccount && (
         <Sheet visible onClose={() => setStmtAccount(null)} title={stmtAccount.code + ' · ' + stmtAccount.name} tall>
           {(() => {
-            const lines2 = db.all<{
-              entry_id: string; date: string; memo: string; src_type: string | null;
-              debit_halalas: number; credit_halalas: number;
-            }>(
-              `SELECT e.id AS entry_id, e.date, e.memo, e.src_type, l.debit_halalas, l.credit_halalas
-               FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-               WHERE l.account_code = ? AND e.status = 'مرحّل' AND e.deleted_at IS NULL
-                 ${from ? "AND e.date >= '" + from + "'" : ''} AND e.date <= '${to}'
-                 ${dimConds(dimF).sql.map((c) => 'AND ' + c).join(' ')}
-               ORDER BY e.date, e.created_at`, [stmtAccount.code, ...dimConds(dimF).params]);
-            let run = 0;
-            return lines2.length ? lines2.map((l, i) => {
-              run += Number(l.debit_halalas) - Number(l.credit_halalas);
-              return (
+            // رصيدٌ منقول (الافتتاحي + ما قبل الفترة) وجاري باتجاه طبيعة الحساب، فآخره «الختامي» في صف الميزان (المراجعة الشاملة 2026-11-13 · A2.7)
+            const st = accountStatement(db, stmtAccount.code, from, to, { dims: dimF });
+            return <>
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
+                <T size={12} med>{t('accounts.stmtCarried')}</T>
+                <Num size={11.5} bold>{fmt(st.carried)}</Num>
+              </Row>
+              {st.lines.length ? st.lines.map((l, i) => (
                 <Pressable key={i} disabled={!seesLedger} onPress={() => setStmtEntry(l.entry_id)}>
                   <View style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
                     <Row style={{ justifyContent: 'space-between' }}>
                       <T size={12} numberOfLines={2} style={{ flex: 1, minWidth: NAME_MIN }}>{l.memo}</T>
-                      <Num size={11.5} bold color={Number(l.debit_halalas) ? C.emerald : C.rose}>
-                        {Number(l.debit_halalas) ? fmt(Number(l.debit_halalas)) : fmt(Number(l.credit_halalas))}
+                      <Num size={11.5} bold color={l.d ? C.emerald : C.rose}>
+                        {l.d ? fmt(l.d) : fmt(l.c)}
                       </Num>
                     </Row>
                     <Row style={{ justifyContent: 'space-between', marginTop: 2 }}>
                       <Num size={10.5} color={C.muted}>{dfmt(l.date)}</Num>
-                      <Num size={10.5} color={C.muted}>الجاري: {fmt(run)}</Num>
+                      <Num size={10.5} color={C.muted}>الجاري: {fmt(l.running)}</Num>
                     </Row>
                     <T size={10} color={C.muted} numberOfLines={1} style={{ marginTop: 2 }}>{srcTypeLabel(l.src_type)}</T>
                   </View>
                 </Pressable>
-              );
-            }) : <EmptyState>لا حركة على الحساب خلال المدة</EmptyState>;
+              )) : <EmptyState>لا حركة على الحساب خلال المدة</EmptyState>}
+              <Row style={{ justifyContent: 'space-between', paddingVertical: 7 }}>
+                <T size={12} med>{t('accounts.stmtClosing')}</T>
+                <Num size={11.5} bold>{fmt(st.closing)}</Num>
+              </Row>
+            </>;
           })()}
           <View style={{ height: 10 }} />
         </Sheet>
