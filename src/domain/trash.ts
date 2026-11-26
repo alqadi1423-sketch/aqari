@@ -11,7 +11,7 @@ import { requireBankTxRestorable } from './bankTx';
 import { logAudit } from './audit';
 import { t } from '../i18n';
 import { lastReversedOf, repostBlockers, repostCopy, repostDate } from './accounting/repost';
-import { isFiledDate } from './vatFilings';
+import { isFiledDate, correctionDate } from './vatFilings';
 
 export const TRASH_ENTITY_LABELS: Record<string, string> = {
   suppliers: 'مورد', tenants: 'مستأجر', contracts: 'عقد إيجار',
@@ -174,8 +174,8 @@ export function trashRestoreGates(db: DB, items: readonly { table: string; id: s
 
   const purchases = idsOf('purchases');
   if (purchases.length) {
-    const rows = allIn<{ id: string; pj: string; eff: number }>(db,
-      `SELECT p.id AS id, e.id AS pj,
+    const rows = allIn<{ id: string; pdate: string; rdate: string | null; eff: number }>(db,
+      `SELECT p.id AS id, e.date AS pdate, (SELECT r.date FROM journal_entries r WHERE r.id = e.reversed_by) AS rdate,
               COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas) FROM journal_lines l
                         WHERE l.entry_id = e.id AND l.account_code = '1100'), 0)
             - COALESCE((SELECT SUM(b.amount_halalas) FROM bank_tx b
@@ -187,7 +187,8 @@ export function trashRestoreGates(db: DB, items: readonly { table: string; id: s
     for (const r of rows) {
       const cashOut = Math.max(0, -Number(r.eff));
       if (!(cashOut > 0)) continue;
-      const date = repostDate(db, r.pj);
+      // repostDate من الصف نفسه: تاريخ العاكس، وإلا تاريخ التصحيح (correctionDate) · بلا عبارةٍ لكل صف
+      const date = r.rdate ?? correctionDate(db, r.pdate);
       let low = lowByDate.get(date);
       if (low === undefined) { low = Math.max(0, walletLowFrom(db, date).low); lowByDate.set(date, low); }
       out.set(trashKey({ table: 'purchases', id: r.id }), { cashOut, short: Math.max(0, cashOut - low), filed: false, date });
