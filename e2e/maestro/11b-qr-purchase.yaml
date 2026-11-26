@@ -31,14 +31,15 @@ appId: com.aqari.app
 - tapOn: "+ تسجيل فاتورة شراء"
 - tapOn: "قراءة QR الفاتورة"
 - tapOn: "صورة من المعرض"
-# منتقي الصور في النظام: أول صورة (المدفوعة في ١١ أ وحدها) بمعرّف مصغّرها · نصّ «Photos» تبويبٌ لا صورة
+# منتقي الصور في النظام: أول صورة (المدفوعة في ١١ أ وحدها) بمعرّف مصغّرها · نصّ «Photos» تبويبٌ لا صورة · والمعرّف تعبيرٌ
+# يطابق حزمة المنتقي في صورة أندرويد المفتوحة (com.android.…، ق٠-٨) وفي صورة قوقل (com.google.android.…)
 - extendedWaitUntil:
     visible:
-      id: "com.google.android.providers.media.module:id/icon_thumbnail"
+      id: "com\\.(google\\.)?android\\.providers\\.media\\.module:id/icon_thumbnail"
     timeout: 20000
 - takeScreenshot: 11-picker
 - tapOn:
-    id: "com.google.android.providers.media.module:id/icon_thumbnail"
+    id: "com\\.(google\\.)?android\\.providers\\.media\\.module:id/icon_thumbnail"
     index: 0
 - tapOn:
     text: "Done|Add|إضافة|تم"

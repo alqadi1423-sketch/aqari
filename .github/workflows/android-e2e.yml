@@ -1,6 +1,7 @@
 # الجوال الافتراضي (التوجيه الرابع ٤ · ١ · قرار المالك 2026-11-07 «اختبار آلي على جوال أندرويد افتراضي في جيت هب»):
 # تُبنى حزمة الإصدار نفسها (الشيفرة مضمّنة، بلا Metro) لمعالج x86_64، موقّعةً بمفتاح اختبارٍ يُولَّد في التشغيل ويُحذف معه
 # (لا مفتاح المالك ولا أي سر)، ثم تُشغَّل تدفقات Maestro في e2e/maestro على محاكي أندرويد · بلا ربطٍ بقوقل: التطبيق محلي كاملاً.
+# والمحاكي بصورة أندرويد المفتوحة (target: default، بلا خدمات قوقل) ويسجّل حركته، فيُسقط العملَ اتصالُ التطبيق بقوقل (ق٠-٨ · الشرط ١٣).
 # والخلاصة ولقطات الشاشة تُكتب في فرع ci-results (مجلد e2e/<الالتزام>) في عملٍ مستقل بصلاحية الكتابة وحدها، كخط الاختبارات.
 name: الجوال الافتراضي
 
@@ -27,6 +28,9 @@ jobs:
     env:
       TZ: Asia/Riyadh
       MAESTRO_VERSION: 2.11.0
+      # ق٠-٨ · وضع فحص «لا اتصال بقوقل» (scripts/ci/noGoogle.js): enforce يُسقط كل نطاق قوقل من التطبيق إلا المؤجَّل باسمه هناك
+      # (ناقل سجلات ML Kit · F-2) · وstrict يُسقطه أيضاً: يُضبط بعد إزالة ML Kit (ق٠-٣ وق٠-٤) وفي التحويل (م٥) · وreport لا يُسقط
+      NO_GOOGLE_MODE: enforce
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -110,13 +114,32 @@ jobs:
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
         with:
           api-level: 34
-          target: google_apis
+          # صورة أندرويد المفتوحة (AOSP) لا google_apis: بلا خدمات قوقل، فما يُسجَّل من حركةٍ إلى قوقل من التطبيق لا من خدمات الجهاز
+          target: default
           arch: x86_64
           profile: pixel_6
           ram-size: 4096M
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          # -tcpdump: كل حركة المحاكي في ملف pcap يفحصه العمل التالي (الشرط ١٣)
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -tcpdump ${{ runner.temp }}/emu-net.pcap
           script: bash e2e/run.sh
+
+      # ق٠-٨ · لا اتصال بقوقل (الشرط ١٣): أسماء DNS وSNI وHost في حركة المحاكي بعد علامة run.sh · النتيجة في e2e-out/no-google.txt
+      # وفي خلاصة الجوال الافتراضي (e2e/summary.js)، فيمنع فشلُها وسم الحزمة كما يمنعه فشل تدفق
+      - name: لا اتصال بقوقل
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p e2e-out
+          node scripts/ci/noGoogle.js --pcap "$RUNNER_TEMP/emu-net.pcap" --mode "$NO_GOOGLE_MODE" --out e2e-out/no-google.txt
+
+      # التسجيل نفسه للمراجعة، أثراً قصير العمر لا في فرع ci-results (حجمه، وهو حركة محاكٍ ببيانات مصطنعة)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-net
+          path: ${{ runner.temp }}/emu-net.pcap
+          retention-days: 14
+          if-no-files-found: warn
 
       # لا خلاصة لتشغيلٍ أُلغي (دفعةٌ لحقته): لا يُحسب فشلاً على التزامٍ لم يُختبر (G-7)
       - name: الخلاصة

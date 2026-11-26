@@ -8,6 +8,16 @@ adb wait-for-device
 # ونوافذ «… isn't responding» من النظام (لا من التطبيق) لا تُعرض: كانت تغطي الشاشة فيسقط كل تدفق (الجوال الافتراضي على 7e3b492:
 # «Pixel Launcher isn't responding» فوق الرئيسية في أحد عشر تدفقاً)
 adb shell settings put global hide_error_dialogs 1 || true
+# ق٠-٨ · لا اتصال بقوقل (الشرط ١٣): المحاكي يسجّل حركته (-tcpdump في android-e2e.yml) ويفحصها scripts/ci/noGoogle.js ·
+# فحص الاتصال في أندرويد نفسه يذهب إلى قوقل فيُطفأ، وDNS مكشوفٌ ليُقرأ، ثم سؤالٌ عن اسم العلامة يفتح نافذة الحكم: ما قبله إقلاع
+# النظام، وما بعده التطبيق · والاسم نفسه MARKER في noGoogle.js
+adb shell settings put global captive_portal_mode 0 || true
+adb shell settings put global captive_portal_detection_enabled 0 || true
+adb shell settings put global private_dns_mode off || true
+sleep 3
+# العلامة تحتاج شبكةً قائمة (بلا شبكة لا يخرج سؤال DNS فتغيب العلامة ويفشل الفحص): انتظارٌ حتى دقيقة لشبكةٍ افتراضية
+for _ in $(seq 30); do adb shell dumpsys connectivity 2>/dev/null | grep -q "Active default network: [0-9]" && break; sleep 2; done
+for _ in 1 2 3; do adb shell ping -c 1 -W 2 aqari-e2e-window.example.com >/dev/null 2>&1 || true; sleep 1; done
 adb install -r "$E2E_APK" > "$OUT/install.txt" 2>&1 || { echo "install-failed" > "$OUT/status.txt"; cat "$OUT/install.txt"; exit 1; }
 adb logcat -c || true
 (adb logcat -v time '*:W' ReactNativeJS:V > "$OUT/logcat.txt" 2>&1 &) 
