@@ -994,7 +994,7 @@ export default function Settings() {
                 ],
               }) : undefined} />
             <ValueRow icon="settings" title="حدّ الملفات المنزَّلة" value={libSizeLabel(Number(settings.fileCacheMb) * 1024 * 1024)}
-              onPress={() => openChoice('حدّ الملفات المنزَّلة', [[250, '٢٥٠ م.ب'], [500, '٥٠٠ م.ب'], [1000, '١ ج.ب'], [2000, '٢ ج.ب']], Number(settings.fileCacheMb),
+              onPress={() => openChoice('حدّ الملفات المنزَّلة', [[250, '250 م.ب'], [500, '500 م.ب'], [1000, '1 ج.ب'], [2000, '2 ج.ب']], Number(settings.fileCacheMb),
                 (v) => updateSetting('fileCacheMb', v as never))} />
             {fu.pendingCount ? (
               <ValueRow icon="reload" title="ملفات تنتظر الرفع إلى الخادم" value={fu.pendingCount + ' ملف · ' + libSizeLabel(fu.pendingBytes)} />
@@ -1007,7 +1007,7 @@ export default function Settings() {
         {admin ? <>
         <ValueRow icon="trash" title="سلة المحذوفات" value={data.trash.length + ' سجل'} onPress={() => setTrashOpen(true)} />
         <ValueRow icon="calendar" title="مدة الاحتفاظ قبل الحذف النهائي" value={settings.trashRetention + ' يوماً'}
-          onPress={() => openChoice('مدة الاحتفاظ', [[30, '٣٠ يوماً'], [60, '٦٠ يوماً'], [90, '٩٠ يوماً']], settings.trashRetention,
+          onPress={() => openChoice('مدة الاحتفاظ', [[30, '30 يوماً'], [60, '60 يوماً'], [90, '90 يوماً']], settings.trashRetention,
             (v) => updateSetting('trashRetention', v as never))} />
         <ValueRow icon="eye" title="نزع بيانات الصور الوصفية عند الرفع" value={settings.stripExif ? 'مفعّل' : 'مطفأ'}
           onPress={() => openChoice('نزع بيانات الصور الوصفية', [[0, 'مطفأ'], [1, 'مفعّل']], settings.stripExif ? 1 : 0,

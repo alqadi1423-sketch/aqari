@@ -1090,9 +1090,9 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
       <SelectField
         label="مدة العقد الجديد" value={durMonths}
         options={[
-          { value: '3', label: '٣ أشهر' }, { value: '6', label: '٦ أشهر' },
+          { value: '3', label: '3 أشهر' }, { value: '6', label: '6 أشهر' },
           { value: '12', label: 'سنة واحدة' }, { value: '24', label: 'سنتان' },
-          { value: '36', label: '٣ سنوات' }, { value: 'custom', label: 'مدة مخصَّصة' },
+          { value: '36', label: '3 سنوات' }, { value: 'custom', label: 'مدة مخصَّصة' },
         ]}
         onPick={setDurMonths}
       />

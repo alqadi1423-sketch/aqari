@@ -4,7 +4,7 @@
  */
 export function normalizePhone(raw: string | null | undefined): string | null {
   let s = String(raw || '')
-    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
     .replace(/[^\d+]/g, '');
   s = s.replace(/^\+?00/, '').replace(/^\+/, '');
   if (s.startsWith('966')) s = s.slice(3);

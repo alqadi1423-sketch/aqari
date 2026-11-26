@@ -412,7 +412,7 @@ export default function Collect() {
       <Row style={{ marginTop: 8, flexWrap: 'wrap' }}>
         <KpiCard label="متأخر" tone="neg" value={<Money halalas={data.kpis.lateSum} size={15} bold />} sub={data.kpis.lateCount + ' دفعة'}
           onPress={() => { setFilter('late'); setFLate(''); }} />
-        <KpiCard label="نسبة التحصيل" value={data.kpis.collectionPct + '%'}
+        <KpiCard label="نسبة التحصيل" value={data.kpis.collectionPct + '٪'}
           onPress={() => setFilter('month')} />
       </Row>
       <View style={{ height: 10 }} />

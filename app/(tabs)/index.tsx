@@ -385,9 +385,9 @@ export default function Dashboard() {
           العقارات
         </CardTitle>
         <Row style={{ flexWrap: 'wrap', marginBottom: 10 }}>
-          <MiniKpi label="معدل الإشغال" value={data.pf.total ? data.pf.occupancyPct + '%' : ''} onPress={() => router.push('/units')} />
+          <MiniKpi label="معدل الإشغال" value={data.pf.total ? data.pf.occupancyPct + '٪' : ''} onPress={() => router.push('/units')} />
           <MiniKpi label="وحدات مشغولة" value={`${data.pf.occupied} من ${data.pf.total}`} onPress={() => router.push('/units?occ=rented')} />
-          {sees('collect') ? <MiniKpi label="نسبة التحصيل" value={data.collectionPct + '%'} onPress={() => router.push('/collect?filter=month')} /> : null}
+          {sees('collect') ? <MiniKpi label="نسبة التحصيل" value={data.collectionPct + '٪'} onPress={() => router.push('/collect?filter=month')} /> : null}
           {sees('collect') ? <MiniKpi label="المتأخرات" value={fmt(data.overdue)} danger={data.overdue > 0} onPress={() => router.push('/collect?filter=late')} /> : null}
         </Row>
         <BarRow label="مشغولة" value={String(data.pf.occupied)} pct={data.pf.total ? (data.pf.occupied / data.pf.total) * 100 : 0} color={C.emerald}

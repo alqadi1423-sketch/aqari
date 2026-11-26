@@ -72,7 +72,7 @@ export function validateProfile(input: Partial<MemberProfile>, required: boolean
   const title = String(input.title ?? '').trim().replace(/\s+/g, ' ');
   if (required || name) {
     if (name.length < 2) return { ok: false, field: 'name', error: 'اكتب الاسم الكامل' };
-    if (name.length > 80) return { ok: false, field: 'name', error: 'الاسم أطول من ٨٠ حرفاً' };
+    if (name.length > 80) return { ok: false, field: 'name', error: 'الاسم أطول من 80 حرفاً' };
     // يُنتحل به المالك في سجل العمليات، وترفض القواعد سطور من يحمله (مراجعة التثبيت #54)
     if (name === OWNER_ACTOR) return { ok: false, field: 'name', error: t('members.ownerNameReserved') };
     if (reservedName(name)) return { ok: false, field: 'name', error: t('members.roleNameReserved') };
@@ -83,8 +83,8 @@ export function validateProfile(input: Partial<MemberProfile>, required: boolean
     if (!p || !PHONE_RE.test(p)) return { ok: false, field: 'phone', error: 'اكتب جوالاً سعودياً صحيحاً يبدأ بـ05 (عشرة أرقام)' };
     phone = p;
   }
-  if (nid && !NID_RE.test(nid)) return { ok: false, field: 'nid', error: 'الهوية أو الإقامة عشرة أرقام أولها ١ أو ٢' };
-  if (title.length > 60) return { ok: false, field: 'title', error: 'المسمى الوظيفي أطول من ٦٠ حرفاً' };
+  if (nid && !NID_RE.test(nid)) return { ok: false, field: 'nid', error: 'الهوية أو الإقامة عشرة أرقام أولها 1 أو 2' };
+  if (title.length > 60) return { ok: false, field: 'title', error: 'المسمى الوظيفي أطول من 60 حرفاً' };
   return { ok: true, profile: { name, phone, nid, title } };
 }
 

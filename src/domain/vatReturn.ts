@@ -252,7 +252,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
 
   const items: VatItem[] = [
     { no: '1', label: 'المبيعات الخاضعة للنسبة الأساسية', amountHalalas: salesSub, taxHalalas: salesTax },
-    { no: '1.1', label: 'المبيعات الخاضعة لنسبة ٥٪', amountHalalas: 0, taxHalalas: 0 },
+    { no: '1.1', label: 'المبيعات الخاضعة لنسبة 5٪', amountHalalas: 0, taxHalalas: 0 },
     { no: '1.2', label: 'المبيعات الحكومية الخاضعة', amountHalalas: 0, taxHalalas: 0 },
     { no: '2', label: 'المبيعات التي تتحمل الدولة ضريبتها', amountHalalas: 0, taxHalalas: 0 },
     { no: '3', label: 'المبيعات المحلية بالنسبة الصفرية', amountHalalas: zeroSales, taxHalalas: 0 },
@@ -260,7 +260,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
     { no: '5', label: 'المبيعات المعفاة (إيرادات الإيجار السكني)', amountHalalas: rentNet + sales.E, taxHalalas: 0 },
     { no: '6', label: 'إجمالي المبيعات', amountHalalas: totalSales, taxHalalas: salesTax },
     { no: '7', label: 'المشتريات الخاضعة للنسبة الأساسية (الفواتير الضريبية القابلة للخصم وحدها)', amountHalalas: dedSub, taxHalalas: dedTax },
-    { no: '7.1', label: 'المشتريات الخاضعة لنسبة ٥٪', amountHalalas: 0, taxHalalas: 0 },
+    { no: '7.1', label: 'المشتريات الخاضعة لنسبة 5٪', amountHalalas: 0, taxHalalas: 0 },
     { no: '8', label: 'الاستيرادات الخاضعة المسددة في الجمارك', amountHalalas: 0, taxHalalas: 0 },
     { no: '9', label: 'الاستيرادات الخاضعة للآلية العكسية', amountHalalas: 0, taxHalalas: 0 },
     { no: '10', label: 'المشتريات بالنسبة الصفرية', amountHalalas: zeroPurAmt, taxHalalas: 0 },
