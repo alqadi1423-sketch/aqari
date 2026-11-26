@@ -8,7 +8,7 @@
     "ios": "expo run:ios",
     "test": "jest",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint app src --max-warnings=516"
+    "lint": "eslint app src --max-warnings=472"
   },
   "dependencies": {
     "@noble/hashes": "1.8.0",
