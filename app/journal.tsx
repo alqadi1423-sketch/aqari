@@ -170,7 +170,8 @@ export default function Journal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   const cashNet = lines.filter((l) => l.account === '1100').reduce((s, l) => s + toHalalas(l.debit) - toHalalas(l.credit), 0);
-  const withBank = owner && !!bankId && cashNet !== 0;
+  // والعضو يختاره لمسودته فيرحّلها المالك منه (الهجرة ٦٧ · A2.10 الباقي) · وكفاية البنك عند الترحيل على جهاز المالك
+  const withBank = !!bankId && cashNet !== 0;
   const walletOk = useCashOk(withBank ? 0 : manualOut, date); // بتاريخ القيد (A2.8)
   const bankLow = withBank && cashNet < 0 ? bankLowFrom(db, bankId, date).low : 0;
   const bankShort = withBank && cashNet < 0 && -cashNet > bankLow
@@ -201,7 +202,7 @@ export default function Journal() {
     try {
       const args = { date, memo: memo.trim() || 'بدون بيان', lines: validLines };
       if (!owner) {
-        saveManualDraft(db, args);
+        saveManualDraft(db, { ...args, bankId: withBank ? bankId : null });
         setBuilderOpen(false); bump();
         toast(t('journal.savedDraft'));
         return;
@@ -286,9 +287,12 @@ export default function Journal() {
   const postDraft = useCallback((id: string, no: string) => {
     // مسودةٌ على حسابٍ مساند (قديمةٌ قبل المنع · A2.10): التنبيه في الحوار نفسه، والزر «على مسؤوليتي»
     const hits = supportingAccountsIn(db, db.all<{ account: string }>(`SELECT account_code AS account FROM journal_lines WHERE entry_id = ?`, [id]));
+    // وبنك سطر النقدية الذي اختاره كاتبها (الهجرة ٦٧): يُرحَّل منه لا من المحفظة
+    const bank = db.get<{ n: string }>(`SELECT b.name AS n FROM journal_entries e JOIN banks b ON b.id = e.draft_bank_id WHERE e.id = ?`, [id])?.n;
     dialog({
       title: t('journal.confirmPostTitle'),
-      body: t('journal.confirmPostBody', { no }) + (hits.length ? '\n' + t('journal.supportWarn', { list: supportList(hits) }) : ''),
+      body: t('journal.confirmPostBody', { no }) + (bank ? '\n' + t('journal.draftBankNote', { bank }) : '')
+        + (hits.length ? '\n' + t('journal.supportWarn', { list: supportList(hits) }) : ''),
       tone: hits.length ? 'danger' : undefined,
       actions: [
         { label: t('journal.cancel'), variant: 'ghost' },
@@ -390,8 +394,8 @@ export default function Journal() {
         ))}
         <BtnGhost small title="+ إضافة سطر"
           onPress={() => setLines((p) => [...p, { account: '', debit: '', credit: '' }])} />
-        {/* سطر النقدية من المحفظة أو من بنك (المالك · A2.10) · بلا بنكٍ أو بلا صافٍ على 1100 لا تظهر الخانة */}
-        {owner && banks.length && cashNet !== 0 ? (
+        {/* سطر النقدية من المحفظة أو من بنك (A2.10 · ومسودة العضو تحمله: الهجرة ٦٧) · بلا بنكٍ أو بلا صافٍ على 1100 لا تظهر الخانة */}
+        {banks.length && cashNet !== 0 ? (
           <SelectField label={t('journal.bankField')} value={bankId}
             options={[{ value: '', label: t('journal.bankWallet') }, ...banks.map((b) => ({ value: b.id, label: b.name }))]}
             onPick={setBankId} />

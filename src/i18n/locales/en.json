@@ -1013,6 +1013,8 @@
     "supportConfirm": "Post at my own responsibility",
     "supportTitle": "Supporting account",
     "bankNeedsCash": "The bank choice is for the cash line 1100 · this entry has no net amount on it",
+    "bankMissing": "The bank chosen for the cash line does not exist or was deleted · choose another bank or the wallet",
+    "draftBankNote": "The cash line comes from {{bank}}, as chosen by the draft's author",
     "bankField": "Cash line from",
     "bankWallet": "Cash wallet",
     "manualBankSource": "Manual entry",

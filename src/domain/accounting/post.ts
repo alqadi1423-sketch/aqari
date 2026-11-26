@@ -179,33 +179,55 @@ export function postManualEntry(
   requireOpenPeriod(db, entry.date);
   if (memberDevice(db)) requireNoSupportForMember(db, entry.lines);
   else requireSupportAck(db, entry.lines, ackSupport);
-  const cashNet = entry.lines.filter((l) => l.account === CASH).reduce((s, l) => s + (l.debit || 0) - (l.credit || 0), 0);
-  if (bankId) {
-    if (!db.get(`SELECT 1 FROM banks WHERE id = ? AND deleted_at IS NULL`, [bankId])) throw new Error(t('bankStatement.txMissing'));
-    if (!cashNet) throw new Error(t('journal.bankNeedsCash'));
-    requireBankFunds(db, bankId, -cashNet, entry.date);
-  } else {
-    requireCash(db, manualCashOut(entry.lines), MANUAL, entry.date); // بتاريخ القيد: لا تصير المحفظة سالبةً في يومٍ مضى (A2.8)
-  }
+  if (bankId) requireManualBank(db, bankId, entry.lines, entry.date);
+  else requireCash(db, manualCashOut(entry.lines), MANUAL, entry.date); // بتاريخ القيد: لا تصير المحفظة سالبةً في يومٍ مضى (A2.8)
   return db.transaction(() => {
     const posted = postEntry(db, { ...entry, auto: false });
-    if (bankId && posted) {
-      db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at) VALUES (?,?,?,?,?,1,?,?,?)`,
-        [uid(), bankId, entry.date, entry.memo, cashNet, posted.no, t('journal.manualBankSource', { lng: 'ar' }), new Date().toISOString()]);
-    }
+    if (bankId && posted) linkManualBank(db, bankId, entry, posted.no);
     return posted;
   });
+}
+
+/** صافي سطور النقدية 1100 في القيد · موجبه داخل */
+const cashNetOf = (lines: EntryLine[]): number =>
+  lines.filter((l) => l.account === CASH).reduce((s, l) => s + (l.debit || 0) - (l.credit || 0), 0);
+
+/**
+ * خانة البنك لسطر النقدية (القاعدة ٩٩ · A2.10): البنك قائم، وللقيد صافٍ على 1100 · وعند الترحيل (funds) يكفي البنك ما يخرج منه من تاريخ
+ * القيد فما بعده (A2.8) · خانة المالك ومسودة العضو بالتحقق نفسه (المراجعة الشاملة 2026-11-13 · A2.10 الباقي)
+ */
+function requireManualBank(db: DB, bankId: string, lines: EntryLine[], date: string, funds = true): void {
+  if (!db.get(`SELECT 1 FROM banks WHERE id = ? AND deleted_at IS NULL`, [bankId])) throw new Error(t('journal.bankMissing'));
+  const cashNet = cashNetOf(lines);
+  if (!cashNet) throw new Error(t('journal.bankNeedsCash'));
+  if (funds) requireBankFunds(db, bankId, -cashNet, date);
+}
+
+/** حركة البنك بصافي سطور النقدية مربوطةً برقم القيد · فيستقر في البنك لا في المحفظة، وعكس القيد يعكسها (journalReversal.ts) */
+function linkManualBank(db: DB, bankId: string, entry: { date: string; memo: string; lines: EntryLine[] }, no: string): void {
+  db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at) VALUES (?,?,?,?,?,1,?,?,?)`,
+    [uid(), bankId, entry.date, entry.memo, cashNetOf(entry.lines), no, t('journal.manualBankSource', { lng: 'ar' }), new Date().toISOString()]);
 }
 
 /**
  * قيد العضو اليدوي مسودةٌ حتى يرحّله المالك (المراجعة الخارجية ٧ · النتيجة ١ · قرار المالك «رابعاً ١ (أ)» 2026-10-10:
  * «والقيد اليدوي من العضو مسودة حتى يرحّله المالك») · متوازنٌ بحسابات قائمة كالمرحّل، ولا يمسّ الأرصدة ولا النقد
  */
-export function saveManualDraft(db: DB, args: { date: string; memo: string; lines: EntryLine[] }): PostedEntry | null {
-  requireOpenPeriod(db, args.date);
+export function saveManualDraft(
+  db: DB,
+  args: { date: string; memo: string; lines: EntryLine[]; bankId?: string | null },
+): PostedEntry | null {
+  const { bankId, ...entry } = args;
+  requireOpenPeriod(db, entry.date);
   // ولا على حسابٍ مساند: يُسجَّل من شاشته (A2.10 · س٢٠)
-  requireNoSupportForMember(db, args.lines);
-  return postEntry(db, { ...args, auto: false, draft: true });
+  requireNoSupportForMember(db, entry.lines);
+  // وبنك سطر النقدية يُحفظ معها (الهجرة ٦٧ · A2.10 الباقي) بتحقق خانة المالك، وكفايته عند ترحيلها على جهاز المالك
+  if (bankId) requireManualBank(db, bankId, entry.lines, entry.date, false);
+  return db.transaction(() => {
+    const draft = postEntry(db, { ...entry, auto: false, draft: true });
+    if (draft && bankId) db.run(`UPDATE journal_entries SET draft_bank_id = ? WHERE id = ?`, [bankId, draft.id]);
+    return draft;
+  });
 }
 
 /**
@@ -213,16 +235,21 @@ export function saveManualDraft(db: DB, args: { date: string; memo: string; line
  * (قديمةٌ قبل المنع) بتأكيد تنبيهها وحده (A2.10)
  */
 export function postDraftEntry(db: DB, entryId: string, ackSupport?: boolean): void {
-  const e = db.get<{ status: string; src_type: string | null; deleted_at: string | null; date: string }>(
-    `SELECT status, src_type, deleted_at, date FROM journal_entries WHERE id = ?`, [entryId]);
+  const e = db.get<{ status: string; src_type: string | null; deleted_at: string | null; date: string; no: string; memo: string; bank: string | null }>(
+    `SELECT status, src_type, deleted_at, date, no, memo, draft_bank_id AS bank FROM journal_entries WHERE id = ?`, [entryId]);
   if (!e || e.status !== 'قيد الإنشاء' || e.deleted_at || e.src_type) throw new Error(t('journal.notDraft')); // i18n-exempt: حالة القيد المخزّنة
   // ومسودةٌ صار تاريخها في فترةٍ قُدِّم إقرارها لا تُرحَّل فيها
   requireOpenPeriod(db, e.date);
   const lines = db.all<{ account: string; debit: number; credit: number }>(
     `SELECT account_code AS account, debit_halalas AS debit, credit_halalas AS credit FROM journal_lines WHERE entry_id = ?`, [entryId]);
   requireSupportAck(db, lines, ackSupport);
-  requireCash(db, manualCashOut(lines), MANUAL, e.date);
-  db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [entryId]);
+  // وبنكها المختار (الهجرة ٦٧ · A2.10 الباقي): يستقر صافي 1100 فيه بحركةٍ برقم القيد، بتحقق خانة المالك وكفاية البنك من تاريخها، وإلا المحفظة
+  if (e.bank) requireManualBank(db, e.bank, lines, e.date);
+  else requireCash(db, manualCashOut(lines), MANUAL, e.date);
+  db.transaction(() => {
+    db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [entryId]);
+    if (e.bank) linkManualBank(db, e.bank, { date: e.date, memo: e.memo, lines }, e.no);
+  });
 }
 
 /** عكس قيد مصدره معروف (للحذف من السلة ونحوه) */

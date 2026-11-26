@@ -229,6 +229,9 @@ export function buildDoc(db: DB, table: string, key: string, op: 'upsert' | 'del
   }
   const doc: RemoteDoc = { ...base, d: stripDerived(table, row), del: false };
   if (table === 'journal_entries') doc.lines = readLines(db, key);
+  // وبنك مسودة القيد اليدوي (الهجرة ٦٧ · A2.10 الباقي) يُرفع حين يُختار وحده: مستند القيد المرحّل كُتب في السحابة قبل العمود، فإضافته فارغاً
+  // في كتابة ربط العاكس تُعدّ تغييراً في حقوله فترفضها القواعد (orgOnlyLinksReversal) · وغيابه في المسودة الواردة «بلا بنك» (applyJournal)
+  if (table === 'journal_entries' && doc.d!.draft_bank_id == null) delete doc.d!.draft_bank_id;
   // والقيد نفسه برقمٍ آخر في السحابة يُرفع برقمه هناك (المدقق الخارجي Y٥: عكسه برقمه هنا كان يُرفض «نهائياً» كل مرة)
   if (table === 'journal_entries' && typeof doc.d!.no === 'string' && doc.d!.no) doc.d!.no = cloudJournalNo(db, doc.d!.no);
   if (table === 'bank_tx' && typeof doc.d!.journal_no === 'string' && doc.d!.journal_no) doc.d!.journal_no = cloudJournalNo(db, doc.d!.journal_no);
@@ -2249,6 +2252,8 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   if (local) db.run(`DELETE FROM journal_lines WHERE entry_id = ?`, [doc.k]); // مسودة · سطورها تُستبدل
   renumberJoiningCollision(db, 'journal_entries', doc.k, d.no);
   const entry: RowData = { ...d, status: posted ? 'قيد الإنشاء' : d.status, reversed_by: null };
+  // المسودة بلا بنكٍ مختار لا تحمل عموده (buildDoc): فغيابه «بلا بنك» لا «كما كان» · والمرحّل لا يُقرأ منه بعد ترحيله (الهجرة ٦٧)
+  if (!posted && cols.e.has('draft_bank_id') && !('draft_bank_id' in entry)) entry.draft_bank_id = null;
   upsertRow(db, 'journal_entries', entry, cols.e);
   for (const l of doc.lines ?? []) {
     const keys = Object.keys(l).filter((c) => cols.l.has(c));

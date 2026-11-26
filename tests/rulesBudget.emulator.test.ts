@@ -124,6 +124,8 @@ d('ميزانية القواعد: كتابات الأعضاء الشائعة ت�
     addUnit(owner.db, 'BP1', { id: 'BU-FREE', unit_no: 'B-7' });
     C1 = confirmContract(owner.db, contractInput(U1, { tenant: 'مستأجر ميزانية أول', idNumber: '1000008001', phone: '0500008001' }));
     confirmContract(owner.db, contractInput(addUnit(owner.db, 'BP2', { unit_no: 'B-2' }), { tenant: 'مستأجر ميزانية ثانٍ', idNumber: '1000008002', phone: '0500008002' }));
+    // بنكٌ بافتتاحيٍّ يكفي سداداً منه: لمسودة العضو بخانة البنك (الهجرة ٦٧ · A2.10 الباقي)
+    owner.db.run(`INSERT INTO banks (id, name, opening_halalas, opening_date, created_at) VALUES ('BBANK', 'بنك ميزانية مصطنع', 500000, '2026-01-01', ?)`, [new Date().toISOString()]);
     enableSync(owner.db, OWNER);
     owner.db.run(`INSERT INTO sync_state (k, v) VALUES ('org', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v`, [OWNER]);
     setFilesSync(owner.db, true);
@@ -232,6 +234,27 @@ d('ميزانية القواعد: كتابات الأعضاء الشائعة ت�
       const { saveManualDraft } = await import('@/domain/accounting/post');
       saveManualDraft(env.db, { date: '2026-02-01', memo: 'قيد يدوي مصطنع', lines: [{ account: '1100', debit: 500, credit: 0 }, { account: '3100', debit: 0, credit: 500 }] });
     });
+  });
+
+  // ومسودته بخانة البنك (الهجرة ٦٧ · A2.10 الباقي): عمودها يمرّ في القواعد بلا تغييرٍ فيها، وجهاز المالك يرحّلها من البنك بحركةٍ برقمها
+  test('الدفتر: مسودة قيدٍ يدوي بخانة البنك ثم يرحّلها المالك', async () => {
+    let draftId = '';
+    await asMember('ledgerBank', { ledger: 3, props: 1 }, 'all', async (env) => {
+      const { saveManualDraft } = await import('@/domain/accounting/post');
+      draftId = saveManualDraft(env.db, { date: '2026-02-01', memo: 'سداد ضريبة مصطنع', bankId: 'BBANK',
+        lines: [{ account: '2200', debit: 195000, credit: 0 }, { account: '1100', debit: 0, credit: 195000 }] })!.id;
+    });
+    const { syncOnce } = await import('@/sync/engine');
+    const { postDraftEntry } = await import('@/domain/accounting/post');
+    const { bankBalance } = await import('@/domain/accounting/ledger');
+    const remote = deviceRemote(owner.db, OWNER, OWNER_EMAIL);
+    await syncOnce(owner.db, remote, 'dev-owner-b');
+    expect(owner.db.get(`SELECT draft_bank_id AS b FROM journal_entries WHERE id = ?`, [draftId])).toEqual({ b: 'BBANK' });
+    postDraftEntry(owner.db, draftId);
+    expect(bankBalance(owner.db, 'BBANK')).toBe(500000 - 195000);
+    const r = await syncOnce(owner.db, remote, 'dev-owner-b');
+    expect(r.rejected).toBe(0);
+    expect(r.pending).toBe(0);
   });
 
   // المراجعة الشاملة 2026-11-13 · B-1 وB-3: ما يكتبه التطبيق بعد قفل الفاتورة الصادرة وإعداد المالك يمرّ في القواعد وتحت ٨٥٪ من الحد ·
