@@ -19,6 +19,8 @@ export interface ContractRow {
   id_number: string;
   unit_id: string;
   unit_label: string;
+  /** اسم الوحدة الآن من الوحدة وعقارها (contractUnitLabelSql) · حين يختاره الاستعلام · A1-13 */
+  unit_label_now?: string | null;
   unit_type: string | null;
   value_halalas: number;
   cycle: string;
@@ -208,6 +210,17 @@ export function renewBlockReason(c: ContractRow, T: string = today()): string | 
 export function datesOverlap(startA: string, endA: string, startB: string, endB: string): boolean {
   return startA <= endB && startB <= endA;
 }
+
+/**
+ * اسم الوحدة في العقد للعرض والبحث: «اسم العقار · رقم الوحدة» من الوحدة وعقارها الآن، فيتبع نقلها وتغيير رقمها (المراجعة الشاملة
+ * 2026-11-13 · A1-13) · والمحفوظ (unit_label) لعقدٍ بلا وحدةٍ قائمة · alias بادئة جدول العقود في الاستعلام ('c.' أو '')
+ */
+export function contractUnitLabelSql(alias = ''): string {
+  return `COALESCE((SELECT lp.name || ' · ' || lu.unit_no FROM units lu JOIN properties lp ON lp.id = lu.property_id WHERE lu.id = ${alias}unit_id), ${alias}unit_label)`;
+}
+
+/** اسم وحدة العقد المعروض: المشتق إن اختاره الاستعلام، وإلا المحفوظ */
+export const contractUnitLabel = (c: Pick<ContractRow, 'unit_label' | 'unit_label_now'>): string => c.unit_label_now || c.unit_label;
 
 /** القاعدة ٣: منع تعارض العقود على نفس الوحدة زمنياً (المسودة والملغى بعد قصّه لا يتعارضان) */
 export function findContractConflict(

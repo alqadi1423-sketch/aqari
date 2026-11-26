@@ -11,6 +11,7 @@ import { uid } from './ids';
 import { logAudit } from './audit';
 import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
+import { contractUnitLabelSql } from './contracts/rules';
 
 export const normTenantName = (s: string): string => s.trim().replace(/\s+/g, ' ');
 
@@ -84,7 +85,7 @@ export function tenantProfile(db: DB, tenantId: string, today: string): TenantPr
     `SELECT id, name, national_id, phone, notes FROM tenants WHERE id = ?`, [tenantId]);
   if (!tenant) return null;
   const contracts = db.all<TenantProfile['contracts'][number]>(
-    `SELECT id, contract_no, unit_label, start, "end", value_halalas, ${contractTotalSql(db)} AS total_halalas,
+    `SELECT id, contract_no, ${contractUnitLabelSql()} AS unit_label, start, "end", value_halalas, ${contractTotalSql(db)} AS total_halalas,
             ${contractTotalSql(db) === 'value_halalas' ? '0 AS services_halalas, 0 AS parking_halalas' : 'services_halalas, parking_halalas'}, status FROM contracts
      WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY COALESCE(start,'') DESC`, [tenantId]);
   // المتبقي على ما حلّ: القسط ناقص المسدَّد ناقص الخصم، قسطاً قسطاً (القرار ٤.١٠) · ومنه العقد الملغى، فأقساطه

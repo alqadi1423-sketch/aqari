@@ -49,8 +49,10 @@ import {
 import {
   contractDisplayId, contractDisplayStatus, contractStatusKind, contractStatusLabel, refreshContractStatuses,
   canRenewContract, contractEnded, renewBlockReason,
-  type ContractRow, RENEW_WINDOW_DAYS,
+  type ContractRow, RENEW_WINDOW_DAYS, contractUnitLabelSql, contractUnitLabel,
 } from '../../src/domain/contracts/rules';
+/** العقد بمعرّفه ومعه اسم وحدته الآن (A1-13) */
+const CONTRACT_BY_ID = `SELECT c.*, ${contractUnitLabelSql('c.')} AS unit_label_now FROM contracts c WHERE c.id = ?`;
 import { keyMoneyBlockReason } from '../../src/domain/contracts/rules';
 import { recordKeyMoneyDeal } from '../../src/domain/keymoney';
 import { generateInstallments } from '../../src/domain/contracts/installments';
@@ -153,7 +155,7 @@ export default function Contracts() {
     const args: Array<string | number> = [showArchived ? 1 : 0];
     const needle = q.trim();
     if (needle) {
-      where.push(`(c.contract_no LIKE '%'||?||'%' OR c.tenant_name LIKE '%'||?||'%' OR c.phone LIKE '%'||?||'%' OR c.unit_label LIKE '%'||?||'%' OR c.ejar_no LIKE '%'||?||'%')`);
+      where.push(`(c.contract_no LIKE '%'||?||'%' OR c.tenant_name LIKE '%'||?||'%' OR c.phone LIKE '%'||?||'%' OR ${contractUnitLabelSql('c.')} LIKE '%'||?||'%' OR c.ejar_no LIKE '%'||?||'%')`);
       args.push(needle, needle, needle, needle, needle);
     }
     if (fStatus === 'مسودة' || fStatus === 'ملغى') { where.push('c.status = ?'); args.push(fStatus); }
@@ -181,7 +183,7 @@ export default function Contracts() {
       `SELECT COUNT(*) AS n FROM contracts c WHERE c.deleted_at IS NULL AND c.archived = ?`,
       [showArchived ? 1 : 0])?.n ?? 0);
     const page = db.all<ContractRow>(
-      `SELECT c.* FROM contracts c WHERE ${w} ORDER BY ${order} LIMIT ? OFFSET ?`,
+      `SELECT c.*, ${contractUnitLabelSql('c.')} AS unit_label_now FROM contracts c WHERE ${w} ORDER BY ${order} LIMIT ? OFFSET ?`,
       [...args, pager.limit, pager.offset]);
     return { rows: page, totalRows: total, allRows: all };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -368,7 +370,7 @@ export default function Contracts() {
               </Row>
             </Row>
             <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
-              <T size={11.5} color={C.muted}>{c.unit_label} · {c.cycle}</T>
+              <T size={11.5} color={C.muted}>{contractUnitLabel(c)} · {c.cycle}</T>
               {c.status !== 'مسودة' && c.contract_no ? <Num size={11.5} color={C.muted}>{contractDisplayId(c)}</Num> : null}
             </Row>
             <Row style={{ justifyContent: 'space-between', marginTop: 6 }}>
@@ -639,7 +641,7 @@ function ContractDetailSheet({
   const onAddOccupant = () => { setOccEditing(null); setOccOpen(true); };
   const onEditOccupant = (o: OccupantRow) => { setOccEditing(o); setOccOpen(true); };
   const c = useMemo(
-    () => db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId]),
+    () => db.get<ContractRow>(CONTRACT_BY_ID, [contractId]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, contractId, version]
   );
@@ -726,7 +728,7 @@ function ContractDetailSheet({
   return (
     <Sheet visible onClose={onClose} title={['عقد' + (c.status !== 'مسودة' && c.contract_no ? ' ' + contractDisplayId(c) : ''), c.tenant_name].join(' · ')} tall>
       <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-        {c.unit_label ? <View><T size={11} color={C.muted}>الوحدة</T><T size={12.5} med>{c.unit_label}</T></View> : null}
+        {contractUnitLabel(c) ? <View><T size={11} color={C.muted}>الوحدة</T><T size={12.5} med>{contractUnitLabel(c)}</T></View> : null}
         <View><T size={11} color={C.muted}>الحالة</T><T size={12.5} med>{contractStatusLabel(c)}</T></View>
       </Row>
       <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
@@ -988,7 +990,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const { db } = useApp();
   const toast = useToast();
   const depPerm = usePerm('deposits');
-  const c = db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId])!;
+  const c = db.get<ContractRow>(CONTRACT_BY_ID, [contractId])!;
   const defaultStart = c.end ? addDays(c.end, 1) : today();
   const [start, setStart] = useState(defaultStart);
   const [durMonths, setDurMonths] = useState<string>('12');
@@ -1076,7 +1078,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
         </>
       }>
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 11, marginBottom: 12 }}>
-        <T size={12.5} bold>{[c.tenant_name, c.unit_label, c.status !== 'مسودة' && c.contract_no ? contractDisplayId(c) : ''].filter(Boolean).join(' · ')}</T>
+        <T size={12.5} bold>{[c.tenant_name, contractUnitLabel(c), c.status !== 'مسودة' && c.contract_no ? contractDisplayId(c) : ''].filter(Boolean).join(' · ')}</T>
         <T size={11.5} color={C.muted} style={{ marginTop: 3 }}>
           العقد الحالي: {dfmt(c.start)} إلى {dfmt(c.end)} · القيمة {fmt(Number(c.value_halalas))} · التأمين {fmt(Number(c.deposit_halalas))}
         </T>
@@ -1540,7 +1542,7 @@ function KeyMoneySheet({ contract, onClose, onDone }: { contract: ContractRow; o
         </>
       }>
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 10, marginBottom: 10 }}>
-        <T size={12.5} med>الوحدة: {contract.unit_label}</T>
+        <T size={12.5} med>الوحدة: {contractUnitLabel(contract)}</T>
       </View>
       <Row>
         <View style={{ flex: 1 }}><Field label="المتنازل (الطرف الخارج)" value={outgoing} onChange={setOutgoing} /></View>

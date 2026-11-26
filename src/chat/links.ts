@@ -6,6 +6,7 @@
 import type { DB } from '../db/adapter';
 import type { Access } from '../domain/access/access';
 import { routeAllowed } from '../domain/access/routes';
+import { contractUnitLabelSql } from '../domain/contracts/rules';
 import type { ChatLink, ChatLinkType } from './types';
 
 const ROUTE: Record<ChatLinkType, string | null> = {
@@ -45,10 +46,10 @@ export function linkCandidates(db: DB, access: Access, type: Exclude<ChatLinkTyp
   try {
     if (type === 'contract') {
       return db.all<{ id: string; label: string }>(
-        `SELECT c.id, COALESCE(NULLIF(c.contract_no, ''), '#') || ' · ' || c.unit_label AS label
+        `SELECT c.id, COALESCE(NULLIF(c.contract_no, ''), '#') || ' · ' || ${contractUnitLabelSql('c.')} AS label
          FROM contracts c LEFT JOIN units u ON u.id = c.unit_id
          WHERE c.deleted_at IS NULL AND c.status != ? AND (? = '' OR u.property_id = ?)
-           AND (c.tenant_name LIKE ? OR COALESCE(c.contract_no,'') LIKE ? OR c.unit_label LIKE ?)
+           AND (c.tenant_name LIKE ? OR COALESCE(c.contract_no,'') LIKE ? OR ${contractUnitLabelSql('c.')} LIKE ?)
          ORDER BY COALESCE(c.start, '') DESC LIMIT ?`, [DRAFT, prop, prop, like, like, like, limit])
         .map((r) => ({ type, id: r.id, label: r.label }));
     }
