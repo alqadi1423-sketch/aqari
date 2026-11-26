@@ -48,6 +48,7 @@ import { logAudit } from '../audit';
 import { reviewState, memberDevice, REPOSTED_KEY } from '../accounting/orphans';
 import { fmt } from '../money';
 import { linkContractTenant, normTenantName } from '../tenants';
+import { refundPrepaidRent, type PrepaidRefundInput } from './prepaid';
 import { seedTenantOccupant, carryOccupantsToRenewal } from '../occupants';
 import { createHandoverForContract } from '../handover/service';
 import { normalizePhone } from '../phone';
@@ -454,6 +455,11 @@ export interface CancelInput {
   deductReceived?: boolean;
   /** منها مقابل أقساطٍ متأخرة: تُسدَّد بها الأقساط نفسها (المراجعة الشاملة 2026-11-13 · A1-2) */
   arrearsHalalas?: number;
+  /**
+   * ما قُبض عن مدةٍ بعد الإنهاء (A1-4 · قرار المالك س١٦): غيابه «يُحتفظ به» فيُحسب إيراداً يوم الإنهاء، ووجوده «يُردّ» بمبلغه
+   * وطريقته بتاريخ الإلغاء (contracts/prepaid.ts) · للمالك وحده
+   */
+  prepaidRefund?: Omit<PrepaidRefundInput, 'date'> | null;
 }
 
 /** القاعدة ١١: إلغاء العقد · خصم من التأمين، والفائض مطالبة تلقائية */
@@ -507,6 +513,8 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
       [date, input.reason.trim(), input.settle ? deduction : null,
        input.settle ? refund : null, input.deductionReason.trim() || null, newEnd, contractId]
     );
+    // وردّ الإيجار المقدَّم بعد كتابة الإلغاء: سقفه ما قُبض فوق المكتسب حتى تاريخه (prepaidUnearned)
+    if (input.prepaidRefund) refundPrepaidRent(db, contractId, { ...input.prepaidRefund, date });
     logAudit(db, 'العقود', 'update', 'إلغاء عقد', c.tenant_name, { status: c.status },
       { status: 'ملغى', ...(input.settle ? { [REPOSTED_KEY]: contractId } : {}) });
     return { excessClaimCreated };

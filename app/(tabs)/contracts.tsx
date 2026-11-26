@@ -52,7 +52,8 @@ import {
 import { keyMoneyBlockReason } from '../../src/domain/contracts/rules';
 import { recordKeyMoneyDeal } from '../../src/domain/keymoney';
 import { generateInstallments } from '../../src/domain/contracts/installments';
-import { today, dfmt, addDays, approxMonths, periodLabel, daysBetween, contractEndFromDuration, periodBounds } from '../../src/domain/dates';
+import { today, dfmt, addDays, approxMonths, periodLabel, daysBetween, contractEndFromDuration, periodBounds, isISODate } from '../../src/domain/dates';
+import { prepaidUnearned } from '../../src/domain/accrual';
 import { fmt, toHalalas } from '../../src/domain/money';
 import { naturalCompare } from '../../src/domain/sortKey';
 import { rescheduleAllNotifications } from '../../src/services/notifications';
@@ -1146,6 +1147,19 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const otherHeld = (c as unknown as { deposit_holder?: string }).deposit_holder === 'طرف آخر';
   const [received, setReceived] = useState(false);
   const [arrears, setArrears] = useState('');
+  // ما قُبض عن مدةٍ بعد الإنهاء (A1-4 · قرار المالك س١٦): يُسأل المالك وحده، والافتراضي «يُحتفظ به» · والخيار لا يظهر إن لم يُقبض شيء
+  const owner = useAccess().owner;
+  const prepaid = owner && isISODate(date) ? prepaidUnearned(db, contractId, date) : 0;
+  const [prepaidFate, setPrepaidFate] = useState<'keep' | 'refund'>('keep');
+  const [prepaidAmt, setPrepaidAmt] = useState('');
+  const [prepaidMethod, setPrepaidMethod] = useState<'cash' | 'bank' | ''>('');
+  const [prepaidBank, setPrepaidBank] = useState('');
+  const banks = useMemo(() => db.all<{ id: string; name: string }>(
+    `SELECT id, name FROM banks WHERE deleted_at IS NULL ORDER BY name`), [db]);
+  const prepaidRefund = prepaid > 0 && prepaidFate === 'refund';
+  const prepaidH = prepaidRefund ? (prepaidAmt.trim() ? toHalalas(prepaidAmt) : prepaid) : 0;
+  const prepaidOver = prepaidRefund && prepaidH > prepaid;
+  const prepaidReady = !prepaidRefund || (prepaidH > 0 && !prepaidOver && (prepaidMethod === 'cash' || (prepaidMethod === 'bank' && !!prepaidBank)));
 
   const dedH = toHalalas(deduction);
   const depH = Number(c.deposit_halalas) || 0;
@@ -1162,7 +1176,8 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const autoRefund = dedH > depH ? 0 : depH - dedH;
   // ردّ التأمين نقداً حين يقبضه المكتب · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
-  const refundCash = settle && officeHeld ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0;
+  const refundCash = (settle && officeHeld ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0)
+    + (prepaidRefund && prepaidMethod === 'cash' ? prepaidH : 0);
   const cashOk = useCashOk(refundCash, date); // بتاريخ التسوية (A2.8)
   // «لا مسترد أكبر من الباقي بعد الخصم» (قرار المالك 2026-10-09) · autoRefund هو الباقي نفسه
   const refundOver = settle && refund.trim() !== '' && toHalalas(refund) > autoRefund;
@@ -1178,11 +1193,12 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         deductionReason: dedReason,
         deductReceived: otherHeld ? received : undefined,
         arrearsHalalas: settle ? arrearsH : 0,
+        prepaidRefund: prepaidRefund ? { amountHalalas: prepaidH, method: prepaidMethod as 'cash' | 'bank', bankId: prepaidMethod === 'bank' ? prepaidBank : null } : null,
       });
       onClose();
       onDone(excessClaimCreated
         ? 'تم إلغاء العقد · وأُنشئت مطالبة تلقائياً بالفرق الزائد عن التأمين'
-        : 'تم إلغاء العقد');
+        : prepaidRefund ? t('prepaid.done', { amount: fmt(prepaidH) }) : 'تم إلغاء العقد');
     } catch (e) { reportFailure({ title: 'تعذّر الإلغاء', e }); }
   };
 
@@ -1190,7 +1206,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
     <Sheet visible onClose={onClose} title="إلغاء العقد" tall
       footer={
         <>
-          {cashOk && !refundOver && !arrearsOver ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
+          {cashOk && !refundOver && !arrearsOver && prepaidReady ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
         </>
       }>
       <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" date={date} />
@@ -1205,6 +1221,30 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         ]}
         onPick={setFate}
       />
+      {prepaid > 0 ? (
+        <>
+          <SelectField<'keep' | 'refund'>
+            label={t('prepaid.fateLabel', { amount: fmt(prepaid) })} value={prepaidFate}
+            options={[{ value: 'keep', label: t('prepaid.keep') }, { value: 'refund', label: t('prepaid.refund') }]}
+            onPick={setPrepaidFate}
+          />
+          {prepaidRefund ? (
+            <>
+              <Field label={t('prepaid.amount')} value={prepaidAmt || fmt(prepaid).replace(/,/g, '')} onChange={setPrepaidAmt} keyboard="money" ltr error={prepaidOver} />
+              {prepaidOver ? <T size={11.5} color={C.rose} style={{ marginBottom: 10 }}>{t('prepaid.over', { amount: fmt(prepaidH), max: fmt(prepaid) })}</T> : null}
+              <SelectField<'cash' | 'bank'>
+                label={t('prepaid.method')} value={prepaidMethod || null}
+                options={[{ value: 'cash', label: t('prepaid.cash') }, ...(banks.length ? [{ value: 'bank' as const, label: t('prepaid.bank') }] : [])]}
+                onPick={setPrepaidMethod}
+              />
+              {prepaidMethod === 'bank' ? (
+                <SelectField label={t('prepaid.bankPick')} value={prepaidBank || null}
+                  options={banks.map((b) => ({ value: b.id, label: b.name }))} onPick={setPrepaidBank} />
+              ) : null}
+            </>
+          ) : null}
+        </>
+      ) : null}
       {/* تسوية التأمين من قسم التأمينات · بلا صلاحيته يُلغى العقد بلا تسوية وتُسوّى لاحقاً */}
       {depPerm.add && canSettleHere ? (
         <Pressable onPress={() => setSettle((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>

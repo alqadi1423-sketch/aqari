@@ -124,6 +124,8 @@ export function dimsFromSource(db: DB, srcType: string | null | undefined, srcId
     return fromContract(db, i ? i.contract_id : srcId);
   }
   if (base === 'contract_deposit' || base.startsWith('deposit')) return fromContract(db, srcId);
+  // وردّ الإيجار المقدَّم عند الإنهاء المبكر مصدره العقد (A1-4)
+  if (base === 'prepaid_refund') return fromContract(db, srcId);
   if (base.startsWith('claim')) {
     const c = one<{ contract_id: string }>(db, `SELECT contract_id FROM claims WHERE id = ?`, [srcId]);
     return c ? fromContract(db, c.contract_id) : {};

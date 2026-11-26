@@ -2190,6 +2190,7 @@ function memberManualSupportCheck(db: DB, doc: RemoteDoc): void {
   if (hits.length) throw new Error(tr('journal.supportMember', { list: supportList(hits), lng: 'ar' }));
 }
 
+const OWNER_ONLY_SOURCES = ['prepaid_refund', 'prepaid_refund_rev'];
 function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<string> }): 'applied' | 'kept' {
   const d = doc.d!;
   const local = db.get<{ status: string; reversed_by: string | null }>(
@@ -2206,6 +2207,10 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   }
   const posted = d.status === 'مرحّل';
   memberManualSupportCheck(db, doc);
+  // ردّ الإيجار المقدَّم عند الإنهاء المبكر وعكسه للمالك وحده (A1-4): لا يظهر خياره لعضو، فقيدٌ بمصدره من جهاز عضو يُرفض
+  if (posted && OWNER_ONLY_SOURCES.includes(String(d.src_type ?? '')) && !getSyncState(db, 'membership') && byMember(db, doc, true)) {
+    throw new Error(tr('prepaid.memberRejected', { lng: 'ar' }));
+  }
   // قبل إدخاله: توزيع الإيراد يُحسب من المرحَّل قبله
   if (posted) memberRentCheck(db, doc);
   if (posted) memberSourceCheck(db, doc);

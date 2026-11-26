@@ -150,6 +150,7 @@ function assetSales(db: DB, from: string, to: string): { net: number; tax: numbe
  *    يُسقطها من فترتها الأصلية فيتغير ما قُدِّم، ولا يظهر في فترة الإلغاء · وأيّاً كان ترتيبهما، فالإلغاء بتاريخٍ قبل الدفعة (إصدار
  *    عضوٍ قديم · التوجيه الثالث · العطل ٩) سالبٌ في فترته وهي موجبةٌ في فترتها، كالدفتر · والملغاة في فترتها نفسها لا تظهر فيها.
  *  - وفائضٌ قديمٌ دخل إيراداً ثم سُوّي رصيداً أو رُدّ (surplus_credit وsurplus_refund وعكوسهما): ينقص في فترة تسويته.
+ *  - وكذلك ردّ الإيجار المقدَّم عند الإنهاء المبكر (prepaid_refund وعكسه · A1-4).
  */
 function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
   const none = ''; // i18n-exempt: نص الكشف المصدَّر بالعربية
@@ -169,7 +170,8 @@ function exemptSalesRows(db: DB, from: string, to: string): ExemptRow[] {
     `SELECT e.date, c.tenant_name AS tenant, COALESCE(c.contract_no, ?) AS contractNo, c.unit_label AS unitLabel,
             -SUM(l.debit_halalas - l.credit_halalas) AS net
      FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id JOIN contracts c ON c.id = e.src_id
-     WHERE ${RESIDENTIAL_SQL} AND e.src_type IN ('surplus_credit', 'surplus_refund', 'surplus_credit_rev', 'surplus_refund_rev')
+     WHERE ${RESIDENTIAL_SQL} AND e.src_type IN ('surplus_credit', 'surplus_refund', 'surplus_credit_rev', 'surplus_refund_rev',
+       'prepaid_refund', 'prepaid_refund_rev')
        AND e.status = ? AND e.deleted_at IS NULL AND l.account_code LIKE '42%' AND e.date >= ? AND e.date <= ?
      GROUP BY e.id ORDER BY e.date`,
     [none, 'مرحّل', from, to]); // i18n-exempt: حالة مخزّنة

@@ -44,6 +44,7 @@ export const SOURCE_DOC: Record<string, [label: string, tables: string[]]> = {
   key_money: ['تقبيل', ['key_money_deals']],
   surplus_refund: ['ردّ فائض', ['contracts']],
   surplus_credit: ['فائض رصيداً', ['contracts']],
+  prepaid_refund: ['ردّ إيجار مقدَّم', ['contracts']], // i18n-exempt: نوع مستند في سجل العمليات · A1-4
   discount: ['خصم', ['contract_payments', 'contract_installments']],
   rent: ['دفعة إيجار', []],
 };

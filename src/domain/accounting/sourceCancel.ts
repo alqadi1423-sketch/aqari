@@ -176,6 +176,15 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
       });
   }
 
+  // وردّ الإيجار المقدَّم عند الإنهاء المبكر (A1-4): يُعكس قيده وحركة بنكه، ويعود المقبوض محتفَظاً به إيراداً يوم الإنهاء
+  if (e.src_type === 'prepaid_refund') {
+    return op(t('prepaid.cancelLabel'), [t('prepaid.cancelEffect1', { no: e.no }), t('prepaid.cancelEffect2')], [], (date, reason) => {
+      const revNo = reverse(db, e, date, t('prepaid.cancelMemo', { reason, lng: 'ar' }));
+      reverseBankTx(db, e.no, revNo, date, t('prepaid.cancelLabel', { lng: 'ar' }));
+      logAudit(db, 'العقود', 'update', t('prepaid.cancelLabel', { lng: 'ar' }), e.no + ' · ' + reason); // i18n-exempt: قسم السجل المخزَّن
+    });
+  }
+
   if (DOCUMENT_SOURCES.includes(e.src_type)) return { kind: 'document' };
   return null;
 }

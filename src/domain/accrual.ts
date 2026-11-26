@@ -18,6 +18,7 @@ import { purchaseExpenseAccount } from './accounting/post';
 import { DISCOUNT_REDUCES_INSTALLMENT, CYCLE_MONTHS } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
 import { ASSET_CATEGORIES } from './assets/catalog';
+import { hasDimColumns } from './accounting/dimensions';
 
 /** حسابات فئات الأصول في SQL · بنود الشراء التي صارت أصولاً تُرحَّل مدينةً عليها */
 const ASSET_CATEGORY_SQL = ASSET_CATEGORIES.map((c) => `'${c.code}'`).join(',');
@@ -40,9 +41,10 @@ export const BASIS_CASH: Basis = 'نقدي';
 // فيُستثنى جانب إيرادها كذلك
 // والعربون المحوَّل إلى عقد إيرادٌ من قيمة العقد التي يعدّها التوزيع كاملة (مراجعة التثبيت #11)
 // وكذلك القسط المتأخر المسدَّد من التأمين في تسويته (deposit_rent · المراجعة الشاملة 2026-11-13 · A1-2): كان خصمه 4300 فيُعدّ مرتين
-const RENT_SOURCES = ['rent', 'rent_rev', 'rent_payment', 'rent_payment_rev', 'discount', 'discount_rev',
+// وردّ الإيجار المقدَّم عند الإنهاء المبكر (prepaid_refund · A1-4): مدينه الإيراد بما رُدّ مما قُبض عن مدةٍ لم تُسكن
+export const RENT_SOURCES = ['rent', 'rent_rev', 'rent_payment', 'rent_payment_rev', 'discount', 'discount_rev',
   'surplus_refund', 'surplus_refund_rev', 'surplus_credit', 'surplus_credit_rev', 'reservation_convert', 'reservation_convert_rev',
-  'deposit_rent', 'deposit_rent_rev'];
+  'deposit_rent', 'deposit_rent_rev', 'prepaid_refund', 'prepaid_refund_rev'];
 const PURCHASE_SOURCES = ['purchase', 'purchase_rev'];
 
 // ─── توزيع قيمة على أيامها ───
@@ -229,15 +231,16 @@ export function contractPeriodRevenue(
  * «تنزيل من القسط» يُخفّض القسط ولا يمسّ قيمة العقد الموثّقة · فيُطرح من إيراد الاستحقاق على مدة قسطه:
  * من استحقاقه إلى ما قبل القسط التالي (أو نهاية العقد)، ويتوقف الطرح عند إلغاء العقد كما يتوقف الاستحقاق.
  */
-interface AccrualReduction { amount: number; start: string; end: string; accrueUntil: string }
+interface AccrualReduction { contractId: string; amount: number; start: string; end: string; accrueUntil: string }
 
-function accrualReductions(db: DB): AccrualReduction[] {
+/** override: عقدٌ واحد بحالٍ مفترضة (معاينة الإلغاء بتاريخه · prepaidUnearned) فتُحسب تنزيلاته وحدها بنافذته */
+function accrualReductions(db: DB, override?: ContractAccrualRow & { id: string }): AccrualReduction[] {
   const rows = db.all<{
-    amount: number; due: string; next_due: string | null;
+    contract_id: string; amount: number; due: string; next_due: string | null;
     start: string | null; end: string | null; status: string; cancel_date: string | null; value_halalas: number; original_end: string | null;
     cycle: string | null; installments: number; after_cancel: number;
   }>(
-    `SELECT p.discount_halalas AS amount, i.due_date AS due,
+    `SELECT c.id AS contract_id, p.discount_halalas AS amount, i.due_date AS due,
             (SELECT MIN(i2.due_date) FROM contract_installments i2
              WHERE i2.contract_id = i.contract_id AND i2.due_date > i.due_date) AS next_due,
             c.start, c.end, c.status, c.cancel_date, c.value_halalas, c.original_end, c.cycle,
@@ -247,18 +250,19 @@ function accrualReductions(db: DB): AccrualReduction[] {
      JOIN contract_installments i ON i.id = p.installment_id
      JOIN contracts c ON c.id = i.contract_id
      WHERE p.discount_kind = '${DISCOUNT_REDUCES_INSTALLMENT}' AND p.discount_halalas > 0 AND p.cancelled_at IS NULL
-       AND c.deleted_at IS NULL AND c.status != 'مسودة'`
+       AND c.deleted_at IS NULL AND c.status != 'مسودة' ${override ? 'AND c.id = ?' : ''}`,
+    override ? [override.id] : []
   );
   const out: AccrualReduction[] = [];
   for (const r of rows) {
-    const w = contractAccrualWindow({ value_halalas: Number(r.value_halalas), start: r.start, end: r.end, status: r.status, cancel_date: r.cancel_date,
+    const w = contractAccrualWindow(override ?? { value_halalas: Number(r.value_halalas), start: r.start, end: r.end, status: r.status, cancel_date: r.cancel_date,
       original_end: r.original_end, cycle: r.cycle, installments: Number(r.installments), installments_after_cancel: Number(r.after_cancel) });
     if (!w) continue;
     const start = r.due < w.start ? w.start : r.due;
     let end = r.next_due ? addDays(r.next_due, -1) : w.end;
     if (end > w.end) end = w.end;
     if (end < start) continue;
-    out.push({ amount: Number(r.amount), start, end, accrueUntil: w.accrueUntil < end ? w.accrueUntil : end });
+    out.push({ contractId: r.contract_id, amount: Number(r.amount), start, end, accrueUntil: w.accrueUntil < end ? w.accrueUntil : end });
   }
   return out;
 }
@@ -287,6 +291,91 @@ function accrualContracts(db: DB): ContractAccrualRow[] {
        AND start IS NOT NULL AND end IS NOT NULL AND start != '' AND end != ''`
   ).map((r) => ({ ...r, value_halalas: Number(r.value_halalas), installments: Number(r.installments),
     installments_after_cancel: Number(r.installments_after_cancel) }));
+}
+
+// ─── الإنهاء المبكر: ما قُبض عن مدةٍ لم تُسكن (A1-4) ───
+
+/**
+ * المراجعة الشاملة 2026-11-13 · A1-4 · قرار المالك س١٦: العقد الملغى يستحق حتى يوم إلغائه بمقام مدته المتفق عليها، وما قبضه المكتب
+ * فوق ذلك (إيجارٌ مقدَّم عن مدةٍ بعد الإنهاء) «يُحتفظ به» افتراضاً فيُحسب إيراداً يوم الإنهاء، أو «يُردّ» بقيد ردٍّ (prepaid_refund)
+ * فينقص المحتفَظ به · كانت دفعات الإيجار مستثناة من جانب الدفتر (RENT_SOURCES) فلا شيء يقابل المحتفَظ به بعد الإلغاء: ٥٬٤٥٧٫٥٣ بدل
+ * ٦٬٠٠٠، و٢٬٩٥٨٫٩٠ بدل ١٢٬٠٠٠ · والثابت: مجموع استحقاق العقد عبر عمره = إيراد إيجاره المحتفَظ به في الدفتر (إن لم يكن عليه متأخر).
+ *
+ * المحتفَظ به R(d) = صافي سطور الإيراد في قيود RENT_SOURCES على العقد حتى يوم d (شاملاً) · والمكتسب E = استحقاق العقد عبر عمره ناقص
+ * تنزيلاته · والمعترَف به زيادةً حتى d: X(d) = 0 قبل يوم الإلغاء، وبعده max(0, R(d) − E) · فالمقبوض قبل الإنهاء يظهر يومه، والمقبوض بعده
+ * (متأخرٌ عن قسطٍ بعد الإلغاء أُبقي مستحقاً) يوم قبضه، والردّ يوم ردّه · والعقد الذي عليه متأخر (R < E) لا زيادة له.
+ */
+const POSTED_STATUS = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
+const REVENUE_TYPE = 'إيراد'; // i18n-exempt: نوع الحساب المخزَّن
+interface PrepaidExtra { contractId: string; cancelDate: string; earned: number; timeline: Array<[string, number]> }
+
+/** المكتسب عبر عمر العقد: نصيبه كاملاً ناقص تنزيلاته · بنافذة الصف المعطى */
+function earnedOverLife(c: ContractAccrualRow, reductions: AccrualReduction[]): number {
+  let e = contractPeriodRevenue(c, null, null);
+  for (const r of reductions) if (r.contractId === c.id) e -= reductionShare(r, null, null);
+  return e;
+}
+
+/** صافي إيراد الإيجار المحتفَظ به لكل عقد بأيامه · مرتّباً بالتاريخ */
+function retainedTimelines(db: DB, ids: string[]): Map<string, Array<[string, number]>> {
+  const out = new Map<string, Array<[string, number]>>();
+  if (!ids.length || !hasDimColumns(db)) return out;
+  const rows = db.all<{ cid: string; date: string; net: number }>(
+    `SELECT l.contract_id AS cid, e.date AS date, SUM(l.credit_halalas - l.debit_halalas) AS net
+     FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.code = l.account_code
+     WHERE e.status = ? AND e.deleted_at IS NULL AND a.type = ?
+       AND e.src_type IN (${RENT_SOURCES.map(() => '?').join(',')})
+       AND l.contract_id IN (SELECT value FROM json_each(?))
+     GROUP BY l.contract_id, e.date ORDER BY e.date`,
+    [POSTED_STATUS, REVENUE_TYPE, ...RENT_SOURCES, JSON.stringify(ids)]);
+  for (const r of rows) {
+    const arr = out.get(r.cid) ?? [];
+    arr.push([String(r.date).slice(0, 10), Number(r.net)]);
+    out.set(r.cid, arr);
+  }
+  return out;
+}
+
+function prepaidExtras(db: DB, contracts: ContractAccrualRow[], reductions: AccrualReduction[]): PrepaidExtra[] {
+  const cancelled = contracts.filter((c) => c.id && c.status === 'ملغى' && c.cancel_date); // i18n-exempt: حالة العقد المخزّنة
+  const lines = retainedTimelines(db, cancelled.map((c) => c.id!));
+  return cancelled.map((c) => ({
+    contractId: c.id!, cancelDate: c.cancel_date!, earned: earnedOverLife(c, reductions), timeline: lines.get(c.id!) ?? [],
+  }));
+}
+
+/** X(d) · المعترَف به زيادةً حتى نهاية يوم d (null: كل الزمن) */
+function prepaidRecognizedThrough(x: PrepaidExtra, d: string | null): number {
+  if (d !== null && d < x.cancelDate) return 0;
+  let r = 0;
+  for (const [day, net] of x.timeline) if (d === null || day <= d) r += net;
+  return Math.max(0, r - x.earned);
+}
+
+/** نصيب الفترة [from,to] من زيادة الإنهاء المبكر · null حدٌّ مفتوح */
+function prepaidShare(x: PrepaidExtra, from: string | null, to: string | null): number {
+  return prepaidRecognizedThrough(x, to) - (from ? prepaidRecognizedThrough(x, addDays(from, -1)) : 0);
+}
+
+/**
+ * ما قبضه المكتب من إيجار العقد فوق ما يكتسبه لو أُلغي في cancelDate (أو بإلغائه القائم): الإيجار المقدَّم عن مدةٍ بعد الإنهاء ·
+ * هو ما يُعرض للردّ في نافذة الإلغاء، وسقف قيد الردّ (contracts/prepaid.ts)
+ */
+export function prepaidUnearned(db: DB, contractId: string, cancelDate?: string): number {
+  const c = accrualContracts(db).find((x) => x.id === contractId);
+  if (!c) return 0;
+  const row: ContractAccrualRow & { id: string } = c.status === 'ملغى' || !cancelDate // i18n-exempt: حالة العقد المخزّنة
+    ? { ...c, id: contractId }
+    : {
+      ...c, id: contractId, status: 'ملغى', cancel_date: cancelDate, // i18n-exempt: حالة العقد المخزّنة
+      original_end: c.original_end || c.end, end: c.end && c.end > cancelDate ? cancelDate : c.end,
+      installments_after_cancel: Number(db.get<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM contract_installments WHERE contract_id = ? AND due_date > ?`, [contractId, cancelDate])!.n),
+    };
+  if (row.status !== 'ملغى') return 0; // i18n-exempt: حالة العقد المخزّنة
+  const earned = earnedOverLife(row, accrualReductions(db, row));
+  const r = (retainedTimelines(db, [contractId]).get(contractId) ?? []).reduce((s, [, n]) => s + n, 0);
+  return Math.max(0, r - earned);
 }
 
 // ─── فواتير الشراء ───
@@ -413,8 +502,11 @@ function ledgerNetOfType(
  */
 export function periodRevenueAccrual(db: DB, from: string | null, to: string | null): number {
   let sum = 0;
-  for (const c of accrualContracts(db)) sum += contractPeriodRevenue(c, from, to);
-  for (const r of accrualReductions(db)) sum -= reductionShare(r, from, to);
+  const contracts = accrualContracts(db);
+  const reductions = accrualReductions(db);
+  for (const c of contracts) sum += contractPeriodRevenue(c, from, to);
+  for (const r of reductions) sum -= reductionShare(r, from, to);
+  for (const x of prepaidExtras(db, contracts, reductions)) sum += prepaidShare(x, from, to);
   return sum + ledgerNetOfType(db, 'إيراد', from, to, RENT_SOURCES);
 }
 
@@ -504,6 +596,7 @@ export function monthlyRevenueExpenseAccrual(
   const out = new Map<string, { revenue: number; expense: number }>();
   const contracts = accrualContracts(db);
   const reductions = accrualReductions(db);
+  const extras = prepaidExtras(db, contracts, reductions);
   const purchases = accrualPurchases(db);
   for (let ym = fromMonth; ym <= toMonth; ym = nextMonthKey(ym)) {
     const b = monthBounds(ym);
@@ -511,6 +604,7 @@ export function monthlyRevenueExpenseAccrual(
     let expense = ledgerNetOfType(db, 'مصروف', b.from, b.to, PURCHASE_SOURCES);
     for (const c of contracts) revenue += contractPeriodRevenue(c, b.from, b.to);
     for (const r of reductions) revenue -= reductionShare(r, b.from, b.to);
+    for (const x of extras) revenue += prepaidShare(x, b.from, b.to);
     for (const p of purchases) expense += purchasePeriodExpense(p, b.from, b.to);
     out.set(ym, { revenue, expense });
   }

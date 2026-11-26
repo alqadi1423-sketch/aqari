@@ -118,7 +118,7 @@ export function crossPublicFields(table: string, row: Record<string, unknown>): 
 export function journalSection(srcType: string | null | undefined): SectionKey {
   const s = (srcType || '').replace(/_rev$/, '');
   if (!s) return 'ledger';
-  if (s === 'rent' || s.startsWith('rent_') || s.startsWith('discount') || s.startsWith('surplus')) return 'collect';
+  if (s === 'rent' || s.startsWith('rent_') || s.startsWith('discount') || s.startsWith('surplus') || s === 'prepaid_refund') return 'collect';
   if (s === 'contract_deposit' || s.startsWith('deposit')) return 'deposits';
   if (s.startsWith('reservation') || s === 'key_money') return 'reservations';
   if (s.startsWith('claim')) return 'claims';

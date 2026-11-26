@@ -50,7 +50,8 @@ export interface CancelPaymentPlan {
   cashShort: number;
 }
 
-const SURPLUS_SOURCES = ['surplus_refund', 'surplus_credit'];
+// وردّ الإيجار المقدَّم عند الإنهاء المبكر (A1-4) كردّ الفائض: سقفه من الدفعات، فلا تُلغى دفعةٌ تحته قبل إلغائه
+const SURPLUS_SOURCES = ['surplus_refund', 'surplus_credit', 'prepaid_refund'];
 
 interface PaymentRow {
   id: string; contract_id: string; installment_id: string | null; date: string; net_halalas: number;

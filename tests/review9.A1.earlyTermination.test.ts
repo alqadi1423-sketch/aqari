@@ -29,7 +29,7 @@ function payAll(db: ReturnType<typeof memDb>, cid: string, upTo: string) {
   }
 }
 
-test.failing('A1-4 (أ) شهري أُنهي في منتصف يونيو: الاستحقاق عبر العمر يساوي المحتفَظ به', () => {
+test('A1-4 (أ) شهري أُنهي في منتصف يونيو: الاستحقاق عبر العمر يساوي المحتفَظ به', () => {
   const db = memDb();
   const u = addUnit(db, addProperty(db, { name: 'عقار إنهاء مصطنع' }), { unit_no: 'E-1' });
   const cid = confirmContract(db, contractInput(u, { tenant: 'مستأجر إنهاء مصطنع', idNumber: '1000000935',
@@ -43,7 +43,7 @@ test.failing('A1-4 (أ) شهري أُنهي في منتصف يونيو: الاس
   db.close();
 });
 
-test.failing('A1-4 (ب) سنوي مدفوع مقدماً أُنهي بعد ربعه: الاستحقاق عبر العمر يساوي المحتفَظ به', () => {
+test('A1-4 (ب) سنوي مدفوع مقدماً أُنهي بعد ربعه: الاستحقاق عبر العمر يساوي المحتفَظ به', () => {
   const db = memDb();
   const u = addUnit(db, addProperty(db, { name: 'عقار إنهاء مصطنع' }), { unit_no: 'E-2' });
   const cid = confirmContract(db, contractInput(u, { tenant: 'مستأجر إنهاء مصطنع', idNumber: '1000000943',
