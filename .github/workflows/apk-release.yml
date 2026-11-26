@@ -49,8 +49,9 @@ jobs:
           SOURCE: ${{ steps.plan.outputs.source }}
           TITLE: ${{ steps.plan.outputs.title }}
           NOTES: ${{ steps.plan.outputs.notes }}
-          # بصمة شهادة الإصدار (ليست سراً) · تُضبط في متغيرات المستودع، وبدونها يُفحص ألا تكون شهادة التصحيح وحده (G-9)
-          APK_CERT_SHA256: ${{ vars.APK_CERT_SHA256 }}
+          # بصمة شهادة الإصدار (ليست سراً · G-9): شهادة المالك كما في حزمة فرع apk (C=SA, O=Aqari, CN=Aqari، حتى 2054)، ومتغير
+          # المستودع APK_CERT_SHA256 يغلبها إن ضُبط · فحزمةٌ بغير شهادته لا تُوسَم ولا تُنشر
+          APK_CERT_SHA256: ${{ vars.APK_CERT_SHA256 || 'ee5d5c5c602d9739a42d666f398c8de66ee60f8f0cfff1fde14feda6dfb7bf83' }}
         run: |
           git show origin/apk:Aqari.apk > "Aqari-${TAG}.apk"
           # رقما الحزمة من داخلها يطابقان src/version.ts عند المصدر، وشهادتها شهادة الإصدار (G-9) · وإلا لا وسم ولا نشرة

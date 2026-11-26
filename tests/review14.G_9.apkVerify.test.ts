@@ -43,7 +43,9 @@ test('G-9 سير النشر يتحقق قبل الوسم والنشرة', () => 
   const release = wf.indexOf('gh release create');
   expect(verify).toBeGreaterThan(0);
   expect(verify).toBeLessThan(release);
-  expect(wf).toMatch(/APK_CERT_SHA256: \$\{\{ vars\.APK_CERT_SHA256 \}\}/);
+  // بصمة شهادة المالك مثبّتةٌ في سير العمل (من حزمة فرع apk: C=SA, O=Aqari, CN=Aqari حتى 2054)، ومتغير المستودع يغلبها إن ضُبط
+  // (إذن المالك 2026-11-26 «أي شيء تقدر تسويه انت لا تطلبه مني»)
+  expect(wf).toMatch(/APK_CERT_SHA256: \$\{\{ vars\.APK_CERT_SHA256 \|\| 'ee5d5c5c602d9739a42d666f398c8de66ee60f8f0cfff1fde14feda6dfb7bf83' \}\}/);
 });
 
 test('G-9 بناء التطوير يولّد debug.keystore إن غاب، وeas.json على الرقم المحلي', () => {
