@@ -16,6 +16,8 @@ import { useDeferredReady } from '../../src/ui/useDeferredReady';
 import { perfNow, perfProbe } from '../../src/perf/perf';
 import { useAccess } from '../../src/ui/access';
 import { canView } from '../../src/domain/access/access';
+import { routeAllowed } from '../../src/domain/access/routes';
+import { sourcePath } from '../../src/ui/sourceRoute';
 import type { SectionKey } from '../../src/domain/access/sections';
 import { useApp } from '../../src/ui/store';
 import { C, TYPE } from '../../src/ui/theme';
@@ -259,21 +261,12 @@ export default function Dashboard() {
   }, [db, version, catDrill, data.from, data.to]);
 
   // كل قيد يفتح ما ولّده
-  const openSource = useCallback((srcType: string | null, srcId: string | null) => {
-    if (!srcType || !srcId) { router.push('/journal'); return; }
-    if (['purchase', 'purchase_pay', 'vat_refund'].includes(srcType)) { router.push(`/purchases?detail=${srcId}`); return; }
-    if (srcType === 'invoice') { router.push(`/invoices?detail=${srcId}`); return; }
-    if (srcType === 'rent') {
-      const c = db.get<{ contract_id: string }>(`SELECT contract_id FROM contract_payments WHERE id = ?`, [srcId]);
-      if (c) { router.push(`/contracts?detail=${c.contract_id}`); return; }
-    }
-    if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_deduct_move', 'deposit_rent', 'key_money'].includes(srcType)) {
-      router.push(`/contracts?detail=${srcId}`); return;
-    }
-    if (['claim', 'claim_collect'].includes(srcType)) { router.push(`/claims?detail=${srcId}`); return; }
-    if (srcType === 'cash_op') { router.push('/banks'); return; }
-    router.push('/journal');
-  }, [db, router]);
+  // مسار مستند القيد، والصف زرٌّ لمسارٍ يُسمح للعضو به وحده · فلا يُدفع إلى شاشةٍ يرتدّ منها إلى الرئيسية (D-22)
+  const sourceTarget = useCallback((srcType: string | null, srcId: string | null): string | null => {
+    const p = sourcePath(srcType, srcId,
+      (pid) => db.get<{ contract_id: string }>(`SELECT contract_id FROM contract_payments WHERE id = ?`, [pid])?.contract_id ?? null);
+    return routeAllowed(access, p) ? p : null;
+  }, [db, access]);
 
   const net = data.revenue - data.expense;
   const maxAging = Math.max(1, ...data.aging);
@@ -403,8 +396,8 @@ export default function Dashboard() {
         <CardTitle action={<Pressable onPress={() => router.push('/journal')}><T size={12} bold color={C.emerald}>عرض الكل</T></Pressable>}>
           أحدث الحركات
         </CardTitle>
-        {data.moves.length ? data.moves.map((m) => (
-          <Pressable key={m.no} onPress={() => openSource(m.src_type, m.src_id)}>
+        {data.moves.length ? data.moves.map((m) => { const to = sourceTarget(m.src_type, m.src_id); return (
+          <Pressable key={m.no} disabled={!to} onPress={() => { if (to) router.push(to as never); }}>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: C.line }}>
               <View style={{ flex: 1 }}>
                 <T size={12} med>{m.memo || m.no}</T>
@@ -413,7 +406,7 @@ export default function Dashboard() {
               <Money halalas={Number(m.d)} size={12} bold />
             </Row>
           </Pressable>
-        )) : <EmptyState>لا حركات بعد</EmptyState>}
+        ); }) : <EmptyState>لا حركات بعد</EmptyState>}
       </Card> : null}
 
       {/* أكبر الأرصدة المستحقة · الاسم يفتح دفعاته في التحصيل */}
@@ -460,8 +453,8 @@ export default function Dashboard() {
       {drill && (
         <Sheet visible onClose={() => setDrill(null)} tall
           title={(drill === 'إيراد' ? 'إيرادات الفترة' : 'مصروفات الفترة') + ' (' + drillRows.length + ')'}>
-          {drillRows.length ? drillRows.map((r, i) => (
-            <Pressable key={r.id + ':' + i} onPress={() => { setDrill(null); openSource(r.src_type, r.src_id); }}>
+          {drillRows.length ? drillRows.map((r, i) => { const to = sourceTarget(r.src_type, r.src_id); return (
+            <Pressable key={r.id + ':' + i} disabled={!to} onPress={() => { if (!to) return; setDrill(null); router.push(to as never); }}>
               <View style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
                 <Row style={{ justifyContent: 'space-between' }}>
                   <T size={12.5} style={{ flex: 1 }}>{r.memo || r.no}</T>
@@ -470,7 +463,7 @@ export default function Dashboard() {
                 <Num size={10.5} color={C.muted}>{r.account} · {dfmt(r.date)} · {r.no}</Num>
               </View>
             </Pressable>
-          )) : <EmptyState>لا قيود في هذه الفترة</EmptyState>}
+          ); }) : <EmptyState>لا قيود في هذه الفترة</EmptyState>}
           <View style={{ height: 10 }} />
         </Sheet>
       )}
@@ -483,8 +476,8 @@ export default function Dashboard() {
              FROM journal_entries e LEFT JOIN journal_lines l ON l.entry_id = e.id
              WHERE e.status='مرحّل' AND e.deleted_at IS NULL AND e.date >= ? AND e.date <= ?
              GROUP BY e.id ORDER BY e.date`, [monthDrill.key + '-01', monthDrill.key + '-31']
-          ).map((e) => (
-            <Pressable key={e.id} onPress={() => { setMonthDrill(null); openSource(e.src_type, e.src_id); }}>
+          ).map((e) => { const to = sourceTarget(e.src_type, e.src_id); return (
+            <Pressable key={e.id} disabled={!to} onPress={() => { if (!to) return; setMonthDrill(null); router.push(to as never); }}>
               <Row style={{ justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
                 <View style={{ flex: 1 }}>
                   {e.memo ? <T size={12} med>{e.memo}</T> : null}
@@ -493,15 +486,15 @@ export default function Dashboard() {
                 <Money halalas={Number(e.d)} size={12} bold />
               </Row>
             </Pressable>
-          ))}
+          ); })}
           <View style={{ height: 10 }} />
         </Sheet>
       )}
       {catDrill && (
         <Sheet visible onClose={() => setCatDrill(null)} tall title={t('home.accountDrill', { name: catDrill.name, n: catRows.length })}>
           {basis === BASIS_ACCRUAL ? <T size={10.5} color={C.muted}>{t('home.accountDrillAccrual')}</T> : null}
-          {catRows.length ? catRows.map((r, i) => (
-            <Pressable key={r.id + ':' + i} onPress={() => { setCatDrill(null); openSource(r.src_type, r.src_id); }}>
+          {catRows.length ? catRows.map((r, i) => { const to = sourceTarget(r.src_type, r.src_id); return (
+            <Pressable key={r.id + ':' + i} disabled={!to} onPress={() => { if (!to) return; setCatDrill(null); router.push(to as never); }}>
               <View style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
                 <Row style={{ justifyContent: 'space-between' }}>
                   <T size={12.5} style={{ flex: 1 }}>{r.memo || r.no}</T>
@@ -510,7 +503,7 @@ export default function Dashboard() {
                 <Num size={10.5} color={C.muted}>{dfmt(r.date)} · {r.no}</Num>
               </View>
             </Pressable>
-          )) : <EmptyState>{t('home.accountDrillEmpty')}</EmptyState>}
+          ); }) : <EmptyState>{t('home.accountDrillEmpty')}</EmptyState>}
           <View style={{ height: 10 }} />
         </Sheet>
       )}
