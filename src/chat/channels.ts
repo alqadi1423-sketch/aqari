@@ -8,7 +8,7 @@
 import type { DB } from '../db/adapter';
 import { GRANTABLE, sectionDef, type SectionKey } from '../domain/access/sections';
 import { readMembership } from '../services/access';
-import type { ChatRemote } from './remote';
+import type { ChatMemberPerm, ChatTransport } from './transport';
 import { applyRemoteThread, listThreads } from './store';
 import { channelId, type ChannelRef, type ChatMe } from './types';
 import { getSyncState, setSyncState } from '../sync/engine';
@@ -17,7 +17,7 @@ export const ANNOUNCE_NAME = 'إعلانات الإدارة'; // i18n-exempt: ا
 // القناة التي لم تُنشأ بعد تُعاد بعد دورة جهاز المالك (عشر دقائق) · فمحادثة العقار التي تُنشأ لأول عضو فيه لا تتأخر ساعة (تحقق الدمج ف٤)
 const JOIN_RETRY_MS = 10 * 60_000;
 
-interface MemberPerm { uid: string; perm: Record<string, number>; all: boolean; props: string[] }
+type MemberPerm = ChatMemberPerm;
 
 /** تحق القناة لهذا العضو؟ (مطابق لقواعد الخادم chatQualifies) */
 export function qualifies(ch: ChannelRef, m: { perm: Record<string, number>; all: boolean; props: string[] }): boolean {
@@ -47,7 +47,7 @@ export function wantedChannels(db: DB, members: MemberPerm[]): Array<{ ch: Chann
 }
 
 /** عند المالك: تُنشأ القنوات الناقصة · ويُخرج منها من لم تعد تحق له */
-export async function ensureChannels(db: DB, remote: ChatRemote, me: ChatMe): Promise<{ created: number; removed: number }> {
+export async function ensureChannels(db: DB, remote: ChatTransport, me: ChatMe): Promise<{ created: number; removed: number }> {
   const members = await remote.members();
   const local = new Map(listThreads(db, me.uid).map((t) => [t.id, t]));
   let created = 0;
@@ -78,7 +78,7 @@ export async function ensureChannels(db: DB, remote: ChatRemote, me: ChatMe): Pr
 }
 
 /** عند العضو: ينضم إلى ما تحق له مما ليس فيه · وما تعذّر (لم تُنشأ بعد) يُعاد بعد ساعة */
-export async function autoJoinChannels(db: DB, remote: ChatRemote, me: ChatMe, now = Date.now()): Promise<number> {
+export async function autoJoinChannels(db: DB, remote: ChatTransport, me: ChatMe, now = Date.now()): Promise<number> {
   const m = readMembership(db);
   if (!m) return 0;
   const mine = { perm: m.perms as Record<string, number>, all: m.allProps, props: m.props };

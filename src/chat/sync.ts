@@ -7,7 +7,7 @@
  */
 import type { DB } from '../db/adapter';
 import { getSyncState, setSyncState } from '../sync/engine';
-import type { ChatRemote, PageAfter } from './remote';
+import { isChatDenied, type ChatTransport, type PageAfter, type RemoteMessage, type RemoteThread } from './transport';
 import { normTs, type ChatMe } from './types';
 import {
   applyRemoteMessage, applyRemoteThread, heldThreads, markMessageRejected, markSent, markThreadPushed, markThreadRejected,
@@ -35,7 +35,7 @@ const STATE_OPEN_EVERY_MS = 30_000;
 const CHANNEL_PULL_EVERY_MS = 10 * 60_000;
 
 /** حال المحادثة: يُسحب ما جدّ منه، وتُرفع قراءتي إن تقدّمت (الدفعة ٢ · 2026-10-08T05:31Z) */
-async function syncState(db: DB, remote: ChatRemote, threadId: string, me: string): Promise<void> {
+async function syncState(db: DB, remote: ChatTransport, threadId: string, me: string): Promise<void> {
   const up = readToPush(db, threadId, me);
   if (up) { await remote.markReadUpTo(threadId, up); markReadPushed(db, threadId, me, up); }
   // حال المحادثة بوقت الطلب كذلك · فبالنافذة نفسها (التحقق المستقل على البند ٢) · صفحةً صفحة حتى صفحةٍ قصيرة
@@ -44,12 +44,12 @@ async function syncState(db: DB, remote: ChatRemote, threadId: string, me: strin
   for (const id of staleEdits(db, threadId)) {
     try { applyRemoteMessage(db, threadId, await remote.getMessage(threadId, id)); } catch (e) {
       // لا يحق لي جلبه (قبل انضمامي): يُعدّ معروفاً فلا يُطلب كل دورة · وما سواه يُعاد في الدورة التالية
-      if (/Firestore 403/.test(String(e))) markEditUnreadable(db, threadId, id);
+      if (isChatDenied(e)) markEditUnreadable(db, threadId, id);
     }
   }
 }
 const PAGE = 200;
-/** صفحة الحال: حدّ ChatRemote.stateSince نفسه */
+/** صفحة الحال: حدّ stateSince في الناقل نفسه (ثلاثمئة كما في Firestore) */
 const STATE_PAGE = 300;
 
 /**
@@ -57,7 +57,7 @@ const STATE_PAGE = 300;
  * (وقتٍ، رقمٍ) أُخذ كما تُقلَّب الرسائل، فثلاثمئة عنصرٍ أو أكثر في نافذة الرجوع لا تعيد الصفحة نفسها كل دورة فيقف المؤشر أبداً ·
  * وكل صفحةٍ تُحفظ حين تصل (applyState يقدّم المؤشر ولا يرجعه) · وكل من يسحب الحال يمرّ بها
  */
-export async function pullState(db: DB, remote: ChatRemote, threadId: string, from: string | null): Promise<number> {
+export async function pullState(db: DB, remote: ChatTransport, threadId: string, from: string | null): Promise<number> {
   let cursor = from;
   let after: PageAfter | null = null;
   let n = 0;
@@ -79,12 +79,12 @@ const stamp = (db: DB, k: string) => Number(getSyncState(db, k) ?? 0);
  * رسائل محادثة بعد مؤشرها · «أكبر من أو يساوي» فلا تُفقد رسالة بالوقت نفسه، والمعروف منها لا يتكرر ·
  * والمجموعة التي سجلُّها «من لحظة انضمامه» من وقت انضمامي وبطريقها (2026-10-08T05:31Z)
  */
-async function pullThread(db: DB, remote: ChatRemote, threadId: string, me: string, retried = false): Promise<number> {
+async function pullThread(db: DB, remote: ChatTransport, threadId: string, me: string, retried = false): Promise<number> {
   try {
     return await pullThreadOnce(db, remote, threadId, me);
   } catch (e) {
     // تبدّل سجل المجموعة عند غيري (أو أُخرجت): تُجلب كما في الخادم وتُعاد مرة
-    if (retried || !/Firestore 403/.test(String(e))) throw e;
+    if (retried || !isChatDenied(e)) throw e;
     applyRemoteThread(db, await remote.getThread(threadId));
     return pullThread(db, remote, threadId, me, true);
   }
@@ -105,7 +105,7 @@ function rewind(cursor: string | null): string | null {
   return Number.isFinite(t) ? new Date(t - CHAT_PULL_SAFETY_MS).toISOString().slice(0, 19) + '.' + m[2] + 'Z' : cursor;
 }
 
-async function pullThreadOnce(db: DB, remote: ChatRemote, threadId: string, me: string): Promise<number> {
+async function pullThreadOnce(db: DB, remote: ChatTransport, threadId: string, me: string): Promise<number> {
   const floor = joinFloor(db, threadId, me);
   let cursor = rewind(threadCursor(db, threadId));
   // ولا يسبق وقتَ انضمامي (المجموعة «من لحظة انضمامه»)
@@ -114,7 +114,7 @@ async function pullThreadOnce(db: DB, remote: ChatRemote, threadId: string, me: 
   // الصفحة التالية تبدأ بعد آخر (وقتٍ، رقمٍ) أُخذ لا عند وقته: صفحةٌ كاملة بوقتٍ واحد لا توقف السحب (المراجعة الخارجية ٧ · النتيجة ٤٠)
   let after: { ts: string; id: string } | null = null;
   for (let guard = 0; guard < 50; guard++) {
-    let page: Awaited<ReturnType<ChatRemote['messagesSince']>>;
+    let page: RemoteMessage[];
     let full: boolean;
     let last: string | null;
     let lastId: string | null;
@@ -134,7 +134,7 @@ async function pullThreadOnce(db: DB, remote: ChatRemote, threadId: string, me: 
   return n;
 }
 
-export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: ChatSyncOptions = {}): Promise<ChatSyncResult> {
+export async function chatSyncOnce(db: DB, remote: ChatTransport, me: ChatMe, o: ChatSyncOptions = {}): Promise<ChatSyncResult> {
   const r: ChatSyncResult = { pushedThreads: 0, pushedMessages: 0, pulledMessages: 0, failed: 0 };
   const now = o.now ?? Date.now();
   // مرة واحدة على جهاز المالك: ما سحبه الاطلاع السابق من محادثات ليس طرفاً فيها يُمحى (2026-10-08T04:11Z)
@@ -165,7 +165,7 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
       r.pushedThreads++;
     } catch (e) {
       // رفض الخادم (مشرف سُحب إشرافه مثلاً) · تُوسم فتظهر بسببها بدل «لم تُرسل» بلا تفسير
-      if (/Firestore 403/.test(String(e))) markThreadRejected(db, t.id);
+      if (isChatDenied(e)) markThreadRejected(db, t.id);
       r.failed++;
     }
   }
@@ -186,7 +186,7 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
       markSent(db, m.id, null);
       r.pushedMessages++;
     } catch (e) {
-      if (/Firestore 403/.test(String(e))) markMessageRejected(db, m.id);
+      if (isChatDenied(e)) markMessageRejected(db, m.id);
       held.add(m.id);
       r.failed++;
     }
@@ -204,7 +204,7 @@ export async function chatSyncOnce(db: DB, remote: ChatRemote, me: ChatMe, o: Ch
     return r;
   }
   if (!o.force && !o.full && now - stamp(db, 'chat_full_at') < FULL_EVERY_MS) return r;
-  let threads: Awaited<ReturnType<ChatRemote['myThreads']>> = [];
+  let threads: RemoteThread[] = [];
   // محادثاتي وحدها، والمالك كغيره: لا تحديث دوري لمحادثات المنشأة عنده، فلا تُقرأ إلا بمراجعة بسببها
   // (قرار المالك 2026-10-08T04:11Z)
   try { threads = await remote.myThreads(); } catch { r.failed++; return r; }

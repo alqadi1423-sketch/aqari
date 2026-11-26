@@ -59,7 +59,7 @@ import { t } from '../i18n';
 import { runChatSync, setSupervisor, supervisorOf, chatSyncRunning, chatUnsentCount, clearChatData, hasChatData, chatRemoveMember, chatEditGroup, chatLeaveOrg, chatSetPin, chatAcknowledge, chatEditMessage, chatEditsOf, chatSetTask, chatSetTaskDone, chatCancelTask, chatVote,
   type GroupChange, type ChatTag, type ChatTask,
   chatReviewCandidates, chatOpenReview, chatCloseReview, chatJoinGroup, chatMe, type ChatSession } from '../chat';
-import type { RemoteMessage, RemoteThread } from '../chat/remote';
+import type { RemoteMessage, RemoteThread } from '../chat';
 import { getCloudLang, putCloudLang } from '../cloud/userPrefs';
 import { today } from '../domain/dates';
 import { wipeAllData } from '../domain/wipe';

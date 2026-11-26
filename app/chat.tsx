@@ -19,7 +19,7 @@ import {
   chatTaskNow, chatTaskDoneNow, chatCancelTaskNow, chatVoteNow,
   chatReviewCandidatesNow, chatOpenReviewNow, chatCloseReviewNow, chatJoinGroupNow,
 } from '../src/services/cloud';
-import type { RemoteMessage, RemoteThread } from '../src/chat/remote';
+import type { RemoteMessage, RemoteThread } from '../src/chat';
 import { useToast } from '../src/ui/Toast';
 import { sectionDef, SECTION_KEYS, type SectionKey } from '../src/domain/access/sections';
 import { UnitDetailSheet } from '../src/ui/unitSheets';

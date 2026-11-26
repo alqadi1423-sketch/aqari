@@ -4,6 +4,7 @@
  *  - runChatSync: دورة مزامنة واحدة · تستدعيها دورة المزامنة العامة وشاشة المحادثة، وفشلها لا يعطّل غيرها.
  *  - setSupervisor: يكتب المالك إشراف عضو بإيميله عند الدعوة أو التعديل.
  * وما سواه (المخزن والعميل والقواعد والشاشات) داخل الوحدة.
+ * والسحابة كلها خلف ناقلٍ واحد (transport.ts · ق٠-٧): Firestore اليوم، وخادم المنشأة بعد التحويل (setChatTransport).
  */
 import type { DB } from '../db/adapter';
 import { readMembership } from '../services/access';
@@ -14,7 +15,7 @@ import { ensureChannels, autoJoinChannels } from './channels';
 export { ensureChannels, autoJoinChannels, qualifies, wantedChannels } from './channels';
 import { CHAT_BODY_MAX, CHAT_MODULE, CHAT_NAME_MAX, FORMER_MEMBER, JOIN_ENTITY, REVIEW_ENTITY, type ChatMe, type ChatTag, type ChatTask, type GroupSettings } from './types';
 import { logAudit } from '../domain/audit';
-import type { RemoteEdit, RemoteMessage, RemoteThread } from './remote';
+import type { ChatTransport, RemoteEdit, RemoteMessage, RemoteThread } from './transport';
 import { applyRemoteThread, applyRemoteMessage, stateCursor } from './store';
 
 export * from './types';
@@ -25,6 +26,10 @@ export {
   tasksIn, myTasks, pollResults, chatUnsentCount, clearChatData, hasChatData, type TaskRow,
 } from './store';
 export { linkTarget, linkCandidates } from './links';
+export {
+  ChatTransportError, isChatDenied, type ChatTransport, type RemoteThread, type RemoteMessage, type RemoteEdit, type RemoteState,
+  type PageAfter, type JoinedPage, type ChatMemberPerm, type OutgoingMessage,
+} from './transport';
 export { roleOf, senderDisplay, type ChatRole } from './roles';
 
 export interface ChatSession { projectId: string; uid: string; email: string; idToken: () => Promise<string>; baseUrl?: string }
@@ -38,8 +43,23 @@ export function chatMe(db: DB, user: { uid: string; email: string }, ownerName =
   return { org: user.uid, uid: user.uid, email: user.email, name: (ownerName || fallback).slice(0, 80), owner: true };
 }
 
-const remoteFor = (s: ChatSession, org: string) =>
+/**
+ * ناقل المحادثة لجلسةٍ ومنشأة (ق٠-٧) · Firestore اليوم (ChatRemote) بلا تغيير · وكل منادٍ في الوحدة يأخذه من هنا وحده، فيُبدَّل الناقل
+ * كله بسطرٍ واحد عند التحويل إلى خادم المنشأة
+ */
+export type ChatTransportFactory = (s: ChatSession, org: string) => ChatTransport;
+const firestoreTransport: ChatTransportFactory = (s, org) =>
   new ChatRemote({ projectId: s.projectId, org, uid: s.uid, idToken: s.idToken, baseUrl: s.baseUrl });
+let transportFactory: ChatTransportFactory = firestoreTransport;
+
+/**
+ * تبديل الناقل · null يعيد Firestore · لا منادي له في التطبيق قبل التحويل بإذن المالك (F §٨ ق٣ وق٤)، والاختبارات وحدها تناديه
+ */
+export function setChatTransport(f: ChatTransportFactory | null): void {
+  transportFactory = f ?? firestoreTransport;
+}
+
+const remoteFor = (s: ChatSession, org: string): ChatTransport => transportFactory(s, org);
 
 let running: Promise<ChatSyncResult> | null = null;
 const listeners = new Set<() => void>();
@@ -113,22 +133,22 @@ export async function chatLeaveOrg(s: ChatSession, org: string): Promise<void> {
   for (const t of await r.myThreads()) {
     if (t.k === 'group') await r.leaveGroup(t.id).catch(() => {});
   }
-  await r.deleteIn(`chatDir/${s.uid}`).catch(() => {});
+  await r.removeFromDirectory(s.uid).catch(() => {});
 }
 
 /** العضو يحذف حسابه: اسمه في رسائله «عضو سابق»، ويخرج من الدليل (#2) */
 export async function chatForgetMe(s: ChatSession, org: string): Promise<number> {
   const r = remoteFor(s, org);
   const n = await r.anonymizeMine(FORMER_MEMBER);
-  await r.deleteIn(`chatDir/${s.uid}`).catch(() => {});
+  await r.removeFromDirectory(s.uid).catch(() => {});
   return n;
 }
 
 /** المالك يُزيل عضواً: يخرج من كل مجموعاتها ومن الدليل والإشراف (#19) */
 export async function chatRemoveMember(s: ChatSession, org: string, uid: string, email: string): Promise<number> {
   const r = remoteFor(s, org);
-  await r.deleteIn(`chatDir/${uid}`).catch(() => {});
-  if (email) await r.deleteIn(`chatRoles/${email.trim().toLowerCase()}`).catch(() => {});
+  await r.removeFromDirectory(uid).catch(() => {});
+  if (email) await r.removeRole(email).catch(() => {});
   const groups = await r.groupsOf(uid);
   let n = 0;
   for (const g of groups) {
@@ -144,7 +164,7 @@ export async function chatRemoveMember(s: ChatSession, org: string, uid: string,
  */
 export interface GroupChange { name?: string; s?: GroupSettings; a?: string[]; members?: string[] }
 export async function chatEditGroup(db: DB, s: ChatSession, org: string, threadId: string, c: GroupChange,
-  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  r: ChatTransport = remoteFor(s, org)): Promise<void> {
   const name = c.name === undefined ? undefined : c.name.trim().slice(0, CHAT_NAME_MAX);
   try {
     if (name !== undefined || c.s) await r.setGroupMeta(threadId, { ...(name !== undefined ? { name } : {}), ...(c.s ? { s: c.s } : {}) });
@@ -165,7 +185,7 @@ export async function chatEditGroup(db: DB, s: ChatSession, org: string, threadI
 /* ─── مراجعة المالك محادثةً بسبب، وانضمامه إلى مجموعة (قرارا المالك 2026-10-08T04:11Z) ─── */
 
 /** محادثات المنشأة التي ليس المالك طرفاً فيها · بأطرافها واسمها دون رسائلها · عند طلبه وحده */
-export async function chatReviewCandidates(s: ChatSession, org: string, r: ChatRemote = remoteFor(s, org)): Promise<RemoteThread[]> {
+export async function chatReviewCandidates(s: ChatSession, org: string, r: ChatTransport = remoteFor(s, org)): Promise<RemoteThread[]> {
   return (await r.orgThreads()).filter((t) => !t.p.includes(s.uid));
 }
 
@@ -174,7 +194,7 @@ export async function chatReviewCandidates(s: ChatSession, org: string, r: ChatR
  * والمراجِع ووقته · ورسائلها تُعرض ولا تُحفظ على الجهاز · وتنتهي بإغلاقها (chatCloseReview)
  */
 export async function chatOpenReview(db: DB, s: ChatSession, org: string, chatId: string, reason: string, title: string,
-  r: ChatRemote = remoteFor(s, org)): Promise<RemoteMessage[]> {
+  r: ChatTransport = remoteFor(s, org)): Promise<RemoteMessage[]> {
   const why = reason.trim().slice(0, 500);
   if (!why) throw new Error('chat: review needs a reason');
   const rid = await r.openReview(chatId, why);
@@ -187,13 +207,13 @@ export async function chatOpenReview(db: DB, s: ChatSession, org: string, chatId
   }
 }
 
-export async function chatCloseReview(s: ChatSession, org: string, chatId: string, r: ChatRemote = remoteFor(s, org)): Promise<void> {
+export async function chatCloseReview(s: ChatSession, org: string, chatId: string, r: ChatTransport = remoteFor(s, org)): Promise<void> {
   await r.closeReview(chatId);
 }
 
 /** المالك ينضم إلى مجموعة ليس فيها · ومعه سطر «انضم المالك» للأعضاء · ثم تصير من محادثاته */
 export async function chatJoinGroup(db: DB, s: ChatSession, org: string, t: { id: string; p: string[]; name: string; by?: string; at?: string | null },
-  myName: string, r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  myName: string, r: ChatTransport = remoteFor(s, org)): Promise<void> {
   const line = await r.joinGroup(t.id, myName);
   logAudit(db, CHAT_MODULE, 'update', JOIN_ENTITY, t.name, null, { chat: t.id, line });
   // كما في الخادم بعد الانضمام · بوقت انضمامه وإعداداتها
@@ -202,21 +222,21 @@ export async function chatJoinGroup(db: DB, s: ChatSession, org: string, t: { id
 
 /** تثبيت رسالة أو إلغاؤه · في المجموعة لمسؤوليها، وفي الفردية لطرفيها · ثم الحال كما في الخادم (الدفعة ٢) */
 export async function chatSetPin(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, on: boolean,
-  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  r: ChatTransport = remoteFor(s, org)): Promise<void> {
   await r.setPin(threadId, msgId, on);
   await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** تأكيد الاطلاع على إعلان مهم · ثم الحال كما في الخادم (الدفعة ٣) */
 export async function chatAcknowledge(db: DB, s: ChatSession, org: string, threadId: string, msgId: string,
-  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  r: ChatTransport = remoteFor(s, org)): Promise<void> {
   await r.acknowledge(threadId, msgId);
   await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** تعديل رسالتي بسجلها · يحتاج اتصالاً · ثم الرسالة كما في الخادم (الدفعة ٣) */
 export async function chatEditMessage(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, body: string, tag: ChatTag | null,
-  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  r: ChatTransport = remoteFor(s, org)): Promise<void> {
   const text = body.trim();
   if (!text) throw new Error('chat: empty message');
   if (text.length > CHAT_BODY_MAX) throw new Error('chat: message too long');
@@ -227,7 +247,7 @@ export async function chatEditMessage(db: DB, s: ChatSession, org: string, threa
 
 /** المهمة من رسالة · ثم الحال كما في الخادم (الدفعة ٥) */
 export async function chatSetTask(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, task: ChatTask,
-  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  r: ChatTransport = remoteFor(s, org)): Promise<void> {
   const title = task.title.trim().slice(0, 200);
   if (!title) throw new Error('chat: task needs a title');
   if (!/^\d{4}-\d\d-\d\d$/.test(task.due)) throw new Error('chat: task due date');
@@ -237,27 +257,27 @@ export async function chatSetTask(db: DB, s: ChatSession, org: string, threadId:
 
 /** إنجاز المهمة أو إعادة فتحها (الإنجاز وحده) · ثم الحال كما في الخادم */
 export async function chatSetTaskDone(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, done: boolean,
-  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  r: ChatTransport = remoteFor(s, org)): Promise<void> {
   await r.setTaskDone(threadId, msgId, done);
   await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** إلغاء المهمة · لمنشئها · ثم الحال كما في الخادم (قرار المالك 2026-10-08T10:24Z) */
 export async function chatCancelTask(db: DB, s: ChatSession, org: string, threadId: string, msgId: string,
-  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  r: ChatTransport = remoteFor(s, org)): Promise<void> {
   await r.cancelTask(threadId, msgId);
   await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** صوتي في استطلاع · ثم الحال كما في الخادم (الدفعة ٥) */
 export async function chatVote(db: DB, s: ChatSession, org: string, threadId: string, msgId: string, options: number[],
-  r: ChatRemote = remoteFor(s, org)): Promise<void> {
+  r: ChatTransport = remoteFor(s, org)): Promise<void> {
   await r.vote(threadId, msgId, Array.from(new Set(options)).sort((a, b) => a - b));
   await pullState(db, r, threadId, stateCursor(db, threadId));
 }
 
 /** سجل تعديلات رسالة · ما قبل كل تعديل (الدفعة ٣) */
-export function chatEditsOf(s: ChatSession, org: string, threadId: string, msgId: string, r: ChatRemote = remoteFor(s, org)): Promise<RemoteEdit[]> {
+export function chatEditsOf(s: ChatSession, org: string, threadId: string, msgId: string, r: ChatTransport = remoteFor(s, org)): Promise<RemoteEdit[]> {
   return r.editsOf(threadId, msgId);
 }
 
