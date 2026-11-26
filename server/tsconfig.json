@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["auth/**/*.ts"]
+  "include": ["auth/**/*.ts", "chat/**/*.ts"]
 }
