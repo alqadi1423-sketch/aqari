@@ -8,6 +8,7 @@ import { otherCurrentOccupants } from '../../src/domain/occupants';
 import { CashShortNote, useCashOk } from '../../src/ui/CashGate';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { contractsArrival, paramStr } from '../../src/ui/routeArrival';
+import { useReturnLayer } from '../../src/ui/returnLayer';
 import { View, Pressable, FlatList } from 'react-native';
 import { Screen, BackButton } from '../../src/ui/Screen';
 import {
@@ -114,6 +115,8 @@ export default function Contracts() {
   const { t } = useLang();
 
   const [detailId, setDetailId] = useState<string | null>(null);
+  // ورقة العقد التي أُغلقت للانتقال (تحصيل · فاتورة) تعود حين يرجع التركيز إلى العقود (D-4)
+  const leaveDetail = useReturnLayer<string>((id) => setDetailId(id));
   const [renewId, setRenewId] = useState<string | null>(null);
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [handoverFor, setHandoverFor] = useState<string | null>(null);
@@ -503,6 +506,7 @@ export default function Contracts() {
         <ContractDetailSheet
           contractId={detailId}
           onClose={() => setDetailId(null)}
+          onLeave={() => { leaveDetail(detailId); setDetailId(null); }}
           onOpenRating={() => setRatingId(detailId)}
           onOpenSettlement={() => setSettleId(detailId)}
         />
@@ -604,8 +608,13 @@ function ReviewSheet({
 
 /* ═══════════ تفاصيل العقد والدفعات ═══════════ */
 function ContractDetailSheet({
-  contractId, onClose, onOpenRating, onOpenSettlement,
-}: { contractId: string; onClose: () => void; onOpenRating: () => void; onOpenSettlement: () => void }) {
+  contractId, onClose, onLeave, onOpenRating, onOpenSettlement,
+}: {
+  contractId: string; onClose: () => void;
+  /** الانتقال إلى شاشة أخرى: تُغلق الورقة وتُذكر فتعود حين يرجع إلى العقود (D-4) */
+  onLeave: () => void;
+  onOpenRating: () => void; onOpenSettlement: () => void;
+}) {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
@@ -696,7 +705,7 @@ function ContractDetailSheet({
           <Row gap={8}>
             <Money halalas={Number(i.amount_halalas)} size={12} bold />
             {payable ? (
-              <BtnPrimary small title="تحصيل" onPress={() => { onClose(); router.push(`/collect?pay=${i.id}`); }} />
+              <BtnPrimary small title="تحصيل" onPress={() => { onLeave(); router.push(`/collect?pay=${i.id}`); }} />
             ) : remaining <= 0 && i.status !== 'ملغية' && receiptIds.has(i.id) ? (
               <BtnGhost small icon="print" title="سند القبض" onPress={() => {
                 const pid = paymentForInstallment(db, i.id);
@@ -783,7 +792,7 @@ function ContractDetailSheet({
                  AND (? IS NULL OR date >= ?) AND (? IS NULL OR date <= ?) ORDER BY date DESC`,
               [c.unit_id, c.start, c.start, c.end, c.end]
             ).map((pu) => (
-              <Pressable key={pu.id} disabled={!seesPurchases} onPress={() => { onClose(); router.push(`/purchases?detail=${pu.id}`); }}>
+              <Pressable key={pu.id} disabled={!seesPurchases} onPress={() => { onLeave(); router.push(`/purchases?detail=${pu.id}`); }}>
                 <Row style={{ justifyContent: 'space-between', paddingVertical: 4, paddingStart: 10 }}>
                   <Num size={11} color={C.muted}>{pu.supplier_name} · {dfmt(pu.date)}</Num>
                   <Money halalas={Number(pu.total_halalas)} size={11.5} />
@@ -925,7 +934,7 @@ function ContractDetailSheet({
       {instFor ? (
         <InstallmentSheet installmentId={instFor}
           onClose={() => setInstFor(null)}
-          onCollect={(iid) => { setInstFor(null); onClose(); router.push(`/collect?pay=${iid}`); }} />
+          onCollect={(iid) => { setInstFor(null); onLeave(); router.push(`/collect?pay=${iid}`); }} />
       ) : null}
       <View style={{ height: 16 }} />
     </Sheet>

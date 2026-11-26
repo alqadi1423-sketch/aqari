@@ -23,6 +23,7 @@ import {
 import { deleteUnit, setUnitArchived, toggleUnitMaintenance } from '../src/domain/propertiesService';
 import { fmt } from '../src/domain/money';
 import { UnitDetailSheet, UnitFormSheet } from '../src/ui/unitSheets';
+import { useReturnLayer } from '../src/ui/returnLayer';
 import { ReservationSheet } from '../src/ui/ReservationSheet';
 import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm } from '../src/ui/access';
@@ -149,6 +150,8 @@ export default function Units() {
   const [q, setQ] = useState('');
   const [formFor, setFormFor] = useState<{ propertyId?: string; unitId?: string } | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  // ورقة الوحدة التي أُغلقت للانتقال (تحصيل · عقد · فاتورة) تعود حين يرجع التركيز إلى الوحدات (D-4)
+  const leaveDetail = useReturnLayer<string>((id) => setDetailId(id));
   const [reserveId, setReserveId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [floorF, setFloorF] = useState('');
@@ -347,6 +350,7 @@ export default function Units() {
       {detailId && (
         <UnitDetailSheet unitId={detailId}
           onClose={() => setDetailId(null)}
+          onLeave={() => { leaveDetail(detailId); setDetailId(null); }}
           onEdit={() => { setFormFor({ unitId: detailId }); setDetailId(null); }}
           onReserve={() => { setReserveId(detailId); setDetailId(null); }} />
       )}

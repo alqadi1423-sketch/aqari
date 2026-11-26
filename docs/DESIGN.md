@@ -1440,6 +1440,7 @@ attachments/<sha256>.<ext> …
 - **D-7 تاريخ العكس:** `journalReversalDate` يعيد `correctionDate` على تاريخ الأصل، والحوار يعرضه بنصٍّ مترجم.
 - **D-9 روابط الوصول:** `collectArrival` و`contractsArrival` (`src/ui/routeArrival.ts`) تمسح المرشّحات ثم تطبّق ما في الرابط، والشاشة تستهلك المعامل بـ`navigation.setParams` فتعمل الضغطة الثانية.
 - **D-10 أزرار الحوار:** «حذف» فاتورة الشراء يظهر ويُرفض بشرطٍ واحد (`purchaseDeleteBlock`) يشمل الأصول المحوّلة، و`DialogButton` يستدعي الإجراء داخل `then` فيمرّ الرمي المتزامن وغير المتزامن بحوار الفشل الموحّد، والتراجع عن السداد وحذف الفاتورة وحذف مسودة القيد بعناوين تقول ما تعذّر.
+- **D-4 الرجوع بين التبويبات (قرار س١٣):** `backBehavior="history"`، وخطّاف `useReturnLayer` يحفظ ورقة العقد أو الوحدة التي أُغلقت للانتقال ويعيد فتحها مرةً عند عودة التركيز إلى شاشتها.
 
 ### ١٣.١٧ الإصدارات وسجل التغييرات (التوجيه الرابع ٤ · ٢ · 2026-11-07)
 - **رقمٌ واحد** في `src/version.ts` (`APP_VERSION` بصيغة رئيسي.فرعي.تصحيح، و`APP_BUILD` عددٌ يزيد دائماً)، ويطابقه `app.json` (`version` و`android.versionCode`) و`package.json` و`android/app/build.gradle` (`versionName` و`versionCode`) باختبار `tests/d4.version.test.ts`.

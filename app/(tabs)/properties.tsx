@@ -37,6 +37,7 @@ import { ReservationSheet } from '../../src/ui/ReservationSheet';
 import { fmt, toHalalas } from '../../src/domain/money';
 import type { PropertyRow } from '../../src/domain/contracts/rules';
 import { UnitDetailSheet, UnitFormSheet } from '../../src/ui/unitSheets';
+import { useReturnLayer } from '../../src/ui/returnLayer';
 import { attachPicked, pickFile } from '../../src/ui/attach';
 import { LeafletMap } from '../../src/ui/LeafletMap';
 import { useDialog } from '../../src/ui/AppDialog';
@@ -78,6 +79,8 @@ export default function Properties() {
   const [bulkFor, setBulkFor] = useState<{ propertyId: string; count: number } | null>(null);
   const [unitFormFor, setUnitFormFor] = useState<{ propertyId?: string; unitId?: string } | null>(null);
   const [unitDetailId, setUnitDetailId] = useState<string | null>(null);
+  // ورقة الوحدة التي أُغلقت للانتقال تعود حين يرجع التركيز إلى العقارات (D-4)
+  const leaveUnit = useReturnLayer<string>((id) => setUnitDetailId(id));
   const [reserveUnitId, setReserveUnitId] = useState<string | null>(null);
 
   // القدوم من الخريطة: ?detail=<id> يفتح تفاصيل العقار مباشرة
@@ -312,6 +315,7 @@ export default function Properties() {
         <UnitDetailSheet
           unitId={unitDetailId}
           onClose={() => setUnitDetailId(null)}
+          onLeave={() => { leaveUnit(unitDetailId); setUnitDetailId(null); }}
           onEdit={() => setUnitFormFor({ unitId: unitDetailId })}
           onReserve={() => { setReserveUnitId(unitDetailId); setUnitDetailId(null); }}
         />

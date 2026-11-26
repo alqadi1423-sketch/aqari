@@ -150,8 +150,13 @@ export function UnitFormSheet({
 }
 
 export function UnitDetailSheet({
-  unitId, onClose, onEdit, onReserve,
-}: { unitId: string; onClose: () => void; onEdit: () => void; onReserve: () => void }) {
+  unitId, onClose, onEdit, onReserve, onLeave,
+}: {
+  unitId: string; onClose: () => void; onEdit: () => void; onReserve: () => void;
+  /** الانتقال إلى شاشة أخرى: صاحب الورقة يذكرها فتعود حين يرجع إليه (D-4) · وبلا صاحبٍ يذكرها تُغلق */
+  onLeave?: () => void;
+}) {
+  const leave = onLeave ?? onClose;
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
@@ -445,7 +450,7 @@ export function UnitDetailSheet({
            WHERE deleted_at IS NULL AND unit_id = ? ORDER BY date DESC LIMIT ? OFFSET ?`,
           [unitId, page.limit, page.offset]
         ).map((e) => (
-          <Pressable key={e.id} disabled={!openPurchases} onPress={() => { onClose(); router.push(`/purchases?detail=${e.id}`); }}>
+          <Pressable key={e.id} disabled={!openPurchases} onPress={() => { leave(); router.push(`/purchases?detail=${e.id}`); }}>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: C.line }}>
               <T size={TYPE.body}>{e.supplier_name} · {dfmt(e.date)}</T>
               <Money halalas={Number(e.total_halalas)} size={TYPE.body} />
@@ -468,12 +473,12 @@ export function UnitDetailSheet({
       {contractFor ? (
         <ContractQuickSheet contractId={contractFor} onClose={() => setContractFor(null)}
           onOpenInstallment={(iid) => setInstFor(iid)}
-          onOpenFull={() => { const id2 = contractFor; setContractFor(null); onClose(); router.push(`/contracts?detail=${id2}`); }} />
+          onOpenFull={() => { const id2 = contractFor; setContractFor(null); leave(); router.push(`/contracts?detail=${id2}`); }} />
       ) : null}
       {instFor ? (
         <InstallmentSheet installmentId={instFor}
           onClose={() => setInstFor(null)}
-          onCollect={(iid) => { setInstFor(null); setContractFor(null); onClose(); router.push(`/collect?pay=${iid}`); }} />
+          onCollect={(iid) => { setInstFor(null); setContractFor(null); leave(); router.push(`/collect?pay=${iid}`); }} />
       ) : null}
       {handoverFor ? (
         <HandoverSheet contractId={handoverFor} onClose={() => setHandoverFor(null)} onSaved={() => { setHandoverFor(null); bump(); }} />
