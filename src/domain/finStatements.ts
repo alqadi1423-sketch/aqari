@@ -21,8 +21,10 @@ export type FinStatement = 'income' | 'balance' | 'cash' | 'equity';
 
 /** قيود الأصول التي لا نقد فيها: الإهلاك وإهلاك ما فات وإعادة التصنيف والاستبعاد والنقل وإثبات التكلفة (الهجرة ٢٩) */
 // وعكسها (_rev) مثلها: عكسُ قيدٍ غير نقدي غير نقدي (التحقق المستقل: عكس إهلاك ما فات ظهر تشغيلياً واستثمارياً)
-const ASSET_ENTRY_TYPES = ['depreciation', 'asset_dep', 'asset_catchup', 'asset_convert', 'asset_dispose', 'asset_sell', 'asset_transfer', 'asset_cost']
-  .flatMap((x) => [x, x + '_rev']);
+// وقيد التراجع عن التحويل (asset_dep_undo · undoConversion) وعكسه: إهلاكٌ يُردّ بلا نقد (المراجعة الشاملة 2026-11-13 · A2.11: كان يظهر
+// تشغيلياً واستثمارياً)
+const ASSET_ENTRY_TYPES = ['depreciation', 'asset_dep', 'asset_catchup', 'asset_convert', 'asset_dispose', 'asset_sell', 'asset_transfer', 'asset_cost',
+  'asset_dep_undo'].flatMap((x) => [x, x + '_rev']);
 const FIXED_ASSET_CODES = ['1400', '1410', '1420', '1430', '1440', '1450', '1460', '1470'];
 /** مجمع الإهلاك (استثماري مع الأصول) · والقروض (تمويلية مع حقوق الملكية) */
 const ACC_ACCUM_DEP = '1490';
