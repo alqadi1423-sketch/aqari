@@ -4,6 +4,7 @@
  * الأرشفة إخفاء من القوائم فقط · الدفتر والتقارير لا يتغيّر فيهما رقم واحد.
  */
 import type { DB } from '../db/adapter';
+import { t } from '../i18n';
 
 export type RefKind =
   | 'property' | 'unit' | 'contract' | 'tenant' | 'supplier'
@@ -19,6 +20,11 @@ export interface LinkedRef {
 
 const n = (db: DB, sql: string, params: unknown[] = []): number =>
   Number(db.get<{ c: number }>(sql, params as never)?.c ?? 0);
+
+/** سطور قيودٍ حيّة تحمل الكيان بُعداً · الوحدة والعقار */
+const JOURNAL_DIM_SQL = (col: 'unit_id' | 'property_id') =>
+  `SELECT COUNT(*) c FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+   WHERE l.${col} = ? AND e.deleted_at IS NULL`;
 
 /** المرتبطات الحية بكيان بعينه · تُعاد الأنواع ذات العدد الموجب فقط */
 export function linkedRefs(db: DB, kind: RefKind, id: string): LinkedRef[] {
@@ -36,6 +42,9 @@ export function linkedRefs(db: DB, kind: RefKind, id: string): LinkedRef[] {
     add('فاتورة شراء', n(db, `SELECT COUNT(*) c FROM purchases WHERE property_id = ? AND deleted_at IS NULL`, [id]), '/purchases');
     add('فاتورة مبيعات', n(db, `SELECT COUNT(*) c FROM invoices WHERE property_id = ? AND deleted_at IS NULL`, [id]), '/invoices');
     add('عداداً', n(db, `SELECT COUNT(*) c FROM meters WHERE owner_type = 'property' AND owner_id = ? AND deleted_at IS NULL`, [id]));
+    // الأصول وسطور القيود بأبعادها تشير إلى العقار (المراجعة الشاملة 2026-11-13 · E-8)
+    add(t('refs.asset', { lng: 'ar' }), n(db, `SELECT COUNT(*) c FROM assets WHERE property_id = ? AND deleted_at IS NULL`, [id]), '/assets');
+    add(t('refs.journalLine', { lng: 'ar' }), n(db, JOURNAL_DIM_SQL('property_id'), [id]), '/journal');
     add('مرفقاً', att('property'), '/library');
   } else if (kind === 'unit') {
     add('عقداً', n(db, `SELECT COUNT(*) c FROM contracts WHERE unit_id = ? AND deleted_at IS NULL`, [id]), '/contracts');
@@ -43,6 +52,11 @@ export function linkedRefs(db: DB, kind: RefKind, id: string): LinkedRef[] {
     add('فاتورة شراء', n(db, `SELECT COUNT(*) c FROM purchases WHERE unit_id = ? AND deleted_at IS NULL`, [id]), '/purchases');
     add('ساكناً', n(db, `SELECT COUNT(*) c FROM occupants WHERE unit_id = ? AND deleted_at IS NULL`, [id]));
     add('عداداً', n(db, `SELECT COUNT(*) c FROM meters WHERE owner_type = 'unit' AND owner_id = ? AND deleted_at IS NULL`, [id]));
+    // الأصول وفواتير المبيعات ونماذج الاستلام وسطور القيود بأبعادها تشير إلى الوحدة (E-8)
+    add(t('refs.asset', { lng: 'ar' }), n(db, `SELECT COUNT(*) c FROM assets WHERE unit_id = ? AND deleted_at IS NULL`, [id]), '/assets');
+    add(t('refs.salesInvoice', { lng: 'ar' }), n(db, `SELECT COUNT(*) c FROM invoices WHERE unit_id = ? AND deleted_at IS NULL`, [id]), '/invoices');
+    add(t('refs.handover', { lng: 'ar' }), n(db, `SELECT COUNT(*) c FROM handovers WHERE unit_id = ? AND deleted_at IS NULL`, [id]));
+    add(t('refs.journalLine', { lng: 'ar' }), n(db, JOURNAL_DIM_SQL('unit_id'), [id]), '/journal');
     add('مرفقاً', att('unit'), '/library');
   } else if (kind === 'contract') {
     add('قسطاً', n(db, `SELECT COUNT(*) c FROM contract_installments WHERE contract_id = ?`, [id]));

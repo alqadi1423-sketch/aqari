@@ -219,16 +219,27 @@ export function purgeManyFromTrash(db: DB, items: Array<{ table: string; id: str
       runIn(db, `DELETE FROM key_money_deals WHERE unit_id IN (:list)`, us);
       runIn(db, `UPDATE occupants SET unit_id = NULL WHERE unit_id IN (:list)`, us);
       runIn(db, `DELETE FROM meters WHERE owner_type = 'unit' AND owner_id IN (:list)
-                AND owner_id NOT IN (SELECT unit_id FROM contracts WHERE unit_id IS NOT NULL)`, us);
+                AND owner_id NOT IN (SELECT unit_id FROM contracts WHERE unit_id IS NOT NULL)
+                AND owner_id NOT IN (SELECT unit_id FROM assets WHERE unit_id IS NOT NULL)
+                AND owner_id NOT IN (SELECT unit_id FROM invoices WHERE unit_id IS NOT NULL)
+                AND owner_id NOT IN (SELECT unit_id FROM handovers WHERE unit_id IS NOT NULL)
+                AND owner_id NOT IN (SELECT unit_id FROM journal_lines WHERE unit_id IS NOT NULL)`, us);
+      // ولا وحدةٌ يشير إليها أصلٌ أو فاتورة مبيعات أو نموذج استلام أو سطر قيد (E-8): تبقى في السلة ولا تُمحى من تحتها
       del(`DELETE FROM units WHERE id IN (:list) AND deleted_at IS NOT NULL
-             AND id NOT IN (SELECT unit_id FROM contracts WHERE unit_id IS NOT NULL)`, us);
+             AND id NOT IN (SELECT unit_id FROM contracts WHERE unit_id IS NOT NULL)
+             AND id NOT IN (SELECT unit_id FROM assets WHERE unit_id IS NOT NULL)
+             AND id NOT IN (SELECT unit_id FROM invoices WHERE unit_id IS NOT NULL)
+             AND id NOT IN (SELECT unit_id FROM handovers WHERE unit_id IS NOT NULL)
+             AND id NOT IN (SELECT unit_id FROM journal_lines WHERE unit_id IS NOT NULL)`, us);
     }
     const ps = ids.get('properties') ?? [];
     if (ps.length) {
       runIn(db, `DELETE FROM meters WHERE owner_type = 'property' AND owner_id IN (:list)
                 AND owner_id NOT IN (SELECT property_id FROM units)`, ps);
       del(`DELETE FROM properties WHERE id IN (:list) AND deleted_at IS NOT NULL
-             AND id NOT IN (SELECT property_id FROM units)`, ps);
+             AND id NOT IN (SELECT property_id FROM units)
+             AND id NOT IN (SELECT property_id FROM assets WHERE property_id IS NOT NULL)
+             AND id NOT IN (SELECT property_id FROM journal_lines WHERE property_id IS NOT NULL)`, ps);
     }
 
     // ٧ · الأطراف: الصفوف الحية المشيرة إليها تُفكّ إشارتها

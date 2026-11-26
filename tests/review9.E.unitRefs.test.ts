@@ -18,7 +18,7 @@ import { deleteUnit } from '@/domain/propertiesService';
 import { LinkedRefsError, linkedRefs } from '@/domain/refs';
 
 describe('E-8 · [متوسط] وحدةٌ فيها أصلٌ أو فاتورة تُحذف كأنها خالية', () => {
-  test.failing('وحدة بأصلٍ حيّ: الحذف مرفوض بمرتبطاته', () => {
+  test('وحدة بأصلٍ حيّ: الحذف مرفوض بمرتبطاته', () => {
     const db = memDb();
     const p = addProperty(db);
     const u = addUnit(db, p);
@@ -29,7 +29,7 @@ describe('E-8 · [متوسط] وحدةٌ فيها أصلٌ أو فاتورة ت�
     expect(() => deleteUnit(db, u)).toThrow(LinkedRefsError);
   });
 
-  test.failing('وحدة بفاتورة مبيعات مربوطة بها: الحذف مرفوض', () => {
+  test('وحدة بفاتورة مبيعات مربوطة بها: الحذف مرفوض', () => {
     const db = memDb();
     const p = addProperty(db);
     const u = addUnit(db, p);

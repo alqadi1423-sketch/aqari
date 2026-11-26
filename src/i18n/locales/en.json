@@ -1427,5 +1427,11 @@
     "bankPick": "Bank account",
     "memberRejected": "A bank movement for entry {{no}} does not match how its document was received or refunded · not applied",
     "rsvRefundByBank": "Cancel and refund the deposit by transfer ({{amount}})"
+  },
+  "refs": {
+    "asset": "asset(s)",
+    "salesInvoice": "sales invoice(s)",
+    "handover": "handover form(s)",
+    "journalLine": "journal line(s)"
   }
 }
