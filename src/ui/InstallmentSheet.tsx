@@ -80,17 +80,13 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
     // خصم القسط · من دفعاته المباشرة وحدها (التخصيصات الجماعية بلا خصم)
     const discount = pays.reduce((s, p) => s + (p.alloc == null && !p.cancelled_at ? Number(p.discount_halalas) : 0), 0);
     const T_ = today();
-    // العقد الملغى لا يُحصَّل عليه · الخدمة ترفض السداد فلا يُعرض زر التحصيل أصلاً
-    const contractCancelled = db.get<{ status: string }>(
-      `SELECT status FROM contracts WHERE id = ?`, [i.contract_id]
-    )?.status === 'ملغى';
     // سند القبض بلا دفعة في القائمة: يُعرض فقط إن وُجد سند فعلاً
     const fallbackPayment = pays.length ? null : paymentForInstallment(db, i.id);
     const remaining = installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), discount);
     // الحالة بالدالة الواحدة مع جدول العقد وشاشة التحصيل (A1-11) لا بنسخةٍ ثانية من منطقها
     const { label: status, kind } = installmentBadge({ dueDate: i.due_date, agreedDate: i.agreed_date, graceUntil: i.grace_until,
       amount: Number(i.amount_halalas), paid: Number(i.paid_halalas), discount, status: i.status }, T_);
-    return { i, pays, discount, remaining, status, kind, contractCancelled, fallbackPayment };
+    return { i, pays, discount, remaining, status, kind, fallbackPayment };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, installmentId]);
 
@@ -109,10 +105,10 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
   const attempt = useSaveAttempt();
 
   if (!data) return null;
-  const { i, pays, discount, remaining, status, kind, contractCancelled, fallbackPayment } = data;
-  // القسط المسدَّد كلياً أو الملغي لا موعد له يُعدَّل · والعقد الملغى لا يُحصَّل
+  const { i, pays, discount, remaining, status, kind, fallbackPayment } = data;
+  // القسط المسدَّد كلياً أو الملغي لا موعد له يُعدَّل · وقسط العقد الملغى القائم يُحصَّل بقسطه كصفّ الجدول (المراجعة ٤.٩ · D-23)
   const scheduleEditable = remaining > 0 && i.status !== 'ملغية' && perm.manage;
-  const collectable = remaining > 0 && i.status !== 'ملغية' && !contractCancelled && perm.add;
+  const collectable = remaining > 0 && i.status !== 'ملغية' && perm.add;
 
   const saveSchedule = () => {
     try {
