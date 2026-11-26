@@ -105,9 +105,13 @@ describe('١٦ · نسخة الأمان من قاعدةٍ فارغة', () => {
       const names = () => nodeFs.list(safetyBackupsDir(emptyEnv)).filter((n) => n.endsWith('.aqbk'));
       expect(names()).toContain(path.basename(first));
       expect(names().length).toBe(2);
-      // ونسخةٌ جديدة من قاعدةٍ فيها بيانات تحلّ محل ما قبلها كما كانت
+      // ونسخةٌ جديدة من قاعدةٍ فيها بيانات تحلّ محل ما قبلها كما كانت · إلا آخر نسخةٍ قبل المسح فيها بيانات: لا تحذفها نسخة ما قبل
+      // الاستعادة طوال مدة السلة (المراجعة الشاملة 2026-11-13 · C-6 · قرار المالك س٢٣)، والفارغة تُحذف
       const last = await makeSafetyBackup(withData, 'pre-restore');
-      expect(names()).toEqual([path.basename(last)]);
+      expect(names().sort()).toEqual([path.basename(first), path.basename(last)].sort());
+      // ونسخة مسحٍ جديدة فيها بيانات تحلّ محل كل ما قبلها كما كانت
+      const wipe2 = await makeSafetyBackup(withData, 'pre-wipe');
+      expect(names()).toEqual([path.basename(wipe2)]);
       full.db.close();
       empty.db.close();
     } finally {

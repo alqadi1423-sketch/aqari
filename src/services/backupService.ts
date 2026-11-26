@@ -8,7 +8,7 @@ import type { AppDB } from '../db/expoAdapter';
 import { openExpoDb } from '../db/expoAdapter';
 import { expoFs, expoHasher, appDataRoot } from '../files/expoFs';
 import { joinPath } from '../files/fsAdapter';
-import { createBackup, ensureFreeSpace, safetyBackupsDir } from '../domain/backup/create';
+import { createBackup, ensureFreeSpace, safetyBackupsDir, sweepSafetyBackups } from '../domain/backup/create';
 import { deviceBackupPath, deviceBackups, type DeviceBackup } from '../domain/backup/deviceBackups';
 import { prepareRestore, commitRestore, abortRestore, finishInterruptedRestore, type RestorePlan, type PrepareOptions } from '../domain/backup/restore';
 import type { BackupEnv, BackupManifest } from '../domain/backup/types';
@@ -43,6 +43,11 @@ export function appBackupEnv(db: AppDB): BackupEnv {
     reopenLive: () => { db.reopen(); open = true; return db; },
     cipher: deviceCipher,
   };
+}
+
+/** عند الإقلاع: نسخة الأمان قبل المسح التي انقضت مدة السلة عليها وبعدها نسخةٌ أحدث تُحذف (المراجعة الشاملة 2026-11-13 · C-6) */
+export function sweepSafetyBackupsOnBoot(db: AppDB): number {
+  return sweepSafetyBackups(appBackupEnv(db));
 }
 
 /** عند الإقلاع وقبل كنس tmp: مرفقات استعادةٍ انقطعت بعد التبديل تُنقل إلى مكانها (R12-BAK-4) · يُعاد عدد ما نُقل */

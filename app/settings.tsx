@@ -25,7 +25,7 @@ import { C, TYPE } from '../src/ui/theme';
 import { exportStatus } from '../src/domain/reminders';
 import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash, restoreCashOut, restoreIntoFiledPeriod } from '../src/domain/trash';
 import { createAndShareBackup, createAndSaveToFolder, pickAndPrepareRestore, prepareRestoreFromSafety, commitPreparedRestore, abortPreparedRestore, appBackupEnv, listDeviceBackups } from '../src/services/backupService';
-import { fingerprintData } from '../src/domain/backup/create';
+import { fingerprintData, keptPreWipe } from '../src/domain/backup/create';
 import { backupFolder, pickBackupFolder, folderLabel, FolderAccessError, FolderMissingError } from '../src/services/backupFolder';
 import { driveExitVisible } from '../src/cloud/driveExit';
 import {
@@ -479,6 +479,12 @@ export default function Settings() {
       + (cashMoves || revivedMoves ? '\n' + keptMovesText(cashMoves, revivedMoves, true) : '');
   };
   const paidText = (n: number) => (n ? '\n\nمسدَّد ' + n + ' قسط حُسب من دفعات النسخة وتوزيعها بدل الرقم المخزّن فيها.' : '');
+  // نسخة الأمان قبل المسح باقية مدة السلة فلا تحذفها الاستعادة (المراجعة الشاملة 2026-11-13 · C-6 · س٢٣)
+  const preWipeText = () => {
+    let k: ReturnType<typeof keptPreWipe> = null;
+    try { k = keptPreWipe(appBackupEnv(db)); } catch { k = null; }
+    return k ? '\n\n' + t('restore.preWipeKept', { at: k.at.slice(0, 10), until: k.until.slice(0, 10) }) : '';
+  };
   // نسخة ما قبل الترقية بلا ملفاتها (المراجعة الشاملة 2026-11-13 · C-2): ملفاتها باقية على الجهاز، وما غاب منها يُسمّى قبل التأكيد ·
   // والعدد يشمل ما سمّته البوابة مفقوداً، فـ«منها N» جزءٌ منه (C2-R11-2)
   const localText = (listed: number, gone: string[]) => {
@@ -533,6 +539,7 @@ export default function Settings() {
           + paidText(plan.paidRecomputed.length)
           + (plan.notes.length ? '\n\nفي النسخة فروق محاسبية لا تمنع استعادتها، وتظهر بعدها في «مراجعة الدفتر»:\n· ' + plan.notes.join('\n· ') : '')
           + keptText(plan.kept, plan.keptCashMoves, plan.keptRevivedMoves)
+          + preWipeText()
           + (cloudPlan ? '\n\nأنت داخل بحساب ' + (cloudState().user?.email ?? '') + ' · المزامنة متوقفة الآن.\n' + cloudReplaceText(cloudPlan) : ''),
         tone: 'normal',
         locked: true,

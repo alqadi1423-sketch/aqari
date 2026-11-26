@@ -12,7 +12,7 @@ import { getAllSettings, setSetting, type AppSettings } from '../repos/settings'
 import { backfillHandovers } from '../domain/handover/service';
 import { refreshContractStatuses } from '../domain/contracts/rules';
 import { sweepCache, ensureAppDirs } from '../services/storageOps';
-import { finishInterruptedRestoreOnBoot } from '../services/backupService';
+import { finishInterruptedRestoreOnBoot, sweepSafetyBackupsOnBoot } from '../services/backupService';
 import { autoDepreciate } from '../domain/assets/auto';
 import { backfillTenantLinks } from '../domain/tenants';
 import { purgeExpiredTrash } from '../domain/trash';
@@ -117,6 +117,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         purgeExpiredTrash(db).catch(() => {});
         gcBlobs(appFilesEnv(db), getSetting(db, 'trashRetention'));
       } catch { /* لا يعطّل الإقلاع */ }
+      // نسخة الأمان قبل المسح بعد مدة السلة (C-6 · س٢٣)
+      try { sweepSafetyBackupsOnBoot(db); } catch { /* لا يعطّل الإقلاع */ }
     }, 3000);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [db, bump]);

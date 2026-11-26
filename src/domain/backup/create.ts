@@ -7,6 +7,8 @@ import { reviewData } from './checks';
 import { allAccounts, accountBalance } from '../accounting/ledger';
 import { currentSchemaVersion } from '../../db/migrations';
 import { hasUserData } from './userData';
+import { getSetting } from '../../repos/settings';
+import { DEFAULT_SETTINGS } from '../../db/seed';
 import { libSizeLabel } from '../library';
 import type { DB } from '../../db/adapter';
 import {
@@ -68,11 +70,80 @@ export function safetyBackupsDir(env: BackupEnv): string {
   return joinPath(env.tmpDir, '..', 'backups');
 }
 
+/* ─── نسخة الأمان قبل المسح تبقى طوال مدة السلة (المراجعة الشاملة 2026-11-13 · C-6 · قرار المالك س٢٣) ───
+ * «امسح كل البيانات» يمسح السحابة معه، فنسختها قبل المسح الطريق الوحيد إلى ما مُسح · وكانت أول استعادةٍ بعدها (والجهاز غير فارغ)
+ * تصنع pre-restore فتحذفها بقاعدة «تبقى الأخيرة وحدها» (2026-09-02) · الآن تبقى آخرها مستقلةً عن نسخة ما قبل الاستعادة مدة السلة
+ * من وقت صنعها (الإعداد ٣٠ أو ٦٠ أو ٩٠ يوماً، تحقيقاً لقرار 2026-08-20 «إمكانية الرجوع من نسخة الأمان طوال مدة الاحتفاظ»)، ثم تعود
+ * إلى القاعدة: تحذفها أول نسخة أمانٍ بعدها، ويكنسها الإقلاع إن سبقتها نسخةٌ أحدث (sweepSafetyBackups) · ومسحٌ آخر بعدها يصنع
+ * نسخته هو فتحلّ محلّها كما كان */
+
+/** نسخة أمانٍ قبل مسحٍ فيها بيانات (لا وسم «فارغة») · ووقتها من اسمها كما يكتبه makeSafetyBackup */
+const PRE_WIPE_NAME = /^pre-wipe-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.aqbk$/;
+const DAY_MS = 86400000;
+
+/** وقت نسخة الأمان (قبل مسحٍ أو استعادة) من اسمها · null لغيرها */
+const safetyAt = (name: string): string | null => {
+  const m = /^pre-(?:wipe|restore)-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.aqbk$/.exec(name);
+  return m ? `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z` : null;
+};
+
+/** مدة السلة من إعدادات القاعدة الحية · وبلا جدول الإعدادات (بنيةٌ أقدم) افتراضها */
+function trashDays(db: DB): number {
+  const fallback = Number(DEFAULT_SETTINGS.trashRetention) || 30;
+  try {
+    const d = Number(getSetting(db, 'trashRetention'));
+    return d > 0 ? d : fallback;
+  } catch { return fallback; }
+}
+
+export interface KeptPreWipe {
+  name: string;
+  /** وقت صنعها (ISO) */
+  at: string;
+  /** آخر يومٍ تبقى فيه محميّة: وقتها ومدة السلة */
+  until: string;
+}
+
+function listSafety(env: BackupEnv): string[] {
+  const dir = safetyBackupsDir(env);
+  try { return env.fs.exists(dir) ? env.fs.list(dir) : []; } catch { return []; }
+}
+
+/** آخر نسخة أمانٍ قبل مسحٍ فيها بيانات، ما دامت في مدة السلة · وإلا null */
+export function keptPreWipe(env: BackupEnv, now: Date = new Date(), names: string[] = listSafety(env)): KeptPreWipe | null {
+  let best: { name: string; at: string } | null = null;
+  for (const name of names) {
+    if (!PRE_WIPE_NAME.test(name)) continue;
+    const at = safetyAt(name);
+    if (at && !Number.isNaN(Date.parse(at)) && (!best || at > best.at)) best = { name, at };
+  }
+  if (!best) return null;
+  const until = Date.parse(best.at) + trashDays(env.db) * DAY_MS;
+  return now.getTime() < until ? { ...best, until: new Date(until).toISOString() } : null;
+}
+
+/**
+ * كنس الإقلاع: نسخة أمانٍ قبل مسحٍ انقضت مدة حمايتها وبعدها نسخة أمانٍ أحدث فيها بيانات تُحذف، كما كانت ستحذفها تلك النسخة لولا الحماية ·
+ * والوحيدة أو الأحدث تبقى كما كانت · يعيد عدد ما حُذف
+ */
+export function sweepSafetyBackups(env: BackupEnv, now: Date = new Date()): number {
+  const names = listSafety(env);
+  const kept = keptPreWipe(env, now, names)?.name;
+  const newest = names.map((n) => (n.endsWith(EMPTY_MARK + '.aqbk') ? null : safetyAt(n))).filter((x): x is string => !!x).sort().pop();
+  let n = 0;
+  for (const name of names) {
+    const at = safetyAt(name);
+    if (!PRE_WIPE_NAME.test(name) || name === kept || !at || !newest || at >= newest) continue;
+    try { env.fs.remove(joinPath(safetyBackupsDir(env), name)); n++; } catch { /* يُعاد في الإقلاع التالي */ }
+  }
+  return n;
+}
+
 /**
  * نسخة أمان واحدة تبقى · وكل ما قبلها يُحذف.
  * فقد كانت كل محاولةٍ تترك ملفاً بحجم بياناتك كاملة في مجلدٍ لا تعدّه شاشة المساحة
  * ولا تكنسه مكنسة · فتتراكم بلا سقف. والحذف بعد نجاح الجديدة لا قبله، فلا تمرّ
- * لحظة واحدة والقرص بلا نسخة أمان.
+ * لحظة واحدة والقرص بلا نسخة أمان · إلا آخر نسخةٍ قبل المسح في مدة السلة: لا تحذفها نسخة ما قبل الاستعادة (C-6 · س٢٣).
  */
 export async function makeSafetyBackup(
   env: BackupEnv,
@@ -87,10 +158,12 @@ export async function makeSafetyBackup(
   const empty = !hasUserData(env.db);
   const keep = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}${empty ? EMPTY_MARK : ''}.aqbk`;
   const outPath = joinPath(dir, keep);
+  // تُعرف قبل النسخة الجديدة بالقاعدة التي فيها إعداد المدة
+  const kept = prefix === 'pre-restore' ? keptPreWipe(env)?.name : undefined;
   await createBackup(env, outPath, onProgress, { asIs: true });
   // نسخ ما قبل الترقية لها سقفها في upgrade.ts · لا تحذفها نسخة استعادة ولا مسح
   for (const name of env.fs.list(dir)) {
-    if (name === keep || !name.endsWith('.aqbk') || name.startsWith(PRE_UPGRADE_PREFIX)) continue;
+    if (name === keep || name === kept || !name.endsWith('.aqbk') || name.startsWith(PRE_UPGRADE_PREFIX)) continue;
     if (empty && !name.endsWith(EMPTY_MARK + '.aqbk')) continue;
     try { env.fs.remove(joinPath(dir, name)); } catch { /* التالي · لا يعطّل */ }
   }

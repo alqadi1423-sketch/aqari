@@ -1037,6 +1037,7 @@
     "badLocalList": "Backup rejected · the list of its on-device files in its manifest is invalid, so nothing is written from it",
     "checkingLocal": "Matching the backup's files on this device · {{i}} of {{n}}",
     "localFiles": "This is a pre-upgrade backup: it holds your data and the list of its files ({{n}}) with their fingerprints, not the files themselves · the files stay on this device as they are and the restore does not touch them.",
+    "preWipeKept": "The safety backup taken before «Erase all data» ({{at}}) stays on this device until {{until}}, so this restore does not delete it · you can restore it from the «Restore» button in «Data and storage».",
     "localMissing": "{{n}} of them were not found on this device or have changed; the backup does not carry them, so the restore will not bring them back:",
     "keptAccountMissing": "Entry {{no}}, posted after the backup date for {{amount}}, has a line on account {{code}}, and that account is not in the backup, on this device or in the cloud · a posted entry is never deleted by a restore, so add account {{code}} to the chart of accounts and then restore the backup",
     "keptAccountTrashed": "Entry {{no}}, posted after the backup date for {{amount}}, has a line on account {{code}}, and that account is in the trash · a posted entry is never deleted by a restore nor left on a deleted account, so restore account {{code}} from the trash and then restore the backup",
