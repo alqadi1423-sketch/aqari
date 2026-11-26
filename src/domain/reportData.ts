@@ -8,6 +8,10 @@ import type { DB } from '../db/adapter';
 import { today } from './dates';
 import { contractStatusLabel } from './contracts/rules';
 import { contractTotalSql } from './accounting/rentSplit';
+import { invoiceNoLabel, KIND_CREDIT } from './invoices';
+import { t } from '../i18n';
+
+const INVOICE_DRAFT = 'مسودة'; // i18n-exempt: حالة الفاتورة المخزّنة
 
 /** التاريخ يُضمَّن في SQL بصيغته وحدها (مراجعة التثبيت #24) */
 const ymd = (d: string): string => {
@@ -199,17 +203,27 @@ export function supplierReportData(db: DB, supplierId: string, from: string | nu
 }
 
 export interface InvoicesReport {
-  rows: Array<{ no: string; customer_name: string; issue: string; due: string; status: string; total_halalas: number }>;
+  rows: Array<{ no: string; customer_name: string; issue: string; due: string; status: string; total_halalas: number; kind: string | null }>;
   byStatus: Array<{ status: string; count: number; total: number }>;
   byCustomer: Array<{ customer: string; count: number; total: number }>;
   grand: { count: number; total: number };
 }
 
+/** رقم الفاتورة في التقرير: الإشعار الدائن بنوعه، والرقم المؤقت لا يُطبع (A2.14) */
+export function invoiceReportNo(r: { no: string; kind?: string | null }): string {
+  return r.kind === KIND_CREDIT ? t('invoice.creditNote', { lng: 'ar' }) + ' ' + invoiceNoLabel(r.no) : invoiceNoLabel(r.no);
+}
+
+/**
+ * تقرير الفواتير: الصادرة وإشعاراتها الدائنة (سالبةً) وحدها · المسودة برقمها المؤقت خارجه ومجاميعه (المراجعة الشاملة 2026-11-13 · A2.14:
+ * كانت تدخل «الإجمالي العام» ويُطبع رقمها المؤقت)
+ */
 export function invoicesReportData(db: DB, from: string | null, to: string = today()): InvoicesReport {
+  const hasKind = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'kind');
   const rows = db.all<InvoicesReport['rows'][number]>(
-    `SELECT no, customer_name, issue, due, status, total_halalas FROM invoices
-     WHERE deleted_at IS NULL${period('issue', from, to)}
-     ORDER BY issue DESC, created_at DESC`
+    `SELECT no, customer_name, issue, due, status, total_halalas, ${hasKind ? 'kind' : 'NULL AS kind'} FROM invoices
+     WHERE deleted_at IS NULL AND status != ?${period('issue', from, to)}
+     ORDER BY issue DESC, created_at DESC`, [INVOICE_DRAFT]
   );
   const map = new Map<string, { count: number; total: number }>();
   for (const r of rows) {

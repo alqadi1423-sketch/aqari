@@ -9,7 +9,7 @@ import { dfmtOut } from '../domain/dates';
 import { printHtmlDoc, companyHeader, companyInfo } from './print';
 import { shownVatNo, vatReturnVatNo } from '../domain/printDocs';
 import {
-  unitReportData, propertyReportData, supplierReportData, invoicesReportData,
+  unitReportData, propertyReportData, supplierReportData, invoicesReportData, invoiceReportNo,
 } from '../domain/reportData';
 import { buildXlsx, buildDocx, type ReportBlock, type Cell, type XlsxDoc } from '../domain/officeBuild';
 import { shareOfficeFile } from './officeFiles';
@@ -159,7 +159,7 @@ function invoicesBlock(db: DB, from: string | null, to: string): ReportBlock {
     meta: [],
     sections: [
       { title: `الفواتير (${d.rows.length})`, header: ['الرقم', 'العميل', 'الإصدار', 'الاستحقاق', 'الحالة', 'الإجمالي'],
-        rows: d.rows.map((r) => [r.no, r.customer_name, dfmtOut(r.issue), dfmtOut(r.due), r.status, M(r.total_halalas)]) },
+        rows: d.rows.map((r) => [invoiceReportNo(r), r.customer_name, dfmtOut(r.issue), dfmtOut(r.due), r.status, M(r.total_halalas)]) },
       { title: 'حسب الحالة', header: ['الحالة', 'العدد', 'الإجمالي'],
         rows: d.byStatus.map((s) => [s.status, s.count, M(s.total)]) },
       { title: 'حسب العميل', header: ['العميل', 'العدد', 'الإجمالي'],
