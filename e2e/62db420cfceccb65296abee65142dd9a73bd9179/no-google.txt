@@ -1,0 +1,8 @@
+no-google fail · mode enforce
+capture /home/runner/work/_temp/emu-net.pcap · packets 825
+app remoteprovisioning.googleapis.com (dns,sni)
+webview clientservices.googleapis.com (dns,sni) · بذرة تجارب WebView في النظام (variations) عند أول خريطة
+webview update.googleapis.com (dns,sni) · محدّث مكوّنات WebView في النظام عند أول خريطة
+system time.android.com (dns) · وقت الشبكة في أندرويد
+problem علامة النافذة aqari-e2e-window.example.com لم تظهر: التسجيل لم يرَ حركة الجوال، فلا يُعدّ نظيفاً
+problem نطاقات قوقل من التطبيق: remoteprovisioning.googleapis.com
