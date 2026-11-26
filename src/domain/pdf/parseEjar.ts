@@ -137,7 +137,8 @@ const SCHEDULE_ANCHORS = [/rentpayments?schedule/i, /payments?schedule/i, /جد�
  * جدول الدفعات من نصّ ملف إيجار (قرار المالك ٢٠٢٦-١٠-٠٥) · يبدأ بعد عنوان الجدول، وكل صفّ سطرٌ فيه تاريخ ميلادي
  * ومبلغ عشري. في الصف تاريخان ميلاديان: الاستحقاق ونهاية مهلة السداد، وترتيب أعمدتهما في النص المستخرج يتبع
  * الرسم لا القراءة (ظهرت المهلة أولاً) · فالأبكر هو الاستحقاق والأبعد آخر المهلة، أياً كان ترتيبهما. وأول مبلغ بعد
- * نزع التواريخ (الميلادية والهجرية) هو قيمته، فلا يختلط يومٌ ملتصق بمبلغ. ينتهي الجدول بأول سطر نصّي بعد صفوفه. يُرفض كله إن خرج تاريخ عن مدة العقد أو لم يتصاعد،
+ * نزع التواريخ (الميلادية والهجرية) هو قيمته، فلا يختلط يومٌ ملتصق بمبلغ. ينتهي الجدول بأول سطر نصّي بعد صفوفه
+ * إلا إطار الصفحة بين صفحتيه (رقم الصفحة والترويسة وصفّ العناوين المكرر · E-5). يُرفض كله إن خرج تاريخ عن مدة العقد أو لم يتصاعد،
  * فالجدول المقروء خطأً أسوأ من المحسوب.
  */
 export function parseEjarSchedule(raw: string): ScheduleRow[] | null {
@@ -149,6 +150,15 @@ export function parseEjarSchedule(raw: string): ScheduleRow[] | null {
   const isAnchor = (l: string) => SCHEDULE_ANCHORS.some((re) => re.test(l) || re.test([...l].reverse().join('')));
   const from = lines.findIndex(isAnchor);
   if (from < 0) return null;
+  // إطار الصفحة بين صفحات الجدول لا يُنهيه (المراجعة الشاملة 2026-11-13 · E-5): رقم الصفحة، وصفّ العناوين المكرر،
+  // وترويسة الصفحة (سطرٌ فيه رقم العقد، أو سطرٌ ظهر قبل الجدول) · وما سواها من نصٍّ ينهيه كما كان
+  const contractNo = tf.match(/ContractNo\.?:?(\d{6,})/i)?.[1];
+  const before = new Set(lines.slice(0, from).filter((l) => l.length >= 6));
+  let header: string | null = null;
+  const isFrame = (l: string) =>
+    /^(?:page)?\d+(?:of|\/)\d+$/i.test(l) || /^(?:صفحة|الصفحة)\d+(?:من\d+)?$/.test(l) || /^(?:page)\d+$/i.test(l)
+    || (header !== null && l === header) || /DueDate/i.test(l) || /تاريخالاستحقاق/.test(l)
+    || (!!contractNo && l.includes(contractNo)) || before.has(l);
   const rows: ScheduleRow[] = [];
   for (let i = from + 1; i < lines.length; i++) {
     const line = lines[i];
@@ -156,6 +166,7 @@ export function parseEjarSchedule(raw: string): ScheduleRow[] | null {
     const gregs = [...line.matchAll(GREG)].map((m) => m[0]);
     const rest = line.replace(GREG, '|').replace(HIJRI, '|');
     const amt = rest.match(AMOUNT);
+    if (!rows.length && !(gregs.length && amt)) { if (header === null && /[A-Za-z\u0600-\u06FF]{3,}/.test(line)) header = line; continue; }
     if (gregs.length && amt) {
       const v = parseFloat(amt[0].replace(/,/g, ''));
       if (!(v > 0)) return null;
@@ -163,7 +174,8 @@ export function parseEjarSchedule(raw: string): ScheduleRow[] | null {
       const due = sorted[0];
       const deadline = sorted.length > 1 && sorted[sorted.length - 1] > due ? sorted[sorted.length - 1] : null;
       rows.push({ dueDate: due, deadline, amountHalalas: Math.round(v * 100) });
-    } else if (rows.length && /[A-Za-z\u0600-\u06FF]{3,}/.test(line)) break; // نهاية الجدول: أول نصّ بعد صفوفه
+    } else if (isFrame(line)) continue; // إطار صفحة: الجدول يكمل بعده
+    else if (/[A-Za-z\u0600-\u06FF]{3,}/.test(line)) break; // نهاية الجدول: أول نصّ بعد صفوفه
   }
   if (!rows.length) return null;
   for (let i = 0; i < rows.length; i++) {

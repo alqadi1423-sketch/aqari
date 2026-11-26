@@ -37,7 +37,7 @@ describe('E-5 · [متوسط] جدول دفعات إيجار يمتد على ص�
     expect(parseEjarSchedule(one)?.length).toBe(12);
   });
 
-  test.failing('بين الصفحتين تذييلٌ وترويسة وصفّ عناوين مكرر: تُقرأ الصفوف الاثنا عشر كلها', () => {
+  test('بين الصفحتين تذييلٌ وترويسة وصفّ عناوين مكرر: تُقرأ الصفوف الاثنا عشر كلها', () => {
     const two = HEAD + '\n'
       + Array.from({ length: 8 }, (_, k) => row(k + 1)).join('\n')
       + '\nPage 1 of 2\nUnified Lease Contract 20260099999/1-2026\n'

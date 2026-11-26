@@ -493,6 +493,7 @@ export default function Contracts() {
       <ReviewSheet
         visible={reviewOpen}
         form={form.state}
+        onUseComputed={() => form.set('schedule', null)}
         onBack={() => { setReviewOpen(false); setFormOpen(true); }}
         onConfirm={doConfirmCreate}
         cc={cc} onCc={setCc}
@@ -552,8 +553,8 @@ import { useLang } from '../../src/i18n';
 import { GENERAL_COST_CENTER, withCostCenter } from '../../src/domain/accounting/dimensions';
 import { contractTotalOf, contractTotalSql } from '../../src/domain/accounting/rentSplit';
 function ReviewSheet({
-  visible, form, onBack, onConfirm, db, cc, onCc, leaseDiffs, approved, onApproved,
-}: { visible: boolean; form: ContractFormState; onBack: () => void; onConfirm: () => void; db: DB; cc: string; onCc: (v: string) => void;
+  visible, form, onBack, onConfirm, db, cc, onCc, leaseDiffs, approved, onApproved, onUseComputed,
+}: { visible: boolean; form: ContractFormState; onUseComputed: () => void; onBack: () => void; onConfirm: () => void; db: DB; cc: string; onCc: (v: string) => void;
   leaseDiffs: ExtraDiff[]; approved: Set<ExtraKey>; onApproved: (s: Set<ExtraKey>) => void }) {
   const u = form.unitId
     ? db.get<{ unit_no: string; property_id: string }>(`SELECT unit_no, property_id FROM units WHERE id = ?`, [form.unitId])
@@ -595,7 +596,7 @@ function ReviewSheet({
         </Row>
       ))}
       <View style={{ marginTop: 12 }}>
-        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} financial={form.extras?.financial} split={formSplit(form)} />
+        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} financial={form.extras?.financial} split={formSplit(form)} onUseComputed={onUseComputed} />
         <LeaseCompare extras={form.extras} diffs={leaseDiffs} approved={approved} onChange={onApproved} />
         <CostCenterField value={cc} onChange={onCc} />
         <Note>بعد الإنشاء لا يمكن تعديل العقد أو حذفه · يُلغى فقط.</Note>

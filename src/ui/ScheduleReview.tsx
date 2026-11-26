@@ -4,7 +4,7 @@
  */
 import React, { useMemo } from 'react';
 import { View } from 'react-native';
-import { Money, Note, Row, T } from './components';
+import { BtnGhost, Money, Note, Row, T } from './components';
 import { C, TYPE } from './theme';
 import { useLang } from '../i18n';
 import { dfmt } from '../domain/dates';
@@ -14,12 +14,14 @@ import { scheduleInstallments } from '../domain/contracts/service';
 import { generateInstallments } from '../domain/contracts/installments';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
 
-export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFile, financial, split }: {
+export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFile, financial, split, onUseComputed }: {
   start: string; end: string; value: string; cycle: string; schedule?: ScheduleRow[] | null; fromEjarFile?: boolean;
   /** البيانات المالية المقروءة · لفحص عدد الصفوف والدفعة الدورية والأخيرة */
   financial?: EjarExtras['financial'];
   /** ما في القيمة للخدمات والمواقف · يُعرض تفصيلها */
   split?: { servicesHalalas?: number; parkingHalalas?: number };
+  /** إسقاط جدول الملف المقروء والحساب بالدالة (E-5) · يظهر زرّه حين لا يطابق المجموع إجمالي العقد، ولا يظهر بلا هذه الدالة */
+  onUseComputed?: () => void;
 }) {
   const { t } = useLang();
   const rows = useMemo(() => {
@@ -47,6 +49,9 @@ export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFil
           sum: fmt(rows.rows.reduce((x, r) => x + r.amount, 0)),
           total: fmt(toHalalas(value) + (split?.servicesHalalas ?? 0) + (split?.parkingHalalas ?? 0)),
         })}</Note>
+      ) : null}
+      {rows.read && onUseComputed && scheduleSumGap(schedule, toHalalas(value) + (split?.servicesHalalas ?? 0) + (split?.parkingHalalas ?? 0)) !== 0 ? (
+        <View style={{ marginTop: 6 }}><BtnGhost small title={t('lease.useComputedSchedule')} onPress={onUseComputed} /></View>
       ) : null}
       {rows.read && financial ? scheduleChecks(schedule, financial).map((c) => (
         <Note key={c.code} tone="danger">{t('lease.check.' + c.code, { expected: c.code === 'count' ? c.expected : fmt(c.expected), actual: c.code === 'count' ? c.actual : fmt(c.actual) })}</Note>

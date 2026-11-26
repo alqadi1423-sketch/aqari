@@ -77,6 +77,7 @@
     "splitLine": "Of which rent {{rent}} · services {{services}} · parking {{parking}}",
     "valueField": "Total rent value",
     "scheduleSumMismatch": "The Ejar schedule total {{sum}} differs from the contract total {{total}} · correct the rent, services or parking until they match, or save as draft",
+    "useComputedSchedule": "Compute the installments instead of the file schedule",
     "renewServices": "Services (gas, electricity, water)",
     "renewParking": "Parking",
     "contractTotal": "Contract total",
