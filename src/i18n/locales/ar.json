@@ -1394,5 +1394,28 @@
     "bank": "تحويل من حساب بنكي",
     "bankPick": "الحساب البنكي",
     "done": "تم إلغاء العقد · ورُدّ للمستأجر {{amount}}"
+  },
+  "depositBank": {
+    "bankMissing": "الحساب البنكي غير موجود",
+    "receiptTx": "قبض تأمين تحويلاً إلى {{bank}} · عقد {{no}} · {{tenant}}",
+    "receiptSrc": "قبض تأمين",
+    "refundTx": "ردّ تأمين تحويلاً من {{bank}} · عقد {{no}} · {{tenant}}",
+    "refundSrc": "ردّ تأمين",
+    "refundRevTx": "عكس ردّ تأمين سابق",
+    "rsvTx": "عربون حجز تحويلاً إلى {{bank}} · {{name}}",
+    "rsvSrc": "عربون حجز",
+    "rsvRefundTx": "ردّ عربون تحويلاً من {{bank}} · {{name}}",
+    "rsvRefundSrc": "ردّ عربون",
+    "receiveMethod": "طريقة قبض التأمين",
+    "extraMethod": "طريقة قبض التأمين الإضافي",
+    "refundMethod": "طريقة ردّ التأمين",
+    "rsvMethod": "طريقة قبض العربون",
+    "rsvRefundMethod": "طريقة ردّ العربون",
+    "cash": "نقداً",
+    "bankIn": "تحويل إلى حساب بنكي",
+    "bankOut": "تحويل من حساب بنكي",
+    "bankPick": "الحساب البنكي",
+    "memberRejected": "حركة بنكٍ لقيد {{no}} لا تطابق طريقة القبض أو الردّ في مستنده · لا تُطبَّق",
+    "rsvRefundByBank": "إلغاء وردّ العربون تحويلاً ({{amount}})"
   }
 }

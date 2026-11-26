@@ -103,7 +103,7 @@ const SELF_CONTAINED = new Set(['cash_op', 'manual']);
 /** قيود التسوية التي لا يُحمل مستندها (صفّ التسوية) · أخوات دفعة «من التأمين» في التسوية الواحدة (R12-BAK-2) */
 const SETTLEMENT_ENTRIES = new Set(['deposit_deduct', 'deposit_refund', 'deposit_deduct_move']);
 /** ما تُعرف به التسوية التي سُدّدت بها دفعة «من التأمين» · صفّها في النسخة وفي المصدر */
-const SETTLEMENT_KEY = ['date', 'deduction_halalas', 'refund_halalas', 'deduct_destination'];
+const SETTLEMENT_KEY = ['date', 'deduction_halalas', 'refund_halalas', 'deduct_destination', 'refund_bank_id'];
 /** مصادر حركة البنك بلا قيد: نقل النقد بين المحفظة والبنوك (cashOps.ts) · تُحمل مع القيود المضمومة (R12-BAK-3) */
 const CASH_MOVE_SOURCES = [CASH_DEPOSIT_SOURCE, CASH_WITHDRAW_SOURCE, TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE];
 const TRANSFER_SOURCES = new Set([TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE]);

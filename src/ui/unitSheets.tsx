@@ -46,6 +46,7 @@ import { GENERAL_COST_CENTER, withCostCenter } from '../domain/accounting/dimens
 import { UnitAssetsSection } from './UnitAssets';
 import { contractTotalSql, contractTotalOf } from '../domain/accounting/rentSplit';
 import { useLang } from '../i18n';
+import { DepositBankField } from './DepositBankField';
 import { propertyMoveLocked } from '../domain/access/access';
 export function UnitFormSheet({
   propertyId, unitId, onClose, onSaved,
@@ -170,6 +171,10 @@ export function UnitDetailSheet({
   // تسوية عربون حجزٍ انتهى ولم يُسوَّ (المراجعة ٤.٥) · بقرار المالك وتاريخه
   const [settle, setSettle] = useState<{ id: string; name: string; deposit: number } | null>(null);
   const [settleDate, setSettleDate] = useState(today());
+  // ردّ العربون تحويلاً من حساب بنكي، والفارغ نقداً (A1-6 · قرار المالك س١٧)
+  const [settleBank, setSettleBank] = useState('');
+  const banksCount = useMemo(() => Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM banks WHERE deleted_at IS NULL`)?.n ?? 0), [db, version]);
+  const { t } = useLang();
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
   // «إيداع المالك» بالناقص حين لا يكفي النقد لردّ عربون (قرار المالك ٢٠٢٦-١٠-٠٥)
   const [depositFor, setDepositFor] = useState<number | null>(null);
@@ -271,6 +276,12 @@ export function UnitDetailSheet({
                     } catch (e) { reportFailure({ title: 'تعذّر الإلغاء', e }); }
                   },
                 }]),
+                // والردّ تحويلاً من حساب بنكي في نافذة التسوية بطريقته وتاريخه (A1-6) · بلا حساب بنكي لا يُعرض
+                ...(Number(rsv.deposit_halalas) > 0 && banksCount > 0 ? [{
+                  label: t('depositBank.rsvRefundByBank', { amount: fmt(dep) }),
+                  variant: 'ghost' as const,
+                  onPress: () => { setSettleDate(today()); setSettleBank(''); setSettle({ id: rsv.id, name: rsv.name, deposit: dep }); },
+                }] : []),
                 // بلا عربون لا مصادرة · الزر لا يُعرض أصلاً
                 ...(Number(rsv.deposit_halalas) > 0 ? [{
                   label: `مصادرة العربون (${fmt(Number(rsv.deposit_halalas))})`,
@@ -292,6 +303,7 @@ export function UnitDetailSheet({
           </T>
           <BtnGhost small title="تسوية العربون" onPress={() => {
             setSettleDate(today());
+            setSettleBank('');
             setSettle({ id: h.id, name: h.name, deposit: Number(h.deposit_halalas) });
           }} />
         </Note>
@@ -301,10 +313,11 @@ export function UnitDetailSheet({
         <Sheet visible onClose={() => setSettle(null)} title={'تسوية عربون «' + settle.name + '»'}>
           <DateField label="تاريخ الرد أو المصادرة" value={settleDate} onChange={setSettleDate} />
           <CostCenterField value={cc} onChange={setCc} />
+          <DepositBankField label={t('depositBank.rsvRefundMethod')} value={settleBank} onChange={setSettleBank} out />
           <View style={{ marginBottom: 8 }}>
-            <CashGate needed={settle.deposit} what="ردّ العربون" date={settleDate}>
+            <CashGate needed={settleBank ? 0 : settle.deposit} what="ردّ العربون" date={settleDate}>
               <BtnPrimary title={'ردّ العربون لصاحبه (' + fmt(settle.deposit) + ')'} onPress={() => {
-                try { withCostCenter(cc, () => cancelReservation(db, settle.id, false, settleDate)); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
+                try { withCostCenter(cc, () => cancelReservation(db, settle.id, false, settleDate, settleBank || null)); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
                 catch (e) { reportFailure({ title: 'تعذّرت التسوية', e }); }
               }} />
             </CashGate>

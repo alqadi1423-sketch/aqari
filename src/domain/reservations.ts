@@ -5,6 +5,8 @@
 import type { DB } from '../db/adapter';
 import { requireCash } from './cashGuard';
 import { moneyError } from './moneyGuard';
+import { requireBankFor, linkBankTx, hasDepositBankCols } from './accounting/bankLink';
+import { t } from '../i18n';
 import { uid } from './ids';
 import { today, dfmt } from './dates';
 import { postReservationDeposit, postReservationForfeit, postReservationRefund } from './accounting/post';
@@ -18,6 +20,8 @@ export interface ReservationInput {
   phone: string;
   depositHalalas: number;
   expiryDate: string;
+  /** قبض العربون تحويلاً إلى هذا البنك · الفارغ نقداً في المحفظة (A1-6 · قرار المالك س١٧) */
+  bankId?: string | null;
 }
 
 export function createReservation(db: DB, input: ReservationInput): string {
@@ -31,6 +35,8 @@ export function createReservation(db: DB, input: ReservationInput): string {
   const existing = unitActiveReservation(db, input.unitId);
   if (existing)
     throw new Error('يوجد حجز نشط على هذه الوحدة بالفعل حتى ' + dfmt(existing.expiry_date));
+  const bank = input.depositHalalas > 0 && input.bankId && hasDepositBankCols(db) ? input.bankId : null;
+  const bankName = bank ? requireBankFor(db, bank) : '';
   return db.transaction(() => {
     const id = uid();
     db.run(
@@ -39,7 +45,13 @@ export function createReservation(db: DB, input: ReservationInput): string {
       [id, input.unitId, input.name.trim(), input.phone.trim(), input.depositHalalas,
        input.expiryDate, today()]
     );
-    postReservationDeposit(db, { id, name: input.name, deposit: input.depositHalalas });
+    if (bank) db.run(`UPDATE reservations SET bank_id = ? WHERE id = ?`, [bank, id]);
+    const entry = postReservationDeposit(db, { id, name: input.name, deposit: input.depositHalalas });
+    // والعربون المقبوض تحويلاً يدخل البنك لا المحفظة (A1-6)
+    if (entry && bank) {
+      linkBankTx(db, { bankId: bank, date: today(), amount: input.depositHalalas, entryNo: entry.no,
+        descr: t('depositBank.rsvTx', { name: input.name.trim(), bank: bankName, lng: 'ar' }), source: t('depositBank.rsvSrc', { lng: 'ar' }) });
+    }
     logAudit(db, 'العقارات', 'create', 'حجز بعربون', input.name);
     return id;
   });
@@ -49,7 +61,7 @@ export function createReservation(db: DB, input: ReservationInput): string {
  * إلغاء الحجز أو تسوية عربون حجزٍ انتهى · مصادرةً إيراداً أو ردّاً لصاحبه، وكلاهما بقيد بتاريخه (المراجعة ٤.٥).
  * العربون يُسوّى مرة واحدة: المحوَّل لعقد أو المسوّى قبلُ يُرفض.
  */
-export function cancelReservation(db: DB, id: string, forfeitDeposit: boolean, date: string = today()): void {
+export function cancelReservation(db: DB, id: string, forfeitDeposit: boolean, date: string = today(), refundBankId?: string | null): void {
   requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
   db.transaction(() => {
     const r = db.get<{ name: string; deposit_halalas: number; status: string; deposit_outcome: string | null }>(
@@ -59,13 +71,24 @@ export function cancelReservation(db: DB, id: string, forfeitDeposit: boolean, d
     if (r.status === 'محوَّل لعقد') throw new Error('الحجز محوَّل لعقد · عربونه سُدّد به العقد');
     if (r.deposit_outcome) throw new Error('عربون هذا الحجز ' + r.deposit_outcome + ' من قبل');
     const deposit = Number(r.deposit_halalas);
-    if (!forfeitDeposit) requireCash(db, deposit, 'ردّ العربون', date); // بتاريخ الرد (A2.8)
+    // والردّ تحويلاً يخرج من البنك ويكفيه رصيده، والنقد من المحفظة (A1-6)
+    const bankCols = hasDepositBankCols(db);
+    const refundBank = !forfeitDeposit && deposit > 0 && refundBankId && bankCols ? refundBankId : null;
+    const bankName = refundBank ? requireBankFor(db, refundBank, deposit) : '';
+    if (!forfeitDeposit && !refundBank) requireCash(db, deposit, 'ردّ العربون', date); // بتاريخ الرد (A2.8)
     const outcome = deposit > 0 ? (forfeitDeposit ? 'مصادَر' : 'مردود') : null;
     db.run(`UPDATE reservations SET status = 'منتهي', deposit_outcome = ?, deposit_settled_date = ? WHERE id = ?`,
       [outcome, outcome ? date : null, id]);
+    if (bankCols) db.run(`UPDATE reservations SET refund_bank_id = ? WHERE id = ?`, [refundBank, id]);
     if (deposit > 0) {
       if (forfeitDeposit) postReservationForfeit(db, { id, name: r.name, deposit, date });
-      else postReservationRefund(db, { id, name: r.name, deposit, date });
+      else {
+        const entry = postReservationRefund(db, { id, name: r.name, deposit, date });
+        if (entry && refundBank) {
+          linkBankTx(db, { bankId: refundBank, date, amount: -deposit, entryNo: entry.no,
+            descr: t('depositBank.rsvRefundTx', { name: r.name, bank: bankName, lng: 'ar' }), source: t('depositBank.rsvRefundSrc', { lng: 'ar' }) });
+        }
+      }
     }
     logAudit(db, 'العقارات', 'update', 'إلغاء حجز', r.name, null, outcome ? { deposit_outcome: outcome, date } : undefined);
   });

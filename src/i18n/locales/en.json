@@ -1394,5 +1394,28 @@
     "bank": "Transfer from a bank account",
     "bankPick": "Bank account",
     "done": "Contract cancelled · {{amount}} refunded to the tenant"
+  },
+  "depositBank": {
+    "bankMissing": "The bank account does not exist",
+    "receiptTx": "Deposit received by transfer to {{bank}} · contract {{no}} · {{tenant}}",
+    "receiptSrc": "Deposit received",
+    "refundTx": "Deposit refunded by transfer from {{bank}} · contract {{no}} · {{tenant}}",
+    "refundSrc": "Deposit refund",
+    "refundRevTx": "Earlier deposit refund reversed",
+    "rsvTx": "Reservation deposit by transfer to {{bank}} · {{name}}",
+    "rsvSrc": "Reservation deposit",
+    "rsvRefundTx": "Reservation deposit refunded by transfer from {{bank}} · {{name}}",
+    "rsvRefundSrc": "Reservation deposit refund",
+    "receiveMethod": "How the deposit was received",
+    "extraMethod": "How the additional deposit was received",
+    "refundMethod": "How the deposit is refunded",
+    "rsvMethod": "How the reservation deposit was received",
+    "rsvRefundMethod": "How the reservation deposit is refunded",
+    "cash": "Cash",
+    "bankIn": "Transfer to a bank account",
+    "bankOut": "Transfer from a bank account",
+    "bankPick": "Bank account",
+    "memberRejected": "A bank movement for entry {{no}} does not match how its document was received or refunded · not applied",
+    "rsvRefundByBank": "Cancel and refund the deposit by transfer ({{amount}})"
   }
 }

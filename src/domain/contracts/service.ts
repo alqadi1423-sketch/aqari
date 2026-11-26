@@ -49,6 +49,7 @@ import { reviewState, memberDevice, REPOSTED_KEY } from '../accounting/orphans';
 import { fmt } from '../money';
 import { linkContractTenant, normTenantName } from '../tenants';
 import { refundPrepaidRent, type PrepaidRefundInput } from './prepaid';
+import { requireBankFor, linkBankTx, bankTxOf, mirrorBankTxOfReversed, hasDepositBankCols } from '../accounting/bankLink';
 import { seedTenantOccupant, carryOccupantsToRenewal } from '../occupants';
 import { createHandoverForContract } from '../handover/service';
 import { normalizePhone } from '../phone';
@@ -66,6 +67,11 @@ export class RuleViolation extends Error {
   }
 }
 
+/** بنك قبض التأمين أو ردّه: للمكتب وحده (المنصة والطرف الآخر لا يمسّان نقد المكتب)، ولمبلغٍ موجب · وإلا نقداً (null) */
+function officeBank(holder: string | null | undefined, amount: number, bankId: string | null | undefined): string | null {
+  return (holder || 'المكتب') === 'المكتب' && amount > 0 && bankId ? bankId : null; // i18n-exempt: جهة مخزّنة
+}
+
 export interface ContractDraftInput {
   tenant: string;
   phone: string;
@@ -79,6 +85,8 @@ export interface ContractDraftInput {
   /** جهة قبض التأمين: المكتب · منصة إيجار · طرف آخر */
   depositHolder?: string;
   depositHolderName?: string;
+  /** قبض المكتب التأمين تحويلاً إلى هذا البنك · الفارغ نقداً في المحفظة (A1-6 · قرار المالك س١٧) */
+  depositBankId?: string | null;
   ejarNo: string;
   services: string;
   furnished: string;
@@ -209,6 +217,9 @@ export function saveDraft(db: DB, input: ContractDraftInput, draftId?: string): 
     }
     db.run(`UPDATE contracts SET deposit_holder = ?, deposit_holder_name = ? WHERE id = ?`,
       [input.depositHolder || 'المكتب', input.depositHolderName || '', id]);
+    if (hasDepositBankCols(db)) {
+      db.run(`UPDATE contracts SET deposit_bank_id = ? WHERE id = ?`, [officeBank(input.depositHolder, input.depositHalalas, input.depositBankId), id]);
+    }
     const ej = hasEjarColumns(db) ? ejarColumns(input) : null;
     if (ej) db.run(`UPDATE contracts SET ejar_schedule = ?, installments_source = ? WHERE id = ?`, [ej.schedule, ej.source, id]);
     // الخدمات والمواقف تُحفظ مع المسودة وتعود عند فتحها (المراجعة #1)
@@ -258,6 +269,9 @@ export function confirmContract(db: DB, inputRaw: ContractDraftInput, draftId?: 
   // التأمين والخدمات والمواقف غير سالبة (A1-7): التأمين −١٬٠٠٠ كان يُحفظ بلا قيد فيحمرّ فحص التأمينات، والخدمات السالبة تُصفَّر بصمت
   const moneyBad = firstMoneyError([['Deposit', input.depositHalalas], ['Services', input.servicesHalalas], ['Parking', input.parkingHalalas]]);
   if (moneyBad) throw new RuleViolation(moneyBad.message);
+  // وبنك قبض التأمين قائم (A1-6)
+  const depositBank = hasDepositBankCols(db) ? officeBank(input.depositHolder, input.depositHalalas, input.depositBankId) : null;
+  const depositBankName = depositBank ? requireBankFor(db, depositBank) : '';
 
   return db.transaction(() => {
     if (draftId) {
@@ -326,16 +340,21 @@ export function confirmContract(db: DB, inputRaw: ContractDraftInput, draftId?: 
       const source = fromFile ? SOURCE_FILE : (ej.source ? SOURCE_COMPUTED : null);
       if (cols) db.run(`UPDATE contracts SET ejar_schedule = ?, installments_source = ? WHERE id = ?`, [ej.schedule, source, id]);
     }
-    // استلام التأمين
+    // استلام التأمين · وبنكه إن قُبض تحويلاً (A1-6)
     db.run(`UPDATE contracts SET deposit_holder = ?, deposit_holder_name = ? WHERE id = ?`,
       [input.depositHolder || 'المكتب', input.depositHolderName || '', id]);
+    if (hasDepositBankCols(db)) db.run(`UPDATE contracts SET deposit_bank_id = ? WHERE id = ?`, [depositBank, id]);
     // بتاريخ بداية العقد، إلا إن قُدِّم إقرار ربعه فبتاريخ التصحيح (#29): عقدٌ يُدخل متأخراً لا يكتب في فترةٍ مجمَّدة (التحقق المستقل على
     // البند ٩: التأمين والعربون المحوَّل ودفعاته كانت تُرحَّل فيها فيتغير الإقرار المقدَّم)
     const postDate = correctionDate(db, input.start);
-    postContractDeposit(db, {
+    const depEntry = postContractDeposit(db, {
       id, contract_no: contractNo, tenant: input.tenant, start: postDate,
       deposit: input.depositHalalas, holder: input.depositHolder,
     });
+    if (depEntry && depositBank) {
+      linkBankTx(db, { bankId: depositBank, date: postDate, amount: input.depositHalalas, entryNo: depEntry.no,
+        descr: t('depositBank.receiptTx', { no: contractNo, tenant: input.tenant.trim(), bank: depositBankName, lng: 'ar' }), source: t('depositBank.receiptSrc', { lng: 'ar' }) });
+    }
     // تحويل الحجز لعقد · بمعرّف الحجز الذي اختاره المستخدم، والعربون يسدّد الأقساط بالترتيب بتاريخ العقد (المراجعة ٤.٤)
     if (input.reservationId) convertReservation(db, input.reservationId, id, contractNo, input.tenant, postDate);
     // نموذج الاستلام والتسليم يُنشأ تلقائياً من تفاصيل الوحدة · واحد لكل عقد
@@ -460,6 +479,8 @@ export interface CancelInput {
    * وطريقته بتاريخ الإلغاء (contracts/prepaid.ts) · للمالك وحده
    */
   prepaidRefund?: Omit<PrepaidRefundInput, 'date'> | null;
+  /** ردّ التأمين في التسوية تحويلاً من هذا البنك · الفارغ نقداً (A1-6) */
+  refundBankId?: string | null;
 }
 
 /** القاعدة ١١: إلغاء العقد · خصم من التأمين، والفائض مطالبة تلقائية */
@@ -487,6 +508,7 @@ export function cancelContract(db: DB, contractId: string, input: CancelInput): 
       const r = applyDepositSettlement(db, c, contractId, {
         date, deductionHalalas: input.deductionHalalas || 0, deductionReason: input.deductionReason || '',
         refundHalalas: input.refundHalalas || 0, notes: '', deductReceived: input.deductReceived, arrearsHalalas: input.arrearsHalalas,
+        refundBankId: input.refundBankId,
       }, 'فرق تسوية التأمين عند إلغاء العقد'); // i18n-exempt: سبب مطالبة مخزَّن
       excessClaimCreated = r.excessClaimCreated;
       deduction = r.deduction; refund = r.refund;
@@ -535,6 +557,8 @@ export interface RenewInput {
   /** الخدمات والمواقف في العقد الجديد · وغيابهما ينقلهما من العقد السابق (المراجعة #3) */
   servicesHalalas?: number;
   parkingHalalas?: number;
+  /** قبض التأمين الإضافي تحويلاً إلى هذا البنك · الفارغ نقداً (A1-6) */
+  extraDepositBankId?: string | null;
   /**
    * جواب «هل غادر الساكنون؟» (قرار المالك 2026-08-20 · دراسة القائم): نعم فتُسجَّل مغادرتهم بنهاية العقد، ولا فينتقلون
    * للعقد الجديد · والمستأجر نفسه ينتقل دائماً
@@ -580,6 +604,8 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
   // تأمينٌ سُوّي (رُدّ أو خُصم) لا يُرحَّل: كان العقد الجديد يحمله بلا قبضٍ فيُردّ مرتين (المراجعة الشاملة 2026-11-13 · A1-1)
   const settled = depositSettlementDate(db, contractId);
   if (input.carryDeposit && settled) throw new RuleViolation(t('deposit.settledNoCarry', { date: settled.split('-').reverse().join('/') }));
+  const extraBank = hasDepositBankCols(db) ? officeBank(depositHolderOf(c), input.extraDepositHalalas || 0, input.extraDepositBankId) : null;
+  const extraBankName = extraBank ? requireBankFor(db, extraBank) : '';
 
   return db.transaction(() => {
     const newId = uid();
@@ -624,10 +650,16 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
       });
     }
     if ((input.extraDepositHalalas || 0) > 0) {
-      postContractDeposit(db, {
+      const extraEntry = postContractDeposit(db, {
         id: newId, contract_no: contractNo, tenant: c.tenant_name,
         start: postDate, deposit: input.extraDepositHalalas, holder: (c as unknown as { deposit_holder?: string }).deposit_holder,
       });
+      // وبنك التأمين الإضافي للعقد الجديد (A1-6) · والمرحَّل لا نقد فيه
+      if (extraBank) db.run(`UPDATE contracts SET deposit_bank_id = ? WHERE id = ?`, [extraBank, newId]);
+      if (extraEntry && extraBank) {
+        linkBankTx(db, { bankId: extraBank, date: postDate, amount: input.extraDepositHalalas, entryNo: extraEntry.no,
+          descr: t('depositBank.receiptTx', { no: contractNo, tenant: c.tenant_name, bank: extraBankName, lng: 'ar' }), source: t('depositBank.receiptSrc', { lng: 'ar' }) });
+      }
     }
     createHandoverForContract(db, newId); // العقد الجديد له نموذجه الواحد
     logAudit(db, 'العقود', 'create', 'تجديد عقد', (c.contract_no || '') + ' ← ' + contractNo);
@@ -776,6 +808,8 @@ export interface DepositSettlementInput {
    * بتاريخ التسوية، فيُحسب إيجاراً لا «إيراداً آخر» · لا يتجاوز الخصم ولا المتبقي على تلك الأقساط
    */
   arrearsHalalas?: number;
+  /** ردّ المكتب التأمين تحويلاً من هذا البنك · الفارغ نقداً من المحفظة (A1-6 · قرار المالك س١٧) */
+  refundBankId?: string | null;
 }
 
 /** رُحِّل تأمين العقد إلى عقده المجدَّد · فلا تسوية له (مراجعة التثبيت #28) */
@@ -970,14 +1004,27 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
     `SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS v FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
      WHERE e.src_type IN ('deposit_deduct', 'deposit_refund', 'deposit_deduct_move') AND e.src_id = ? AND e.reversed_by IS NULL
        AND e.deleted_at IS NULL AND e.status = 'مرحّل' AND l.account_code = '1100'`, [contractId])?.v ?? 0); // i18n-exempt: حالة مخزّنة
+  // والردّ تحويلاً يخرج من البنك لا من المحفظة (A1-6 · قرار المالك س١٧): فالمحفظة بصافي القيود الحيّة ناقصاً حركات بنوكها، والبنك يكفي
+  // ردّه بعد ما يعود إليه من ردٍّ سابقٍ منه يُعكس هنا
+  const bankCols = hasDepositBankCols(db);
+  const refundBank = bankCols ? officeBank(holder, refund, input.refundBankId) : null;
+  const liveEntries = db.all<{ id: string; no: string }>(
+    `SELECT id, no FROM journal_entries WHERE src_type IN ('deposit_deduct', 'deposit_refund', 'deposit_deduct_move') AND src_id = ?
+       AND reversed_by IS NULL AND deleted_at IS NULL AND status = 'مرحّل'`, [contractId]); // i18n-exempt: حالة مخزّنة
+  const liveBank = liveEntries.flatMap((e) => bankTxOf(db, e.no));
+  const liveWallet = liveCash - liveBank.reduce((s, x) => s + x.amount, 0);
   const newCash = (holder === 'طرف آخر' && input.deductReceived ? deduction : 0) // i18n-exempt: جهة مخزّنة
     + (holder === 'منصة إيجار' && (input.deductDestination ?? 'محفظة إيجار') === 'حسابنا' ? deduction : 0) // i18n-exempt: جهة ووجهة مخزّنتان
-    - (holder === 'المكتب' ? refund : 0); // i18n-exempt: جهة مخزّنة
-  requireCash(db, liveCash - newCash, 'تسوية التأمين', input.date); // بتاريخ التسوية (A2.8)
+    - (holder === 'المكتب' && !refundBank ? refund : 0); // i18n-exempt: جهة مخزّنة
+  requireCash(db, liveWallet - newCash, 'تسوية التأمين', input.date); // بتاريخ التسوية (A2.8)
+  const refundBankName = refundBank
+    ? requireBankFor(db, refundBank, refund, -liveBank.filter((x) => x.bankId === refundBank).reduce((s, x) => s + x.amount, 0)) : '';
   // كل قيدٍ حيّ من كل مصدر (التحقق المستقل E3: عقودٌ قبل صفّ التسوية فيها مجموعتا قيود)
   for (const [src, memo] of [['deposit_deduct', 'عكس الخصم السابق'], ['deposit_refund', 'عكس الرد السابق'], ['deposit_deduct_move', 'عكس استقرار المخصوم']]) {
     for (let i = 0; i < 20 && reverseEntryBySource(db, src, contractId, 'تعديل تسوية التأمين · ' + memo); i++) { /* حتى لا يبقى حيّ */ }
   }
+  // وحركة بنك ردٍّ سابقٍ عُكس تُعكس بمثلها، فيعود المبلغ إلى البنك الذي خرج منه (A1-6)
+  for (const e of liveEntries) mirrorBankTxOfReversed(db, e.id, t('depositBank.refundRevTx', { lng: 'ar' }));
   // وما سدّده التأمين من الأقساط في التسوية السابقة يُعكس في المعاملة نفسها قبل الجديدة (A1-2)
   reverseDepositRent(db, contractId);
   // تعديل تسويةٍ قائمة: قيودها الجديدة قيود تصحيح بتاريخها، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسها (#29) · والتسوية الأولى
@@ -1006,7 +1053,11 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   }
   // وما ضُمّ منها بعد استعادةٍ ورُوجع يعود داخل المطابقة بهذا الحفظ نفسه: سطر الحفظ في السجل يسمّي العقد (REPOSTED_KEY ·
   // orphans.ts: documentedSql)، يكتبه من حفظ ولو عضواً
-  postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder }, refund, postDate);
+  const refundEntry = postDepositRefund(db, { id: contractId, contract_no: c.contract_no || '', holder }, refund, postDate);
+  if (refundEntry && refundBank) {
+    linkBankTx(db, { bankId: refundBank, date: postDate, amount: -refund, entryNo: refundEntry.no,
+      descr: t('depositBank.refundTx', { no: c.contract_no || '', tenant: c.tenant_name, bank: refundBankName, lng: 'ar' }), source: t('depositBank.refundSrc', { lng: 'ar' }) });
+  }
   db.run(
     `INSERT INTO deposit_settlements (contract_id, date, deduction_halalas, deduction_reason, refund_halalas, notes, deduct_destination)
      VALUES (?,?,?,?,?,?,?)
@@ -1016,6 +1067,7 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
     [contractId, input.date, deduction, input.deductionReason.trim(), refund, input.notes.trim(),
      holder === 'منصة إيجار' ? (input.deductDestination ?? 'محفظة إيجار') : ''] // i18n-exempt: قيم مخزّنة
   );
+  if (bankCols) db.run(`UPDATE deposit_settlements SET refund_bank_id = ? WHERE contract_id = ?`, [refundBank, contractId]);
   return { excessClaimCreated, deduction, refund, arrears: arrearsPaid, prev };
 }
 

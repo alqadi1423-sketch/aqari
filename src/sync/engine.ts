@@ -1739,6 +1739,8 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> 
       // يُطبّق القيد ويمسك حركته فيختلف الجهازان) · ومع رصيدٍ يكفي أثر المزوَّر نقلُ نقدٍ من البنك إلى المحفظة بلا قيد كالسحب (حدٌّ موثَّق)
       // وسداد فاتورة الشراء بطريقة سدادها في الفاتورة: لا حركة بنكٍ لسدادٍ نقداً (O٢)
       if (head?.s === 'purchase_pay') purchasePaidByBank(db, entry.id, nowLive.no);
+      // وقبض التأمين والعربون وردّهما بطريقته في مستنده: حركة بنكٍ بالبنك المسجَّل فيه وحده (A1-6)
+      if (head?.s && DEPOSIT_BANK_COL[head.s.replace(/_rev$/, '')]) depositPaidByBank(db, entry.id, head.s, nowLive.no, nowLive.bank);
       if (!wasLive && nowLive.amount < 0 && bankLowFrom(db, nowLive.bank, nowLive.date || null).low + nowLive.amount < 0
         && (head?.s === 'cash_op' || lateLink(db, entry.id, doc))) {
         throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
@@ -1786,6 +1788,36 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> 
  * فاتورة شراءٍ هذا القيدُ سدادُها القائم بطريقةٍ غير النقد · والفاتورة بمصدر القيد هنا أو في الوارد، وإلا انتظرت الحركة · وقيدُ سدادٍ
  * سابقٍ (عُكس أو بُدّل) يحكم عليه فحص الربط المتأخر لا طريقة السداد القائمة
  */
+/**
+ * بنك قبض التأمين والعربون وردّهما في مستنده (المراجعة الشاملة 2026-11-13 · A1-6 · الهجرة ٦٣): حركة بنكٍ من عضوٍ لقيدٍ منها تُقبل إن
+ * سمّى مستنده ذلك البنك (العمود الفارغ نقدٌ فلا حركة) · وعاكس القيد بحركةٍ على بنك حركة أصله وحده (تعديل التسوية يعكس ردّاً سابقاً) ·
+ * كحارس سداد فاتورة الشراء (purchasePaidByBank): حركةٌ مزوَّرة كانت تنقل نقد المحفظة إلى بنكٍ بلا قبضٍ فيه
+ */
+const DEPOSIT_BANK_COL: Record<string, { table: string; col: string }> = {
+  contract_deposit: { table: 'contracts', col: 'deposit_bank_id' },
+  deposit_refund: { table: 'deposit_settlements', col: 'refund_bank_id' },
+  reservation: { table: 'reservations', col: 'bank_id' },
+  reservation_refund: { table: 'reservations', col: 'refund_bank_id' },
+};
+function depositPaidByBank(db: DB, entryId: string, src: string, no: string, bank: string): void {
+  const bad = () => new Error(tr('depositBank.memberRejected', { no, lng: 'ar' }));
+  if (src.endsWith('_rev')) {
+    const orig = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE reversed_by = ?`, [entryId]);
+    if (!orig) throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
+    if (!db.get(`SELECT 1 FROM bank_tx WHERE journal_no = ? AND bank_id = ? AND deleted_at IS NULL`, [orig.no, bank])) throw bad();
+    return;
+  }
+  const m = DEPOSIT_BANK_COL[src];
+  const srcId = db.get<{ s: string | null }>(`SELECT src_id AS s FROM journal_entries WHERE id = ?`, [entryId])?.s ?? '';
+  const pk = m.table === 'deposit_settlements' ? 'contract_id' : 'id';
+  // نسخة المستند في الوارد لم تُطبَّق بعد أحدث مما هنا (تعديل تسويةٍ ببنكٍ آخر يصل مع حركته)
+  const pending = db.get<{ b: string | null }>(
+    `SELECT json_extract(payload, '$.d.${m.col}') AS b FROM sync_inbox WHERE tbl = ? AND del = 0 AND pk = ?`, [m.table, srcId]);
+  const row = pending ?? db.get<{ b: string | null }>(`SELECT ${m.col} AS b FROM "${m.table}" WHERE ${pk} = ?`, [srcId]);
+  if (!row) throw new AwaitOriginal(tr('deriveSrc.noDoc', { lng: 'ar' }));
+  if (!row.b || row.b !== bank) throw bad();
+}
+
 function purchasePaidByBank(db: DB, entryId: string, no: string): void {
   const pid = db.get<{ s: string | null }>(`SELECT src_id AS s FROM journal_entries WHERE id = ?`, [entryId])?.s ?? '';
   const here = db.get<{ e: string | null; m: string | null }>(`SELECT payment_journal_entry_id AS e, payment_method AS m FROM purchases WHERE id = ?`, [pid]);

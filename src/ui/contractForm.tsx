@@ -3,6 +3,7 @@
  * والحقول الخاصة بنوع الوحدة.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import { DepositBankField } from './DepositBankField';
 import { useAccess } from './access';
 import { propertyMoveLocked } from '../domain/access/access';
 import { View, Share, Animated } from 'react-native';
@@ -29,6 +30,8 @@ import type { ScheduleRow } from '../domain/pdf/parseEjar';
 import type { ContractField } from '../domain/contracts/rules';
 import { reportFailure } from './failureDialog';
 import { useLang } from '../i18n';
+
+const OFFICE_HOLDER = 'المكتب'; // i18n-exempt: جهة قبض التأمين المخزّنة
 
 /**
  * تاريخ الحقول: ما كتبه المستخدم في العمود نفسه من قبل، الأحدث أولاً ·
@@ -83,6 +86,8 @@ export interface ContractFormState {
   /** جهة قبض التأمين: المكتب · منصة إيجار · طرف آخر */
   depositHolder: string;
   depositHolderName: string;
+  /** بنك قبض التأمين تحويلاً · الفارغ نقداً (A1-6) */
+  depositBankId?: string;
   ejarNo: string;
   services: string;
   furnished: string;
@@ -121,6 +126,7 @@ export function formToInput(s: ContractFormState): ContractDraftInput {
     tenant: s.tenant, phone: s.phone, idNumber: s.idNumber, unitId: s.unitId,
     valueHalalas: toHalalas(s.value), cycle: s.cycle, start: s.start, end: s.end,
     depositHalalas: toHalalas(s.deposit), depositHolder: s.depositHolder, depositHolderName: s.depositHolderName,
+    depositBankId: s.depositBankId || null,
     ejarNo: s.ejarNo, services: s.services,
     furnished: s.furnished, typeSpecific: s.typeSpecific,
     reservationId: s.reservationId || null,
@@ -416,6 +422,10 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
             onPick={(v) => set('depositHolder', v)} />
         </View>
       </Row>
+      {/* قبض المكتب التأمين نقداً أو تحويلاً لحساب بنكي (A1-6 · قرار المالك س١٧) */}
+      {(state.depositHolder || OFFICE_HOLDER) === OFFICE_HOLDER && toHalalas(state.deposit) > 0 ? (
+        <DepositBankField label={t('depositBank.receiveMethod')} value={state.depositBankId ?? ''} onChange={(v) => set('depositBankId', v)} />
+      ) : null}
       {state.depositHolder === 'طرف آخر' ? (
         <Field label="اسم الطرف القابض للتأمين" value={state.depositHolderName}
           onChange={(v) => set('depositHolderName', v)} />

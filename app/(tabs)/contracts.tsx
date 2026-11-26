@@ -54,6 +54,7 @@ import { recordKeyMoneyDeal } from '../../src/domain/keymoney';
 import { generateInstallments } from '../../src/domain/contracts/installments';
 import { today, dfmt, addDays, approxMonths, periodLabel, daysBetween, contractEndFromDuration, periodBounds, isISODate } from '../../src/domain/dates';
 import { prepaidUnearned } from '../../src/domain/accrual';
+import { DepositBankField } from '../../src/ui/DepositBankField';
 import { fmt, toHalalas } from '../../src/domain/money';
 import { naturalCompare } from '../../src/domain/sortKey';
 import { rescheduleAllNotifications } from '../../src/services/notifications';
@@ -202,6 +203,7 @@ export default function Contracts() {
       deposit: c.deposit_halalas ? fmt(c.deposit_halalas).replace(/,/g, '') : '',
       depositHolder: (c as unknown as { deposit_holder?: string }).deposit_holder ?? 'المكتب',
       depositHolderName: (c as unknown as { deposit_holder_name?: string }).deposit_holder_name ?? '',
+      depositBankId: (c as unknown as { deposit_bank_id?: string | null }).deposit_bank_id ?? '',
       ejarNo: c.ejar_no, services: c.services, furnished: c.furnished,
       typeSpecific: JSON.parse(c.type_specific || '{}'),
       pendingFile: null,
@@ -981,6 +983,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const settledOn = depositSettlementDate(db, contractId);
   const [carry, setCarry] = useState(false);
   const [extraDeposit, setExtraDeposit] = useState('');
+  const [extraBank, setExtraBank] = useState('');
   const [services, setServices] = useState(c.services || '');
   const [furnished, setFurnished] = useState(c.furnished || '');
   const [ejar, setEjar] = useState('');
@@ -1019,7 +1022,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
       renewContract(db, contractId, {
         occupantsLeft: occLeft === 'yes',
         start, end, valueHalalas: valueH, cycle,
-        carryDeposit: carry, extraDepositHalalas: toHalalas(extraDeposit),
+        carryDeposit: carry, extraDepositHalalas: toHalalas(extraDeposit), extraDepositBankId: extraBank || null,
         services, furnished, ejarNo: ejar, note,
         servicesHalalas: toHalalas(servicesAmt), parkingHalalas: toHalalas(parkingAmt),
       });
@@ -1071,6 +1074,9 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
         {/* استلام التأمين وترحيله من قسم التأمينات · ومن لا يملكه يجدد بالترحيل الافتراضي */}
         {depPerm.add ? <View style={{ flex: 1 }}><Field label="تأمين إضافي" value={extraDeposit} onChange={setExtraDeposit} keyboard="money" ltr /></View> : null}
       </Row>
+      {depPerm.add && toHalalas(extraDeposit) > 0 && ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب' ? (
+        <DepositBankField label={t('depositBank.extraMethod')} value={extraBank} onChange={setExtraBank} />
+      ) : null}
       <Row>
         <View style={{ flex: 1 }}><Field label={t('lease.renewServices')} value={servicesAmt} onChange={setServicesAmt} keyboard="money" ltr /></View>
         <View style={{ flex: 1 }}><Field label={t('lease.renewParking')} value={parkingAmt} onChange={setParkingAmt} keyboard="money" ltr /></View>
@@ -1147,6 +1153,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const otherHeld = (c as unknown as { deposit_holder?: string }).deposit_holder === 'طرف آخر';
   const [received, setReceived] = useState(false);
   const [arrears, setArrears] = useState('');
+  const [refundBank, setRefundBank] = useState('');
   // ما قُبض عن مدةٍ بعد الإنهاء (A1-4 · قرار المالك س١٦): يُسأل المالك وحده، والافتراضي «يُحتفظ به» · والخيار لا يظهر إن لم يُقبض شيء
   const owner = useAccess().owner;
   const prepaid = owner && isISODate(date) ? prepaidUnearned(db, contractId, date) : 0;
@@ -1176,7 +1183,9 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const autoRefund = dedH > depH ? 0 : depH - dedH;
   // ردّ التأمين نقداً حين يقبضه المكتب · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
-  const refundCash = (settle && officeHeld ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0)
+  // والردّ تحويلاً من بنكٍ لا يمسّ المحفظة (A1-6)
+  const settleRefundH = settle ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0;
+  const refundCash = (settle && officeHeld && !refundBank ? settleRefundH : 0)
     + (prepaidRefund && prepaidMethod === 'cash' ? prepaidH : 0);
   const cashOk = useCashOk(refundCash, date); // بتاريخ التسوية (A2.8)
   // «لا مسترد أكبر من الباقي بعد الخصم» (قرار المالك 2026-10-09) · autoRefund هو الباقي نفسه
@@ -1193,6 +1202,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         deductionReason: dedReason,
         deductReceived: otherHeld ? received : undefined,
         arrearsHalalas: settle ? arrearsH : 0,
+        refundBankId: settle && officeHeld && settleRefundH > 0 ? refundBank || null : null,
         prepaidRefund: prepaidRefund ? { amountHalalas: prepaidH, method: prepaidMethod as 'cash' | 'bank', bankId: prepaidMethod === 'bank' ? prepaidBank : null } : null,
       });
       onClose();
@@ -1269,6 +1279,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
             </View>
           </Row>
           {refundOver ? <T size={11.5} color={C.rose} style={{ marginBottom: 10 }}>{t('deposit.refundOverLeft', { left: fmt(autoRefund) })}</T> : null}
+          {officeHeld && settleRefundH > 0 ? <DepositBankField label={t('depositBank.refundMethod')} value={refundBank} onChange={setRefundBank} out /> : null}
           <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
           {arrearsDue > 0 && dedH > 0 ? (
             <>
@@ -1342,7 +1353,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
   const { t } = useLang();
   const toast = useToast();
   const c = db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId])!;
-  const existing = db.get<{ date: string; deduction_halalas: number; deduction_reason: string; refund_halalas: number; notes: string; deduct_destination: string }>(
+  const existing = db.get<{ date: string; deduction_halalas: number; deduction_reason: string; refund_halalas: number; notes: string; deduct_destination: string; refund_bank_id?: string | null }>(
     `SELECT * FROM deposit_settlements WHERE contract_id = ?`, [contractId]
   );
   const [date, setDate] = useState(existing?.date || today());
@@ -1379,7 +1390,9 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
   const refundOver = toHalalas(refund) > refundLeft;
   // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق (قرار المالك ٢٠٢٦-١٠-٠٥)
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
-  const refundCash = officeHeld ? toHalalas(refund) - Number(existing?.refund_halalas ?? 0) : 0;
+  // والردّ تحويلاً من بنكٍ لا يمسّ المحفظة، وردٌّ سابقٌ تحويلاً لا يعود إليها (A1-6)
+  const [refundBank, setRefundBank] = useState(existing?.refund_bank_id ?? '');
+  const refundCash = officeHeld ? (refundBank ? 0 : toHalalas(refund)) - (existing?.refund_bank_id ? 0 : Number(existing?.refund_halalas ?? 0)) : 0;
   const cashOk = useCashOk(refundCash, date); // بتاريخ التسوية (A2.8)
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
   const save = (...a: Parameters<typeof saveIn>) => withCostCenter(cc, () => saveIn(...a));
@@ -1391,6 +1404,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
         deductDestination: platformHeld ? dest : undefined,
         deductReceived: otherHeld ? received : undefined,
         arrearsHalalas: arrearsH,
+        refundBankId: officeHeld && toHalalas(refund) > 0 ? refundBank || null : null,
       });
       onClose();
       onDone('تم حفظ تفاصيل التصرف بالتأمين');
@@ -1433,6 +1447,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
           onPick={(v) => setReceived(v === 'y')} />
       ) : null}
       <Field label="المبلغ المسترَد للمستأجر" value={refund} onChange={setRefund} keyboard="money" ltr />
+      {officeHeld && toHalalas(refund) > 0 ? <DepositBankField label={t('depositBank.refundMethod')} value={refundBank} onChange={setRefundBank} out /> : null}
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 11, marginBottom: 10 }}>
         <Row style={{ justifyContent: 'space-between' }}>
           <T size={12.5} bold>الفرق (خصم + مسترَد مقابل الأصلي):</T>
