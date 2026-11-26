@@ -14,7 +14,7 @@ import { joinPath } from '../../files/fsAdapter';
 import { currentSchemaVersion, migrate } from '../../db/migrations';
 import { SCHEMA_VERSION } from '../../db/schema';
 import { createBackup, ensureFreeSpace, safetyBackupsDir, PRE_UPGRADE_PREFIX } from './create';
-import type { BackupEnv, BackupManifest } from './types';
+import { NotEnoughSpaceError, type BackupEnv, type BackupManifest } from './types';
 
 /** عدد نسخ ما قبل الترقية المحفوظة · الأحدث فالأقدم */
 export const PRE_UPGRADE_KEEP = 3;
@@ -38,7 +38,8 @@ export function upgradeState(db: BackupEnv['db']): UpgradeState {
 
 /** فشل نسخة ما قبل الترقية · رسالته عربية تُعرض كما هي ولا ترقية بعدها */
 export class UpgradeBackupError extends Error {
-  constructor(public reason: string) {
+  /** السبب أن القرص لا يسع النسخة · فتعرض البوابة حذف أقدم نسخة ترقية (المراجعة الشاملة 2026-11-13 · C-7) */
+  constructor(public reason: string, public space = false) {
     super('لم تُرقَّ بياناتك لأن حفظ نسخةٍ من بياناتك وقائمة ملفاتها قبل الترقية لم يكتمل · ' + reason
       + ' · بياناتك كما هي لم يتغيّر فيها شيء، فأعد المحاولة بعد معالجة السبب.');
     this.name = 'UpgradeBackupError';
@@ -53,6 +54,17 @@ export function preUpgradeBackups(env: BackupEnv): string[] {
   let names: string[] = [];
   try { names = env.fs.list(dir); } catch { return []; }
   return names.filter((n) => n.startsWith(PRE_UPGRADE_PREFIX + '-') && n.endsWith('.aqbk')).sort().reverse();
+}
+
+/**
+ * «احذف أقدم نسخة ترقية» في البوابة حين لا تسع المساحة نسخةً جديدة (المراجعة الشاملة 2026-11-13 · C-7) · الأقدم وحدها، فتبقى الأحدث
+ * للرجوع · يعيد اسمها، أو null إن لم تكن نسخة ترقية
+ */
+export function deleteOldestPreUpgradeBackup(env: BackupEnv): string | null {
+  const oldest = preUpgradeBackups(env).at(-1);
+  if (!oldest) return null;
+  env.fs.remove(joinPath(safetyBackupsDir(env), oldest));
+  return oldest;
 }
 
 /**
@@ -78,7 +90,7 @@ export async function makePreUpgradeBackup(
   } catch (e) {
     if (isCancelled(e)) throw e;
     const m = e instanceof Error ? e.message : '';
-    throw new UpgradeBackupError(ARABIC.test(m) ? m : 'تعذّر إنشاء النسخة أو التحقق منها');
+    throw new UpgradeBackupError(ARABIC.test(m) ? m : 'تعذّر إنشاء النسخة أو التحقق منها', e instanceof NotEnoughSpaceError);
   }
   // السقف بعد نجاح الجديدة · فلا تمرّ لحظة بلا نسخة
   for (const old of preUpgradeBackups(env).slice(PRE_UPGRADE_KEEP)) {

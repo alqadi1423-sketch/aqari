@@ -153,8 +153,10 @@ export async function prepareRestore(
   if (!env.hasher) throw new RestoreError('التحقق يحتاج مكوّن البصمات وهو غير متاح');
   const hasher = env.hasher;
 
-  // ٠) القرص يسع العملية · قبل أن يُكتب بايت واحد
-  await ensureFreeSpace(env);
+  // ٠) القرص يسع العملية · قبل أن يُكتب بايت واحد · بالبيانات الحالية وبالملف الوارد (C-7)
+  let archiveBytes = 0;
+  try { if (env.fs.exists(archivePath)) archiveBytes = env.fs.size(archivePath); } catch { /* يُفحص وجوده بعدها برسالته */ }
+  await ensureFreeSpace(env, true, archiveBytes);
 
   // ١) الملف موجود ويُقرأ
   if (!env.fs.exists(archivePath)) throw new RestoreError('الملف غير موجود');

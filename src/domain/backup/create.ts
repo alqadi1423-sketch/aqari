@@ -233,9 +233,11 @@ export function dataFootprintBytes(env: BackupEnv, withFiles = true): number {
  * لا تبدأ عمليةً لا يسعها القرص · فالبدء ثم الفشل في المنتصف أسوأ من الامتناع.
  * والحدّ ثلاثة أضعاف ما تشغله البيانات: لقطة القاعدة، ثم الأرشيف، ثم ما يُفكّ منه.
  * ونسخة ما قبل الترقية لا تنسخ المرفقات، فلا تُطلب لها مساحتها (المراجعة الشاملة 2026-11-13 · C-2).
+ * وفي الاستعادة الأكبر من ذلك ومن الملف الوارد × ٣ (C-7 · قرار المالك س١٢): جوالٌ جديد بياناته أقل من ميغا كان يمرّ بالفحص ثم يمتلئ
+ * قرصه في منتصف استعادة نسخةٍ بغيغا.
  */
-export async function ensureFreeSpace(env: BackupEnv, withFiles = true): Promise<void> {
-  const needed = dataFootprintBytes(env, withFiles) * SPACE_FACTOR;
+export async function ensureFreeSpace(env: BackupEnv, withFiles = true, incomingBytes = 0): Promise<void> {
+  const needed = Math.max(dataFootprintBytes(env, withFiles), incomingBytes) * SPACE_FACTOR;
   const usable = await env.fs.usableSpace();
   if (usable >= needed) return;
   throw new NotEnoughSpaceError(

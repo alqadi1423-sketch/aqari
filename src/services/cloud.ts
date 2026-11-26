@@ -1256,6 +1256,7 @@ export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?:
   const env = appBackupEnv(db);
   const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
   const out = joinPath(env.tmpDir, 'drive-' + Date.now() + '.aqbk');
+  await ensureFreeSpace(env); // C-7
   // الملفات في الخادم: نسخة Drive للبيانات وقائمة الملفات وبصماتها، ومعها ما لم يُرفع بعد · فتصير صغيرة وسريعة
   const manifest = await createBackup(env, out, onProgress, { signal, dataOnly: filesCloudOn() });
   try {
@@ -1301,8 +1302,8 @@ export async function prepareRestoreFromDrive(
   db: AppDB, b: DriveBackup, onProgress?: ProgressFn, opts?: PrepareOptions
 ): Promise<{ env: BackupEnv; plan: RestorePlan; archiveTmp: string }> {
   const env = appBackupEnv(db);
-  // القرص يسع العملية قبل أن يبدأ التنزيل · كما في الاستعادة من ملف
-  await ensureFreeSpace(env);
+  // القرص يسع العملية قبل أن يبدأ التنزيل · كما في الاستعادة من ملف، وبحجم النسخة الواردة (C-7)
+  await ensureFreeSpace(env, true, b.size || 0);
   env.fs.mkdirp(env.tmpDir);
   const archiveTmp = joinPath(env.tmpDir, 'restore-input.aqbk');
   try {

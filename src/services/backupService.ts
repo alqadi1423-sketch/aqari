@@ -67,6 +67,8 @@ export async function createAndShareBackup(
   signal?: CancelSignal,
 ): Promise<BackupManifest> {
   const env = appBackupEnv(db);
+  // القرص يسع النسخة ونسختها المشفّرة قبل أن تبدأ (المراجعة الشاملة 2026-11-13 · C-7)
+  await ensureFreeSpace(env);
   const name = backupFileName();
   const outPath = joinPath(env.tmpDir, name);
   const manifest = await createBackup(env, outPath, onProgress, { signal });
@@ -106,6 +108,8 @@ export async function createAndSaveToFolder(
   if (!folder) throw new FolderMissingError();
   await checkFolderAccess(folder);
   const env = appBackupEnv(db);
+  // القرص يسع النسخة ونسختها المشفّرة قبل أن تبدأ (C-7)
+  await ensureFreeSpace(env);
   const outPath = joinPath(env.tmpDir, 'folder-' + Date.now() + '.aqbk');
   let savedName = '';
   let manifest: BackupManifest;
@@ -149,7 +153,8 @@ export async function prepareRestoreFromSafety(
   // نسخة الأمان ونسخ ما قبل الترقية (القرارات المعلّقة البند ١٧) · المختارة باسمها من القائمة، وبلا اسمٍ الأحدث
   const src = deviceBackupPath(env, name);
   if (!src) return null;
-  await ensureFreeSpace(env);
+  // وبحجم النسخة المختارة (C-7)
+  await ensureFreeSpace(env, true, env.fs.size(src));
   env.fs.mkdirp(env.tmpDir);
   const archiveTmp = joinPath(env.tmpDir, 'restore-input.aqbk');
   env.fs.write(archiveTmp, env.fs.read(src));
@@ -170,11 +175,19 @@ export async function pickAndPrepareRestore(
   await ensureFreeSpace(env);
   const res = await whilePrompting(() => DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true }));
   if (res.canceled || !res.assets?.length) return null;
+  const pickedUri = res.assets[0].uri;
+  // وبحجم الملف المختار قبل نسخه إلى مجلد التطبيق (المراجعة الشاملة 2026-11-13 · C-7): نسخةٌ بغيغا على جوالٍ جديد كانت تمرّ بالفحص
+  // ثم يمتلئ القرص في منتصفها · وما لا يسعه القرص لا تبقى نسخة المنتقي منه تشغله
+  try {
+    await ensureFreeSpace(env, true, res.assets[0].size ?? 0);
+  } catch (e) {
+    try { env.fs.remove(pickedUri); } catch { /* المنتقي قد يكون سلّم مرجعاً لا نسخة */ }
+    throw e;
+  }
   onProgress?.('جاري قراءة الملف المختار');
   env.fs.mkdirp(env.tmpDir);
   const archiveTmp = joinPath(env.tmpDir, 'restore-input.aqbk');
   // قراءة لا تحتجز خيط الواجهة · الملف يُقرأ على الخيط الأصلي
-  const pickedUri = res.assets[0].uri;
   let bytes: Uint8Array | null = new Uint8Array(await new File(pickedUri).arrayBuffer());
   env.fs.write(archiveTmp, bytes);
   bytes = null; // تحرير قبل الفك · الذاكرة لا تحمل الأرشيف مرتين

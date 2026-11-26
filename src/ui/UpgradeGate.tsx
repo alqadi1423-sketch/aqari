@@ -15,7 +15,7 @@ import { C, FONT, FONT_BOLD } from './theme';
 import { rawAppDb, clearUpgrade, appDb } from '../db/expoAdapter';
 import { applyScreenSecureFrom } from '../services/screenSecure';
 import { rescheduleAllNotifications } from '../services/notifications';
-import { upgradeState, makePreUpgradeBackup } from '../domain/backup/upgrade';
+import { upgradeState, makePreUpgradeBackup, preUpgradeBackups, deleteOldestPreUpgradeBackup, UpgradeBackupError } from '../domain/backup/upgrade';
 import { missingFileLabels } from '../domain/backup/create';
 import { t } from '../i18n';
 import { appBackupEnv } from '../services/backupService';
@@ -60,6 +60,9 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
   const cancelRef = useRef<{ cancel: () => void; retry: boolean } | null>(null);
 
   const [missing, setMissing] = useState<string[]>([]);
+  // السبب أن القرص لا يسع النسخة (C-7) · فيُعرض حذف أقدم نسخة ترقية إن كانت، والزرّ لا يظهر بلا نسخةٍ يحذفها
+  const [spaceFix, setSpaceFix] = useState(false);
+  const oldest = (() => { try { return spaceFix ? preUpgradeBackups(appBackupEnv(rawAppDb())).length > 0 : false; } catch { return false; } })();
 
   /** الترقية نفسها بعد أن حُفظت النسخة وتُحقّق منها */
   const finish = useCallback(() => {
@@ -95,6 +98,7 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
     } catch (e) {
       if (isCancelled(e) && cancelRef.current?.retry) { run(); return; }
       setCancelled(isCancelled(e));
+      setSpaceFix(e instanceof UpgradeBackupError && e.space);
       setReason(isCancelled(e)
         ? 'بياناتك كما هي، والترقية تنتظر نسخةً منها ومن قائمة ملفاتها.'
         : e instanceof Error ? e.message : 'لم تُرقَّ بياناتك لأن حفظ نسخة منها قبل الترقية لم يكتمل.');
@@ -161,6 +165,10 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
           <Text style={[txt(13, C.ink), { marginTop: 12, lineHeight: 22 }]}>{reason}</Text>
           <View style={{ marginTop: 18, gap: 10 }}>
             <Btn primary title="إعادة المحاولة" onPress={run} />
+            {spaceFix && oldest ? <Btn title={t('upgrade.deleteOldest')} onPress={() => {
+              try { deleteOldestPreUpgradeBackup(appBackupEnv(rawAppDb())); } catch { /* تُعاد المحاولة فتقول المساحة ما بقي */ }
+              run();
+            }} /> : null}
             {/* ما يُشارك خارج الجهاز محجوبةٌ بياناته كتقرير الخطأ (المراجعة الشاملة · البند ١٨) */}
             {cancelled ? null : <Btn title="مشاركة السبب" onPress={() => { Share.share({ message: redactForReport(reason) }).catch(() => {}); }} />}
           </View>
