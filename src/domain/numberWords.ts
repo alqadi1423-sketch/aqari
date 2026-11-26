@@ -52,7 +52,11 @@ export function intToArabicWords(n: number): string {
   if (!Number.isInteger(n) || n < 0) return String(n);
   if (n === 0) return 'صفر';
   const parts: string[] = [];
-  const millions = Math.floor(n / 1000000);
+  // مرتبة المليار (E-15): ألف مليون فأكثر كان يُكتب «undefined مليون»
+  const billions = Math.floor(n / 1000000000);
+  if (billions >= 1000) return String(n);
+  if (billions) parts.push(scaled(billions, 'مليار', 'ملياران', 'مليارات', 'ملياراً')); // i18n-exempt: التفقيط
+  const millions = Math.floor((n % 1000000000) / 1000000);
   const thousands = Math.floor((n % 1000000) / 1000);
   const rest = n % 1000;
   if (millions) parts.push(scaled(millions, 'مليون', 'مليونان', 'ملايين', 'مليوناً'));

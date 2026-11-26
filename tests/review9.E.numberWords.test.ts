@@ -14,11 +14,11 @@
 import { moneyToArabicWords } from '@/domain/numberWords';
 
 describe('E-15 · [منخفض] المبلغ بالحروف فوق ألف مليون', () => {
-  test.failing('مليار ريال يُكتب بالحروف بلا «undefined»', () => {
-    // (الواقع: «undefined مليون ريال فقط لا غير»)
+  test('مليار ريال يُكتب بالحروف بلا «undefined»', () => {
+    // (كان: «undefined مليون ريال فقط لا غير»)
     expect(moneyToArabicWords(1_000_000_000 * 100)).toBe('مليار ريال فقط لا غير');
   });
-  test.failing('لا «undefined» في مبلغٍ مركّب فوق المليار', () => {
+  test('لا «undefined» في مبلغٍ مركّب فوق المليار', () => {
     expect(moneyToArabicWords(1_234_567_890 * 100)).not.toMatch(/undefined/);
   });
 });
