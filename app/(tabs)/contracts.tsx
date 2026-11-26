@@ -6,6 +6,7 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { otherCurrentOccupants } from '../../src/domain/occupants';
 import { CashShortNote, useCashOk } from '../../src/ui/CashGate';
+import { contractReviewFigures } from '../../src/ui/contractReview';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { contractsArrival, paramStr } from '../../src/ui/routeArrival';
 import { useReturnLayer } from '../../src/ui/returnLayer';
@@ -564,22 +565,25 @@ function ReviewSheet({
     : undefined;
   const p = u ? db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [u.property_id]) : undefined;
   const { t } = useLang();
-  const months = form.start && form.end ? Math.max(1, approxMonths(form.start, form.end)) : 0;
+  // الخانة التي لم تُكتب يسقط صفّها بعنوانه · لا «لا يوجد» ولا «0 شهراً» ولا «0.00» لنموذجٍ ناقص (D-14)
+  const f = contractReviewFigures(form, 1);
   // العدد والمبلغ من صفوف جدول المراجعة نفسها وبإجمالي العقد، كما يُنشئها التوثيق (A1-10)
   const sp = formSplit(form);
-  const sched = reviewScheduleRows({ start: form.start, end: form.end, cycle: form.cycle, schedule: form.schedule,
-    totalHalalas: toHalalas(form.value) + (sp?.servicesHalalas ?? 0) + (sp?.parkingHalalas ?? 0) })?.rows ?? [];
+  const sched = f.months != null && f.value != null
+    ? reviewScheduleRows({ start: form.start, end: form.end, cycle: form.cycle, schedule: form.schedule,
+      totalHalalas: f.value + (sp?.servicesHalalas ?? 0) + (sp?.parkingHalalas ?? 0) })?.rows ?? []
+    : [];
   const first = sched.length ? sched[0].amount : 0;
   const last = sched.length ? sched[sched.length - 1].amount : 0;
   const rows: [string, React.ReactNode][] = [
     ['المستأجر', form.tenant], ['الجوال', form.phone], ['الهوية / السجل', form.idNumber],
     ['العقار', p?.name ?? ''], ['الوحدة', u?.unit_no ?? ''],
-    ['قيمة العقد', fmt(toHalalas(form.value))], ['الدورية', form.cycle],
-    ['البداية', dfmt(form.start)], ['النهاية', dfmt(form.end)],
-    ['المدة', months + ' شهراً'],
+    ['قيمة العقد', f.value != null ? fmt(f.value) : ''], ['الدورية', form.cycle],
+    ['البداية', f.start], ['النهاية', f.end],
+    ['المدة', f.months != null ? f.months + ' شهراً' : ''],
     ['عدد الدفعات', !sched.length ? '' : first === last ? sched.length + ' دفعة × ' + fmt(first)
       : t('lease.reviewCountMixed', { n: sched.length, first: fmt(first), last: fmt(last) })],
-    ['التأمين', fmt(toHalalas(form.deposit))],
+    ['التأمين', f.deposit != null ? fmt(f.deposit) : ''],
     ['رقم إيجار', form.ejarNo], ['الخدمات المشمولة', form.services],
     ['الأثاث', form.furnished],
   ];
@@ -865,7 +869,7 @@ function ContractDetailSheet({
       {c.status === 'ملغى' && (
         <View style={{ backgroundColor: C.roseSoft, borderRadius: 9, padding: 11, marginTop: 12 }}>
           <T size={13} bold>تفاصيل الإلغاء</T>
-          <T size={12} style={{ marginTop: 4 }}>تاريخ الإنهاء: {dfmt(c.cancel_date)}</T>
+          {c.cancel_date ? <T size={12} style={{ marginTop: 4 }}>تاريخ الإنهاء: {dfmt(c.cancel_date)}</T> : null}
           {c.cancel_reason ? <T size={12}>السبب: {c.cancel_reason}</T> : null}
           {c.cancel_deduction_halalas != null ? (
             <T size={12}>الخصم من التأمين: {fmt(Number(c.cancel_deduction_halalas))} {c.cancel_deduction_reason ? '· ' + c.cancel_deduction_reason : ''}</T>
