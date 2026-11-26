@@ -1453,5 +1453,10 @@
     "dateField": "Deposit receipt date",
     "afterCurrent": "Reserved after the current contract for “{{name}}” until {{date}}",
     "forfeitFailed": "Couldn’t forfeit the deposit"
+  },
+  "invoiceGaps": {
+    "title": "Tax invoice numbers without an invoice",
+    "detail": "No invoice or credit note was issued with these numbers, so they are gaps in the sequence. A number may still be reserved on a device that has not synced yet",
+    "more": "and {{n}} more"
   }
 }

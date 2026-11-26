@@ -17,7 +17,11 @@ import { previewRepairs, applyRepair, type RepairPreview } from '../src/domain/r
 import { previewEjarSchedules, applyEjarSchedules, contractsWithLease, type EjarScheduleDiff } from '../src/domain/ejarScheduleRepair';
 import { readLeaseText } from '../src/services/contractScan';
 import { dfmt } from '../src/domain/dates';
+import { invoiceSeqGaps } from '../src/domain/invoiceGaps';
 import { useLang } from '../src/i18n';
+
+/** ما يُعرض من أرقام الفجوات · والباقي عدداً */
+const GAPS_SHOWN = 60;
 
 export default function Integrity() {
   const { db, version, bump } = useApp();
@@ -37,6 +41,10 @@ export default function Integrity() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, tick, access.owner]);
   const ok = checks.every((c) => c.ok);
+  // أرقام الفاتورة الضريبية المحجوزة بلا فاتورة (B-7) · للمالك وحده: جهاز العضو لا يحمل كل الفواتير فيظن ما لا يراه فجوة
+  const invGaps = useMemo(() => (access.owner ? invoiceSeqGaps(db) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version, tick, access.owner]);
   // أقساط عقود إيجار مقابل جدول ملفها (قرار المالك ٢٠٢٦-١٠-٠٥) · القراءة من الملفات بطلب لا عند الفتح
   const leaseCount = useMemo(() => (access.owner ? contractsWithLease(db).length : 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -121,6 +129,16 @@ export default function Integrity() {
           </View>
         ))}
       </Card>
+      {invGaps.length ? (
+        <Card>
+          <CardTitle>{t('invoiceGaps.title') + ' · ' + invGaps.length}</CardTitle>
+          <T size={12} color={C.muted} style={{ marginBottom: 8 }}>{t('invoiceGaps.detail')}</T>
+          <Num size={12.5} bold color={C.rose} style={{ textAlign: 'left' }}>
+            {invGaps.slice(0, GAPS_SHOWN).join(' · ')}
+          </Num>
+          {invGaps.length > GAPS_SHOWN ? <T size={11.5} color={C.muted}>{t('invoiceGaps.more', { n: invGaps.length - GAPS_SHOWN })}</T> : null}
+        </Card>
+      ) : null}
       {access.owner && leaseCount ? (
         <Card>
           <CardTitle>أقساط عقود إيجار مقابل جدول ملفها</CardTitle>
