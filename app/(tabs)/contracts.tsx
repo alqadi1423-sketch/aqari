@@ -546,6 +546,8 @@ import { reportFailure } from '../../src/ui/failureDialog';
 
 import { CostCenterField } from '../../src/ui/CostCenters';
 import { ScheduleReview } from '../../src/ui/ScheduleReview';
+import { RenewEjarRead, type RenewFileRead } from '../../src/ui/RenewEjarRead';
+import { scheduleInstallments } from '../../src/domain/contracts/service';
 import { formSplit } from '../../src/ui/contractForm';
 import { LeaseCompare, useLeaseDiffs } from '../../src/ui/LeaseCompare';
 import { applyExtras, type ExtraDiff, type ExtraKey } from '../../src/domain/pdf/ejarExtras';
@@ -922,7 +924,7 @@ function ContractDetailSheet({
       </T>
       {/* عقد قُرئ من ملف إيجار وتعذّر جدول دفعاته: التواريخ محسوبة لا مقروءة (قرار المالك ٢٠٢٦-١٠-٠٥) */}
       {(c as unknown as { installments_source?: string | null }).installments_source === 'محسوبة' ? (
-        <Note>تواريخ الأقساط محسوبة لا مقروءة: تعذّرت قراءة جدول الدفعات من ملف إيجار · طابقها بالجدول في الملف.</Note>
+        <Note>{t('lease.computedNote')}</Note>
       ) : null}
       {dueInsts.length ? dueInsts.map(renderInst) : <T size={12} color={C.muted}>لا دفعات مستحقة</T>}
 
@@ -999,6 +1001,8 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const [furnished, setFurnished] = useState(c.furnished || '');
   const [ejar, setEjar] = useState('');
   const [note, setNote] = useState('');
+  // ملف إيجار العقد الجديد إن قُرئ: جدول دفعاته تؤخذ منه التواريخ، وملفه يُرفق بالعقد (A1-9)
+  const [fileRead, setFileRead] = useState<RenewFileRead | null>(null);
   // الخدمات والمواقف تنتقل من العقد السابق وتدخل الأقساط وفصل الإيراد (المراجعة #3)
   const cx = c as ContractRow & { services_halalas?: number; parking_halalas?: number };
   const [servicesAmt, setServicesAmt] = useState(Number(cx.services_halalas ?? 0) ? fmt(Number(cx.services_halalas)).replace(/,/g, '') : '');
@@ -1011,8 +1015,20 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const valueH = toHalalas(value);
   const totalDep = (carry ? Number(c.deposit_halalas) : 0) + toHalalas(extraDeposit);
   const totalH = valueH + toHalalas(servicesAmt) + toHalalas(parkingAmt);
-  const ins = start && end && valueH ? generateInstallments(start, end, totalH, cycle) : [];
+  // صفوف الملخص من الجدول الذي سيُنشأ: جدول الملف إن قُرئ وإلا المحسوب (A1-9 · نظير A1-10)
+  const fileRows = fileRead && start && end ? scheduleInstallments(fileRead.schedule, start, end, totalH) : null;
+  const ins = fileRows ?? (start && end && valueH ? generateInstallments(start, end, totalH, cycle) : []);
   const warns = renewWarnings(db, contractId, { start, end, valueHalalas: valueH });
+  const onFileRead = (r: RenewFileRead) => {
+    setFileRead(r);
+    if (r.ejarNo) setEjar(r.ejarNo);
+    if (r.start) setStart(r.start);
+    if (r.end) { setDurMonths('custom'); setCustomEnd(r.end); }
+    if (r.valueHalalas != null) { setValue(fmt(r.valueHalalas).replace(/,/g, '')); setRaise(''); }
+    if (r.cycle) setCycle(r.cycle);
+    setServicesAmt(r.servicesHalalas ? fmt(r.servicesHalalas).replace(/,/g, '') : '');
+    setParkingAmt(r.parkingHalalas ? fmt(r.parkingHalalas).replace(/,/g, '') : '');
+  };
   const block = renewBlockReason(c);
   // المتبقي من الأقساط الحيّة بعد المسدَّد والخصم (المراجعة #8)
   const due = contractRemainingHalalas(db, contractId);
@@ -1030,13 +1046,16 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const confirm = (...a: Parameters<typeof confirmIn>) => withCostCenter(cc, () => confirmIn(...a));
   const confirmIn = () => {
     try {
-      renewContract(db, contractId, {
+      const newId = renewContract(db, contractId, {
         occupantsLeft: occLeft === 'yes',
         start, end, valueHalalas: valueH, cycle,
         carryDeposit: carry, extraDepositHalalas: toHalalas(extraDeposit), extraDepositBankId: extraBank || null,
         services, furnished, ejarNo: ejar, note,
         servicesHalalas: toHalalas(servicesAmt), parkingHalalas: toHalalas(parkingAmt),
+        ...(fileRead ? { schedule: fileRead.schedule, fromEjarFile: true } : {}),
       });
+      // ملف إيجار الجديد يُرفق به كما في إنشاء العقد
+      if (fileRead) attachPicked(db, fileRead.file, 'contract', newId, 'lease').catch((e) => reportFailure({ title: t('lease.renewFileFailed'), e }));
       onClose();
       onDone('جُدِّد العقد بنجاح');
     } catch (e) { reportFailure({ title: 'تعذّر التجديد', e }); }
@@ -1060,6 +1079,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
         {due > 0 ? <T size={11.5} bold color={C.rose} style={{ marginTop: 4 }}>متبقٍ غير مسدَّد على العقد الحالي: {fmt(due)}</T> : null}
       </View>
       {block ? <Note tone="danger">{block}</Note> : null}
+      {!block ? <RenewEjarRead onRead={onFileRead} /> : null}
       <DateField label="تاريخ بداية العقد الجديد" value={start} onChange={setStart} />
       <CostCenterField value={cc} onChange={setCc} />
       <SelectField
@@ -1139,6 +1159,10 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
           </Row>
         ))}
       </View>
+      {fileRead && start && end ? (
+        <ScheduleReview start={start} end={end} value={value} cycle={cycle} schedule={fileRead.schedule} fromEjarFile
+          split={{ servicesHalalas: toHalalas(servicesAmt), parkingHalalas: toHalalas(parkingAmt) }} />
+      ) : null}
       {warns.map((w) => <T key={w} size={11.5} color={C.rose} style={{ marginTop: 6 }}>{w}</T>)}
       <View style={{ height: 12 }} />
     </Sheet>

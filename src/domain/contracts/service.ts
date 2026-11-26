@@ -20,6 +20,7 @@ import { recomputeInstallments } from './paid';
 import { depositCarryChain } from './depositChain';
 import {
   validateConfirmedContract,
+  unitActivityError,
   nextContractNo,
   unitActiveReservation,
   getUnit,
@@ -568,6 +569,13 @@ export interface RenewInput {
    * للعقد الجديد · والمستأجر نفسه ينتقل دائماً
    */
   occupantsLeft?: boolean;
+  /**
+   * جدول الدفعات كما قُرئ من ملف إيجار العقد الجديد · null = قُرئ الملف وتعذّر جدوله (A1-9 · قرار المالك 2026-10-05): التواريخ
+   * من الملف دائماً، وإلا حُسبت ووُسمت «محسوبة» فينبَّه عليها
+   */
+  schedule?: ScheduleRow[] | null;
+  /** العقد الجديد قُرئ من ملف إيجار */
+  fromEjarFile?: boolean;
 }
 
 /** تحذيرات التجديد · بنصوص النموذج (تُعرض قبل التنفيذ وتمنع التأكيد) */
@@ -591,6 +599,12 @@ export function renewWarnings(db: DB, contractId: string, input: Partial<RenewIn
     if (prop && prop.ownership === 'إيجار' && prop.lease_end && end > prop.lease_end)
       warn.push('العقار مستأجَر من الغير حتى ' + prop.lease_end.split('-').reverse().join('/') + ' · لا يجوز تجاوزها');
   }
+  // القاعدتان ١ و٤ كالتوثيق (A1-9): نشاط العقار وفئته على الوحدة كما هي الآن، والحجز بعربون لغيره يمنع تجديدها له
+  const unit = getUnit(db, c.unit_id);
+  const rule1 = unit ? unitActivityError(db, unit, getProperty(db, unit.property_id)) : null;
+  if (rule1) warn.push(rule1);
+  const rsv = c.unit_id ? unitActiveReservation(db, c.unit_id) : null;
+  if (rsv) warn.push(t('lease.renewReserved', { name: rsv.name, date: dfmt(rsv.expiry_date) }));
   return warn;
 }
 
@@ -635,14 +649,29 @@ export function renewContract(db: DB, contractId: string, input: RenewInput): st
       parkingHalalas: Math.max(0, input.parkingHalalas ?? Number(prevSplit?.p ?? 0)),
     };
     if (prevSplit) db.run(`UPDATE contracts SET services_halalas = ?, parking_halalas = ? WHERE id = ?`, [split.servicesHalalas, split.parkingHalalas, newId]);
-    const insts = generateInstallments(input.start, input.end, draftTotal({ valueHalalas: input.valueHalalas, ...split }), input.cycle);
+    // تواريخ الأقساط من جدول ملف إيجار الجديد كالتوثيق (A1-9 · قرار المالك 2026-10-05) ولا استبدال صامت إن خالف مجموعه الإجمالي ·
+    // وإلا حُسبت، ووُسمت «محسوبة» متى قُرئ ملفٌ أو كُتب رقم إيجار فيظهر تنبيهها في العقد
+    const total = draftTotal({ valueHalalas: input.valueHalalas, ...split });
+    const fromFile = scheduleInstallments(input.schedule ?? null, input.start, input.end, total);
+    if (fromFile) {
+      const sum = fromFile.reduce((x, r) => x + r.amountHalalas, 0);
+      if (sum !== total) throw new RuleViolation(t('lease.scheduleSumMismatch', { lng: 'ar', sum: fmt(sum), total: fmt(total) }), 'value');
+    }
+    const insts: Array<{ id: string; dueDate: string; amountHalalas: number; deadline?: string | null }> = fromFile
+      ? fromFile.map((x) => ({ id: uid(), ...x }))
+      : generateInstallments(input.start, input.end, total, input.cycle);
     insts.forEach((inst, i) => {
       db.run(
-        `INSERT INTO contract_installments (id, contract_id, due_date, amount_halalas, sort)
-         VALUES (?,?,?,?,?)`,
-        [inst.id, newId, inst.dueDate, inst.amountHalalas, i]
+        `INSERT INTO contract_installments (id, contract_id, due_date, amount_halalas, sort, grace_until)
+         VALUES (?,?,?,?,?,?)`,
+        [inst.id, newId, inst.dueDate, inst.amountHalalas, i, inst.deadline ?? null]
       );
     });
+    if (hasEjarColumns(db)) {
+      const read = fromFile ? JSON.stringify(input.schedule) : null;
+      const src = fromFile ? SOURCE_FILE : (input.fromEjarFile || input.ejarNo.trim() ? SOURCE_COMPUTED : null);
+      db.run(`UPDATE contracts SET ejar_schedule = ?, installments_source = ? WHERE id = ?`, [read, src, newId]);
+    }
     db.run(`UPDATE contracts SET status='منتهٍ', renewed_to=? WHERE id = ?`, [contractNo, c.id]);
 
     // بتاريخ بداية التجديد، إلا إن قُدِّم إقرار ربعه فبتاريخ التصحيح (#29 · التحقق المستقل على البند ٩)

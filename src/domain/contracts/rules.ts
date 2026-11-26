@@ -294,6 +294,30 @@ export function lastContractErrorField(): ContractField | null {
 }
 
 /**
+ * القاعدة ١: نشاط العقار يقيّد نوع الوحدة، وفئته وفئة الطابق فئتها · رسالة الرفض أو null ·
+ * مشتركة بين التوثيق والتجديد (المراجعة الشاملة 2026-11-13 · A1-9: التجديد كان لا يفحصها)
+ */
+export function unitActivityError(db: DB, u: UnitRow, unitProp: PropertyRow | undefined): string | null {
+  // القاعدة ١أ: نشاط العقار يقيّد نوع الوحدة
+  if (
+    unitProp && unitProp.activity_type && unitProp.activity_type !== 'مختلط' &&
+    u.type && u.type !== unitProp.activity_type
+  ) {
+    return `تعذّر الحفظ · العقار "${unitProp.name}" مخصَّص لنشاط "${unitProp.activity_type}"، والوحدة المختارة من نوع "${u.type}". إمّا عدّل نوع الوحدة، أو اجعل العقار "مختلط" من تعديل بياناته`;
+  }
+  // القاعدة ١ب: فئة العقار
+  if (unitProp && unitProp.activity_subtype && u.subtype && u.subtype !== unitProp.activity_subtype) {
+    return `تعذّر الحفظ · العقار "${unitProp.name}" مخصَّص لفئة "${unitProp.activity_subtype}" فقط، والوحدة المختارة فئتها "${u.subtype}". إمّا عدّل فئة الوحدة، أو أزل تخصيص الفئة عن العقار`;
+  }
+  // القاعدة ١ج: فئة الطابق
+  const floorCat = unitProp ? floorCategory(db, unitProp.id, u.floor) : null;
+  if (floorCat && u.subtype && u.subtype !== floorCat) {
+    return `تعذّر الحفظ · طابق "${u.floor}" بهذا العقار مخصَّص لفئة "${floorCat}" فقط، والوحدة المختارة فئتها "${u.subtype}"`;
+  }
+  return null;
+}
+
+/**
  * التحقق قبل إنشاء عقد موثَّق (غير مسودة) · القواعد ١ و٢ و٣ و٤ بنصوص النموذج.
  * يعيد رسالة الخطأ أو null، ويسجّل الحقل المسبِّب في lastContractErrorField.
  */
@@ -328,22 +352,9 @@ export function validateConfirmedContract(
   if (!u) return fail('unitId', 'أضف وحدة أولاً من شاشة العقارات');
   const unitProp = getProperty(db, u.property_id);
 
-  // القاعدة ١أ: نشاط العقار يقيّد نوع الوحدة
-  if (
-    unitProp && unitProp.activity_type && unitProp.activity_type !== 'مختلط' &&
-    u.type && u.type !== unitProp.activity_type
-  ) {
-    return fail('unitId', `تعذّر الحفظ · العقار "${unitProp.name}" مخصَّص لنشاط "${unitProp.activity_type}"، والوحدة المختارة من نوع "${u.type}". إمّا عدّل نوع الوحدة، أو اجعل العقار "مختلط" من تعديل بياناته`);
-  }
-  // القاعدة ١ب: فئة العقار
-  if (unitProp && unitProp.activity_subtype && u.subtype && u.subtype !== unitProp.activity_subtype) {
-    return fail('unitId', `تعذّر الحفظ · العقار "${unitProp.name}" مخصَّص لفئة "${unitProp.activity_subtype}" فقط، والوحدة المختارة فئتها "${u.subtype}". إمّا عدّل فئة الوحدة، أو أزل تخصيص الفئة عن العقار`);
-  }
-  // القاعدة ١ج: فئة الطابق
-  const floorCat = unitProp ? floorCategory(db, unitProp.id, u.floor) : null;
-  if (floorCat && u.subtype && u.subtype !== floorCat) {
-    return fail('unitId', `تعذّر الحفظ · طابق "${u.floor}" بهذا العقار مخصَّص لفئة "${floorCat}" فقط، والوحدة المختارة فئتها "${u.subtype}"`);
-  }
+  // القاعدة ١: نشاط العقار وفئته وفئة الطابق تقيّد الوحدة (ومعها التجديد · A1-9)
+  const rule1 = unitActivityError(db, u, unitProp);
+  if (rule1) return fail('unitId', rule1);
   // القاعدة ٢: العقار المستأجَر من الغير
   if (unitProp && unitProp.ownership === 'إيجار' && unitProp.lease_start && unitProp.lease_end) {
     if (start < unitProp.lease_start || end > unitProp.lease_end) {

@@ -88,7 +88,14 @@
       "total": "Contract total",
       "value": "Contract value"
     },
-    "splitOther": "The file total has an unexplained amount: {{amount}} (not rent, services or parking) · check the file"
+    "splitOther": "The file total has an unexplained amount: {{amount}} (not rent, services or parking) · check the file",
+    "renewReserved": "The unit is reserved with a deposit for “{{name}}” until {{date}} · it can’t be renewed for anyone else until the reservation ends or is cancelled",
+    "renewReadFile": "Read the new contract’s Ejar file",
+    "renewFileRead": "File read · payment schedule of {{n}} installments taken from the file",
+    "renewFileNoSchedule": "File read but its payment schedule couldn’t be read · dates will be computed and flagged on the contract",
+    "renewFileEmpty": "No clear fields could be read from the file",
+    "renewFileFailed": "Couldn’t read the file",
+    "computedNote": "Installment dates are computed, not read from the Ejar file’s schedule · match them to the schedule in the file."
   },
   "dataLabels": {
     "table": {
