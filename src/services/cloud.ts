@@ -66,7 +66,7 @@ import { wipeAllData } from '../domain/wipe';
 import { makeSafetyBackup } from '../domain/backup/create';
 import { leaveSafely } from '../domain/leaveOrg';
 import { saveUnsyncedWork, unsyncedAuditNote, dropMemberBackups, noteDropPending, retryDropMemberBackups, readExitNotice, writeExitNotice,
-  clearExitNotice, unsyncedPath, MEMBER_SINCE_KEY, type UnsyncedSaved, type ExitWhy } from '../domain/memberExit';
+  clearExitNotice, unsyncedPath, stackExitNotice, noticeFiles, MEMBER_SINCE_KEY, type UnsyncedSaved, type ExitWhy, type ExitNotice } from '../domain/memberExit';
 import { wipeCloud, deleteAccountCloud, type CloudFiles } from './cloudWipe';
 import { logMemberAccess } from '../domain/memberAudit';
 import { appDataRoot } from '../files/expoFs';
@@ -165,7 +165,8 @@ export interface CloudState {
    * إشعارٌ بذلك وملفُّ ما لم يُرفع من عمله (pending عدد ما فيه) يرسله إلى صاحب المنشأة (المراجعة الشاملة 2026-11-13 · B-4 · س٩ وس١٠).
    * والمزامنة متوقفة حتى يقرر.
    */
-  decision: { kind: 'epoch' | 'removed'; pending: number; left?: boolean } | null;
+  /** reduced: إشعار إنقاص الصلاحية بورقة الخروج نفسها (B-5b) · لا يوقف المزامنة ولا المحادثة، فالعضو باقٍ */
+  decision: { kind: 'epoch' | 'removed'; pending: number; left?: boolean; reduced?: boolean } | null;
 }
 
 let state: CloudState = { configured: !!cloudConfig(), user: null, online: false, syncing: false, progress: null, lastError: null, sync: null, restored: false, invites: null, gate: null, decision: null };
@@ -280,8 +281,9 @@ export async function syncNow(): Promise<void> {
   // (المراجعة الشاملة 2026-11-13 · B-4 · س٩ وس١٠)
   // ونسخ الجهاز التي تعذّر حذفها عند خروجه يُعاد حذفها (R11-B4-2) · لا تُنتظر
   retryExitDrop(db).catch(() => {});
+  // وإشعار إنقاص الصلاحية (B-5b) لا يوقفها: العضو باقٍ ويُسحب له بصلاحيته الجديدة، والإشعار يبقى حتى يقرأه
   const exit = readExitNotice(db);
-  if (exit) { patch({ decision: { kind: 'removed', pending: exit.count, ...(exit.why === 'left' ? { left: true } : {}) } }); return; }
+  if (exit && exit.why !== 'reduced') { patch({ decision: { kind: 'removed', pending: exit.count, ...(exit.why === 'left' ? { left: true } : {}) } }); return; }
   // رفضٌ متكرر من الخادم (حصة أو انشغال) · تُؤجَّل الدورات ثم تُستأنف من الطابور نفسه
   if (syncBackoffUntil(db)) return;
   // القاعدة قد تكون استُبدلت باستعادة: بلا حالة مزامنة أو بحساب آخر أو بالتقاط متوقف ·
@@ -346,7 +348,7 @@ export async function syncNow(): Promise<void> {
       // المالك والعضو كلاهما: جهازٌ أقدم من الحد لا يكتب فيُرفض ما يكتبه (التحقق المستقل من f07ad73)
       if (appTooOld(compat.min)) { patch({ lastError: t('compat.updateApp') }); return; }
     }
-    patch({ decision: null });
+    patch({ decision: reducedDecision(db) });
     // ما رُفض لإصدارٍ أقدم يعود بعد الترقية، مرة لكل إصدار (التحقق المستقل من #36 والهجرة ٤٠)
     replayRejectsAfterUpgrade(db, SCHEMA_VERSION);
     // الشاشات تتحدث بما وصل أثناء التطبيق لا بعده كله · أول سحب يظهر تدريجياً (أعطال ٢٠٢٦-١٠-٠٥)
@@ -368,11 +370,21 @@ export async function syncNow(): Promise<void> {
       // والزيادة لا تسجّل تفريغاً، ولا تلغي تفريغاً منتظراً من إنقاصٍ قبلها (permWipeDue)
       const due = permWipeDue(db, r, moved, queued + chatUnsentCount(db));
       if (due) {
+        // بلا نسخة أمانٍ كاملة (B-5b · كخروج العضو B-4): كانت تبقى على جواله بكل ما أُخذ منه للتو، ويستعيدها (حزام الاستعادة يقارن المنشأة
+        // والعضو لا الصلاحية) · فما لم يُرفع من عمله وحده (ما رفضته السحابة ومرفقاته التي لم تُرفع) في ملفٍ صغير قبله، وفشلُه يوقف التفريغ
+        // فيُعاد في الدورة التالية · ونسخ جهازه وهو عضو (فيها ما كان يراه) تُحذف · وإشعارٌ بذلك لا يوقف المزامنة
         const next = readMembership(db)!;
-        await wipeLocal(db, undefined, undefined, due === 'moved' ? 'نُقلت وحدةٌ من عقاراتك إلى عقار ليس لك' : 'تغيّرت صلاحيتك في المنشأة');
+        const prev = readExitNotice(db);
+        const saved = saveUnsynced(db, 'reduced');
+        const since = getSyncState(db, MEMBER_SINCE_KEY);
+        const dropped = await dropMemberBackups(appBackupEnv(db), next.org, since);
+        await wipeLocal(db, undefined, null, (due === 'moved' ? 'نُقلت وحدةٌ من عقاراتك إلى عقار ليس لك' : 'تغيّرت صلاحيتك في المنشأة') + unsyncedAuditNote(saved));
         db = liveAfterWipe(db);
         setSyncState(db, PERM_WIPE_KEY, null);
         bindMember(db, next, state.user.email, getSyncState(db, 'org_name'));
+        if (dropped.failed.length) noteDropPending(db, next.org, since);
+        writeExitNotice(db, stackExitNotice(prev, { why: 'reduced', count: saved?.count ?? 0, file: saved?.name ?? null, at: new Date().toISOString() }));
+        patch({ decision: reducedDecision(db) });
         onData();
       }
     }
@@ -413,7 +425,7 @@ export async function chatSyncNow(o: { threadId?: string; full?: boolean; force?
   const u = state.user;
   if (!s || !db || !cfg || !u || !state.online) return;
   // ما يوقف المزامنة العامة يوقف المحادثة (مراجعة المحادثة #7)
-  if (paused || chatHeld || activating || state.gate || state.invites?.length || state.decision) return;
+  if (paused || chatHeld || activating || state.gate || state.invites?.length || (state.decision && !state.decision.reduced)) return;
   if (activeAccount(db) !== u.uid) return;
   if (getSyncState(db, 'restored_unadopted') === '1' || syncBackoffUntil(db)) return;
   const owner = deviceAccount(db);
@@ -807,6 +819,12 @@ function saveUnsynced(db: AppDB, why: ExitWhy): UnsyncedSaved | null {
   });
 }
 
+/** إشعار إنقاص الصلاحية ما لم يُقرأ (B-5b) · null بدونه */
+function reducedDecision(db: DB): CloudState['decision'] {
+  const n = readExitNotice(db);
+  return n?.why === 'reduced' ? { kind: 'removed', pending: n.count, reduced: true } : null;
+}
+
 /**
  * خروج العضو من المنشأة، أُزيل أو غادر (المراجعة الشاملة 2026-11-13 · B-4 · قرارا المالك س٩ وس١٠ تطبيقاً لقرار 2026-11-07 (٢ أ)):
  * تُحذف أولاً نسخ الجهاز التي صُنعت وهو عضو، تُعرف بما فيها لا بساعته، قبل التفريغ ومحو العضوية ووقت انضمامه (R11-B4-2) · ثم تفريغٌ بلا
@@ -841,20 +859,22 @@ async function retryExitDrop(db: AppDB): Promise<void> {
  * ما في طابوره ورفضته السحابة من عمله يُحفظ في الملف أولاً (وفشلُه يوقف التفريغ فيُعاد في الدورة التالية) · ثم يبقى إشعارٌ بذلك حتى يقرأه
  */
 async function exitRemoved(db: AppDB): Promise<AppDB> {
+  // إشعار إنقاصٍ سابق لم يُقرأ يُضمّ ملفه إلى إشعار الإزالة (B-5b): التفريغ يمحوه
+  const prev = readExitNotice(db);
   const saved = saveUnsynced(db, 'removed');
   const live = await wipeForRemoval(db, saved, t('org.removedReason', { lng: 'ar' }));
-  writeExitNotice(live, { why: 'removed', count: saved?.count ?? 0, file: saved?.name ?? null, at: new Date().toISOString() });
-  patch({ decision: { kind: 'removed', pending: saved?.count ?? 0 }, lastError: null });
+  const notice = stackExitNotice(prev, { why: 'removed', count: saved?.count ?? 0, file: saved?.name ?? null, at: new Date().toISOString() });
+  writeExitNotice(live, notice);
+  patch({ decision: { kind: 'removed', pending: notice.count }, lastError: null });
   onData();
   return live;
 }
 
-/** إرسال ملفّ ما لم يُرفع إلى صاحب المنشأة من نافذة المشاركة (B-4) · وبلا ملفٍ لا شيء */
+/** إرسال ملفّ ما لم يُرفع إلى صاحب المنشأة من نافذة المشاركة (B-4) · وملفات تفريغٍ سابق لم يُقرأ إشعاره قبله، واحداً بعد واحد (B-5b) · وبلا ملفٍ لا شيء */
 export async function shareUnsyncedNow(): Promise<void> {
   const db = appDb;
-  const n = db ? readExitNotice(db) : null;
-  if (!db || !n?.file) return;
-  await shareUnsyncedFile(unsyncedPath(appBackupEnv(db), n.file), t('org.exit.shareTitle'));
+  if (!db) return;
+  for (const f of noticeFiles(readExitNotice(db))) await shareUnsyncedFile(unsyncedPath(appBackupEnv(db), f), t('org.exit.shareTitle'));
 }
 
 /**
@@ -882,7 +902,7 @@ export async function resolveDecision(choice: 'keep' | 'wipe' | 'done', onProgre
 
 /**
  * تفريغ الجهاز: القاعدة والمرفقات والمصغّرات ولقطة الودجت · بنسخة أمان، ويبقى الحساب وهوية الجهاز · وsafety = null لخروج العضو من
- * المنشأة: بلا نسخة أمان (B-4 · wipeForRemoval)
+ * المنشأة أو إنقاص صلاحيته: بلا نسخة أمان (B-4 · wipeForRemoval · وB-5b في syncNow)
  */
 async function wipeLocal(db: AppDB, onProgress?: (m: string) => void, safety?: string | null, reason?: string): Promise<string> {
   return holdChat(async () => {
@@ -986,6 +1006,8 @@ export async function leaveOrgNow(db: AppDB): Promise<void> {
   try {
     const user = state.user;
     const out: { saved: UnsyncedSaved | null; live: AppDB } = { saved: null, live: db };
+    // إشعار إنقاصٍ سابق لم يُقرأ (B-5b): التفريغ يمحوه، فيُضمّ ملفه إلى ملف المغادرة
+    const prev: ExitNotice | null = readExitNotice(db);
     // ما لم يُرفع أولاً (وفشله يوقف كل شيء)، ثم الخروج، ثم التفريغ بلا نسخة أمان وبسببه في سجل العمليات كالإزالة (#65 · B-4)
     await leaveSafely({
       backup: async () => { out.saved = saveUnsynced(db, 'left'); return out.saved?.name ?? null; },
@@ -998,10 +1020,12 @@ export async function leaveOrgNow(db: AppDB): Promise<void> {
       wipe: async (_saved, why) => { out.live = await wipeForRemoval(db, out.saved, why); },
     }, t('org.leftReason', { lng: 'ar' }));
     const saved = out.saved;
-    if (saved) {
-      writeExitNotice(out.live, { why: 'left', count: saved.count, file: saved.name, at: new Date().toISOString() });
+    const notice = stackExitNotice(prev, { why: 'left', count: saved?.count ?? 0, file: saved?.name ?? null, at: new Date().toISOString() });
+    const files = noticeFiles(notice);
+    if (files.length) {
+      writeExitNotice(out.live, notice);
       // نافذة الإرسال الآن، وتعذّرها لا يُفشل المغادرة وقد تمّت: الإشعار والملف باقيان حتى يقرأه عند دخوله التالي
-      await shareUnsyncedFile(unsyncedPath(appBackupEnv(out.live), saved.name), t('org.exit.shareTitle')).catch(() => {});
+      for (const f of files) await shareUnsyncedFile(unsyncedPath(appBackupEnv(out.live), f), t('org.exit.shareTitle')).catch(() => {});
     }
     await sess.signOut();
     patch({ user: null, sync: syncStatus(out.live) });

@@ -3,6 +3,7 @@
  *  - مُسحت بيانات المنشأة من جهاز آخر وعلى هذا الجهاز بيانات: يبقيها ويرفعها، أو يفرّغ الجهاز (بنسخة أمان).
  *  - أُزيلت عضويته أو غادر: لا قرار فيه (المراجعة الشاملة 2026-11-13 · B-4 · قرارا المالك س٩ وس١٠): فُرّغ الجهاز عند أول اتصال بلا
  *    نسخةٍ كاملة ولا «أبقِ بياناتي»، وما يبقى إشعارٌ بذلك وملفُّ ما لم يُرفع من عمله يرسله إلى صاحب المنشأة، ثم «تم» يحذفه بأمره.
+ *  - نقصت صلاحيته (B-5b): الإشعار نفسه بعنوانه، والمزامنة ماضية لا تنتظره، فهو باقٍ عضواً.
  * المزامنة متوقفة حتى يقرر، والتطبيق يعمل بما على الجهاز.
  */
 import React, { useState } from 'react';
@@ -33,7 +34,7 @@ export function DecisionSheet({ decision }: { decision: NonNullable<CloudState['
     setBusy(false);
   };
   if (decision.kind === 'removed') {
-    // الإزالة والمغادرة (B-4): الجهاز فُرّغ · إرسال ملفّ ما لم يُرفع لا يغلق الورقة، و«تم» يمحو الإشعار ويحذف الملف بأمره
+    // الإزالة والمغادرة (B-4) وإنقاص الصلاحية (B-5b): الجهاز فُرّغ · إرسال ملفّ ما لم يُرفع لا يغلق الورقة، و«تم» يمحو الإشعار ويحذف الملف بأمره
     const share = async () => {
       setBusy(true);
       try { await shareUnsyncedNow(); }
@@ -41,9 +42,10 @@ export function DecisionSheet({ decision }: { decision: NonNullable<CloudState['
       setBusy(false);
     };
     const saved = decision.pending > 0;
+    const reduced = !!decision.reduced;
     return (
-      <Sheet visible onClose={() => setLater(true)} title={t(decision.left ? 'org.exit.leftTitle' : 'org.exit.removedTitle')}>
-        <T size={TYPE.body} style={{ marginBottom: 8 }}>{t('org.exit.wiped')}</T>
+      <Sheet visible onClose={() => setLater(true)} title={t(reduced ? 'org.exit.reducedTitle' : decision.left ? 'org.exit.leftTitle' : 'org.exit.removedTitle')}>
+        <T size={TYPE.body} style={{ marginBottom: 8 }}>{t(reduced ? 'org.exit.reducedWiped' : 'org.exit.wiped')}</T>
         {saved ? <Note>{t('org.exit.saved', { n: decision.pending })}</Note> : null}
         {saved ? (
           <View style={{ marginBottom: 8 }}>

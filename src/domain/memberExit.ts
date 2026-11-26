@@ -6,6 +6,8 @@
  *  ٢) تُحذف نسخ هذا الجهاز التي صُنعت وهو عضو (نسخ الأمان وما قبل الترقية فيها بيانات المنشأة كما رآها) قبل التفريغ، وتُعرف بما فيها
  *     لا بساعة الجهاز، وما قبل انضمامه يبقى له.
  *  ٣) يُفرَّغ الجهاز بلا نسخة أمان (wipe.ts).
+ * وإنقاص صلاحية العضو كذلك (B-5b): كان تفريغه يصنع نسخة أمانٍ كاملة تبقى على جواله بما أُخذ منه للتو · فصار كالخروج: ما لم يُرفع من
+ * عمله وحده في الملف نفسه (reason = 'reduced')، وتُحذف نسخ جهازه وهو عضو، ويُفرَّغ بلا نسخة أمان · وإشعاره لا يوقف المزامنة، فهو باقٍ عضواً.
  * والملف بصيغة JSON مقروءة لا مختومة بسرّ نسخ العضو: يُرسل إلى صاحب المنشأة وهو لا يملك ذلك السرّ، وليس فيه إلا عمل العضو نفسه.
  * والملف في مجلدٍ فرعي من مجلد نسخ الحساب، فيُركن معه (accountSlots.ts)، ولا تعدّه شاشة المساحة نسخة أمان ولا يعرضه زرّ «استعادة».
  */
@@ -34,7 +36,8 @@ export const UNSYNCED_FORMAT = 'aqari-unsynced-work';
 const UNSYNCED_DIR = 'unsynced';
 const UNSYNCED_NAME = /^unsynced-work-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.json$/;
 
-export type ExitWhy = 'removed' | 'left';
+/** سبب تفريغ جوال العضو بلا نسخة أمان: أُزيل، أو غادر، أو نقصت صلاحيته فبقي عضواً (B-5b) */
+export type ExitWhy = 'removed' | 'left' | 'reduced';
 
 export interface UnsyncedReject {
   /** سبب الرفض كما حُفظ على الجهاز */
@@ -311,6 +314,22 @@ export interface ExitNotice {
   /** اسم ملف ما لم يُرفع · null بلا ملف */
   file: string | null;
   at: string;
+  /** ملفاتٌ من تفريغٍ سابق لم يُقرأ إشعاره (إنقاصٌ ثم إنقاصٌ أو إزالة قبل «تم» · B-5b) · تُرسل وتُحذف معه */
+  earlier?: string[];
+}
+
+/** ملفات الإشعار كلها، الأقدم أولاً */
+export function noticeFiles(n: ExitNotice | null): string[] {
+  return n ? [...(n.earlier ?? []), ...(n.file ? [n.file] : [])] : [];
+}
+
+/**
+ * إشعار تفريغٍ جديد فوق إشعارٍ لم يُقرأ (B-5b): التفريغ يمحو الإشعار القديم من القاعدة، فيُقرأ قبله ويُضمّ ملفه وعدده إلى الجديد · فلا يبقى
+ * ملفٌ من عمله على الجهاز بلا زرّ إرسال ولا حذف
+ */
+export function stackExitNotice(prev: ExitNotice | null, next: ExitNotice): ExitNotice {
+  const earlier = noticeFiles(prev);
+  return earlier.length ? { ...next, count: next.count + (prev?.count ?? 0), earlier } : next;
 }
 
 export function readExitNotice(db: DB): ExitNotice | null {
@@ -319,8 +338,10 @@ export function readExitNotice(db: DB): ExitNotice | null {
   if (!raw) return null;
   try {
     const n = JSON.parse(raw) as Partial<ExitNotice>;
-    if (n.why !== 'removed' && n.why !== 'left') return null;
-    return { why: n.why, count: Math.max(0, Number(n.count) || 0), file: typeof n.file === 'string' && n.file ? n.file : null, at: String(n.at ?? '') };
+    if (n.why !== 'removed' && n.why !== 'left' && n.why !== 'reduced') return null;
+    const earlier = Array.isArray(n.earlier) ? n.earlier.filter((f): f is string => typeof f === 'string' && !!f) : [];
+    return { why: n.why, count: Math.max(0, Number(n.count) || 0), file: typeof n.file === 'string' && n.file ? n.file : null, at: String(n.at ?? ''),
+      ...(earlier.length ? { earlier } : {}) };
   } catch { return null; }
 }
 
@@ -330,9 +351,8 @@ export function writeExitNotice(db: DB, n: ExitNotice): void {
 
 /** قرأ الإشعار (بأمره): يُمحى، ويُحذف ملف ما لم يُرفع من الجهاز (أرسله أو تركه بأمره) */
 export function clearExitNotice(env: DirEnv, db: DB): void {
-  const n = readExitNotice(db);
-  if (n?.file) {
-    try { const p = unsyncedPath(env, n.file); if (env.fs.exists(p)) env.fs.remove(p); } catch { /* حُذف أو اسمٌ غير صالح */ }
+  for (const f of noticeFiles(readExitNotice(db))) {
+    try { const p = unsyncedPath(env, f); if (env.fs.exists(p)) env.fs.remove(p); } catch { /* حُذف أو اسمٌ غير صالح */ }
   }
   setSyncState(db, EXIT_NOTICE_KEY, null);
 }

@@ -704,6 +704,8 @@
     "exit": {
       "removedTitle": "Your membership in the organization was removed",
       "leftTitle": "You left the organization",
+      "reducedTitle": "Your permissions in the organization changed",
+      "reducedWiped": "This device was cleared of what is no longer within your permissions, and no copy of it remains here. What your new permissions allow is downloaded again.",
       "wiped": "This device was cleared of the organization's data, and no copy of it remains here.",
       "saved": "Your work that was not uploaded ({{n}}), attachments included, was saved in one file. Send it to the organization's owner to add it.",
       "share": "Send the file to the organization's owner",
