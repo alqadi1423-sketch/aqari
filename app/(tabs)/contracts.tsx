@@ -64,7 +64,6 @@ import { attachPicked, pickFile } from '../../src/ui/attach';
 import { attachmentsFor } from '../../src/files/store';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../../src/ui/FilterSheet';
 import { usePerm, useAccess } from '../../src/ui/access';
-import { rowBy } from '../../src/services/access';
 import { routeAllowed } from '../../src/domain/access/routes';
 
 /** العقد بمعرّفه ومعه اسم وحدته الآن (A1-13) */
@@ -188,6 +187,24 @@ export default function Contracts() {
     return { rows: page, totalRows: total, allRows: all };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, ready, q, sortKey, showArchived, fStatus, fProp, fUnit, fCycle, fPeriod, pager.limit, pager.offset, T60]);
+
+  // ما تحتاجه بطاقات الصفحة يُحسب مرةً لها باستعلامين، لا استعلامان لكل صفٍّ مع كل رسم (D-17)
+  const pageMeta = useMemo(() => {
+    const ids = rows.map((c) => c.id);
+    const by = new Map<string, string>();
+    const hasLease = new Set<string>();
+    if (ids.length) {
+      const ph = ids.map(() => '?').join(',');
+      db.all<{ pk: string; uid: string }>(`SELECT pk, uid FROM row_by WHERE tbl = 'contracts' AND pk IN (${ph})`, ids)
+        .forEach((r) => by.set(r.pk, r.uid));
+      db.all<{ id: string }>(
+        `SELECT DISTINCT entity_id AS id FROM attachments
+         WHERE entity_type = 'contract' AND kind = 'lease' AND deleted_at IS NULL AND entity_id IN (${ph})`, ids)
+        .forEach((r) => hasLease.add(r.id));
+    }
+    return { by, hasLease };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, version, rows]);
 
   useEffect(() => { pager.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -324,7 +341,7 @@ export default function Contracts() {
   const renderContract = ({ item: c }: { item: ContractRow }) => {
     const draft = c.status === 'مسودة';
     // المسودة يعدّلها ويحذفها كاتبها بإدخال · وما بعدها لصاحب «كامل»
-    const draftEditable = draft && perm.edit({ by: rowBy(db, 'contracts', c.id), draft: true });
+    const draftEditable = draft && perm.edit({ by: pageMeta.by.get(c.id) ?? null, draft: true });
     return (
         <Card style={{ paddingVertical: 10 }}>
           <Pressable onPress={() => setDetailId(c.id)}>
@@ -336,7 +353,7 @@ export default function Contracts() {
                 <ActionMenuButton title={c.tenant_name} actions={[
                   { icon: 'eye', label: 'عرض التفاصيل والدفعات', onPress: () => setDetailId(c.id) },
                   // يظهر فقط إن لم يكن للعقد مستند من نوعه · الرفع بالمسار الواحد نفسه attachPicked
-                  perm.add && attachmentsFor(db, 'contract', c.id, 'lease').length === 0 ? {
+                  perm.add && !pageMeta.hasLease.has(c.id) ? {
                     icon: 'attach', label: 'إرفاق مستند العقد',
                     onPress: async () => {
                       const f = await pickFile(['application/pdf', 'image/*']);
