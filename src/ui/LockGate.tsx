@@ -15,7 +15,7 @@
  * وللمالك طريقٌ ثانٍ يعمل الآن على الجهاز وحده: مفتاح الاسترداد (services/lockRecovery.ts)، فلا يُحبس إن أُزيل قوقل
  */
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, View } from 'react-native';
+import { AppState, BackHandler, View } from 'react-native';
 import { useLang } from '../i18n';
 import { T, BtnPrimary, BtnGhost, Field, Note } from './components';
 import { isValidRecoveryKey } from '../domain/backup/recoveryKey';
@@ -89,6 +89,12 @@ export function LockGate({ children }: { children: React.ReactNode }) {
   const hidden = locked || cover;
   // النوافذ المنبثقة تُطوى حين يُقفل فعلاً وحده: طيّها يمحو ما فيها، فلا تُطوى بكل خروجٍ قبل المهلة (المتحقق، الجولة السادسة)
   useEffect(() => { setAppLocked(locked); }, [locked]);
+  // رجوع الجوال على شاشة القفل يُبتلع: لا يغلق ورقةً مخفية ولا يرجع المسار تحت القفل (D-27) · والمستمع الأحدث يُسأل أولاً
+  useEffect(() => {
+    if (!locked) return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, [locked]);
   return (
     <View style={{ flex: 1 }}>
       <View style={{ flex: 1 }} importantForAccessibility={hidden ? 'no-hide-descendants' : 'auto'} accessibilityElementsHidden={hidden}>

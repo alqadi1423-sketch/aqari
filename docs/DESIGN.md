@@ -1488,6 +1488,7 @@ attachments/<sha256>.<ext> …
 - **D-23:** قاعدة «تحصيل» في تفاصيل القسط مثل صف الجدول.
 - **D-24:** حُذف الفراغ وحالة `tCredit` الميتة.
 - **D-26:** `pickableLangs` تعرض اللغات المكتملة وحدها، ويبقى طريق العودة لمن اختار الإنجليزية (س٢٦).
+- **D-27:** `LockGate` يبتلع زر الرجوع ما دام مقفلاً، ومستمع الورقة مشروطٌ بأن التطبيق غير مقفل.
 
 ### ١٣.١٧ الإصدارات وسجل التغييرات (التوجيه الرابع ٤ · ٢ · 2026-11-07)
 - **رقمٌ واحد** في `src/version.ts` (`APP_VERSION` بصيغة رئيسي.فرعي.تصحيح، و`APP_BUILD` عددٌ يزيد دائماً)، ويطابقه `app.json` (`version` و`android.versionCode`) و`package.json` و`android/app/build.gradle` (`versionName` و`versionCode`) باختبار `tests/d4.version.test.ts`.

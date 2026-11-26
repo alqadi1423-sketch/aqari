@@ -178,15 +178,15 @@ export function Sheet({
     onClose();
   }, [dialog, onClose, dirty]);
 
-  // زر الرجوع في أندرويد يغلق النافذة أولاً · ويستأذن إن كان فيها إدخال
+  // زر الرجوع في أندرويد يغلق النافذة أولاً · ويستأذن إن كان فيها إدخال · والورقة المخفية خلف القفل لا تسمعه (D-27)
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || appLocked) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       requestClose();
       return true;
     });
     return () => sub.remove();
-  }, [visible, requestClose]);
+  }, [visible, appLocked, requestClose]);
 
   // قياس زمن فتح النافذة من اللمسة حتى ظهورها
   useEffect(() => {

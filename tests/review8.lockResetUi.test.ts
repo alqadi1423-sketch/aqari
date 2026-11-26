@@ -69,6 +69,8 @@ jest.mock('react-native', () => ({
     currentState: 'active',
     addEventListener: (_e: string, f: (s: string) => void) => { mockUi.appListeners.add(f); return { remove: () => { mockUi.appListeners.delete(f); } }; },
   },
+  // رجوع الجوال يُبتلع على شاشة القفل (D-27)
+  BackHandler: { addEventListener: () => ({ remove: () => {} }) },
   View: 'View',
 }));
 jest.mock('expo-secure-store', () => ({
