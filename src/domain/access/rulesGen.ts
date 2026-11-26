@@ -651,11 +651,14 @@ ${lockedFns()}
     }
 
     // التعديل الوحيد على قيد مرحّل: ربطه بعاكسه مرة · وحقول الرؤية تُكتب مع كل كتابة
+    // وبنك المسودة (الهجرة ٦٧) يُنزع وحده مع الربط: جهازٌ بإصدارٍ أقدم لا يعرف عموده يعكس مسودةً رحّلها مالكٌ على ٦٧ من بنكها · ولا
+    // يُقرأ بعد ترحيلها (حركة البنك صفٌّ مستقل برقم القيد)، فنزعه لا يحرّك مالاً · وإضافته أو تغيير قيمته مرفوضان (المدقق المستقل للمرحلة ٣)
     function orgOnlyLinksReversal(org) {
       let before = resource.data;
       let after = request.resource.data;
+      let dd = after.d.diff(before.d);
       return after.diff(before).affectedKeys().hasOnly(['d', 'u', 'dev', 'ts', 'op', 'g', 'pids', 'sv', 'dr', 'cr'])
-        && after.d.diff(before.d).affectedKeys().hasOnly(['reversed_by'])
+        && dd.affectedKeys().difference(dd.removedKeys()).hasOnly(['reversed_by']) && dd.removedKeys().hasOnly(['draft_bank_id'])
         && (!('reversed_by' in before.d) || before.d.reversed_by == null)
         && after.d.reversed_by is string
         && reversalReal(org, before, after, after.d.reversed_by);

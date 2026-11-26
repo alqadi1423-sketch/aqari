@@ -2234,6 +2234,11 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   if (local?.status === 'مرحّل') {
     // أبعاد سطور القيد المرحّل وحدها تصل (ملء القيود القديمة · الهجرة ٢٨) · ولا يتغير فيه غيرها
     const dimsChanged = cols.l.has('cost_center_id') ? applyLineDims(db, doc.k, doc.lines ?? []) : 0;
+    // وبنك مسودته الغائب من مستنده (نزعه ربطُ عاكسٍ من إصدارٍ أقدم · orgOnlyLinksReversal) يسقط هنا كما في السحابة، فلا ترفع كتابةٌ
+    // لاحقة للقيد حقلاً ليس فيها فتُرفض · ولا يُقرأ بعد الترحيل (الهجرة ٦٧ · المدقق المستقل للمرحلة ٣)
+    if (cols.e.has('draft_bank_id') && !('draft_bank_id' in d)) {
+      db.run(`UPDATE journal_entries SET draft_bank_id = NULL WHERE id = ? AND draft_bank_id IS NOT NULL`, [doc.k]);
+    }
     if (remoteRev && !local.reversed_by) {
       linkReversal(db, doc.k, remoteRev, doc);
       return 'applied';

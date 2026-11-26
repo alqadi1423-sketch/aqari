@@ -76,3 +76,32 @@ test('مالكٌ بإصدارٍ أقدم يرحّل مسودة البنك من �
   expect([...red(s.owner), ...red(s.dev)]).toEqual([]);
   s.close();
 });
+
+test('جهازٌ بإصدارٍ أقدم يعكس مسودةً رحّلها المالك من بنكها: ربطه بلا الحقل يُقبل، والجهاز على ٦٧ يسقطه معه · وإضافته أو تغييره مرفوضان', async () => {
+  const s = await memberDraft();
+  postDraftEntry(s.owner, s.d.id);
+  expect(bankBalance(s.owner, s.bank)).toBe(230000);
+  await sync(s.owner, s.r);
+  expect(cloud(s.r, s.d.id).d!.draft_bank_id).toBe(s.bank);
+  await sync(s.dev, s.r);
+
+  // ربط العاكس مع تغيير بنكها على القيد المرحّل: مرفوض
+  const posted = cloud(s.r, s.d.id);
+  const res = await s.r.write([{ ...posted, d: { ...posted.d, reversed_by: 'X1', draft_bank_id: 'بنك آخر' } } as RemoteDoc]);
+  expect(res.map((x) => x.ok)).toEqual([false]);
+
+  // الإصدار الأقدم لا يعرف العمود: مستند ربطه بلا الحقل
+  s.dev.run(`UPDATE journal_entries SET draft_bank_id = NULL WHERE id = ?`, [s.d.id]);
+  const rev = reverseFromJournal(s.dev, s.d.id)!;
+  await sync(s.dev, s.r);
+  expect(reasonOf(s.dev, s.d.id)).toBe('');
+  expect(cloud(s.r, s.d.id).d!.reversed_by).toBe(rev.id);
+  expect('draft_bank_id' in cloud(s.r, s.d.id).d!).toBe(false);
+
+  // جهاز المالك على ٦٧ يربط العاكس ويسقط الحقل كالسحابة، فلا تُرفض كتابةٌ لاحقة للقيد بحقلٍ ليس فيها
+  await ownerPulls(s.owner, s.r);
+  expect(s.owner.get(`SELECT reversed_by AS r, draft_bank_id AS b FROM journal_entries WHERE id = ?`, [s.d.id])).toEqual({ r: rev.id, b: null });
+  expect(bankBalance(s.owner, s.bank)).toBe(250000);
+  expect([...red(s.owner), ...red(s.dev)]).toEqual([]);
+  s.close();
+});

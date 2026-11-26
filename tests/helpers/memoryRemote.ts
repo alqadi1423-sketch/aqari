@@ -43,7 +43,9 @@ export class MemoryRemote implements RemoteStore {
     if (JSON.stringify(prev.d) === JSON.stringify(next.d) && prev.del === next.del && noDims(prev.lines) === noDims(next.lines)) return true;
     // الربط بالقيد العكسي وحده ومرة واحدة
     if (prev.d!.reversed_by != null || typeof next.d.reversed_by !== 'string') return false;
-    const a = { ...prev.d, reversed_by: null };
+    // وبنك المسودة يُنزع وحده مع الربط، ولا يُضاف ولا يتغيّر (orgOnlyLinksReversal · الهجرة ٦٧)
+    const a: Record<string, unknown> = { ...prev.d, reversed_by: null };
+    if (!('draft_bank_id' in next.d)) delete a.draft_bank_id;
     const b = { ...next.d, reversed_by: null };
     return JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(prev.lines) === JSON.stringify(next.lines) && prev.del === next.del;
   }
