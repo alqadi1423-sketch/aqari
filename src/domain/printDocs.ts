@@ -244,10 +244,16 @@ export interface InvoiceDocData {
   lines: Array<{ descr: string; qty: number; priceHalalas: number; taxPct: number }>;
   /** إشعار دائن (#30): رقم فاتورته وسببه · ومبالغه المخزّنة سالبة تُطبع موجبة */
   credit?: { refNo: string; reason: string };
+  /** وضعها الضريبي يوم صدرت (الهجرة ٦٤ · E-6 · invoiceVatStamp) · وبدونه: ضريبتها غير صفرية فضريبية، وإلا حال المنشأة اليوم */
+  vatRegistered?: boolean;
+  /** رقم البائع الضريبي يوم صدرت · وبدونه رقم المنشأة اليوم */
+  sellerVatNo?: string;
 }
 
-export function buildInvoiceDoc(co: CompanyInfo, doc: InvoiceDocData, issuedAt: string): string {
-  const vat = co.vatEnabled;
+export function buildInvoiceDoc(co0: CompanyInfo, doc: InvoiceDocData, issuedAt: string): string {
+  // إعادة الطباعة تُخرج ما صدر (القاعدة ٩٩ · E-6): العنوان وخانات الضريبة والرقم والرمز من وضع الفاتورة لا من مفتاح اليوم
+  const vat = doc.vatRegistered ?? (doc.taxHalalas !== 0 || co0.vatEnabled);
+  const co: CompanyInfo = { ...co0, vatEnabled: vat, vatno: vat ? (doc.sellerVatNo ?? co0.vatno) : '' };
   // الإشعار الدائن بعنوانه ومرجعه، ومبالغه موجبة في الورقة
   const cr = doc.credit;
   const v: InvoiceDocData = cr ? {

@@ -6,7 +6,7 @@
 import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, STATEMENT_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 63;
+export const SCHEMA_VERSION = 64;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -2035,4 +2035,30 @@ ALTER TABLE reservations ADD COLUMN bank_id TEXT;
 ALTER TABLE reservations ADD COLUMN refund_bank_id TEXT;
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53, MIGRATION_54, MIGRATION_55, MIGRATION_56, MIGRATION_57, MIGRATION_58, MIGRATION_59, MIGRATION_60, MIGRATION_61, MIGRATION_62, MIGRATION_63];
+/**
+ * الهجرة ٦٤ · وضع الفاتورة الضريبي يوم صدورها (المراجعة الشاملة 2026-11-13 · E-6 · القاعدة ٩٩: إعادة طباعة الوثيقة النظامية تُخرج ما صدر):
+ * كانت الطباعة تقرّر «ضريبية» والرقم الضريبي والرمز من مفتاح الضريبة ساعة الطباعة، فإطفاؤه بعد الإصدار يُخرج ورقةً تناقض نفسها، وتفعيله
+ * يُخرج «فاتورة ضريبية» لفترةٍ لم تكن فيها مسجّلة · فيُحفظ مع الفاتورة عند إصدارها وعند الإشعار الدائن:
+ *   invoices.vat_registered: 1 مسجّلة يوم الصدور، 0 غير مسجّلة، NULL مسودةٌ لم تصدر · invoices.seller_vatno: رقم البائع الضريبي يومها
+ * والقائم: ضريبتها أو نسبة أي سطرٍ فيها غير صفرية فمسجّلة، وإلا حال المنشأة يوم الترقية · والإشعار الدائن القائم يرث فاتورته ·
+ * والالتقاط مطفأ كالهجرة ٦٢: كل جهاز يملؤها بهجرته من البيانات نفسها، فلا تُرفع الفواتير كلها بوقت الترقية فتغلب تعديلاً أحدث
+ */
+// i18n-exempt: حالة الفاتورة كما تُخزَّن
+export const MIGRATION_64 = `
+ALTER TABLE invoices ADD COLUMN vat_registered INTEGER;
+ALTER TABLE invoices ADD COLUMN seller_vatno TEXT;
+CREATE TEMP TABLE _m64_cap AS SELECT k, v FROM sync_ctl WHERE k = 'capture';
+UPDATE sync_ctl SET v = 0 WHERE k = 'capture';
+UPDATE invoices SET vat_registered = CASE
+    WHEN tax_halalas != 0 OR EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = invoices.id AND l.tax_pct != 0) THEN 1
+    ELSE COALESCE((SELECT vat_enabled FROM company WHERE id = 1), 0) END
+  WHERE status != 'مسودة';
+UPDATE invoices SET vat_registered = COALESCE((SELECT r.vat_registered FROM invoices r WHERE r.id = invoices.ref_invoice_id), vat_registered)
+  WHERE kind = 'credit_note' AND ref_invoice_id IS NOT NULL;
+UPDATE invoices SET seller_vatno = CASE WHEN vat_registered = 1 THEN COALESCE((SELECT vatno FROM company WHERE id = 1), '') ELSE '' END
+  WHERE vat_registered IS NOT NULL;
+UPDATE sync_ctl SET v = (SELECT v FROM _m64_cap WHERE _m64_cap.k = sync_ctl.k) WHERE k IN (SELECT k FROM _m64_cap);
+DROP TABLE _m64_cap;
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53, MIGRATION_54, MIGRATION_55, MIGRATION_56, MIGRATION_57, MIGRATION_58, MIGRATION_59, MIGRATION_60, MIGRATION_61, MIGRATION_62, MIGRATION_63, MIGRATION_64];

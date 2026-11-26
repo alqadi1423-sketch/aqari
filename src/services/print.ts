@@ -24,7 +24,7 @@ import { occupantsOf, shownNationalId } from '../domain/occupants';
 import { depositState } from '../domain/contracts/vocab';
 import { contractStatusLabel } from '../domain/contracts/rules';
 import { tenantStatementRows } from '../domain/statement';
-import { isTempInvoiceNo } from '../domain/invoices';
+import { isTempInvoiceNo, invoiceVatStamp } from '../domain/invoices';
 import { receiptBlocked } from '../domain/contracts/cancelPayment';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from './appLockService';
@@ -167,6 +167,8 @@ export async function printInvoice(db: DB, invoiceId: string): Promise<void> {
     totalHalalas: Number(v.total_halalas),
     lines: lines.map((l) => ({ descr: l.descr, qty: Number(l.qty), priceHalalas: Number(l.price_halalas), taxPct: Number(l.tax_pct) })),
     credit: refNo !== null ? { refNo, reason: v.credit_reason ?? '' } : undefined,
+    // وضعها الضريبي ورقم البائع يوم صدرت (E-6)
+    ...invoiceVatStamp(db, v.id),
   }, issuedNow());
   const filename = 'فاتورة · ' + v.no;
   const uri = await renderPdf('فاتورة ' + v.no, body, filename);
