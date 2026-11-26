@@ -45,7 +45,6 @@ export function useAppLockSetting(): { value: string; open: () => void; sheet: R
 
   const sheet = (
     <Sheet visible={visible} onClose={() => setVisible(false)} title={t('lock.settingTitle')}>
-      <Note>{t('lock.about')}</Note>
       {cfg?.on && cfg.method === 'pin' ? (
         <Field label={t('lock.currentPin')} value={current} onChange={(v) => setCurrent(v.replace(/[^0-9]/g, '').slice(0, 8))} keyboard="numeric" secure ltr />
       ) : null}

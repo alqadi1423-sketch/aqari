@@ -122,7 +122,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
               {c.by ? <T size={TYPE.caption} color={C.muted} style={{ textAlign: 'center', marginTop: 4 }}>{t('invites.from', { email: c.by })}</T> : null}
             </View>
           ))}
-          <Note>ترى في المنشأة ما تجيزه لك صلاحيتك وحدها.</Note>
           <View style={{ marginTop: 12 }}>
             <BtnGhost title="لا · أستعمل التطبيق لأملاكي" onPress={() => { declineInvites(db); bump(); }} />
           </View>
