@@ -9,7 +9,7 @@ import { uid } from './ids';
 import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
 import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount, vatRefundLines, vatRejectLines } from './accounting/post';
-import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseAssetsMoved, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
+import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseAssetsMoved, purchaseCatchUp, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
 import { correctionDate, isFiledDate, requireISODate, requireOpenPeriod } from './vatFilings';
@@ -472,12 +472,6 @@ export function isPurchaseFiled(db: DB, id: string): boolean {
   return (p.s ?? '').startsWith('مُقدَّم') || isFiledDate(db, p.date); // i18n-exempt: حالة مخزّنة
 }
 
-function failVatSettled(db: DB, id: string): void {
-  const r = db.get<{ s: string | null }>(`SELECT refund_status AS s FROM purchases WHERE id = ?`, [id])?.s;
-  if (isVatSettled(r)) throw new Error(t('purchase.vatSettled'));
-  if (isPurchaseFiled(db, id)) throw new Error(t('purchase.filedLocked'));
-}
-
 /**
  * ما يمنع تعديل فاتورة شراء قائمة، برسالته سبباً وما يُفعل · وnull إن جاز (المراجعة الشاملة · البند ٤) ·
  * الحفظ يرفض به والواجهة تُخفي «تعديل» به في البطاقة والورقة، فلا يظهر زرٌّ يُرفض الحفظ بعده.
@@ -500,17 +494,30 @@ export function purchaseEditBlock(db: DB, id: string): string | null {
   return null;
 }
 
+/**
+ * ما يمنع حذف فاتورة شراء، برسالته · وnull إن جاز (D-10) · الحذف يرفض به والواجهة تُخفي «حذف» به،
+ * فلا يظهر زرٌّ يرفضه الدومين ثم يفلت رفضه: الضريبة المسترَدة أو المرفوضة، والإقرار المقدَّم، وأصولٌ محوّلة
+ * أو مُثبتة التكلفة بالفاتورة (تُعكس أو تُعدَّل من الأصل أولاً)
+ */
+export function purchaseDeleteBlock(db: DB, id: string): string | null {
+  const r = db.get<{ s: string | null }>(`SELECT refund_status AS s FROM purchases WHERE id = ?`, [id]);
+  if (!r) return null;
+  if (isVatSettled(r.s)) return t('purchase.vatSettled');
+  if (isPurchaseFiled(db, id)) return t('purchase.filedLocked');
+  if (purchaseAssets(db, id).some((a) => a.source !== 'purchase')) return t('assets.err.purchaseLocked');
+  return null;
+}
+
 /** حذف ناعم · قيدا التسجيل والسداد يُعكَسان بقيدي مرآة ولا يُخفيان */
 export function deletePurchase(db: DB, id: string): void {
-  failVatSettled(db, id);
+  const why = purchaseDeleteBlock(db, id);
+  if (why) throw new Error(why);
   db.transaction(() => {
     const p = db.get<{ no: string; journal_entry_id: string | null; paid: number }>(
       `SELECT no, journal_entry_id, paid FROM purchases WHERE id = ?`, [id]
     );
     if (!p) return;
-    // أصولٌ محوّلة أو مُثبتة التكلفة بالفاتورة تبقى مربوطة بها · تُعكس أو تُعدَّل من الأصل قبل حذف الفاتورة
     const stamp = new Date().toISOString();
-    if (purchaseAssets(db, id).some((a) => a.source !== 'purchase')) failPurchaseLocked();
     clearPurchaseAssets(db, id, stamp);
     if (Number(p.paid)) reversePurchasePayment(db, id, true); // السداد يبقى مربوطاً بقيده المعكوس لتعيده الاستعادة
     if (p.journal_entry_id) {

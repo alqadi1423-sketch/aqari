@@ -265,8 +265,10 @@ export default function Journal() {
         {
           label: 'حذف', variant: 'danger',
           onPress: () => {
-            voidEntryById(db, id);
-            bump(); toast('حُذفت المسودة · يمكن استعادتها من سلة المحذوفات');
+            try {
+              voidEntryById(db, id);
+              bump(); toast('حُذفت المسودة · يمكن استعادتها من سلة المحذوفات');
+            } catch (e) { reportFailure({ title: t('journal.deleteDraftFailed'), e }); }
           },
         },
       ],

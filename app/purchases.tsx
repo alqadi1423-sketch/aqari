@@ -24,7 +24,7 @@ import { Icon } from '../src/ui/icons';
 import {
   savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax, priorPaymentCashOut,
   TAX_STATUSES, taxStatusesFor, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
-  type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled, purchaseEditBlock, purchaseByQrKey, purchaseLookalike,
+  type PurchasePayMethod, type TaxStatus, isVatSettled, purchaseEditBlock, purchaseDeleteBlock, purchaseByQrKey, purchaseLookalike,
 } from '../src/domain/purchases';
 import { today as todayFn } from '../src/domain/dates';
 import { metersForPurchase } from '../src/domain/meters';
@@ -91,15 +91,18 @@ function statusBadge(p: { paid: number; due: string }) {
  * الضغط على البطاقة يفتح ورقة العرض الشاملة · السداد المسدَّد لا يُعدَّل بل يُتراجع عنه */
 const PurchaseCard = React.memo(function PurchaseCard({
   id, no, supplierName, date, due, category, subtotalHalalas, taxHalalas, totalHalalas,
-  exempt, excludeFromVat, paid, taxStatus, refundStatus, filedLocked, editLocked, hasOriginal, canManage,
+  exempt, excludeFromVat, paid, taxStatus, refundStatus, deleteLocked, editLocked, hasOriginal, canManage,
   onDetail, onPay, onEdit, onUndoPay, onPrint, onDelete, onVatFiled, onVatRefunded, onVatRejected,
 }: {
   id: string; no: string; supplierName: string; date: string; due: string; category: string;
   subtotalHalalas: number; taxHalalas: number; totalHalalas: number;
   exempt: number; excludeFromVat: number; paid: number; taxStatus: string;
   refundStatus: string; hasOriginal: boolean;
-  /** مقدَّمة في إقرار ضريبي: لا تعديل ولا حذف (قرار المالك 2026-10-09) */
-  filedLocked: boolean;
+  /**
+   * ما يرفض به الحذف (purchaseDeleteBlock): الإقرار المقدَّم (قرار المالك 2026-10-09) والضريبة المسترَدة أو المرفوضة
+   * وأصول الفاتورة المحوّلة · فلا يظهر «حذف» يرفضه الدومين (D-10)
+   */
+  deleteLocked: boolean;
   /** ما يرفض به الحفظ التعديل (purchaseEditBlock): السداد والإقرار والضريبة المسترَدة والسلة وأصول الفاتورة */
   editLocked: boolean;
   /** «المشتريات والموردون: كامل» · السداد والتراجع والتعديل والحذف واسترداد الضريبة */
@@ -117,7 +120,6 @@ const PurchaseCard = React.memo(function PurchaseCard({
   const { t } = useLang();
   // الضريبة إذا استُردت أو رُفضت فقد انتهت قصتها · لا يُعرض لها فعل استرداد بعدها
   const vatSettled = isVatSettled(refundStatus);
-  const contentLocked = vatSettled || filedLocked;
   const vatActions = canManage && taxStatus === TS_DEDUCTIBLE && !vatSettled ? [
     ...(refundStatus.startsWith('مُقدَّم') ? [] : [
       { icon: 'reload' as const, label: 'الضريبة: مُقدَّمة في الإقرار', onPress: () => onVatFiled(id) },
@@ -141,8 +143,8 @@ const PurchaseCard = React.memo(function PurchaseCard({
               canManage && !editLocked ? { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) } : null,
               hasOriginal ? { icon: 'print' as const, label: 'الفاتورة الأصلية', onPress: () => onPrint(id, no) } : null,
               ...vatActions,
-              // الضريبة المسترَدة أو المرفوضة تقفل الفاتورة حتى يُلغى قيدها من الدفتر (#32)
-              canManage && !contentLocked ? {
+              // الضريبة المسترَدة أو المرفوضة تقفل الفاتورة حتى يُلغى قيدها من الدفتر (#32) · والمحوّلة إلى أصل (D-10)
+              canManage && !deleteLocked ? {
                 icon: 'trash', label: 'حذف', danger: true,
                 onPress: () => onDelete(id),
               } : null,
@@ -620,10 +622,13 @@ export default function Purchases() {
       body: 'سيُعكَس أثره المحاسبي بالكامل.',
       actions: [
         { label: 'تراجع', variant: 'ghost' },
-        { label: 'تأكيد', variant: 'primary', onPress: () => { unmarkPurchasePaid(db, id); bump(); toast('تم التراجع عن السداد'); } },
+        { label: 'تأكيد', variant: 'primary', onPress: () => {
+          try { unmarkPurchasePaid(db, id); bump(); toast('تم التراجع عن السداد'); }
+          catch (e) { reportFailure({ title: t('purchase.undoPayFailed'), e }); }
+        } },
       ],
     });
-  }, [db, bump, toast, dialog]);
+  }, [db, bump, toast, dialog, t]);
   const doDelete = useCallback((id: string) => {
     dialog({
       title: 'حذف الفاتورة',
@@ -631,10 +636,13 @@ export default function Purchases() {
       tone: 'danger',
       actions: [
         { label: 'تراجع', variant: 'ghost' },
-        { label: 'حذف', variant: 'danger', onPress: () => { deletePurchase(db, id); bump(); toast('تم الحذف · يمكن استعادته من الإعدادات'); } },
+        { label: 'حذف', variant: 'danger', onPress: () => {
+          try { deletePurchase(db, id); bump(); toast('تم الحذف · يمكن استعادته من الإعدادات'); }
+          catch (e) { reportFailure({ title: t('purchase.deleteFailed'), e }); }
+        } },
       ],
     });
-  }, [db, bump, toast, dialog]);
+  }, [db, bump, toast, dialog, t]);
   const vatFiled = useCallback((id: string) => {
     try { markVatFiled(db, id); bump(); toast('حُدّثت حالة الاسترداد'); }
     catch (e) { reportFailure({ title: 'تعذّر تحديث حالة الاسترداد', e }); }
@@ -691,7 +699,7 @@ export default function Purchases() {
       category={item.category} subtotalHalalas={Number(item.subtotal_halalas)} taxHalalas={Number(item.tax_halalas)}
       totalHalalas={Number(item.total_halalas)} exempt={Number(item.exempt)} excludeFromVat={Number(item.exclude_from_vat)}
       paid={Number(item.paid)} taxStatus={item.tax_status ?? ''} refundStatus={item.refund_status ?? ''}
-      hasOriginal={!!Number(item.att_n)} canManage={perm.manage} filedLocked={isPurchaseFiled(db, item.id)}
+      hasOriginal={!!Number(item.att_n)} canManage={perm.manage} deleteLocked={!!purchaseDeleteBlock(db, item.id)}
       editLocked={!!purchaseEditBlock(db, item.id)}
       onDetail={openDetail} onPay={openPay} onEdit={openEdit} onUndoPay={undoPay} onPrint={printOriginal} onDelete={doDelete}
       onVatFiled={vatFiled} onVatRefunded={vatRefunded} onVatRejected={vatRejected}
