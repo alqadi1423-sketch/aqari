@@ -344,7 +344,8 @@ export default function Journal() {
           <>
             {/* مسودة العضو لا تمسّ النقد فلا يُشترط لها كفايته */}
             {/* والعضو على حسابٍ مساند لا زرّ له: يُسجَّل من شاشته (A2.10) */}
-            {(owner ? manualOk : !supportHits.length) ? <View style={{ flex: 1 }}><BtnPrimary title={owner ? 'ترحيل القيد' : t('journal.saveDraft')} onPress={post} disabled={!balanced} /></View> : null}
+            {/* القيد غير المتوازن لا زرّ له، وسببه في شريط التوازن أسفل الورقة (D-15) */}
+            {(owner ? manualOk : !supportHits.length) && balanced ? <View style={{ flex: 1 }}><BtnPrimary title={owner ? 'ترحيل القيد' : t('journal.saveDraft')} onPress={post} /></View> : null}
           </>
         }>
         {withBank ? null : <CashShortNote needed={manualOut} what="صرف النقد في القيد" date={date} />}

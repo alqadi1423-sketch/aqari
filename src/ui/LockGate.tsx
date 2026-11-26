@@ -209,7 +209,8 @@ function LockScreen({ cfg, onOpen, onRecovered }: { cfg: LockConfig; onOpen: () 
         <>
           <Note>{t('lock.recoveryKeyHint')}</Note>
           <Field label={t('lock.recoveryKeyLabel')} value={typedKey} onChange={(v) => setTypedKey(v.slice(0, 40))} ltr />
-          <BtnPrimary title={t('lock.useRecoveryKey')} loading={busy} disabled={!isValidRecoveryKey(typedKey)} onPress={submitKey} />
+          {/* الزر يظهر حين يكتمل المفتاح أو الرمز، لا معطَّلاً قبله (D-15) */}
+          {isValidRecoveryKey(typedKey) ? <BtnPrimary title={t('lock.useRecoveryKey')} loading={busy} onPress={submitKey} /> : null}
           <BtnGhost title={t('common.cancel')} onPress={() => { setKeyMode(false); setTypedKey(''); setMsg(null); }} />
         </>
       ) : resetting ? (
@@ -217,12 +218,13 @@ function LockScreen({ cfg, onOpen, onRecovered }: { cfg: LockConfig; onOpen: () 
           <Note>{t('lock.setNewPin')}</Note>
           <Field label={t('lock.newPin')} value={pin1} onChange={(v) => setPin1(v.replace(/[^0-9]/g, '').slice(0, 8))} keyboard="numeric" secure ltr />
           <Field label={t('lock.repeatPin')} value={pin2} onChange={(v) => setPin2(v.replace(/[^0-9]/g, '').slice(0, 8))} keyboard="numeric" secure ltr />
-          <BtnPrimary title={t('lock.saveNewPin')} loading={busy} disabled={!pinShapeOk(pin1) || pin1 !== pin2} onPress={saveNewPin} />
+          {pinShapeOk(pin1) && pinShapeOk(pin2) && pin1 !== pin2 ? <Note tone="danger">{t('lock.pinsDiffer')}</Note> : null}
+          {pinShapeOk(pin1) && pin1 === pin2 ? <BtnPrimary title={t('lock.saveNewPin')} loading={busy} onPress={saveNewPin} /> : null}
         </>
       ) : cfg.method === 'pin' ? (
         <>
           <Field label={t('lock.pinLabel')} value={pin} onChange={(v) => setPin(v.replace(/[^0-9]/g, '').slice(0, 8))} keyboard="numeric" secure ltr />
-          <BtnPrimary title={t('lock.open')} loading={busy} disabled={!pinShapeOk(pin)} onPress={submitPin} />
+          {pinShapeOk(pin) ? <BtnPrimary title={t('lock.open')} loading={busy} onPress={submitPin} /> : null}
         </>
       ) : device === false ? (
         <>

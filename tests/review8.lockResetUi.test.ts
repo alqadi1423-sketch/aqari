@@ -362,10 +362,10 @@ test('ق٠-٦ الواجهة: بلا حسابٍ ولا قوقل (البناء ا
   expect(button('lock.forgotPin')).toBeUndefined();
   press(button('lock.forgotPinKey'));
   await until(() => !!field('lock.recoveryKeyLabel'), 'حقل المفتاح');
-  // لا يُرسل حتى يصحّ شكله ومحرف تحققه
+  // لا يُرسل حتى يصحّ شكله ومحرف تحققه · الزر يغيب قبلها لا يُعطَّل (D-15)
   type('lock.recoveryKeyLabel', 'ABC');
   await round();
-  expect(button('lock.useRecoveryKey')!.props.disabled).toBe(true);
+  expect(button('lock.useRecoveryKey')).toBeUndefined();
   type('lock.recoveryKeyLabel', OTHER_KEY);
   await round();
   await press(button('lock.useRecoveryKey'));
@@ -375,7 +375,8 @@ test('ق٠-٦ الواجهة: بلا حسابٍ ولا قوقل (البناء ا
   const typed = formatRecoveryKey(KEY).toLowerCase();
   type('lock.recoveryKeyLabel', typed);
   await round();
-  expect(button('lock.useRecoveryKey')!.props.disabled).toBe(false);
+  expect(button('lock.useRecoveryKey')).toBeDefined();
+  expect(button('lock.useRecoveryKey')!.props.disabled).toBeFalsy();
   await press(button('lock.useRecoveryKey'));
   await newPin('2468');
   expect(mockUi.keyChecks).toEqual([OTHER_KEY, typed]);

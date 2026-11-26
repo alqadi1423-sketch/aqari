@@ -899,6 +899,7 @@
     "noDeviceLockSet": "This device has no lock · choose an app code of 4 to 8 digits.",
     "newPin": "App code (4 to 8 digits)",
     "repeatPin": "Repeat it",
+    "pinsDiffer": "The two codes differ",
     "enablePin": "Turn on with this code",
     "currentPin": "Current code",
     "setDelay": "Lock {{delay}}",
