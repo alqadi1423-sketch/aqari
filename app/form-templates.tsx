@@ -14,6 +14,7 @@ import { uid } from '../src/domain/ids';
 import { logAudit } from '../src/domain/audit';
 import { HandoverSheet } from '../src/ui/HandoverSheet';
 import { usePerm } from '../src/ui/access';
+import { parseTemplateSections } from '../src/domain/handover/build';
 
 interface TplSection { section: string; items: string[] }
 
@@ -40,7 +41,7 @@ export default function FormTemplates() {
     () =>
       db.all<Omit<TplRow, 'sections'>>(
         `SELECT * FROM form_templates WHERE deleted_at IS NULL ORDER BY is_system DESC, created_at`
-      ).map((t) => ({ ...t, sections: JSON.parse(t.sections_json) as TplSection[] })),
+      ).map((t) => ({ ...t, sections: parseTemplateSections(t.sections_json) })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]
   );

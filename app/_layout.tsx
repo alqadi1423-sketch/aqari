@@ -19,6 +19,13 @@ import { rescheduleAllNotifications } from '../src/services/notifications';
 import { applyScreenSecureFrom } from '../src/services/screenSecure';
 import { appDb } from '../src/db/expoAdapter';
 import { perfMarkNavRender, perfRouteChanged, perfTouch, perfTouchUp } from '../src/perf/perf';
+import { ScreenErrorFallback } from '../src/ui/ScreenErrorFallback';
+
+/**
+ * حاجز أخطاء حول كل شاشة (D-5) · expo-router يلفّ به كل شاشة تحت هذا التخطيط (useScreens.js)،
+ * فعطلُ رسمٍ في شاشة يُعرض بطاقةً مكانها، والمزوّدون فوقها (الحوار · التنبيه · القفل) أحياء
+ */
+export const unstable_settings = { screenErrorBoundary: ScreenErrorFallback };
 
 // لغة الواجهة واتجاهها من اختيار الجهاز (العربية افتراضاً) · قبل أول رسم
 try {

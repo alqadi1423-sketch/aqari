@@ -1082,7 +1082,9 @@
     "title": "Crash reports",
     "close": "Close",
     "copy": "Copy details",
-    "share": "Send"
+    "share": "Send",
+    "screen": "this screen",
+    "home": "Home"
   },
   "purchaseQr": {
     "read": "Read invoice QR",

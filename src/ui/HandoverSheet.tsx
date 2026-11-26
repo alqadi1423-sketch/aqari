@@ -13,7 +13,7 @@ import { useApp } from './store';
 import { useToast } from './Toast';
 import { useDialog } from './AppDialog';
 import { C, TYPE } from './theme';
-import { type HandoverSection, sectionsFromTemplate, HANDOVER_LEGAL_FOOTER, NO_HANDOVER_SOURCE } from '../domain/handover/build';
+import { type HandoverSection, sectionsFromTemplate, parseHandoverSections, HANDOVER_LEGAL_FOOTER, NO_HANDOVER_SOURCE } from '../domain/handover/build';
 import { NeedsTemplate } from './NeedsTemplate';
 import {
   getContractHandover, createHandoverForContract, updateHandover, lockHandover,
@@ -105,7 +105,7 @@ export function HandoverSheet({
   const [companySign, setCompanySign] = useState(record?.company_sign ?? '');
   const [sections, setSections] = useState<HandoverSection[]>(() =>
     record
-      ? (JSON.parse(record.sections_json) as HandoverSection[])
+      ? parseHandoverSections(record.sections_json)
       : sectionsFromTemplate(db, templateId ?? null)
   );
 

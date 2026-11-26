@@ -20,6 +20,37 @@ const blank = (name: string): HandoverItem => ({
   name, count: '', receiveCondition: '', deliverCondition: '', notes: '',
 });
 
+/** نصّ عمود JSON قد يصل تالفاً بالمزامنة (جهاز بإصدار سابق أو كتابة مزوّرة) · يُقرأ بلا رمي (D-5) */
+function parseArray(json: string | null | undefined): unknown[] {
+  try {
+    const v: unknown = JSON.parse(json ?? '');
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+const str = (v: unknown): string => (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '');
+const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** أقسام قالب النموذج من `form_templates.sections_json` · التالف لا يرمي، وما سلم منه يبقى */
+export function parseTemplateSections(json: string | null | undefined): Array<{ section: string; items: string[] }> {
+  return parseArray(json).filter(isObj).map((s) => ({
+    section: str(s.section),
+    items: Array.isArray(s.items) ? s.items.filter((i): i is string => typeof i === 'string') : [],
+  }));
+}
+
+/** أقسام نموذج استلامٍ محفوظ من `handovers.sections_json` · التالف لا يرمي، والخانة الغائبة فارغة */
+export function parseHandoverSections(json: string | null | undefined): HandoverSection[] {
+  return parseArray(json).filter(isObj).map((s) => ({
+    section: str(s.section),
+    items: (Array.isArray(s.items) ? s.items : []).filter(isObj).map((it) => ({
+      name: str(it.name), count: str(it.count), receiveCondition: str(it.receiveCondition),
+      deliverCondition: str(it.deliverCondition), notes: str(it.notes),
+    })),
+  }));
+}
+
 /** بناء أقسام النموذج من غرف الوحدة وأقسام عقارها · وإلا null (فيُستخدم القالب) */
 export function buildSectionsFromUnit(db: DB, unitId: string): HandoverSection[] | null {
   const u = db.get<{ id: string; property_id: string }>(
@@ -78,7 +109,7 @@ export function sectionsFromTemplate(db: DB, templateId: string | null): Handove
   const pick = (id: string | null) => id ? db.get<{ sections_json: string }>(
     `SELECT sections_json FROM form_templates WHERE id = ? AND deleted_at IS NULL`, [id]) : undefined;
   const row = pick(templateId) ?? pick(defaultHandoverTemplate(db));
-  const raw = row ? (JSON.parse(row.sections_json) as Array<{ section: string; items: string[] }>) : [];
+  const raw = row ? parseTemplateSections(row.sections_json) : [];
   return raw.map((s) => ({ section: s.section, items: s.items.map(blank) }));
 }
 
