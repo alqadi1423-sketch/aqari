@@ -77,13 +77,27 @@ function commercialRentParts(db: DB, from: string, to: string): { paid: number; 
   return { paid, cancelled };
 }
 
-/** مبيعات الفواتير بالرمز: الفاتورة برمزٍ واحد بمجاميعها المحفوظة، والمختلطة سطراً سطراً */
+/**
+ * مبيعات الفواتير بالرمز: الفاتورة برمزٍ واحد بمجاميعها المحفوظة، والمختلطة سطراً سطراً · والخاضع من قيد الفاتورة نفسه كعمولة التقبيل
+ * (المراجعة الشاملة 2026-11-13 · A2.12): الفاتورة أو الإشعار الذي حمل قيده سطر ضريبة مخرجات (2200) خاضعٌ في فترته، فلا يُسقطه إلغاء
+ * التسجيل بعده ويطابق البند ١ الدفتر · وما لا قيد له هنا (لم يصل بعد) بتسجيل المنشأة كما كان · والصفري رمزٌ لُقط يوم إصداره
+ */
 function invoiceSales(db: DB, from: string, to: string): { S: number; tax: number; Z: number; E: number } {
   const out = { S: 0, tax: 0, Z: 0, E: 0 };
   const registered = vatRegistered(db);
+  // ما يدل أن المنشأة سُجّلت يوماً: مسجّلةٌ الآن، أو بقي لها رقمٌ ضريبي بعد إلغاء تسجيلها · فالمنشأة التي لم تُسجَّل قط تبقى بلا مبيعات
+  // خاضعة ولو حملت فواتيرها القديمة ضريبةً بالنسبة الافتراضية (دراسة القائم 2026-10-09)
+  const everRegistered = registered || !!db.get(`SELECT 1 FROM company WHERE id = 1 AND TRIM(vatno) != ''`);
+  const entryVat = (id: string): boolean | null => {
+    const r = db.get<{ n: number; vat: number }>(
+      `SELECT COUNT(DISTINCT e.id) AS n, COALESCE(SUM(CASE WHEN l.account_code = '2200' THEN 1 ELSE 0 END), 0) AS vat
+       FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+       WHERE e.src_type = 'invoice' AND e.src_id = ? AND e.deleted_at IS NULL`, [id]);
+    return !r || !Number(r.n) ? null : Number(r.vat) > 0;
+  };
   const hasKind = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'kind');
-  const invs = db.all<{ id: string; subtotal_halalas: number; tax_halalas: number; kind: string | null }>(
-    `SELECT id, subtotal_halalas, tax_halalas, ${hasKind ? 'kind' : 'NULL AS kind'} AS kind FROM invoices
+  const invs = db.all<{ id: string; subtotal_halalas: number; tax_halalas: number; kind: string | null; ref: string | null }>(
+    `SELECT id, subtotal_halalas, tax_halalas, ${hasKind ? 'kind' : 'NULL AS kind'} AS kind, ${hasKind ? 'ref_invoice_id' : 'NULL'} AS ref FROM invoices
      WHERE deleted_at IS NULL AND status != ? AND issue >= ? AND issue <= ?`,
     ['مسودة', from, to]); // i18n-exempt: حالة مخزّنة
   for (const v of invs) {
@@ -102,9 +116,12 @@ function invoiceSales(db: DB, from: string, to: string): { S: number; tax: numbe
       const s = parts.find((p) => p.code === 'S');
       if (s) s.tax = Number(v.tax_halalas) - parts.filter((p) => p !== s).reduce((x, p) => x + p.tax, 0);
     }
+    // والإشعار الدائن بقيد فاتورته: خاضعٌ ولو قُرّبت ضريبته إلى صفر فلم يحمل قيده 2200
+    const vatAtIssue = parts.some((p) => p.code === 'S') ? entryVat(v.kind === 'credit_note' && v.ref ? v.ref : v.id) : false;
+    const taxed = vatAtIssue === null ? registered : vatAtIssue && everRegistered;
     for (const p of parts) {
-      if (p.code === 'S') { if (registered) { out.S += p.net; out.tax += p.tax; } }
-      else if (p.code === 'Z') { if (registered) out.Z += p.net; }
+      if (p.code === 'S') { if (taxed) { out.S += p.net; out.tax += p.tax; } }
+      else if (p.code === 'Z') out.Z += p.net;
       else out.E += p.net;
     }
   }
