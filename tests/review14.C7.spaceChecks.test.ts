@@ -161,3 +161,11 @@ test('C-7 · بوابة الترقية: سبب المساحة يُعرف، وأ�
   expect(gate).toMatch(/spaceFix\s*&&\s*oldest\s*\?/);
   expect(gate).toMatch(/deleteOldestPreUpgradeBackup\(/);
 });
+
+test('C-7 (المدقق المستقل) · نسخة Drive بلا الملفات المرفوعة تفحص المساحة بلا الملفات حين تكون في الخادم', () => {
+  const cloud = fs.readFileSync(path.resolve(__dirname, '..', 'src', 'services', 'cloud.ts'), 'utf8');
+  const fn = cloud.slice(cloud.indexOf('export async function backupToDrive('));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  expect(body).toMatch(/dataOnly: filesCloudOn\(\)/);
+  expect(body).toMatch(/ensureFreeSpace\(env, !filesCloudOn\(\)\)/);
+});

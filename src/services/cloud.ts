@@ -1256,7 +1256,8 @@ export async function backupToDrive(db: AppDB, onProgress?: ProgressFn, signal?:
   const env = appBackupEnv(db);
   const name = `عقاري · نسخة · ${toLocalISODate(new Date())}.aqbk`;
   const out = joinPath(env.tmpDir, 'drive-' + Date.now() + '.aqbk');
-  await ensureFreeSpace(env); // C-7
+  // الملفات في الخادم لا تدخل النسخة، فلا تُحسب في المساحة المطلوبة (C-7 · المدقق المستقل للمرحلة ٣)
+  await ensureFreeSpace(env, !filesCloudOn());
   // الملفات في الخادم: نسخة Drive للبيانات وقائمة الملفات وبصماتها، ومعها ما لم يُرفع بعد · فتصير صغيرة وسريعة
   const manifest = await createBackup(env, out, onProgress, { signal, dataOnly: filesCloudOn() });
   try {
