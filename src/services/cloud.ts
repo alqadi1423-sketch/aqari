@@ -312,7 +312,8 @@ export async function syncNow(): Promise<void> {
     // مؤشر النقل تقدّم · فيُسجَّل التفريغ الآن قبل طلب العضوية، فلا يضيع بفشله
     if (moved === 'lost') notePermWipe(db, 'moved');
     const r0 = await refreshMembership(db, remoteOf(db, uid, idToken), seen.denied);
-    const r = r0 === 'same' && moved === 'lost' ? 'changed' : r0;
+    // وزيادة الصلاحية وحدها سحبٌ بلا تفريغ (B-5 · isGrant): حُفظت وصُفّر المؤشر، فيُسحب بها في هذه الدورة · إلا أن تخرج معها وحدةٌ من عقاراته
+    const r = (r0 === 'same' || r0 === 'granted') && moved === 'lost' ? 'changed' : r0;
     if (r === 'removed') { db = await exitRemoved(db); return; }
     // والتغيّر يُسجَّل تفريغه المنتظر الآن (حُفظت العضوية الجديدة) فلا يضيع بفشلٍ بعده في الدورة
     if (r === 'changed') notePermWipe(db, moved === 'lost' ? 'moved' : 'changed');
@@ -360,10 +361,11 @@ export async function syncNow(): Promise<void> {
     pumpFilesInBackground(db, rep.applied + rep.pushed > 0).catch(() => {});
     // المالك ينشر نقل الوحدات بعد رفع صفوفها بوسمها الجديد (ملاحظة المالك على ٤.١٢)
     if (!member && org === uid) await publishUnitMoves(db, remoteOf(db, uid, idToken), org);
-    if (member && (r === 'changed' || r === 'same')) {
+    if (member && (r === 'changed' || r === 'same' || r === 'granted')) {
       // تغيّر الصلاحية (عُرف أول الدورة): لا تفريغ وفي الطابور ما لم يُرفع (قاعدة المالك ٢٠٢٦-١٠-٠٥) · التفريغ منتظرٌ محفوظ حتى يُرفع
       // الطابور وما لم يُرسل من المحادثة (في هذه الدورة)، ثم يقع في أول دورة بعدها، ويُعاد السحب من أوله بصلاحيته الجديدة (تحقق الدمج ف٢)
       const queued = outboxCount(db);
+      // والزيادة لا تسجّل تفريغاً، ولا تلغي تفريغاً منتظراً من إنقاصٍ قبلها (permWipeDue)
       const due = permWipeDue(db, r, moved, queued + chatUnsentCount(db));
       if (due) {
         const next = readMembership(db)!;
@@ -383,6 +385,8 @@ export async function syncNow(): Promise<void> {
         const again = await refreshMembership(db, remoteOf(db, uid, idToken));
         if (again === 'removed') { db = await exitRemoved(db); return; }
         if (again === 'changed') { notePermWipe(db, 'changed'); e = new Error(t('org.permChanged')); }
+        // والزيادة وحدها حُفظت وصُفّر مؤشرها، فتُسحب بها الدورة التالية بلا تفريغ (B-5)
+        if (again === 'granted') e = new Error(t('org.permChanged'));
       } catch (e2) {
         e = e2;
       }

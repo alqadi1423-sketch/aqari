@@ -11,7 +11,7 @@ import { getSyncState, setSyncState, seedOutbox } from '../sync/engine';
 import { isoCmp } from '../sync/isoTime';
 import { hasUserData } from '../domain/backup/upgrade';
 import { memberTokens } from '../sync/acl';
-import { SECTION_KEYS, type Level, type Perms } from '../domain/access/sections';
+import { SECTION_KEYS, levelOf, type Level, type Perms } from '../domain/access/sections';
 import { readMembership, saveMembership, type Membership } from './access';
 import { EMPTY_PROFILE, type MemberProfile } from '../domain/access/profile';
 import { pendingUnitMoves, PENDING_MOVES_KEY, type UnitMove } from '../domain/unitMove';
@@ -232,13 +232,25 @@ export async function acceptInvite(db: DB, remote: FirestoreRemote, org: string,
 }
 
 /**
- * مقارنة العضوية المحفوظة بما في الخادم · 'removed' أُزيلت (يُمسح الجهاز)، و'changed' تغيّرت صلاحيته
- * (يُعاد السحب من أوله بصلاحيته الجديدة)، و'same' كما هي.
+ * الصلاحية الجديدة زيادةٌ على القديمة لا غير (المراجعة الشاملة 2026-11-13 · B-5 · المحسوم بالقاعدة ٩٩ في 2026-11-07: «نقص الصلاحية يفرّغ
+ * ما لم يعد يحق له رؤيته، والزيادة سحبٌ بلا تفريغ»): مستوى كل قسمٍ أكبر من القديم أو يساويه، والعقارات تشمل القديمة («كل العقارات» لا تعود
+ * عقاراتٍ بعينها) · فكل ما كان يراه باقٍ له، ورموز سحبه تشمل القديمة · وأي نقصٍ في شيءٍ منها، ولو مع زيادةٍ في غيره، ليس زيادة
+ */
+export function isGrant(prev: Pick<Membership, 'perms' | 'allProps' | 'props'>, next: Pick<Membership, 'perms' | 'allProps' | 'props'>): boolean {
+  if (SECTION_KEYS.some((k) => levelOf(next.perms, k) < levelOf(prev.perms, k))) return false;
+  if (next.allProps) return true;
+  return !prev.allProps && prev.props.every((p) => next.props.includes(p));
+}
+
+/**
+ * مقارنة العضوية المحفوظة بما في الخادم · 'removed' أُزيلت (يُمسح الجهاز)، و'changed' نقصت صلاحيته
+ * (يُفرَّغ ويُعاد السحب من أوله بصلاحيته الجديدة)، و'granted' زيدت صلاحيته وحدها (isGrant · B-5): تُحفظ ويُصفَّر مؤشر السحب وحده فيصل
+ * ما صار يراه، بلا تفريغ ولا نسخة أمان، و'same' كما هي.
  * والإزالة لا تُعرف إلا بدليلين معاً (المراجعة الشاملة 2026-11-13 · R11-B2-1): مستند العضوية غائبٌ هو نفسه (getDocStrict: لا 404 القاعدة
  * أو المشروع)، ورفض الخادم (403) لمستندٍ للأعضاء وحدهم (firestore.rules · isMember) · denied: رُفض في هذه الدورة (سجل النقل)، وإلا يُقرأ
  * عهد المسح · فغيابٌ بلا رفضٍ يوافقه خطأ اتصالٍ يُعاد، ويبقى الجهاز وعضويته كما هما (قاعدة المالك 2026-10-05: لا مسح إلا بإزالةٍ حقيقية)
  */
-export async function refreshMembership(db: DB, remote: FirestoreRemote, denied = false): Promise<'same' | 'changed' | 'removed' | 'none'> {
+export async function refreshMembership(db: DB, remote: FirestoreRemote, denied = false): Promise<'same' | 'changed' | 'granted' | 'removed' | 'none'> {
   const m = readMembership(db);
   if (!m) return 'none';
   const path = `orgs/${m.org}/members/${m.uid}`;
@@ -255,6 +267,11 @@ export async function refreshMembership(db: DB, remote: FirestoreRemote, denied 
   if (same) {
     if (JSON.stringify(m.profile ?? null) !== JSON.stringify(next.profile)) saveMembership(db, next);
     return 'same';
+  }
+  // والزيادة وحدها: العضوية والمؤشر معاً، فلا يبقى سحبٌ من موضعٍ قديم بصلاحيةٍ جديدة (ما صار يراه أقدم من المؤشر)
+  if (isGrant(m, next)) {
+    db.transaction(() => { saveMembership(db, next); setSyncState(db, 'cursor', null); });
+    return 'granted';
   }
   saveMembership(db, next);
   return 'changed';
@@ -395,9 +412,9 @@ export const PERM_WIPE_KEY = 'perm_wipe_pending';
 /**
  * تفريغ الجهاز لتغيّر الصلاحية (قاعدة المالك ٢٠٢٦-١٠-٠٥: لا تفريغ وفي الطابور ما لم يُرفع) · يُحفظ منتظراً، ويقع في أول دورة
  * يخلو فيها طابور المزامنة وما لم يُرسل من المحادثة · فالعضوية الجديدة تُحفظ عند اكتشافها والتفريغ لا يضيع بذلك
- * (تحقق الدمج الثاني، ف٢) · يعيد سببه إن حان، وإلا null
+ * (تحقق الدمج الثاني، ف٢) · يعيد سببه إن حان، وإلا null · و'granted' (زيادةٌ وحدها · B-5) لا تسجّل تفريغاً ولا تلغي المنتظر قبلها
  */
-export function permWipeDue(db: DB, r: 'same' | 'changed', moved: 'lost' | 'none', waiting: number): 'changed' | 'moved' | null {
+export function permWipeDue(db: DB, r: 'same' | 'changed' | 'granted', moved: 'lost' | 'none', waiting: number): 'changed' | 'moved' | null {
   if (r === 'changed') notePermWipe(db, moved === 'lost' ? 'moved' : 'changed');
   const pend = getSyncState(db, PERM_WIPE_KEY);
   return pend === 'changed' || pend === 'moved' ? (waiting === 0 ? pend : null) : null;
