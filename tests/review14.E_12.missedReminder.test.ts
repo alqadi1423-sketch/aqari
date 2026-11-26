@@ -84,3 +84,38 @@ test('E-12 الخدمة تجدول الفائت بعد دقيقة ولا تكر�
   expect(again.length).toBe(soon.length);
   db.close();
 });
+
+test('E-12 (المدقق المستقل): مرةً واحدة عبر الأيام · ولا يُعاد ما أُطلق في التاسعة إن أُعيدت الجدولة بعدها', () => {
+  const db = memDb();
+  setSetting(db, 'remindersOn', true);
+  setSetting(db, 'remindPayment', 7);
+  confirmContract(db, contractInput(addUnit(db, addProperty(db, { name: 'عقار مصطنع' }), { unit_no: 'E-12b' }),
+    { start: '2026-03-05', end: '2026-08-31', depositHalalas: 0 }));
+  // كل فتحٍ للتطبيق يعيد الجدولة كلها، وما خُطِّط بموعدٍ قبل الفتح التالي أُطلق فعلاً
+  const opens = ['2026-03-01T10:00:00', '2026-03-01T18:00:00', '2026-03-02T08:00:00', '2026-03-02T12:00:00',
+    '2026-03-03T08:30:00', '2026-03-03T13:00:00', '2026-03-04T20:00:00'];
+  let caught: Record<string, number> = {};
+  let pending: number[] = [];
+  const fired: number[] = [];
+  for (const o of opens) {
+    const now = new Date(o).getTime();
+    fired.push(...pending.filter((at) => at <= now));
+    const items = computeSchedule(db, o.slice(0, 10)).filter((s) => s.kind === 'payment' && s.dueDate === '2026-03-05');
+    const r = planReminderDelivery(items, now, caught);
+    caught = r.caught;
+    pending = r.plan.map((p) => p.at);
+  }
+  fired.push(...pending);
+  expect(fired).toEqual([new Date('2026-03-01T10:01:00').getTime()]);
+
+  // قسطٌ يحين تذكيره في التاسعة: يُطلق، ثم جدولةٌ في الظهر لا تعيده بعد دقيقة
+  const it = item('2026-03-10', '2026-03-17');
+  const a = planReminderDelivery([it], new Date('2026-03-10T08:00:00').getTime(), {});
+  expect(a.plan.map((p) => p.at)).toEqual([new Date('2026-03-10T09:00:00').getTime()]);
+  expect(planReminderDelivery([it], new Date('2026-03-10T12:00:00').getTime(), a.caught).plan).toEqual([]);
+  // ومهلةٌ رُفعت قبل الإطلاق تُقدّم موعده
+  const later = planReminderDelivery([item('2026-03-12', '2026-03-17')], new Date('2026-03-10T08:00:00').getTime(), {});
+  const raised = planReminderDelivery([item('2026-03-10', '2026-03-17')], new Date('2026-03-10T10:00:00').getTime(), later.caught);
+  expect(raised.plan.map((p) => p.at)).toEqual([new Date('2026-03-10T10:01:00').getTime()]);
+  db.close();
+});

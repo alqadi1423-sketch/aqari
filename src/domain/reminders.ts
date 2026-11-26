@@ -125,8 +125,9 @@ export interface ScheduledReminder {
 
 /**
  * ما فات موعد إطلاقه والاستحقاق لم يأتِ (مهلةٌ أطول من المتبقي، أو اليوم بعد التاسعة، أو رفع المهلة) يُطلق بعد دقيقة،
- * مرةً واحدة (المراجعة الشاملة 2026-11-13 · E-12) · caught: ما جُدول هكذا بموعده (مفتاحه النوع والسجل والاستحقاق)، فالجدولة
- * التالية بعد كل كتابة تُبقي موعده إن لم يحن، ولا تعيده بعد أن أُطلق · ويُنسى ما خرج من القائمة (سُدِّد أو مضى).
+ * مرةً واحدة (المراجعة الشاملة 2026-11-13 · E-12) · caught: كل ما جُدول بموعده (مفتاحه النوع والسجل والاستحقاق)، تاسعةً كان أو
+ * بعد دقيقة، فالجدولة التالية بعد كل كتابة تُبقي موعده إن لم يحن، ولا تعيده بعد أن حان ولو في يومٍ تالٍ · ويُنسى ما خرج من
+ * القائمة (سُدِّد أو مضى).
  */
 export function planReminderDelivery(
   items: ScheduledReminder[], nowMs: number, caught: Record<string, number>,
@@ -135,12 +136,14 @@ export function planReminderDelivery(
   const next: Record<string, number> = {};
   for (const item of items) {
     const at9 = new Date(item.fireDate + 'T09:00:00').getTime();
-    if (at9 > nowMs) { plan.push({ item, at: at9 }); continue; }
     const key = item.kind + ':' + item.entityId + ':' + item.dueDate;
     const prev = caught[key];
-    const at = prev ?? nowMs + 60_000;
+    // أُطلق من قبل (في التاسعة أو بعد دقيقة): لا يُعاد ولو صار موعده المرحَّل اليوم تاسعةً قادمة (المدقق المستقل للمرحلة ٣)
+    if (prev != null && prev <= nowMs) { next[key] = prev; continue; }
+    // تاسعةٌ قادمة، وإلا الإطلاق المنتظر بعد دقيقة إن كان محفوظاً، وإلا بعد دقيقة · وتاسعةٌ محفوظة لموعدٍ أبعد (قبل رفع المهلة) لا تؤخّره
+    const at = at9 > nowMs ? at9 : prev != null && prev <= nowMs + 60_000 ? prev : nowMs + 60_000;
     next[key] = at;
-    if (at > nowMs) plan.push({ item, at });
+    plan.push({ item, at });
   }
   return { plan, caught: next };
 }
