@@ -13,6 +13,7 @@ import { MemoryRemote } from './helpers/memoryRemote';
 import { savePurchase, payPurchase, unmarkPurchasePaid, TS_EXCLUDED, type PurchaseInput } from '@/domain/purchases';
 import { fileVatReturn } from '@/domain/vatFilings';
 import { ownerCashIn } from '@/domain/cashOps';
+import { convertibleInvoices } from '@/domain/assets/convert';
 import { saveSupplier } from '@/domain/suppliers';
 import { supplierReportData } from '@/domain/reportData';
 import { enableSync, syncOnce, docId } from '@/sync/engine';
@@ -103,5 +104,31 @@ test('تعديل فاتورةٍ أبقت اسم موردها القديم بال
   // واسمٌ آخر يُعاد حسابه منه
   savePurchase(db, { ...purchase('مورد أ بعد التسمية مصطنع', '2026-04-10'), subtotalHalalas: 90000, totalHalalas: 90000 }, p);
   expect(row(db, p)).toEqual({ s: sid, n: 'مورد أ بعد التسمية مصطنع' });
+  db.close();
+});
+
+/*
+ * منخفض · src/domain/assets/convert.ts (convertibleInvoices): مرشِّح المورد كان باسم الفاتورة (supplier_name = ?) · لا يناديه التطبيق به
+ * اليوم (ورقة التحويل تبحث بالكلمة وحدها) · صار بمعرّف المورد كسائر شاشاته (supplierPurchasesSql): فاتورةٌ أبقت لقطة اسمها القديم تُرى
+ * تحت موردها، وموردٌ جديد بالاسم القديم لا يرثها.
+ */
+test('مرشِّح المورد في فواتير التحويل إلى أصول بمعرّفه لا باسم الفاتورة', () => {
+  const db = memDb();
+  db.run(`UPDATE company SET vat_enabled = 1, vatno = '300000000000003' WHERE id = 1`);
+  const sid = saveSupplier(db, null, { ...supplier(A), vat: '311111111100003' });
+  const other = saveSupplier(db, null, supplier(B));
+  const filed = savePurchase(db, { ...purchase(A, '2026-02-10'), taxStatus: 'فاتورة ضريبية · قابلة للخصم', taxHalalas: 15000, totalHalalas: 115000 });
+  const open = savePurchase(db, purchase(A, '2026-05-10'));
+  const notHis = savePurchase(db, purchase(B, '2026-05-11'));
+  fileVatReturn(db, 2026, 1, '2026-04-15');
+  saveSupplier(db, sid, { ...supplier('مورد أ بعد التسمية مصطنع'), vat: '311111111100003' });
+  // المقفلة تُبقي اسمها القديم، وموردٌ جديد بهذا الاسم
+  expect(row(db, filed)).toEqual({ s: sid, n: A });
+  const heir = saveSupplier(db, null, supplier(A));
+  const ids = (s: string) => convertibleInvoices(db, { supplier: s }).map((x) => x.id).sort();
+  expect(ids(sid)).toEqual([filed, open].sort());
+  expect(ids(other)).toEqual([notHis]);
+  expect(ids(heir)).toEqual([]);
+  expect(convertibleInvoices(db).length).toBe(3);
   db.close();
 });
