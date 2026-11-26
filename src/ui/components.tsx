@@ -162,7 +162,7 @@ export function BtnPrimary({
       {loading ? <ActivityIndicator color="#fff" size="small" /> : (
         <>
           {icon ? <Icon name={icon} size={fs(S.icon)} color="#fff" /> : null}
-          <Text style={{ fontFamily: FONT_BOLD, color: '#fff', fontSize: fs(S.font) }}>{title}</Text>
+          <Text numberOfLines={1} style={{ fontFamily: FONT_BOLD, color: '#fff', fontSize: fs(S.font), flexShrink: 0 }}>{title}</Text>
         </>
       )}
     </Pressable>
@@ -190,7 +190,7 @@ export function BtnGhost({
       ]}
     >
       {icon ? <Icon name={icon} size={fs(S.icon)} color={danger ? C.rose : C.charcoal} /> : null}
-      <Text style={{ fontFamily: FONT_BOLD, color: danger ? C.rose : C.charcoal, fontSize: fs(S.font) }}>
+      <Text numberOfLines={1} style={{ fontFamily: FONT_BOLD, color: danger ? C.rose : C.charcoal, fontSize: fs(S.font), flexShrink: 0 }}>
         {title}
       </Text>
     </Pressable>

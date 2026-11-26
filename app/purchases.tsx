@@ -1115,7 +1115,7 @@ export default function Purchases() {
               )}
             </View>
           ))}
-          <BtnGhost small title="+ إضافة طريقة سداد أخرى (دفع بأكثر من طريقة)"
+          <BtnGhost small title="+ طريقة سداد أخرى"
             onPress={() => setPayLines((p) => [...p, { method: 'cash', bankId: banks[0]?.id ?? '', amount: '' }])} />
           <View style={{
             marginTop: 10, borderRadius: 8, padding: 11, alignItems: 'center',

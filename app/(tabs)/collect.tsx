@@ -605,7 +605,7 @@ export default function Collect() {
             )}
           </View>
         ))}
-        <BtnGhost small title="+ إضافة طريقة سداد أخرى (دفع بأكثر من طريقة)"
+        <BtnGhost small title="+ طريقة سداد أخرى"
           onPress={() => setPayLines((p) => [...p, { method: 'cash', bankId: '', amount: '' }])} />
         <View style={{ height: 10 }} />
         <Field label="الخصم" value={discount} onChange={onDiscountChange} keyboard="numeric" ltr />
