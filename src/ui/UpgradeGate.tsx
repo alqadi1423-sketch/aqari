@@ -10,7 +10,8 @@
  * التطبيق عند أول فتح لقاعدة قديمة بـ«AppStateProvider مفقود».
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, ActivityIndicator, Share, type TextStyle } from 'react-native';
+import { View, Text, Pressable, Share, type TextStyle } from 'react-native';
+import { ProgressTrack } from './components';
 import { C, FONT, FONT_BOLD } from './theme';
 import { rawAppDb, clearUpgrade, appDb } from '../db/expoAdapter';
 import { applyScreenSecureFrom } from '../services/screenSecure';
@@ -124,7 +125,8 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
     <View style={{ flex: 1, backgroundColor: C.paper, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
       {phase === 'backup' ? (
         <>
-          <ActivityIndicator color={C.emerald} size="large" />
+          {/* النسبة إن عُرفت في شريطها تحت · وقبلها شريطٌ يتحرّك لا دائرة (D-20) */}
+          {progressView(msg, info).pct === null ? <ProgressTrack /> : null}
           <Text style={[txt(15, C.ink, true), { marginTop: 18 }]}>{t('upgrade.backingUp')}</Text>
           <Text style={[txt(12.5, C.muted), { marginTop: 8 }]}>{progressLabel(msg)}</Text>
           {(() => {

@@ -9,7 +9,7 @@ import { usePerm } from './access';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal, View, FlatList, Pressable, useWindowDimensions,
-  ActivityIndicator, Image, PanResponder, Text, Platform, I18nManager,
+  Image, PanResponder, Text, Platform, I18nManager,
 } from 'react-native';
 import { DirView } from './DirView';
 import { useAppLocked } from './lockState';
@@ -21,7 +21,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
-import { T, Num, BtnGhost, BtnPrimary, Row, Field } from './components';
+import { T, Num, BtnGhost, BtnPrimary, Row, Field, ProgressTrack } from './components';
 import { PickerSheet, Sheet } from './Sheet';
 import { useSaveAttempt } from './formAttempt';
 import { Icon, type IconName } from './icons';
@@ -148,8 +148,9 @@ function ImagePage({ file, width }: { file: ViewerFile; width: number }) {
           style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, opacity: 0.6 }} />
       ) : null}
       {!loaded ? (
-        <ActivityIndicator color={C.gold} size="large"
-          style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }} />
+        <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'center', justifyContent: 'center' }}>
+          <ProgressTrack color={C.gold} track="rgba(255,255,255,0.25)" />
+        </View>
       ) : null}
       <WebView
         ref={webRef}

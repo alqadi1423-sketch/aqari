@@ -13,8 +13,8 @@ import { legalUrls as legalUrlsOf } from '../domain/legal';
 import { useLang } from '../i18n';
 import { inviteChoices } from '../services/org';
 import React, { useEffect, useState } from 'react';
-import { View, Pressable, ActivityIndicator, Linking, ScrollView } from 'react-native';
-import { T, BtnPrimary, BtnGhost, Note } from './components';
+import { View, Pressable, Linking, ScrollView } from 'react-native';
+import { T, BtnPrimary, BtnGhost, Note, StageProgress } from './components';
 import { C, TYPE } from './theme';
 import { useApp } from './store';
 import { reportFailure, copyFailureDetails } from './failureDialog';
@@ -67,8 +67,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (!cloud.configured) return <>{children}</>;
   const spinner = (msg?: string) => (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.paper }}>
-      <ActivityIndicator color={C.emerald} size="large" />
-      {msg ? <T size={TYPE.body} color={C.muted} style={{ marginTop: 12 }}>{msg}</T> : null}
+      <StageProgress label={msg ?? t('common.loading')} />
     </View>
   );
   if (!cloud.restored) return spinner();

@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
-import { I18nManager, View, ActivityIndicator } from 'react-native';
+import { I18nManager, View } from 'react-native';
+import { ProgressTrack } from '../src/ui/components';
 import { LangProvider, initI18n } from '../src/i18n';
 import { bootLanguage } from '../src/i18n/device';
 import { Stack, usePathname } from 'expo-router';
@@ -99,7 +100,8 @@ export default function RootLayout() {
   if (!fontsLoaded) {
     return (
       <View style={{ flex: 1, backgroundColor: C.paper, alignItems: 'center', justifyContent: 'center' }}>
-        <ActivityIndicator color={C.emerald} size="large" />
+        {/* الخطوط لم تُحمَّل فلا نصّ بخط الهوية بعد · الشريط وحده لحظاتٍ (D-20) */}
+        <ProgressTrack />
       </View>
     );
   }

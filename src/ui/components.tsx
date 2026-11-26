@@ -5,7 +5,7 @@
 import React from 'react';
 import {
   View, Text, TextInput, Pressable, StyleSheet, ViewStyle, TextStyle,
-  StyleProp, ActivityIndicator, Image,
+  StyleProp, Image, Animated, Easing,
 } from 'react-native';
 import { C, FONT, FONT_BOLD, FONT_MED, RADIUS, TYPE, BADGE_STYLES } from './theme';
 import { useFs } from './store';
@@ -159,7 +159,13 @@ export function BtnPrimary({
         small && st.btnSm, (disabled || loading) && { opacity: 0.45 }, pressed && { opacity: 0.85 },
       ]}
     >
-      {loading ? <ActivityIndicator color="#fff" size="small" /> : (
+      {loading ? (
+        // أثناء التنفيذ: نص الزر نفسه وتحته شريطٌ يتحرّك · لا دائرة (D-20)
+        <View style={{ alignItems: 'center', gap: 3 }}>
+          <Text numberOfLines={1} style={{ fontFamily: FONT_BOLD, color: '#fff', fontSize: fs(S.font), flexShrink: 0 }}>{title}</Text>
+          <ProgressTrack width={48} height={3} color="#fff" track="rgba(255,255,255,0.3)" />
+        </View>
+      ) : (
         <>
           {icon ? <Icon name={icon} size={fs(S.icon)} color="#fff" /> : null}
           <Text numberOfLines={1} style={{ fontFamily: FONT_BOLD, color: '#fff', fontSize: fs(S.font), flexShrink: 0 }}>{title}</Text>
@@ -403,6 +409,48 @@ export function SetRow({ title, sub, onPress, trailing, icon }: {
       </View>
       {trailing ?? (onPress ? <View style={{ transform: [{ scaleX: -1 }] }}><Icon name="back" size={14} color={C.muted} /></View> : null)}
     </Pressable>
+  );
+}
+
+/**
+ * مؤشّر الانتظار الموحَّد (قرار المالك 2026-08-22: «بشريط تقدّم ونصّ المرحلة، لا دائرة عائمة» · D-20):
+ * pct معلومة = شريطٌ بنسبته · غائبة = مقطعٌ يتحرّك على المسار · بلا خطّافات من مزوّد الحالة فيُرسم قبله (شاشة الخطوط)
+ */
+export function ProgressTrack({ pct, width = 220, height = 4, color = C.emerald, track = C.paperLine }: {
+  pct?: number | null; width?: number; height?: number; color?: string; track?: string;
+}) {
+  // قيمة الحركة تُنشأ مرةً لكل شريط (حالةٌ لا مرجعٌ يُقرأ أثناء الرسم)
+  const [x] = React.useState(() => new Animated.Value(0));
+  const known = pct != null;
+  React.useEffect(() => {
+    if (known) return undefined;
+    const loop = Animated.loop(Animated.timing(x, { toValue: 1, duration: 1100, easing: Easing.linear, useNativeDriver: true }));
+    loop.start();
+    return () => loop.stop();
+  }, [known, x]);
+  const seg = Math.round(width * 0.35);
+  return (
+    <View accessibilityRole="progressbar" style={{ width, height, borderRadius: height / 2, backgroundColor: track, overflow: 'hidden' }}>
+      {known ? (
+        <View style={{ width: `${Math.min(100, Math.max(0, pct!))}%`, height, borderRadius: height / 2, backgroundColor: color }} />
+      ) : (
+        <Animated.View style={{
+          width: seg, height, borderRadius: height / 2, backgroundColor: color,
+          transform: [{ translateX: x.interpolate({ inputRange: [0, 1], outputRange: [-seg, width] }) }],
+        }} />
+      )}
+    </View>
+  );
+}
+
+/** الشريط ونصّ المرحلة تحته · للشاشات والأقسام التي تنتظر */
+export function StageProgress({ label, pct }: { label?: string; pct?: number | null }) {
+  const fs = useFs();
+  return (
+    <View style={{ alignItems: 'center', gap: 10 }} accessibilityLabel={label}>
+      <ProgressTrack pct={pct} />
+      {label ? <Text style={{ fontFamily: FONT, fontSize: fs(TYPE.body), color: C.muted, textAlign: 'center' }}>{label}</Text> : null}
+    </View>
   );
 }
 

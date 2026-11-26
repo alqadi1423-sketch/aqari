@@ -15,6 +15,7 @@
   "common": {
     "ok": "Done",
     "close": "Close",
+    "loading": "Loading",
     "cancel": "Back",
     "save": "Save",
     "confirm": "Confirm",

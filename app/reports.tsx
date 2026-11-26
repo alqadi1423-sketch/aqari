@@ -4,10 +4,10 @@
  * وتصدير PDF وإكسل من كل تقرير.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { View, ActivityIndicator, ScrollView, Pressable } from 'react-native';
+import { View, ScrollView, Pressable } from 'react-native';
 import { perfScreenShown } from '../src/perf/perf';
 import { Screen } from '../src/ui/Screen';
-import { Card, CardTitle, T, Num, EmptyState, Row, ChipGroup, BtnGhost, BtnPrimary, SetRow, SearchBox } from '../src/ui/components';
+import { Card, CardTitle, T, Num, EmptyState, Row, ChipGroup, BtnGhost, BtnPrimary, SetRow, SearchBox, StageProgress } from '../src/ui/components';
 import { Icon } from '../src/ui/icons';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { useDeferredReady } from '../src/ui/useDeferredReady';
@@ -749,10 +749,7 @@ export default function Reports() {
               </Row>
             )}
             {exporting ? (
-              <Row gap={8} style={{ marginTop: 10, alignItems: 'center' }}>
-                <ActivityIndicator color={C.emerald} />
-                <T size={12} color={C.muted}>جاري تجهيز التقرير…</T>
-              </Row>
+              <View style={{ marginTop: 10 }}><StageProgress label="جاري تجهيز التقرير…" /></View>
             ) : null}
             <View style={{ height: 8 }} />
           </Sheet>
