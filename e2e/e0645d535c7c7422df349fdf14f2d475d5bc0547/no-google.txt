@@ -1,0 +1,9 @@
+no-google fail · mode enforce
+capture /home/runner/work/_temp/emu-net.pcap · packets 1328
+window from packet 28 (marker aqari-e2e-window.example.com)
+window end at packet 1326 (marker aqari-e2e-window-end.example.com)
+app remoteprovisioning.googleapis.com (dns,sni)
+webview clientservices.googleapis.com (dns,sni) · بذرة تجارب WebView في النظام (variations) عند أول خريطة
+webview update.googleapis.com (dns,sni) · محدّث مكوّنات WebView في النظام عند أول خريطة
+boot time.android.com (dns)
+problem نطاقات قوقل من التطبيق: remoteprovisioning.googleapis.com
