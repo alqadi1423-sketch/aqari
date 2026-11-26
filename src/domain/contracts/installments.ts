@@ -1,5 +1,7 @@
 import { toLocalISODate, addMonthsClamped, daysBetween } from '../dates';
 import { uid } from '../ids';
+import { fmt } from '../money';
+import { t } from '../../i18n';
 
 /** حساب الخصومات الممنوحة · بنوع مصروف */
 export const DISCOUNT_ACCOUNT = '4900';
@@ -87,6 +89,22 @@ export function installmentState(f: InstallmentFacts, T: string): InstallmentSta
   else if (daysLate > 0) { displayStatus = 'متأخرة ' + daysLate + ' يوماً'; cls = 'late'; }
   else { displayStatus = 'مستحقة'; cls = 'due'; }
   return { remaining, effectiveDue, daysLate, displayStatus, cls };
+}
+
+/**
+ * شارة القسط في جدول العقد وتفاصيل القسط (المراجعة الشاملة 2026-11-13 · A1-11 · القرار ٤.١٠ و٤.١١): من installmentState نفسها التي
+ * تعرضها شاشة التحصيل، فالمتأخر «متأخرة N يوماً» هنا وهناك · و«قادمة» ما لم يحلّ موعده المتفق عليه (أو استحقاقه) ولم يُسدَّد منه شيء،
+ * والجزئي يُذكر متبقّيه
+ */
+export function installmentBadge(f: InstallmentFacts, T: string): { label: string; kind: 'paid' | 'due' | 'overdue' | 'draft' } {
+  const st = installmentState(f, T);
+  if (st.cls === 'mut') return { label: st.displayStatus, kind: 'draft' };
+  if (st.cls === 'paid') return { label: st.displayStatus, kind: 'paid' };
+  const partial = Number(f.paid) > 0;
+  const label = partial ? t('lease.instRemaining', { label: st.displayStatus, amount: fmt(st.remaining) }) : st.displayStatus;
+  if (st.cls === 'late') return { label, kind: 'overdue' };
+  if (!partial && st.effectiveDue > T) return { label: t('lease.instUpcoming'), kind: 'draft' };
+  return { label, kind: 'due' };
 }
 
 /**

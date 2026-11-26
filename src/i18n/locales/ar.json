@@ -96,7 +96,9 @@
     "renewFileEmpty": "لم تُقرأ حقول واضحة من الملف",
     "renewFileFailed": "تعذّرت قراءة الملف",
     "computedNote": "تواريخ الأقساط محسوبة لا مقروءة من جدول ملف إيجار · طابقها بالجدول في الملف.",
-    "reviewCountMixed": "{{n}} دفعة · أولها {{first}} وآخرها {{last}}"
+    "reviewCountMixed": "{{n}} دفعة · أولها {{first}} وآخرها {{last}}",
+    "instUpcoming": "قادمة",
+    "instRemaining": "{{label}} (متبقي {{amount}})"
   },
   "dataLabels": {
     "table": {

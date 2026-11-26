@@ -13,9 +13,9 @@ import { useToast } from './Toast';
 import { useDialog, confirmDiscard } from './AppDialog';
 import { C } from './theme';
 import { setInstallmentSchedule, paymentForInstallment } from '../domain/contracts/service';
-import { installmentRemaining } from '../domain/contracts/installments';
+import { installmentRemaining, installmentBadge } from '../domain/contracts/installments';
 import { printReceipt } from '../services/print';
-import { dfmt, today, daysBetween, periodLabel } from '../domain/dates';
+import { dfmt, today, periodLabel } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
 import { CancelPaymentSheet } from './CancelPaymentPanel';
@@ -87,17 +87,9 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
     // سند القبض بلا دفعة في القائمة: يُعرض فقط إن وُجد سند فعلاً
     const fallbackPayment = pays.length ? null : paymentForInstallment(db, i.id);
     const remaining = installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), discount);
-    const effectiveDue = i.agreed_date || i.due_date;
-    let daysLate = effectiveDue ? daysBetween(T_, effectiveDue) : 0;
-    if (i.grace_until && T_ <= i.grace_until) daysLate = Math.min(daysLate, 0);
-    let status: string;
-    let kind: string;
-    if (i.status === 'ملغية') { status = 'ملغاة'; kind = 'draft'; }
-    else if (remaining <= 0) { status = 'مدفوعة'; kind = 'paid'; }
-    else if (Number(i.paid_halalas) > 0 && daysLate > 0) { status = `مدفوعة جزئياً · متأخرة ${daysLate} يوماً`; kind = 'overdue'; }
-    else if (Number(i.paid_halalas) > 0) { status = 'مدفوعة جزئياً'; kind = 'due'; }
-    else if (daysLate > 0) { status = `متأخرة ${daysLate} يوماً`; kind = 'overdue'; }
-    else { status = 'مستحقة'; kind = 'due'; }
+    // الحالة بالدالة الواحدة مع جدول العقد وشاشة التحصيل (A1-11) لا بنسخةٍ ثانية من منطقها
+    const { label: status, kind } = installmentBadge({ dueDate: i.due_date, agreedDate: i.agreed_date, graceUntil: i.grace_until,
+      amount: Number(i.amount_halalas), paid: Number(i.paid_halalas), discount, status: i.status }, T_);
     return { i, pays, discount, remaining, status, kind, contractCancelled, fallbackPayment };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, installmentId]);

@@ -20,7 +20,7 @@ import { DateField } from '../../src/ui/DateField';
 import { ActionMenuButton } from '../../src/ui/ActionMenu';
 import { printTenantStatement, printContractDoc, printReceipt } from '../../src/services/print';
 import { paymentForInstallment } from '../../src/domain/contracts/service';
-import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining } from '../../src/domain/contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentBadge } from '../../src/domain/contracts/installments';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../../src/domain/contracts/vocab';
 import { depositState } from '../../src/domain/contracts/vocab';
 import { InstallmentSheet } from '../../src/ui/InstallmentSheet';
@@ -682,13 +682,12 @@ function ContractDetailSheet({
         unitCondition: rating.unit_condition, neighborComplaints: rating.neighbor_complaints, notes: rating.notes,
       })
     : null;
+  // بالدالة الواحدة مع شاشة التحصيل (A1-11 · القرار ٤.١٠ و٤.١١): المتأخر «متأخرة N يوماً» هنا كما هناك
+  const T_inst = today();
   const instBadge = (i: (typeof insts)[number]) => {
-    let display = i.status;
-    if (i.status === 'مستحقة' && i.due_date > today()) display = 'قادمة';
-    const map: Record<string, string> = { 'مستحقة': 'due', 'قادمة': 'draft', 'متأخرة': 'overdue', 'مدفوعة': 'paid', 'مدفوعة جزئياً': 'due', 'ملغية': 'draft' };
-    const rem = installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount));
-    const note = i.status === 'مدفوعة جزئياً' && rem > 0 ? ` (متبقي ${fmt(rem)})` : '';
-    return <Badge kind={map[display] || 'draft'} label={display + note} />;
+    const b = installmentBadge({ dueDate: i.due_date, agreedDate: i.agreed_date, graceUntil: i.grace_until,
+      amount: Number(i.amount_halalas), paid: Number(i.paid_halalas), discount: Number(i.discount), status: i.status }, T_inst);
+    return <Badge kind={b.kind} label={b.label} />;
   };
   // صف قسط واحد · مشترك بين قسمي المستحق والسجل · الضغط يفتح تفاصيل القسط
   const renderInst = (i: (typeof insts)[number]) => {

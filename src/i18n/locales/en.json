@@ -96,7 +96,9 @@
     "renewFileEmpty": "No clear fields could be read from the file",
     "renewFileFailed": "Couldn’t read the file",
     "computedNote": "Installment dates are computed, not read from the Ejar file’s schedule · match them to the schedule in the file.",
-    "reviewCountMixed": "{{n}} payments · first {{first}}, last {{last}}"
+    "reviewCountMixed": "{{n}} payments · first {{first}}, last {{last}}",
+    "instUpcoming": "Upcoming",
+    "instRemaining": "{{label}} ({{amount}} remaining)"
   },
   "dataLabels": {
     "table": {
