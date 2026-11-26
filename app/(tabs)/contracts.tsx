@@ -272,13 +272,8 @@ export default function Contracts() {
           { label: 'لاحقاً', variant: 'ghost' },
           {
             label: 'فتح النموذج', variant: 'primary',
-            onPress: () => {
-              const c = db.get<{ id: string }>(
-                `SELECT id FROM contracts WHERE TRIM(tenant_name)=TRIM(?) ORDER BY created_at DESC LIMIT 1`,
-                [form.state.tenant]
-              );
-              if (c) setHandoverFor(c.id);
-            },
+            // العقد الذي وُثّق الآن بمعرّفه · لا أحدث عقدٍ باسم المستأجر، فالمسودة الموثَّقة تُبقي تاريخ إنشائها (D-8)
+            onPress: () => { setHandoverFor(id); },
           },
         ],
       });
