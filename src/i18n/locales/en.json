@@ -1107,7 +1107,7 @@
       "empty": "No transactions in the statement",
       "balance": "Opening plus transactions doesn't equal the printed balances or the closing · nothing was saved",
       "needBalances": "The statement prints no balances · enter the opening and closing from its header",
-      "ocr": "Reading photos is not available in this app version · update it or choose the statement file",
+      "ocr": "Reading text from photos is stopped for now · choose the statement as a PDF or Excel file from the bank",
       "image": "The photo could not be read · choose a clearer photo or the statement file"
     },
     "needTitle": "Opening and closing",
@@ -1232,6 +1232,11 @@
     "asCollection": "New collection",
     "transferTo": "To account",
     "transferFrom": "From account"
+  },
+  "contractScan": {
+    "pick": "Choose the contract file (PDF)",
+    "ocrStopped": "Reading text from photos is stopped for now · choose the contract PDF from the Ejar platform",
+    "pdfEmpty": "The file has no extractable text layer · and reading text from photos is stopped for now, so choose the original PDF from the Ejar platform or type the fields yourself"
   },
   "dates": {
     "invalid": "Invalid date · type it as year-month-day, e.g. 2026-01-15",

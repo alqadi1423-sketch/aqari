@@ -17,6 +17,7 @@ import { C } from './theme';
 import { fmt, toHalalas } from '../domain/money';
 import { contractEndFromDuration, today, dfmt } from '../domain/dates';
 import { scanContractFile } from '../services/contractScan';
+import { isOcrStopped } from '../services/imageText';
 import { anchorDiagnostics } from '../domain/pdf/parseEjar';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../domain/contracts/vocab';
 import { parseEjarExtras, unitByNumber, revenueSplitOf, type EjarExtras } from '../domain/pdf/ejarExtras';
@@ -248,10 +249,11 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
       if (n) set('pendingFile', { uri: asset.uri, name: asset.name ?? 'عقد.pdf', mime: asset.mimeType ?? '' });
     } catch (e) {
       const code = e instanceof Error ? e.message : '';
-      const msg = code === 'pdf-encrypted' ? 'الملف محمي بتشفير · أزل الحماية أو صدّر نسخة غير محمية من منصة إيجار'
-        : code === 'pdf-empty' ? 'الملف بلا طبقة نص قابلة للاستخراج · إن كان صورة ممسوحة فالتقطه كصورة بدل PDF'
+      // صورة العقد: قراءة النص من الصور موقوفةٌ الآن (ق٠-٤ · services/imageText.ts)
+      const msg = isOcrStopped(e) ? t('contractScan.ocrStopped')
+        : code === 'pdf-encrypted' ? 'الملف محمي بتشفير · أزل الحماية أو صدّر نسخة غير محمية من منصة إيجار'
+        : code === 'pdf-empty' ? t('contractScan.pdfEmpty')
         : code === 'pdf' ? 'تعذّر فك بنية الملف · تأكد أنه PDF سليم من منصة إيجار'
-        : code === 'ocr' ? 'قارئ الصور غير متاح على هذا البناء · استخدم ملف PDF'
         : '';
       setScanStatus(msg || 'تعذّرت قراءة الملف');
       if (!msg) reportFailure({ title: 'تعذّرت قراءة الملف', where: 'قراءة ملف العقد', e });
@@ -269,7 +271,7 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
     <View>
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 10, marginBottom: 12 }}>
         <T size={11.5} color={C.muted} style={{ marginBottom: 6 }}>قراءة العقد تلقائياً</T>
-        <BtnGhost small icon="contract" title="اختيار ملف العقد (PDF أو صورة)" onPress={scan} disabled={scanning} />
+        <BtnGhost small icon="contract" title={t('contractScan.pick')} onPress={scan} disabled={scanning} />
         {scanning ? <ProgressStripe /> : null}
         {scanStatus ? <T size={11} color={scanStatus.startsWith('قُرئ') ? C.emerald : C.muted} style={{ marginTop: 5 }}>{scanStatus}</T> : null}
         {rawText && !scanning ? (

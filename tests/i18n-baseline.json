@@ -148,7 +148,7 @@
  "src/ui/UpgradeGate.tsx": 13,
  "src/ui/attach.ts": 10,
  "src/ui/components.tsx": 4,
- "src/ui/contractForm.tsx": 82,
+ "src/ui/contractForm.tsx": 77,
  "src/ui/editors.tsx": 14,
  "src/ui/failureDialog.ts": 15,
  "src/ui/moreScreens.ts": 45,

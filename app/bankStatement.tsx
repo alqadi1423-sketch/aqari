@@ -24,6 +24,7 @@ import { today, dfmt } from '../src/domain/dates';
 import { recordManualBankTx, transferBetweenBanks, type ManualBankKind } from '../src/domain/cashOps';
 import { collectionSuggestions, approveCollection, collectPermission, type CollectSuggestion } from '../src/domain/bankStatement/collect';
 import { statementSource, type StatementSource } from '../src/services/bankStatement';
+import { isOcrStopped } from '../src/services/imageText';
 import { unverifiedResult, type StatementResult, type StatementOk, type ColumnMapping, type ReadOpts } from '../src/domain/bankStatement/read';
 import type { Role } from '../src/domain/bankStatement/columns';
 import type { DateOrder } from '../src/domain/bankStatement/normalize';
@@ -176,7 +177,8 @@ export default function BankStatementScreen() {
       const { result, hash } = src.read(opts);
       showResult(src, result, hash, opts, false);
     } catch (e) {
-      if (e instanceof Error && e.message === 'ocr') toast(t('bankStatement.err.ocr'));
+      // صورة الكشف: قراءة النص من الصور موقوفةٌ الآن (ق٠-٤ · services/imageText.ts)
+      if (isOcrStopped(e)) toast(t('bankStatement.err.ocr'));
       else fail(e);
     } finally { setBusy(false); }
   };

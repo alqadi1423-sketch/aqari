@@ -1,6 +1,6 @@
 /**
- * قراءة العقد تلقائياً: PDF عبر المستخرج المصغّر الخالص (يعمل على Hermes)،
- * والصور عبر ML Kit OCR · مع تدهور رشيق حين لا تتوفر الوحدة.
+ * قراءة العقد تلقائياً: PDF عبر المستخرج المصغّر الخالص (يعمل على Hermes) ·
+ * وقراءة النص من صورة العقد موقوفةٌ الآن (ق٠-٤ · imageText.ts): الصورة ترمي OCR_STOPPED فتعرض الشاشة رسالتها.
  */
 import { parseEjarContract, type EjarParseResult } from '../domain/pdf/parseEjar';
 import { extractPdfText, PdfEncrypted } from '../domain/pdf/miniPdfText';
@@ -8,6 +8,7 @@ import type { DB } from '../db/adapter';
 import { attachmentsFor, attachmentPath } from '../files/store';
 import { openFileNow } from './cloud';
 import { appFilesEnv } from './filesEnv';
+import { readImageText } from './imageText';
 
 /**
  * استخراج نص PDF بتجميع الأسطر بفارق عمودي > 3 (منطق النموذج).
@@ -23,18 +24,6 @@ export async function readPdfText(data: Uint8Array): Promise<string> {
   }
   if (!text.trim()) throw new Error('pdf-empty');
   return text;
-}
-
-/** OCR لصورة عبر ML Kit · يتطلب بناء تطوير؛ يرمي 'ocr' حين غير متاح */
-export async function readImageText(uri: string): Promise<string> {
-  try {
-    const mod = await import('@react-native-ml-kit/text-recognition');
-    const TextRecognition = mod.default;
-    const result = await TextRecognition.recognize(uri);
-    return result.blocks.map((b) => b.lines.map((l) => l.text).join('\n')).join('\n');
-  } catch {
-    throw new Error('ocr');
-  }
 }
 
 export async function scanContractFile(file: {
