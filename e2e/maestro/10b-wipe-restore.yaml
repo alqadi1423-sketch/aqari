@@ -23,7 +23,9 @@ appId: com.aqari.app
 - tapOn:
     id: "field-اكتب «مسح» للتأكيد"
 - inputText: "مسح"
-- hideKeyboard
+# لا hideKeyboard: يرسل زرّ الرجوع حين لا تُرى لوحة المفاتيح، فيغلق الورقة ويظهر «إغلاق بلا حفظ» (التشغيل 45828448176) ·
+# النقر على نص التحذير (ليس زراً) يُخفي اللوحة، فالورقة keyboardShouldPersistTaps="handled"
+- tapOn: "يُمسح كل شيء.*"
 - tapOn: "تنفيذ المسح"
 - extendedWaitUntil:
     notVisible: "تنفيذ المسح"

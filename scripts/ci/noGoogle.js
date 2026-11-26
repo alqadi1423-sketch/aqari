@@ -11,6 +11,8 @@
  * الأصناف داخل النافذة:
  *  - system: نقاط أندرويد نفسه (فحص الاتصال والوقت)، لا التطبيق · تُطفأ في run.sh وتُذكر إن ظهرت ولا تُسقط.
  *  - pending: اتصالٌ معروف للحزمة الحالية بموعد إزالته في الخطة (ML Kit · F-2) · يُذكر بالاسم كل تشغيل، ويُسقط في strict.
+ *  - webview: حزمة WebView في النظام (لا كود التطبيق) تطلب بذرة التجارب وتحديث مكوّناتها مرةً عند أول WebView يفتحه أي تطبيق
+ *    (الخريطة هنا) · رآها أول تشغيلٍ حقيقي للنافذة (9c9d182، الحزمة 102 بعد ثانيةٍ من بدء webview_service) · تُذكر ولا تُسقط إلا في strict.
  *  - app: كل نطاق قوقل سواهما · يُسقط في enforce وstrict.
  * الأوضاع (NO_GOOGLE_MODE أو --mode): report لا يُسقط أبداً · enforce (الآن) · strict (بعد إزالة ML Kit، وفي التحويل م٥).
  *
@@ -38,6 +40,11 @@ const SYSTEM = [
   { host: 'metric.gstatic.com', suffix: true, why: 'فحص DNS الخاص في أندرويد' },
   { host: 'time.android.com', why: 'وقت الشبكة في أندرويد' },
 ];
+// حزمة WebView في النظام، يطلبها أول WebView في أي تطبيق لا كود التطبيق: بذرة التجارب (variations) ومحدّث المكوّنات
+const WEBVIEW = [
+  { host: 'clientservices.googleapis.com', why: 'بذرة تجارب WebView في النظام (variations) عند أول خريطة' },
+  { host: 'update.googleapis.com', why: 'محدّث مكوّنات WebView في النظام عند أول خريطة' },
+];
 // معروفٌ للحزمة الحالية وموعد إزالته في الخطة · يُذكر كل تشغيل، ويُسقط في strict · القائمة تقصر ولا تطول
 const PENDING = [
   { host: 'firebaselogging.googleapis.com', why: 'ناقل سجلات ML Kit (F-2) · يزول مع ق٠-٣ وق٠-٤' },
@@ -61,10 +68,11 @@ function listed(list, host) {
   return list.find((e) => h === e.host || (e.suffix && h.endsWith('.' + e.host))) || null;
 }
 
-/** صنف اسمٍ من قوقل: system أو pending أو app · وnull لما ليس من قوقل */
+/** صنف اسمٍ من قوقل: system أو webview أو pending أو app · وnull لما ليس من قوقل */
 function classify(host) {
   if (!isGoogleHost(host)) return null;
   if (listed(SYSTEM, host)) return 'system';
+  if (listed(WEBVIEW, host)) return 'webview';
   if (listed(PENDING, host)) return 'pending';
   return 'app';
 }
@@ -332,7 +340,7 @@ function analyze({ pcapBuf, mode = 'enforce', marker = MARKER, endMarker = END_M
       if (!end) problems.push('علامة الختام ' + endMarker + ' لم تظهر بعد علامة النافذة: حركة الجوال خرجت من التسجيل أثناء التدفقات، فلا يُعدّ نظيفاً');
       else body.push('window end at packet ' + end.at + ' (marker ' + endMarker + ')');
     }
-    const groups = { app: new Map(), pending: new Map(), system: new Map(), boot: new Map() };
+    const groups = { app: new Map(), pending: new Map(), webview: new Map(), system: new Map(), boot: new Map() };
     for (const e of events) {
       const h = normHost(e.host);
       if (h === m || h === em) continue;
@@ -346,11 +354,12 @@ function analyze({ pcapBuf, mode = 'enforce', marker = MARKER, endMarker = END_M
     const why = (list, h) => (listed(list, h) || {}).why || '';
     const fmt = (tag, g, list) => [...g.keys()].sort().map((h) => tag + ' ' + h + ' (' + [...g.get(h)].sort().join(',') + ')' +
       (list ? ' · ' + why(list, h) : ''));
-    body.push(...fmt('app', groups.app), ...fmt('pending', groups.pending, PENDING), ...fmt('system', groups.system, SYSTEM),
+    body.push(...fmt('app', groups.app), ...fmt('pending', groups.pending, PENDING), ...fmt('webview', groups.webview, WEBVIEW), ...fmt('system', groups.system, SYSTEM),
       ...fmt('boot', groups.boot));
     if (quic) body.push('quic-packets ' + quic + ' (UDP 443: الاسم في سؤال DNS قبلها)');
     if (groups.app.size) problems.push('نطاقات قوقل من التطبيق: ' + [...groups.app.keys()].sort().join(' '));
     if (mode === 'strict' && groups.pending.size) problems.push('نطاقات قوقل المؤجلة في الوضع الصارم: ' + [...groups.pending.keys()].sort().join(' '));
+    if (mode === 'strict' && groups.webview.size) problems.push('نطاقات WebView النظام في الوضع الصارم: ' + [...groups.webview.keys()].sort().join(' '));
   }
   const verdict = mode === 'report' ? 'report' : problems.length ? 'fail' : 'pass';
   const lines = ['no-google ' + verdict + ' · mode ' + mode, ...body, ...problems.map((p) => 'problem ' + p)];
@@ -383,4 +392,4 @@ if (require.main === module) {
   if (res.verdict === 'fail') process.exit(1);
 }
 
-module.exports = { MARKER, END_MARKER, MODES, SYSTEM, PENDING, isGoogleHost, classify, parsePcap, extractNames, tlsSni, dnsQuestions, analyze };
+module.exports = { MARKER, END_MARKER, MODES, SYSTEM, WEBVIEW, PENDING, isGoogleHost, classify, parsePcap, extractNames, tlsSni, dnsQuestions, analyze };

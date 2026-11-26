@@ -50,6 +50,15 @@ describe('١٠ ب · المسح ثم الاستعادة', () => {
     expect(read('src/ui/Screen.tsx')).toMatch(/paddingBottom: bottomPad/);
   });
 
+  test('لا hideKeyboard بعد كتابة «مسح»: زرّ الرجوع يغلق الورقة («إغلاق بلا حفظ» في التشغيل 45828448176)، والنقر على نص التحذير يُخفي اللوحة', () => {
+    const typed = flow.slice(flow.indexOf('- inputText: "مسح"'), flow.indexOf('- tapOn: "تنفيذ المسح"'));
+    expect(typed).not.toMatch(/hideKeyboard|pressKey/);
+    expect(typed).toMatch(/- tapOn: "يُمسح كل شيء\.\*"/);
+    // النص في الشاشة نصّ تحذيرٍ لا زرّ، داخل ورقةٍ تُخفي اللوحة بالنقر على ما ليس زراً
+    expect(settings).toMatch(/<Note tone="danger">يُمسح كل شيء من هذا الجهاز/);
+    expect(read('src/ui/Sheet.tsx')).toMatch(/keyboardShouldPersistTaps="handled"/);
+  });
+
   test('«المساحة» و«استعادة» يُبلغان بالتمرير إلى صفٍّ تحتهما فلا يقعان تحت شريط التنقل', () => {
     expect(flow).toMatch(/- scrollUntilVisible:\n\s+element: "الملفات المؤقتة"\n\s+direction: DOWN\n- tapOn: "المساحة"/);
     expect(flow).toMatch(/- scrollUntilVisible:\n\s+element: "الملفات المؤقتة"\n\s+direction: DOWN\n- tapOn: "استعادة"/);

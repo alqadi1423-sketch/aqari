@@ -109,6 +109,23 @@ describe('الحكم', () => {
     expect(ng.analyze({ pcapBuf: googleCapture(), mode: 'report' }).verdict).toBe('report');
   });
 
+  test('WebView النظام (أول تشغيلٍ حقيقي للنافذة 9c9d182): بذرة التجارب ومحدّث المكوّنات تُذكر باسمها ولا تُسقط إلا في strict، وغيرها من googleapis يبقى من التطبيق', () => {
+    // التشغيل 45828448176: الحزم 102–127 بعد ثانيةٍ من بدء webview_service مع أول خريطة، ولا شيء منها بعد ذلك
+    const frames = [dnsFrame(BUILD_MARKER, 1), dnsFrame('update.googleapis.com', 2), ...tlsFrames('update.googleapis.com', { port: 50010 }),
+      dnsFrame('clientservices.googleapis.com', 3), ...tlsFrames('clientservices.googleapis.com', { port: 50011 }), dnsFrame(BUILD_END, 4)];
+    const enforce = ng.analyze({ pcapBuf: pcapFile(frames), mode: 'enforce' });
+    expect(enforce.verdict).toBe('pass');
+    expect(enforce.lines.some((l: string) => l.startsWith('webview clientservices.googleapis.com (dns,sni) · '))).toBe(true);
+    expect(enforce.lines.some((l: string) => l.startsWith('webview update.googleapis.com (dns,sni) · '))).toBe(true);
+    const strict = ng.analyze({ pcapBuf: pcapFile(frames), mode: 'strict' });
+    expect(strict.verdict).toBe('fail');
+    expect(strict.lines.join('\n')).toMatch(/WebView النظام في الوضع الصارم: clientservices\.googleapis\.com update\.googleapis\.com/);
+    // مطابقةٌ تامة: لاحقةٌ أو اسمٌ قريب من التطبيق يُسقط
+    expect(ng.classify('clientservices.googleapis.com')).toBe('webview');
+    expect(ng.classify('x.update.googleapis.com')).toBe('app');
+    expect(ng.classify('updates.googleapis.com')).toBe('app');
+  });
+
   test('لا نظافة بلا دليل: غياب التسجيل، أو تسجيلٌ لا يُقرأ، أو غياب العلامة يُسقط', () => {
     expect(ng.analyze({ pcapBuf: null, mode: 'enforce' }).verdict).toBe('fail');
     expect(ng.analyze({ pcapBuf: Buffer.from('not a capture'), mode: 'enforce' }).verdict).toBe('fail');
