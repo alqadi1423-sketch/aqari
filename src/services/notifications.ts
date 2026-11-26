@@ -4,10 +4,13 @@
  */
 import * as Notifications from 'expo-notifications';
 import type { DB } from '../db/adapter';
-import { computeSchedule } from '../domain/reminders';
-import { getSetting } from '../repos/settings';
+import { computeSchedule, planReminderDelivery } from '../domain/reminders';
+import { getMeta, getSetting, setMeta } from '../repos/settings';
 import { uid } from '../domain/ids';
 import { t } from '../i18n';
+
+/** مواعيد ما فات موعده فجُدول بعد دقيقة · في meta هذا الجهاز (E-12) */
+const CATCH_UP_KEY = 'reminders_catch_up';
 
 /**
  * هل اختار المستخدم مجلد النسخ على هذا الجهاز · يُحمَّل عند الحاجة: وحدة المجلد تحمل وحدات الملفات الأصلية، والجدولة تُختبر بدونها
@@ -121,9 +124,13 @@ async function rescheduleNow(db: DB, ask: boolean): Promise<void> {
   const schedule = computeSchedule(db);
   // حد نظامي معقول لعدد المجدولات (iOS يسمح بـ64)
   const limited = schedule.sort((a, b) => (a.fireDate < b.fireDate ? -1 : 1)).slice(0, 50);
-  for (const s of limited) {
-    const when = new Date(s.fireDate + 'T09:00:00');
-    if (when.getTime() <= Date.now()) continue;
+  // ما فات موعده يُطلق بعد دقيقة مرةً واحدة، وموعده محفوظٌ على هذا الجهاز بين الجدولات (E-12)
+  let caught: Record<string, number> = {};
+  try { caught = JSON.parse(getMeta(db, CATCH_UP_KEY) || '{}') as Record<string, number>; } catch { caught = {}; }
+  const { plan, caught: nextCaught } = planReminderDelivery(limited, Date.now(), caught);
+  try { setMeta(db, CATCH_UP_KEY, JSON.stringify(nextCaught)); } catch { /* مغلقة */ }
+  for (const { item: s, at } of plan) {
+    const when = new Date(at);
     try {
       const osId = await Notifications.scheduleNotificationAsync({
         content: { title: s.title, body: s.body },
