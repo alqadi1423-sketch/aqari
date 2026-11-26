@@ -39,7 +39,7 @@ import { filesCloudOn, openFileNow } from '../services/cloud';
 import { cancelSource, isCancelled, progressView, progressLabel, progressLine, type ProgressInfo } from '../domain/progress';
 import Pdf from 'react-native-pdf';
 import { logAudit } from '../domain/audit';
-import { reportFailure, recordFailure, copyFailureDetails, shareFailureDetails } from './failureDialog';
+import { reportFailure, recordFailure, copyFailureDetails, shareFailureDetails, arabicMessage } from './failureDialog';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from '../services/appLockService';
 
@@ -90,7 +90,7 @@ function RemoteFilePage({ file, onReady }: { file: ViewerFile; onReady: () => vo
     setError(null); setInfo(null); setMsg('جاري تنزيل الملف');
     openFileNow(db, file.sha256, file.ext, (m, i) => { setMsg(m); setInfo(i ?? null); }, src.signal)
       .then(() => onReady())
-      .catch((e) => { if (!isCancelled(e)) setError(e instanceof Error ? e.message : 'تعذّر تنزيل الملف'); });
+      .catch((e) => { if (!isCancelled(e)) setError(arabicMessage(e) || 'تعذّر تنزيل الملف'); });
     return () => src.cancel();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.sha256, attempt]);

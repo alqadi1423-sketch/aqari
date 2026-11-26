@@ -12,6 +12,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, Pressable, Share, type TextStyle } from 'react-native';
 import { ProgressTrack } from './components';
+import { arabicMessage } from './failureDialog';
 import { C, FONT, FONT_BOLD } from './theme';
 import { rawAppDb, clearUpgrade, appDb } from '../db/expoAdapter';
 import { applyScreenSecureFrom } from '../services/screenSecure';
@@ -102,7 +103,8 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
       setSpaceFix(e instanceof UpgradeBackupError && e.space);
       setReason(isCancelled(e)
         ? 'بياناتك كما هي، والترقية تنتظر نسخةً منها ومن قائمة ملفاتها.'
-        : e instanceof Error ? e.message : 'لم تُرقَّ بياناتك لأن حفظ نسخة منها قبل الترقية لم يكتمل.');
+        // نص الخطأ العربي من الدومين، وإلا الرسالة العامة · لا «Network request failed» (D-21)
+        : arabicMessage(e) || 'لم تُرقَّ بياناتك لأن حفظ نسخة منها قبل الترقية لم يكتمل.');
       setPhase('failed');
     }
   }, [finish]);

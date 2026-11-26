@@ -26,6 +26,7 @@ import { allAccounts } from '../src/domain/accounting/ledger';
 import { today, dfmt } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
 import { reportFailure } from '../src/ui/failureDialog';
+import { useSaveAttempt } from '../src/ui/formAttempt';
 import { usePerm, useAccess } from '../src/ui/access';
 import { rowBy } from '../src/services/access';
 
@@ -181,17 +182,22 @@ export default function Journal() {
   const openBuilder = () => {
     setDate(today()); setMemo(''); setBankId('');
     setLines([{ account: '', debit: '', credit: '' }, { account: '', debit: '', credit: '' }]);
+    jf.reset();
     setBuilderOpen(true);
   };
 
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
+  const jf = useSaveAttempt();
+  const hasAmount = (l: JeLine) => toHalalas(l.debit) > 0 || toHalalas(l.credit) > 0;
+  const lineNoAccount = lines.some((l) => !l.account && hasAmount(l));
   const post = (...a: Parameters<typeof postIn>) => withCostCenter(cc, () => postIn(...a));
   const postIn = () => {
     if (!balanced) { toast('لا يمكن ترحيل قيد غير متوازن'); return; }
     const validLines = lines
       .filter((l) => l.account && (toHalalas(l.debit) || toHalalas(l.credit)))
       .map((l) => ({ account: l.account, debit: toHalalas(l.debit), credit: toHalalas(l.credit) }));
-    if (!validLines.length) { toast('أضف سطراً واحداً على الأقل بحساب صحيح'); return; }
+    // سطرٌ بمبلغ بلا حساب: خانة حسابه حمراء ولا يُرحَّل شيء، لا تنبيهٌ عابر (D-21)
+    if (lineNoAccount || !validLines.length) { jf.attempt(false, () => {}); return; }
     try {
       const args = { date, memo: memo.trim() || 'بدون بيان', lines: validLines };
       if (!owner) {
@@ -361,7 +367,7 @@ export default function Journal() {
         <Field label="البيان" value={memo} onChange={setMemo} />
         {lines.map((l, i) => (
           <View key={i} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 9, marginBottom: 8 }}>
-            <SelectField label="الحساب" value={l.account} options={accountOpts}
+            <SelectField label="الحساب" value={l.account} options={accountOpts} error={jf.tried && !l.account && hasAmount(l)}
               onPick={(v) => setLines((p) => p.map((x, xi) => (xi === i ? { ...x, account: v } : x)))}
               placeholder="اختر الحساب…" />
             <Row>

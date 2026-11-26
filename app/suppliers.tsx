@@ -12,6 +12,7 @@ import { ActionMenuButton } from '../src/ui/ActionMenu';
 import { CollapsibleSection } from '../src/ui/Collapsible';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../src/ui/FilterSheet';
 import { useDialog } from '../src/ui/AppDialog';
+import { reportFailure } from '../src/ui/failureDialog';
 import { useApp } from '../src/ui/store';
 import { AttachStrip } from '../src/ui/AttachStrip';
 import { MeterSheet } from '../src/ui/MeterSheet';
@@ -188,7 +189,7 @@ export default function Suppliers() {
     // الحفظ في المنطق (src/domain/suppliers.ts): تعديل الاسم يتبعه في فواتير شرائه (دراسة القائم)
     try {
       saveSupplier(db, editingId, { name, vat, phone, category, amountHalalas: amount.trim() ? toHalalas(amount) : null, utility });
-    } catch (e) { toast((e as Error).message); return; }
+    } catch (e) { reportFailure({ title: 'تعذّر حفظ المورد', db, e }); return; }
     setFormOpen(false); bump();
     toast(editingId ? 'تم تحديث المورد' : `تمت إضافة المورد "${name.trim()}"`);
   };
