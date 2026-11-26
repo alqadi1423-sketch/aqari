@@ -46,7 +46,7 @@ test('C-9 الترقية لا تُطفئ «نزع البيانات الوصفي�
   db.close();
 });
 
-test.failing('C-10 تقرير العطل لا يحمل اسماً لاتينياً بين علامتي تنصيص منحنيتين أو في سطرٍ إنجليزي', () => {
+test('C-10 تقرير العطل لا يحمل اسماً لاتينياً بين علامتي تنصيص منحنيتين أو في سطرٍ إنجليزي', () => {
   const NAME = 'ZQPROBE Holdings';
   const out = [
     redactForReport(`Error: The supplier “${NAME}” is archived · restore it from Suppliers`),

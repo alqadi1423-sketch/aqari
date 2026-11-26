@@ -19,6 +19,43 @@ const NUMBER = /[+]?\d[\d,.\s٫٬\-/]*\d|\d/g;
 const EASTERN_DIGITS = /[٠-٩۰-۹]+/g;
 /** كلمات لاتينية متتالية · في السطر العربي وحده */
 const LATIN_RUN = /[A-Za-z][\w\-.]*(?:\s+[A-Za-z][\w\-.]*)*/g;
+/** كلمةٌ لاتينية في السطر غير العربي · والنقطة داخلها لا في آخرها (آخر الجملة ليس معرّفاً) */
+const LATIN_WORD = /[A-Za-z][\w\-]*(?:\.[\w\-]+)*/g;
+/** نوع الخطأ في أول السطر (TypeError: · java.io.IOException:) يبقى */
+const ERROR_HEAD = /^\s*(?:[\w$]+\.)*[\w$]*(?:Error|Exception)\b:?\s*/;
+/**
+ * نصوصٌ تقنية معروفة تبقى في السطر غير العربي (المراجعة الشاملة 2026-11-13 · C-10): رسائل SQLite ورسائل المحرّك والقرص والشبكة ·
+ * لا اسم فيها، وهي أنفع ما في الرسالة
+ */
+const KNOWN_TEXTS = [
+  'UNIQUE constraint failed', 'NOT NULL constraint failed', 'FOREIGN KEY constraint failed', 'CHECK constraint failed',
+  'PRIMARY KEY must be unique', 'constraint failed', 'no such table', 'no such column', 'no such index', 'no such trigger',
+  'has no column named', 'already exists', 'database is locked', 'database table is locked', 'database disk image is malformed',
+  'database or disk is full', 'disk I/O error', 'file is not a database', 'attempt to write a readonly database',
+  'cannot start a transaction within a transaction', 'cannot commit', 'no transaction is active', 'syntax error', 'near',
+  'out of memory', 'interrupted', 'unable to open database file', 'SQL logic error',
+  'is not a function', 'is not an object', 'is not a constructor', 'is not defined', 'is undefined', 'is null',
+  'Cannot read property', 'Cannot read properties of', 'of undefined', 'of null', 'undefined', 'null',
+  'Maximum call stack size exceeded', 'Network request failed', 'Aborted', 'timeout', 'timed out',
+  'no space left on device', 'ENOSPC', 'ENOENT', 'EACCES', 'EPERM', 'EEXIST', 'Permission denied', 'write', 'read', 'open',
+  'Caused by', 'Unexpected token', 'JSON Parse error', 'in JSON at position',
+].sort((a, b) => b.length - a.length);
+const KNOWN_RE = new RegExp('\\b(?:' + KNOWN_TEXTS.map((s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')).join('|') + ')\\b', 'g');
+
+/**
+ * السطر بلا حرف عربي (واجهة إنجليزية أو رسالة مكتبة · C-10): قد يحمل اسماً لاتينياً بلا علامات · فيُحجب كل ما بعد نوع الخطأ إلا
+ * المعرّفات التقنية (فيها «_» أو «.» داخلها) والنصوص المعروفة أعلاه
+ */
+function maskLatinLine(line: string): string {
+  const head = ERROR_HEAD.exec(line)?.[0] ?? '';
+  const kept: string[] = [];
+  const body = line.slice(head.length)
+    .replace(KNOWN_RE, (m) => { kept.push(m); return '\u0000' + (kept.length - 1) + '\u0000'; })
+    .replace(LATIN_WORD, (w) => (/[_.]/.test(w) ? w : '…'))
+    .replace(/…(?:[\s,'’]+…)+/g, '…')
+    .replace(/\u0000(\d+)\u0000/g, (_m, i: string) => kept[Number(i)]);
+  return head + body;
+}
 
 /**
  * التقرير يخرج من الجهاز (التنزيلات والحافظة ونافذة المشاركة) · فلا يحمل اسماً ولا جوالاً ولا هوية
@@ -43,6 +80,9 @@ export function redactForReport(text: string): string {
     let out = line
       .replace(/«[^»]*»/g, '«…»')
       .replace(/"[^"\n]*"/g, '"…"')
+      // والتنصيص المنحني كما في نصوص en.json (C-10)
+      .replace(/“[^”\n]*”/g, '“…”')
+      .replace(/‘[^’\n]*’/g, '‘…’')
       .replace(ARABIC_RUN, '…')
       .replace(OTHER_SCRIPT_RUN, '…')
       .replace(EASTERN_DIGITS, '#')
@@ -51,6 +91,8 @@ export function redactForReport(text: string): string {
       // نوع الخطأ في أول السطر يبقى (RestoreError:) وما بعده يُحجب
       const head = /^\s*\w*Error:\s*/.exec(out)?.[0] ?? '';
       out = head + out.slice(head.length).replace(LATIN_RUN, '…');
+    } else {
+      out = maskLatinLine(out);
     }
     return out;
   }).join('\n');
