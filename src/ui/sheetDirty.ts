@@ -18,3 +18,30 @@ export function useMarkSheetDirty(): () => void {
 }
 
 const noop = (): void => {};
+
+/**
+ * هل تغيّر النموذج عمّا فُتح عليه؟ · مقارنة قيم (لا مراجع) تنزل في الكائنات والمصفوفات ·
+ * فما كُتب ثم مُسح حتى عاد كما كان ليس إدخالاً، وتغيير اختيارٍ وحده إدخال (D-3).
+ */
+export function formChanged(base: unknown, now: unknown): boolean {
+  if (Object.is(base, now)) return false;
+  if (base === null || now === null || typeof base !== 'object' || typeof now !== 'object') {
+    // الغائب والفارغ سواء في الحقول الاختيارية
+    const blank = (v: unknown) => v === undefined || v === null || v === '';
+    return !(blank(base) && blank(now));
+  }
+  if (Array.isArray(base) !== Array.isArray(now)) return true;
+  const a = base as Record<string, unknown>;
+  const b = now as Record<string, unknown>;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) if (formChanged(a[k], b[k])) return true;
+  return false;
+}
+
+/**
+ * هل يستأذن إغلاق الورقة بالإيماءة؟ · حكم صاحب النموذج (`dirty`) إن مرّره مقدَّمٌ على العلامة
+ * الداخلية، لأن العلامة تُصفَّر كلما ظهرت الورقة والإدخال باقٍ عنده (العودة من المراجعة · D-3).
+ */
+export function sheetNeedsConfirm(dirty: boolean | undefined, marked: boolean): boolean {
+  return dirty !== undefined ? dirty : marked;
+}

@@ -13,7 +13,7 @@ import { UiScaleView, useScaledInsets } from './UiScale';
 import { Icon, type IconName } from './icons';
 import { perfMarkNavRender, perfNow, perfScreenShown, perfTouch, perfTouchUp } from '../perf/perf';
 import { useDialog, confirmDiscard } from './AppDialog';
-import { SheetDirtyCtx } from './sheetDirty';
+import { SheetDirtyCtx, sheetNeedsConfirm, useMarkSheetDirty } from './sheetDirty';
 import { useAppLocked } from './lockState';
 
 /**
@@ -63,7 +63,7 @@ type Measurable = {
 };
 
 export function Sheet({
-  visible, onClose, title, children, footer, tall,
+  visible, onClose, title, children, footer, tall, dirty,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -72,6 +72,11 @@ export function Sheet({
   /** التذييل الثابت (أزرار الإجراء) */
   footer?: React.ReactNode;
   tall?: boolean;
+  /**
+   * حكم صاحب النموذج: هل فيه إدخالٌ لم يُحفظ؟ · يُقدَّم على علامة الحقول الداخلية التي تُصفَّر
+   * كلما ظهرت الورقة، فالنموذج العائد من صفحة المراجعة يبقى محروساً (D-3)
+   */
+  dirty?: boolean;
 }) {
   // النافذة المنبثقة فوق غطاء القفل · تختفي ما دام مقفلاً (#51 · ui/lockState.ts)
   const appLocked = useAppLocked();
@@ -167,9 +172,9 @@ export function Sheet({
   useEffect(() => { if (visible) dirtyRef.current = false; }, [visible]);
   const dirtyCtx = React.useMemo(() => ({ mark: () => { dirtyRef.current = true; } }), []);
   const requestClose = React.useCallback(() => {
-    if (dirtyRef.current) { confirmDiscard(dialog, onClose); return; }
+    if (sheetNeedsConfirm(dirty, dirtyRef.current)) { confirmDiscard(dialog, onClose); return; }
     onClose();
-  }, [dialog, onClose]);
+  }, [dialog, onClose, dirty]);
 
   // زر الرجوع في أندرويد يغلق النافذة أولاً · ويستأذن إن كان فيها إدخال
   useEffect(() => {
@@ -334,6 +339,8 @@ export function SelectField<Tv extends string>({
 }) {
   const [open, setOpen] = React.useState(false);
   const fs = useFs();
+  // الاختيار إدخالٌ كالكتابة · يعلّم الورقة الحاوية فلا تُغلق بلا استئذان (D-3)
+  const markDirty = useMarkSheetDirty();
   const current = options.find((o) => o.value === value);
   return (
     <View style={{ marginBottom: 12 }}>
@@ -358,7 +365,7 @@ export function SelectField<Tv extends string>({
         title={label}
         options={options}
         value={value ?? undefined}
-        onPick={onPick}
+        onPick={(v) => { if (v !== value) markDirty(); onPick(v); }}
         emptyText={emptyText ?? placeholder}
       />
     </View>

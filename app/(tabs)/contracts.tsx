@@ -475,6 +475,8 @@ export default function Contracts() {
         onClose={() => setFormOpen(false)}
         title={editingDraftId ? 'تعديل عقد الإيجار' : 'عقد إيجار جديد'}
         tall
+        // النموذج يحرس نفسه بما فيه لا بعلامة الورقة · فالعائد من المراجعة لا يُغلق بلا استئذان (D-3)
+        dirty={form.dirty}
         footer={
           <>
             <View style={{ flex: 1 }}><BtnGhost title="حفظ كمسودة" onPress={doSaveDraft} /></View>

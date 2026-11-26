@@ -12,6 +12,7 @@ import { File } from 'expo-file-system';
 import { Field, Row, T, Num, BtnGhost, BtnPrimary, Note, ChipGroup } from './components';
 import { SuggestField } from './editors';
 import { SelectField, Sheet } from './Sheet';
+import { formChanged } from './sheetDirty';
 import { DateField } from './DateField';
 import { useApp } from './store';
 import { C } from './theme';
@@ -145,8 +146,11 @@ export function useContractForm() {
     setState((p) => ({ ...p, [k]: v }));
     setErrorField((f) => ((f as string) === (k as string) ? null : f));
   };
-  const reset = (s: ContractFormState) => { setState(s); setErrorField(null); };
-  return { state, set, reset, errorField, setErrorField };
+  // ما فُتح عليه النموذج آخر مرة · «فيه إدخال» مقارنةٌ به لا علامةٌ تُصفَّر حين تعود الورقة من المراجعة (D-3)
+  const [baseline, setBaseline] = useState<ContractFormState>(state);
+  const reset = (s: ContractFormState) => { setState(s); setBaseline(s); setErrorField(null); };
+  const dirty = formChanged(baseline, state);
+  return { state, set, reset, errorField, setErrorField, dirty };
 }
 
 export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof useContractForm>; draftId?: string | null }) {
