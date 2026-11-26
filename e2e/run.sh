@@ -48,6 +48,11 @@ ensure_device() {
   [ "$(adb get-state 2>/dev/null)" = "device" ]
 }
 no_device() { grep -qE "0 devices connected|device offline|no devices/emulators found|device '.*' not found" "$1"; }
+# أندرويد لم يُقلع التطبيق في التدفق (من سطر السجل $1): على af84ee5 بقي ١٠ أ على شاشة البداية حتى المهلة بهذا السطر وحده،
+# وهو عطل المحاكي تحت الحمل لا التطبيق (نجح التدفق نفسه قبله) · يُعاد التدفق مرةً كغياب الجهاز
+attach_failed() {
+  tail -n +"$1" "$OUT/logcat.txt" 2>/dev/null | grep -qE 'ProcessRecord\{[^}]* [0-9]+:com\.aqari\.app/[^}]*\} failed to attach'
+}
 # التدفقات (yaml) وخطوات الجهاز (sh: أوامر adb كقتل العملية وضغط الذاكرة وفحص النافذة) بترتيب أسمائها معاً
 for f in $(ls e2e/maestro/[0-9]*.yaml e2e/maestro/[0-9]*.sh 2>/dev/null | LC_ALL=C sort); do
   name="$(basename "$f")"; name="${name%.*}"
@@ -57,10 +62,15 @@ for f in $(ls e2e/maestro/[0-9]*.yaml e2e/maestro/[0-9]*.sh 2>/dev/null | LC_ALL
     run=(maestro test "$f" --format junit --output "$OUT/flows/$name.xml" --test-output-dir "$OUT/shots/$name"); fi
   ensure_device || echo "$name: no device before run" >> "$OUT/flows/$name.log"
   note=""
+  from=$(( $(wc -l < "$OUT/logcat.txt" 2>/dev/null || echo 0) + 1 ))
   ok=0; "${run[@]}" > "$OUT/flows/$name.log" 2>&1 && ok=1
   if [ $ok = 0 ] && no_device "$OUT/flows/$name.log"; then
     note=" (retried: device lost)"
     pgrep -f "adb logcat" >/dev/null || (adb logcat -v time '*:W' ReactNativeJS:V >> "$OUT/logcat.txt" 2>&1 &)
+    ensure_device && "${run[@]}" > "$OUT/flows/$name.log" 2>&1 && ok=1
+  elif [ $ok = 0 ] && attach_failed "$from"; then
+    note=" (retried: app failed to attach)"
+    cp "$OUT/flows/$name.log" "$OUT/flows/$name.attach-failed.log" 2>/dev/null || true
     ensure_device && "${run[@]}" > "$OUT/flows/$name.log" 2>&1 && ok=1
   fi
   if [ $ok = 1 ]; then
