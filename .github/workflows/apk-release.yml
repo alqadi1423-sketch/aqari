@@ -49,7 +49,11 @@ jobs:
           SOURCE: ${{ steps.plan.outputs.source }}
           TITLE: ${{ steps.plan.outputs.title }}
           NOTES: ${{ steps.plan.outputs.notes }}
+          # بصمة شهادة الإصدار (ليست سراً) · تُضبط في متغيرات المستودع، وبدونها يُفحص ألا تكون شهادة التصحيح وحده (G-9)
+          APK_CERT_SHA256: ${{ vars.APK_CERT_SHA256 }}
         run: |
           git show origin/apk:Aqari.apk > "Aqari-${TAG}.apk"
+          # رقما الحزمة من داخلها يطابقان src/version.ts عند المصدر، وشهادتها شهادة الإصدار (G-9) · وإلا لا وسم ولا نشرة
+          node scripts/ci/apkVerify.js "Aqari-${TAG}.apk" "$SOURCE"
           sha256sum "Aqari-${TAG}.apk" | tee -a "$NOTES"
           gh release create "$TAG" "Aqari-${TAG}.apk" --target "$SOURCE" --title "$TITLE" --notes-file "$NOTES"
