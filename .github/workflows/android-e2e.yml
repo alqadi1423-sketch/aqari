@@ -121,7 +121,8 @@ jobs:
           profile: pixel_6
           ram-size: 4096M
           disable-animations: true
-          # -tcpdump: كل حركة المحاكي في ملف pcap يفحصه العمل التالي (الشرط ١٣)
+          # -tcpdump: حركة واجهة المحاكي في QEMU (بيانات الجوال) في ملف pcap يفحصه العمل التالي (الشرط ١٣) · وWi-Fi يمرّ بـnetsim خارجها
+          # فيطفئه run.sh قبل علامة النافذة، وعلامة الختام بعد التدفقات تثبت أن الحركة بقيت فيه
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -tcpdump ${{ runner.temp }}/emu-net.pcap
           script: bash e2e/run.sh
 

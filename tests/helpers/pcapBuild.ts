@@ -80,8 +80,9 @@ export function httpGet(host: string, path = '/'): Buffer {
   return Buffer.from(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\nUser-Agent: e2e\r\n\r\n`, 'latin1');
 }
 
-/* إطارات جاهزة من الجوال (10.0.2.16) إلى خادم DNS في المحاكي (10.0.2.3) وإلى عناوين توثيقية (RFC 5737) */
-const PHONE = '10.0.2.16';
+/* إطارات جاهزة من الجوال (10.0.2.15: بيانات الجوال على واجهة QEMU، وWi-Fi مطفأ في run.sh) إلى خادم DNS في المحاكي (10.0.2.3)
+ * وإلى عناوين توثيقية (RFC 5737) */
+const PHONE = '10.0.2.15';
 export const dnsFrame = (name: string, id = 1) => eth(ipv4(PHONE, '10.0.2.3', 17, udp(40000 + (id % 20000), 53, dnsQuery(name, id))));
 
 export function tlsFrames(sni: string, opts: { port?: number; split?: boolean; reorder?: boolean; padding?: number } = {}): Buffer[] {
@@ -106,8 +107,9 @@ export function httpFrames(host: string, port = 51000): Buffer[] {
 }
 
 export const MARKER = 'aqari-e2e-window.example.com';
+export const END_MARKER = 'aqari-e2e-window-end.example.com';
 
-/** تسجيلٌ نظيف: إقلاعٌ فيه قوقل قبل العلامة، ثم العلامة، ثم خرائط OpenStreetMap وفحص اتصالٍ من النظام */
+/** تسجيلٌ نظيف: إقلاعٌ فيه قوقل قبل العلامة، ثم العلامة، ثم خرائط OpenStreetMap وفحص اتصالٍ من النظام، ثم علامة الختام */
 export function cleanCapture(): Buffer {
   return pcapFile([
     dnsFrame('www.google.com', 1),
@@ -116,6 +118,7 @@ export function cleanCapture(): Buffer {
     dnsFrame('tile.openstreetmap.org', 3),
     ...tlsFrames('tile.openstreetmap.org', { port: 50001 }),
     dnsFrame('connectivitycheck.gstatic.com', 4),
+    dnsFrame(END_MARKER, 5),
   ]);
 }
 
@@ -127,5 +130,6 @@ export function googleCapture(): Buffer {
     ...tlsFrames('www.google.com', { port: 50002, split: true, reorder: true, padding: 1400 }),
     ...httpFrames('fonts.gstatic.com'),
     dnsFrame('tile.openstreetmap.org', 4),
+    dnsFrame(END_MARKER, 5),
   ]);
 }

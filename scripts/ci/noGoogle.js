@@ -5,7 +5,8 @@
  * ثم يصنّف ما كان من نطاقات قوقل. جافاسكربت خالصة بلا tshark ولا حزم: النتيجة نفسها لكل ملفٍ على كل جهاز.
  *
  * النافذة: الحركة قبل أول سؤال DNS عن اسم العلامة (يرسله e2e/run.sh قبل تثبيت التطبيق) هي إقلاع أندرويد، تُذكر ولا يُحكم بها ·
- * وغياب العلامة يعني أن التسجيل لم يرَ حركة الجوال، فلا يُعدّ «نظيفاً».
+ * وغياب العلامة يعني أن التسجيل لم يرَ حركة الجوال، فلا يُعدّ «نظيفاً» · وعلامة الختام (يرسلها run.sh بعد التدفقات كلها) تُطلب بعد
+ * الأولى: غيابها يعني أن حركة الجوال خرجت من التسجيل أثناء التدفقات (Wi-Fi المحاكي يمرّ بـnetsim خارج -tcpdump)، فلا يُعدّ نظيفاً كذلك.
  *
  * الأصناف داخل النافذة:
  *  - system: نقاط أندرويد نفسه (فحص الاتصال والوقت)، لا التطبيق · تُطفأ في run.sh وتُذكر إن ظهرت ولا تُسقط.
@@ -13,11 +14,12 @@
  *  - app: كل نطاق قوقل سواهما · يُسقط في enforce وstrict.
  * الأوضاع (NO_GOOGLE_MODE أو --mode): report لا يُسقط أبداً · enforce (الآن) · strict (بعد إزالة ML Kit، وفي التحويل م٥).
  *
- * الاستعمال: node scripts/ci/noGoogle.js --pcap <ملف> [--mode enforce] [--marker <اسم>] [--out <ملف>]
+ * الاستعمال: node scripts/ci/noGoogle.js --pcap <ملف> [--mode enforce] [--marker <اسم>] [--end-marker <اسم>] [--out <ملف>]
  */
 const fs = require('fs');
 
 const MARKER = 'aqari-e2e-window.example.com';
+const END_MARKER = 'aqari-e2e-window-end.example.com';
 const MODES = ['report', 'enforce', 'strict'];
 
 // نطاقات قوقل: لاحقة اسمٍ كاملة، أو مقطعٌ من الاسم بعينه، أو مقطعٌ يبدأ بـfirebase (الشرط ١٣: google وgoogleapis وgstatic وfirebase*
@@ -308,7 +310,7 @@ function extractNames(pcap) {
  * الحكم على تسجيلٍ واحد · pcapBuf ‏null حين غاب الملف
  * @returns {{ verdict: 'pass'|'fail'|'report', lines: string[] }}
  */
-function analyze({ pcapBuf, mode = 'enforce', marker = MARKER, source = 'capture' }) {
+function analyze({ pcapBuf, mode = 'enforce', marker = MARKER, endMarker = END_MARKER, source = 'capture' }) {
   if (!MODES.includes(mode)) throw new Error('وضعٌ غير معروف: ' + mode + ' (' + MODES.join('|') + ')');
   const problems = [];
   const body = [];
@@ -322,12 +324,18 @@ function analyze({ pcapBuf, mode = 'enforce', marker = MARKER, source = 'capture
     const m = normHost(marker);
     const start = events.find((e) => e.kind === 'dns' && normHost(e.host) === m);
     body.push('capture ' + source + ' · packets ' + parsed.packets.length + (parsed.truncated ? ' · truncated' : ''));
+    const em = normHost(endMarker);
+    const end = start ? events.find((e) => e.kind === 'dns' && normHost(e.host) === em && e.at >= start.at) : null;
     if (!start) problems.push('علامة النافذة ' + marker + ' لم تظهر: التسجيل لم يرَ حركة الجوال، فلا يُعدّ نظيفاً');
-    else body.push('window from packet ' + start.at + ' (marker ' + marker + ')');
+    else {
+      body.push('window from packet ' + start.at + ' (marker ' + marker + ')');
+      if (!end) problems.push('علامة الختام ' + endMarker + ' لم تظهر بعد علامة النافذة: حركة الجوال خرجت من التسجيل أثناء التدفقات، فلا يُعدّ نظيفاً');
+      else body.push('window end at packet ' + end.at + ' (marker ' + endMarker + ')');
+    }
     const groups = { app: new Map(), pending: new Map(), system: new Map(), boot: new Map() };
     for (const e of events) {
       const h = normHost(e.host);
-      if (h === m) continue;
+      if (h === m || h === em) continue;
       const cls = classify(h);
       if (!cls) continue;
       const g = !start || e.at >= start.at ? groups[cls] : groups.boot;
@@ -362,7 +370,7 @@ if (require.main === module) {
   try { pcapBuf = pcapPath ? fs.readFileSync(pcapPath) : null; } catch { pcapBuf = null; }
   let res;
   try {
-    res = analyze({ pcapBuf, mode, marker: arg('marker', MARKER), source: pcapPath || '(none)' });
+    res = analyze({ pcapBuf, mode, marker: arg('marker', MARKER), endMarker: arg('end-marker', END_MARKER), source: pcapPath || '(none)' });
   } catch (e) {
     res = { verdict: mode === 'report' ? 'report' : 'fail', lines: ['no-google ' + (mode === 'report' ? 'report' : 'fail') + ' · mode ' + mode, 'problem ' + e.message] };
   }
@@ -375,4 +383,4 @@ if (require.main === module) {
   if (res.verdict === 'fail') process.exit(1);
 }
 
-module.exports = { MARKER, MODES, SYSTEM, PENDING, isGoogleHost, classify, parsePcap, extractNames, tlsSni, dnsQuestions, analyze };
+module.exports = { MARKER, END_MARKER, MODES, SYSTEM, PENDING, isGoogleHost, classify, parsePcap, extractNames, tlsSni, dnsQuestions, analyze };

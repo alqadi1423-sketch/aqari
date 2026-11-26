@@ -14,10 +14,23 @@ adb shell settings put global hide_error_dialogs 1 || true
 adb shell settings put global captive_portal_mode 0 || true
 adb shell settings put global captive_portal_detection_enabled 0 || true
 adb shell settings put global private_dns_mode off || true
+# وWi-Fi يُطفأ فتخرج الحركة كلها من بيانات الجوال: -tcpdump يسجّل واجهة المحاكي في QEMU (eth0 · 10.0.2.15) وحدها، وWi-Fi في
+# المحاكي ٣٧ يمرّ بـnetsim خارجها · فكان التسجيل ٤٧ و٩٨ حزمة بثٍّ متعدد بلا سؤال DNS واحد، وغابت العلامة في كل تشغيل منذ ق٠-٨
+# (45732971915 و45815501062) · وعلامة الختام بعد التدفقات تثبت أن الحركة بقيت في التسجيل إلى آخرها (noGoogle.js END_MARKER)
+adb shell svc wifi disable || true
+adb shell cmd wifi set-wifi-enabled disabled >/dev/null 2>&1 || true
+adb shell svc data enable || true
+for _ in $(seq 30); do adb shell cmd wifi status 2>/dev/null | grep -qi "wifi is disabled" && break; sleep 2; done
 sleep 3
-# العلامة تحتاج شبكةً قائمة (بلا شبكة لا يخرج سؤال DNS فتغيب العلامة ويفشل الفحص): انتظارٌ حتى دقيقة لشبكةٍ افتراضية
-for _ in $(seq 30); do adb shell dumpsys connectivity 2>/dev/null | grep -q "Active default network: [0-9]" && break; sleep 2; done
-for _ in 1 2 3; do adb shell ping -c 1 -W 2 aqari-e2e-window.example.com >/dev/null 2>&1 || true; sleep 1; done
+# العلامة تحتاج شبكةً قائمة (بلا شبكة لا يخرج سؤال DNS فتغيب العلامة ويفشل الفحص): انتظارٌ حتى دقيقة لشبكةٍ افتراضية ·
+# وحال الشبكة عند كل علامة في net.txt لقراءة الفشل
+mark() {
+  for _ in $(seq 30); do adb shell dumpsys connectivity 2>/dev/null | grep -q "Active default network: [0-9]" && break; sleep 2; done
+  { echo "== $1"; adb shell cmd wifi status 2>&1 | head -3
+    adb shell dumpsys connectivity 2>&1 | grep -E "Active default network|^  NetworkAgentInfo" | cut -c1-300 | head -8; } >> "$OUT/net.txt"
+  for _ in 1 2 3; do adb shell ping -c 1 -W 2 "$1" >/dev/null 2>&1 || true; sleep 1; done
+}
+mark aqari-e2e-window.example.com
 adb install -r "$E2E_APK" > "$OUT/install.txt" 2>&1 || { echo "install-failed" > "$OUT/status.txt"; cat "$OUT/install.txt"; exit 1; }
 adb logcat -c || true
 (adb logcat -v time '*:W' ReactNativeJS:V > "$OUT/logcat.txt" 2>&1 &) 
@@ -58,6 +71,9 @@ for f in $(ls e2e/maestro/[0-9]*.yaml e2e/maestro/[0-9]*.sh 2>/dev/null | LC_ALL
     adb exec-out screencap -p > "$OUT/shots/$name-failure.png" 2>/dev/null || true
   fi
 done
+# علامة الختام: غيابها في التسجيل يعني أن حركة الجوال خرجت منه أثناء التدفقات (Wi-Fi عاد، أو انقطع)، فلا يُعدّ نظيفاً
+ensure_device >/dev/null 2>&1 || true
+mark aqari-e2e-window-end.example.com
 adb shell dumpsys meminfo com.aqari.app > "$OUT/meminfo.txt" 2>&1 || true
 pkill -f "adb logcat" || true
 exit $rc

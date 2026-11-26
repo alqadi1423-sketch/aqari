@@ -9,6 +9,7 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   pcapFile, eth, ipv4, ipv6, udp, dnsQuery, dnsFrame, tlsFrames, cleanCapture, googleCapture, MARKER as BUILD_MARKER,
+  END_MARKER as BUILD_END,
 } from './helpers/pcapBuild';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -100,7 +101,7 @@ describe('الحكم', () => {
   });
 
   test('المؤجَّل (ML Kit) يُذكر ولا يُسقط في enforce، ويُسقط في strict · وreport لا يُسقط أبداً', () => {
-    const buf = pcapFile([dnsFrame(BUILD_MARKER), dnsFrame('firebaselogging.googleapis.com', 5)]);
+    const buf = pcapFile([dnsFrame(BUILD_MARKER), dnsFrame('firebaselogging.googleapis.com', 5), dnsFrame(BUILD_END, 6)]);
     const enforce = ng.analyze({ pcapBuf: buf, mode: 'enforce' });
     expect(enforce.verdict).toBe('pass');
     expect(enforce.lines.some((l: string) => l.startsWith('pending firebaselogging.googleapis.com (dns) · '))).toBe(true);
@@ -115,6 +116,25 @@ describe('الحكم', () => {
     expect(noMarker.verdict).toBe('fail');
     expect(noMarker.lines.join('\n')).toMatch(/علامة النافذة/);
     expect(() => ng.analyze({ pcapBuf: cleanCapture(), mode: 'lenient' })).toThrow(/وضعٌ غير معروف/);
+  });
+
+  test('علامة الختام بعد علامة النافذة شرط: غيابها أو سبقها النافذة يُسقط، ولو في تسجيلٍ بلا قوقل', () => {
+    // التشغيلان 45732971915 و45815501062: تسجيل واجهة QEMU وحدها (بثٌّ متعدد بلا DNS) وWi-Fi عبر netsim خارجه
+    const ok = ng.analyze({ pcapBuf: pcapFile([dnsFrame(BUILD_MARKER, 1), dnsFrame('tile.openstreetmap.org', 2), dnsFrame(BUILD_END, 3)]), mode: 'enforce' });
+    expect(ok.verdict).toBe('pass');
+    expect(ok.lines).toContain('window end at packet 2 (marker ' + ng.END_MARKER + ')');
+    for (const frames of [
+      [dnsFrame(BUILD_MARKER, 1), dnsFrame('tile.openstreetmap.org', 2)],
+      [dnsFrame(BUILD_END, 1), dnsFrame(BUILD_MARKER, 2), dnsFrame('tile.openstreetmap.org', 3)],
+    ]) {
+      const r = ng.analyze({ pcapBuf: pcapFile(frames), mode: 'enforce' });
+      expect(r.verdict).toBe('fail');
+      expect(r.lines.join('\n')).toMatch(/علامة الختام aqari-e2e-window-end\.example\.com لم تظهر/);
+    }
+    // وفي وضع التقرير تُذكر ولا تُسقط
+    expect(ng.analyze({ pcapBuf: pcapFile([dnsFrame(BUILD_MARKER, 1)]), mode: 'report' }).verdict).toBe('report');
+    // العلامتان لا تُعدّان من أسماء الحركة
+    expect(ok.lines.some((l: string) => /aqari-e2e-window/.test(l) && !/^window /.test(l))).toBe(false);
   });
 });
 
@@ -174,15 +194,28 @@ describe('الجوال الافتراضي', () => {
     expect(wf).not.toMatch(/cp [^\n]*emu-net\.pcap/);
   });
 
-  test('run.sh يطفئ فحص اتصال أندرويد بقوقل ثم يرسل العلامة قبل تثبيت التطبيق', () => {
+  test('run.sh يطفئ فحص اتصال أندرويد بقوقل وWi-Fi ثم يرسل العلامة قبل تثبيت التطبيق، وعلامة الختام بعد التدفقات', () => {
     const iOff = run.indexOf('captive_portal_mode 0');
-    const iMark = run.indexOf(`ping -c 1 -W 2 ${ng.MARKER}`);
+    const iWifi = run.indexOf('svc wifi disable');
+    const iMark = run.indexOf(`mark ${ng.MARKER}\n`);
     const iInstall = run.indexOf('adb install');
+    const iLoop = run.indexOf('for f in $(ls e2e/maestro/');
+    const iLoopEnd = run.indexOf('\ndone\n', iLoop);
+    const iEnd = run.indexOf(`mark ${ng.END_MARKER}\n`);
     expect(iOff).toBeGreaterThan(0);
     expect(run).toContain('private_dns_mode off');
+    // Wi-Fi المحاكي يمرّ بـnetsim خارج -tcpdump: يُطفأ قبل العلامة فتخرج الحركة من الواجهة المسجَّلة
+    expect(iWifi).toBeGreaterThan(0);
+    expect(iMark).toBeGreaterThan(iWifi);
+    expect(run).toMatch(/mark\(\) \{[\s\S]*?ping -c 1 -W 2 "\$1"[\s\S]*?\n\}/);
     expect(iMark).toBeGreaterThan(iOff);
     expect(iInstall).toBeGreaterThan(iMark);
+    expect(iLoopEnd).toBeGreaterThan(iLoop);
+    expect(iEnd).toBeGreaterThan(iLoopEnd);
+    // ولا يُشغَّل Wi-Fi بعد إطفائه
+    expect(run).not.toMatch(/wifi enable|set-wifi-enabled enabled/);
     expect(BUILD_MARKER).toBe(ng.MARKER);
+    expect(BUILD_END).toBe(ng.END_MARKER);
   });
 
   test('منتقي الصور في ١١ ب بمعرّفٍ يطابق حزمته في الصورة المفتوحة وصورة قوقل', () => {
