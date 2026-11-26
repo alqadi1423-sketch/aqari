@@ -1,0 +1,57 @@
+Applications Memory Usage (in Kilobytes):
+Uptime: 765612 Realtime: 765612
+
+** MEMINFO in pid 9085 [com.aqari.app] **
+                   Pss  Private  Private     Swap      Rss     Heap     Heap     Heap
+                 Total    Dirty    Clean    Dirty    Total     Size    Alloc     Free
+                ------   ------   ------   ------   ------   ------   ------   ------
+  Native Heap    64448    64356        0        0    67492    77240    67054     5907
+  Dalvik Heap    13100    12860        0        0    20480    22180    11106    11074
+ Dalvik Other     4397     3960        0        0     5504                           
+        Stack      944      944        0        0      952                           
+       Ashmem       21        0        0        0      576                           
+    Other dev       18        0       16        0      264                           
+     .so mmap     2680      276      128        0    41936                           
+    .jar mmap     2371        0        4        0    34360                           
+    .apk mmap    25792      628    24128        0    28860                           
+    .ttf mmap      724        0      684        0     1004                           
+    .dex mmap    18211        4    18188        0    18940                           
+    .oat mmap      896        0        0        0    14720                           
+    .art mmap     1608      732        0        0    27072                           
+   Other mmap      254       28       64        0     2268                           
+      Unknown    19405    19396        0        0    19960                           
+        TOTAL   154869   103184    43212        0   284388    99420    78160    16981
+ 
+ App Summary
+                       Pss(KB)                        Rss(KB)
+                        ------                         ------
+           Java Heap:    13592                          47552
+         Native Heap:    64356                          67492
+                Code:    44044                         140672
+               Stack:      944                            952
+            Graphics:        0                              0
+       Private Other:    23460
+              System:     8473
+             Unknown:                                   27720
+ 
+           TOTAL PSS:   154869            TOTAL RSS:   284388      TOTAL SWAP (KB):        0
+ 
+ Objects
+               Views:      592         ViewRootImpl:        1
+         AppContexts:        5           Activities:        1
+              Assets:        7        AssetManagers:        0
+       Local Binders:       37        Proxy Binders:       42
+       Parcel memory:       12         Parcel count:       45
+    Death Recipients:        0             WebViews:        0
+ 
+ SQL
+         MEMORY_USED:      101
+  PAGECACHE_OVERFLOW:       42          MALLOC_SIZE:       46
+ 
+ DATABASES
+      pgsz     dbsz   Lookaside(b) cache hits cache misses cache size  Dbname
+PER CONNECTION STATS
+         4       32             69    11    47     8  /data/user/0/com.aqari.app/databases/exoplayer_internal.db
+POOL STATS
+     cache hits  cache misses    cache size  Dbname
+             11            48            59  /data/user/0/com.aqari.app/databases/exoplayer_internal.db
