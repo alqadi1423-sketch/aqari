@@ -1500,6 +1500,7 @@ attachments/<sha256>.<ext> …
 - **E-19:** `xesc` تنزع محارف التحكم، وخانة SUM تحمل قيمتها المحسوبة مع الصيغة.
 - **E-20:** ‎@font-face‎ مضمّن Base64 بالوزنين 400 و700 من `assets/fonts`، و`expo-asset` يُحمَّل عند الطباعة داخل المحاولة فتعذّره يُبقي خط النظام. يحتاج فحصاً على الجهاز.
 - **G-9:** `apkVerify.js` يفحص رقمي الحزمة من داخلها (aapt2) وشهادة توقيعها (apksigner)، ويرفض شهادة التصحيح، ويطابق `APK_CERT_SHA256` إن ضُبط. `ensure-debug-keystore.js` يولّد مفتاح التصحيح قبل البناء، و`eas.json` على الرقم المحلي. الحزم ما زالت ملفاتٍ في فرع apk.
+- **G-10:** حذف date-fns و@expo/ngrok من `package.json` والقفل بلا تثبيت، وdependabot أسبوعي للإجراءات وحدها. و`expo install --fix` وdedupe مؤجلة لأنها تثبيت. وreact-dom باقٍ حتى يثبت بناء الجهاز أنه غير لازم.
 
 ### ١٣.١٧ الإصدارات وسجل التغييرات (التوجيه الرابع ٤ · ٢ · 2026-11-07)
 - **رقمٌ واحد** في `src/version.ts` (`APP_VERSION` بصيغة رئيسي.فرعي.تصحيح، و`APP_BUILD` عددٌ يزيد دائماً)، ويطابقه `app.json` (`version` و`android.versionCode`) و`package.json` و`android/app/build.gradle` (`versionName` و`versionCode`) باختبار `tests/d4.version.test.ts`.

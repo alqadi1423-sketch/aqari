@@ -1,0 +1,9 @@
+# تحديثٌ أسبوعي لإجراءات جيت هب وحدها (المراجعة الشاملة 2026-11-13 · G-10): الإجراءات مثبّتة ببصماتها، فهذا يقترح رفعها بطلب دمجٍ
+# يمرّ بالاختبارات · وحزم npm خارجه: ترقيتها مع ترقية Expo بقرار المالك لا بطلبٍ آلي.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
