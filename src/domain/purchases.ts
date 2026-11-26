@@ -193,8 +193,15 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
   return db.transaction(() => {
     // الافتراض مستبعدة ما لم يُثبَت العكس · و«خاضعة باسمنا» تشترط الرقم الضريبي للمورد
     const taxStatus: TaxStatus = input.taxStatus ?? (input.exempt ? TS_EXEMPT : TS_EXCLUDED);
-    // الفاتورة مربوطةٌ بمعرّف موردها (الهجرة ٦٦ · A2.17) · فورقته وتقريره يرونها ولو تغيّر اسمه بعدها
-    const supplierId = supplierIdByName(db, input.supplier);
+    // الفاتورة مربوطةٌ بمعرّف موردها (الهجرة ٦٦ · A2.17) · فورقته وتقريره يرونها ولو تغيّر اسمه بعدها · والتعديل باسمها المخزَّن نفسه
+    // يُبقي معرّفها ما دام موردها حيّاً: لقطة الاسم القديم (سُدِّدت في ربعٍ مقدَّم ثم تُرجع سدادها) لا تطابق موردها باسمه الجديد
+    // (المدقق المستقل للمرحلة ٣)
+    const kept = existingId
+      ? db.get<{ n: string; s: string | null }>(
+        `SELECT p.supplier_name AS n, s.id AS s FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id AND s.deleted_at IS NULL
+         WHERE p.id = ?`, [existingId])
+      : undefined;
+    const supplierId = kept?.s && kept.n.trim() === input.supplier.trim() ? kept.s : supplierIdByName(db, input.supplier);
     // الرقم الضريبي يأتي من بطاقة المورد · مصدر واحد للحقيقة، ويُلتقط لقطةً في الفاتورة
     let supplierVat = '';
     // «قابلة للخصم» للمسجّلة وحدها، إلا فاتورةً كانت كذلك قبل إلغاء التسجيل تُعدَّل بوضعها نفسه

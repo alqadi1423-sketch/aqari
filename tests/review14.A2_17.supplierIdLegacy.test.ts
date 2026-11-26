@@ -10,7 +10,9 @@
  */
 import { memDb } from './helpers/testDb';
 import { MemoryRemote } from './helpers/memoryRemote';
-import { savePurchase, TS_EXCLUDED, type PurchaseInput } from '@/domain/purchases';
+import { savePurchase, payPurchase, unmarkPurchasePaid, TS_EXCLUDED, type PurchaseInput } from '@/domain/purchases';
+import { fileVatReturn } from '@/domain/vatFilings';
+import { ownerCashIn } from '@/domain/cashOps';
 import { saveSupplier } from '@/domain/suppliers';
 import { supplierReportData } from '@/domain/reportData';
 import { enableSync, syncOnce, docId } from '@/sync/engine';
@@ -76,4 +78,30 @@ test('إصدارٌ أقدم ينقل الفاتورة إلى مورد آخر: ت
   expect(row(b, p)).toEqual({ s: null, n: 'بائع عابر مصطنع' });
   a.close();
   b.close();
+});
+
+/*
+ * منخفض · src/domain/purchases.ts (savePurchase) مع app/purchases.tsx: نموذج التعديل يملأ المورد من اسم الفاتورة، والحفظ يعيد حساب المعرّف
+ * من الاسم · فاتورةٌ أبقت لقطة اسمها القديم (سُدِّدت في ربعٍ قُدِّم إقراره، ثم تُرجع سدادها وعُدّلت) كانت تفقد معرّف موردها.
+ * السلوك الصحيح: التعديل بالاسم المخزَّن نفسه يُبقي المعرّف القائم.
+ */
+test('تعديل فاتورةٍ أبقت اسم موردها القديم بالاسم نفسه يُبقيها مربوطةً بموردها', () => {
+  const db = memDb();
+  ownerCashIn(db, { amountHalalas: 500000, date: '2026-01-01' });
+  const sid = saveSupplier(db, null, supplier(A));
+  // فاتورة الربع الثاني سُدِّدت مقدَّماً في الربع الأول، ثم قُدِّم إقراره
+  const p = savePurchase(db, purchase(A, '2026-04-10'));
+  payPurchase(db, p, 'cash', null, '2026-03-20');
+  fileVatReturn(db, 2026, 1, '2026-04-15');
+  saveSupplier(db, sid, supplier('مورد أ بعد التسمية مصطنع'));
+  expect(row(db, p)).toEqual({ s: sid, n: A });
+  // يُتراجع عن سدادها ثم تُعدَّل من النموذج باسمها المخزَّن
+  unmarkPurchasePaid(db, p);
+  savePurchase(db, { ...purchase(A, '2026-04-10'), subtotalHalalas: 90000, totalHalalas: 90000 }, p);
+  expect(row(db, p)).toEqual({ s: sid, n: A });
+  expect(supplierReportData(db, sid, null, '2026-12-31')!.totals).toMatchObject({ count: 1, total: 90000 });
+  // واسمٌ آخر يُعاد حسابه منه
+  savePurchase(db, { ...purchase('مورد أ بعد التسمية مصطنع', '2026-04-10'), subtotalHalalas: 90000, totalHalalas: 90000 }, p);
+  expect(row(db, p)).toEqual({ s: sid, n: 'مورد أ بعد التسمية مصطنع' });
+  db.close();
 });
