@@ -796,7 +796,10 @@ export default function Settings() {
     toast('أُنشئت نسخة أمان ثم مُسح كل شيء من الجهاز والسحابة · تستعيده من النسخة متى شئت');
   };
 
-  const storage = storageBreakdown(db);
+  // يمشي مجلدات الجهاز متزامناً · مرةً لكل تغيّرٍ في البيانات لا مع كل حرفٍ يُكتب في الإعدادات (D-16)
+  // version: كل تحديثٍ للبيانات أو تفريغٍ للمؤقتات (bump) يعيد الإحصاء، والمجلدات لا تُقرأ من db
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const storage = useMemo(() => storageBreakdown(db), [db, version]);
   const storageTotal = storage.originalsBytes + storage.thumbsBytes + storage.dbBytes
     + storage.cacheBytes + storage.trashBytes + storage.safetyBytes;
   const storageRow = (label: string, v: number, extra?: string, action?: React.ReactNode) => (
