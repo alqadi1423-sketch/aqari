@@ -1,0 +1,10 @@
+== aqari-e2e-window.example.com
+Wifi is disabled
+Wifi scanning is always available
+Active default network: 101
+  NetworkAgentInfo{network{101}  handle{437197393933}  ni{MOBILE[HSPA] CONNECTED extra: epc.tmobile.com} created=2026-11-26T15:30:22.825Z Score(Policies : EVER_EVALUATED&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  created 25733 firstValidated 25782 lastValidated 25782  lp{{InterfaceName: eth0 
+== aqari-e2e-window-end.example.com
+Wifi is disabled
+Wifi scanning is always available
+Active default network: 102
+  NetworkAgentInfo{network{102}  handle{441492361229}  ni{MOBILE[HSPA] CONNECTED extra: epc.tmobile.com} created=2026-11-26T15:32:17.215Z Score(Policies : EVER_EVALUATED&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  created 140049 firstValidated 140115 lastValidated 140115  lp{{InterfaceName: et
