@@ -317,8 +317,10 @@ export async function prepareRestore(
           if (counted[t] !== undefined && !migrated && counted[t] !== expected)
             throw new RestoreError(`عدد سجلات «${t}» لا يطابق البيان (${counted[t]} بدل ${expected})`);
         }
-        // التلف يرفض الاستعادة قبل أي حساب على أرقامها · كما يرفض إنشاء النسخة
-        const damage = reviewData(probe).blocking;
+        // التلف يرفض الاستعادة قبل أي حساب على أرقامها · كما يرفض إنشاء النسخة · ومعه القيد المرحّل المختل كما يرفضه فحص المزامنة
+        // (C-12 · قرار المالك س١١)
+        const review = reviewData(probe);
+        const damage = [...review.blocking, ...review.restoreBlocking];
         if (damage.length) throw new RestoreError('النسخة مرفوضة · ' + damage.join(' · '));
         // ما يحسمه دفتر النسخة أولاً: دفعاتٌ تجاوزت أقساطها تُوزَّع على أقساط عقدها بترتيب الاستحقاق ·
         // على نسخة التجهيز وحدها، ويُعرض على المستخدم قبل التبديل

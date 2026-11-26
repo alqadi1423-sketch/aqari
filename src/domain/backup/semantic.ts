@@ -96,6 +96,9 @@ function nonIntegers(db: DB, table: string, cols: string[], where: string, param
 
 /** بادئة العيب الوحيد الذي هو تلفٌ لا فرقٌ محاسبي: مبلغ بالهللات ليس عدداً صحيحاً (لا ينتجه التطبيق) · checks.ts */
 export const NON_INTEGER_ISSUE = 'مبلغ بالهللات ليس عدداً صحيحاً';
+/** القيد المرحّل المختل (البند ١) · يرفض الاستعادة كما يرفضه فحص المزامنة (C-12 · قرار المالك س١١) */
+export const UNBALANCED_ISSUE = 'قيد مرحّل غير متوازن'; // i18n-exempt: بادئة بندٍ يقارن بها الفحص كأختها
+export const LINELESS_ISSUE = 'قيد مرحّل بلا سطور'; // i18n-exempt: بادئة بندٍ يقارن بها الفحص كأختها
 
 export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColumns(db)): string[] {
   const out: string[] = [];
@@ -134,7 +137,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
      GROUP BY e.id HAVING diff != 0 ORDER BY e.no`, (r) => String(r.no)
   );
   if (unbalanced.length) {
-    out.push('قيد مرحّل غير متوازن: ' + listOf(
+    out.push(UNBALANCED_ISSUE + ': ' + listOf(
       unbalanced.slice(0, SHOW).map((r) => `${r.no} (الفرق ${fmt(Math.abs(Number(r.diff)))})`),
       unbalanced.length));
   }
@@ -146,7 +149,7 @@ export function semanticIssues(db: DB, scope?: SemanticScope, money = moneyColum
      ORDER BY e.no`, (r) => String(r.no)
   );
   if (lineless.length) {
-    out.push('قيد مرحّل بلا سطور: ' + listOf(lineless.slice(0, SHOW).map((r) => r.no), lineless.length));
+    out.push(LINELESS_ISSUE + ': ' + listOf(lineless.slice(0, SHOW).map((r) => r.no), lineless.length));
   }
 
   /* ٢) سقف القسط بخصم الدفتر · النص نفسه الذي تقرأ به الشاشات ومحفّزات السقف، ومحصور في النطاق */

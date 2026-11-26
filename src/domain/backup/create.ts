@@ -339,7 +339,7 @@ export async function createBackup(
       review = reviewData(env.db);
     } catch {
       // بنية أقدم من أعمدة الفحوص (نسخة أمان لقاعدة لم تُرقَّ) · تُحفظ كما هي وتُذكر في ملاحظاتها
-      review = { blocking: [], notes: ['تعذّر فحص الدفتر على بنية الإصدار ' + currentSchemaVersion(env.db)] };
+      review = { blocking: [], restoreBlocking: [], notes: ['تعذّر فحص الدفتر على بنية الإصدار ' + currentSchemaVersion(env.db)] };
     }
     if (review.blocking.length) throw new BackupIntegrityError(review.blocking);
     notes = review.notes;
