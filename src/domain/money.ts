@@ -4,6 +4,16 @@
 import { pct as corePct } from './ledgerCore';
 
 /**
+ * الأرقام العربية الهندية (٠-٩) والفارسية والأردية (۰-۹) إلى لاتينية · المحوّل الواحد لكل إدخال (E-16 · G-11): كان مكرراً في
+ * سبعة مواضع، وبعضها لا يحوّل الفارسية فيُرفض رقمٌ صحيح
+ */
+export function toLatinDigits(s: string): string {
+  return s
+    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0));
+}
+
+/**
  * ريالات (نص أو رقم من إدخال المستخدم) ← هللات، بتقريب نصفي بعيداً عن الصفر · النص يُحلَّل بمنازله نصّاً لا بعدد عشري
  * (مراجعة التثبيت #62: «10.075» كانت 1007 لا 1008)، والأرقام العربية الهندية والفارسية و«٫» تُطبَّع (كانت صفراً بصمت)
  */
@@ -11,9 +21,7 @@ export function toHalalas(riyals: string | number | null | undefined): number {
   if (riyals == null) return 0;
   const raw = typeof riyals === 'number'
     ? (isFinite(riyals) ? riyals.toFixed(6) : '')
-    : riyals
-      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
-      .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+    : toLatinDigits(riyals)
       .replace(/\u066B/g, '.')
       .replace(/[,،\u066C\s]/g, '');
   // البادئة الرقمية كما كان parseFloat يقرؤها (نصٌّ بعدها كوحدة العملة لا يُسقط المبلغ)
