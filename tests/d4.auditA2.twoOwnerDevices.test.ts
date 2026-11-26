@@ -28,7 +28,10 @@ import type { DB } from '@/db/adapter';
 
 // حدٌّ معروف موثَّق (DESIGN §١٣.٢٢ · القرار ٦٣): جهازا المالك يكتبان بلا حَكَمٍ بينهما، فلا يُحسم «أيّ القيدين سبق» إلا بمرجعٍ واحد للترتيب
 // (البند ٥ · ٢، ينتظر قرار البنية) · test.failing يسقط حين يُصلح فيُذكَّر به
-test.failing('A2-2 · [عالٍ] العضو يعتمد الحوالة لنوفمبر ويقبلها هاتف المالك، ولوح المالك يعتمدها لأكتوبر: على الجهازين تحصيلٌ بنكيٌّ واحد', async () => {
+/** ما يحدث اليوم: الهاتف بتحصيلين بنكيين والبنك 2,000 وتحصيلٌ «في الدفاتر وحدها»، واللوح بتحصيلٍ واحد */
+const A22_TODAY = { phone: { bank: 200000, bankPayments: 2, onlyInBooks: 1 }, tablet: { bank: 100000, bankPayments: 1, onlyInBooks: 0 } };
+/** السيناريو كله · يعيد دفاتر الهاتف واللوح بعد المزامنة */
+async function a22(): Promise<{ phone: { bank: number; bankPayments: number; onlyInBooks: number }; tablet: { bank: number; bankPayments: number; onlyInBooks: number } }> {
   const r = new MemoryRemote();
   const phone = memDb(); const tablet = memDb(); const member = memDb();
   for (const d of [phone, tablet, member]) enableSync(d, UID);
@@ -72,7 +75,19 @@ test.failing('A2-2 · [عالٍ] العضو يعتمد الحوالة لنوفم
   });
   // في الكشف إيداعٌ واحد بـ1,000
   // (الواقع: الهاتف بتحصيلين بنكيين والبنك 2,000 وتحصيلٌ «في الدفاتر وحدها»، واللوح بتحصيلٍ واحد)
-  const want = { bank: 100000, bankPayments: 1, onlyInBooks: 0 };
-  expect({ phone: books(phone), tablet: books(tablet) }).toEqual({ phone: want, tablet: want });
+  const out = { phone: books(phone), tablet: books(tablet) };
   phone.close(); tablet.close(); member.close();
+  return out;
+}
+
+// العطل نفسه ما زال يُستنسخ اليوم (المراجعة الشاملة 2026-11-13 · G-15): test.failing وحده ينجح على أي فشل، ومنه عطلٌ لا صلة له،
+// فهذا يثبت القيم الخاطئة نفسها، ويسقط إن تغيّر سبب الفشل أو أُصلح العطل (فيُحذف ويصير التالي عادياً)
+test('A2-2 · (الحد القائم اليوم) الهاتف بتحصيلين بنكيين والبنك 2,000 وتحصيلٌ «في الدفاتر وحدها»، واللوح بتحصيلٍ واحد', async () => {
+  expect(await a22()).toEqual(A22_TODAY);
+});
+
+test.failing('A2-2 · [عالٍ] العضو يعتمد الحوالة لنوفمبر ويقبلها هاتف المالك، ولوح المالك يعتمدها لأكتوبر: على الجهازين تحصيلٌ بنكيٌّ واحد', async () => {
+  // في الكشف إيداعٌ واحد بـ1,000
+  const want = { bank: 100000, bankPayments: 1, onlyInBooks: 0 };
+  expect(await a22()).toEqual({ phone: want, tablet: want });
 });

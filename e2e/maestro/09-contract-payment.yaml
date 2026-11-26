@@ -94,3 +94,13 @@ appId: com.aqari.app
     notVisible: "تأكيد التحصيل"
     timeout: 15000
 - takeScreenshot: 09-paid
+# ملخص الدفعة ثم الترحيل · وحوار «سند القبض» لا يظهر إلا بعد أن يُسجَّل السداد فعلاً (G-15: كان التدفق ينتهي عند إغلاق الورقة
+# بلا تحقق من أن الدفعة سُجّلت)
+- tapOn:
+    text: "تأكيد التسجيل"
+    optional: true
+- extendedWaitUntil:
+    visible: "سند القبض"
+    timeout: 15000
+- tapOn: "بلا سند"
+- takeScreenshot: 09-recorded
