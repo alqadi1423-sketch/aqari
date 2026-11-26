@@ -21,6 +21,7 @@ import { Skeleton } from '../../src/ui/Skeleton';
 import { DateField } from '../../src/ui/DateField';
 import { ActionMenuButton } from '../../src/ui/ActionMenu';
 import { usePerm } from '../../src/ui/access';
+import { paymentsByReceipt } from '../../src/domain/receipts';
 import { useApp } from '../../src/ui/store';
 import { attachPicked, pickFile, type PickedFile } from '../../src/ui/attach';
 import { useToast } from '../../src/ui/Toast';
@@ -204,9 +205,13 @@ export default function Collect() {
     const statusTotal = rows.length;
     const needle = q.trim().toLowerCase();
     if (needle) {
-      rows = rows.filter((x) =>
+      // ورقم سند القبض يجد قسطه ولو كان مسدَّداً خارج المرشِّح (E-10 · س٣٠)
+      const byReceipt = paymentsByReceipt(db, needle);
+      const text = rows.filter((x) =>
         [x.tenant, x.unitNo, x.contractNo ?? '', x.dueDate].some((v) => v && String(v).toLowerCase().includes(needle))
       );
+      const seen = new Set(text.map((x) => x.installmentId));
+      rows = byReceipt.size ? [...text, ...base.all.filter((x) => byReceipt.has(x.installmentId) && !seen.has(x.installmentId))] : text;
     }
     // المرشِّحات تُجمع: العقار ثم مدى التأخير ثم المبلغ
     if (fProp) rows = rows.filter((x) => base.unitProp.get(x.unitId) === fProp);
@@ -232,7 +237,7 @@ export default function Collect() {
     const paged = rows.slice(pager.offset, pager.offset + pager.limit);
     return { ...base, rows: paged, totalRows, statusTotal };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base, filter, q, fProp, fLate, fAmt, pager.offset, pager.limit]);
+  }, [base, filter, q, fProp, fLate, fAmt, pager.offset, pager.limit, db]);
 
   useEffect(() => { pager.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps

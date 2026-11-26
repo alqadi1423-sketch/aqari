@@ -25,6 +25,7 @@ import { depositState } from '../domain/contracts/vocab';
 import { contractStatusLabel } from '../domain/contracts/rules';
 import { tenantStatementRows } from '../domain/statement';
 import { isTempInvoiceNo, invoiceVatStamp } from '../domain/invoices';
+import { receiptNoOf } from '../domain/receipts';
 import { receiptBlocked } from '../domain/contracts/cancelPayment';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from './appLockService';
@@ -133,7 +134,8 @@ export async function printReceipt(db: DB, paymentId: string, copy: CopyKind = '
   if (!p) return;
   const blocked = receiptBlocked(db, paymentId);
   if (blocked) throw new Error(blocked);
-  const no = 'RCP-' + p.id.slice(0, 8).toUpperCase();
+  // رقمه المتسلسل المحفوظ مع الدفعة، وما سُجّل قبل التسلسل برقمه المشتق كما طُبع (E-10 · س٣٠)
+  const no = receiptNoOf(db, p.id);
   const body = buildReceiptDoc(companyInfo(db), {
     no, tenantName: p.tenant_name, contractNo: p.contract_no || '', unitLabel: p.unit_label,
     date: p.date, period: p.period, methodLabel: p.method_label, notes: p.notes,

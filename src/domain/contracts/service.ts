@@ -5,6 +5,7 @@
 import { contractDims } from '../accounting/dimensions';
 import { correctionDate, isFiledDate, requireGivenDate, requireISODate, requireOpenPeriod } from '../vatFilings';
 import type { DB } from '../../db/adapter';
+import { stampReceiptNo } from '../receipts';
 import { allIn } from '../../db/inList';
 import { requireCash } from '../cashGuard';
 import type { ScheduleRow } from '../pdf/parseEjar';
@@ -412,6 +413,7 @@ export function applyTenantCredit(db: DB, contractId: string, input: { installme
         discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
        VALUES (?,?,?,?,?,?,0,?,?,?,?,?)`,
       [paymentId, contractId, inst.id, period, input.date, amount, amount, 'من الرصيد الدائن', '', entry ? entry.id : null, new Date().toISOString()]); // i18n-exempt: طريقة مخزّنة
+    stampReceiptNo(db, paymentId, input.date);
     db.run(`UPDATE tenants SET credit_halalas = credit_halalas - ? WHERE id = ?`, [amount, (c as unknown as { tenant_id: string | null }).tenant_id]);
     recomputeInstallments(db, [inst.id]);
     logAudit(db, 'التحصيل', 'create', 'سداد من الرصيد الدائن', c.tenant_name + ' · ' + fmt(amount)); // i18n-exempt: سجل العمليات
@@ -441,11 +443,13 @@ export function allocateDeposit(
     left -= amt;
     const period = 'قسط ' + dfmt(i.due_date);
     const entry = postReservationConvert(db, { id: a.rsvId, amount: amt, tenant: a.tenant, date: a.date, period, contractId: a.contractId }, a.contractNo);
+    const rcpId = uid();
     db.run(
       `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
         discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
        VALUES (?,?,?,?,?,?,0,?,?,?,?,?)`,
-      [uid(), a.contractId, i.id, period, a.date, amt, amt, 'من العربون', 'عربون الحجز محوَّل', entry ? entry.id : null, new Date().toISOString()]);
+      [rcpId, a.contractId, i.id, period, a.date, amt, amt, 'من العربون', 'عربون الحجز محوَّل', entry ? entry.id : null, new Date().toISOString()]);
+    stampReceiptNo(db, rcpId, a.date);
     covered.push(i.id);
   }
   if (left > 0) throw new RuleViolation('العربون (' + fmt(a.amount) + ') يتجاوز المتبقي على أقساط العقد · ردّ الزائد قبل التحويل');
@@ -769,6 +773,7 @@ export function recordRentPayment(db: DB, contractId: string, input: RentPayment
       [paymentId, contractId, input.installmentId ?? null, input.period, date, gross, discount, net,
        methodsLabel, input.notes.trim(), entry ? entry.id : null, new Date().toISOString(), kind]
     );
+    stampReceiptNo(db, paymentId, date);
     for (const l of rawLines) {
       db.run(
         `INSERT INTO payment_lines (id, payment_id, method, bank_id, amount_halalas) VALUES (?,?,?,?,?)`,
@@ -940,11 +945,13 @@ function payArrearsFromDeposit(db: DB, c: ContractRow, contractId: string, amoun
       contractId, contractNo: of ?? (c.contract_no || ''), tenant: c.tenant_name, amount: amt, date, period,
       ...(of === null ? {} : { installmentContractId: i.contract_id }),
     });
+    const rcpId = uid();
     db.run(
       `INSERT INTO contract_payments (id, contract_id, installment_id, period, date, gross_halalas,
         discount_halalas, net_halalas, method_label, notes, journal_entry_id, created_at)
        VALUES (?,?,?,?,?,?,0,?,?,?,?,?)`,
-      [uid(), i.contract_id, i.id, period, date, amt, amt, DEPOSIT_RENT_METHOD, '', entry ? entry.id : null, new Date().toISOString()]);
+      [rcpId, i.contract_id, i.id, period, date, amt, amt, DEPOSIT_RENT_METHOD, '', entry ? entry.id : null, new Date().toISOString()]);
+    stampReceiptNo(db, rcpId, date);
     covered.push(i.id);
   }
   // السقف فُحص قبل التطبيق (depositArrearsDue) · فما بقي هنا خللٌ لا يُسكت عنه
@@ -1212,6 +1219,7 @@ export function recordBulkRentPayment(
       [paymentId, contractId, null, 'تحصيل جماعي · ' + allocations.length + ' قسط', date, net, 0, net,
        methodsLabel, input.notes.trim(), entry ? entry.id : null, new Date().toISOString()]
     );
+    stampReceiptNo(db, paymentId, date);
     for (const l of rawLines) {
       db.run(
         `INSERT INTO payment_lines (id, payment_id, method, bank_id, amount_halalas) VALUES (?,?,?,?,?)`,

@@ -3783,7 +3783,19 @@ export async function syncOnce(
 
   // ٠) كتل أرقام المستندات قبل أي كتابة · ما بقي منه أقل من نصفه يُملأ، فيعمل الجهاز بعدها بلا اتصال (numbering.ts)
   if (remote.reserveBlocks) {
-    const req = blockRequests(db);
+    const all = blockRequests(db);
+    // كتلة سندات القبض (E-10) تُحجز وحدها ولا يوقف تعذّرها المزامنة: قواعد سحابةٍ لم تُحدَّث بعد ترفضها، والسند بلا كتلة يُرقَّم بتسلسل الجهاز
+    const rcp = all.filter((r) => r.series === 'RCP');
+    const req = all.filter((r) => r.series !== 'RCP');
+    if (rcp.length) {
+      try {
+        const got = await retrying(() => remote.reserveBlocks!(rcp));
+        db.transaction(() => { for (const b of got) addBlock(db, b.series, b.lo, b.hi); });
+      } catch (e) {
+        if (isTransientRemoteError(e)) throw e;
+        setSyncState(db, 'blocks_error', (e instanceof Error ? e.message : String(e)).slice(0, 200));
+      }
+    }
     if (req.length) {
       try {
         const got = await retrying(() => remote.reserveBlocks!(req));

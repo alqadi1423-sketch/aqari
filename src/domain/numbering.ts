@@ -13,12 +13,13 @@ import type { DB } from '../db/adapter';
 
 /* ═══════════ الكتل ═══════════ */
 
-export type Series = 'JE' | 'EJ' | 'PUR';
-export const SERIES: Series[] = ['JE', 'EJ', 'PUR'];
+/** RCP: سندات القبض (المراجعة الشاملة 2026-11-13 · E-10 · قرار المالك س٣٠) */
+export type Series = 'JE' | 'EJ' | 'PUR' | 'RCP';
+export const SERIES: Series[] = ['JE', 'EJ', 'PUR', 'RCP'];
 /** حجم الكتلة · نصفها يكفي أياماً بلا اتصال (كل دفعة قيدٌ أو اثنان)، والفجوة عند إعادة التثبيت مقبولة */
-export const BLOCK_SIZE: Record<Series, number> = { JE: 500, EJ: 50, PUR: 100 };
+export const BLOCK_SIZE: Record<Series, number> = { JE: 500, EJ: 50, PUR: 100, RCP: 200 };
 /** أول إنشاءٍ للعدّاد يبدأ بعد أعلى رقمٍ معروف بهذه الفجوة · فلا يصطدم بما كتبه جهازٌ بالترقيم القديم ولم يُرفع بعد */
-export const FIRST_GAP: Record<Series, number> = { JE: 1000, EJ: 100, PUR: 100 };
+export const FIRST_GAP: Record<Series, number> = { JE: 1000, EJ: 100, PUR: 100, RCP: 100 };
 
 const BLOCKS_KEY = 'number_blocks';
 export interface Block { lo: number; hi: number; next: number }
@@ -91,6 +92,8 @@ export function localMaxNumber(db: DB, s: Series | 'INV'): number {
   switch (s) {
     case 'JE': return q(`SELECT COALESCE(MAX(CAST(substr(no, 4) AS INTEGER)), 0) AS mx FROM journal_entries WHERE no GLOB 'JE-[0-9]*' AND ${plain('no')}`);
     case 'PUR': return q(`SELECT COALESCE(MAX(CAST(substr(no, 5) AS INTEGER)), 0) AS mx FROM purchases WHERE no GLOB 'PUR-[0-9]*' AND ${plain('no')}`);
+    // i18n-exempt: تعليل الاستعلام لحارس الدفعات الملغاة
+    case 'RCP': return q(`SELECT COALESCE(MAX(CAST(substr(receipt_no, 10) AS INTEGER)), 0) AS mx FROM contract_payments /* تشمل الملغاة: رقم سندها مأخوذ */ WHERE receipt_no GLOB 'RCP-[0-9][0-9][0-9][0-9]-[0-9]*' AND ${plain('receipt_no')}`);
     case 'EJ': return q(`SELECT COALESCE(MAX(CAST(substr(contract_no, 9) AS INTEGER)), 0) AS mx FROM contracts WHERE contract_no GLOB 'EJ-[0-9][0-9][0-9][0-9]-[0-9]*' AND ${plain('contract_no')}`);
     // الفاتورة: كل رقمٍ صدر بحرفٍ أو بدونه · فالتسلسل الجديد يكمل فوقها كلها بلا فجوة
     case 'INV': return q(`SELECT COALESCE(MAX(CAST(substr(no, 10) AS INTEGER)), 0) AS mx FROM invoices WHERE no GLOB 'INV-[0-9][0-9][0-9][0-9]-[0-9]*'`);

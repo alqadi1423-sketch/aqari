@@ -816,8 +816,8 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
         return !(k in d) || (d[k] is int && d[k] >= 0 && (b == null || !(k in b) || d[k] >= b[k]));
       }
       function countersOk(d, b) {
-        return d.keys().hasOnly(['JE', 'EJ', 'PUR', 'INV'])
-          && counterOk(d, b, 'JE') && counterOk(d, b, 'EJ') && counterOk(d, b, 'PUR') && counterOk(d, b, 'INV')
+        return d.keys().hasOnly(['JE', 'EJ', 'PUR', 'INV', 'RCP'])
+          && counterOk(d, b, 'JE') && counterOk(d, b, 'EJ') && counterOk(d, b, 'PUR') && counterOk(d, b, 'INV') && counterOk(d, b, 'RCP')
           && (b == null || d.keys().hasAll(b.keys()));
       }
       // العضو (مراجعة التثبيت #55): INV لمن يصدر الفاتورة (كامل الفواتير) وبواحدٍ لا غير فلا فجوة في تسلسلها ·
@@ -831,7 +831,7 @@ ${Array.from({ length: DIM_LINES_MAX }, (_, i) => `        && (b.size() <= ${i} 
         let before = b != null && 'INV' in b ? b.INV : 0;
         let after = 'INV' in d ? d.INV : 0;
         return memberJump(d, b, 'JE', ${BLOCK_SIZE.JE}, ${FIRST_GAP.JE}) && memberJump(d, b, 'EJ', ${BLOCK_SIZE.EJ}, ${FIRST_GAP.EJ})
-          && memberJump(d, b, 'PUR', ${BLOCK_SIZE.PUR}, ${FIRST_GAP.PUR})
+          && memberJump(d, b, 'PUR', ${BLOCK_SIZE.PUR}, ${FIRST_GAP.PUR}) && memberJump(d, b, 'RCP', ${BLOCK_SIZE.RCP}, ${FIRST_GAP.RCP})
           && (after == before || (lvl(org, 'invoices') >= 3 && b != null && 'INV' in b && after == before + 1));
       }
       match /meta/counters {
