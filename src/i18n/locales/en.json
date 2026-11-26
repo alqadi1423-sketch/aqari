@@ -325,7 +325,8 @@
       "undoBlocked": "An asset from this invoice was transferred, disposed or sold · the conversion can't be reversed",
       "linesSum": "Lines total ({{sum}}) doesn't equal the amount before tax ({{base}})",
       "purchaseLocked": "This invoice's assets have depreciation or movements · edit the asset or reverse the conversion",
-      "notConverted": "The invoice is not converted"
+      "notConverted": "The invoice is not converted",
+      "futureDate": "The date is after today · record the operation on the day it happens"
     }
   },
   "occupant": {

@@ -79,6 +79,11 @@ function requireOpenDate(db: DB, a: AssetRow, date: string): void {
   if (a.purchase_date && date < a.purchase_date) fail('beforePurchase');
 }
 const requireLive = (a: AssetRow) => { if (ENDED.includes(a.status)) fail('ended'); };
+/**
+ * لا نقل ولا استبعاد ولا بيع بتاريخٍ بعد اليوم (المراجعة الشاملة 2026-11-13 · A2.16): كان depreciateAssetTo يرحّل إهلاك أيامٍ لم تمضِ
+ * (ومعه الشهر الجاري كله) في قيدٍ واحد بالتاريخ المقبل، ثم يتخطاه التشغيل الشهري
+ */
+const requireNotFuture = (date: string, today: string) => { if (date > today) fail('futureDate'); };
 const validLife = (n: number) => { if (!Number.isInteger(n) || n < 1 || n > 600) fail('life'); };
 
 export interface NewAssetInput {
@@ -185,6 +190,7 @@ export function transferAsset(db: DB, id: string, input: { unitId: string; room?
   // النقل بين وحدتين قيدٌ بتاريخه (البند ٩ ونظيره هنا)
   if (a.cost_halalas != null && a.unit_id !== input.unitId) requireOpenPeriod(db, input.date);
   const today = input.today ?? todayFn();
+  requireNotFuture(input.date, today);
   db.transaction(() => {
     if (a.cost_halalas != null) {
       requireOpenDate(db, a, input.date);
@@ -223,6 +229,7 @@ export function disposeAsset(db: DB, id: string, input: { date: string; reason: 
   if (!input.reason.trim()) fail('reason');
   if (a.cost_halalas != null) requireOpenPeriod(db, input.date); // الاستبعاد قيدٌ بتاريخه (البند ٩ ونظيره هنا)
   const today = input.today ?? todayFn();
+  requireNotFuture(input.date, today);
   db.transaction(() => {
     let entryId: string | null = null;
     if (a.cost_halalas != null) {
@@ -260,6 +267,7 @@ export function sellAsset(db: DB, id: string, input: {
   if (input.method === 'bank' && !input.bankId) fail('bank');
   requireOpenPeriod(db, input.date); // البيع قيدٌ ونقدٌ بتاريخه (البند ٩ ونظيره هنا)
   const today = input.today ?? todayFn();
+  requireNotFuture(input.date, today);
   db.transaction(() => {
     requireOpenDate(db, a, input.date);
     runDepreciation(db, input.date < today ? input.date : today);
