@@ -77,6 +77,7 @@ const Static = React.memo(
   ({ children }: { deps: unknown[]; children: React.ReactElement }) => children,
   (a, b) => a.deps.length === b.deps.length && a.deps.every((v, i) => Object.is(v, b.deps[i]))
 );
+Static.displayName = 'Static';
 
 export default function Dashboard() {
   const { db, version } = useApp();
