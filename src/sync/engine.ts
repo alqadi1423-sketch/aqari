@@ -34,9 +34,10 @@ import { blockRequests, addBlock } from '../domain/numbering';
 import { markOrphans, recordForeignReview, foreignReviewRows, reviewState } from '../domain/accounting/orphans';
 import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, entryDimsIssue } from '../domain/accounting/derive';
 import { filingRecordedAt } from '../domain/vatFilings';
-import { isISODate } from '../domain/dates';
+import { isISODate, dfmt } from '../domain/dates';
+import { bankLowFrom, walletLowFrom } from '../domain/cashGuard';
 import { TS_DEDUCTIBLE } from '../domain/purchases';
-import { walletCashBalance, bankBalance, ACC_OPENING_BALANCES } from '../domain/accounting/ledger';
+import { ACC_OPENING_BALANCES } from '../domain/accounting/ledger';
 import { MIGRATED_SYSTEM_ACCOUNTS } from '../db/seed';
 import { CASH_DEPOSIT_SOURCE, CASH_WITHDRAW_SOURCE, TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE } from '../domain/cashOps';
 import { CRASH_ENTITY, FAILURE_ENTITY_PREFIX, retryCrashRank } from '../domain/crashReport';
@@ -627,12 +628,19 @@ function memberBankOutCheck(db: DB, doc: RemoteDoc): void {
       throw new AwaitOriginal('purchase_pay copy in transit');
     }
   }
+  // بأدنى رصيدٍ للبنك من تاريخ القيد فما بعده كما على جهاز العضو (requireBankFunds): لا ينزل تحت الصفر في يومٍ مضى (قرار المالك س١٩ ·
+  // المراجعة الشاملة 2026-11-13 · A2.8) · وما ينتظر في الوارد يُحسب في كل يومٍ بعده (حدٌّ موثَّق: لا يُعرف يومه قبل تطبيقه)
+  const on = typeof doc.d!.date === 'string' ? String(doc.d!.date).slice(0, 10) : null;
   for (const [bank, a] of total) {
     if (a >= 0) continue;
-    const balance = bankBalance(db, bank) + pendingBankMoves(db, doc, bank, own);
+    const low = bankLowFrom(db, bank, on);
+    const balance = low.low + pendingBankMoves(db, doc, bank, own);
     if (balance + a >= 0) continue;
     const name = db.get<{ n: string }>(`SELECT name AS n FROM banks WHERE id = ?`, [bank])?.n ?? '';
-    const why = tr('bankTx.bankShort', { bank: name, balance: fmt(balance), amount: fmt(-a), lng: 'ar' });
+    // ويومٌ مضى كان رصيده دون الرصيد الآن يُذكر في الرسالة (A2.8)
+    const why = low.at && low.low < bankLowFrom(db, bank, null).low
+      ? tr('bankTx.bankShortOn', { bank: name, at: dfmt(low.at), balance: fmt(balance), amount: fmt(-a), lng: 'ar' })
+      : tr('bankTx.bankShort', { bank: name, balance: fmt(balance), amount: fmt(-a), lng: 'ar' });
     throw new Error(tr('sync.memberBankShort', { why, lng: 'ar' }));
   }
 }
@@ -1729,7 +1737,7 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> 
       // يُطبّق القيد ويمسك حركته فيختلف الجهازان) · ومع رصيدٍ يكفي أثر المزوَّر نقلُ نقدٍ من البنك إلى المحفظة بلا قيد كالسحب (حدٌّ موثَّق)
       // وسداد فاتورة الشراء بطريقة سدادها في الفاتورة: لا حركة بنكٍ لسدادٍ نقداً (O٢)
       if (head?.s === 'purchase_pay') purchasePaidByBank(db, entry.id, nowLive.no);
-      if (!wasLive && nowLive.amount < 0 && bankBalance(db, nowLive.bank) + nowLive.amount < 0
+      if (!wasLive && nowLive.amount < 0 && bankLowFrom(db, nowLive.bank, nowLive.date || null).low + nowLive.amount < 0
         && (head?.s === 'cash_op' || lateLink(db, entry.id, doc))) {
         throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
       }
@@ -1755,17 +1763,20 @@ function memberBankTxCheck(db: DB, doc: RemoteDoc, row: Record<string, unknown> 
   if (wasLive) delta.set(wasLive.bank, (delta.get(wasLive.bank) ?? 0) - wasLive.amount);
   if (nowLive) delta.set(nowLive.bank, (delta.get(nowLive.bank) ?? 0) + nowLive.amount);
   let wallet = 0;
+  // بأدنى رصيدٍ من أقدم تاريخَي الحركة (قبل التغيير وبعده) فما بعده، كما على جهاز العضو: لا ينزل بنكٌ ولا المحفظة تحت الصفر في يومٍ مضى
+  // (قرار المالك س١٩ · المراجعة الشاملة 2026-11-13 · A2.8)
+  const from = [wasLive?.date, nowLive?.date].filter((x): x is string => !!x).sort()[0] ?? null;
   for (const [bank, d] of delta) {
     wallet -= d;
     // والبنك لا ينزل تحت الصفر بنقلٍ بلا قيد، كما في التطبيق (السحب والتحويل وحذف الإيداع واستعادة السحب) · فسحبٌ من بنكٍ فارغ لا يُدخل
     // المحفظة نقداً لا وجود له (G٥ وG٦) · وحدٌّ معروف: سحب عضوٍ بلا اتصال من بنكٍ سدّد منه غيره في الوقت نفسه ينتظر ثم يُرفض (L٦)،
     // فالجهاز لا يعرف ما رآه العضو · يُعالج بشاشة التعارضات في القسم ٥
-    if (d < 0 && bankBalance(db, bank) + d < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+    if (d < 0 && bankLowFrom(db, bank, from).low + d < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
   }
   // ووارد التحويل بين بنكين نصفُ نقلٍ صادره هنا: لا يمسّ المحفظة (L٥: كان يُفحص وحده أمامها فينتظر إن كانت سالبة)
   // (للإنشاء وحده: استعادة الوارد من السلة تُنقص المحفظة وتُفحص · المدقق الخارجي M٦)
   if (nowLive?.source === TRANSFER_IN_SOURCE && !was && transferPaired(db, doc.k, row!)) return;
-  if (wallet < 0 && walletCashBalance(db) + wallet < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
+  if (wallet < 0 && walletLowFrom(db, from).low + wallet < 0) throw new AwaitOriginal(tr('sync.bankTxShort', { lng: 'ar' }));
 }
 
 

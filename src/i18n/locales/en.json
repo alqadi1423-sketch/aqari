@@ -665,7 +665,9 @@
     "deleteBankShort": "Deleting this inflow takes the bank balance ({{balance}}) below zero by {{amount}}",
     "cancelBankShort": "The bank balance ({{balance}}) does not cover reversing an inflow of {{amount}}",
     "restoreWhat": "restoring the transaction",
-    "restoreBankShort": "The bank balance {{balance}} does not cover restoring an outgoing transaction of {{amount}}"
+    "restoreBankShort": "The bank balance {{balance}} does not cover restoring an outgoing transaction of {{amount}}",
+    "walletShortOn": "Cash in the wallet on {{at}} was {{available}}, not enough for {{what}} of {{amount}} · short by {{short}}; cash never goes negative on a past day · record an owner deposit dated no later than the operation first",
+    "bankShortOn": "{{bank}} balance on {{at}} was {{balance}}, not enough for {{amount}} · a bank never goes below zero on a past day"
   },
   "props": {
     "geoSearchNote": "Searching sends the address text to the OpenStreetMap service outside the app, and the map loads from it."

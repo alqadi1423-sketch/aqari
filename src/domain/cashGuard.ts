@@ -8,27 +8,100 @@ import type { DB } from '../db/adapter';
 import { walletCashBalance, bankBalance } from './accounting/ledger';
 import { t } from '../i18n';
 import { fmt } from './money';
+import { dfmt } from './dates';
 
 export class CashShortfallError extends Error {
-  constructor(public needed: number, public available: number, what: string) {
-    super('النقد في المحفظة ' + fmt(Math.max(0, available)) + ' لا يكفي: ' + what + ' بمبلغ ' + fmt(needed)
-      + ' · ينقصه ' + fmt(needed - Math.max(0, available)) + '، سجّله «إيداع المالك» أولاً');
+  /** at: يومٌ مضى كان أدنى رصيدٍ للمحفظة من تاريخ العملية فما بعده (A2.8) · فالرسالة تذكره، والإيداع بتاريخٍ لا يتأخر عن العملية */
+  constructor(public needed: number, public available: number, what: string, public at?: string) {
+    super(at
+      ? t('bankTx.walletShortOn', { at: dfmt(at), available: fmt(Math.max(0, available)), what, amount: fmt(needed), short: fmt(needed - Math.max(0, available)) })
+      : 'النقد في المحفظة ' + fmt(Math.max(0, available)) + ' لا يكفي: ' + what + ' بمبلغ ' + fmt(needed)
+        + ' · ينقصه ' + fmt(needed - Math.max(0, available)) + '، سجّله «إيداع المالك» أولاً');
     this.name = 'CashShortfallError';
   }
   get shortfall(): number { return this.needed - Math.max(0, this.available); }
 }
 
-/** الناقص عن صرف نقدي بمبلغ · صفر إن كفى */
-export function cashShortfall(db: DB, amountHalalas: number): number {
-  if (!(amountHalalas > 0)) return 0;
-  return Math.max(0, amountHalalas - Math.max(0, walletCashBalance(db)));
+/** أدنى رصيدٍ جارٍ ويومه */
+export interface LowPoint { low: number; at: string | null }
+
+/**
+ * أدنى رصيدٍ في نهاية كل يومٍ من date فما بعده لسلسلة حركاتٍ مؤرخة، والرصيد كله (الآن) معروف · الرصيد في نهاية يوم d = الكل ناقص حركات
+ * ما بعده، ولا يتغيّر إلا في أيام الحركات · فيُقرأ في نهاية date ثم في نهاية كل يوم حركةٍ بعده · والتعادل لأقدم يوم
+ */
+function lowFrom(total: number, date: string, byDate: Array<{ d: string; n: number }>): LowPoint {
+  const after = byDate.filter((r) => r.d > date).sort((a, b) => (a.d < b.d ? -1 : 1));
+  let run = total - after.reduce((x, r) => x + r.n, 0);
+  let best: LowPoint = { low: run, at: date };
+  for (const r of after) {
+    run += r.n;
+    if (run < best.low) best = { low: run, at: r.d };
+  }
+  return best;
 }
 
-/** يرفض الصرف النقدي إن لم يكفِ النقد · قبل أي كتابة */
-export function requireCash(db: DB, amountHalalas: number, what: string): void {
+/**
+ * أدنى رصيدٍ للمحفظة من يوم date فما بعده (قرار المالك س١٩ في المراجعة الشاملة 2026-11-13 · A2.8: «لا يصير النقد سالباً أبداً» في أي
+ * يومٍ مضى أيضاً) · المحفظة يومياً = سطور 1100 حتى اليوم ناقص حركات البنوك حتى اليوم (الافتتاحيات ثابتة) · وبلا تاريخ: الرصيد الآن
+ */
+export function walletLowFrom(db: DB, date?: string | null): LowPoint {
+  const total = walletCashBalance(db);
+  if (!date) return { low: total, at: null };
+  const d = date.slice(0, 10);
+  const rows = db.all<{ d: string; n: number }>(
+    // i18n-exempt: حالة القيد المخزّنة
+    `SELECT d, SUM(n) AS n FROM (
+       SELECT substr(e.date, 1, 10) AS d, l.debit_halalas - l.credit_halalas AS n
+       FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+       WHERE l.account_code = '1100' AND e.status = 'مرحّل' AND e.deleted_at IS NULL AND substr(e.date, 1, 10) > ?
+       UNION ALL
+       SELECT substr(COALESCE(date, ''), 1, 10) AS d, -amount_halalas AS n FROM bank_tx
+       WHERE deleted_at IS NULL AND substr(COALESCE(date, ''), 1, 10) > ?
+     ) GROUP BY d`, [d, d]).map((r) => ({ d: r.d, n: Number(r.n) }));
+  return lowFrom(total, d, rows);
+}
+
+/** أدنى رصيدٍ للبنك من يوم date فما بعده: افتتاحيه ثابت وحركاته بتواريخها (A2.8) · وبلا تاريخ: الرصيد الآن */
+export function bankLowFrom(db: DB, bankId: string, date?: string | null): LowPoint {
+  const total = bankBalance(db, bankId);
+  if (!date) return { low: total, at: null };
+  const d = date.slice(0, 10);
+  const rows = db.all<{ d: string; n: number }>(
+    `SELECT substr(COALESCE(date, ''), 1, 10) AS d, SUM(amount_halalas) AS n FROM bank_tx
+     WHERE bank_id = ? AND deleted_at IS NULL AND substr(COALESCE(date, ''), 1, 10) > ? GROUP BY 1`, [bankId, d])
+    .map((r) => ({ d: r.d, n: Number(r.n) }));
+  return lowFrom(total, d, rows);
+}
+
+/** الناقص عن صرف نقدي بمبلغ · صفر إن كفى · وبتاريخ العملية: بأدنى رصيدٍ للمحفظة منه فما بعده (A2.8) */
+export function cashShortfall(db: DB, amountHalalas: number, date?: string | null): number {
+  if (!(amountHalalas > 0)) return 0;
+  return Math.max(0, amountHalalas - Math.max(0, walletLowFrom(db, date).low));
+}
+
+/**
+ * يرفض الصرف النقدي إن لم يكفِ النقد · قبل أي كتابة · وبتاريخ العملية: بأدنى رصيدٍ للمحفظة منه فما بعده، فلا تصير سالبةً في يومٍ مضى،
+ * والرسالة تذكر ذلك اليوم إن كان رصيده دون الرصيد الآن (A2.8)
+ */
+export function requireCash(db: DB, amountHalalas: number, what: string, date?: string | null): void {
   if (!(amountHalalas > 0)) return;
-  const available = walletCashBalance(db);
-  if (amountHalalas > available) throw new CashShortfallError(amountHalalas, available, what);
+  const { low, at } = walletLowFrom(db, date);
+  if (amountHalalas > low) throw new CashShortfallError(amountHalalas, low, what, at && low < walletCashBalance(db) ? at : undefined);
+}
+
+/**
+ * يرفض صرفاً من بنك لا يكفيه رصيده (قرار المالك ٥٥) · وبتاريخ العملية: بأدنى رصيدٍ للبنك منه فما بعده، فلا ينزل تحت الصفر في يومٍ مضى،
+ * والرسالة تذكر ذلك اليوم إن كان رصيده دون الرصيد الآن (A2.8) · وإلا رسالة المسار نفسه (short) أو الرسالة العامة
+ */
+export function requireBankFunds(db: DB, bankId: string, amountHalalas: number, date?: string | null,
+  short?: (bank: string, balance: number) => string): void {
+  if (!(amountHalalas > 0)) return;
+  const { low, at } = bankLowFrom(db, bankId, date);
+  if (amountHalalas <= low) return;
+  const bank = db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ?`, [bankId])?.name ?? '';
+  throw new BankShortfallError(at && low < bankBalance(db, bankId)
+    ? t('bankTx.bankShortOn', { bank, at: dfmt(at), balance: fmt(low), amount: fmt(amountHalalas) })
+    : short ? short(bank, low) : t('bankTx.bankShort', { bank, balance: fmt(low), amount: fmt(amountHalalas) }));
 }
 
 /** أثر القيد على المحفظة: موجب أدخل نقداً، وسالب أخرجه */

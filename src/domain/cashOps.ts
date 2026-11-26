@@ -6,12 +6,11 @@
  */
 import { requireOpenPeriod } from './vatFilings';
 import type { DB } from '../db/adapter';
-import { requireCash } from './cashGuard';
+import { requireCash, requireBankFunds } from './cashGuard';
 import { uid } from './ids';
 import { fmt } from './money';
 import { logAudit } from './audit';
 import { postEntry, cashOpLines } from './accounting/post';
-import { walletCashBalance, bankBalance } from './accounting/ledger';
 import { t } from '../i18n';
 
 const MODULE = 'المحفظة النقدية';
@@ -28,9 +27,9 @@ function requirePositive(amountHalalas: number): void {
   }
 }
 
-/** كفاية النقد بالدالة الواحدة (cashGuard) · الرسالة نفسها في كل صرف نقدي */
-function requireWalletCovers(db: DB, amountHalalas: number, what: string): void {
-  requireCash(db, amountHalalas, what);
+/** كفاية النقد بالدالة الواحدة (cashGuard) · الرسالة نفسها في كل صرف نقدي · بتاريخ العملية فلا تصير المحفظة سالبةً في يومٍ مضى (A2.8) */
+function requireWalletCovers(db: DB, amountHalalas: number, what: string, date: string): void {
+  requireCash(db, amountHalalas, what, date);
 }
 
 /** مصدرا حركة البنك بلا قيد: نقلُ نقدٍ بين المحفظة والبنك (النقدية 1100 لا تتغير) · قيمتان مخزّنتان يفحص بهما جهاز المالك (engine.ts) */
@@ -54,7 +53,7 @@ export function depositCashToBank(
 ): void {
   requirePositive(args.amountHalalas);
   requireOpenPeriod(db, args.date);
-  requireWalletCovers(db, args.amountHalalas, 'الإيداع في البنك');
+  requireWalletCovers(db, args.amountHalalas, 'الإيداع في البنك', args.date);
   const name = bankName(db, args.bankId);
   db.transaction(() => {
     insertBankTx(
@@ -76,10 +75,9 @@ export function withdrawCashFromBank(
   requirePositive(args.amountHalalas);
   requireOpenPeriod(db, args.date);
   const name = bankName(db, args.bankId);
-  const b = bankBalance(db, args.bankId);
-  if (args.amountHalalas > b) {
-    throw new Error('رصيد ' + name + ' هو ' + fmt(b) + ' ولا يكفي لسحب ' + fmt(args.amountHalalas));
-  }
+  // بأدنى رصيدٍ للبنك من تاريخ السحب فما بعده: لا ينزل تحت الصفر في يومٍ مضى (المراجعة الشاملة 2026-11-13 · A2.8)
+  requireBankFunds(db, args.bankId, args.amountHalalas, args.date,
+    (bank, b) => 'رصيد ' + bank + ' هو ' + fmt(b) + ' ولا يكفي لسحب ' + fmt(args.amountHalalas));
   db.transaction(() => {
     insertBankTx(
       db, args.bankId, args.date,
@@ -104,10 +102,8 @@ export function transferBetweenBanks(
   }
   const fromName = bankName(db, args.fromBankId);
   const toName = bankName(db, args.toBankId);
-  const b = bankBalance(db, args.fromBankId);
-  if (args.amountHalalas > b) {
-    throw new Error('رصيد ' + fromName + ' هو ' + fmt(b) + ' ولا يكفي لتحويل ' + fmt(args.amountHalalas));
-  }
+  requireBankFunds(db, args.fromBankId, args.amountHalalas, args.date, // A2.8
+    (bank, b) => 'رصيد ' + bank + ' هو ' + fmt(b) + ' ولا يكفي لتحويل ' + fmt(args.amountHalalas));
   db.transaction(() => {
     const descr = args.notes?.trim() || 'تحويل من ' + fromName + ' إلى ' + toName;
     insertBankTx(db, args.fromBankId, args.date, descr, -args.amountHalalas, TRANSFER_OUT_SOURCE);
@@ -127,7 +123,7 @@ export function pettyCashExpense(
   requireOpenPeriod(db, args.date);
   const descr = args.descr.trim();
   if (!descr) throw new Error('اكتب بيان المصروف · لا يُقبل مصروف بلا بيان');
-  requireWalletCovers(db, args.amountHalalas, 'صرف المصروف');
+  requireWalletCovers(db, args.amountHalalas, 'صرف المصروف', args.date);
   const opId = uid();
   db.transaction(() => {
     postEntry(db, {
@@ -171,7 +167,7 @@ export function ownerCashOut(
 ): void {
   requirePositive(args.amountHalalas);
   requireOpenPeriod(db, args.date);
-  requireWalletCovers(db, args.amountHalalas, 'مسحوبات المالك');
+  requireWalletCovers(db, args.amountHalalas, 'مسحوبات المالك', args.date);
   const memo = args.notes?.trim() || 'مسحوبات المالك نقداً';
   const opId = uid();
   db.transaction(() => {
@@ -208,9 +204,7 @@ export function recordManualBankTx(
   if (!descr) throw new Error(t('bankTx.descrRequired'));
   const name = bankName(db, a.bankId);
   const fee = a.kind === 'fee';
-  if (fee && a.amountHalalas > bankBalance(db, a.bankId)) {
-    throw new Error(t('bankTx.bankShort', { bank: name, balance: fmt(bankBalance(db, a.bankId)), amount: fmt(a.amountHalalas) }));
-  }
+  if (fee) requireBankFunds(db, a.bankId, a.amountHalalas, a.date); // بتاريخ الرسوم (A2.8)
   const opId = uid();
   db.transaction(() => {
     const entry = postEntry(db, {

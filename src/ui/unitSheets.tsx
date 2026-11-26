@@ -302,7 +302,7 @@ export function UnitDetailSheet({
           <DateField label="تاريخ الرد أو المصادرة" value={settleDate} onChange={setSettleDate} />
           <CostCenterField value={cc} onChange={setCc} />
           <View style={{ marginBottom: 8 }}>
-            <CashGate needed={settle.deposit} what="ردّ العربون">
+            <CashGate needed={settle.deposit} what="ردّ العربون" date={settleDate}>
               <BtnPrimary title={'ردّ العربون لصاحبه (' + fmt(settle.deposit) + ')'} onPress={() => {
                 try { withCostCenter(cc, () => cancelReservation(db, settle.id, false, settleDate)); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
                 catch (e) { reportFailure({ title: 'تعذّرت التسوية', e }); }

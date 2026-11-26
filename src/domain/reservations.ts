@@ -55,7 +55,7 @@ export function cancelReservation(db: DB, id: string, forfeitDeposit: boolean, d
     if (r.status === 'محوَّل لعقد') throw new Error('الحجز محوَّل لعقد · عربونه سُدّد به العقد');
     if (r.deposit_outcome) throw new Error('عربون هذا الحجز ' + r.deposit_outcome + ' من قبل');
     const deposit = Number(r.deposit_halalas);
-    if (!forfeitDeposit) requireCash(db, deposit, 'ردّ العربون');
+    if (!forfeitDeposit) requireCash(db, deposit, 'ردّ العربون', date); // بتاريخ الرد (A2.8)
     const outcome = deposit > 0 ? (forfeitDeposit ? 'مصادَر' : 'مردود') : null;
     db.run(`UPDATE reservations SET status = 'منتهي', deposit_outcome = ?, deposit_settled_date = ? WHERE id = ?`,
       [outcome, outcome ? date : null, id]);

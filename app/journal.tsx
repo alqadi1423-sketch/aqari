@@ -162,7 +162,7 @@ export default function Journal() {
   const balanced = totalDebit > 0 && totalDebit === totalCredit;
   // صافي دائن النقدية في القيد اليدوي صرفٌ من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
   const manualOut = manualCashOut(lines.map((l) => ({ account: l.account, debit: toHalalas(l.debit), credit: toHalalas(l.credit) })));
-  const manualOk = useCashOk(manualOut);
+  const manualOk = useCashOk(manualOut, date); // بتاريخ القيد (A2.8)
 
   const openBuilder = () => {
     setDate(today()); setMemo('');
@@ -307,7 +307,7 @@ export default function Journal() {
             {manualOk || !owner ? <View style={{ flex: 1 }}><BtnPrimary title={owner ? 'ترحيل القيد' : t('journal.saveDraft')} onPress={post} disabled={!balanced} /></View> : null}
           </>
         }>
-        <CashShortNote needed={manualOut} what="صرف النقد في القيد" />
+        <CashShortNote needed={manualOut} what="صرف النقد في القيد" date={date} />
         <Row>
           <View style={{ flex: 1 }}><Field label="رقم القيد" value={peekJournalNo(db)} disabled ltr /></View>
           <View style={{ flex: 1 }}><DateField label="التاريخ" value={date} onChange={setDate} /></View>

@@ -952,7 +952,7 @@ function applyDepositSettlement(db: DB, c: ContractRow, contractId: string, inpu
   const newCash = (holder === 'طرف آخر' && input.deductReceived ? deduction : 0) // i18n-exempt: جهة مخزّنة
     + (holder === 'منصة إيجار' && (input.deductDestination ?? 'محفظة إيجار') === 'حسابنا' ? deduction : 0) // i18n-exempt: جهة ووجهة مخزّنتان
     - (holder === 'المكتب' ? refund : 0); // i18n-exempt: جهة مخزّنة
-  requireCash(db, liveCash - newCash, 'تسوية التأمين');
+  requireCash(db, liveCash - newCash, 'تسوية التأمين', input.date); // بتاريخ التسوية (A2.8)
   // كل قيدٍ حيّ من كل مصدر (التحقق المستقل E3: عقودٌ قبل صفّ التسوية فيها مجموعتا قيود)
   for (const [src, memo] of [['deposit_deduct', 'عكس الخصم السابق'], ['deposit_refund', 'عكس الرد السابق'], ['deposit_deduct_move', 'عكس استقرار المخصوم']]) {
     for (let i = 0; i < 20 && reverseEntryBySource(db, src, contractId, 'تعديل تسوية التأمين · ' + memo); i++) { /* حتى لا يبقى حيّ */ }

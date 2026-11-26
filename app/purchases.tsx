@@ -1034,7 +1034,7 @@ export default function Purchases() {
         // النقد المطلوب: الطرق النقدية ناقص ما يعيده عكس سدادٍ نقدي سابق · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
         const cashNeed = payLines.filter((l) => l.method === 'cash').reduce((s, l) => s + toHalalas(l.amount), 0)
           - priorPaymentCashOut(db, payFor);
-        const cashOk = cashShortfall(db, cashNeed) <= 0;
+        const cashOk = cashShortfall(db, cashNeed, payDate) <= 0; // بتاريخ السداد (A2.8)
         const doPay = () => {
           try {
             withCostCenter(payCc, () => payPurchaseSplit(db, payFor,
@@ -1080,7 +1080,7 @@ export default function Purchases() {
           }>
           <DateField label="تاريخ السداد" value={payDate} onChange={setPayDate} />
           <CostCenterField value={payCc} onChange={setPayCc} />
-          <CashShortNote needed={cashNeed} what="سداد الفاتورة نقداً" />
+          <CashShortNote needed={cashNeed} what="سداد الفاتورة نقداً" date={payDate} />
           {payLines.map((l, i) => (
             <View key={i} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 9, marginBottom: 8 }}>
               <SelectField label="الطريقة" value={l.method}

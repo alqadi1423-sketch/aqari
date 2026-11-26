@@ -1476,7 +1476,7 @@ export default function Settings() {
         title={settle?.action === 'credit' ? 'تحويل الفائض رصيداً دائناً' : 'ردّ الفائض للمستأجر'}
         footer={settle && toHalalas(settleAmount) > 0 && toHalalas(settleAmount) <= settle.s.amount && !!settleDate
           && (settle.action === 'credit' || settleMethod === 'cash' || (settleMethod === 'bank' && !!settleBank))
-          && (settle.action === 'credit' || settleMethod !== 'cash' || cashShortfall(db, toHalalas(settleAmount)) <= 0) ? (
+          && (settle.action === 'credit' || settleMethod !== 'cash' || cashShortfall(db, toHalalas(settleAmount), settleDate) <= 0) ? (
           <View style={{ flex: 1 }}>
             <BtnPrimary title={settle.action === 'credit' ? 'سجّل التحويل' : 'سجّل الردّ'} onPress={() => {
               const cur = settle;
@@ -1506,7 +1506,7 @@ export default function Settings() {
             <Field label={'المبلغ (الفائض ' + fmt(settle.s.amount) + ')'} value={settleAmount} onChange={setSettleAmount} keyboard="numeric" ltr />
             <DateField label={settle.action === 'credit' ? 'تاريخ التحويل' : 'تاريخ الردّ'} value={settleDate} onChange={setSettleDate} />
             <CostCenterField value={surplusCc} onChange={setSurplusCc} />
-            {settle.action === 'refund' && settleMethod === 'cash' ? <CashShortNote needed={toHalalas(settleAmount)} what="ردّ الفائض نقداً" /> : null}
+            {settle.action === 'refund' && settleMethod === 'cash' ? <CashShortNote needed={toHalalas(settleAmount)} what="ردّ الفائض نقداً" date={settleDate} /> : null}
             {settle.action === 'refund' ? (
               <>
                 <SelectField<'cash' | 'bank'>

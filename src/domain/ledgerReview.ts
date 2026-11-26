@@ -12,7 +12,7 @@
  * دائناً له (settleSurplus) · بقيد جديد بتاريخ التنفيذ وطريقته، وفي سجل العمليات.
  */
 import type { DB } from '../db/adapter';
-import { requireCash } from './cashGuard';
+import { requireCash, requireBankFunds } from './cashGuard';
 import { uid } from './ids';
 import { logAudit } from './audit';
 import { fmt } from './money';
@@ -433,7 +433,7 @@ export function settleSurplus(db: DB, contractId: string, input: SettleSurplusIn
   const refund = input.action === 'refund';
   if (refund && input.method !== 'cash' && input.method !== 'bank') throw new Error('حدّد طريقة الردّ: نقداً أو تحويلاً بنكياً');
   if (refund && input.method === 'bank' && !input.bankId) throw new Error('اختر الحساب البنكي الذي خرج منه التحويل');
-  if (refund && input.method === 'cash') requireCash(db, amount, 'ردّ الفائض');
+  if (refund && input.method === 'cash') requireCash(db, amount, 'ردّ الفائض', input.date); // بتاريخ الرد (A2.8)
   const bank = refund && input.method === 'bank'
     ? db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ? AND deleted_at IS NULL`, [input.bankId!])
     : null;
@@ -442,6 +442,8 @@ export function settleSurplus(db: DB, contractId: string, input: SettleSurplusIn
   if (refund && input.method === 'bank') {
     const b = bankBalance(db, input.bankId!);
     if (amount > b) throw new Error(t('bank.insufficient', { bank: bank!.name, balance: fmt(b), amount: fmt(amount) }));
+    // وبتاريخ الرد: لا ينزل البنك تحت الصفر في يومٍ مضى (المراجعة الشاملة 2026-11-13 · A2.8)
+    requireBankFunds(db, input.bankId!, amount, input.date);
   }
   const who = s.tenant + ' (عقد ' + s.contractNo + ')';
   return db.transaction(() => {

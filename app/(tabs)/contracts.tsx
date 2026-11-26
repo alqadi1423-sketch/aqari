@@ -1163,7 +1163,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   // ردّ التأمين نقداً حين يقبضه المكتب · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
   const refundCash = settle && officeHeld ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0;
-  const cashOk = useCashOk(refundCash);
+  const cashOk = useCashOk(refundCash, date); // بتاريخ التسوية (A2.8)
   // «لا مسترد أكبر من الباقي بعد الخصم» (قرار المالك 2026-10-09) · autoRefund هو الباقي نفسه
   const refundOver = settle && refund.trim() !== '' && toHalalas(refund) > autoRefund;
 
@@ -1193,7 +1193,7 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
           {cashOk && !refundOver && !arrearsOver ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
         </>
       }>
-      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
+      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" date={date} />
       <DateField label="تاريخ إنهاء العقد" value={date} onChange={setDate} />
       <CostCenterField value={cc} onChange={setCc} />
       <Field label="سبب الإلغاء" value={reason} onChange={setReason} />
@@ -1340,7 +1340,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
   // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق (قرار المالك ٢٠٢٦-١٠-٠٥)
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
   const refundCash = officeHeld ? toHalalas(refund) - Number(existing?.refund_halalas ?? 0) : 0;
-  const cashOk = useCashOk(refundCash);
+  const cashOk = useCashOk(refundCash, date); // بتاريخ التسوية (A2.8)
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
   const save = (...a: Parameters<typeof saveIn>) => withCostCenter(cc, () => saveIn(...a));
   const saveIn = () => {
@@ -1364,7 +1364,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
           {cashOk && diff >= 0 && !refundOver && !arrearsOver ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
         </>
       }>
-      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
+      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" date={date} />
       <View style={{ marginBottom: 10 }}>
         <T size={11.5} color={C.muted}>مبلغ التأمين الأصلي</T>
         <Money halalas={Number(c.deposit_halalas)} size={14} bold />

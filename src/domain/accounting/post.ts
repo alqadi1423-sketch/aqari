@@ -166,7 +166,7 @@ export function manualCashOut(lines: EntryLine[]): number {
 const MANUAL = 'القيد اليدوي';
 export function postManualEntry(db: DB, args: { date: string; memo: string; lines: EntryLine[] }): PostedEntry | null {
   requireOpenPeriod(db, args.date);
-  requireCash(db, manualCashOut(args.lines), MANUAL);
+  requireCash(db, manualCashOut(args.lines), MANUAL, args.date); // بتاريخ القيد: لا تصير المحفظة سالبةً في يومٍ مضى (A2.8)
   return postEntry(db, { ...args, auto: false });
 }
 
@@ -188,7 +188,7 @@ export function postDraftEntry(db: DB, entryId: string): void {
   requireOpenPeriod(db, e.date);
   const lines = db.all<{ account: string; debit: number; credit: number }>(
     `SELECT account_code AS account, debit_halalas AS debit, credit_halalas AS credit FROM journal_lines WHERE entry_id = ?`, [entryId]);
-  requireCash(db, manualCashOut(lines), MANUAL);
+  requireCash(db, manualCashOut(lines), MANUAL, e.date);
   db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [entryId]);
 }
 

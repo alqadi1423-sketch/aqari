@@ -503,7 +503,7 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
     const ready = toHalalas(amount) > 0;
     // ما يُخرج نقداً من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
     const cashOut = op === 'deposit' || op === 'petty' || op === 'ownerOut' ? toHalalas(amount) : 0;
-    const cashOk = cashShortfall(db, cashOut) <= 0;
+    const cashOk = cashShortfall(db, cashOut, opDate) <= 0; // بتاريخ العملية (A2.8)
     return (
       <Sheet visible onClose={() => setOp(null)} title={meta.label}
         footer={
@@ -539,7 +539,7 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
         </Row>
         <CostCenterField value={cc} onChange={setCc} />
         <Field label={op === 'petty' ? 'بيان المصروف' : 'البيان'} value={descr} onChange={setDescr} />
-        <CashShortNote needed={cashOut} what={meta.label} />
+        <CashShortNote needed={cashOut} what={meta.label} date={opDate} />
       </Sheet>
     );
   }

@@ -4,11 +4,10 @@
  */
 import type { DB } from '../db/adapter';
 import { RuleViolation } from './contracts/service';
-import { requireCash, entryCashEffect } from './cashGuard';
+import { requireCash, entryCashEffect, requireBankFunds } from './cashGuard';
 import { uid } from './ids';
 import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
-import { bankBalance } from './accounting/ledger';
 import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount, vatRefundLines, vatRejectLines } from './accounting/post';
 import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseAssetsMoved, purchaseCatchUp, failPurchaseLocked, type PurchaseLineInput } from './assets/purchaseLines';
 import { addMeterReading } from './meters';
@@ -303,11 +302,9 @@ export function priorPaymentCashOut(db: DB, id: string): number {
  * السداد من حسابٍ بنكي لا يُنزل رصيده تحت الصفر، كالرسوم والسحب والتحويل (القاعدة ٩٩ · سجل القرارات ٥٥ · المدقق الخارجي O٢: جهاز المالك
  * ينتظر حركة القيد السالبة حتى يكفيها رصيد البنك، فسدادٌ يتجاوزه من جهاز عضوٍ كان يعلق ثم يُرفض) · بعد عكس السداد السابق، فما أخرجه يعود
  */
-function requireBankCovers(db: DB, bankId: string, amount: number): void {
-  const balance = bankBalance(db, bankId);
-  if (amount <= balance) return;
-  const bank = db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ?`, [bankId])?.name ?? '';
-  throw new RuleViolation(t('bankTx.bankShort', { bank, balance: fmtH(balance), amount: fmtH(amount) }));
+function requireBankCovers(db: DB, bankId: string, amount: number, date: string): void {
+  // وبأدنى رصيدٍ للبنك من تاريخ السداد فما بعده: لا ينزل تحت الصفر في يومٍ مضى (المراجعة الشاملة 2026-11-13 · A2.8)
+  try { requireBankFunds(db, bankId, amount, date); } catch (e) { throw new RuleViolation((e as Error).message); }
 }
 
 export function reversePurchasePayment(db: DB, id: string, keepTerms = false): void {
@@ -368,6 +365,8 @@ export function payPurchase(
     // كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥) · وسدادٌ سابق يُعكس أولاً يعيد ما أخرجه
     if (method === 'cash') requireCash(db, Number(p.total_halalas) - priorPaymentCashOut(db, id), 'سداد الفاتورة ' + p.no);
     if (Number(p.paid)) reversePurchasePayment(db, id);
+    // وبعد عكس السابق (في المعاملة نفسها) بتاريخ السداد: لا تصير المحفظة سالبةً في يومٍ مضى (A2.8)
+    if (method === 'cash') requireCash(db, Number(p.total_halalas), 'سداد الفاتورة ' + p.no, payDate);
     const entry = postPurchasePayment(
       db,
       { id, no: p.no, supplier: p.supplier_name, total: Number(p.total_halalas) },
@@ -375,7 +374,7 @@ export function payPurchase(
       method === 'cash'
     );
     if (method !== 'cash' && bankId) {
-      requireBankCovers(db, bankId, Number(p.total_halalas));
+      requireBankCovers(db, bankId, Number(p.total_halalas), payDate);
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,
@@ -424,13 +423,14 @@ export function payPurchaseSplit(db: DB, id: string, lines: PurchasePayLine[], p
     const cashPart = valid.filter((l) => l.method === 'cash').reduce((s, l) => s + l.amountHalalas, 0);
     requireCash(db, cashPart - priorPaymentCashOut(db, id), 'سداد الفاتورة ' + p.no + ' نقداً');
     if (Number(p.paid)) reversePurchasePayment(db, id);
+    requireCash(db, cashPart, 'سداد الفاتورة ' + p.no + ' نقداً', payDate); // بتاريخ السداد بعد عكس السابق (A2.8)
     const allCash = valid.every((l) => l.method === 'cash');
     const entry = postPurchasePayment(
       db, { id, no: p.no, supplier: p.supplier_name, total }, payDate, allCash
     );
     for (const l of valid) {
       if (l.method === 'cash') continue;
-      requireBankCovers(db, l.bankId!, l.amountHalalas);
+      requireBankCovers(db, l.bankId!, l.amountHalalas, payDate);
       db.run(
         `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
          VALUES (?,?,?,?,?,1,?,?,?)`,
