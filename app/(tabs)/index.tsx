@@ -24,7 +24,7 @@ import {
   periodRevenueExpenseAccrual, monthlyRevenueExpenseAccrual, BASIS_ACCRUAL, BASIS_CASH, type Basis,
 } from '../../src/domain/accrual';
 import {
-  allInstallments, agingBuckets, AGING_BUCKETS, expenseSplit, portfolioStats, reservedUnitsCount, type ExpenseSplitRow,
+  allInstallments, collectKpis, agingBuckets, AGING_BUCKETS, expenseSplit, portfolioStats, reservedUnitsCount, type ExpenseSplitRow,
 } from '../../src/domain/stats';
 import { today, toLocalISODate, dfmt, daysBetween, ARABIC_MONTHS_SHORT } from '../../src/domain/dates';
 import { fmt } from '../../src/domain/money';
@@ -144,7 +144,7 @@ export default function Dashboard() {
         months: [] as Array<{ label: string; key: string; revenue: number; expense: number }>,
         split: [] as ExpenseSplitRow[], aging: [0, 0, 0, 0, 0],
         pf: { total: 0, occupied: 0, vacant: 0, occupancyPct: 0, income: 0, cancelledValue: 0, cancelledCount: 0 },
-        reserved: 0, vacant: 0, totalDue: 0, totalPaid: 0, overdue: 0,
+        reserved: 0, vacant: 0, collectionPct: 0, overdue: 0,
         moves: [] as Array<{ id: string; no: string; date: string; memo: string; d: number; src_type: string | null; src_id: string | null }>,
         topDueArr: [] as Array<[string, number]>,
         recentInvoices: [] as Array<{ id: string; customer_name: string; no: string; issue: string; status: string; total_halalas: number }>,
@@ -196,8 +196,8 @@ export default function Dashboard() {
     const pf = portfolioStats(db, T0);
     const reserved = reservedUnitsCount(db, T0);
     const vacant = Math.max(0, pf.total - pf.occupied - reserved);
-    const totalDue = insts.reduce((s, x) => s + x.amount, 0);
-    const totalPaid = insts.reduce((s, x) => s + x.paid, 0);
+    // النسبة نفسها التي تعرضها شاشة التحصيل · الأقساط الملغاة ليست مستحقة ولا محصَّلة (D-6)
+    const collectionPct = collectKpis(insts, T0).collectionPct;
     const overdue = late.reduce((s, x) => s + x.remaining, 0);
 
     const moves = db.all<{ id: string; no: string; date: string; memo: string; d: number; src_type: string | null; src_id: string | null }>(
@@ -219,7 +219,7 @@ export default function Dashboard() {
     return {
       from, to, revenue, expense, cash, banksCount: Number(banksCount),
       late, soonContracts, openClaims, months, split, aging,
-      pf, reserved, vacant, totalDue, totalPaid, overdue, moves, topDueArr, recentInvoices,
+      pf, reserved, vacant, collectionPct, overdue, moves, topDueArr, recentInvoices,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, range, customFrom, customTo, ready, basis]);
@@ -386,7 +386,7 @@ export default function Dashboard() {
         <Row style={{ flexWrap: 'wrap', marginBottom: 10 }}>
           <MiniKpi label="معدل الإشغال" value={data.pf.total ? data.pf.occupancyPct + '%' : ''} onPress={() => router.push('/units')} />
           <MiniKpi label="وحدات مشغولة" value={`${data.pf.occupied} من ${data.pf.total}`} onPress={() => router.push('/units?occ=rented')} />
-          {sees('collect') ? <MiniKpi label="نسبة التحصيل" value={(data.totalDue ? Math.round((data.totalPaid / data.totalDue) * 100) : 0) + '%'} onPress={() => router.push('/collect?filter=month')} /> : null}
+          {sees('collect') ? <MiniKpi label="نسبة التحصيل" value={data.collectionPct + '%'} onPress={() => router.push('/collect?filter=month')} /> : null}
           {sees('collect') ? <MiniKpi label="المتأخرات" value={fmt(data.overdue)} danger={data.overdue > 0} onPress={() => router.push('/collect?filter=late')} /> : null}
         </Row>
         <BarRow label="مشغولة" value={String(data.pf.occupied)} pct={data.pf.total ? (data.pf.occupied / data.pf.total) * 100 : 0} color={C.emerald}

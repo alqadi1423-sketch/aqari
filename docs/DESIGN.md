@@ -1436,6 +1436,7 @@ attachments/<sha256>.<ext> …
 - **D-3 حارس نموذج العقد:** `Sheet` يقبل `dirty` يمرّره صاحب النموذج ويُقدَّم على العلامة الداخلية (`sheetNeedsConfirm`)، و`useContractForm` يقارن حالته بما فُتح عليه (`formChanged`)، فالنموذج العائد من «مراجعة قبل الإنشاء» أو من رفض الإنشاء لا يُغلق بلا «إغلاق بلا حفظ»، و`SelectField` يعلّم الورقة حين يتغيّر الاختيار.
 - **D-5 حاجز الشاشات:** التخطيط الجذري يصدّر `unstable_settings.screenErrorBoundary = ScreenErrorFallback`، فعطل الرسم يظهر بطاقةً عربية مكان الشاشة فيها «أعد المحاولة» و«الرئيسية»، وتبقى التبويبات والحوارات تعمل، و`sections_json` يُقرأ بلا رمي.
 - **D-8 نموذج الاستلام:** «فتح النموذج» بعد التوثيق يستعمل المعرّف العائد من `confirmContract`.
+- **D-6 نسبة التحصيل:** الرئيسية تأخذ `collectKpis(insts, T0).collectionPct`، الدالة نفسها في شاشة التحصيل.
 
 ### ١٣.١٧ الإصدارات وسجل التغييرات (التوجيه الرابع ٤ · ٢ · 2026-11-07)
 - **رقمٌ واحد** في `src/version.ts` (`APP_VERSION` بصيغة رئيسي.فرعي.تصحيح، و`APP_BUILD` عددٌ يزيد دائماً)، ويطابقه `app.json` (`version` و`android.versionCode`) و`package.json` و`android/app/build.gradle` (`versionName` و`versionCode`) باختبار `tests/d4.version.test.ts`.
