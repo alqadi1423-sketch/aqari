@@ -22,7 +22,7 @@ import { accountBalance } from '@/domain/accounting/ledger';
 import { tenantStatementRows } from '@/domain/statement';
 import type { ContractRow } from '@/domain/contracts/rules';
 
-test.failing('A1-5 إلغاء دفعة قسطٍ ملغى يعيد مسدَّده صفراً كما وعدت المعاينة', () => {
+test('A1-5 إلغاء دفعة قسطٍ ملغى يعيد مسدَّده صفراً كما وعدت المعاينة', () => {
   const db = memDb();
   ownerCashIn(db, { amountHalalas: 500000, date: '2026-01-01' });
   const u = addUnit(db, addProperty(db, { name: 'عقار إلغاء مصطنع' }), { unit_no: 'Q-1' });

@@ -24,7 +24,7 @@ import { getSetting } from '../repos/settings';
 import { today } from '../domain/dates';
 import { naturalKey } from '../domain/sortKey';
 import { startCloud } from '../services/cloud';
-import { recomputeInstallments } from '../domain/contracts/paid';
+import { recomputePaidOnUpgrade } from '../domain/contracts/paid';
 import { logAudit } from '../domain/audit';
 
 /** هجرة البيانات القائمة: حساب مفتاح الترتيب لكل وحدة بلا مفتاح */
@@ -99,11 +99,10 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         if (owner) backfillTenantLinks(db);
         // الإهلاك الشهري الآلي · بلا مزامنةٍ مفعّلة هنا، ومعها بعد دورةٍ نظيفة (services/cloud)
         autoDepreciate(db, today(), { owner, afterSync: false });
-        // المسدَّد يُحسب من الدفعات منذ الهجرة ٢١ · يُعاد حسابه مرة لكل قاعدة رُقّيت إليها
-        if (owner && !db.get(`SELECT 1 FROM meta WHERE key = 'paid_derived_v21'`)) {
-          const changed = recomputeInstallments(db);
-          if (changed.length) logAudit(db, 'البيانات', 'update', 'المسدَّد من الدفعات', changed.length + ' قسط أُعيد حساب مسدَّده من دفعاته وتوزيعها');
-          db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('paid_derived_v21', ?)`, [new Date().toISOString()]);
+        // المسدَّد يُحسب من الدفعات منذ الهجرة ٢١، وللقسط الملغى أيضاً منذ A1-5 · يُعاد حسابه مرة لكل ترقية
+        if (owner) {
+          const changed = recomputePaidOnUpgrade(db);
+          if (changed?.length) logAudit(db, 'البيانات', 'update', 'المسدَّد من الدفعات', changed.length + ' قسط أُعيد حساب مسدَّده من دفعاته وتوزيعها');
         }
         writeWidgetSnapshot(db);
         bump();
