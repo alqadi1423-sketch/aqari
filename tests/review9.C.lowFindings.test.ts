@@ -55,7 +55,7 @@ test('C-10 تقرير العطل لا يحمل اسماً لاتينياً بي�
   expect(out.filter((s) => s.includes('ZQPROBE'))).toEqual([]);
 });
 
-test.failing('C-11 امتلاء القرص أثناء كتابة مرفق لا يترك ملفاً يتيماً في مجلد المرفقات', async () => {
+test('C-11 امتلاء القرص أثناء كتابة مرفق لا يترك ملفاً يتيماً في مجلد المرفقات', async () => {
   const d = tempDir('aq-r9c-enospc-');
   dirs.push(d);
   const env = makeBackupEnv(d);
