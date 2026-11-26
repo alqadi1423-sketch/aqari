@@ -61,7 +61,8 @@ test('الهجرة ٦٦ على قاعدةٍ بالإصدار ٦٥: المعرّ�
 
   migrate(db);
   expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
-  expect(SCHEMA_VERSION).toBe(66);
+  // الهجرة ٦٦ جرت (والهجرات بعدها تبني عليها · ٦٧ مسودة البنك) · وأثرها مفحوصٌ بالأعمدة والقيم أدناه
+  expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(66);
   expect(['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7'].map((id) => sidOf(db, id))).toEqual(['S1', 'S1', 'S2', null, null, null, 'S6']);
   expect(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM sync_outbox WHERE tbl = 'purchases'`)!.n).toBe(0);
   expect(db.get<{ v: number }>(`SELECT v FROM sync_ctl WHERE k = 'capture'`)!.v).toBe(1);
