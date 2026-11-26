@@ -115,23 +115,49 @@ export function pageFooter(pageNo: number, total: number, issuedAt: string): str
 
 /* ═══════════ الترقيم اليدوي · صفوف لكل صفحة محسوبة فلا يُقطع صف أبداً ═══════════ */
 
-export interface PagedChunk { html: string; rows: number }
+/**
+ * كتلة صفوف · rows وزنها بالصفوف، و`table` جدولٌ يُقسم على الصفحات برأسه في كل صفحة (المراجعة الشاملة 2026-11-13 · E-4):
+ * `open` يفتحه أول مرة (وفيه عنوانه)، و`cont` يفتحه في الصفحة التالية (رأسه بلا عنوان · وبدونه `open`)، و`overhead` وزن الفتح
+ * (و`contOverhead` وزن الفتح التالي)
+ */
+export interface PagedChunk {
+  html: string; rows: number;
+  table?: { open: string; cont?: string; close: string; rows: string[]; overhead: number; contOverhead?: number };
+}
+
+/** سعة الصفحة بالصفوف: الأولى تخصم مقدّمتها (الترويسة ومربعات البيانات) */
+export interface PageCaps { first: number; next: number }
 
 /**
  * توزيع كتل صفوف على صفحات: سعة الصفحة الأولى أقل (ترويسة كاملة).
- * كل كتلة {html, rows} حيث rows وزنها بالصفوف · الكتلة لا تُقسم إن كانت ≤ سعة صفحة.
+ * الكتلة العادية لا تُقسم وتنتقل كاملةً إلى صفحةٍ جديدة إن لم تسعها الباقية · والجدول (`table`) يُقسم على الصفحات فلا تفيض صفحة
+ * عن سعتها ولا يُقطع صفٌّ بين صفحتين (E-4: كانت الكتلة الأكبر من السعة توضع كاملة، فيقطعها المتصفح ويختلّ الترقيم)
  */
 export function paginateChunks(chunks: PagedChunk[], firstCap = 18, nextCap = 24): string[][] {
   const pages: string[][] = [[]];
   let cap = firstCap;
   let used = 0;
+  const newPage = () => { pages.push([]); cap = nextCap; used = 0; };
   for (const c of chunks) {
-    const w = Math.max(1, c.rows);
-    if (used + w > cap && used > 0) {
-      pages.push([]);
-      cap = nextCap;
-      used = 0;
+    if (c.table) {
+      const tb = c.table;
+      let i = 0;
+      let first = true;
+      while (i < tb.rows.length) {
+        const over = first ? tb.overhead : (tb.contOverhead ?? tb.overhead);
+        // لا رأس جدولٍ بلا صفٍّ تحته في آخر الصفحة
+        if (used > 0 && cap - used - over < 1) { newPage(); continue; }
+        const take = Math.max(1, Math.min(tb.rows.length - i, cap - used - over));
+        pages[pages.length - 1].push((first ? tb.open : (tb.cont ?? tb.open)) + tb.rows.slice(i, i + take).join('') + tb.close);
+        used += take + over;
+        i += take;
+        first = false;
+        if (i < tb.rows.length) newPage();
+      }
+      continue;
     }
+    const w = Math.max(1, c.rows);
+    if (used + w > cap && used > 0) newPage();
     pages[pages.length - 1].push(c.html);
     used += w;
   }
@@ -141,9 +167,9 @@ export function paginateChunks(chunks: PagedChunk[], firstCap = 18, nextCap = 24
 /** غلاف مستند مرقَّم: صفحات مبنية يدوياً بترويسة وتذييل لكل صفحة */
 export function pagedDoc(
   co: CompanyInfo, docTitle: string, docNo: string | undefined, issuedAt: string,
-  firstPageIntro: string, chunks: PagedChunk[], copyLabel?: string
+  firstPageIntro: string, chunks: PagedChunk[], copyLabel?: string, caps?: PageCaps
 ): string {
-  const pages = paginateChunks(chunks);
+  const pages = caps ? paginateChunks(chunks, caps.first, caps.next) : paginateChunks(chunks);
   const total = pages.length;
   return pages.map((body, i) =>
     `<div class="page">
@@ -153,6 +179,11 @@ export function pagedDoc(
     </div>`
   ).join('');
 }
+
+/** سعة صفحات الكشف: ١٤ صفاً في الأولى بعد مقدّمتها ثم ٢٠ (ورأس الجدول صفّان) · E-4 */
+export const STATEMENT_CAPS: PageCaps = { first: 14 + 2, next: 20 + 2 };
+/** سعة صفحات العقد: ١٢ قسطاً في الأولى بعد مربعات بياناته ثم ٢٢ (وعنوان الجدول ورأسه ثلاثة في الأولى وصفّان بعدها) · E-4 */
+export const CONTRACT_CAPS: PageCaps = { first: 12 + 3, next: 22 + 2 };
 
 /* ═══════════ QR هيئة الزكاة · TLV ثم ترميز Base64 ═══════════ */
 
@@ -306,22 +337,17 @@ export function buildStatementDoc(co: CompanyInfo, d: StatementData, issuedAt: s
   let running = 0;
   const head = '<table><thead><tr><th>التاريخ</th><th>البيان</th><th>مستحق</th><th>مسدَّد</th><th>الرصيد</th></tr></thead><tbody>';
   const chunks: PagedChunk[] = [];
-  let buf = head;
-  let rowsInBuf = 0;
-  const flush = () => {
-    if (rowsInBuf) { chunks.push({ html: buf + '</tbody></table>', rows: rowsInBuf + 2 }); buf = head; rowsInBuf = 0; }
-  };
+  const rowsHtml: string[] = [];
   for (const r of d.rows) {
     // القادم (لم يحلّ بتاريخ الكشف) يُعرض ولا يدخل الرصيد (مراجعة التثبيت #12)
     if (!r.future) running += r.debitHalalas - r.creditHalalas;
-    buf += `<tr><td class="num">${dfmtOut(r.date)}</td><td>${esc(r.descr)}</td>
+    rowsHtml.push(`<tr><td class="num">${dfmtOut(r.date)}</td><td>${esc(r.descr)}</td>
       <td class="num">${r.debitHalalas ? fmt(r.debitHalalas) : ''}</td>
       <td class="num">${r.creditHalalas ? fmt(r.creditHalalas) : ''}</td>
-      <td class="num">${r.future ? '' : fmt(running)}</td></tr>`;
-    rowsInBuf += 1;
-    if (rowsInBuf >= 20) flush();
+      <td class="num">${r.future ? '' : fmt(running)}</td></tr>`);
   }
-  flush();
+  // الجدول يُقسم على الصفحات بسعتها برأسه في كل صفحة (E-4)
+  if (rowsHtml.length) chunks.push({ html: '', rows: 0, table: { open: head, close: '</tbody></table>', rows: rowsHtml, overhead: 2 } });
   const current = d.rows.filter((r) => !r.future);
   const totalDue = current.reduce((s, r) => s + r.debitHalalas, 0);
   const totalPaid = current.reduce((s, r) => s + r.creditHalalas, 0);
@@ -338,7 +364,7 @@ export function buildStatementDoc(co: CompanyInfo, d: StatementData, issuedAt: s
     <div class="inv-box"><b>المستأجر:</b> ${esc(d.tenantName)}<br><b>العقد:</b> <span class="num">${esc(d.contractNo || '')}</span><br><b>الوحدة:</b> ${esc(d.unitLabel)}</div>
     <div class="inv-box"><b>المدة:</b> <span class="num">${d.start ? dfmtOut(d.start) : ''}</span> إلى <span class="num">${d.end ? dfmtOut(d.end) : ''}</span><br><b>عدد الحركات:</b> <span class="num">${d.rows.length}</span></div>
   </div>`;
-  return pagedDoc(co, 'كشف حساب مستأجر', d.contractNo || undefined, issuedAt, intro, chunks);
+  return pagedDoc(co, 'كشف حساب مستأجر', d.contractNo || undefined, issuedAt, intro, chunks, undefined, STATEMENT_CAPS);
 }
 
 export interface ContractDocData {
@@ -364,20 +390,15 @@ export function buildContractDoc(co: CompanyInfo, c: ContractDocData, issuedAt: 
   const splitHtml = services || parking
     ? `<br><b>${ar('lease.print.services')}:</b> <span class="num">${fmt(services)}</span> ${SAR}<br><b>${ar('lease.print.parking')}:</b> <span class="num">${fmt(parking)}</span> ${SAR}<br><b>${ar('lease.print.total')}:</b> <span class="num">${fmt(total)}</span> ${SAR}`
     : '';
-  chunks.push({
-    html: `<h3>جدول الأقساط (${c.installments.length})</h3>
-    <table><thead><tr><th>م</th><th>تاريخ الاستحقاق</th><th>القسط</th><th>المسدَّد</th><th>الحالة</th></tr></thead><tbody>
-    ${c.installments.slice(0, 18).map((i, n) => `<tr><td class="num">${n + 1}</td><td class="num">${dfmtOut(i.dueDate)}</td><td class="num">${fmt(i.amountHalalas)}</td><td class="num">${fmt(i.paidHalalas)}</td><td>${esc(i.status)}</td></tr>`).join('')}
-    </tbody></table>`, rows: Math.min(18, c.installments.length) + 3,
+  // جدول الأقساط يُقسم على الصفحات بسعتها، برأسه في كل صفحة وعنوانه في أولها (E-4)
+  const thead = '<table><thead><tr><th>م</th><th>تاريخ الاستحقاق</th><th>القسط</th><th>المسدَّد</th><th>الحالة</th></tr></thead><tbody>';
+  if (c.installments.length) chunks.push({
+    html: '', rows: 0,
+    table: {
+      open: `<h3>جدول الأقساط (${c.installments.length})</h3>` + thead, cont: thead, close: '</tbody></table>', overhead: 3, contOverhead: 2,
+      rows: c.installments.map((i, n) => `<tr><td class="num">${n + 1}</td><td class="num">${dfmtOut(i.dueDate)}</td><td class="num">${fmt(i.amountHalalas)}</td><td class="num">${fmt(i.paidHalalas)}</td><td>${esc(i.status)}</td></tr>`),
+    },
   });
-  for (let s = 18; s < c.installments.length; s += 22) {
-    const part = c.installments.slice(s, s + 22);
-    chunks.push({
-      html: `<table><thead><tr><th>م</th><th>تاريخ الاستحقاق</th><th>القسط</th><th>المسدَّد</th><th>الحالة</th></tr></thead><tbody>
-      ${part.map((i, n) => `<tr><td class="num">${s + n + 1}</td><td class="num">${dfmtOut(i.dueDate)}</td><td class="num">${fmt(i.amountHalalas)}</td><td class="num">${fmt(i.paidHalalas)}</td><td>${esc(i.status)}</td></tr>`).join('')}
-      </tbody></table>`, rows: part.length + 2,
-    });
-  }
   chunks.push({
     html: `<div class="words">${services || parking ? ar('lease.print.total') : ar('lease.print.value')}: ${fmt(total)} ${SAR} · ${esc(moneyToArabicWords(total))}</div>
     <div class="sign-row">
@@ -393,7 +414,7 @@ export function buildContractDoc(co: CompanyInfo, c: ContractDocData, issuedAt: 
     <div class="inv-box"><b>المدة:</b> <span class="num">${c.start ? dfmtOut(c.start) : ''}</span> إلى <span class="num">${c.end ? dfmtOut(c.end) : ''}</span><br><b>الدورية:</b> ${esc(c.cycle)}</div>
     <div class="inv-box"><b>${services || parking ? ar('lease.print.rent') : ar('lease.print.value')}:</b> <span class="num">${fmt(c.valueHalalas)}</span> ${SAR}${splitHtml}<br><b>التأمين:</b> <span class="num">${fmt(c.depositHalalas)}</span> ${SAR}${c.depositHolderLabel ? ' · ' + esc(c.depositHolderLabel) : ''}</div>
   </div>`;
-  return pagedDoc(co, 'عقد إيجار · نسخة المكتب', c.contractNo || undefined, issuedAt, intro, chunks);
+  return pagedDoc(co, 'عقد إيجار · نسخة المكتب', c.contractNo || undefined, issuedAt, intro, chunks, undefined, CONTRACT_CAPS);
 }
 
 export interface HandoverDocData {
