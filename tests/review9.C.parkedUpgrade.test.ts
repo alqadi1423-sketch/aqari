@@ -38,10 +38,13 @@ import { SCHEMA_VERSION } from '@/db/schema';
 import { seed, ensureDeviceId } from '@/db/seed';
 import { nodeFs } from '@/files/nodeFs';
 import { enableSync } from '@/sync/engine';
-import { switchTo, slotDir, activeAccount } from '@/services/accountSlots';
+import { switchTo, slotDir, activeAccount, upgradeReturned, hasParked } from '@/services/accountSlots';
 import { appSlotEnv } from '@/services/slotsApp';
+import { nodeHasher } from '@/files/nodeFs';
+import { nodeCipher } from '@/files/nodeCipher';
 import type { DB } from '@/db/adapter';
 import type { AppDB } from '@/db/expoAdapter';
+import type { BackupEnv } from '@/domain/backup/types';
 
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmrf(d); });
@@ -61,7 +64,37 @@ function appDbAt(file: string): AppDB {
   return wrapper;
 }
 
-test.failing('C-4 عودة حسابٍ مركون ببنية أقدم: لا تُرقّى بياناته بلا نسخة ما قبل الترقية', () => {
+/** بيئة النسخ فوق القاعدة الحية نفسها كما في backupService.appBackupEnv */
+function backupEnvOf(db: AppDB, root: string, failBackup = false): BackupEnv {
+  return {
+    db, dbPath: db.databasePath, hasher: nodeHasher, cipher: nodeCipher,
+    // قرصٌ ممتلئ لحالة فشل النسخة
+    fs: failBackup ? { ...nodeFs, usableSpace: async () => 0 } : nodeFs,
+    attachmentsDir: root + '/attachments', tmpDir: root + '/tmp', appVersion: '1.0.0-test',
+    openDb: (p) => openNodeDb(p),
+    closeLive: () => db.close(), reopenLive: () => { db.reopen(); return db; },
+  };
+}
+
+/** نسخة A المركونة ببنية الإصدار ٤٠ وبياناتها، وB النشط بالبنية الأحدث */
+function phone(prefix: string) {
+  const root = tempDir(prefix).replace(/\\/g, '/');
+  dirs.push(root);
+  disk.root = root;
+  const aDir = slotDir({ root }, 'ACC-A');
+  nodeFs.mkdirp(aDir);
+  const old = schemaAt(path.join(aDir, 'aqari.db'), 40);
+  fill(old);
+  old.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  old.close();
+  nodeFs.mkdirp(root + '/SQLite');
+  const db = appDbAt(root + '/SQLite/aqari.db');
+  migrate(db); seed(db); ensureDeviceId(db);
+  enableSync(db, 'ACC-B');
+  return { root, db };
+}
+
+test('C-4 عودة حسابٍ مركون ببنية أقدم: لا تُرقّى بياناته بلا نسخة ما قبل الترقية', async () => {
   const root = tempDir('aq-r9c-park-').replace(/\\/g, '/');
   dirs.push(root);
   disk.root = root;
@@ -82,12 +115,47 @@ test.failing('C-4 عودة حسابٍ مركون ببنية أقدم: لا تُ�
 
   const env = appSlotEnv(db);
   expect(switchTo(env, 'ACC-A')).toBe('switched');
-  // عادت نسخة A ورُقّيت
+  // عادت نسخة A ببنيتها، وتُرقّى بحراستها كما يفعل activateAccount
+  expect(await upgradeReturned(env, 'ACC-A', backupEnvOf(db, root), true)).toMatch(/pre-upgrade-.*-v40\.aqbk$/);
   expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
   expect(activeAccount(db)).toBeNull(); // بيانات المصفوفة بلا حساب مسجّل · لا يغيّر المسألة
 
   // نسخة ما قبل الترقية لبيانات A في مجلد نسخها (backups ينتقل مع الحساب: accountSlots ITEMS)
   const backups = nodeFs.list(root + '/backups').filter((n) => n.startsWith('pre-upgrade-') && n.endsWith('-v40.aqbk'));
   expect(backups.length).toBeGreaterThan(0);
+  db.close();
+});
+
+test('C-4 · فشل نسخة ما قبل الترقية: لا ترقية، وتعود نسخة A إلى مركنها كما هي، والسبب عربي', async () => {
+  const { root, db } = phone('aq-r9c-park-fail-');
+  const env = appSlotEnv(db);
+  expect(switchTo(env, 'ACC-A')).toBe('switched');
+  await expect(upgradeReturned(env, 'ACC-A', backupEnvOf(db, root, true), true)).rejects.toThrow(/لم تُرقَّ بياناتك/);
+  // نسخة A مركونة ببنيتها وبياناتها لم تُمسّ، والنشطة فارغةٌ بالبنية الأحدث
+  expect(hasParked(env, 'ACC-A')).toBe(true);
+  const parked = openNodeDb(slotDir({ root }, 'ACC-A') + '/aqari.db');
+  expect(currentSchemaVersion(parked)).toBe(40);
+  expect(parked.get<{ n: number }>(`SELECT COUNT(*) AS n FROM properties`)!.n).toBeGreaterThan(0);
+  parked.close();
+  expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
+  expect(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM properties`)!.n).toBe(0);
+  expect(nodeFs.exists(root + '/backups') ? nodeFs.list(root + '/backups').filter((n) => n.endsWith('.aqbk')) : []).toEqual([]);
+  // وإعادة المحاولة بعد معالجة السبب تكمل: نسخة ثم ترقية
+  expect(switchTo(env, 'ACC-A')).toBe('switched');
+  expect(await upgradeReturned(env, 'ACC-A', backupEnvOf(db, root), true)).toMatch(/-v40\.aqbk$/);
+  expect(currentSchemaVersion(db)).toBe(SCHEMA_VERSION);
+  db.close();
+});
+
+test('C-4 · نسخة حسابٍ ببنية التطبيق: لا نسخة ولا شيء', async () => {
+  const { root, db } = phone('aq-r9c-park-same-');
+  const env = appSlotEnv(db);
+  // B يُركن ويعود ببنيته الأحدث
+  expect(switchTo(env, 'ACC-A')).toBe('switched');
+  await upgradeReturned(env, 'ACC-A', backupEnvOf(db, root), true);
+  enableSync(db, 'ACC-A');
+  expect(switchTo(env, 'ACC-B')).toBe('switched');
+  expect(await upgradeReturned(env, 'ACC-B', backupEnvOf(db, root), true)).toBeNull();
+  expect(activeAccount(db)).toBe('ACC-B');
   db.close();
 });

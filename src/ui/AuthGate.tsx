@@ -82,7 +82,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (cloud.user) {
     const email = cloud.user.email;
-    if (cloud.gate === 'switching' || needsActivation) return spinner('جاري فتح بيانات حساب ' + email);
+    // ونسخة ما قبل الترقية لحسابٍ عاد ببنيةٍ أقدم تظهر خطوتها هنا كبوابة الترقية (C-4)
+    if (cloud.gate === 'switching' || needsActivation) return spinner(cloud.progress ?? 'جاري فتح بيانات حساب ' + email);
     // التحقق من الدعوات لم يتمّ · لا يُفترض الداخل مالكاً ولا تُنشأ له منشأة
     if (cloud.gate === 'retry') {
       return (

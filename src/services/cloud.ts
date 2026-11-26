@@ -70,7 +70,7 @@ import { saveUnsyncedWork, unsyncedAuditNote, dropMemberBackups, noteDropPending
 import { wipeCloud, deleteAccountCloud, type CloudFiles } from './cloudWipe';
 import { logMemberAccess } from '../domain/memberAudit';
 import { appDataRoot } from '../files/expoFs';
-import { switchTo, parkActive, activeAccount, UNBOUND } from './accountSlots';
+import { switchTo, parkActive, activeAccount, upgradeReturned, UNBOUND } from './accountSlots';
 import { appSlotEnv } from './slotsApp';
 import { readAccess, readMembership, saveMembership, type Membership } from './access';
 import {
@@ -482,6 +482,7 @@ export async function cloudSignIn(): Promise<SessionUser | null> {
 
 // موضع الخطأ في نص التفاصيل المنسوخ لا في الشاشة
 const GATE_WHERE = 'الدخول · التحقق من الدعوات'; // i18n-exempt: موضع في تقرير الخطأ
+const GATE_UPGRADE_WHERE = 'الدخول · ترقية بيانات الحساب'; // i18n-exempt: موضع في تقرير الخطأ
 
 let activating = false;
 
@@ -501,6 +502,19 @@ export async function activateAccount(u: SessionUser): Promise<void> {
   try {
     const env = appSlotEnv(db);
     const r = switchTo(env, u.uid);
+    // نسخة الحساب العائدة ببنيةٍ أقدم: نسخة ما قبل الترقية ثم الترقية، وتقدّمها على شاشة الانتظار · وفشلها يعيدها إلى مركنها كما هي،
+    // وسببه على شاشة «أعد المحاولة» (المراجعة الشاملة 2026-11-13 · C-4)
+    if (r !== 'unbound') {
+      try {
+        await upgradeReturned(env, u.uid, appBackupEnv(db), r === 'switched', (m) => patch({ progress: m }));
+      } catch (e) {
+        onData();
+        patch({ gate: 'retry', gateError: gateFailure(GATE_UPGRADE_WHERE, true, e) });
+        return;
+      } finally {
+        patch({ progress: null });
+      }
+    }
     onData();
     const fresh = activeAccount(db) !== u.uid;
     // نسخة الحساب بلا عضوية ولا بيانات (منشأة فارغة أُنشئت قبل قراره) · تُعرض دعواته كالجديدة،

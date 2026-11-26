@@ -16,8 +16,8 @@ export function appSlotEnv(db: AppDB): SlotEnv {
     dbFile: 'file://' + plain(db.databasePath),
     db: () => db,
     close: () => { try { db.close(); } catch { /* مغلقة */ } },
-    // النسخة المركونة قد تكون بإصدار أقدم · تُرقّى عند فتحها
-    reopen: () => { db.reopen(); migrate(db); },
+    // النسخة المركونة قد تكون بإصدار أقدم · لا تُرقّى هنا بلا نسخة: تُرقّى بحراسة upgradeReturned (المراجعة الشاملة 2026-11-13 · C-4)
+    reopen: () => { db.reopen(); },
     prepareFresh: (d) => { migrate(d); seed(d); ensureDeviceId(d); },
   };
 }
