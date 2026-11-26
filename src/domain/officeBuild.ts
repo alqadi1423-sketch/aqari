@@ -8,8 +8,22 @@
  */
 import { zipSync, strToU8 } from 'fflate';
 
+/**
+ * محارف التحكم غير المسموحة في XML 1.0 تُنزع (E-19): فاصل السطر U+000B المنسوخ من وورد في ملاحظةٍ واحدة كان يجعل إكسل يقول
+ * إن الملف تالف، ووورد يرفض فتحه · والجدولة والسطر الجديد والعودة مسموحة فتبقى
+ */
+const xmlAllowed = (s: string): string => {
+  let out = '';
+  for (const ch of s) {
+    const c = ch.codePointAt(0)!;
+    if ((c < 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x0D) || c === 0xFFFE || c === 0xFFFF) continue;
+    out += ch;
+  }
+  return out;
+};
 const xesc = (s: unknown): string =>
-  String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
+  xmlAllowed(String(s ?? ''))
+    .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
 /**
  * خلية تقرير: نص أو عدد · العدد يدخل إكسل رقماً بتنسيق عشريين.
@@ -185,8 +199,14 @@ function sheetXml(blocks: ReportBlock[], doc?: XlsxDoc): string {
           const ref = colName(i) + r;
           if (i === 0) return `<c r="${ref}" s="${ST.totalText}" t="inlineStr"><is><t>الإجمالي</t></is></c>`;
           if (!nums.has(i)) return `<c r="${ref}" s="${ST.totalText}"/>`;
-          return `<c r="${ref}" s="${ctx.cols.has(i) ? ST.totalMoney : ST.totalText}">` +
-            `<f>SUM(${colName(i)}${ctx.first}:${colName(i)}${ctx.last})</f></c>`;
+          // والمجموع المحسوب <v> مع الصيغة الحيّة: العارضات التي لا تحسب (معاينات الجوال) كانت تعرضه فارغاً (E-19)
+          const money = ctx.cols.has(i);
+          const total = sec.rows.reduce((s, row) => {
+            const c = row[i];
+            return s + (typeof c === 'object' ? c.money : typeof c === 'number' ? c : 0);
+          }, 0);
+          return `<c r="${ref}" s="${money ? ST.totalMoney : ST.totalText}">` +
+            `<f>SUM(${colName(i)}${ctx.first}:${colName(i)}${ctx.last})</f><v>${money ? (total / 100).toFixed(2) : total}</v></c>`;
         }).join('');
         rows.push(`<row r="${r}">${cells}</row>`);
       }
