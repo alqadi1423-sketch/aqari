@@ -113,11 +113,16 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          mkdir -p runs
-          cp /tmp/result/result.txt "runs/${GITHUB_SHA}.txt"
-          cp /tmp/result/result.txt latest.txt
-          git add runs latest.txt
-          git commit -q -m "نتيجة الاختبارات ${GITHUB_SHA}"
-          # دفعتان متقاربتان تتسابقان على ci-results: يُعاد الدفع بعد سحبٍ وإعادة تأسيس كالجوال الافتراضي (مدقق المرحلة ٠ · P0-4)
-          for i in 1 2 3 4; do git push -q origin HEAD:ci-results && exit 0; git pull -q --rebase origin ci-results; done
+          # دفعاتٌ متقاربة تتسابقان على ci-results (مدقق المرحلة ٠ · P0-4): يُبنى الالتزام من جديد فوق آخره في كل محاولة، فلا
+          # تعارض في latest.txt كإعادة التأسيس (التشغيل 45865769363 في الجوال الافتراضي)
+          for i in 1 2 3 4 5; do
+            git fetch -q origin ci-results && git reset -q --hard origin/ci-results
+            mkdir -p runs
+            cp /tmp/result/result.txt "runs/${GITHUB_SHA}.txt"
+            cp /tmp/result/result.txt latest.txt
+            git add runs latest.txt
+            git commit -q -m "نتيجة الاختبارات ${GITHUB_SHA}" || exit 0
+            git push -q origin HEAD:ci-results && exit 0
+            sleep $((i * 3))
+          done
           exit 1

@@ -177,9 +177,16 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@users.noreply.github.com"
-          mkdir -p "e2e/${GITHUB_SHA}"
-          cp -r /tmp/e2e/. "e2e/${GITHUB_SHA}/"
-          cp /tmp/e2e/summary.txt e2e/latest.txt 2>/dev/null || true
-          git add e2e
-          git commit -q -m "الجوال الافتراضي ${GITHUB_SHA}" || exit 0
-          for i in 1 2 3; do git push -q origin HEAD:ci-results && break; git pull -q --rebase origin ci-results; done
+          # سباق الدفع (دفعاتٌ متقاربة إلى main والفرع وطلبات dependabot): يُبنى الالتزام من جديد فوق آخر ci-results في كل محاولة ·
+          # كانت إعادة التأسيس تتعارض في latest.txt فيسقط النشر (التشغيل 45865769363)
+          for i in 1 2 3 4 5; do
+            git fetch -q origin ci-results && git reset -q --hard origin/ci-results
+            mkdir -p "e2e/${GITHUB_SHA}"
+            cp -r /tmp/e2e/. "e2e/${GITHUB_SHA}/"
+            cp /tmp/e2e/summary.txt e2e/latest.txt 2>/dev/null || true
+            git add e2e
+            git commit -q -m "الجوال الافتراضي ${GITHUB_SHA}" || exit 0
+            git push -q origin HEAD:ci-results && exit 0
+            sleep $((i * 3))
+          done
+          exit 1
