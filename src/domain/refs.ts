@@ -5,6 +5,7 @@
  */
 import type { DB } from '../db/adapter';
 import { t } from '../i18n';
+import { supplierPurchasesSql } from './suppliers';
 
 export type RefKind =
   | 'property' | 'unit' | 'contract' | 'tenant' | 'supplier'
@@ -70,8 +71,8 @@ export function linkedRefs(db: DB, kind: RefKind, id: string): LinkedRef[] {
     add('عقداً', n(db, `SELECT COUNT(*) c FROM contracts WHERE tenant_id = ? AND deleted_at IS NULL`, [id]), '/contracts');
     add('مرفقاً', att('tenant'), '/library');
   } else if (kind === 'supplier') {
-    const name = db.get<{ name: string }>(`SELECT name FROM suppliers WHERE id = ?`, [id])?.name ?? '';
-    add('فاتورة شراء', n(db, `SELECT COUNT(*) c FROM purchases WHERE supplier_name = ? AND deleted_at IS NULL`, [name]), '/purchases');
+    // بمعرّفه، وما لا معرّف له باسمه الحالي (الهجرة ٦٦ · A2.17)
+    add('فاتورة شراء', n(db, `SELECT COUNT(*) c FROM purchases WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL`, [id, id]), '/purchases');
     add('عداداً مرتبطاً', n(db, `SELECT COUNT(*) c FROM meters WHERE supplier_id = ? AND deleted_at IS NULL`, [id]));
     add('مرفقاً', att('supplier'), '/library');
   } else if (kind === 'bank') {

@@ -6,7 +6,7 @@
 import { ROW_BY_TABLES_42, ASSET_SYNC_TABLES, buildSyncMigration, buildSyncTriggers, CAPTURE_FILES, DIMENSION_SYNC_TABLES, LATER_SYNC_TABLES, STATEMENT_SYNC_TABLES, VAT_SYNC_TABLES, syncTable } from './syncTables';
 import { LEGACY_HANDOVER_TEMPLATE, LEGACY_SEED_SCRIPTS } from './seed';
 
-export const SCHEMA_VERSION = 65;
+export const SCHEMA_VERSION = 66;
 
 export const MIGRATION_1 = `
 -- ─── جداول النظام ───
@@ -2075,4 +2075,25 @@ ALTER TABLE contract_payments ADD COLUMN receipt_no TEXT;
 CREATE INDEX IF NOT EXISTS ix_payments_receipt_no ON contract_payments(receipt_no);
 `;
 
-export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53, MIGRATION_54, MIGRATION_55, MIGRATION_56, MIGRATION_57, MIGRATION_58, MIGRATION_59, MIGRATION_60, MIGRATION_61, MIGRATION_62, MIGRATION_63, MIGRATION_64, MIGRATION_65];
+/**
+ * الهجرة ٦٦ · فاتورة الشراء بمعرّف موردها (المراجعة الشاملة 2026-11-13 · A2.17): كانت تربطها به اسمَه وحده (supplier_name)، فتغيير الاسم
+ * يعيد كتابته في فواتيره كلها ومنها المقفلة في إقرارٍ مقدَّم فيتغيّر كشفه المساند بعد تقديمه، وإبقاء القديم فيها يقطعها عن ورقته وتقريره
+ * ومانع حذفه ويورثها من يُنشأ بالاسم القديم · purchases.supplier_id: معرّف المورد (مرجعٌ منطقي بلا قيد مفتاح أجنبي كأعمدة الهجرة ٦٣،
+ * فلا تنتظر فاتورةٌ واردة موردها ولا يُرفض قيدها) · وما يربط الفاتورة بموردها المعرّف، وما لا معرّف له فباسمه الحالي
+ * (suppliers.ts: supplierPurchasesSql) · وsupplier_name لقطة الاسم: المقفلة في إقرارٍ مقدَّم تُبقيه وغيرها يتبع الاسم الجديد (saveSupplier)
+ * والقائم من مطابقة الاسم بلا فراغات الطرفين بموردٍ حيٍّ واحد، والملتبس وما لا يطابق يبقى فارغاً · والالتقاط مطفأ كالهجرة ٦٤: كل جهاز
+ * يملؤه بهجرته من البيانات نفسها، وإعادة التسمية ترفعه لفواتير المورد كلها
+ */
+export const MIGRATION_66 = `
+ALTER TABLE purchases ADD COLUMN supplier_id TEXT;
+CREATE INDEX IF NOT EXISTS ix_purchases_supplier ON purchases(supplier_id);
+CREATE TEMP TABLE _m66_cap AS SELECT k, v FROM sync_ctl WHERE k = 'capture';
+UPDATE sync_ctl SET v = 0 WHERE k = 'capture';
+UPDATE purchases SET supplier_id = (SELECT s.id FROM suppliers s WHERE s.deleted_at IS NULL AND TRIM(s.name) = TRIM(purchases.supplier_name))
+  WHERE supplier_id IS NULL
+    AND (SELECT COUNT(*) FROM suppliers s WHERE s.deleted_at IS NULL AND TRIM(s.name) = TRIM(purchases.supplier_name)) = 1;
+UPDATE sync_ctl SET v = (SELECT v FROM _m66_cap WHERE _m66_cap.k = sync_ctl.k) WHERE k IN (SELECT k FROM _m66_cap);
+DROP TABLE _m66_cap;
+`;
+
+export const MIGRATIONS: string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4, MIGRATION_5, MIGRATION_6, MIGRATION_7, MIGRATION_8, MIGRATION_9, MIGRATION_10, MIGRATION_11, MIGRATION_12, MIGRATION_13, MIGRATION_14, MIGRATION_15, MIGRATION_16, MIGRATION_17, MIGRATION_18, MIGRATION_19, MIGRATION_20, MIGRATION_21, MIGRATION_22, MIGRATION_23, MIGRATION_24, MIGRATION_25, MIGRATION_26, MIGRATION_27, MIGRATION_28, MIGRATION_29, MIGRATION_30, MIGRATION_31, MIGRATION_32, MIGRATION_33, MIGRATION_34, MIGRATION_35, MIGRATION_36, MIGRATION_37, MIGRATION_38, MIGRATION_39, MIGRATION_40, MIGRATION_41, MIGRATION_42, MIGRATION_43, MIGRATION_44, MIGRATION_45, MIGRATION_46, MIGRATION_47, MIGRATION_48, MIGRATION_49, MIGRATION_50, MIGRATION_51, MIGRATION_52, MIGRATION_53, MIGRATION_54, MIGRATION_55, MIGRATION_56, MIGRATION_57, MIGRATION_58, MIGRATION_59, MIGRATION_60, MIGRATION_61, MIGRATION_62, MIGRATION_63, MIGRATION_64, MIGRATION_65, MIGRATION_66];

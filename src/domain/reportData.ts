@@ -10,6 +10,7 @@ import { contractStatusLabel } from './contracts/rules';
 import { contractTotalSql } from './accounting/rentSplit';
 import { invoiceNoLabel, KIND_CREDIT } from './invoices';
 import { t } from '../i18n';
+import { supplierPurchasesSql } from './suppliers';
 
 const INVOICE_DRAFT = 'مسودة'; // i18n-exempt: حالة الفاتورة المخزّنة
 
@@ -181,8 +182,8 @@ export function supplierReportData(db: DB, supplierId: string, from: string | nu
   });
   const purchases = db.all<{ no: string; date: string; category: string; total_halalas: number; paid: number; unit_id: string | null; property_id: string | null }>(
     `SELECT no, date, category, total_halalas, paid, unit_id, property_id FROM purchases
-     WHERE supplier_name = (SELECT name FROM suppliers WHERE id = ?) AND deleted_at IS NULL${period('date', from, to)}
-     ORDER BY date DESC`, [supplierId]
+     WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL${period('date', from, to)}
+     ORDER BY date DESC`, [supplierId, supplierId]
   ).map((p) => {
     const target = p.unit_id
       ? 'وحدة ' + (db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [p.unit_id])?.unit_no ?? '')
