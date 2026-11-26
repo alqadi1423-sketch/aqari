@@ -18,6 +18,7 @@
   <string name="widget_no_access">لا تشمل صلاحيتك التحصيل</string>
   <string name="widget_locked_amount">المبالغ مخفية</string>
   <string name="widget_locked_hint">قفل التطبيق مفعّل · افتحه لعرض المبالغ</string>
+  <string name="widget_stale">آخر تحديث %1$s · افتح التطبيق</string>
 
   <string name="widget_desc_strip">كم دفعة متأخرة وبكم · بضغطة تفتح التحصيل</string>
   <string name="widget_desc_actions">اختصارات التحصيل والفاتورة والمطالبة · بلا بيانات</string>
