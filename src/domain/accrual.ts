@@ -14,6 +14,7 @@
 import type { DB } from '../db/adapter';
 import { daysBetween, addDays, contractEndFromDuration } from './dates';
 import { TS_DEDUCTIBLE } from './purchases';
+import { purchaseExpenseAccount } from './accounting/post';
 import { DISCOUNT_REDUCES_INSTALLMENT, CYCLE_MONTHS } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
 import { ASSET_CATEGORIES } from './assets/catalog';
@@ -426,6 +427,57 @@ export function periodExpenseAccrual(db: DB, from: string | null, to: string | n
   let sum = 0;
   for (const p of accrualPurchases(db)) sum += purchasePeriodExpense(p, from, to);
   return sum + ledgerNetOfType(db, 'مصروف', from, to, PURCHASE_SOURCES);
+}
+
+/**
+ * مصروف الفترة بالاستحقاق موزَّعاً على حساباته (توزيع المصروفات في الرئيسية · المراجعة الشاملة 2026-11-13 · A2.6) ·
+ * مجموعه periodExpenseAccrual بالهللة: سطور الدفتر لحسابات «مصروف» بلا قيود فواتير الشراء بحساباتها، ونصيب الفترة من كل
+ * فاتورة شراء يُقسم على حسابات المصروف في قيدها بنسبها (والباقي من التقريب لأكبرها) · وفاتورةٌ بلا سطر مصروفٍ في قيدها
+ * نصيبها لحساب فئتها.
+ */
+export function expenseByAccountAccrual(db: DB, from: string | null, to: string | null): Map<string, number> {
+  const out = new Map<string, number>();
+  const add = (code: string, v: number) => { if (v) out.set(code, (out.get(code) ?? 0) + v); };
+  // i18n-exempt: حالة القيد ونوع الحساب المخزّنان
+  const conds = [`e.status = 'مرحّل'`, `e.deleted_at IS NULL`, `a.type = 'مصروف'`,
+    `COALESCE(e.src_type,'') NOT IN (${PURCHASE_SOURCES.map(() => '?').join(',')})`];
+  const params: string[] = [...PURCHASE_SOURCES];
+  if (from) { conds.push(`e.date >= ?`); params.push(from); }
+  if (to) { conds.push(`e.date <= ?`); params.push(to); }
+  for (const r of db.all<{ code: string; net: number }>(
+    `SELECT l.account_code AS code, COALESCE(SUM(l.debit_halalas - l.credit_halalas),0) AS net
+     FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.code = l.account_code
+     WHERE ${conds.join(' AND ')} GROUP BY l.account_code`, params)) add(r.code, Number(r.net));
+  // حسابات المصروف في قيد كل فاتورة شراء حية · أوزانُ قسمة نصيبها
+  const weights = new Map<string, Array<{ code: string; w: number }>>();
+  for (const r of db.all<{ pid: string; code: string; w: number }>(
+    // i18n-exempt: نوع الحساب المخزّن
+    `SELECT p.id AS pid, l.account_code AS code, SUM(l.debit_halalas - l.credit_halalas) AS w
+     FROM purchases p JOIN journal_lines l ON l.entry_id = p.journal_entry_id JOIN accounts a ON a.code = l.account_code
+     WHERE p.deleted_at IS NULL AND a.type = 'مصروف'
+     GROUP BY p.id, l.account_code ORDER BY p.id, w DESC, l.account_code`)) {
+    if (!Number(r.w)) continue;
+    const list = weights.get(r.pid) ?? [];
+    list.push({ code: r.code, w: Number(r.w) });
+    weights.set(r.pid, list);
+  }
+  const categories = new Map(db.all<{ id: string; category: string | null }>(
+    `SELECT id, category FROM purchases WHERE deleted_at IS NULL`).map((r) => [r.id, r.category]));
+  for (const p of accrualPurchases(db)) {
+    const share = purchasePeriodExpense(p, from, to);
+    if (!share) continue;
+    const list = weights.get(p.id!) ?? [];
+    const total = list.reduce((s, x) => s + x.w, 0);
+    if (!list.length || !total) { add(purchaseExpenseAccount(categories.get(p.id!)), share); continue; }
+    let given = 0;
+    for (let i = 1; i < list.length; i++) {
+      const part = Math.round((share * list[i].w) / total);
+      add(list[i].code, part);
+      given += part;
+    }
+    add(list[0].code, share - given);
+  }
+  return out;
 }
 
 /** الاثنان معاً · توقيع periodRevenueExpense حرفياً كي يحلّ أحدهما محل الآخر */

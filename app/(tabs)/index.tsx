@@ -24,7 +24,7 @@ import {
   periodRevenueExpenseAccrual, monthlyRevenueExpenseAccrual, BASIS_ACCRUAL, BASIS_CASH, type Basis,
 } from '../../src/domain/accrual';
 import {
-  allInstallments, agingBuckets, AGING_BUCKETS, expenseSplit, portfolioStats, reservedUnitsCount,
+  allInstallments, agingBuckets, AGING_BUCKETS, expenseSplit, portfolioStats, reservedUnitsCount, type ExpenseSplitRow,
 } from '../../src/domain/stats';
 import { today, toLocalISODate, dfmt, daysBetween, ARABIC_MONTHS_SHORT } from '../../src/domain/dates';
 import { fmt } from '../../src/domain/money';
@@ -125,7 +125,9 @@ export default function Dashboard() {
   }, [ready]);
   // ورقتا التفصيل: قيود النوع (إيراد/مصروف) وفواتير فئة مصروفات
   const [drill, setDrill] = useState<'إيراد' | 'مصروف' | null>(null);
-  const [catDrill, setCatDrill] = useState<string | null>(null);
+  // حساب مصروفٍ من «توزيع المصروفات» · يفتح قيوده في الفترة (المراجعة الشاملة 2026-11-13 · A2.6)
+  const [catDrill, setCatDrill] = useState<{ code: string; name: string } | null>(null);
+  const { t } = useLang();
   const [monthDrill, setMonthDrill] = useState<{ key: string; label: string } | null>(null);
   const T0 = today();
   // الرئيسية تُبنى من صلاحيات العضو · البطاقة التي قسمها «لا» لا تظهر
@@ -140,7 +142,7 @@ export default function Dashboard() {
         late: [] as ReturnType<typeof allInstallments>, soonContracts: [] as Array<{ id: string; end: string }>,
         openClaims: [] as Array<{ id: string }>,
         months: [] as Array<{ label: string; key: string; revenue: number; expense: number }>,
-        split: [] as Array<[string, number]>, aging: [0, 0, 0, 0, 0],
+        split: [] as ExpenseSplitRow[], aging: [0, 0, 0, 0, 0],
         pf: { total: 0, occupied: 0, vacant: 0, occupancyPct: 0, income: 0, cancelledValue: 0, cancelledCount: 0 },
         reserved: 0, vacant: 0, totalDue: 0, totalPaid: 0, overdue: 0,
         moves: [] as Array<{ id: string; no: string; date: string; memo: string; d: number; src_type: string | null; src_id: string | null }>,
@@ -189,7 +191,7 @@ export default function Dashboard() {
       months.push({ label: ARABIC_MONTHS_SHORT[d.getMonth()], key, revenue: m.revenue, expense: m.expense });
     }
 
-    const split = expenseSplit(db, from, to);
+    const split = expenseSplit(db, from, to, basis);
     const aging = agingBuckets(insts);
     const pf = portfolioStats(db, T0);
     const reserved = reservedUnitsCount(db, T0);
@@ -243,13 +245,15 @@ export default function Dashboard() {
 
   const catRows = useMemo(() => {
     if (!catDrill) return [];
-    const conds = [`deleted_at IS NULL`, `COALESCE(NULLIF(TRIM(category),''),'غير مصنَّف') = ?`];
-    const params: string[] = [catDrill];
-    if (data.from) { conds.push(`date >= ?`); params.push(data.from); }
-    conds.push(`date <= ?`); params.push(data.to);
-    return db.all<{ id: string; no: string; supplier_name: string; date: string; total_halalas: number }>(
-      `SELECT id, no, supplier_name, date, total_halalas FROM purchases
-       WHERE ${conds.join(' AND ')} ORDER BY date DESC LIMIT 200`, params);
+    const conds = [`e.status = 'مرحّل'`, `e.deleted_at IS NULL`, `l.account_code = ?`];
+    const params: string[] = [catDrill.code];
+    if (data.from) { conds.push(`e.date >= ?`); params.push(data.from); }
+    conds.push(`e.date <= ?`); params.push(data.to);
+    return db.all<{ id: string; no: string; date: string; memo: string; amount: number; src_type: string | null; src_id: string | null }>(
+      `SELECT e.id, e.no, e.date, e.memo, e.src_type, e.src_id, l.debit_halalas - l.credit_halalas AS amount
+       FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+       WHERE ${conds.join(' AND ')} AND amount != 0
+       ORDER BY e.date DESC LIMIT 200`, params);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, catDrill, data.from, data.to]);
 
@@ -272,7 +276,7 @@ export default function Dashboard() {
 
   const net = data.revenue - data.expense;
   const maxAging = Math.max(1, ...data.aging);
-  const splitTotal = data.split.reduce((s, [, v]) => s + v, 0);
+  const splitTotal = data.split.reduce((s, r) => s + Math.max(0, r.amount), 0);
   const statusMap: Record<string, string> = { 'مدفوعة': 'paid', 'مستحقة': 'due', 'متأخرة': 'overdue', 'مسودة': 'draft' };
 
   return (
@@ -345,13 +349,16 @@ export default function Dashboard() {
         )}
       </Card></Static> : null}
 
-      {/* توزيع المصروفات · كل فئة تفتح فواتيرها */}
+      {/* توزيع المصروفات · من الدفتر بالحساب فمجموعه «المصروفات» بالأساس نفسه، وكل حساب يفتح قيوده (A2.6) */}
       {stage >= 4 && sees('reports') ? <Static deps={[data]}><Card>
         <CardTitle>توزيع المصروفات</CardTitle>
-        {data.split.length ? data.split.map(([k, v]) => (
-          <BarRow key={k} label={k} value={fmt(v)} pct={splitTotal ? (v / splitTotal) * 100 : 0}
-            onPress={() => setCatDrill(k)} />
-        )) : <EmptyState>لا بيانات في هذه الفترة</EmptyState>}
+        {data.split.length ? <>
+          {data.split.map((r) => (
+            <BarRow key={r.code} label={r.name} value={fmt(r.amount)} pct={splitTotal ? (Math.max(0, r.amount) / splitTotal) * 100 : 0}
+              onPress={() => setCatDrill({ code: r.code, name: r.name })} />
+          ))}
+          <T size={10.5} color={C.muted}>{t('home.expenseSplitHint')}</T>
+        </> : <EmptyState>لا بيانات في هذه الفترة</EmptyState>}
       </Card></Static> : null}
 
       {/* أعمار الذمم · كل شريحة تفتح أقساطها في التحصيل */}
@@ -490,18 +497,19 @@ export default function Dashboard() {
         </Sheet>
       )}
       {catDrill && (
-        <Sheet visible onClose={() => setCatDrill(null)} tall title={'فواتير ' + catDrill + ' (' + catRows.length + ')'}>
-          {catRows.length ? catRows.map((p) => (
-            <Pressable key={p.id} onPress={() => { setCatDrill(null); router.push(`/purchases?detail=${p.id}`); }}>
-              <Row style={{ justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
-                <View style={{ flex: 1 }}>
-                  <T size={12.5} bold>{p.supplier_name}</T>
-                  <Num size={10.5} color={C.muted}>{p.no} · {dfmt(p.date)}</Num>
-                </View>
-                <Money halalas={Number(p.total_halalas)} size={12.5} bold />
-              </Row>
+        <Sheet visible onClose={() => setCatDrill(null)} tall title={t('home.accountDrill', { name: catDrill.name, n: catRows.length })}>
+          {basis === BASIS_ACCRUAL ? <T size={10.5} color={C.muted}>{t('home.accountDrillAccrual')}</T> : null}
+          {catRows.length ? catRows.map((r, i) => (
+            <Pressable key={r.id + ':' + i} onPress={() => { setCatDrill(null); openSource(r.src_type, r.src_id); }}>
+              <View style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
+                <Row style={{ justifyContent: 'space-between' }}>
+                  <T size={12.5} style={{ flex: 1 }}>{r.memo || r.no}</T>
+                  <Money halalas={Number(r.amount)} size={12.5} bold color={C.rose} />
+                </Row>
+                <Num size={10.5} color={C.muted}>{dfmt(r.date)} · {r.no}</Num>
+              </View>
             </Pressable>
-          )) : <EmptyState>لا فواتير في هذه الفئة خلال الفترة</EmptyState>}
+          )) : <EmptyState>{t('home.accountDrillEmpty')}</EmptyState>}
           <View style={{ height: 10 }} />
         </Sheet>
       )}

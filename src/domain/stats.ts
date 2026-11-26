@@ -6,6 +6,7 @@ import { today, daysBetween } from './dates';
 import { unitActiveReservation, unitCurrentContract, expireOldReservations } from './contracts/rules';
 import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentState, paymentCashSql, paymentAppliedSql, surplusCreditSql } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
+import { expenseByAccountAccrual, BASIS_ACCRUAL, type Basis } from './accrual';
 
 export interface InstallmentView {
   installmentId: string;
@@ -596,17 +597,28 @@ export function computeTopPerformers(db: DB, from: string | null = null, to: str
   };
 }
 
-/** توزيع المصروفات بالفئة (للوحة الرئيسية) خلال فترة */
-export function expenseSplit(db: DB, from: string | null, to: string | null): Array<[string, number]> {
-  const conds = [`deleted_at IS NULL`];
-  const params: string[] = [];
-  if (from) { conds.push(`date >= ?`); params.push(from); }
-  if (to) { conds.push(`date <= ?`); params.push(to); }
-  const rows = db.all<{ category: string; s: number }>(
-    `SELECT COALESCE(NULLIF(TRIM(category),''),'غير مصنَّف') AS category, SUM(subtotal_halalas) AS s
-     FROM purchases WHERE ${conds.join(' AND ')}
-     GROUP BY 1 ORDER BY s DESC`,
-    params
-  );
-  return rows.map((r) => [r.category, Number(r.s)]);
+export interface ExpenseSplitRow { code: string; name: string; amount: number }
+
+/**
+ * توزيع المصروفات بالحساب (للوحة الرئيسية) خلال فترة · من سطور الدفتر لحسابات «مصروف» لا من صافي فواتير الشراء، فمجموعه
+ * يساوي بطاقة «المصروفات» بجانبه بالأساس نفسه: النقدي = periodRevenueExpense، والاستحقاق = periodExpenseAccrual · فتدخل
+ * الضريبة غير القابلة للخصم والنثري والإهلاك والقيد اليدوي والخصومات، ولا يدخل ما رُسمل أصلاً (المراجعة الشاملة 2026-11-13 · A2.6)
+ */
+export function expenseSplit(db: DB, from: string | null, to: string | null, basis: Basis): ExpenseSplitRow[] {
+  let byCode: Map<string, number>;
+  if (basis === BASIS_ACCRUAL) byCode = expenseByAccountAccrual(db, from, to);
+  else {
+    const conds = [`e.status = 'مرحّل'`, `e.deleted_at IS NULL`, `a.type = 'مصروف'`];
+    const params: string[] = [];
+    if (from) { conds.push(`e.date >= ?`); params.push(from); }
+    if (to) { conds.push(`e.date <= ?`); params.push(to); }
+    byCode = new Map(db.all<{ code: string; s: number }>(
+      `SELECT l.account_code AS code, COALESCE(SUM(l.debit_halalas - l.credit_halalas),0) AS s
+       FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id JOIN accounts a ON a.code = l.account_code
+       WHERE ${conds.join(' AND ')} GROUP BY l.account_code`, params).map((r) => [r.code, Number(r.s)]));
+  }
+  const names = new Map(db.all<{ code: string; name: string }>(`SELECT code, name FROM accounts`).map((r) => [r.code, r.name]));
+  return [...byCode.entries()].filter(([, v]) => v !== 0)
+    .map(([code, amount]) => ({ code, name: names.get(code) ?? code, amount }))
+    .sort((a, b) => b.amount - a.amount || a.code.localeCompare(b.code));
 }

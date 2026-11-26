@@ -1302,5 +1302,11 @@
     "failedTitle": "تعذّر إخراج نسخك من Google Drive",
     "restore": "استعادة من Google Drive",
     "cancelled": "أُلغي التنزيل · ما نُزّل قبل الإلغاء باقٍ في المجلد"
+  },
+  "home": {
+    "expenseSplitHint": "كل حساب يفتح قيوده في الفترة",
+    "accountDrill": "قيود {{name}} ({{n}})",
+    "accountDrillEmpty": "لا قيود على هذا الحساب في هذه الفترة",
+    "accountDrillAccrual": "بأساس الاستحقاق تتوزع الفاتورة المستهلكة على أشهرها، والقيود هنا بتواريخها"
   }
 }

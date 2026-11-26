@@ -1302,5 +1302,11 @@
     "failedTitle": "Could not take your backups out of Google Drive",
     "restore": "Restore from Google Drive",
     "cancelled": "Downloading was cancelled · what was downloaded before stays in the folder"
+  },
+  "home": {
+    "expenseSplitHint": "Each account opens its entries in the period",
+    "accountDrill": "{{name}} entries ({{n}})",
+    "accountDrillEmpty": "No entries on this account in this period",
+    "accountDrillAccrual": "On the accrual basis an amortized purchase is spread over its months; the entries here are shown on their dates"
   }
 }
