@@ -349,6 +349,10 @@ export const PAY_LABEL: Record<PurchasePayMethod, string> = {
   cash: 'نقداً', bank: 'تحويل بنكي', cheque: 'شيك', card: 'بطاقة',
 };
 
+/**
+ * سداد فاتورة الشراء بطريقةٍ واحدة · غلافٌ على payPurchaseSplit بسطرٍ واحد بالإجمالي (المراجعة الشاملة 2026-11-13 · G-11): كانت نسخةً
+ * ثانية من منطق النقد والبنك والقيد لا يناديها التطبيق، والاختبارات تحرسها
+ */
 export function payPurchase(
   db: DB,
   id: string,
@@ -356,41 +360,9 @@ export function payPurchase(
   bankId: string | null,
   payDate: string = today()
 ): void {
-  requireOpenPeriod(db, payDate); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
-  db.transaction(() => {
-    const p = db.get<{
-      no: string; supplier_name: string; category: string; total_halalas: number; paid: number;
-    }>(`SELECT no, supplier_name, category, total_halalas, paid FROM purchases WHERE id = ?`, [id]);
-    if (!p) throw new Error('تعذّر العثور على الفاتورة');
-    if (method !== 'cash' && !bankId) throw new Error('اختر الحساب البنكي (' + PAY_LABEL[method] + ')، أو بدِّل الطريقة لنقداً');
-    // كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥) · وسدادٌ سابق يُعكس أولاً يعيد ما أخرجه
-    if (method === 'cash') requireCash(db, Number(p.total_halalas) - priorPaymentCashOut(db, id), 'سداد الفاتورة ' + p.no);
-    if (Number(p.paid)) reversePurchasePayment(db, id);
-    // وبعد عكس السابق (في المعاملة نفسها) بتاريخ السداد: لا تصير المحفظة سالبةً في يومٍ مضى (A2.8)
-    if (method === 'cash') requireCash(db, Number(p.total_halalas), 'سداد الفاتورة ' + p.no, payDate);
-    const entry = postPurchasePayment(
-      db,
-      { id, no: p.no, supplier: p.supplier_name, total: Number(p.total_halalas) },
-      payDate,
-      method === 'cash'
-    );
-    if (method !== 'cash' && bankId) {
-      requireBankCovers(db, bankId, Number(p.total_halalas), payDate);
-      db.run(
-        `INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at)
-         VALUES (?,?,?,?,?,1,?,?,?)`,
-        [uid(), bankId, payDate, 'سداد ' + p.category + ' · ' + p.supplier_name,
-         -Number(p.total_halalas), entry ? entry.no : '',
-         'سداد فاتورة · ' + PAY_LABEL[method], new Date().toISOString()]
-      );
-    }
-    db.run(
-      `UPDATE purchases SET paid = 1, paid_date = ?, payment_method = ?, payment_bank_id = ?,
-        payment_journal_entry_id = ? WHERE id = ?`,
-      [payDate, PAY_LABEL[method], method !== 'cash' ? bankId : null, entry ? entry.id : null, id]
-    );
-    logAudit(db, 'فواتير الشراء', 'update', 'سداد فاتورة', p.no);
-  });
+  const p = db.get<{ total_halalas: number }>(`SELECT total_halalas FROM purchases WHERE id = ?`, [id]);
+  if (!p) throw new Error('تعذّر العثور على الفاتورة');
+  return payPurchaseSplit(db, id, [{ method, bankId, amountHalalas: Number(p.total_halalas) }], payDate);
 }
 
 export interface PurchasePayLine {

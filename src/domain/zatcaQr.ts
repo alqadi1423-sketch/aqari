@@ -7,6 +7,7 @@
  * دالةٌ خالصة بلا وحدات جهاز (ولا atob ولا TextDecoder، فقد لا يحملهما المحرّك): تُفكّ Base64 وUTF-8 هنا · والنتيجة مسودةٌ للمستخدم
  * يراجعها قبل الحفظ، والتنبيهات لا تمنع القراءة.
  */
+import { toLatinDigits } from './money';
 
 export interface ZatcaQr {
   sellerName: string;
@@ -80,8 +81,7 @@ function utf8(b: Uint8Array): string | null {
 }
 
 /** الأرقام العربية الهندية والفارسية إلى لاتينية (المدقق الخارجي J٤: «١١٥٠٫٠٠» كانت تُرفض والتطبيق نفسه يقرؤها) */
-const latinDigits = (v: string) => v.replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
-  .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0));
+const latinDigits = toLatinDigits; // المحوّل الواحد (G-11)
 
 /**
  * مبلغٌ نصّي إلى هللات · null لما لا يُقرأ: «1150» و«1150.00» و«1,150.00» (فاصل الآلاف لثلاث خاناتٍ وحدها) و«115,00» (فاصلةٌ عشرية

@@ -4,6 +4,7 @@
 import type { DB, SqlValue } from '../db/adapter';
 import { allIn, runIn } from '../db/inList';
 import { uid as newId } from '../domain/ids';
+import { toLatinDigits } from '../domain/money';
 import {
   CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, POLL_MAX, directId, groupSettings, tsGte,
   type ChannelRef, type ChatPoll, type ChatTag, type ChatTask, type GroupSettings,
@@ -486,9 +487,8 @@ export function staleEdits(db: DB, threadId: string): string[] {
  * onlyMine للمالك (قائمته محادثاته وحدها)
  */
 export interface ChatSearch { text?: string; sender?: string; from?: string; to?: string; tag?: ChatTag | null }
-const AR_DIGITS = /[٠-٩۰-۹]/g;
-/** الأرقام العربية والفارسية إلى لاتينية · فالتاريخ المكتوب بها يُقرأ */
-export const latinDigits = (s: string) => s.replace(AR_DIGITS, (c) => String((c.charCodeAt(0) & 0xf) % 10));
+/** الأرقام العربية والفارسية إلى لاتينية · فالتاريخ المكتوب بها يُقرأ · بالمحوّل الواحد (G-11) */
+export const latinDigits = toLatinDigits;
 
 export function searchMessages(db: DB, me: string, q: ChatSearch, onlyMine = false, limit = 500): ChatMessage[] {
   const threads = listThreads(db, me, onlyMine).map((t) => t.id);

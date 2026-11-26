@@ -6,6 +6,7 @@ import { t } from '../../i18n';
  * الهوية لا يراها إلا المالك والعضو نفسه (الواجهة وقواعد الأمان) · فتبقى في مستند العضوية وحده.
  */
 import { normalizePhone } from '../phone';
+import { toLatinDigits } from '../money';
 
 export interface MemberProfile {
   /** الاسم الكامل */
@@ -20,9 +21,8 @@ export interface MemberProfile {
 
 export const EMPTY_PROFILE: MemberProfile = { name: '', phone: '', nid: '', title: '' };
 
-/** الأرقام العربية والفارسية إلى لاتينية */
-const latinDigits = (s: string) =>
-  s.replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660)).replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0));
+/** الأرقام العربية والفارسية إلى لاتينية · بالمحوّل الواحد (G-11) */
+const latinDigits = toLatinDigits;
 
 /** الهوية بعد التوحيد: أرقام لاتينية بلا مسافات */
 export function normalizeNid(raw: string): string {

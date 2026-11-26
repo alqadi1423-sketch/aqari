@@ -155,9 +155,10 @@ describe('R٥ · مطابقة الاسم بلا توحيد يونيكود: ال�
 
 describe('R٦ · الوقت بمنطقته يُحوَّل إلى منطقة الهاتف لا إلى توقيت المملكة: تاريخ الفاتورة وفترتها الضريبية بحسب مكان الهاتف', () => {
   test('فاتورةٌ صدرت 00:30 بتوقيت المملكة أول أكتوبر («2026-09-30T21:30:00Z»): هاتفٌ في لندن أو نيويورك يجعلها 30 سبتمبر (الربع الثالث)', () => {
-    // jest يعزل process.env فلا يتغيّر توقيت المحرّك داخله: تُترجم الوحدات الثلاث (dates وzatcaQr وpurchaseQr) وتُشغَّل في عمليةٍ بتوقيتٍ آخر
+    // jest يعزل process.env فلا يتغيّر توقيت المحرّك داخله: تُترجم الوحدات (dates وzatcaQr وpurchaseQr، ومحوّل الأرقام الواحد في money
+    // وما يستورده · G-11) وتُشغَّل في عمليةٍ بتوقيتٍ آخر
     const out = fs.mkdtempSync(path.join(os.tmpdir(), 'auditR-tz-'));
-    for (const f of ['dates', 'zatcaQr', 'purchaseQr']) {
+    for (const f of ['dates', 'zatcaQr', 'purchaseQr', 'money', 'ledgerCore']) {
       const code = fs.readFileSync(path.join(ROOT, 'src', 'domain', f + '.ts'), 'utf8');
       fs.writeFileSync(path.join(out, f + '.js'), ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText);
     }

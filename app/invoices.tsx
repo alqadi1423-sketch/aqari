@@ -21,7 +21,7 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import {
-  payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, collectionBankShortages, invoiceNoLabel, invoiceRemaining, creditTaxFor, creditLeft, KIND_CREDIT,
+  payInvoice, deleteInvoice, invoiceTotals, collectionCashOut, collectionBankShortages, invoiceNoLabel, invoiceRemaining, creditNotePreview, KIND_CREDIT,
   type InvoiceLineInput, type InvoicePayMethod,
 } from '../src/domain/invoices';
 import { useLang } from '../src/i18n';
@@ -653,9 +653,10 @@ function CreditNoteSheet({ invoiceId, onClose }: { invoiceId: string; onClose: (
     `SELECT no, subtotal_halalas, tax_halalas FROM invoices WHERE id = ?`, [invoiceId]);
   if (!v) return null;
   const sub = toHalalas(amount);
-  // كما تحسبها الخدمة: الباقي كله يأخذ ما بقي من الضريبة
-  const rest = creditLeft(db, invoiceId, Number(v.subtotal_halalas), Number(v.tax_halalas));
-  const tax = sub === rest.sub ? rest.tax : Math.min(rest.tax, creditTaxFor({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) }, sub));
+  // بالحساب نفسه الذي تحفظ به الخدمة، برموز الفاتورة لا بنسبتها المتوسطة (G-11)
+  const preview = creditNotePreview(db, invoiceId, sub);
+  const rest = preview?.left ?? { sub: 0, tax: 0 };
+  const tax = preview?.tax ?? 0;
   const left = invoiceRemaining(db, invoiceId);
   const ok = sub > 0 && sub <= rest.sub && sub + tax <= left && !!reason.trim();
   return (

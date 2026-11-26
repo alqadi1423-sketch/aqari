@@ -8,6 +8,7 @@
  * وO تُقرأ صفراً وI وL تُقرآن واحداً كما في الأبجدية نفسها.
  * والمفتاح المنسي لا يُستعاد: لا مفتاح خلفي، فالنسخة المشفّرة به لا تُفتح بغيره.
  */
+import { toLatinDigits } from '../money';
 
 export const KEY_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const DATA_CHARS = 23;
@@ -46,8 +47,8 @@ export function generateRecoveryKey(random: (n: number) => Uint8Array): string {
 
 /** ما كتبه المستخدم بلا شرطات ومسافات، بحروفٍ كبيرة، وO صفراً وI وL واحداً · وأرقامٌ عربية هندية تُقرأ لاتينية */
 export function normalizeKey(input: string): string {
-  return String(input ?? '')
-    .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+  // والفارسية أيضاً بالمحوّل الواحد (G-11): كانت العربية الهندية وحدها
+  return toLatinDigits(String(input ?? ''))
     .toUpperCase()
     .replace(/[\s\-_.·]/g, '')
     .replace(/O/g, '0')

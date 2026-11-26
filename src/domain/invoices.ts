@@ -526,6 +526,21 @@ export function checkCreditNote(db: DB, invoiceId: string, input: CreditNoteInpu
   creditNoteChecked(db, invoiceId, input);
 }
 
+/**
+ * معاينة الإشعار الدائن في ورقته بالحساب نفسه الذي يحفظ به saveCreditNote (G-11): كانت الورقة تحسب الضريبة بنسبة الفاتورة
+ * المتوسطة (creditTaxFor) والخدمة بالرموز، فتختلفان بهللة في الفاتورة المختلطة · left: ما بقي من صافيها وضريبتها
+ */
+export function creditNotePreview(db: DB, invoiceId: string, sub: number): { tax: number; left: { sub: number; tax: number } } | null {
+  const v = db.get<{ subtotal_halalas: number; tax_halalas: number }>(
+    `SELECT subtotal_halalas, tax_halalas FROM invoices WHERE id = ?`, [invoiceId]);
+  if (!v) return null;
+  const left = creditLeft(db, invoiceId, Number(v.subtotal_halalas), Number(v.tax_halalas));
+  if (sub <= 0 || sub > left.sub) return { tax: 0, left };
+  const { tax } = creditNoteAmounts({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) },
+    remainingByCode(db, invoiceId), left, sub);
+  return { tax, left };
+}
+
 export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput, issuedNo?: string): string {
   return db.transaction(() => {
     const { v, reason, sub, left } = creditNoteChecked(db, invoiceId, input);

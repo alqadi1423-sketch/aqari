@@ -11,6 +11,7 @@ import { uid } from '../ids';
 import { flatLatin, fixArabicOrder, arabicIsVisual, type ScheduleRow } from './parseEjar';
 import { FURNISHED_OPTIONS } from '../contracts/vocab';
 import { floorLabels } from '../propertiesService';
+import { toLatinDigits } from '../money';
 
 export type MeterKind = 'electricity' | 'water' | 'gas';
 // i18n-exempt: أنواع العدادات المخزّنة (الغاز منذ الهجرة ٣١)
@@ -334,7 +335,7 @@ export function applyExtras(db: DB, diffs: ExtraDiff[], approved: Set<ExtraKey>,
 
 /** الوحدة برقمها داخل العقار المختار · للاختيار الآلي */
 export function unitByNumber(db: DB, propertyId: string, unitNo: string): string | null {
-  const norm = (s: string) => s.replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x660)).replace(/\s+/g, '').toLowerCase();
+  const norm = (s: string) => toLatinDigits(s).replace(/\s+/g, '').toLowerCase();
   const rows = db.all<{ id: string; unit_no: string }>(`SELECT id, unit_no FROM units WHERE property_id = ? AND deleted_at IS NULL`, [propertyId]);
   return rows.find((r) => norm(r.unit_no) === norm(unitNo))?.id ?? null;
 }
