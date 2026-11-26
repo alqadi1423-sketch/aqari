@@ -13,10 +13,9 @@ import { t } from '../../i18n';
 import { uid } from '../ids';
 import { fmt } from '../money';
 import { logAudit } from '../audit';
-import { requireCash } from '../cashGuard';
+import { requireCash, requireBankFunds } from '../cashGuard';
 import { requireOpenPeriod } from '../vatFilings';
 import { postEntry, type PostedEntry } from '../accounting/post';
-import { bankBalance } from '../accounting/ledger';
 import { rentRevenueLines } from '../accounting/rentSplit';
 import { prepaidUnearned } from '../accrual';
 
@@ -48,10 +47,10 @@ export function refundPrepaidRent(db: DB, contractId: string, input: PrepaidRefu
     const b = db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ? AND deleted_at IS NULL`, [input.bankId]);
     if (!b) throw new Error(t('prepaid.bankMissing'));
     bankName = b.name;
-    const bal = bankBalance(db, input.bankId);
-    if (amount > bal) throw new Error(t('bank.insufficient', { bank: b.name, balance: fmt(bal), amount: fmt(amount) }));
+    // بتاريخ الرد (تاريخ الإنهاء): أدنى رصيد البنك أو المحفظة منه فما بعده، فلا ينزل تحت الصفر في يومٍ مضى (قرار المالك س١٩ · A2.8)
+    requireBankFunds(db, input.bankId, amount, input.date, (bank, bal) => t('bank.insufficient', { bank, balance: fmt(bal), amount: fmt(amount) }));
   } else {
-    requireCash(db, amount, t('prepaid.cashWhat', { lng: 'ar' }));
+    requireCash(db, amount, t('prepaid.cashWhat', { lng: 'ar' }), input.date);
   }
   const who = t('prepaid.who', { tenant: c.tenant_name, no: c.contract_no || '', lng: 'ar' });
   const how = input.method === 'bank' ? t('prepaid.viaBank', { bank: bankName, lng: 'ar' }) : t('prepaid.viaCash', { lng: 'ar' });

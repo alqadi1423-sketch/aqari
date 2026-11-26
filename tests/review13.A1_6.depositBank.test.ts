@@ -120,7 +120,8 @@ test('A1-6 التأمين الإضافي في التجديد تحويلاً: ل�
 
 test('A1-6 العربون: قبضه تحويلاً وردّه تحويلاً', () => {
   const { db, u1 } = world();
-  const r = createReservation(db, { unitId: u1, name: 'حاجز مصطنع', phone: '', depositHalalas: 150000, expiryDate: '2027-01-01', bankId: BANK });
+  // مقبوضٌ قبل ردّه (02-01): الردّ يُفحص بأدنى رصيد البنك من تاريخه فما بعده (A2.8: العكس والإلغاء)، وكان القبض بتاريخ اليوم بعده
+  const r = createReservation(db, { unitId: u1, name: 'حاجز مصطنع', phone: '', depositHalalas: 150000, expiryDate: '2027-01-01', bankId: BANK, date: '2026-01-15' });
   expect(bankBalance(db, BANK)).toBe(150000);
   expect(walletCashBalance(db)).toBe(0);
   expect(accountBalance(db, '2450')).toBe(150000);

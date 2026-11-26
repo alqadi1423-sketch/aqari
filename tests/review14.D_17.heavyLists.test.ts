@@ -126,8 +126,10 @@ test('D-17 أحكام الاستعادة للصفحة دفعةً: مساويةٌ
   const gates = trash.trashRestoreGates(db, items);
   for (const it of items) {
     const cashOut = trash.restoreCashOut(db, it.table, it.id);
+    // والنقص من تاريخ إعادة الصرف فما بعده كما يفحصه الصف وحده (A2.8)
+    const date = cashOut > 0 ? trash.restoreCashDate(db, it.table, it.id) : null;
     expect([it.table, gates.get(trash.trashKey(it))]).toEqual([it.table, {
-      cashOut, short: cashShortfall(db, cashOut), filed: trash.restoreIntoFiledPeriod(db, it.table, it.id),
+      cashOut, short: cashShortfall(db, cashOut, date), filed: trash.restoreIntoFiledPeriod(db, it.table, it.id), date,
     }]);
   }
   const all = [...gates.values()];

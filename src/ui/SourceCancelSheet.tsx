@@ -47,6 +47,8 @@ export function SourceCancelSheet({ entryId, entryNo, onClose }: { entryId: stri
   const action = useMemo(() => entrySourceAction(db, entryId),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, entryId]);
+  // المانع بتاريخ الإلغاء المختار (A2.8: العكس والإلغاء بأدنى الرصيد من تاريخه)
+  const onDate = useMemo(() => (action?.kind === 'op' && date ? action.dateBlock(date) : ''), [action, date]);
   const src = useMemo(() => db.get<{ t: string | null; s: string | null }>(
     `SELECT src_type AS t, src_id AS s FROM journal_entries WHERE id = ?`, [entryId]), [db, entryId]);
   // القيد بلا مستند يُعكس في الدفتر وحده · وغيره يحتاج كاملاً في قسم عمليته أيضاً
@@ -85,18 +87,20 @@ export function SourceCancelSheet({ entryId, entryNo, onClose }: { entryId: stri
           ) : canRun ? (
             <>
               <View style={{ marginTop: 8 }}>
-                <DateField label="تاريخ الإلغاء" value={date} onChange={setDate} />
+                <DateField label="تاريخ الإلغاء" value={date} onChange={setDate} error={!!onDate} />
+                {/* المحفظة أو البنك لا يكفي من تاريخ الإلغاء فما بعده: سببه تحت الحقل، ولا زرّ حتى يُغيَّر التاريخ (A2.8 · القاعدة ٧) */}
+                {onDate ? <T size={12} color={C.rose} style={{ marginTop: -6, marginBottom: 8 }}>{onDate}</T> : null}
                 <Field label="السبب" value={reason} onChange={setReason} error={attempt.missing(reason)} />
               </View>
               <Row>
                 <View style={{ flex: 1 }}><BtnGhost small title="رجوع" onPress={onClose} /></View>
                 {/* الزر ظاهر · وبلا سبب يُظلَّل الحقل بعد المحاولة ولا يُنفَّذ شيء (قرار المالك 2026-10-07) */}
-                <View style={{ flex: 1 }}>
+                {onDate ? null : <View style={{ flex: 1 }}>
                   <BtnPrimary small danger title={'تأكيد ' + action.label} onPress={() => attempt.attempt(!!reason.trim(), () => {
                     try { action.run(date, reason); bump(); toast('تمّ: ' + action.label); onClose(); }
                     catch (e) { reportFailure({ title: 'تعذّر ' + action.label, where: action.label, db, e }); }
                   })} />
-                </View>
+                </View>}
               </Row>
             </>
           ) : null}

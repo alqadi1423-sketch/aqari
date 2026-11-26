@@ -11,7 +11,7 @@ import { t } from '../i18n';
 import { lineTaxCode, type TaxCode } from './taxCode';
 import { remainingByCodeOf, creditNoteAmounts, creditTaxFor, type CodePart, type StoredInvoiceLine } from './creditNote';
 import { lastReversedOf, repostDate } from './accounting/repost';
-import { isFiledDate, requireISODate, requireOpenPeriod } from './vatFilings';
+import { correctionDate, isFiledDate, requireISODate, requireOpenPeriod } from './vatFilings';
 import { mulQty, pctOf } from './money';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
@@ -271,7 +271,7 @@ export function payInvoice(db: DB, id: string, pay: { method: InvoicePayMethod; 
     if (pay.method !== 'cash' && !pay.bankId) throw new Error('اختر الحساب البنكي (' + INV_PAY_LABEL[pay.method] + ')، أو بدِّل الطريقة لنقداً');
     // تحصيلٌ قائم يُعكس أولاً فيخرج نقده · بكفاية النقد (التحقق المستقل · قرار المالك 2026-10-05)
     if (v.payment_journal_entry_id) {
-      requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION);
+      requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION, collectionReversalDate(db, id));
       // إعادة التحصيل إلى البنك نفسه تُرجع ما يُخرجه العكس منه في المعاملة نفسها، فلا يُفحص عكسها وحده (A2.2)
       const oldBank = db.get<{ b: string | null }>(`SELECT payment_bank_id AS b FROM invoices WHERE id = ?`, [id])?.b ?? null;
       reverseInvoicePayment(db, id, false, { skipBankCheck: pay.method !== 'cash' && !!pay.bankId && pay.bankId === oldBank });
@@ -292,7 +292,8 @@ export function reverseInvoicePayment(db: DB, id: string, keepTerms = false, opt
   if (!v || !v.payment_journal_entry_id) return;
   const je = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [v.payment_journal_entry_id]);
   // ما دخل البنك يخرج منه بالعكس: لا تحت الصفر (قرار ٥٥ · المراجعة الشاملة · A2.2) · قبل أي كتابة
-  if (je && !opts.skipBankCheck) requireBanksCover(db, je.no, 'reverse');
+  // وبتاريخ العاكس (تاريخ التحصيل ما لم يُقدَّم إقرار فترته): لا ينزل البنك تحت الصفر في يومٍ مضى (قرار المالك س١٩ · A2.8)
+  if (je && !opts.skipBankCheck) requireBanksCover(db, je.no, 'reverse', collectionReversalDate(db, id));
   const rev = reverseEntryById(db, v.payment_journal_entry_id, 'عكس تحصيل الفاتورة ' + v.no + (je ? ' · القيد ' + je.no : ''));
   if (je && rev) {
     for (const t of db.all<{ bank_id: string; amount_halalas: number }>(
@@ -313,7 +314,7 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
   if (newStatus === 'مدفوعة') throw new Error('سجّل التحصيل بتاريخه وطريقته · «مدفوعة» لا تُختار حالةً وحدها');
   // الصادرة لا تعود مسودة (قرار المالك على #30): تصحيحها بإشعار دائن
   if (newStatus === 'مسودة' && db.get(`SELECT 1 FROM invoices WHERE id = ? AND status != 'مسودة'`, [id])) throw new Error(t('invoice.locked')); // i18n-exempt: حالة مخزّنة
-  requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION);
+  requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION, collectionReversalDate(db, id));
   db.transaction(() => {
     const v = db.get<{
       no: string; customer_name: string; issue: string;
@@ -351,6 +352,16 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
   });
 }
 
+/**
+ * تاريخ عاكس تحصيل الفاتورة كما يكتبه reverseInvoicePayment (reverseEntryById بلا تاريخ: تاريخ التحصيل، إلا إن قُدِّم إقرار فترته
+ * فاليوم) · به تُفحص كفاية المحفظة والبنك من يومه فما بعده (قرار المالك س١٩ · A2.8: العكس والإلغاء) · null بلا تحصيل
+ */
+export function collectionReversalDate(db: DB, id: string): string | null {
+  const pj = db.get<{ pj: string | null }>(`SELECT payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [id])?.pj;
+  const d = pj ? db.get<{ d: string }>(`SELECT date AS d FROM journal_entries WHERE id = ?`, [pj])?.d : undefined;
+  return d ? correctionDate(db, d) : null;
+}
+
 /** ما يُخرجه عكس تحصيل الفاتورة من المحفظة · صفر إن حُصّلت بنكياً أو لم تُحصَّل */
 export function collectionCashOut(db: DB, id: string): number {
   const pj = db.get<{ pj: string | null }>(`SELECT payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [id])?.pj;
@@ -365,14 +376,14 @@ export function collectionCashOut(db: DB, id: string): number {
 export function collectionBankShortages(db: DB, id: string): string[] {
   const pj = db.get<{ pj: string | null }>(`SELECT payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [id])?.pj;
   const je = pj ? db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [pj]) : undefined;
-  return je ? bankShortages(db, je.no, 'reverse') : [];
+  return je ? bankShortages(db, je.no, 'reverse', collectionReversalDate(db, id)) : [];
 }
 
 /** حذف ناعم · القيد المرحّل يُعكَس بقيد مرآة ولا يُخفى فالتاريخ لا يُمحى */
 export function deleteInvoice(db: DB, id: string): void {
   // الصادرة والإشعار الدائن لا يُحذفان (قرار المالك على #30) · المسودة وحدها
   if (db.get(`SELECT 1 FROM invoices WHERE id = ? AND status != 'مسودة'`, [id])) throw new Error(t('invoice.locked')); // i18n-exempt: حالة مخزّنة
-  requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION);
+  requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION, collectionReversalDate(db, id));
   db.transaction(() => {
     const v = db.get<{ no: string; journal_entry_id: string | null }>(
       `SELECT no, journal_entry_id FROM invoices WHERE id = ?`, [id]

@@ -44,11 +44,12 @@ test('R12-UI-2 سبب الإخفاء يطابق رفض A2.2: يُسمّى الب
   // وهو ما يرفضه الضغط بعينه
   expect(() => setInvoiceStatus(db, id, 'مستحقة')).toThrow(short[0]);
 
-  // يعود بعضه: ١٠٠٬٠٠٠ < ١١٥٬٠٠٠ فما زال لا يكفي، والرصيد في السبب ١٬٠٠٠٫٠٠
-  transferBetweenBanks(db, { fromBankId: b, toBankId: a, amountHalalas: 100000, date: '2026-10-07' });
+  // يعود بعضه: ١٠٠٬٠٠٠ < ١١٥٬٠٠٠ فما زال لا يكفي، والرصيد في السبب ١٬٠٠٠٫٠٠ · ويومَ خروجه نفسه (10-06): العكس بتاريخ التحصيل (10-05)
+  // يُفحص بأدنى رصيد البنك منه فما بعده (قرار المالك س١٩ · A2.8: العكس والإلغاء)، فما يعود بعد يومٍ فرغ فيه لا يرفع ذلك اليوم
+  transferBetweenBanks(db, { fromBankId: b, toBankId: a, amountHalalas: 100000, date: '2026-10-06' });
   expect(collectionBankShortages(db, id)).toEqual([t('bankTx.bankShort', { bank: 'بنك مصطنع أ ui-12ج', balance: fmt(100000), amount: fmt(115000) })]);
   // ويعود الباقي ١٥٬٠٠٠: ١١٥٬٠٠٠ يكفي فلا سبب، ويصح العكس فيصير البنك صفراً
-  transferBetweenBanks(db, { fromBankId: b, toBankId: a, amountHalalas: 15000, date: '2026-10-08' });
+  transferBetweenBanks(db, { fromBankId: b, toBankId: a, amountHalalas: 15000, date: '2026-10-06' });
   expect(collectionBankShortages(db, id)).toEqual([]);
   setInvoiceStatus(db, id, 'مستحقة');
   expect(bankBalance(db, a)).toBe(0); // 115000 − 115000

@@ -130,7 +130,7 @@ function Fold({ icon, title, value, children }: { icon: IconName; title: string;
   );
 }
 
-const NO_GATE: TrashRestoreGate = { cashOut: 0, short: 0, filed: false };
+const NO_GATE: TrashRestoreGate = { cashOut: 0, short: 0, filed: false, date: null };
 
 /**
  * صفّ عنصرٍ في السلة · بذاكرة، وما يحكم أزراره (نقص النقد وفترة الإقرار المقدَّم) يأتيه محسوباً للصفحة فلا يستعلم في رسمه (D-17) ·
@@ -146,7 +146,7 @@ const TrashRow = React.memo(function TrashRow({ item, gate, onRestore, onPurge }
         <T size={TYPE.cardTitle} med style={{ flex: 1 }}>{item.entityLabel}: {item.label}</T>
         <Badge kind={item.daysLeft <= 5 ? 'overdue' : 'due'} label={item.daysLeft + ' يوم متبقٍ'} />
       </Row>
-      {gate.short > 0 ? <CashShortNote needed={gate.cashOut} what="إعادة سداد الفاتورة نقداً" /> : null}
+      {gate.short > 0 ? <CashShortNote needed={gate.cashOut} what="إعادة سداد الفاتورة نقداً" date={gate.date} /> : null}
       <Row style={{ justifyContent: 'flex-end', marginTop: 6 }}>
         {gate.short <= 0 && !gate.filed ? (
           <BtnGhost small icon="undo" title="استعادة" onPress={() => onRestore(item)} />

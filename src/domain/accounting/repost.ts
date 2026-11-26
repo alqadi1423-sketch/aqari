@@ -4,8 +4,7 @@
  * ما يمنع النسخة (حساب أو بنك محذوف) يُعرف قبل أي كتابة فتُرفض الاستعادة بسببه.
  */
 import type { DB } from '../../db/adapter';
-import { cashShortfall, entryCashEffect, bankShortages } from '../cashGuard';
-import { fmt } from '../money';
+import { cashShortMessage, entryCashEffect, bankShortages } from '../cashGuard';
 import { rowId, withDeterministicIds } from '../ids';
 import { postEntry, type PostedEntry } from './post';
 import { hasDimColumns } from './dimensions';
@@ -31,12 +30,13 @@ export function repostBlockers(db: DB, entryId: string): string[] {
      WHERE t.journal_no = ? AND t.deleted_at IS NULL`, [e.no])) {
     if (!b.name || b.deleted_at) out.push('البنك' + (b.name ? ' «' + b.name + '»' : '') + ' الذي كانت عليه الحركة محذوف · استرجعه أولاً');
   }
-  // نسخة قيدٍ أخرج نقداً تخرجه ثانية · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
-  const out0 = Math.max(0, -entryCashEffect(db, entryId));
-  const short = cashShortfall(db, out0);
-  if (short > 0) out.push('النقد في المحفظة لا يكفي لإعادة صرفٍ بمبلغ ' + fmt(out0) + ' · ينقصه ' + fmt(short) + '، سجّله «إيداع المالك» أولاً');
-  // ونسخة قيدٍ أخرج من بنكٍ تُخرج منه ثانية: لا تحت الصفر (قرار ٥٥ · المراجعة الشاملة · A2.2)
-  out.push(...bankShortages(db, e.no, 'repost'));
+  // نسخة قيدٍ أخرج نقداً تخرجه ثانية · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥) · بتاريخ النسخة (repostDate): أدنى رصيد المحفظة منه فما
+  // بعده، فلا تصير سالبةً في يومٍ مضى (قرار المالك س١٩ · A2.8)
+  const on = repostDate(db, entryId);
+  const short = cashShortMessage(db, Math.max(0, -entryCashEffect(db, entryId)), 'إعادة الصرف', on);
+  if (short) out.push(short);
+  // ونسخة قيدٍ أخرج من بنكٍ تُخرج منه ثانية: لا تحت الصفر (قرار ٥٥ · المراجعة الشاملة · A2.2) ولا في يومٍ مضى (A2.8)
+  out.push(...bankShortages(db, e.no, 'repost', on));
   return out;
 }
 

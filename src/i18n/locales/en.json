@@ -987,6 +987,7 @@
   "journal": {
     "deleteDraftFailed": "Could not delete the draft",
     "reverseBody": "A reversing entry dated {{date}} will be posted to cancel its effect on balances, and both entries stay in the ledger.",
+    "reverseWhat": "reversing the entry",
     "saveDraft": "Save draft",
     "savedDraft": "Saved as a draft · the owner posts it",
     "postDraft": "Post",

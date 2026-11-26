@@ -1,7 +1,7 @@
 /** القيود اليومية · القائمة وبناء قيد جديد بميزان حي وترحيله */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { CashShortNote, OwnerCashInSheet, useCashOk } from '../src/ui/CashGate';
-import { cashShortfall, reversalCashOut, bankShortages, bankLowFrom } from '../src/domain/cashGuard';
+import { cashShortfall, cashShortMessage, reversalCashOut, bankShortages, bankLowFrom } from '../src/domain/cashGuard';
 import { supportingAccountsIn, supportList } from '../src/domain/accounting/manualGuard';
 import { View, FlatList, Pressable } from 'react-native';
 import { Screen } from '../src/ui/Screen';
@@ -111,7 +111,7 @@ export default function Journal() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [sourceFor, setSourceFor] = useState<{ id: string; no: string } | null>(null);
   const [builderOpen, setBuilderOpen] = useState(false);
-  const [depositFor, setDepositFor] = useState<number | null>(null);
+  const [depositFor, setDepositFor] = useState<{ n: number; on?: string | null } | null>(null);
   const canDeposit = usePerm('banks').add;
   const [date, setDate] = useState(today());
   const [bankId, setBankId] = useState('');
@@ -234,20 +234,22 @@ export default function Journal() {
     // القيد الآلي يُلغى من عمليته الأصلية بتأكيدها (sourceCancel.ts) · واليدوي يُعكس هنا
     if (journalReversalBlock(db, id)) { setSourceFor({ id, no }); return; }
     // عكس قيدٍ أدخل نقداً يُخرجه من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+    // بتاريخ العاكس: أدنى رصيد المحفظة والبنك منه فما بعده، كما يفحصه reverseFromJournal (A2.8 · العكس والإلغاء)
+    const on = journalReversalDate(db, id);
     const out = reversalCashOut(db, id);
-    const short = cashShortfall(db, out);
+    const short = cashShortfall(db, out, on);
     // وحركة بنكٍ مربوطة بالقيد اليدوي (A2.10) يُخرجها عكسُها من البنك: لا زرّ إن لم يكفِ
-    const bankShorts = bankShortages(db, no, 'reverse');
+    const bankShorts = bankShortages(db, no, 'reverse', on);
     dialog({
       title: 'عكس القيد ' + no,
       // التاريخ الذي سيُكتب فعلاً: تاريخ الأصل، إلا في فترةٍ قُدِّم إقرارها فاليوم (D-7)
       body: t('journal.reverseBody', { date: dfmt(journalReversalDate(db, id)) })
-        + (short > 0 ? '\nالنقد في المحفظة لا يكفي لعكسه (' + fmt(out) + ') · ينقصه ' + fmt(short) : '')
+        + (short > 0 ? '\n' + cashShortMessage(db, out, t('journal.reverseWhat'), on) : '')
         + (bankShorts.length ? '\n' + bankShorts.join('\n') : ''),
       tone: 'normal',
       actions: [
         { label: 'تراجع', variant: 'ghost' },
-        ...(bankShorts.length ? [] : short > 0 ? (canDeposit ? [{ label: 'إيداع المالك · ' + fmt(short), variant: 'primary' as const, onPress: () => setDepositFor(short) }] : []) : [{
+        ...(bankShorts.length ? [] : short > 0 ? (canDeposit ? [{ label: 'إيداع المالك · ' + fmt(short), variant: 'primary' as const, onPress: () => setDepositFor({ n: short, on }) }] : []) : [{
           label: 'عكس القيد', variant: 'primary' as const,
           onPress: () => {
             try {
@@ -344,7 +346,7 @@ export default function Journal() {
       {/* القيد الآلي يُلغى من عمليته الأصلية بتأكيدها */}
       {sourceFor ? <SourceCancelSheet entryId={sourceFor.id} entryNo={sourceFor.no} onClose={() => setSourceFor(null)} /> : null}
 
-      {depositFor !== null ? <OwnerCashInSheet amountHalalas={depositFor} onClose={() => setDepositFor(null)} /> : null}
+      {depositFor !== null ? <OwnerCashInSheet amountHalalas={depositFor.n} date={depositFor.on} onClose={() => setDepositFor(null)} /> : null}
       <Sheet visible={builderOpen} onClose={() => setBuilderOpen(false)} title="قيد يومية جديد" tall
         footer={
           <>

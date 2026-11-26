@@ -41,10 +41,12 @@ export function journalReversalDate(db: DB, entryId: string): string {
 export function reverseFromJournal(db: DB, entryId: string): PostedEntry | null {
   const why = journalReversalBlock(db, entryId);
   if (why) throw new RuleViolation(why);
-  requireCash(db, reversalCashOut(db, entryId), 'عكس القيد');
-  // وحركة البنك المربوطة بالقيد اليدوي (خانة البنك · A2.10) تُعكس بمثلها، ولا يُنزل عكسُها البنك تحت الصفر
+  // بأدنى رصيد المحفظة من تاريخ العاكس فما بعده: عكس قيدٍ أدخل نقداً بتاريخه لا يجعلها سالبةً في يومٍ مضى (قرار المالك س١٩ · A2.8)
+  const on = journalReversalDate(db, entryId);
+  requireCash(db, reversalCashOut(db, entryId), 'عكس القيد', on);
+  // وحركة البنك المربوطة بالقيد اليدوي (خانة البنك · A2.10) تُعكس بمثلها، ولا يُنزل عكسُها البنك تحت الصفر في يومٍ مضى
   const no = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [entryId])?.no ?? '';
-  requireBanksCover(db, no, 'reverse');
+  requireBanksCover(db, no, 'reverse', on);
   return db.transaction(() => {
     const rev = reverseEntryById(db, entryId);
     if (rev) {

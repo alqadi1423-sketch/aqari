@@ -4,8 +4,7 @@
  */
 import type { DB } from '../db/adapter';
 import { logAudit } from './audit';
-import { requireCash } from './cashGuard';
-import { bankBalance } from './accounting/ledger';
+import { requireCash, requireBankFunds } from './cashGuard';
 import { fmt } from './money';
 import { t } from '../i18n';
 
@@ -22,11 +21,13 @@ export function deleteBankTx(db: DB, id: string): void {
   if (no) throw new Error('الحركة مرتبطة بالقيد ' + no + ' · تُلغى بإلغاء عمليتها لا بحذفها');
   // الحركة بلا قيد تحويلٌ بين المحفظة والبنك: حذف الصادر منها يُنقص المحفظة، وحذف الوارد يُنقص البنك · ولا يصير أحدهما
   // سالباً (#33 · قرار المالك 2026-10-05)
-  const tx = db.get<{ amount_halalas: number; bank_id: string }>(`SELECT amount_halalas, bank_id FROM bank_tx WHERE id = ? AND deleted_at IS NULL`, [id]);
+  // وبتاريخ الحركة: أثر حذفها يبدأ يومها، فيكفيه أدنى رصيد المحفظة أو البنك منه فما بعده (قرار المالك س١٩ · A2.8: العكس والإلغاء)
+  const tx = db.get<{ amount_halalas: number; bank_id: string; date: string | null }>(
+    `SELECT amount_halalas, bank_id, date FROM bank_tx WHERE id = ? AND deleted_at IS NULL`, [id]);
   if (tx) {
     const amt = Number(tx.amount_halalas);
-    if (amt < 0) requireCash(db, -amt, t('bankTx.deleteWhat', { lng: 'ar' }));
-    if (amt > 0 && amt > bankBalance(db, tx.bank_id)) throw new Error(t('bankTx.deleteBankShort', { balance: fmt(bankBalance(db, tx.bank_id)), amount: fmt(amt) }));
+    if (amt < 0) requireCash(db, -amt, t('bankTx.deleteWhat', { lng: 'ar' }), tx.date);
+    if (amt > 0) requireBankFunds(db, tx.bank_id, amt, tx.date, (_b, balance) => t('bankTx.deleteBankShort', { balance: fmt(balance), amount: fmt(amt) }));
   }
   db.transaction(() => {
     const t = db.get<{ descr: string }>(`SELECT descr FROM bank_tx WHERE id = ?`, [id]);
@@ -43,11 +44,11 @@ export function deleteBankTx(db: DB, id: string): void {
  */
 export function requireBankTxRestorable(db: DB, id: string): void {
   if (bankTxEntryNo(db, id)) return;
-  const tx = db.get<{ amount_halalas: number; bank_id: string }>(`SELECT amount_halalas, bank_id FROM bank_tx WHERE id = ? AND deleted_at IS NOT NULL`, [id]);
+  // وبتاريخ الحركة كحذفها (A2.8)
+  const tx = db.get<{ amount_halalas: number; bank_id: string; date: string | null }>(
+    `SELECT amount_halalas, bank_id, date FROM bank_tx WHERE id = ? AND deleted_at IS NOT NULL`, [id]);
   if (!tx) return;
   const amt = Number(tx.amount_halalas);
-  if (amt > 0) requireCash(db, amt, t('bankTx.restoreWhat', { lng: 'ar' }));
-  if (amt < 0 && -amt > bankBalance(db, tx.bank_id)) {
-    throw new Error(t('bankTx.restoreBankShort', { balance: fmt(bankBalance(db, tx.bank_id)), amount: fmt(-amt) }));
-  }
+  if (amt > 0) requireCash(db, amt, t('bankTx.restoreWhat', { lng: 'ar' }), tx.date);
+  if (amt < 0) requireBankFunds(db, tx.bank_id, -amt, tx.date, (_b, balance) => t('bankTx.restoreBankShort', { balance: fmt(balance), amount: fmt(-amt) }));
 }

@@ -90,7 +90,7 @@ export function cancelReservation(db: DB, id: string, forfeitDeposit: boolean, d
     // والردّ تحويلاً يخرج من البنك ويكفيه رصيده، والنقد من المحفظة (A1-6)
     const bankCols = hasDepositBankCols(db);
     const refundBank = !forfeitDeposit && deposit > 0 && refundBankId && bankCols ? refundBankId : null;
-    const bankName = refundBank ? requireBankFor(db, refundBank, deposit) : '';
+    const bankName = refundBank ? requireBankFor(db, refundBank, deposit, 0, date) : ''; // بتاريخ الرد (A2.8)
     if (!forfeitDeposit && !refundBank) requireCash(db, deposit, 'ردّ العربون', date); // بتاريخ الرد (A2.8)
     const outcome = deposit > 0 ? (forfeitDeposit ? 'مصادَر' : 'مردود') : null;
     db.run(`UPDATE reservations SET status = 'منتهي', deposit_outcome = ?, deposit_settled_date = ? WHERE id = ?`,
