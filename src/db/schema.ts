@@ -1732,18 +1732,22 @@ CREATE TABLE IF NOT EXISTS file_orphans (
 /** الهجرات بالترتيب · الفهرس 0 = الهجرة إلى الإصدار 1 */
 /**
  * الترحيلة ٤٦ · نزع البيانات الوصفية من الصور مفعّلٌ افتراضاً (قرار المالك 2026-10-15 «١٢»، يحلّ محل قراره 2026-08-20) ·
- * البذرة تكتب كل إعدادٍ صفاً، فالجهاز القائم يُفعَّل فيه هنا · وتعديله بعدها في الإعدادات كما كان
+ * البذرة تكتب كل إعدادٍ صفاً، فالجهاز القائم يُفعَّل فيه هنا · وتعديله بعدها في الإعدادات كما كان ·
+ * وتحفظ اختيار المستخدم قبلها لتعيده ٤٧ (المراجعة الشاملة 2026-11-13 · C-9): كانت ٤٧ تطفئه للكل، فيُطفأ صامتاً عند من فعّله بنفسه
  */
 export const MIGRATION_46 = `
+INSERT OR REPLACE INTO meta (key, value) SELECT 'stripExif_before_46', value_json FROM settings WHERE key = 'stripExif';
 UPDATE settings SET value_json = 'true' WHERE key = 'stripExif';
 `;
 
 /**
  * الترحيلة ٤٧ · نزع البيانات الوصفية من الصور مطفأ افتراضاً كما كان (تصحيح المالك للقرار ١٢ في 2026-10-15: «يرجع قراري 2026-08-20
- * كما كان») · تعيد ما فعّلته الترحيلة ٤٦ ولا تمسّها · والنزع والتدوير يعملان حين يُفعَّل الخيار في الإعدادات
+ * كما كان») · تعيد ما فعّلته الترحيلة ٤٦ ولا تمسّها · والنزع والتدوير يعملان حين يُفعَّل الخيار في الإعدادات ·
+ * ومن يمرّ بالترحيلتين معاً يعود إلى ما اختاره قبل ٤٦ (C-9) · ومن وقف على ٤٦ (لا اختيار محفوظ) مطفأ كما كان
  */
 export const MIGRATION_47 = `
-UPDATE settings SET value_json = 'false' WHERE key = 'stripExif';
+UPDATE settings SET value_json = COALESCE((SELECT value FROM meta WHERE key = 'stripExif_before_46'), 'false') WHERE key = 'stripExif';
+DELETE FROM meta WHERE key = 'stripExif_before_46';
 `;
 
 /**

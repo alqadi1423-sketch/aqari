@@ -35,7 +35,7 @@ import { nodeFs } from '@/files/nodeFs';
 const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmrf(d); });
 
-test.failing('C-9 الترقية لا تُطفئ «نزع البيانات الوصفية» لمن فعّله بنفسه قبل الهجرة ٤٦', () => {
+test('C-9 الترقية لا تُطفئ «نزع البيانات الوصفية» لمن فعّله بنفسه قبل الهجرة ٤٦', () => {
   const d = tempDir('aq-r9c-exif-');
   dirs.push(d);
   const db = schemaAt(path.join(d, 'v45.db'), 45);
