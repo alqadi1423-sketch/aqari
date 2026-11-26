@@ -1,6 +1,6 @@
 /**
  * الاختبارات كلها على منطق العمل الخالص (src/domain, src/db) وتعمل على Node
- * عبر محوّل better-sqlite3 — لا حاجة لبيئة React Native.
+ * عبر محوّل node:sqlite المدمج في Node (src/db/nodeAdapter.ts) · لا حاجة لبيئة React Native.
  */
 module.exports = {
   preset: 'ts-jest',

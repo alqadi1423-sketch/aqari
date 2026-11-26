@@ -1504,6 +1504,7 @@ attachments/<sha256>.<ext> …
 - **G-11:** `creditNotePreview` بحساب الحفظ نفسه، و`payPurchase` غلافٌ على `payPurchaseSplit`، ومحوّل أرقامٍ واحد في ستة ملفات.
 - **G-12:** حذف 21 تصديراً ميتاً و49 استيراداً ومتغيراً غير مستعمل، وبقي `LinkedRefsSheet` لأنه قد يكون ميزةً منسية.
 - **G-13:** حارس النصوص يسقط إن نقص عدد ملفٍ عن أساسه، فيُشدّ الأساس مع كل نقل.
+- **G-14:** تعليقا `jest.config.js` و`adapter.ts` يسمّيان `node:sqlite`. ورأس DESIGN.md وأعداد الاختبارات وجدول الهجرات تُحدَّث في جولة الوثائق.
 
 ### ١٣.١٧ الإصدارات وسجل التغييرات (التوجيه الرابع ٤ · ٢ · 2026-11-07)
 - **رقمٌ واحد** في `src/version.ts` (`APP_VERSION` بصيغة رئيسي.فرعي.تصحيح، و`APP_BUILD` عددٌ يزيد دائماً)، ويطابقه `app.json` (`version` و`android.versionCode`) و`package.json` و`android/app/build.gradle` (`versionName` و`versionCode`) باختبار `tests/d4.version.test.ts`.

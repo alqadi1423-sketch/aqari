@@ -1,7 +1,7 @@
 /**
  * واجهة قاعدة البيانات المجردة · تنفيذان:
  *  - expoAdapter (expo-sqlite) في التطبيق
- *  - nodeAdapter (better-sqlite3) في الاختبارات
+ *  - nodeAdapter (node:sqlite المدمج في Node) في الاختبارات
  * كلاهما متزامن، وكل كتابة تمر عبر transaction() التي تفتح BEGIN IMMEDIATE.
  */
 export type SqlValue = string | number | null | Uint8Array;
