@@ -4,6 +4,7 @@
 import type { DB } from '../db/adapter';
 import { today, dfmtOut } from './dates';
 import { fmt } from './money';
+import { moneyToArabicWords } from './numberWords';
 import { INSTALLMENT_DISCOUNT_SQL, installmentState } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
 import { t } from '../i18n';
@@ -29,9 +30,14 @@ export const TEMPLATE_TOKENS: Array<{ k: string; d: string }> = [
   { k: '{إجمالي_العقد}', get d() { return t('templates.tok.total'); } }, // i18n-exempt: رمز قالب مخزَّن
   { k: '{الخدمات}', get d() { return t('templates.tok.services'); } }, // i18n-exempt: رمز قالب مخزَّن
   { k: '{المواقف}', get d() { return t('templates.tok.parking'); } }, // i18n-exempt: رمز قالب مخزَّن
+  // إشعار المطالبة قالبٌ يعدّله المالك (E-18 · س٣١)
+  { k: '{المبلغ_بالحروف}', get d() { return t('templates.tok.amountWords'); } }, // i18n-exempt: رمز قالب مخزَّن
+  { k: '{سبب_المطالبة}', get d() { return t('templates.tok.claimReason'); } }, // i18n-exempt: رمز قالب مخزَّن
 ];
 
-export const SCRIPT_CATEGORIES = ['تذكير بالسداد', 'تأخر السداد', 'تجديد العقد', 'إخلاء', 'صيانة', 'عام'];
+export const SCRIPT_CATEGORIES = ['تذكير بالسداد', 'تأخر السداد', 'تجديد العقد', 'إخلاء', 'صيانة', 'مطالبة', 'عام']; // i18n-exempt: تصنيفات مخزَّنة
+/** تصنيف قالب إشعار المطالبة (E-18) */
+export const CLAIM_CATEGORY = 'مطالبة'; // i18n-exempt: تصنيف مخزَّن
 export const SCRIPT_AUDIENCES = ['مستأجرون', 'عملاء', 'موظفون'];
 
 export function templateContext(db: DB, contractId: string | null, name?: string): Record<string, string> {
@@ -113,6 +119,20 @@ export function resolveTemplateTokens(text: string, ctx: Record<string, string>)
     out = out.split(k).join('').split(k.replace('{', '[').replace('}', ']')).join('');
   }
   return out;
+}
+
+/**
+ * نص إشعار المطالبة (المراجعة الشاملة 2026-11-13 · E-18 · القاعدة ١٢ · ٩ · س٣١): أحدث قالبٍ بتصنيف «مطالبة» في «قوالب الرسائل»،
+ * وبلا قالبٍ النص الافتراضي من ملف الترجمة · والمهلة جزءٌ من النص فيعدّلها المالك بتعديله · يُملأ بسياق العقد ورموز المطالبة
+ */
+export function claimNoticeBody(db: DB, contractId: string | null, cl: { amountHalalas: number; reason: string }): string {
+  const tpl = db.get<{ body: string }>(
+    `SELECT body FROM message_scripts WHERE deleted_at IS NULL AND category = ? ORDER BY created_at DESC LIMIT 1`, [CLAIM_CATEGORY]);
+  const ctx = templateContext(db, contractId);
+  ctx['{المبلغ}'] = fmt(cl.amountHalalas); // i18n-exempt: رمز قالب مخزَّن
+  ctx['{المبلغ_بالحروف}'] = moneyToArabicWords(cl.amountHalalas); // i18n-exempt: رمز قالب مخزَّن
+  ctx['{سبب_المطالبة}'] = cl.reason || ''; // i18n-exempt: رمز قالب مخزَّن
+  return resolveTemplateTokens(tpl?.body || t('claims.noticeDefault', { lng: 'ar' }), ctx);
 }
 
 /**

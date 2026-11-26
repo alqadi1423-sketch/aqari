@@ -26,6 +26,7 @@ import { contractStatusLabel } from '../domain/contracts/rules';
 import { tenantStatementRows } from '../domain/statement';
 import { isTempInvoiceNo, invoiceVatStamp } from '../domain/invoices';
 import { receiptNoOf } from '../domain/receipts';
+import { claimNoticeBody } from '../domain/templates';
 import { receiptBlocked } from '../domain/contracts/cancelPayment';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from './appLockService';
@@ -242,6 +243,8 @@ export async function printClaim(db: DB, claimId: string): Promise<void> {
   const body = buildClaimDoc(companyInfo(db), {
     contractNo: c?.contract_no || '', tenantName: c?.tenant_name || '', unitLabel: c?.unit_label || '',
     amountHalalas: Number(cl.amount_halalas), reason: cl.reason, date: cl.date,
+    // النص من قالب «مطالبة» في «قوالب الرسائل» (E-18)
+    body: claimNoticeBody(db, cl.contract_id, { amountHalalas: Number(cl.amount_halalas), reason: cl.reason }),
   }, issuedNow());
   const filename = 'إشعار مطالبة · ' + (c?.contract_no || dfmtOut(cl.date));
   const uri = await renderPdf('إشعار مطالبة', body, filename);

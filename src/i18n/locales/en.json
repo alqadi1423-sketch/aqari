@@ -364,7 +364,9 @@
     "tok": {
       "total": "Contract total (rent, services and parking)",
       "services": "Contract services amount",
-      "parking": "Contract parking amount"
+      "parking": "Contract parking amount",
+      "amountWords": "Claim amount in words",
+      "claimReason": "Claim reason"
     }
   },
   "chat": {
@@ -550,7 +552,8 @@
     "collectedLocked": "The claim is collected and posted · only its reason can be edited",
     "collectedNoDelete": "The claim is collected and posted · it cannot be deleted",
     "bankCollectDescr": "Claim collection · {{reason}}",
-    "bankCollectSource": "Claim collection · bank transfer"
+    "bankCollectSource": "Claim collection · bank transfer",
+    "noticeDefault": "Greetings,\nThere is an outstanding financial claim against you of {المبلغ} SAR ({المبلغ_بالحروف}), for: {سبب_المطالبة}.\nPlease settle it or contact us within seven days of the date of this notice."
   },
   "deposit": {
     "refundOver": "The refund exceeds the deposit itself",

@@ -476,6 +476,8 @@ export function buildHandoverDoc(co: CompanyInfo, h: HandoverDocData, issuedAt: 
 export interface ClaimDocData {
   contractNo: string; tenantName: string; unitLabel: string;
   amountHalalas: number; reason: string; date: string;
+  /** نص الإشعار من قالب «مطالبة» أو الافتراضي (claimNoticeBody · E-18) · لا نصّ ثابت هنا */
+  body: string;
 }
 
 /** إشعار مطالبة · يُسلَّم أو يُرسل */
@@ -486,10 +488,7 @@ export function buildClaimDoc(co: CompanyInfo, cl: ClaimDocData, issuedAt: strin
       <div class="inv-box"><b>المستأجر:</b> ${esc(cl.tenantName)}<br><b>العقد:</b> <span class="num">${esc(cl.contractNo || '')}</span><br><b>الوحدة:</b> ${esc(cl.unitLabel || '')}</div>
       <div class="inv-box"><b>تاريخ الإشعار:</b> <span class="num">${dfmtOut(cl.date)}</span><br><b>مبلغ المطالبة:</b> <span class="num">${fmt(cl.amountHalalas)}</span> ${SAR}</div>
     </div>
-    <p style="font-size:12.5px;line-height:2">تحية طيبة وبعد،<br>
-    نفيدكم بوجود مطالبة مالية مستحقة بذمتكم بمبلغ <b class="num">${fmt(cl.amountHalalas)}</b> ${SAR}
-    (${esc(moneyToArabicWords(cl.amountHalalas))})، وبيانها: ${esc(cl.reason || '')}.<br>
-    نأمل المبادرة بالسداد أو التواصل معنا خلال مدة أقصاها سبعة أيام من تاريخ هذا الإشعار.</p>
+    <p style="font-size:12.5px;line-height:2">${esc(cl.body).replace(/\n/g, '<br>')}</p>
     <div class="sign-row">
       <div class="sign"><div class="line"></div>${esc(co.name || 'المكتب')}</div>
     </div>
