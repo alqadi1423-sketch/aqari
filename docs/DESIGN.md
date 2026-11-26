@@ -1492,6 +1492,7 @@ attachments/<sha256>.<ext> …
 - **E-11:** ‎@page @bottom-center‎ بالعدّادين `counter(page)` و`counter(pages)` لتقارير `printHtmlDoc` وحدها. يحتاج فحصاً على الجهاز.
 - **E-12:** `planReminderDelivery` تطلق ما فات موعده والاستحقاق لم يأتِ بعد دقيقةٍ مرةً واحدة، والموعد محفوظ في `meta` (المفتاح `reminders_catch_up`).
 - **E-13:** ملف `data_extraction_rules` يستثني كل النطاقات من النسخ السحابي والنقل بين الأجهزة في أندرويد 12 فأحدث (س١٥). يحتاج فحصاً على الجهاز.
+- **E-14:** المعدود يتبع عدده («ريال واحد، ريالان، ثلاثة ريالات، أحد عشر ريالاً»)، والهللة مؤنثة (س١٤). وألفاظ الأعداد معفاةٌ من حارس النصوص لأنها بيانات لغة.
 
 ### ١٣.١٧ الإصدارات وسجل التغييرات (التوجيه الرابع ٤ · ٢ · 2026-11-07)
 - **رقمٌ واحد** في `src/version.ts` (`APP_VERSION` بصيغة رئيسي.فرعي.تصحيح، و`APP_BUILD` عددٌ يزيد دائماً)، ويطابقه `app.json` (`version` و`android.versionCode`) و`package.json` و`android/app/build.gradle` (`versionName` و`versionCode`) باختبار `tests/d4.version.test.ts`.

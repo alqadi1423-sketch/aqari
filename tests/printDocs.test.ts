@@ -27,7 +27,8 @@ describe('المبلغ بالحروف', () => {
   });
   test('هللات ومئات وآلاف مركبة', () => {
     expect(moneyToArabicWords(50)).toBe('خمسون هللة فقط لا غير');
-    expect(moneyToArabicWords(123456)).toBe('ألف ومئتان وأربعة وثلاثون ريال وستة وخمسون هللة فقط لا غير');
+    // المعدود بعدده والهللة مؤنثة (س١٤ · E-14)
+    expect(moneyToArabicWords(123456)).toBe('ألف ومئتان وأربعة وثلاثون ريالاً وست وخمسون هللة فقط لا غير');
     expect(intToArabicWords(25300)).toBe('خمسة وعشرون ألفاً وثلاثمئة');
     expect(intToArabicWords(2000000)).toBe('مليونان');
   });

@@ -61,13 +61,49 @@ export function intToArabicWords(n: number): string {
   return parts.join(' و');
 }
 
+/*
+ * المعدود بعدده (المراجعة الشاملة 2026-11-13 · E-14 · قرار المالك ٤.١٣ وس١٤): ألفاظ العدد والمعدود بيانات لغوية للتفقيط العربي
+ * لا نصّ واجهةٍ يُترجم، فالمبلغ بالحروف عربيٌّ في كل مستند · ولذا وُسمت i18n-exempt
+ */
+// الهللة مؤنثة: ١ و٢ بعد المعدود، و٣-١٠ تخالفه («ثلاث هللات»)، و١١-١٩ «إحدى عشرة، اثنتا عشرة، ثلاث عشرة»
+const ONES_F = ['', 'إحدى', 'اثنتان', 'ثلاث', 'أربع', 'خمس', 'ست', 'سبع', 'ثماني', 'تسع', 'عشر', 'إحدى عشرة', 'اثنتا عشرة', 'ثلاث عشرة', 'أربع عشرة', 'خمس عشرة', 'ست عشرة', 'سبع عشرة', 'ثماني عشرة', 'تسع عشرة']; // i18n-exempt: ألفاظ العدد المؤنث للتفقيط
+const EIGHT_IN_TENS = 'ثمان'; // i18n-exempt: «ثمانٍ وعشرون» في المعطوف
+
+/** ١-٩٩ مؤنثاً */
+function femBelow100(n: number): string {
+  if (n < 20) return ONES_F[n];
+  const t = Math.floor(n / 10);
+  const o = n % 10;
+  return o ? (o === 8 ? EIGHT_IN_TENS : ONES_F[o]) + ' و' + TENS[t] : TENS[t];
+}
+
+/** الريال بعدده: «ريال واحد · ريالان · ثلاثة ريالات · أحد عشر ريالاً · مئة ريال» */
+function riyalPhrase(n: number): string {
+  if (n === 0) return 'صفر ريال'; // i18n-exempt: التفقيط
+  if (n === 1) return 'ريال واحد'; // i18n-exempt: التفقيط
+  if (n === 2) return 'ريالان'; // i18n-exempt: التفقيط
+  const r = n % 100;
+  const words = intToArabicWords(n);
+  if (r >= 3 && r <= 10) return words + ' ريالات'; // i18n-exempt: التفقيط
+  if (r >= 11) return words + ' ريالاً'; // i18n-exempt: التفقيط
+  // المئات والمراتب الصحيحة وما زاد عليها بواحد أو اثنين: المعدود مفرداً بعدها («مئة ريال · ألف ريال · مئة وواحد ريال»)
+  return words + ' ريال'; // i18n-exempt: التفقيط
+}
+
+/** الهللة بعددها (١-٩٩): «هللة واحدة · هللتان · ثلاث هللات · إحدى عشرة هللة · ست وخمسون هللة» */
+function halalaPhrase(n: number): string {
+  if (n === 1) return 'هللة واحدة'; // i18n-exempt: التفقيط
+  if (n === 2) return 'هللتان'; // i18n-exempt: التفقيط
+  return femBelow100(n) + (n <= 10 ? ' هللات' : ' هللة'); // i18n-exempt: التفقيط
+}
+
 /** المبلغ بالهللات → جملة السند: «أربعة آلاف ريال وخمسون هللة فقط لا غير» */
 export function moneyToArabicWords(halalas: number): string {
   const total = Math.abs(Math.round(halalas));
   const riyals = Math.floor(total / 100);
   const hal = total % 100;
   const parts: string[] = [];
-  if (riyals || !hal) parts.push(intToArabicWords(riyals) + ' ريال');
-  if (hal) parts.push(intToArabicWords(hal) + ' هللة');
+  if (riyals || !hal) parts.push(riyalPhrase(riyals));
+  if (hal) parts.push(halalaPhrase(hal));
   return parts.join(' و') + ' فقط لا غير';
 }
