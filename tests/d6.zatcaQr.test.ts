@@ -131,8 +131,10 @@ describe('الربط بشاشة المشتريات (لا تعمل الواجهة
     // (تحديثٌ وظيفي بمرجع صورة الرمز · المدقق الخارجي R١٠)
     expect(src).toMatch(/setPendingFile\(\(cur\) => \(!cur \|\| cur === qrFileRef\.current \? \(setQrFile\(img\), img\) : cur\)\)/);
   });
-  test('الخدمة تقرأ بوحدة ML Kit للرموز وتفشل برسالةٍ مفهومة إن غابت', () => {
-    expect(svc).toMatch(/import\('@react-native-ml-kit\/barcode-scanning'\)/);
+  test('الخدمة تقرأ بجافاسكربت خالصة (المصغِّر ثم jsQR · ق٠-٣ بدل ML Kit) وتفشل برسالةٍ مفهومة إن غاب المصغِّر', () => {
+    expect(svc).toMatch(/import\('expo-image-manipulator'\)/);
+    expect(svc).toMatch(/import\('\.\.\/domain\/qrImage'\)/);
+    expect(svc).not.toMatch(/ml-kit\/barcode-scanning/);
     expect(svc).toMatch(/qr-unavailable/);
   });
 });

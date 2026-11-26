@@ -396,7 +396,7 @@ export default function Purchases() {
     setQrBusy(true);
     try {
       let values: string[];
-      try { values = kind === 'image' ? await readQrFromImage(img.uri) : await readQrFromInvoiceFile(img); }
+      try { values = kind === 'image' ? await readQrFromImage(img.uri, img) : await readQrFromInvoiceFile(img); }
       catch (e) {
         if (seq !== qrSeq.current) return;
         const m = (e as Error).message;

@@ -174,15 +174,15 @@ describe('J٨ · سقف الحجم لا يحدّ الزمن', () => {
   });
 });
 
-jest.mock('@react-native-ml-kit/barcode-scanning', () => {
-  // كما في index.ts من الحزمة نفسها حين لا تُربط وحدتها الأصلية (NativeModules.BarcodeScanning غائب: نسخةٌ أقدم من التطبيق تحمل
-  // حزمة JS أحدث، أو بيئة بلا ML Kit): الاستيراد ينجح، وكل وصولٍ لخاصيةٍ يرمي LINKING_ERROR
-  const proxy = new Proxy({}, { get() { throw new Error("The package '@react-native-ml-kit/barcode-scanning' doesn't seem to be linked."); } });
-  return { __esModule: true, default: proxy };
+jest.mock('expo-image-manipulator', () => {
+  // كما في حزم expo حين لا تُربط وحدتها الأصلية (نسخةٌ أقدم من التطبيق تحمل حزمة JS أحدث، أو بيئة بلا المصغِّر): الاستيراد ينجح،
+  // وكل وصولٍ لخاصيةٍ يرمي · (كانت المحاكاة لـML Kit للرموز، واستُبدل بقارئٍ بجافاسكربت يصغّر الصورة بالمصغِّر · ق٠-٣)
+  const proxy = new Proxy({}, { get(_t, k) { if (k === '__esModule') return true; if (k === 'then') return undefined; throw new Error("Cannot find native module 'ExpoImageManipulator'"); } });
+  return proxy;
 });
 
-describe('J٩ · وحدة ML Kit غير مربوطة', () => {
-  test('تُرمى «qr-read» («جرّب صورةً أوضح») لا «qr-unavailable» («حدّث التطبيق»): الاستيراد لا يفشل أبداً، والفشل عند الاستدعاء', async () => {
+describe('J٩ · وحدة قراءة الصورة غير مربوطة', () => {
+  test('تُرمى «qr-unavailable» («حدّث التطبيق») لا «qr-read» («جرّب صورةً أوضح»): الاستيراد لا يفشل أبداً، والفشل عند الاستدعاء', async () => {
     const { readQrFromImage } = await import('@/services/invoiceQr');
     let msg = '';
     try { await readQrFromImage('file:///tmp/qr-synthetic.png'); } catch (e) { msg = (e as Error).message; }

@@ -19,6 +19,9 @@ export interface PickedFile {
   uri: string;
   name: string;
   mime: string;
+  /** أبعاد الصورة إن عرفها المنتقي · تُصغَّر بها صورة رمز الفاتورة قبل قراءته (ق٠-٣) */
+  width?: number;
+  height?: number;
 }
 
 const SIZE_WARN = 50 * 1024 * 1024;
@@ -44,6 +47,7 @@ export async function pickFromGallery(mediaTypes: ImagePicker.MediaType[] = ['im
     uri: a.uri,
     name: a.fileName ?? `${a.type === 'video' ? 'مقطع' : 'صورة'}.${ext}`,
     mime: a.mimeType ?? (a.type === 'video' ? 'video/mp4' : 'image/jpeg'),
+    ...(a.width && a.height ? { width: a.width, height: a.height } : {}),
   };
 }
 
@@ -58,6 +62,7 @@ export async function captureWithCamera(mediaTypes: ImagePicker.MediaType[] = ['
     uri: a.uri,
     name: a.fileName ?? `تصوير · ${Date.now()}.${a.type === 'video' ? 'mp4' : 'jpg'}`,
     mime: a.mimeType ?? (a.type === 'video' ? 'video/mp4' : 'image/jpeg'),
+    ...(a.width && a.height ? { width: a.width, height: a.height } : {}),
   };
 }
 
