@@ -124,7 +124,7 @@ export function replaceMeters(
   });
 }
 
-/** تسجيل قراءة عداد (من فاتورة شراء مرتبطة) */
+/** تسجيل قراءة عداد بلا فاتورة · فاتورة الشراء لا تكتب هنا منذ E-7: سجلها يُشتق منها */
 export function addMeterReading(
   db: DB,
   meterId: string,
@@ -139,12 +139,29 @@ export function addMeterReading(
   );
 }
 
+/**
+ * سجل العداد يتبع فاتورته (المراجعة الشاملة 2026-11-13 · E-7): سطور فواتير الشراء الحيّة المربوطة به (عدادها وقراءتها ومبلغها وتاريخها
+ * ورقمها)، ومعها من جدول القراءات ما ليس من فاتورة (قراءات محضر الاستلام) · فتعديل الفاتورة يغيّر سطرها، وحذفها يُخرجه، واستعادتها
+ * تعيده · وسطرٌ كتبه إصدارٌ سابق لفاتورةٍ (مرجعه رقمها) لا يُعدّ مرتين ولا يبقى بعد حذفها
+ */
+const METER_ROWS_SQL = `
+  SELECT date, meter_reading AS reading, total_halalas AS amount_halalas, no AS ref FROM purchases
+   WHERE meter_id = ? AND deleted_at IS NULL
+  UNION ALL
+  SELECT r.date, r.reading, r.amount_halalas, r.ref FROM meter_readings r
+   WHERE r.meter_id = ? AND NOT EXISTS (SELECT 1 FROM purchases p WHERE p.no = r.ref)`;
+
 export function meterReadings(
   db: DB,
   meterId: string
 ): Array<{ date: string; reading: number | null; amount_halalas: number; ref: string }> {
-  return db.all(
-    `SELECT date, reading, amount_halalas, ref FROM meter_readings WHERE meter_id = ? ORDER BY date DESC`,
-    [meterId]
-  );
+  return db.all(`SELECT * FROM (${METER_ROWS_SQL}) ORDER BY date DESC, ref DESC`, [meterId, meterId]);
+}
+
+/** آخر قراءةٍ مسجّلة للعداد من سجله الحيّ · «القراءة السابقة» في فاتورة الشراء · وفاتورةٌ تُعدَّل لا تُقترح قراءتها هي */
+export function lastMeterReading(db: DB, meterId: string, exceptRef?: string): number | null {
+  const r = db.get<{ reading: number | null }>(
+    `SELECT reading FROM (${METER_ROWS_SQL}) WHERE reading IS NOT NULL AND ref != ? ORDER BY date DESC LIMIT 1`,
+    [meterId, meterId, exceptRef ?? '']);
+  return r?.reading ?? null;
 }

@@ -27,7 +27,7 @@ import {
   type PurchasePayMethod, type TaxStatus, isVatSettled, purchaseEditBlock, purchaseDeleteBlock, purchaseByQrKey, purchaseLookalike,
 } from '../src/domain/purchases';
 import { today as todayFn } from '../src/domain/dates';
-import { metersForPurchase } from '../src/domain/meters';
+import { metersForPurchase, lastMeterReading } from '../src/domain/meters';
 import { today, dfmt, daysBetween, toLocalISODate } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
 import { attachPicked, pickFile, captureWithCamera, pickFromGallery, type PickedFile } from '../src/ui/attach';
@@ -339,15 +339,15 @@ export default function Purchases() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, selectedSupplier, propertyId]
   );
+  const editingNo = useMemo(
+    () => (editingId ? db.get<{ no: string }>(`SELECT no FROM purchases WHERE id = ?`, [editingId])?.no : undefined),
+    [db, editingId]
+  );
+  // من سجل العداد الحيّ (E-7): فاتورةٌ محذوفة لا تُقترح قراءتها، والمعدَّلة لا تُقترح قراءتها هي
   const prevReading = useMemo(
-    () => (meterId
-      ? db.get<{ reading: number | null }>(
-          `SELECT reading FROM meter_readings WHERE meter_id = ? AND reading IS NOT NULL ORDER BY date DESC LIMIT 1`,
-          [meterId]
-        )?.reading ?? null
-      : null),
+    () => (meterId ? lastMeterReading(db, meterId, editingNo) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [db, version, meterId]
+    [db, version, meterId, editingNo]
   );
 
   const deriveAmounts = (patch: Partial<{ base: string; tax: string; total: string }>, mark: 'base' | 'tax' | 'total') => {
@@ -507,6 +507,7 @@ export default function Purchases() {
       amortize: number; amortize_months: number | null; exempt: number; exclude_from_vat: number;
       tax_status: string; exclude_reason: string; supplier_vatno: string;
       unit_id: string | null; property_id: string | null; subtotal_halalas: number;
+      meter_id: string | null; meter_reading: number | null;
     }>(`SELECT * FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
     // ولا يبقى من فاتورةٍ جديدة لم تُحفظ ملفٌ معلّق أو رمزٌ مقروء (المدقق الخارجي L٦: كان يُرفق صامتاً بالفاتورة المعدّلة)
@@ -518,7 +519,8 @@ export default function Purchases() {
     const u = p.unit_id ? db.get<{ property_id: string }>(`SELECT property_id FROM units WHERE id = ?`, [p.unit_id]) : undefined;
     setPropertyId(p.property_id ?? u?.property_id ?? '');
     setUnitSel(p.unit_id ? 'U:' + p.unit_id : p.property_id ? 'P:' + p.property_id : '');
-    setMeterId(''); setMeterReading('');
+    // العداد وقراءته من الفاتورة، فلا يُفكّ ربطه بحفظ التعديل (E-7)
+    setMeterId(p.meter_id ?? ''); setMeterReading(p.meter_reading != null ? String(p.meter_reading) : '');
     setSubtotal(fmt(Number(p.subtotal_halalas)).replace(/,/g, ''));
     setTaxStr(fmt(Number((p as unknown as { tax_halalas: number }).tax_halalas)).replace(/,/g, ''));
     setTotalStr(fmt(Number((p as unknown as { total_halalas: number }).total_halalas)).replace(/,/g, ''));

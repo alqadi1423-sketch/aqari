@@ -10,7 +10,6 @@ import { today } from './dates';
 import { pctOf, fmt as fmtH } from './money';
 import { postPurchaseToLedger, postPurchasePayment, voidEntryById, reverseEntryById, postEntry, purchaseExpenseAccount, vatRefundLines, vatRejectLines } from './accounting/post';
 import { validateLines, lineCosts, writePurchaseLines, purchaseAssets, clearPurchaseAssets, restorePurchaseAssets, requirePurchaseAssetsFree, purchaseAssetsMoved, purchaseCatchUp, type PurchaseLineInput } from './assets/purchaseLines';
-import { addMeterReading } from './meters';
 import { repostBlockers, repostCopy } from './accounting/repost';
 import { correctionDate, isFiledDate, requireISODate, requireOpenPeriod } from './vatFilings';
 import { t } from '../i18n';
@@ -246,6 +245,11 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
          input.subtotalHalalas, tax, total,
          taxStatus, input.excludeReason ?? '', supplierVat, existingId]
       );
+      // والعداد وقراءته يتبعان التعديل، فسجل العداد المشتق منها يتبعه (E-7) · ومدخلٌ بلا حقل العداد لا يمسّه
+      if (input.meterId !== undefined) {
+        db.run(`UPDATE purchases SET meter_id = ?, meter_reading = ? WHERE id = ?`,
+          [input.meterId ?? null, input.meterId ? (input.meterReading ?? null) : null, existingId]);
+      }
     } else {
       const qrKey = (input.qrKey ?? '').trim();
       rejectDuplicateQr(db, qrKey);
@@ -261,9 +265,6 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
          input.subtotalHalalas, tax, total, input.meterId ?? null, input.meterReading ?? null,
          new Date().toISOString(), qrKey]
       );
-      if (input.meterId) {
-        addMeterReading(db, input.meterId, input.meterReading ?? null, total, input.date, no);
-      }
     }
     const deductible = taxStatus === TS_DEDUCTIBLE;
     const assetLines = input.lines?.length

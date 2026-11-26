@@ -31,7 +31,7 @@ describe('E-7 · [متوسط] سجل العداد لا يتبع فاتورته �
     return { db, input };
   };
 
-  test.failing('تعديل الفاتورة يحدّث مبلغ سطر العداد وقراءته', () => {
+  test('تعديل الفاتورة يحدّث مبلغ سطر العداد وقراءته', () => {
     const { db, input } = setup();
     const id = savePurchase(db, input);
     savePurchase(db, { ...input, subtotalHalalas: 30000, totalHalalas: 30000, meterReading: 1100 }, id);
@@ -40,7 +40,7 @@ describe('E-7 · [متوسط] سجل العداد لا يتبع فاتورته �
       .toEqual([{ amount_halalas: 30000, reading: 1100 }]);
   });
 
-  test.failing('حذف الفاتورة يُخرج سطرها من سجل العداد وإجماليه', () => {
+  test('حذف الفاتورة يُخرج سطرها من سجل العداد وإجماليه', () => {
     const { db, input } = setup();
     const id = savePurchase(db, input);
     deletePurchase(db, id);
