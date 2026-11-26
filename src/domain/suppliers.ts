@@ -1,6 +1,6 @@
 /**
  * حفظ المورد في موضعٍ واحد (دراسة القائم · قرار المالك 2026-10-09 أولاً ٨):
- *  - تعديل اسمه يتبعه في فواتير شرائه (تربطه المشتريات باسمه)، فلا يسقط تاريخه من تقريره وكشفه
+ *  - تعديل اسمه يتبعه في فواتير شرائه (تربطه المشتريات باسمه)، فلا يسقط تاريخه من تقريره وكشفه · إلا المقفلة في إقرارٍ مقدَّم (A2.17)
  *  - مورد الغاز نوعاً للخدمة كالكهرباء والماء (قرار 2026-10-07: «عداد الغاز: يُضاف نوعاً للعدادات» · الهجرة ٤٠)
  */
 import type { DB } from '../db/adapter';
@@ -8,6 +8,7 @@ import { uid } from './ids';
 import { logAudit } from './audit';
 import { t } from '../i18n';
 import { isUtilityKind } from './meters';
+import { isPurchaseFiled, isVatSettled } from './purchases';
 
 export interface SupplierInput {
   name: string;
@@ -38,9 +39,14 @@ export function saveSupplier(db: DB, id: string | null, f: SupplierInput): strin
       db.run(
         `UPDATE suppliers SET name=?, vat=?, phone=?, category=?, default_category=?, default_amount_halalas=?, utility_type=? WHERE id=?`,
         [...fields, id]);
-      // فواتير شرائه تتبع اسمه الجديد
+      // فواتير شرائه تتبع اسمه الجديد · إلا المقفلة في إقرارٍ مقدَّم أو سُوّيت ضريبتها: اسمها لقطةٌ لا تُمسّ، فلا يتغير الكشف المساند لإقرارٍ
+      // بعد تقديمه (المراجعة الشاملة 2026-11-13 · A2.17)
       if (old && old.name.trim() !== name) {
-        db.run(`UPDATE purchases SET supplier_name = ? WHERE TRIM(supplier_name) = TRIM(?)`, [name, old.name]);
+        for (const p of db.all<{ id: string; s: string | null }>(
+          `SELECT id, refund_status AS s FROM purchases WHERE TRIM(supplier_name) = TRIM(?)`, [old.name])) {
+          if (isVatSettled(p.s) || isPurchaseFiled(db, p.id)) continue;
+          db.run(`UPDATE purchases SET supplier_name = ? WHERE id = ?`, [name, p.id]);
+        }
       }
     } else {
       sid = uid();
