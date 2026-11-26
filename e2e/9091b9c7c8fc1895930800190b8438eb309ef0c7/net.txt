@@ -1,0 +1,12 @@
+-- no default network: restarting mobile data
+-- still none: toggling airplane mode
+== aqari-e2e-window.example.com
+Wifi is disabled
+Wifi scanning is always available
+Active default network: 101
+  NetworkAgentInfo{network{101}  handle{437197393933}  ni{MOBILE[HSPA] CONNECTED extra: epc.tmobile.com} created=2026-11-26T23:17:50.562Z Score(Policies : EVER_EVALUATED&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  created 151730 firstValidated 151803 lastValidated 151803  lp{{InterfaceName: et
+== aqari-e2e-window-end.example.com
+Wifi is disabled
+Wifi scanning is always available
+Active default network: 102
+  NetworkAgentInfo{network{102}  handle{441492361229}  ni{MOBILE[HSPA] CONNECTED extra: epc.tmobile.com} created=2026-11-26T23:19:58.024Z Score(Policies : EVER_EVALUATED&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)  created 279210 firstValidated 279270 lastValidated 279270  lp{{InterfaceName: et
