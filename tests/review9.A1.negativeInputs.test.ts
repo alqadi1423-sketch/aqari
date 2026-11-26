@@ -16,7 +16,7 @@ import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { confirmContract, renewContract, RuleViolation } from '@/domain/contracts/service';
 import { createReservation } from '@/domain/reservations';
 
-test.failing('A1-7 تأمين سالب في توثيق العقد يُرفض', () => {
+test('A1-7 تأمين سالب في توثيق العقد يُرفض', () => {
   const db = memDb();
   const u = addUnit(db, addProperty(db, { name: 'عقار سالب مصطنع' }), { unit_no: 'S-1' });
   expect(() => confirmContract(db, contractInput(u, { tenant: 'مستأجر سالب مصطنع', idNumber: '1000000968',
@@ -24,14 +24,14 @@ test.failing('A1-7 تأمين سالب في توثيق العقد يُرفض', (
   db.close();
 });
 
-test.failing('A1-7 عربون حجز سالب يُرفض', () => {
+test('A1-7 عربون حجز سالب يُرفض', () => {
   const db = memDb();
   const u = addUnit(db, addProperty(db, { name: 'عقار سالب مصطنع' }), { unit_no: 'S-2' });
   expect(() => createReservation(db, { unitId: u, name: 'حاجز مصطنع', phone: '', depositHalalas: -50000, expiryDate: '2027-01-01' })).toThrow();
   db.close();
 });
 
-test.failing('A1-7 تأمين إضافي سالب في التجديد يُرفض', () => {
+test('A1-7 تأمين إضافي سالب في التجديد يُرفض', () => {
   const db = memDb();
   const u = addUnit(db, addProperty(db, { name: 'عقار سالب مصطنع' }), { unit_no: 'S-3' });
   const a = confirmContract(db, contractInput(u, { tenant: 'مستأجر سالب مصطنع', idNumber: '1000000976',

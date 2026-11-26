@@ -370,7 +370,7 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
       ) : null}
       <Row>
         <View style={{ flex: 1 }}>
-          <Field label={t('lease.valueField')} value={state.value} onChange={(v) => set('value', v)} keyboard="numeric" ltr error={form.errorField === 'value'} />
+          <Field label={t('lease.valueField')} value={state.value} onChange={(v) => set('value', v)} keyboard="money" ltr error={form.errorField === 'value'} />
         </View>
         <View style={{ flex: 1 }}>
           <SelectField label="دورية الدفعات" value={state.cycle}
@@ -380,11 +380,11 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
       </Row>
       <Row>
         <View style={{ flex: 1 }}>
-          <Field label={t('lease.renewServices')} keyboard="numeric" ltr value={servicesText}
+          <Field label={t('lease.renewServices')} keyboard="money" ltr value={servicesText}
             onChange={(v) => { setServicesText(v); set('split', { ...formSplit(state), servicesHalalas: toHalalas(v) }); }} />
         </View>
         <View style={{ flex: 1 }}>
-          <Field label={t('lease.renewParking')} keyboard="numeric" ltr value={parkingText}
+          <Field label={t('lease.renewParking')} keyboard="money" ltr value={parkingText}
             onChange={(v) => { setParkingText(v); set('split', { ...formSplit(state), parkingHalalas: toHalalas(v) }); }} />
           {/* ما بقي من إجمالي الملف بعد الإيجار والخدمات والمواقف: فرقٌ يُعرض ولا يُوزَّع (دراسة القائم) */}
           {state.extras && revenueSplitOf(state.extras).otherHalalas
@@ -408,7 +408,7 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
       <DateField label="تاريخ النهاية" value={state.end} onChange={(v) => set('end', v)} error={form.errorField === 'end'} />
       <Row>
         <View style={{ flex: 1 }}>
-          <Field label="مبلغ التأمين" value={state.deposit} onChange={(v) => set('deposit', v)} keyboard="numeric" ltr />
+          <Field label="مبلغ التأمين" value={state.deposit} onChange={(v) => set('deposit', v)} keyboard="money" ltr />
         </View>
         <View style={{ flex: 1 }}>
           <SelectField label="جهة قبض التأمين" value={state.depositHolder}

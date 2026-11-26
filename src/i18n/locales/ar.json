@@ -1345,5 +1345,22 @@
     "accountDrill": "قيود {{name}} ({{n}})",
     "accountDrillEmpty": "لا قيود على هذا الحساب في هذه الفترة",
     "accountDrillAccrual": "بأساس الاستحقاق تتوزع الفاتورة المستهلكة على أشهرها، والقيود هنا بتواريخها"
+  },
+  "money": {
+    "negative": "السالب لا يُقبل في {{field}}، والمكتوب {{value}} · اكتبه بلا إشارة السالب",
+    "notInteger": "{{field}} ليس مبلغاً صحيحاً بالهللات: {{value}}",
+    "commissionOver": "العمولة ({{commission}}) أكبر من مبلغ التقبيل نفسه ({{amount}})",
+    "fieldValue": "قيمة العقد",
+    "fieldDeposit": "مبلغ التأمين",
+    "fieldServices": "مبلغ الخدمات",
+    "fieldParking": "مبلغ المواقف",
+    "fieldExtraDeposit": "التأمين الإضافي",
+    "fieldReservationDeposit": "العربون",
+    "fieldKeyMoney": "مبلغ التقبيل",
+    "fieldCommission": "العمولة",
+    "integrityName": "لا مبلغ سالب في العقود والحجوزات وصفقات التقبيل",
+    "integrityValue": "{{contracts}} عقد · {{reservations}} حجز · {{deals}} صفقة تقبيل",
+    "integrityFix": "{{contracts}} عقد · {{reservations}} حجز · {{deals}} صفقة تقبيل · مبالغ سالبة دخلت قبل منعها فلا قيد لها أو قيدها ناقص · يُلغى المستند ويُعاد إدخاله بمبلغه الصحيح",
+    "syncRejected": "مبلغ سالب من جهاز عضو ({{field}} {{value}}) · لا يُطبَّق"
   }
 }

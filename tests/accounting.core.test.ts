@@ -170,7 +170,7 @@ describe('المحرّك المحاسبي — الأساس', () => {
     });
     postContractDeposit(db, c);
     const checks = integrityChecks(db);
-    expect(checks).toHaveLength(15); // ومعها مطابقة الرصيد الدائن 2410 (مراجعة التثبيت #63) و«مرآة واحدة لكل أصل» (المراجعة ٧ · النتيجة ٣) و«كل تاريخ بصيغة سنة-شهر-يوم» (D-2)
+    expect(checks).toHaveLength(16); // ومعها مطابقة الرصيد الدائن 2410 (مراجعة التثبيت #63) و«مرآة واحدة لكل أصل» (المراجعة ٧ · النتيجة ٣) و«كل تاريخ بصيغة سنة-شهر-يوم» (D-2) و«لا مبلغ سالب» (A1-7)
     for (const ch of checks) expect(ch.ok).toBe(true);
     db.close();
   });

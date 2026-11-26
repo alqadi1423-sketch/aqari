@@ -1345,5 +1345,22 @@
     "accountDrill": "{{name}} entries ({{n}})",
     "accountDrillEmpty": "No entries on this account in this period",
     "accountDrillAccrual": "On the accrual basis an amortized purchase is spread over its months; the entries here are shown on their dates"
+  },
+  "money": {
+    "negative": "A negative amount is not accepted in {{field}}; {{value}} was entered · type it without the minus sign",
+    "notInteger": "{{field}} is not a whole amount in halalas: {{value}}",
+    "commissionOver": "The commission ({{commission}}) is larger than the key money amount itself ({{amount}})",
+    "fieldValue": "Contract value",
+    "fieldDeposit": "Deposit amount",
+    "fieldServices": "Services amount",
+    "fieldParking": "Parking amount",
+    "fieldExtraDeposit": "Additional deposit",
+    "fieldReservationDeposit": "Reservation deposit",
+    "fieldKeyMoney": "Key money amount",
+    "fieldCommission": "Commission",
+    "integrityName": "No negative amount in contracts, reservations or key money deals",
+    "integrityValue": "{{contracts}} contracts · {{reservations}} reservations · {{deals}} key money deals",
+    "integrityFix": "{{contracts}} contracts · {{reservations}} reservations · {{deals}} key money deals · negative amounts entered before they were blocked, with no entry or a short one · cancel the document and enter it again with its correct amount",
+    "syncRejected": "Negative amount from a member device ({{field}} {{value}}) · not applied"
   }
 }

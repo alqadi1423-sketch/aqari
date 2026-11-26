@@ -1058,7 +1058,7 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
       />
       {durMonths === 'custom' && <DateField label="تاريخ نهاية العقد الجديد" value={customEnd} onChange={setCustomEnd} />}
       <Row>
-        <View style={{ flex: 1 }}><Field label="قيمة العقد الجديدة" value={value} onChange={setValue} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label="قيمة العقد الجديدة" value={value} onChange={setValue} keyboard="money" ltr /></View>
         <View style={{ flex: 1 }}><Field label="نسبة الزيادة ٪" value={raise} onChange={applyRaise} keyboard="numeric" ltr /></View>
       </Row>
       <Row>
@@ -1068,11 +1068,11 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
             onPick={setCycle} />
         </View>
         {/* استلام التأمين وترحيله من قسم التأمينات · ومن لا يملكه يجدد بالترحيل الافتراضي */}
-        {depPerm.add ? <View style={{ flex: 1 }}><Field label="تأمين إضافي" value={extraDeposit} onChange={setExtraDeposit} keyboard="numeric" ltr /></View> : null}
+        {depPerm.add ? <View style={{ flex: 1 }}><Field label="تأمين إضافي" value={extraDeposit} onChange={setExtraDeposit} keyboard="money" ltr /></View> : null}
       </Row>
       <Row>
-        <View style={{ flex: 1 }}><Field label={t('lease.renewServices')} value={servicesAmt} onChange={setServicesAmt} keyboard="numeric" ltr /></View>
-        <View style={{ flex: 1 }}><Field label={t('lease.renewParking')} value={parkingAmt} onChange={setParkingAmt} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label={t('lease.renewServices')} value={servicesAmt} onChange={setServicesAmt} keyboard="money" ltr /></View>
+        <View style={{ flex: 1 }}><Field label={t('lease.renewParking')} value={parkingAmt} onChange={setParkingAmt} keyboard="money" ltr /></View>
       </Row>
       {depPerm.add && Number(c.deposit_halalas) > 0 && !settledOn && (
         <Pressable onPress={() => setCarry((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>
@@ -1222,17 +1222,17 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         <>
           <Row>
             <View style={{ flex: 1 }}>
-              <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="numeric" ltr />
+              <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="money" ltr />
             </View>
             <View style={{ flex: 1 }}>
-              <Field label="المبلغ المسترَد للمستأجر" value={refund || (dedH ? fmt(autoRefund).replace(/,/g, '') : '')} onChange={setRefund} keyboard="numeric" ltr />
+              <Field label="المبلغ المسترَد للمستأجر" value={refund || (dedH ? fmt(autoRefund).replace(/,/g, '') : '')} onChange={setRefund} keyboard="money" ltr />
             </View>
           </Row>
           {refundOver ? <T size={11.5} color={C.rose} style={{ marginBottom: 10 }}>{t('deposit.refundOverLeft', { left: fmt(autoRefund) })}</T> : null}
           <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
           {arrearsDue > 0 && dedH > 0 ? (
             <>
-              <Field label={t('deposit.arrearsLabel')} value={arrears || fmt(arrearsH).replace(/,/g, '')} onChange={setArrears} keyboard="numeric" ltr error={!!arrearsOver} />
+              <Field label={t('deposit.arrearsLabel')} value={arrears || fmt(arrearsH).replace(/,/g, '')} onChange={setArrears} keyboard="money" ltr error={!!arrearsOver} />
               <T size={11.5} color={arrearsOver ? C.rose : C.muted} style={{ marginBottom: 10 }}>{arrearsOver ?? t('deposit.arrearsHint', { due: fmt(arrearsDue) })}</T>
             </>
           ) : null}
@@ -1371,11 +1371,11 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
       </View>
       <DateField label="تاريخ التسوية" value={date} onChange={setDate} />
       <CostCenterField value={cc} onChange={setCc} />
-      <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="numeric" ltr />
+      <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="money" ltr />
       <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
       {arrearsDue > 0 && toHalalas(deduction) > 0 ? (
         <>
-          <Field label={t('deposit.arrearsLabel')} value={arrears || fmt(arrearsH).replace(/,/g, '')} onChange={setArrears} keyboard="numeric" ltr error={!!arrearsOver} />
+          <Field label={t('deposit.arrearsLabel')} value={arrears || fmt(arrearsH).replace(/,/g, '')} onChange={setArrears} keyboard="money" ltr error={!!arrearsOver} />
           <T size={11.5} color={arrearsOver ? C.rose : C.muted} style={{ marginTop: -4, marginBottom: 10 }}>{arrearsOver ?? t('deposit.arrearsHint', { due: fmt(arrearsDue) })}</T>
         </>
       ) : null}
@@ -1392,7 +1392,7 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
           options={[{ value: 'y', label: t('deposit.received') }, { value: 'n', label: t('deposit.receivedNo') }]}
           onPick={(v) => setReceived(v === 'y')} />
       ) : null}
-      <Field label="المبلغ المسترَد للمستأجر" value={refund} onChange={setRefund} keyboard="numeric" ltr />
+      <Field label="المبلغ المسترَد للمستأجر" value={refund} onChange={setRefund} keyboard="money" ltr />
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 11, marginBottom: 10 }}>
         <Row style={{ justifyContent: 'space-between' }}>
           <T size={12.5} bold>الفرق (خصم + مسترَد مقابل الأصلي):</T>
@@ -1453,11 +1453,11 @@ function KeyMoneySheet({ contract, onClose, onDone }: { contract: ContractRow; o
         <View style={{ flex: 1 }}><Field label="المتنازل له (الطرف الداخل)" value={incoming} onChange={setIncoming} /></View>
       </Row>
       <Row>
-        <View style={{ flex: 1 }}><Field label="مبلغ التقبيل الإجمالي" value={amount} onChange={setAmount} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label="مبلغ التقبيل الإجمالي" value={amount} onChange={setAmount} keyboard="money" ltr /></View>
         <View style={{ flex: 1 }}><DateField label="تاريخ الاتفاق" value={date} onChange={setDate} /></View>
       </Row>
       <CostCenterField value={cc} onChange={setCc} />
-      <Field label="عمولة الشركة/المالك" value={commission} onChange={setCommission} keyboard="numeric" ltr />
+      <Field label="عمولة الشركة/المالك" value={commission} onChange={setCommission} keyboard="money" ltr />
       {toHalalas(commission) > 0 && (
         <>
           <SelectField label="طريقة استلام العمولة" value={method}

@@ -53,6 +53,7 @@ import { createHandoverForContract } from '../handover/service';
 import { normalizePhone } from '../phone';
 import { rentRevenueLines } from '../accounting/rentSplit';
 import { t } from '../../i18n';
+import { firstMoneyError } from '../moneyGuard';
 
 export class RuleViolation extends Error {
   /** الحقل المسبِّب · تظلّله الواجهة بالأحمر */
@@ -248,6 +249,9 @@ export function confirmContract(db: DB, inputRaw: ContractDraftInput, draftId?: 
     draftId
   );
   if (err) throw new RuleViolation(err, lastContractErrorField());
+  // التأمين والخدمات والمواقف غير سالبة (A1-7): التأمين −١٬٠٠٠ كان يُحفظ بلا قيد فيحمرّ فحص التأمينات، والخدمات السالبة تُصفَّر بصمت
+  const moneyBad = firstMoneyError([['Deposit', input.depositHalalas], ['Services', input.servicesHalalas], ['Parking', input.parkingHalalas]]);
+  if (moneyBad) throw new RuleViolation(moneyBad.message);
 
   return db.transaction(() => {
     if (draftId) {
@@ -534,6 +538,10 @@ export function renewWarnings(db: DB, contractId: string, input: Partial<RenewIn
   if (start && c.end && start <= c.end) warn.push('العقد الجديد يجب أن يبدأ بعد ' + c.end.split('-').reverse().join('/'));
   if (start && end && start >= end) warn.push('تاريخ النهاية يجب أن يقع بعد البداية');
   if (!valueHalalas) warn.push('أدخل قيمة العقد');
+  // والمبالغ غير سالبة (A1-7): التأمين الإضافي −٤٠٠ مع ترحيل ١٬٠٠٠ كان يجعل تأمين الجديد ٦٠٠ ودفتره ١٬٠٠٠ فتعلق ٤٠٠ في 2400
+  const moneyBad = firstMoneyError([['Value', valueHalalas], ['ExtraDeposit', input.extraDepositHalalas],
+    ['Services', input.servicesHalalas], ['Parking', input.parkingHalalas]]);
+  if (moneyBad) warn.push(moneyBad.message);
   if (start && end) {
     const clash = findContractConflict(db, c.unit_id, start, end, c.id);
     if (clash) warn.push('تتداخل المدة مع العقد ' + (clash.contract_no || ''));

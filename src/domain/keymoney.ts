@@ -14,6 +14,9 @@ import { postKeyMoneyCommission } from './accounting/post';
 import { keyMoneyBlockReason, getContract } from './contracts/rules';
 import { logAudit } from './audit';
 import { requireGivenDate, requireOpenPeriod } from './vatFilings';
+import { firstMoneyError } from './moneyGuard';
+import { t } from '../i18n';
+import { fmt } from './money';
 
 export interface KeyMoneyInput {
   unitId: string;
@@ -31,6 +34,11 @@ export interface KeyMoneyInput {
 export function recordKeyMoneyDeal(db: DB, input: KeyMoneyInput): string {
   if (!input.outgoing.trim() || !input.incoming.trim() || !input.amountHalalas)
     throw new Error('أدخل اسم الطرفين والمبلغ الإجمالي');
+  // المبلغ والعمولة غير سالبين، والعمولة لا تتجاوز مبلغ التقبيل (A1-7)
+  const moneyBad = firstMoneyError([['KeyMoney', input.amountHalalas], ['Commission', input.commissionHalalas]]);
+  if (moneyBad) throw new Error(moneyBad.message);
+  if (input.commissionHalalas > input.amountHalalas)
+    throw new Error(t('money.commissionOver', { commission: fmt(input.commissionHalalas), amount: fmt(input.amountHalalas) }));
   if (input.contractId) {
     const c = getContract(db, input.contractId);
     const block = keyMoneyBlockReason(c ?? null);

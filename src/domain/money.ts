@@ -24,6 +24,14 @@ export function toHalalas(riyals: string | number | null | undefined): number {
   return m[1] === '-' ? -abs : abs;
 }
 
+/**
+ * نص خانة المال كما يُكتب: بلا إشارة سالب ولا موجب (المراجعة الشاملة 2026-11-13 · A1-7) · لوحة الأرقام في أندرويد فيها «-»
+ * وtoHalalas يقبلها، فكان التأمين −١٬٠٠٠ يصل إلى المجال · والإشارات الشبيهة بالشرطة كذلك
+ */
+export function moneyInputText(v: string): string {
+  return v.replace(/[-+\u2212\u2010-\u2015\uFE63\uFF0D]/g, '');
+}
+
 export function toRiyals(halalas: number): number {
   return halalas / 100;
 }

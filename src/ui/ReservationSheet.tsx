@@ -42,7 +42,7 @@ export function ReservationSheet({
       <Field label="اسم صاحب الحجز" value={name} onChange={setName} />
       <Field label="رقم الجوال" value={phone} onChange={setPhone} keyboard="phone-pad" ltr />
       <Row>
-        <View style={{ flex: 1 }}><Field label="مبلغ العربون" value={deposit} onChange={setDeposit} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label="مبلغ العربون" value={deposit} onChange={setDeposit} keyboard="money" ltr /></View>
         <View style={{ flex: 1 }}><DateField label="الحجز ساري حتى تاريخ" value={expiry} onChange={setExpiry} /></View>
       </Row>
       <CostCenterField value={cc} onChange={setCc} />

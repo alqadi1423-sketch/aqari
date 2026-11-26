@@ -251,7 +251,29 @@ export function integrityChecks(db: DB): IntegrityCheck[] {
     value: t(oddTotal ? 'dates.integrityFix' : 'dates.integrityValue', odd),
   });
 
+  // مبالغ سالبة دخلت قبل منعها (المراجعة الشاملة 2026-11-13 · A1-7 · البيانات القائمة): تأمين عقدٍ أو عربونٌ سالب حُفظ بلا قيد،
+  // فيُعرض هنا بعدده ليُلغى مستنده ويُعاد إدخاله
+  const neg = negativeMoneyCounts(db);
+  const negTotal = neg.contracts + neg.reservations + neg.deals;
+  out.push({
+    name: t('money.integrityName'),
+    ok: negTotal === 0,
+    value: t(negTotal ? 'money.integrityFix' : 'money.integrityValue', neg),
+  });
+
   return out;
+}
+
+/** صفوفٌ حيّة بمبلغٍ سالب: العقد (القيمة والتأمين والخدمات والمواقف) والحجز (العربون) وصفقة التقبيل (المبلغ والعمولة) · A1-7 */
+export function negativeMoneyCounts(db: DB): { contracts: number; reservations: number; deals: number } {
+  const n = (sql: string) => Number(db.get<{ n: number }>(sql)!.n);
+  const split = hasCol(db, 'contracts', 'services_halalas') ? 'OR services_halalas < 0 OR parking_halalas < 0' : '';
+  return {
+    contracts: n(`SELECT COUNT(*) AS n FROM contracts WHERE deleted_at IS NULL
+      AND (value_halalas < 0 OR deposit_halalas < 0 ${split})`),
+    reservations: n(`SELECT COUNT(*) AS n FROM reservations WHERE deleted_at IS NULL AND deposit_halalas < 0`),
+    deals: n(`SELECT COUNT(*) AS n FROM key_money_deals WHERE deleted_at IS NULL AND (amount_halalas < 0 OR commission_halalas < 0)`),
+  };
 }
 
 /** صفوفٌ حيّة بتاريخٍ ليس بصيغة سنة-شهر-يوم ويومٍ قائم · date() في SQLite يعيد غير المكتوب لـ«2026-02-31» ولا شيء لـ«2026-3-15» */

@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { C, FONT, FONT_BOLD, FONT_MED, RADIUS, TYPE, BADGE_STYLES } from './theme';
 import { useFs } from './store';
-import { fmt } from '../domain/money';
+import { fmt, moneyInputText } from '../domain/money';
 import { Icon, Riyal, type IconName } from './icons';
 import { useMarkSheetDirty } from './sheetDirty';
 import { useLang } from '../i18n';
@@ -235,7 +235,8 @@ export function Field({
   label, value, onChange, placeholder, keyboard, multiline, disabled, ltr, error, secure,
 }: {
   label: string; value: string; onChange?: (v: string) => void; placeholder?: string;
-  keyboard?: 'numeric' | 'default' | 'phone-pad'; multiline?: boolean; disabled?: boolean; ltr?: boolean;
+  /** money: لوحة الأرقام، ولا تقبل الخانة إشارة السالب (A1-7) */
+  keyboard?: 'numeric' | 'money' | 'default' | 'phone-pad'; multiline?: boolean; disabled?: boolean; ltr?: boolean;
   /** الحقل سبب رفضاً · يُظلَّل بالأحمر */
   error?: boolean;
   /** كلمة مرور · تُخفى ولا تُقترح ولا تُحفظ في لوحة المفاتيح */
@@ -253,10 +254,10 @@ export function Field({
         accessibilityLabel={label || placeholder}
         testID={'field-' + (label || placeholder || '')}
         value={value}
-        onChangeText={(v) => { markDirty(); onChange?.(v); }}
+        onChangeText={(v) => { markDirty(); onChange?.(keyboard === 'money' ? moneyInputText(v) : v); }}
         placeholder={placeholder}
         placeholderTextColor="#B9BFC9"
-        keyboardType={keyboard === 'numeric' ? 'decimal-pad' : keyboard === 'phone-pad' ? 'phone-pad' : 'default'}
+        keyboardType={keyboard === 'numeric' || keyboard === 'money' ? 'decimal-pad' : keyboard === 'phone-pad' ? 'phone-pad' : 'default'}
         multiline={multiline}
         editable={!disabled}
         secureTextEntry={secure}

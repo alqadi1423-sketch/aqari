@@ -4,6 +4,7 @@
  */
 import type { DB } from '../db/adapter';
 import { requireCash } from './cashGuard';
+import { moneyError } from './moneyGuard';
 import { uid } from './ids';
 import { today, dfmt } from './dates';
 import { postReservationDeposit, postReservationForfeit, postReservationRefund } from './accounting/post';
@@ -22,6 +23,9 @@ export interface ReservationInput {
 export function createReservation(db: DB, input: ReservationInput): string {
   if (!input.name.trim() || !input.expiryDate)
     throw new Error('الرجاء إدخال اسم صاحب الحجز وتاريخ انتهاء الحجز');
+  // العربون غير سالب (A1-7): −٥٠٠ كان يُحفظ بلا قيد فيحمرّ فحص عربون الحجوزات
+  const depositErr = moneyError('ReservationDeposit', input.depositHalalas);
+  if (depositErr) throw new Error(depositErr);
   if (unitCurrentContract(db, input.unitId))
     throw new Error('هذه الوحدة مؤجَّرة حالياً بعقد سارٍ · لا يمكن حجزها');
   const existing = unitActiveReservation(db, input.unitId);

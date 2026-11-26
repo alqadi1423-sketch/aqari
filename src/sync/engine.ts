@@ -48,6 +48,7 @@ import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, Wri
 import { isoCmp, isoNorm } from './isoTime';
 import { redactForReport } from '../domain/redact';
 import { mulQty, pctOf, fmt } from '../domain/money';
+import { moneyFieldLabel, type MoneyField } from '../domain/moneyGuard';
 import { OWNER_ONLY_COLS, POSTED_PURCHASE_COLS, HANDOVER_FORM_COLS } from '../domain/access/opWrites';
 import { READ_TABLE } from '../domain/access/readSections';
 
@@ -1948,6 +1949,28 @@ const FROZEN_COLS: Record<string, string[]> = {
   payment_lines: ['payment_id', 'method', 'bank_id', 'amount_halalas'],
   payment_allocations: ['payment_id', 'installment_id', 'amount_halalas'],
 };
+/**
+ * مبالغ العقد والحجز وصفقة التقبيل غير سالبة (المراجعة الشاملة 2026-11-13 · A1-7): جهاز عضوٍ بإصدارٍ قبل المنع يكتب تأميناً أو عربوناً
+ * سالباً بلا قيد فيحمرّ فحصا التأمينات والعربون، والعقد الموثَّق لا يُعدَّل · فيُرفض على جهاز المالك · وسالبٌ قائمٌ هنا قبل المنع لا يُرفض
+ * تعديلٌ يُبقيه كما هو (يُعرض في فحص المطابقة ليُلغى مستنده)
+ */
+const MONEY_COLS: Record<string, Array<[string, MoneyField]>> = {
+  contracts: [['value_halalas', 'Value'], ['deposit_halalas', 'Deposit'], ['services_halalas', 'Services'], ['parking_halalas', 'Parking']],
+  reservations: [['deposit_halalas', 'ReservationDeposit']],
+  key_money_deals: [['amount_halalas', 'KeyMoney'], ['commission_halalas', 'Commission']],
+};
+function memberMoneyCheck(db: DB, doc: RemoteDoc, row: RowData): void {
+  const cols = MONEY_COLS[doc.t];
+  if (!cols || getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
+  const cur = db.get<Record<string, unknown>>(`SELECT * FROM "${doc.t}" WHERE id = ?`, [doc.k]);
+  for (const [c, field] of cols) {
+    if (!(c in row) || row[c] == null) continue;
+    const v = Number(row[c]);
+    if (!(v < 0) || (cur && Number(cur[c]) === v)) continue;
+    throw new Error(tr('money.syncRejected', { field: moneyFieldLabel(field, 'ar'), value: fmt(v), lng: 'ar' }));
+  }
+}
+
 function collectionRowCheck(db: DB, doc: RemoteDoc, row: RowData): void {
   const frozen = FROZEN_COLS[doc.t];
   if (!frozen || getSyncState(db, 'membership')) return;
@@ -3150,6 +3173,7 @@ function applyOne(
         const row = stripDerived(doc.t, doc.d!);
         if (doc.t === 'purchases') renumberJoiningCollision(db, 'purchases', doc.k, row.no);
         collectionRowCheck(db, doc, row);
+        memberMoneyCheck(db, doc, row);
         assetBasisCheck(db, doc, row);
         // وصفّ فاتورة الشراء «قابلة للخصم» من عضوٍ والمنشأة غير مسجّلة (المدقق الخارجي ض١): الإقرار يقرأ الوضع المخزّن، فلا يُطبَّق
         if (doc.t === 'purchases' && !getSyncState(db, 'membership') && byMember(db, doc, true) && row.tax_status === TS_DEDUCTIBLE
