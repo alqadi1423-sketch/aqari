@@ -2252,8 +2252,10 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   if (local) db.run(`DELETE FROM journal_lines WHERE entry_id = ?`, [doc.k]); // مسودة · سطورها تُستبدل
   renumberJoiningCollision(db, 'journal_entries', doc.k, d.no);
   const entry: RowData = { ...d, status: posted ? 'قيد الإنشاء' : d.status, reversed_by: null };
-  // المسودة بلا بنكٍ مختار لا تحمل عموده (buildDoc): فغيابه «بلا بنك» لا «كما كان» · والمرحّل لا يُقرأ منه بعد ترحيله (الهجرة ٦٧)
-  if (!posted && cols.e.has('draft_bank_id') && !('draft_bank_id' in entry)) entry.draft_bank_id = null;
+  // المسودة بلا بنكٍ مختار لا تحمل عموده (buildDoc): فغيابه «بلا بنك» لا «كما كان» (الهجرة ٦٧) · والمرحّل كذلك: مالكٌ بإصدارٍ أقدم
+  // رحّل مسودة البنك من المحفظة فمستنده بلا الحقل، وإبقاؤه هنا يرفعه ربطُ عاكسه من هذا الجهاز والسحابة بلا حقله فترفضه القواعد
+  // (orgOnlyLinksReversal) نهائياً · المدقق المستقل للمرحلة ٣
+  if (cols.e.has('draft_bank_id') && !('draft_bank_id' in entry)) entry.draft_bank_id = null;
   upsertRow(db, 'journal_entries', entry, cols.e);
   for (const l of doc.lines ?? []) {
     const keys = Object.keys(l).filter((c) => cols.l.has(c));
