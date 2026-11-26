@@ -19,7 +19,7 @@ import { SAME_KEY_SQL, sameKeyParams, keepInOrder, lineKeyBase, sameLineKey, sta
 import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
-import { nextPurchaseNo, PAY_LABEL } from '../domain/purchases';
+import { nextPurchaseNo, PAY_LABEL, supplierIdByName } from '../domain/purchases';
 import { postedAccum } from '../domain/assets/depreciation';
 import { t as tr } from '../i18n';
 import { isDbFault, TransactionAbortedError, type DB, type SqlValue } from '../db/adapter';
@@ -410,6 +410,17 @@ function keepUnknownOriginalEnd(db: DB, id: string, row: RowData, fresh: boolean
   if (row.original_end || (!('original_end' in row) && !fresh)) return;
   db.run(`UPDATE contracts SET original_end = NULL WHERE id = ? AND status = ? AND cancel_date IS NOT NULL AND end = cancel_date
             AND (original_end IS NULL OR original_end = end)`, [id, 'ملغى']); // i18n-exempt: حالة العقد المخزّنة
+}
+
+/**
+ * فاتورة شراءٍ من جهازٍ بإصدارٍ أقدم (بلا supplier_id · الهجرة ٦٦) غيّر موردها: المعرّف هنا لموردها السابق، وإبقاؤه يُريها تحت غير موردها
+ * ويكتب تغييرُ اسم السابق اسمَه عليها · فتُربط بالمورد الحيّ الواحد بالاسم الجديد كما يربطها الحفظ (وإلا بلا معرّف، فتُرى باسمها) ·
+ * والاسم نفسه يُبقي المعرّف: لقطة المقفلة في إقرارٍ مقدَّم تبقى مربوطةً بموردها بعد تغيير اسمه (المدقق المستقل للمرحلة ٣)
+ */
+function legacySupplierId(db: DB, id: string, row: RowData, cols: Set<string>): void {
+  if (!cols.has('supplier_id') || 'supplier_id' in row || typeof row.supplier_name !== 'string') return;
+  const cur = db.get<{ n: string }>(`SELECT supplier_name AS n FROM purchases WHERE id = ?`, [id]);
+  if (cur && cur.n.trim() !== row.supplier_name.trim()) row.supplier_id = supplierIdByName(db, row.supplier_name);
 }
 
 /**
@@ -3239,6 +3250,7 @@ function applyOne(
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         noteViaMember(db, doc, row);
         noteInvoiceIssued(db, doc, row);
+        if (doc.t === 'purchases') legacySupplierId(db, doc.k, row, cols(doc.t));
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
         if (deadCarry) noteDeadCarry(db, doc.k, deadCarry.was, deadCarry.want);
