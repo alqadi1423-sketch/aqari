@@ -1469,5 +1469,9 @@
     "integrityName": "Every record points to an existing parent (no broken links between tables)",
     "integrityValue": "{{n}} broken links",
     "restoreNote": "The backup has {{n}} broken links between tables (a record pointing to a missing parent) · it is restored as is, and the count shows in the integrity check"
+  },
+  "printDoc": {
+    "page": "Page",
+    "of": "of"
   }
 }

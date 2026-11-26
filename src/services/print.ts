@@ -12,7 +12,7 @@ import type { DB } from '../db/adapter';
 import { fmt } from '../domain/money';
 import { dfmtOut, today } from '../domain/dates';
 import {
-  PRINT_CSS, letterhead, esc, shownVatNo, vatReturnVatNo, type CompanyInfo, type CopyKind,
+  PRINT_CSS, reportPageCss, letterhead, esc, shownVatNo, vatReturnVatNo, type CompanyInfo, type CopyKind,
   buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc,
   buildHandoverDoc, buildClaimDoc,
 } from '../domain/printDocs';
@@ -55,8 +55,8 @@ const issuedNow = (): string => {
 };
 
 /** توليد PDF باسم مفهوم · يعيد مساره */
-async function renderPdf(title: string, bodyHtml: string, filename: string): Promise<string> {
-  const html = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>${esc(title)}</title><style>${PRINT_CSS}</style></head><body>${bodyHtml}</body></html>`;
+async function renderPdf(title: string, bodyHtml: string, filename: string, extraCss = ''): Promise<string> {
+  const html = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>${esc(title)}</title><style>${PRINT_CSS}${extraCss}</style></head><body>${bodyHtml}</body></html>`;
   const { uri } = await Print.printToFileAsync({ html });
   const dir = new Directory(Paths.cache.uri + 'prints/');
   if (!dir.exists) dir.create({ intermediates: true });
@@ -115,7 +115,8 @@ async function outputPdf(db: DB, uri: string, title: string, filename: string, t
 /** مستند عام (التقارير) · نفس القشرة والهوية */
 export async function printHtmlDoc(title: string, bodyHtml: string, filename?: string): Promise<void> {
   const brand = '<div style="text-align:center;margin-top:22px;font-size:10.5px;color:#9AA1AD">صدر عبر تطبيق عقاري · أحد حلول منصة رِكز · ' + esc(issuedNow()) + '</div>';
-  const uri = await renderPdf(title, bodyHtml + brand, filename || title);
+  // طوله غير معلوم قبل الطباعة: «صفحة X من Y» في هامش كل صفحة بعدّاد المتصفح (E-11)
+  const uri = await renderPdf(title, bodyHtml + brand, filename || title, reportPageCss());
   await sharePdf(uri, title);
 }
 

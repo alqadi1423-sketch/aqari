@@ -104,6 +104,17 @@ export function letterhead(co: CompanyInfo, docTitle: string, docNo?: string, co
 const miniHead = (co: CompanyInfo, docTitle: string, docNo?: string): string =>
   `<div class="lh-mini"><span>${esc(co.name)}</span><span>${esc(docTitle)}${docNo ? ' · ' + esc(docNo) : ''}</span></div>`;
 
+/**
+ * ترقيم التقارير المتغيّرة الطول (القوائم والإقرار وتقارير الوحدات والعقارات والموردين · E-11): «صفحة X من Y» في صندوق هامش
+ * الصفحة يعدّه المتصفح نفسه، فلا يُحسب طولها قبل الطباعة · قرار المالك 2026-08-20 «ورقم الصفحة من الإجمالي إلزامي» ·
+ * والمستندات المرقّمة يدوياً (pageFooter) لا تأخذه فلا يتكرر الرقم
+ */
+export function reportPageCss(): string {
+  const q = (s: string) => '"' + s.replace(/["\\]/g, '') + '"';
+  return `@page{@bottom-center{content:${q(t('printDoc.page') + ' ')} counter(page) ${q(' ' + t('printDoc.of') + ' ')} counter(pages);`
+    + `font-family:'IBM Plex Sans Arabic','Segoe UI',Tahoma,sans-serif;font-size:9.5px;color:#5F6775}}`;
+}
+
 /** التذييل · رقم الصفحة من الإجمالي إلزامي في المرقَّم */
 export function pageFooter(pageNo: number, total: number, issuedAt: string): string {
   return `<div class="pfoot">
