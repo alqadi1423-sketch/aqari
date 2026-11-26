@@ -12,7 +12,7 @@ import type { DB } from '../db/adapter';
 import { fmt } from '../domain/money';
 import { dfmtOut, today } from '../domain/dates';
 import {
-  PRINT_CSS, reportPageCss, letterhead, esc, shownVatNo, vatReturnVatNo, type CompanyInfo, type CopyKind,
+  PRINT_CSS, reportPageCss, printFontFaceCss, letterhead, esc, shownVatNo, vatReturnVatNo, type CompanyInfo, type CopyKind,
   buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc,
   buildHandoverDoc, buildClaimDoc,
 } from '../domain/printDocs';
@@ -55,9 +55,36 @@ const issuedNow = (): string => {
   return `${dfmtOut(`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`)} ${two(d.getHours())}:${two(d.getMinutes())}`;
 };
 
+let printFonts: Promise<string> | null = null;
+/** خط الهوية للطباعة: ملفّا الوزنين Base64 مرةً في الجلسة (E-20) · وتعذّرهما يُبقي خط النظام ولا يوقف الطباعة */
+function printFontCss(): Promise<string> {
+  if (!printFonts) {
+    printFonts = (async () => {
+      try {
+        // expo-asset يُحمَّل عند الطباعة وحدها · وتعذّره (بيئةٌ بلا وحداته الأصلية) يُبقي خط النظام ولا يوقف الطباعة
+        const { Asset } = await import('expo-asset');
+        const read = async (mod: number): Promise<string | null> => {
+          const [a] = await Asset.loadAsync(mod);
+          return a?.localUri ? new File(a.localUri).base64() : null;
+        };
+        const [regular, bold] = await Promise.all([
+          read(require('../../assets/fonts/IBMPlexSansArabic_400Regular.ttf')),
+          read(require('../../assets/fonts/IBMPlexSansArabic_700Bold.ttf')),
+        ]);
+        return printFontFaceCss({ regular, bold });
+      } catch {
+        printFonts = null;
+        return '';
+      }
+    })();
+  }
+  return printFonts;
+}
+
 /** توليد PDF باسم مفهوم · يعيد مساره */
 async function renderPdf(title: string, bodyHtml: string, filename: string, extraCss = ''): Promise<string> {
-  const html = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>${esc(title)}</title><style>${PRINT_CSS}${extraCss}</style></head><body>${bodyHtml}</body></html>`;
+  const fonts = await printFontCss();
+  const html = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>${esc(title)}</title><style>${fonts}${PRINT_CSS}${extraCss}</style></head><body>${bodyHtml}</body></html>`;
   const { uri } = await Print.printToFileAsync({ html });
   const dir = new Directory(Paths.cache.uri + 'prints/');
   if (!dir.exists) dir.create({ intermediates: true });

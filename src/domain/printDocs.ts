@@ -32,6 +32,17 @@ export interface CompanyInfo {
 
 /* ═══════════ الهوية ═══════════ */
 
+/**
+ * خط الهوية مضمَّناً في الـPDF (المراجعة الشاملة 2026-11-13 · E-20): WebView الطباعة لا يرى خطوط التطبيق المحمّلة بـexpo-font،
+ * فيُضمَّن الوزنان ٤٠٠ و٧٠٠ Base64 من ملفات assets/fonts نفسها (ق٠-٢) · وما تعذّرت قراءته لا وجه له فيبقى خط النظام
+ */
+export function printFontFaceCss(fonts: { regular: string | null; bold: string | null }): string {
+  const face = (b64: string | null, weight: number) => (b64
+    ? `@font-face{font-family:'IBM Plex Sans Arabic';font-style:normal;font-weight:${weight};src:url(data:font/ttf;base64,${b64}) format('truetype')}`
+    : '');
+  return face(fonts.regular, 400) + face(fonts.bold, 700);
+}
+
 export const PRINT_CSS = `
   @page{size:A4;margin:20mm}
   *{box-sizing:border-box}
