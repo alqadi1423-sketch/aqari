@@ -4,7 +4,7 @@
 import type { DB } from '../db/adapter';
 import { today, daysBetween } from './dates';
 import { unitActiveReservation, unitCurrentContract, expireOldReservations } from './contracts/rules';
-import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentState, paymentCashSql, paymentAppliedSql, surplusCreditSql } from './contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentState, paymentCashSql, paymentAppliedSql, surplusCreditSql } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
 import { expenseByAccountAccrual, BASIS_ACCRUAL, type Basis } from './accrual';
 
@@ -374,25 +374,6 @@ export interface PropertyMapStatus {
   rented: number;
   total: number;
   reserved: number;
-}
-
-/** حالة العقار للخريطة · ألوان النموذج الخمسة */
-export function propertyMapStatus(db: DB, propertyId: string, T: string = today()): PropertyMapStatus {
-  const units = db.all<{ id: string }>(
-    `SELECT id FROM units WHERE property_id = ? AND deleted_at IS NULL`, [propertyId]
-  );
-  if (!units.length) return { key: 'empty', label: 'بلا وحدات', color: '#6B7280', pct: null, rented: 0, total: 0, reserved: 0 };
-  let rented = 0, reserved = 0;
-  for (const u of units) {
-    if (unitCurrentContract(db, u.id, T)) { rented++; continue; }
-    if (unitActiveReservation(db, u.id, T)) reserved++;
-  }
-  const pct = Math.round((rented / units.length) * 100);
-  const base = { pct, rented, total: units.length, reserved };
-  if (pct === 100) return { key: 'full', label: 'مؤجَّر بالكامل', color: '#1E6E5C', ...base };
-  if (rented === 0 && reserved > 0) return { key: 'held', label: 'محجوز', color: '#B08D3D', ...base };
-  if (rented === 0) return { key: 'vacant', label: 'شاغر بالكامل', color: '#AE4438', ...base };
-  return { key: 'partial', label: 'مؤجَّر جزئياً', color: '#C9A961', ...base };
 }
 
 /** نسبة الأيام المؤجَّرة خلال آخر 365 يوماً */

@@ -4,7 +4,7 @@ import { View, Image } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { Screen } from '../src/ui/Screen';
-import { Card, CardTitle, T, Num, EmptyState, Row, Badge, BtnPrimary, BtnGhost, Field } from '../src/ui/components';
+import { Card, CardTitle, T, EmptyState, Row, Badge, BtnPrimary, BtnGhost, Field } from '../src/ui/components';
 import { Sheet } from '../src/ui/Sheet';
 import { DateField } from '../src/ui/DateField';
 import { useApp } from '../src/ui/store';

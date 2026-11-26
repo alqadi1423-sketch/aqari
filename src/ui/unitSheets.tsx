@@ -52,7 +52,6 @@ export function UnitFormSheet({
   propertyId, unitId, onClose, onSaved,
 }: { propertyId?: string; unitId?: string; onClose: () => void; onSaved: () => void }) {
   const { db } = useApp();
-  const toast = useToast();
   // من يقرأ الوحدة بلا مبالغها لا يرى الإيجار ولا يكتبه: لا يُرفع منه (المراجعة #17 · الزر غير المسموح لا يظهر)
   const access = useAccess();
   const { t } = useLang();

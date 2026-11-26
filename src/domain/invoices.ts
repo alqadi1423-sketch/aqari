@@ -438,7 +438,6 @@ export { reverseEntryBySource };
 
 /* ═══════════ الإشعار الدائن (قرار المالك 2026-10-07 على #30) ═══════════ */
 
-export const KIND_INVOICE = 'invoice';
 export const KIND_CREDIT = 'credit_note';
 
 const hasKind = (db: DB): boolean => db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'kind');

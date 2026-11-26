@@ -176,10 +176,6 @@ export function deviceLetter(db: DB): string {
   return !v || v === NONE ? '' : v;
 }
 
-export function deviceLetterAssigned(db: DB): boolean {
-  return !!db.get(`SELECT 1 FROM meta WHERE key = ?`, [LETTER_KEY]);
-}
-
 export function setDeviceLetter(db: DB, letter: string): void {
   if (letter && !/^[A-Z]{1,2}$/.test(letter)) throw new Error('حرف جهاز غير صالح');
   db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`, [LETTER_KEY, letter || NONE]);

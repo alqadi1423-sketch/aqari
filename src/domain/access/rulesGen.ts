@@ -129,7 +129,6 @@ function linkLevels(schema: RulesSchema): string {
 }
 
 function guardFns(schema: RulesSchema): string {
-  const names = SYNC_TABLES.map((t) => t.name);
   // الجدول ونظيره «~pub» · المقارنة بالاسم كما هو بلا تقطيع: للطلب حدّ ألف تعبير، والدالة تعيد حساب وسائطها عند كل استعمال
   const both = (ts: string[]) => q(ts.flatMap((t) => [t, t + '~pub']));
   const special = SYNC_TABLES.filter((t) => !(t.pkCols.length === 1 && t.pkCols[0] === 'id'));

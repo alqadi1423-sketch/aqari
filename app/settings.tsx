@@ -8,7 +8,7 @@ import { applyScreenSecure } from '../src/services/screenSecure';
 import React, { useEffect, useMemo, useState } from 'react';
 import { CashShortNote } from '../src/ui/CashGate';
 import { cashShortfall } from '../src/domain/cashGuard';
-import { View, Modal, Pressable } from 'react-native';
+import { View, Pressable } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
 import { Screen } from '../src/ui/Screen';

@@ -138,12 +138,6 @@ export function createGroup(db: DB, me: string, name: string, members: string[],
   return id;
 }
 
-/** حقول المحادثة كما تُطبَّق من السحابة · لتعديلٍ محلي بعد نجاحه على الخادم */
-export function getThreadRow(db: DB, id: string): { by: string; at: string | null } {
-  const r = db.get<{ by: string; at: string | null }>(`SELECT created_by AS by, created_at AS at FROM chat_threads WHERE id = ?`, [id]);
-  return r ?? { by: '', at: null };
-}
-
 export function markRead(db: DB, threadId: string): void {
   const last = db.get<{ t: string | null }>(
     `SELECT MAX(COALESCE(server_ts, local_at)) AS t FROM chat_messages WHERE thread_id = ?`, [threadId])?.t;

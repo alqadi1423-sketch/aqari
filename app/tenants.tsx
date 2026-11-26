@@ -18,7 +18,6 @@ import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import { allInstallments } from '../src/domain/stats';
 import { today } from '../src/domain/dates';
-import { toHalalas } from '../src/domain/money';
 import { uid } from '../src/domain/ids';
 import { logAudit } from '../src/domain/audit';
 import { usePerm } from '../src/ui/access';

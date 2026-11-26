@@ -99,7 +99,6 @@ export default function Contracts() {
   const [fUnit, setFUnit] = useState('');
   const [fPeriod, setFPeriod] = useState('');
   const [fCycle, setFCycle] = useState('');
-  const [instSheetFor, setInstSheetFor] = useState<string | null>(null);
   const ready = useDeferredReady();
   const pager = usePager('contracts');
   const fsheet = useFilterSheet();
@@ -1008,7 +1007,6 @@ function ContractFileButton({ contractId, linked }: { contractId: string; linked
 /* ═══════════ التجديد ═══════════ */
 function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg?: string) => void }) {
   const { db } = useApp();
-  const toast = useToast();
   const depPerm = usePerm('deposits');
   const c = db.get<ContractRow>(CONTRACT_BY_ID, [contractId])!;
   const defaultStart = c.end ? addDays(c.end, 1) : today();
@@ -1198,7 +1196,6 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
 /* ═══════════ الإلغاء ═══════════ */
 function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg: string) => void }) {
   const { db } = useApp();
-  const toast = useToast();
   const c = db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId])!;
   const [date, setDate] = useState(today());
   const [reason, setReason] = useState('');
@@ -1369,7 +1366,6 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
 const RATING_OPTS = ['ممتاز', 'جيد', 'متوسط', 'ضعيف'];
 function RatingSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg: string) => void }) {
   const { db } = useApp();
-  const toast = useToast();
   const existing = db.get<{ on_time: string; payment_commit: string; contract_commit: string; unit_condition: string; neighbor_complaints: string; notes: string }>(
     `SELECT * FROM tenant_ratings WHERE contract_id = ?`, [contractId]
   );
@@ -1412,7 +1408,6 @@ function RatingSheet({ contractId, onClose, onDone }: { contractId: string; onCl
 function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg: string) => void }) {
   const { db } = useApp();
   const { t } = useLang();
-  const toast = useToast();
   const c = db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId])!;
   const existing = db.get<{ date: string; deduction_halalas: number; deduction_reason: string; refund_halalas: number; notes: string; deduct_destination: string; refund_bank_id?: string | null }>(
     `SELECT * FROM deposit_settlements WHERE contract_id = ?`, [contractId]
@@ -1526,7 +1521,6 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
 /* ═══════════ تسجيل تقبيل ═══════════ */
 function KeyMoneySheet({ contract, onClose, onDone }: { contract: ContractRow; onClose: () => void; onDone: (msg: string) => void }) {
   const { db } = useApp();
-  const toast = useToast();
   const [outgoing, setOutgoing] = useState('');
   const [incoming, setIncoming] = useState('');
   const [amount, setAmount] = useState('');

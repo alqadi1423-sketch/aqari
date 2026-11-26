@@ -19,7 +19,7 @@ import { fmt } from './money';
 import { t } from '../i18n';
 import { requireOpenPeriod, correctionDate } from './vatFilings';
 import { postBookedDiscount, postEntry, type PostedEntry } from './accounting/post';
-import { walletCashBalance, bankBalance } from './accounting/ledger';
+import { bankBalance } from './accounting/ledger';
 import { DERIVED_PAID_SQL, recomputeInstallments } from './contracts/paid';
 import { rentRevenueLines, RENT_REVENUE_SQL } from './accounting/rentSplit';
 import {

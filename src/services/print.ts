@@ -9,13 +9,8 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { File, Directory, Paths } from 'expo-file-system';
 import type { DB } from '../db/adapter';
-import { fmt } from '../domain/money';
-import { dfmtOut, today } from '../domain/dates';
-import {
-  PRINT_CSS, reportPageCss, printFontFaceCss, letterhead, esc, shownVatNo, vatReturnVatNo, type CompanyInfo, type CopyKind,
-  buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc,
-  buildHandoverDoc, buildClaimDoc,
-} from '../domain/printDocs';
+import { dfmtOut } from '../domain/dates';
+import { PRINT_CSS, reportPageCss, printFontFaceCss, esc, shownVatNo, vatReturnVatNo, type CompanyInfo, type CopyKind, buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc, buildHandoverDoc, buildClaimDoc } from '../domain/printDocs';
 import type { HandoverSection } from '../domain/handover/build';
 import { HANDOVER_LEGAL_FOOTER } from '../domain/handover/build';
 import { putAttachment } from '../files/store';

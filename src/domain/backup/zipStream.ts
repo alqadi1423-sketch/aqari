@@ -19,7 +19,7 @@
  * والتنفّس باقٍ: الخيط الرئيسي لا يُحتجز كتلة واحدة طويلة، بل يُفسح للواجهة
  * دورة رسم بين المداخل · فلا يقتل أندرويد التطبيق مهما كبر الأرشيف.
  */
-import { Deflate, Inflate, deflateSync, inflateSync, strToU8, strFromU8 } from 'fflate';
+import { Deflate, Inflate, deflateSync, strToU8, strFromU8 } from 'fflate';
 import { t } from '../../i18n';
 
 /**

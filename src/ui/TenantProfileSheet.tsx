@@ -30,7 +30,6 @@ import { useSaveAttempt } from './formAttempt';
 export function TenantProfileSheet({ tenantId, onClose }: { tenantId: string; onClose: () => void }) {
   const { db, version, bump } = useApp();
   const toast = useToast();
-  const dialog = useDialog();
   const router = useRouter();
   const perm = usePerm('tenants');
   const access = useAccess();

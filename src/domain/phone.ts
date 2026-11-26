@@ -12,13 +12,6 @@ export function normalizePhone(raw: string | null | undefined): string | null {
   return /^5\d{8}$/.test(s) ? '0' + s : null;
 }
 
-/** صيغة العرض: 05 4599 5268 */
-export function displayPhone(stored: string): string {
-  const p = normalizePhone(stored);
-  if (!p) return stored;
-  return p.slice(0, 2) + ' ' + p.slice(2, 6) + ' ' + p.slice(6);
-}
-
 /** صيغة الاتصال الدولية: +966545995268 */
 export function dialPhone(stored: string): string | null {
   const p = normalizePhone(stored);

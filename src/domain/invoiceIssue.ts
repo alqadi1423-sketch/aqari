@@ -160,7 +160,3 @@ export async function issueCreditNote(db: DB, src: InvoiceNumberSource | null, i
   return withSeq(db, () => saveCreditNote(db, invoiceId, input, invoiceNoFor(seq, input.date)));
 }
 
-/** يلغي انتظار الإصدار · حين يُبقيها المستخدم مسودةً بقصد */
-export function cancelPendingIssue(db: DB, id: string): void {
-  setPending(db, pendingIssues(db).filter((x) => x !== id));
-}

@@ -160,10 +160,6 @@ function stripPngStrict(bytes: Uint8Array): Uint8Array | null {
   return stripped ? joinChunks(chunks) : bytes;
 }
 
-export function stripPngMetadata(bytes: Uint8Array): Uint8Array {
-  return stripPngStrict(bytes) ?? bytes;
-}
-
 /** مقاطع WebP التي تُبقى: الصورة وشفافيتها وحركتها وألوانها · وما سواها يُنزع (EXIF وXMP وMETA/C2PA · المتحقق المستقل، الجولة ٣٧) */
 const WEBP_KEEP = ['VP8 ', 'VP8L', 'VP8X', 'ALPH', 'ANIM', 'ANMF', 'ICCP'];
 
@@ -194,10 +190,6 @@ function stripWebpStrict(bytes: Uint8Array): Uint8Array | null {
   out[4] = riff & 0xff; out[5] = (riff >> 8) & 0xff; out[6] = (riff >> 16) & 0xff; out[7] = (riff >>> 24) & 0xff;
   out.set(body, 12);
   return out;
-}
-
-export function stripWebpMetadata(bytes: Uint8Array): Uint8Array {
-  return stripWebpStrict(bytes) ?? bytes;
 }
 
 const HEIF_BRANDS = ['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'heif', 'mif1', 'msf1', 'MiHE', 'MiAF', 'avif', 'avis', 'crx '];

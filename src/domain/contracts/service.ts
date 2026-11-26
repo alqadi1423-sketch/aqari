@@ -18,22 +18,7 @@ import {
 } from './installments';
 import { recomputeInstallments } from './paid';
 import { depositCarryChain } from './depositChain';
-import {
-  validateConfirmedContract,
-  unitActivityError,
-  nextContractNo,
-  unitActiveReservation,
-  getUnit,
-  getProperty,
-  getContract,
-  contractLocked,
-  contractEnded,
-  renewBlockReason,
-  findContractConflict,
-  lastContractErrorField,
-  type ContractRow,
-  type ContractField,
-} from './rules';
+import { validateConfirmedContract, unitActivityError, nextContractNo, unitActiveReservation, getUnit, getProperty, getContract, contractLocked, contractEnded, renewBlockReason, findContractConflict, lastContractErrorField, type ContractRow, type ContractField } from './rules';
 import {
   postContractDeposit,
   postDepositCarry,

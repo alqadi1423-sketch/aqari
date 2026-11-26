@@ -426,7 +426,6 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
   const { db, version, bump } = useApp();
   const canAdd = usePerm('banks').add;
   const toast = useToast();
-  const dialog = useDialog();
   const [op, setOp] = useState<CashOp | null>(null);
   const [amount, setAmount] = useState('');
   const [bankA, setBankA] = useState('');

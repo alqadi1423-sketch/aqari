@@ -147,8 +147,6 @@ export function parseIssued(raw: string): IssuedTime | null {
 }
 /** وقتٌ مقروء بالدقيقة أو بالثانية في يومٍ من التقويم · لا تاريخٌ وحده ولا نصٌّ لا يُقرأ */
 export const readableTime = (iso: string) => parseIssued(iso)?.time != null;
-/** المنطقة مكتوبةٌ في الوقت */
-export const hasZone = (iso: string) => parseIssued(iso)?.zone != null;
 
 /** يومٌ بتوقيت المملكة (+03:00 بلا توقيتٍ صيفي) للحظة · بحساب التقويم لا بمنطقة الجهاز */
 function riyadhDay(ms: number): string {

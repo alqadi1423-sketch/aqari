@@ -3,9 +3,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Pressable, FlatList, type ListRenderItem } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Screen } from '../src/ui/Screen';
-import {
-  Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, BtnIcon, Field,
-} from '../src/ui/components';
+import { Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnIcon, Field } from '../src/ui/components';
 import { Icon, type IconName } from '../src/ui/icons';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { ActionMenuButton } from '../src/ui/ActionMenu';
@@ -25,10 +23,8 @@ import { supplierMeters, METER_ICON, UTILITY_KINDS, type LabeledMeter } from '..
 import { saveSupplier } from '../src/domain/suppliers';
 import { t } from '../src/i18n';
 import { TS_DEDUCTIBLE, TS_EXEMPT } from '../src/domain/purchases';
-import { uid } from '../src/domain/ids';
 import { fmt, toHalalas } from '../src/domain/money';
 import { dfmt } from '../src/domain/dates';
-import { logAudit } from '../src/domain/audit';
 import { usePerm } from '../src/ui/access';
 
 interface SupplierRow {

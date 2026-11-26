@@ -4,7 +4,6 @@
  */
 import type { DB } from '../db/adapter';
 import { allAccounts, accountPeriodChange, hasDimFilter, dimConds, type DimFilter, allAccountMovements } from './accounting/ledger';
-import { fmt } from './money';
 import { dfmt, addDays } from './dates';
 import type { ReportBlock, Cell } from './officeBuild';
 import { t } from '../i18n';

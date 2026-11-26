@@ -90,14 +90,6 @@ export const SECTION_GROUPS: Array<{ title: string; keys: SectionKey[] }> = [
   { title: 'التقارير', keys: ['reports', 'audit'] },
 ];
 
-/** ما يتاح في كل مستوى · نصٌّ لشاشة الصلاحيات وللدراسة */
-export const LEVEL_MEANING: Record<Level, string> = {
-  0: 'القسم لا يظهر أبداً، ولا رابط يفتحه',
-  1: 'يرى ولا يضيف ولا يعدّل',
-  2: 'يضيف، ويعدّل مسودته هو وحده قبل ترحيلها',
-  3: 'يضيف ويعدّل ويلغي',
-};
-
 export interface Template { key: string; label: string; perms: Perms }
 
 const all = (lvl: Level): Perms => Object.fromEntries(GRANTABLE.map((s) => [s.key, Math.min(lvl, s.max)])) as Perms;

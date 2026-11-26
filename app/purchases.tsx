@@ -47,7 +47,6 @@ import { PurchaseLinesSection, loadLineDrafts } from '../src/ui/PurchaseLines';
 import { toLineInput, emptyLine, type LineDraft } from '../src/ui/AssetSheets';
 import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 const CATEGORIES = ['كهرباء', 'مياه', 'اتصالات وإنترنت', 'إيجار', 'رواتب', 'تكلفة مبيعات', 'مصروفات تأسيس', 'مصروفات أخرى'];
-const INCORP_ITEMS = ['رسوم حكومية', 'ديكور وتجهيزات', 'معدات', 'تسويق افتتاحي', 'استشارات'];
 
 interface PurchaseRow {
   id: string; no: string; supplier_name: string; date: string; due: string; category: string;

@@ -25,7 +25,6 @@ const ASSET_CATEGORY_SQL = ASSET_CATEGORIES.map((c) => `'${c.code}'`).join(',');
 
 /** أساس القياس المعروض · نص صريح تستعمله الشاشات في الأزرار والعناوين */
 export type Basis = 'استحقاق' | 'نقدي';
-export const BASES: readonly Basis[] = ['استحقاق', 'نقدي'];
 export const BASIS_ACCRUAL: Basis = 'استحقاق';
 export const BASIS_CASH: Basis = 'نقدي';
 

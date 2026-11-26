@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, FlatList } from 'react-native';
 import { Screen } from '../src/ui/Screen';
-import { Card, T, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, Field, ChipGroup } from '../src/ui/components';
+import { Card, T, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, Field, ChipGroup } from '../src/ui/components';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { DateField } from '../src/ui/DateField';
 import { ActionMenuButton } from '../src/ui/ActionMenu';

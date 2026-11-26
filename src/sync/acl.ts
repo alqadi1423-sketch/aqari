@@ -17,7 +17,6 @@ import { journalSection } from '../domain/access/readSections';
 
 export const ORG_WIDE = '*';
 export const ANY_PROP = '@';
-export const DRAFT_TABLES = new Set(['contracts', 'invoices', 'journal_entries']);
 
 const one = (db: DB, sql: string, p: unknown[]): string | null =>
   (db.get<{ v: string | null }>(sql, p as never)?.v ?? null);

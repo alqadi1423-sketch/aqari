@@ -43,7 +43,7 @@ import { MIGRATED_SYSTEM_ACCOUNTS } from '../db/seed';
 import { CASH_DEPOSIT_SOURCE, CASH_WITHDRAW_SOURCE, TRANSFER_OUT_SOURCE, TRANSFER_IN_SOURCE } from '../domain/cashOps';
 import { CRASH_ENTITY, FAILURE_ENTITY_PREFIX, retryCrashRank } from '../domain/crashReport';
 import { memberSourceIssue, deductibleIssue, DERIVED_SOURCES, type SourceReader, type SrcLine } from '../domain/accounting/deriveSources';
-import { RENT_REVENUE_GROUP, RENT_REVENUE_SQL } from '../domain/accounting/rentSplit';
+import { RENT_REVENUE_GROUP } from '../domain/accounting/rentSplit';
 import type { Cursor, PullPage, RemoteDoc, RemoteStore, RowData, SyncReport, WriteResult } from './types';
 import { isoCmp, isoNorm } from './isoTime';
 import { redactForReport } from '../domain/redact';

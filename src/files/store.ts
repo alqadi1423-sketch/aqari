@@ -289,14 +289,6 @@ export function attachmentsFor(db: DB, entityType: string, entityId: string, kin
   ).map(withBlobFallback);
 }
 
-export function readAttachment(env: FilesEnv, id: string): Uint8Array | null {
-  const att = getAttachment(env.db, id);
-  if (!att) return null;
-  const p = attachmentPath(env, att);
-  if (!env.fs.exists(p)) return null;
-  return env.fs.read(p);
-}
-
 /** حذف ناعم */
 export function softDeleteAttachment(db: DB, id: string): void {
   db.transaction(() => {

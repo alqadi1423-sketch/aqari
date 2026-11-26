@@ -5,7 +5,7 @@
 import React, { useState } from 'react';
 import { View } from 'react-native';
 import { Sheet } from './Sheet';
-import { Field, Row, BtnGhost, BtnPrimary } from './components';
+import { Field, Row, BtnPrimary } from './components';
 import { DateField } from './DateField';
 import { useApp } from './store';
 import { createReservation } from '../domain/reservations';

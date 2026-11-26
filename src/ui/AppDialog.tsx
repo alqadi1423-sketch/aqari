@@ -67,14 +67,6 @@ export function confirmDiscard(dialog: (spec: DialogSpec) => void, close: () => 
   });
 }
 
-/** يطوي اللوحة بالضغط ثانيةً · ويستأذن إن كان فيها إدخال */
-export function toggleClose(
-  dialog: (spec: DialogSpec) => void, open: boolean, dirty: boolean, set: (v: boolean) => void,
-) {
-  if (!open) { set(true); return; }
-  if (dirty) { confirmDiscard(dialog, () => set(false)); return; }
-  set(false);
-}
 /** ثلاثة خيارات فأكثر لا تسع صفاً واحداً بعرض الهاتف فتُرصّ عمودياً بعرض كامل */
 const STACK_FROM = 3;
 

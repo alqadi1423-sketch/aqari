@@ -5,7 +5,7 @@ import { saveAccount, deleteAccount, deleteBlocker, openingDifference } from '..
 import { View, Pressable, FlatList, type ListRenderItem } from 'react-native';
 import { Screen } from '../src/ui/Screen';
 import { EntrySheet, srcTypeLabel } from '../src/ui/EntrySheet';
-import { Card, T, Num, EmptyState, Row, SearchBox, BtnPrimary, BtnGhost, Field, ChipGroup } from '../src/ui/components';
+import { Card, T, Num, EmptyState, Row, SearchBox, BtnPrimary, Field, ChipGroup } from '../src/ui/components';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { ActionMenuButton } from '../src/ui/ActionMenu';
 import { useDialog } from '../src/ui/AppDialog';
@@ -18,7 +18,6 @@ import { C, RADIUS, TYPE_TAG_STYLES } from '../src/ui/theme';
 import { allAccounts, accountPeriodBalances, accountStatement, type AccountStatement } from '../src/domain/accounting/ledger';
 import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
-import { logAudit } from '../src/domain/audit';
 import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm, useAccess } from '../src/ui/access';
 

@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, FlatList, type ListRenderItem } from 'react-native';
 import { Screen } from '../src/ui/Screen';
-import { Card, T, EmptyState, Row, BtnPrimary, BtnGhost, Field, SearchBox, Chip } from '../src/ui/components';
+import { Card, T, EmptyState, Row, BtnPrimary, Field, SearchBox, Chip } from '../src/ui/components';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { ActionMenuButton } from '../src/ui/ActionMenu';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../src/ui/FilterSheet';

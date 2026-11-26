@@ -18,7 +18,6 @@ import { T, BtnPrimary, BtnGhost, Note, StageProgress } from './components';
 import { C, TYPE } from './theme';
 import { useApp } from './store';
 import { reportFailure, copyFailureDetails } from './failureDialog';
-import { t } from '../i18n';
 import { cloudConfig } from '../cloud/config';
 import { signInFailureText } from '../cloud/signInFailure';
 import {

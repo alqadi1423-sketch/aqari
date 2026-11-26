@@ -42,9 +42,6 @@ export interface MemberDoc {
   title: string;
 }
 
-/** مفاتيح بيانات العضو · العضو يعدّل هذه وحدها في مستند عضويته (القواعد) */
-export const PROFILE_KEYS = ['name', 'phone', 'nid', 'title'] as const;
-
 export const profileOf = (d: MemberDoc): MemberProfile => ({ name: d.name, phone: d.phone, nid: d.nid, title: d.title });
 
 export const normEmail = (e: string) => e.trim().toLowerCase();

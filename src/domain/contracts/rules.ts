@@ -114,9 +114,6 @@ export function contractDisplayStatus(
   return 'سارٍ';
 }
 
-/** سارٍ بمعناه الواسع: يشمل «ينتهي قريباً» · للمرشِّحات والإحصاءات */
-export const isActiveDisplay = (s: ContractDisplayStatus): boolean => s === 'سارٍ' || s === 'ينتهي قريباً';
-
 /**
  * نص الانتهاء بعدد أيامه بالصيغة العربية الصحيحة:
  * صفر «ينتهي اليوم» · واحد «ينتهي غداً» · اثنان «ينتهي بعد يومين»
