@@ -64,7 +64,7 @@ type Measurable = {
 };
 
 export function Sheet({
-  visible, onClose, title, children, footer, tall, dirty,
+  visible, onClose, title, children, footer, tall, dirty, list,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -78,6 +78,11 @@ export function Sheet({
    * كلما ظهرت الورقة، فالنموذج العائد من صفحة المراجعة يبقى محروساً (D-3)
    */
   dirty?: boolean;
+  /**
+   * المحتوى قائمةٌ افتراضية (FlatList) تمرّر نفسها: لا يُلفّ في تمرير الورقة، فقائمةٌ افتراضية داخل ScrollView تُرسم كاملةً
+   * (المراجعة الشاملة 2026-11-13 · D-17 · السلة) · وتأخذ القائمة ما بقي من ارتفاع الورقة كما كان يأخذه تمريرها
+   */
+  list?: boolean;
 }) {
   // النافذة المنبثقة فوق غطاء القفل · تختفي ما دام مقفلاً (#51 · ui/lockState.ts)
   const appLocked = useAppLocked();
@@ -223,6 +228,15 @@ export function Sheet({
                 <Icon name="x" size={16} color={C.charcoal} />
               </Pressable>
             </View>
+            {list ? (
+              <View style={{ flexGrow: 1, flexShrink: 1, paddingHorizontal: padH, paddingBottom: 8 }}>
+                <SheetScrollCtx.Provider value={scrollCtl}>
+                  <SheetDirtyCtx.Provider value={dirtyCtx}>
+                    {contentIn ? children : <View style={{ height: 160 }} />}
+                  </SheetDirtyCtx.Provider>
+                </SheetScrollCtx.Provider>
+              </View>
+            ) : (
             <ScrollView
               ref={scrollRef}
               innerViewRef={innerRef as unknown as React.RefObject<View>}
@@ -242,6 +256,7 @@ export function Sheet({
                 </SheetDirtyCtx.Provider>
               </SheetScrollCtx.Provider>
             </ScrollView>
+            )}
             {footer && contentIn ? <View style={[st.foot, { paddingHorizontal: padH }]}>{footer}</View> : null}
           </View>
         </View>
