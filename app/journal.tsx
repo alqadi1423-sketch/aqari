@@ -19,7 +19,7 @@ import { useDialog } from '../src/ui/AppDialog';
 import { C } from '../src/ui/theme';
 import { postManualEntry, saveManualDraft, postDraftEntry, manualCashOut, peekJournalNo, voidEntryById } from '../src/domain/accounting/post';
 import { t } from '../src/i18n';
-import { reverseFromJournal, journalReversalBlock } from '../src/domain/accounting/journalReversal';
+import { reverseFromJournal, journalReversalBlock, journalReversalDate } from '../src/domain/accounting/journalReversal';
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { sourceCancelLocked } from '../src/domain/accounting/sourceCancel';
 import { allAccounts } from '../src/domain/accounting/ledger';
@@ -234,7 +234,8 @@ export default function Journal() {
     const bankShorts = bankShortages(db, no, 'reverse');
     dialog({
       title: 'عكس القيد ' + no,
-      body: 'سيُرحَّل قيد عاكس بتاريخ اليوم يلغي أثره على الأرصدة، ويبقى القيدان معاً في الدفتر.'
+      // التاريخ الذي سيُكتب فعلاً: تاريخ الأصل، إلا في فترةٍ قُدِّم إقرارها فاليوم (D-7)
+      body: t('journal.reverseBody', { date: dfmt(journalReversalDate(db, id)) })
         + (short > 0 ? '\nالنقد في المحفظة لا يكفي لعكسه (' + fmt(out) + ') · ينقصه ' + fmt(short) : '')
         + (bankShorts.length ? '\n' + bankShorts.join('\n') : ''),
       tone: 'normal',

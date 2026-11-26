@@ -12,6 +12,7 @@ import { uid } from '../ids';
 import { t } from '../../i18n';
 import { RuleViolation } from '../contracts/service';
 import { reverseEntryById, type PostedEntry } from './post';
+import { correctionDate } from '../vatFilings';
 
 /** سبب منع عكس القيد من الدفتر · فارغ إن جاز */
 export function journalReversalBlock(db: DB, entryId: string): string {
@@ -25,6 +26,15 @@ export function journalReversalBlock(db: DB, entryId: string): string {
     return 'قيد آلي من مستنده · عكسه من الدفتر وحده يترك المستند قائماً بلا أثر في الأرصدة، فيُلغى من المستند نفسه';
   }
   return '';
+}
+
+/**
+ * التاريخ الذي سيُكتب به العكس · الدالة نفسها التي يكتب بها reverseEntryById: تاريخ الأصل، إلا إن قُدِّم إقرار
+ * فترته فاليوم المفتوح · فيقوله الحوار قبل التأكيد ولا يقول «اليوم» وهو يكتب شهراً مضى (D-7)
+ */
+export function journalReversalDate(db: DB, entryId: string): string {
+  const d = db.get<{ date: string }>(`SELECT date FROM journal_entries WHERE id = ?`, [entryId])?.date;
+  return correctionDate(db, d);
 }
 
 /** العكس من شاشة الدفتر · يرمي سبباً عربياً للقيد الآلي ويعكس اليدوي */

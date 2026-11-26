@@ -973,6 +973,7 @@
     "carryOwnerOnly": "A deposit carry reversal is for the owner only (the \"Reverse the carry\" tool)"
   },
   "journal": {
+    "reverseBody": "A reversing entry dated {{date}} will be posted to cancel its effect on balances, and both entries stay in the ledger.",
     "saveDraft": "Save draft",
     "savedDraft": "Saved as a draft · the owner posts it",
     "postDraft": "Post",
