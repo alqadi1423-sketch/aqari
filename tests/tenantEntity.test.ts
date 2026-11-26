@@ -55,7 +55,7 @@ describe('المستأجر كيان بمعرّف · الهوية مفتاح ال
     db.close();
   });
 
-  test('العقود القديمة بلا ربط: الإقلاع يربطها كلها (بالهوية أولاً ثم الاسم)', () => {
+  test('العقود القديمة بلا ربط: الإقلاع يربطها كلها (بالهوية وحدها، والسميّ بلا هوية مستأجرٌ آخر في المتشابهين · A1-8 · س٨)', () => {
     const { db, u1, u2 } = seed();
     const c1 = confirmContract(db, contractInput(u1, {
       tenant: 'سعد العمري', idNumber: '1055555555', valueHalalas: 600000, depositHalalas: 0,
@@ -71,7 +71,14 @@ describe('المستأجر كيان بمعرّف · الهوية مفتاح ال
     expect(n).toBe(2);
     const t1 = db.get<{ tenant_id: string }>(`SELECT tenant_id FROM contracts WHERE id = ?`, [c1])!.tenant_id;
     const t2 = db.get<{ tenant_id: string }>(`SELECT tenant_id FROM contracts WHERE id = ?`, [c2])!.tenant_id;
-    expect(t1).toBe(t2); // نفس الاسم = نفس الكيان
+    // الاسم وحده لا يربط (قرار المالك س٨ تطبيقاً لقراره 2026-08-20): كيانان يظهران في «مستأجرون متشابهون» والدمج بقراره
+    expect(t1).toBeTruthy();
+    expect(t2).toBeTruthy();
+    expect(t2).not.toBe(t1);
+    // (والمستأجر الذي أنشأه التوثيق قبل محو الربط باقٍ بالاسم نفسه، فهو معهما في المجموعة)
+    const groups = similarTenantGroups(db);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].tenants.map((x) => x.id)).toEqual(expect.arrayContaining([t1, t2]));
     db.close();
   });
 

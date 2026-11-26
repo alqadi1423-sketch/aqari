@@ -47,7 +47,7 @@ import {
 import { logAudit } from '../audit';
 import { reviewState, memberDevice, REPOSTED_KEY } from '../accounting/orphans';
 import { fmt } from '../money';
-import { linkContractTenant } from '../tenants';
+import { linkContractTenant, normTenantName } from '../tenants';
 import { seedTenantOccupant, carryOccupantsToRenewal } from '../occupants';
 import { createHandoverForContract } from '../handover/service';
 import { normalizePhone } from '../phone';
@@ -212,9 +212,14 @@ export function saveDraft(db: DB, input: ContractDraftInput, draftId?: string): 
     if (ej) db.run(`UPDATE contracts SET ejar_schedule = ?, installments_source = ? WHERE id = ?`, [ej.schedule, ej.source, id]);
     // الخدمات والمواقف تُحفظ مع المسودة وتعود عند فتحها (المراجعة #1)
     saveRevenueSplit(db, id, input);
-    // تغيير مستأجر المسودة يغيّر ربطها (دراسة القائم): يُعاد البحث بهويته واسمه في كل حفظ
+    // تغيير مستأجر المسودة يغيّر ربطها (دراسة القائم): يُعاد البحث بهويته في كل حفظ · ومسودةٌ بلا هوية واسمها كما كان تبقى على
+    // مستأجرها بلا هوية، فلا يُنشأ لها مستأجرٌ جديد في كل حفظ بعد أن صار الربط بالهوية وحدها (A1-8)
     const prevTenant = draftId ? db.get<{ t: string | null }>(`SELECT tenant_id AS t FROM contracts WHERE id = ?`, [id])?.t ?? null : null;
-    if (draftId) db.run(`UPDATE contracts SET tenant_id = NULL WHERE id = ?`, [id]);
+    const prevRow = prevTenant ? db.get<{ name: string; national_id: string }>(
+      `SELECT name, national_id FROM tenants WHERE id = ? AND deleted_at IS NULL`, [prevTenant]) : undefined;
+    const keepPrev = !!prevRow && !input.idNumber.trim() && !prevRow.national_id.trim()
+      && normTenantName(prevRow.name) === normTenantName(input.tenant);
+    if (draftId && !keepPrev) db.run(`UPDATE contracts SET tenant_id = NULL WHERE id = ?`, [id]);
     linkContractTenant(db, id);
     if (prevTenant) dropDraftOrphan(db, prevTenant, id);
     seedTenantOccupant(db, id);

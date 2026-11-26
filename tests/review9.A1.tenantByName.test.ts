@@ -14,7 +14,7 @@ import { memDb } from './helpers/testDb';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';
 import { confirmContract, tenantCreditOf } from '@/domain/contracts/service';
 
-test.failing('A1-8 عقدٌ بلا هوية لا يُربط بالاسم بمستأجرٍ آخر له هوية ولا يرى رصيده', () => {
+test('A1-8 عقدٌ بلا هوية لا يُربط بالاسم بمستأجرٍ آخر له هوية ولا يرى رصيده', () => {
   const db = memDb();
   const p = addProperty(db, { name: 'عقار أسماء مصطنع' });
   const c1 = confirmContract(db, contractInput(addUnit(db, p, { unit_no: 'T-1' }), { tenant: 'خالد مصطنع', idNumber: '1000000984',

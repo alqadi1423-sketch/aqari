@@ -19,8 +19,10 @@ const similarityKey = (name: string): string =>
   normTenantName(name).replace(/\s+/g, '').replace(/^ال/, '').replace(/ال(?=[؀-ۿ]{2,})/g, '');
 
 /**
- * البحث بالهوية أولاً ثم بالاسم المطابق · وُجد فرُبط وحُدّثت بياناته الناقصة،
- * لم يوجد فأُنشئ. يعيد معرّف المستأجر.
+ * البحث بالهوية وحدها · وُجد فرُبط وحُدّثت بياناته الناقصة، لم يوجد فأُنشئ. يعيد معرّف المستأجر.
+ * ولا ربط بالاسم أبداً (المراجعة الشاملة 2026-11-13 · A1-8 · قرار المالك س٨ تطبيقاً لقراره 2026-08-20): عقدٌ بلا هوية باسمٍ يطابق
+ * مستأجراً قائماً كان يُربط به صامتاً، فيجمع ملفٌ واحد شخصين ويسدّد الثاني أقساطه من رصيد الأول الدائن · فيُنشأ له مستأجرٌ جديد
+ * ويظهر مع سميّه في «مستأجرون متشابهون» (similarTenantGroups) ليدمجهما المالك بنفسه إن كانا شخصاً واحداً.
  */
 export function findOrCreateTenant(
   db: DB,
@@ -29,17 +31,10 @@ export function findOrCreateTenant(
   const name = normTenantName(info.name);
   const nat = (info.nationalId ?? '').trim();
   const phone = (info.phone ?? '').trim();
-  let row = nat
+  const row = nat
     ? db.get<{ id: string; name: string; phone: string }>(
         `SELECT id, name, phone FROM tenants WHERE national_id = ? AND deleted_at IS NULL`, [nat])
     : undefined;
-  // بالاسم حين لا هوية يُبحث بها وحده: الهوية مفتاحٌ فريد، فلا يُدمج حاملا هويتين مختلفتين باسمٍ واحد (قرار المالك
-  // 2026-08-20: «ابحث بالهوية أولاً · وُجد فاربط، لم يوجد فأنشئ»، والمتشابهون يُعرضون في «مستأجرون متشابهون»)
-  if (!row && !nat) {
-    row = db.get<{ id: string; name: string; phone: string; national_id: string }>(
-      `SELECT id, name, phone, national_id FROM tenants
-       WHERE TRIM(name) = ? AND deleted_at IS NULL`, [name]) as typeof row;
-  }
   if (row) {
     // إكمال الناقص في مصدره · لا كتابة فوق قائم
     const natRow = db.get<{ national_id: string; phone: string }>(
