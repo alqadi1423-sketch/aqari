@@ -22,6 +22,8 @@ export const defaultLife = (code: string): number => ASSET_CATEGORIES.find((c) =
 export const categoryName = (code: string): string => t('assets.cat.' + code);
 
 export const ACC_ACCUM = '1490';
+/** ضريبة المخرجات في بيع الأصل من منشأةٍ مسجّلة (A2.15) */
+export const ACC_OUTPUT_VAT = '2200';
 export const ACC_DEPRECIATION = '5600';
 export const ACC_DISPOSAL_LOSS = '5700';
 export const ACC_SALE_GAIN = '4400';

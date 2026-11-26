@@ -128,6 +128,22 @@ function keyMoneySales(db: DB, from: string, to: string): { net: number; tax: nu
 }
 
 /**
+ * بيع الأصول الخاضع في البند ١ (المراجعة الشاملة 2026-11-13 · A2.15 · قرار المالك س٢١): من سطور قيود البيع نفسها كعمولة التقبيل، فيطابق
+ * البند ١ حركة 2200 بالهللة · الضريبة دائن 2200، والصافي النقد ناقصاً الضريبة · وعكسه وكل قيدٍ بلا سطر 2200 (منشأة غير مسجّلة يومها) كما هو
+ */
+function assetSales(db: DB, from: string, to: string): { net: number; tax: number } {
+  const r = db.get<{ cash: number; tax: number }>(
+    `SELECT COALESCE(SUM(CASE WHEN l.account_code = '1100' THEN l.debit_halalas - l.credit_halalas ELSE 0 END), 0) AS cash,
+            COALESCE(SUM(CASE WHEN l.account_code = '2200' THEN l.credit_halalas - l.debit_halalas ELSE 0 END), 0) AS tax
+     FROM journal_entries e JOIN journal_lines l ON l.entry_id = e.id
+     WHERE e.src_type IN ('asset_sell', 'asset_sell_rev') AND e.status = ? AND e.deleted_at IS NULL AND e.date >= ? AND e.date <= ?
+       AND EXISTS (SELECT 1 FROM journal_lines x WHERE x.entry_id = e.id AND x.account_code = '2200')`,
+    ['مرحّل', from, to]); // i18n-exempt: حالة مخزّنة
+  const tax = Number(r?.tax ?? 0);
+  return { net: Number(r?.cash ?? 0) - tax, tax };
+}
+
+/**
  * صفوف المبيعات المعفاة (البند ٥ وكشفه معاً · #31 والتحقق المستقل):
  *  - كل دفعة إيجار بصافيها بلا فائضها الذي صار رصيداً دائناً للمستأجر (دائن 2410 في قيدها): التزامٌ له لا توريد.
  *  - والدفعة الملغاة في غير فترتها تبقى فيها، ويُخصم صافيها بصفٍّ سالب بتاريخ إلغائها (المراجعة الشاملة · البند ١٠): كان الإلغاء
@@ -171,6 +187,8 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
   const sales = invoiceSales(db, from, to);
   // ١ · وعمولات التقبيل الخاضعة من قيودها (المراجعة الشاملة ٨ · البند ١١)
   const keyMoney = keyMoneySales(db, from, to);
+  // ١ · وبيع الأصول الخاضع من قيوده (A2.15)
+  const assetSale = assetSales(db, from, to);
 
   // ٥ · المبيعات المعفاة = إيرادات الإيجار السكني المحصَّلة، من صفوف كشفها نفسها (exemptSalesRows)
 
@@ -198,7 +216,7 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
      FROM purchases WHERE deleted_at IS NULL AND tax_status = 'غير قابلة للخصم'${inPeriod('date')}`
   )!;
 
-  const salesSub = sales.S + keyMoney.net, salesTax = sales.tax + keyMoney.tax, zeroSales = sales.Z;
+  const salesSub = sales.S + keyMoney.net + assetSale.net, salesTax = sales.tax + keyMoney.tax + assetSale.tax, zeroSales = sales.Z;
   const exemptSales = exemptSalesRows(db, from, to);
   const rentNet = exemptSales.reduce((s, r) => s + Number(r.net), 0);
   const dedSub = Number(ded.sub), dedTax = Number(ded.tax);

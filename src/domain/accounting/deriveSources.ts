@@ -28,7 +28,7 @@ import { RENT_REVENUE_GROUP } from './rentSplit';
 import { DEPOSIT_RENT_METHOD, DEPOSIT_RENT_SRC, SETTLEMENT_CLAIM_SOURCE } from '../contracts/installments';
 import { invoiceTotals, normalizeInvoiceLines, KIND_CREDIT } from '../invoices';
 import { remainingByCodeOf, creditNoteAmounts, type StoredInvoiceLine } from '../creditNote';
-import { lineTaxCode, vatRegistered, type TaxCode } from '../taxCode';
+import { lineTaxCode, vatRegistered, assetSaleSplit, type TaxCode } from '../taxCode';
 import { mulQty } from '../money';
 import { lineCosts, splitQty } from '../assets/purchaseLines';
 import {
@@ -113,7 +113,7 @@ export const DERIVED_SOURCES: Record<string, string[]> = {
   // نقل الأصل بين وحدتين (تكلفته ومجمعه)، واستبعاده (خسارته)، وبيعه نقداً أو ببنك (ربحه أو خسارته)
   asset_transfer: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM],
   asset_dispose: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM, ACC_DISPOSAL_LOSS],
-  asset_sell: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM, ACC_DISPOSAL_LOSS, ACC_CASH, ACC_SALE_GAIN],
+  asset_sell: [...ASSET_CATEGORIES.map((c) => c.code), ACC_ACCUM, ACC_DISPOSAL_LOSS, ACC_CASH, ACC_SALE_GAIN, '2200'],
   // تحويل فاتورةٍ قديمة مسجّلة مصروفاً إلى أصول: مدين حسابات فئات أصولها ودائن مصروف فئتها
   asset_convert: [...ASSET_CATEGORIES.map((c) => c.code), ...EXPENSE_ACCOUNTS],
 };
@@ -898,10 +898,13 @@ function derive(db: DB, r: SourceReader, e: { id: string; src: string; srcId: st
       // والبيع ببنك حركته برقم قيده بمبلغه
       const txs = e.no ? r.rows<{ amount_halalas: number; deleted_at?: string | null }>('bank_tx', 'journal_no', e.no).filter((x) => !x.deleted_at) : [];
       if (txs.length > 1 || (txs.length && num(txs[0].amount_halalas) !== amount)) return no('assetSale');
-      const diff = amount - nbv;
+      // والمنشأة المسجّلة: المقبوض شاملٌ ضريبة المخرجات والربح على صافيه، كما يرحّله sellAsset (A2.15 · س٢١) · بتسجيلها هنا كعمولة التقبيل
+      const sale = assetSaleSplit(db, amount);
+      const diff = sale.net - nbv;
       return {
         lines: [
           ...close, { account: ACC_CASH, debit: amount, credit: 0, dims },
+          { account: '2200', debit: 0, credit: sale.tax, dims },
           { account: ACC_DISPOSAL_LOSS, debit: diff < 0 ? -diff : 0, credit: 0, dims }, { account: ACC_SALE_GAIN, debit: 0, credit: diff > 0 ? diff : 0, dims },
         ],
         date: d, correctable: false, pending: led.pending || short || moving,

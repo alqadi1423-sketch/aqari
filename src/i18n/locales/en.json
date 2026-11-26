@@ -228,7 +228,8 @@
       "warranty": "Before warranty ends",
       "warrantyHome": "Warranty ending soon",
       "warrantyRow": "{{name}} · {{unit}} · ends {{date}}",
-      "days": "{{n}} days"
+      "days": "{{n}} days",
+      "saleVatNote": "The business is VAT registered: the amount received includes 15% VAT, net {{net}} and VAT {{tax}} which enters the return (box 1); the gain or loss is on the net"
     },
     "convert": {
       "title": "Convert an old purchase invoice",
