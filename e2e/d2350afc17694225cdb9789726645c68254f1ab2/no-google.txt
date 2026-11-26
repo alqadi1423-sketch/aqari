@@ -1,0 +1,3 @@
+no-google fail · mode enforce
+capture /home/runner/work/_temp/emu-net.pcap · packets 98
+problem علامة النافذة aqari-e2e-window.example.com لم تظهر: التسجيل لم يرَ حركة الجوال، فلا يُعدّ نظيفاً
