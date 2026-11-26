@@ -1,0 +1,11 @@
+no-google fail · mode enforce
+capture /home/runner/work/_temp/emu-net.pcap · packets 1377
+window from packet 91 (marker aqari-e2e-window.example.com)
+window end at packet 1374 (marker aqari-e2e-window-end.example.com)
+app clientservices.googleapis.com (dns,sni)
+app update.googleapis.com (dns,sni)
+boot connectivitycheck.gstatic.com (dns,http)
+boot remoteprovisioning.googleapis.com (dns,sni)
+boot time.android.com (dns)
+boot www.google.com (dns,sni)
+problem نطاقات قوقل من التطبيق: clientservices.googleapis.com update.googleapis.com
