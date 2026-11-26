@@ -576,7 +576,6 @@ export default function Settings() {
                   toast('اكتملت الاستعادة والتُحقق منها');
                 }
                 bump();
-                rescheduleAllNotifications(db).catch(() => {});
               } catch (e) {
                 // الاستعادة تمّت والاعتماد لم يتمّ: المزامنة تبقى منتظرة القرار ولا تدمج صامتةً
                 if (restored && cloudPlan) { try { markRestoredUnadopted(db); } catch { /* القاعدة مشغولة */ } resumeSync(); bump(); }

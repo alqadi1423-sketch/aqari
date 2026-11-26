@@ -37,7 +37,6 @@ import { today, dfmt, periodLabel } from '../../src/domain/dates';
 import { collectionMessage } from '../../src/domain/templates';
 import { fmt, toHalalas } from '../../src/domain/money';
 import { dialPhone } from '../../src/domain/phone';
-import { rescheduleAllNotifications } from '../../src/services/notifications';
 import { printReceipt } from '../../src/services/print';
 import { reportFailure } from '../../src/ui/failureDialog';
 
@@ -305,7 +304,6 @@ export default function Collect() {
       }
       setPaying(null);
       bump();
-      rescheduleAllNotifications(db).catch(() => {});
       toast('تم تسجيل السداد وتحديث حالة الدفعة بنجاح');
       // سند القبض · نسخة المستأجر أو المكتب أو كلاهما
       dialog({

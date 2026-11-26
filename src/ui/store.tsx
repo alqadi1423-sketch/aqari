@@ -19,6 +19,7 @@ import { purgeExpiredTrash } from '../domain/trash';
 import { gcBlobs } from '../files/store';
 import { appFilesEnv } from '../services/filesEnv';
 import { writeWidgetSnapshot, scheduleWidgetSnapshot } from '../services/widgetService';
+import { scheduleNotificationsAfterWrite } from '../services/notifications';
 import { perfAttachStorage } from '../perf/perf';
 import { getSetting } from '../repos/settings';
 import { today } from '../domain/dates';
@@ -84,6 +85,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setSettings(getAllSettings(db));
     // لقطة الودجت مجدولة بعد سكون · لا تركب كل bump فتُثقله
     scheduleWidgetSnapshot(db);
+    // والتنبيهات كذلك (E-2): كل كتابة وكل ما يصل بالمزامنة يعيد جدولتها بعد سكون
+    scheduleNotificationsAfterWrite(db);
   }, [db]);
 
   // صيانة الإقلاع كانت متزامنة قبل أول رسم فكانت تجمّد أول الشاشات ثواني ·

@@ -81,12 +81,36 @@ function serial(fn: () => Promise<void>): Promise<void> {
  * إعادة الجدولة الكاملة · تُستدعى بعد كل تغيير في العقود أو الدفعات
  * أو المستندات أو الإعدادات، وعند إقلاع التطبيق.
  */
-export function rescheduleAllNotifications(db: DB): Promise<void> {
-  return serial(() => rescheduleNow(db));
+export function rescheduleAllNotifications(db: DB, o: { ask?: boolean } = {}): Promise<void> {
+  return serial(() => rescheduleNow(db, o.ask !== false));
 }
 
-async function rescheduleNow(db: DB): Promise<void> {
-  const ok = await ensurePermission();
+/** سكونٌ بعد آخر كتابة قبل الجدولة · إعادة الجدولة نحو خمسين نداء جسر، فلا تركب كل كتابة */
+const AFTER_WRITE_QUIET_MS = 8000;
+let afterWriteTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * جدولةٌ مؤجلة مجمَّعة بعد كل كتابة (المراجعة الشاملة 2026-11-13 · E-2) · تُنادى من `bump` نفسه، فتشمل كل تغيير في الشاشات
+ * وكل ما يصل بالمزامنة وكشف البنك وإلغاء الدفعة والموعد المتفق عليه ومستندات المنشأة · وتُلغي جدولةً سابقة فلا تتراكم.
+ * ولا تسأل عن الإذن في الخلفية: بلا إذنٍ لا تفعل شيئاً، والسؤال من مفتاح التذكيرات في الإعدادات.
+ */
+export function scheduleNotificationsAfterWrite(db: DB, quietMs: number = AFTER_WRITE_QUIET_MS): void {
+  if (afterWriteTimer) clearTimeout(afterWriteTimer);
+  afterWriteTimer = setTimeout(() => {
+    afterWriteTimer = null;
+    rescheduleAllNotifications(db, { ask: false }).catch(() => {});
+  }, quietMs);
+}
+
+/** تنتهي حين تنتهي الجدولة الجارية وما قبلها (للاختبار ولمن ينتظر) */
+export function whenNotificationsIdle(): Promise<void> {
+  return chain;
+}
+
+async function rescheduleNow(db: DB, ask: boolean): Promise<void> {
+  let ok: boolean;
+  if (ask) ok = await ensurePermission();
+  else { try { ok = (await Notifications.getPermissionsAsync()).granted; } catch { ok = false; } }
   if (!ok) return;
   await ensureChannel();
   await Notifications.cancelAllScheduledNotificationsAsync();

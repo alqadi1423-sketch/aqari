@@ -59,7 +59,6 @@ import { prepaidUnearned } from '../../src/domain/accrual';
 import { DepositBankField } from '../../src/ui/DepositBankField';
 import { fmt, toHalalas } from '../../src/domain/money';
 import { naturalCompare } from '../../src/domain/sortKey';
-import { rescheduleAllNotifications } from '../../src/services/notifications';
 import { HandoverSheet } from '../../src/ui/HandoverSheet';
 import { attachPicked, pickFile } from '../../src/ui/attach';
 import { attachmentsFor } from '../../src/files/store';
@@ -194,7 +193,6 @@ export default function Contracts() {
 
   const afterMutation = (msg?: string) => {
     bump();
-    rescheduleAllNotifications(db).catch(() => {});
     if (msg) toast(msg);
   };
 

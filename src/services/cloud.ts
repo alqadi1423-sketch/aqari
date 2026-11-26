@@ -514,6 +514,8 @@ export async function activateAccount(u: SessionUser): Promise<void> {
   try {
     const env = appSlotEnv(db);
     const r = switchTo(env, u.uid);
+    // نسخةٌ غير التي كانت: تنبيهات المركونة تُلغى الآن، وتُجدول تنبيهات الداخلة بعد السكون من onData (E-2)
+    if (r === 'switched') await cancelAllNotifications(db);
     // نسخة الحساب العائدة ببنيةٍ أقدم: نسخة ما قبل الترقية ثم الترقية، وتقدّمها على شاشة الانتظار · وفشلها يعيدها إلى مركنها كما هي،
     // وسببه على شاشة «أعد المحاولة» (المراجعة الشاملة 2026-11-13 · C-4)
     if (r !== 'unbound') {
@@ -556,7 +558,7 @@ export async function activateAccount(u: SessionUser): Promise<void> {
       if (inv === null) { patch({ gate: 'retry' }); return; }
       if (inv.length) {
         // بيانات الجهاز التي بلا حساب لا تُعرض على مدعوّ · تُركن كما هي
-        if (r === 'unbound') { parkActive(env, UNBOUND); onData(); }
+        if (r === 'unbound') { parkActive(env, UNBOUND); await cancelAllNotifications(db); onData(); }
         // منشأة الحساب القائمة تُعرض قبل دعوات غيره (مراجعة التثبيت #52)
         const sess = s;
         const ownOrg = await ownOrgExists(new FirestoreRemote({ projectId: cloudConfig()!.projectId, uid: u.uid, idToken: () => sess.accessToken() }), u.uid);
@@ -626,7 +628,7 @@ export async function bindUnboundToAccount(db: AppDB): Promise<void> {
 export async function keepUnboundAside(db: AppDB): Promise<void> {
   if (!state.user) return;
   await pauseSync();
-  try { parkActive(appSlotEnv(db), UNBOUND); onData(); }
+  try { parkActive(appSlotEnv(db), UNBOUND); await cancelAllNotifications(db); onData(); }
   finally { resumeSync(); }
   await activateAccount(state.user);
 }
