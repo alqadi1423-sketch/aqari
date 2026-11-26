@@ -73,11 +73,12 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # مهلتا الخطوتين دون مهلة العمل (١٢٠): التعليق فشلُ خطوةٍ تُكتب خلاصته، لا إلغاء (P0-5)
+      # والبناء يُعاد لعطل الجلب من الشبكة وحده (scripts/ci/gradleRetry.sh: إضافة foojay لم تُجلب على d9609a0)، وخطأ الترجمة يُسقطه من أول مرة
       - name: بناء حزمة الاختبار (x86_64)
         timeout-minutes: 40
         working-directory: android
         run: |
-          bash ./gradlew :app:assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 \
+          bash ../scripts/ci/gradleRetry.sh :app:assembleRelease -PreactNativeArchitectures=x86_64 --no-daemon --max-workers=2 \
             "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g"
           ls -l app/build/outputs/apk/release/
           apk="$(ls "$PWD"/app/build/outputs/apk/release/*.apk | head -1)"
