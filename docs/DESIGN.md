@@ -1438,6 +1438,7 @@ attachments/<sha256>.<ext> …
 - **D-8 نموذج الاستلام:** «فتح النموذج» بعد التوثيق يستعمل المعرّف العائد من `confirmContract`.
 - **D-6 نسبة التحصيل:** الرئيسية تأخذ `collectKpis(insts, T0).collectionPct`، الدالة نفسها في شاشة التحصيل.
 - **D-7 تاريخ العكس:** `journalReversalDate` يعيد `correctionDate` على تاريخ الأصل، والحوار يعرضه بنصٍّ مترجم.
+- **D-9 روابط الوصول:** `collectArrival` و`contractsArrival` (`src/ui/routeArrival.ts`) تمسح المرشّحات ثم تطبّق ما في الرابط، والشاشة تستهلك المعامل بـ`navigation.setParams` فتعمل الضغطة الثانية.
 
 ### ١٣.١٧ الإصدارات وسجل التغييرات (التوجيه الرابع ٤ · ٢ · 2026-11-07)
 - **رقمٌ واحد** في `src/version.ts` (`APP_VERSION` بصيغة رئيسي.فرعي.تصحيح، و`APP_BUILD` عددٌ يزيد دائماً)، ويطابقه `app.json` (`version` و`android.versionCode`) و`package.json` و`android/app/build.gradle` (`versionName` و`versionCode`) باختبار `tests/d4.version.test.ts`.

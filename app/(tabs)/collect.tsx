@@ -5,6 +5,7 @@
  */
 import React, { useMemo, useState, useEffect } from 'react';
 import { useLocalSearchParams, useNavigation } from 'expo-router';
+import { collectArrival } from '../../src/ui/routeArrival';
 import { View, Pressable, Linking, FlatList } from 'react-native';
 import { Screen } from '../../src/ui/Screen';
 import {
@@ -152,13 +153,12 @@ export default function Collect() {
     navigation.setParams({ pay: undefined } as never);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.pay]);
+  // روابط الرئيسية: كل وصولٍ يمسح المرشّحات ثم يطبّق ما جاء، ثم يُستهلك المعامل فتعمل الضغطة الثانية (D-9)
   useEffect(() => {
-    if (params.filter) setFilter(String(params.filter) as CollectFilter);
-    if (params.q) setQ(String(params.q));
-    if (params.bucket) {
-      const b = Number(params.bucket);
-      setFLate(b === 1 ? '1-30' : b === 2 ? '31-60' : b === 3 ? '61-90' : b === 4 ? '90+' : '');
-    }
+    const a = collectArrival(params);
+    if (!a) return;
+    setFilter(a.filter as CollectFilter); setQ(a.q); setFProp(a.fProp); setFLate(a.fLate); setFAmt(a.fAmt);
+    navigation.setParams({ filter: undefined, bucket: undefined, q: undefined } as never);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.filter, params.bucket, params.q]);
   const [payDate, setPayDate] = useState(today());

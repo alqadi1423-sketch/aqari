@@ -6,7 +6,8 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { otherCurrentOccupants } from '../../src/domain/occupants';
 import { CashShortNote, useCashOk } from '../../src/ui/CashGate';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { contractsArrival, paramStr } from '../../src/ui/routeArrival';
 import { View, Pressable, FlatList } from 'react-native';
 import { Screen, BackButton } from '../../src/ui/Screen';
 import {
@@ -72,10 +73,15 @@ type SortKey = 'start' | 'contract_no' | 'value_halalas' | 'tenant_name';
 export default function Contracts() {
   const { db, version, bump } = useApp();
   // القدوم من الدفتر أو تقرير: ?detail=<id> يفتح المستند مباشرة والرجوع يعيد من حيث أتيت
+  // وصولٌ بحالة يمسح بقية المرشّحات ثم يطبّقها، ويُستهلك المعامل فيعمل الرابط نفسه ثانيةً بعد إغلاق الورقة (D-9)
   const params = useLocalSearchParams<{ detail?: string; status?: string }>();
+  const navigation = useNavigation();
   useEffect(() => {
-    if (params.detail) setDetailId(String(params.detail));
-    if (params.status) setFStatus(String(params.status));
+    if (!params.detail && !params.status) return;
+    if (params.detail) setDetailId(paramStr(params.detail));
+    const a = contractsArrival(params);
+    if (a) { setFStatus(a.fStatus); setFProp(a.fProp); setFUnit(a.fUnit); setFPeriod(a.fPeriod); setFCycle(a.fCycle); setQ(a.q); }
+    navigation.setParams({ detail: undefined, status: undefined } as never);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.detail, params.status]);
   const toast = useToast();
