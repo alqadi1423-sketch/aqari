@@ -36,6 +36,7 @@ import { rentEntryIssue, allocationIssue, CREDIT_METHOD, type RentPaymentSrc, en
 import { filingRecordedAt } from '../domain/vatFilings';
 import { isISODate, dfmt } from '../domain/dates';
 import { bankLowFrom, walletLowFrom } from '../domain/cashGuard';
+import { supportingAccountsIn, supportList } from '../domain/accounting/manualGuard';
 import { TS_DEDUCTIBLE } from '../domain/purchases';
 import { ACC_OPENING_BALANCES } from '../domain/accounting/ledger';
 import { MIGRATED_SYSTEM_ACCOUNTS } from '../db/seed';
@@ -2154,6 +2155,18 @@ function applyLineDims(db: DB, entryId: string, lines: RowData[]): number {
   return n;
 }
 
+/**
+ * قيد العضو اليدوي (مسودته) على حسابٍ مساند يُرفض على جهاز المالك كما يمنعه تطبيق العضو (saveManualDraft): يُسجَّل من شاشته لا يدوياً
+ * (المراجعة الشاملة 2026-11-13 · A2.10 · قرار المالك س٢٠: «يُمنع للعضو») · ومسودة المالك من جهازه الآخر تمرّ، وترحيلها بتنبيهه
+ */
+function memberManualSupportCheck(db: DB, doc: RemoteDoc): void {
+  if (getSyncState(db, 'membership') || !byMember(db, doc, true)) return;
+  const src = doc.d!.src_type;
+  if (src != null && src !== '') return;
+  const hits = supportingAccountsIn(db, (doc.lines ?? []).map((l) => ({ account: String(l.account_code ?? '') })));
+  if (hits.length) throw new Error(tr('journal.supportMember', { list: supportList(hits), lng: 'ar' }));
+}
+
 function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<string> }): 'applied' | 'kept' {
   const d = doc.d!;
   const local = db.get<{ status: string; reversed_by: string | null }>(
@@ -2169,6 +2182,7 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
     return dimsChanged ? 'applied' : 'kept';
   }
   const posted = d.status === 'مرحّل';
+  memberManualSupportCheck(db, doc);
   // قبل إدخاله: توزيع الإيراد يُحسب من المرحَّل قبله
   if (posted) memberRentCheck(db, doc);
   if (posted) memberSourceCheck(db, doc);

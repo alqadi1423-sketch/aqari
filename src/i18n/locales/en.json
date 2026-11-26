@@ -981,7 +981,26 @@
     "confirmPostBody": "Post entry {{no}}? It enters the balances and cannot be edited, only reversed.",
     "cancel": "Cancel",
     "postFailed": "Posting failed",
-    "reverseBeforeOriginal": "The cancellation date is before the original entry date ({{date}}) · choose that date or later"
+    "reverseBeforeOriginal": "The cancellation date is before the original entry date ({{date}}) · choose that date or later",
+    "supportScreen": {
+      "invoices": "“Invoices”",
+      "claims": "“Claims”",
+      "purchases": "“Purchases” (VAT refund or rejection)",
+      "contracts": "“Contracts” (deposit and its settlement)",
+      "collect": "“Collection” (tenant credit balance)",
+      "reservations": "“Units” (reservation and its deposit)",
+      "assets": "“Assets”"
+    },
+    "supportItem": "{{code}} “{{name}}” from {{screen}}",
+    "supportMember": "A manual entry cannot touch an account that a supporting register reconciles; record it from its screen: {{list}}",
+    "supportWarn": "This entry touches an account whose supporting register it does not change, so the reconciliation check turns red until it is reversed: {{list}} · it normally belongs on its screen",
+    "supportConfirm": "Post at my own responsibility",
+    "supportTitle": "Supporting account",
+    "bankNeedsCash": "The bank choice is for the cash line 1100 · this entry has no net amount on it",
+    "bankField": "Cash line from",
+    "bankWallet": "Cash wallet",
+    "manualBankSource": "Manual entry",
+    "manualBankReversed": "Reversal of manual entry {{no}}"
   },
   "sync": {
     "cascadeNotOwner": "A delete with children from someone other than the owner is not cascaded",

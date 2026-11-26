@@ -1,11 +1,12 @@
 /** القيود اليومية · القائمة وبناء قيد جديد بميزان حي وترحيله */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { CashShortNote, OwnerCashInSheet, useCashOk } from '../src/ui/CashGate';
-import { cashShortfall, reversalCashOut } from '../src/domain/cashGuard';
+import { cashShortfall, reversalCashOut, bankShortages, bankLowFrom } from '../src/domain/cashGuard';
+import { supportingAccountsIn, supportList } from '../src/domain/accounting/manualGuard';
 import { View, FlatList, Pressable } from 'react-native';
 import { Screen } from '../src/ui/Screen';
 import { EntrySheet, srcTypeLabel } from '../src/ui/EntrySheet';
-import { Card, T, Num, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, Field } from '../src/ui/components';
+import { Card, T, Num, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, Field, Note } from '../src/ui/components';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { DateField } from '../src/ui/DateField';
 import { ActionMenuButton } from '../src/ui/ActionMenu';
@@ -112,6 +113,7 @@ export default function Journal() {
   const [depositFor, setDepositFor] = useState<number | null>(null);
   const canDeposit = usePerm('banks').add;
   const [date, setDate] = useState(today());
+  const [bankId, setBankId] = useState('');
   const [memo, setMemo] = useState('');
   const [lines, setLines] = useState<JeLine[]>([
     { account: '', debit: '', credit: '' },
@@ -162,10 +164,22 @@ export default function Journal() {
   const balanced = totalDebit > 0 && totalDebit === totalCredit;
   // صافي دائن النقدية في القيد اليدوي صرفٌ من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
   const manualOut = manualCashOut(lines.map((l) => ({ account: l.account, debit: toHalalas(l.debit), credit: toHalalas(l.credit) })));
-  const manualOk = useCashOk(manualOut, date); // بتاريخ القيد (A2.8)
+  // خانة البنك لسطر النقدية 1100 (المالك · A2.10): صافيه يستقر في البنك لا في المحفظة، فالكفاية برصيد البنك من تاريخ القيد
+  const banks = useMemo(() => db.all<{ id: string; name: string }>(`SELECT id, name FROM banks WHERE deleted_at IS NULL AND archived = 0 ORDER BY created_at`),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version]);
+  const cashNet = lines.filter((l) => l.account === '1100').reduce((s, l) => s + toHalalas(l.debit) - toHalalas(l.credit), 0);
+  const withBank = owner && !!bankId && cashNet !== 0;
+  const walletOk = useCashOk(withBank ? 0 : manualOut, date); // بتاريخ القيد (A2.8)
+  const bankLow = withBank && cashNet < 0 ? bankLowFrom(db, bankId, date).low : 0;
+  const bankShort = withBank && cashNet < 0 && -cashNet > bankLow
+    ? t('bankTx.bankShort', { bank: banks.find((b) => b.id === bankId)?.name ?? '', balance: fmt(bankLow), amount: fmt(-cashNet) }) : '';
+  const manualOk = walletOk && !bankShort;
+  // الحسابات المساندة في القيد (A2.10 · س٢٠): العضو يُمنع فلا زرّ له، والمالك يُنبَّه قبل الترحيل
+  const supportHits = supportingAccountsIn(db, lines.filter((l) => l.account));
 
   const openBuilder = () => {
-    setDate(today()); setMemo('');
+    setDate(today()); setMemo(''); setBankId('');
     setLines([{ account: '', debit: '', credit: '' }, { account: '', debit: '', credit: '' }]);
     setBuilderOpen(true);
   };
@@ -186,9 +200,24 @@ export default function Journal() {
         toast(t('journal.savedDraft'));
         return;
       }
-      postManualEntry(db, args);
-      setBuilderOpen(false); bump();
-      toast('تم ترحيل القيد بنجاح · تحدَّثت أرصدة الحسابات فعلياً');
+      const doPost = (ackSupport: boolean) => {
+        try {
+          withCostCenter(cc, () => postManualEntry(db, { ...args, bankId: withBank ? bankId : null, ackSupport }));
+          setBuilderOpen(false); bump();
+          toast('تم ترحيل القيد بنجاح · تحدَّثت أرصدة الحسابات فعلياً');
+        } catch (e) { reportFailure({ title: t('journal.postFailed'), e }); }
+      };
+      const hits = supportingAccountsIn(db, validLines);
+      if (!hits.length) { doPost(false); return; }
+      dialog({
+        title: t('journal.supportTitle'),
+        body: t('journal.supportWarn', { list: supportList(hits) }),
+        tone: 'danger',
+        actions: [
+          { label: t('journal.cancel'), variant: 'ghost' },
+          { label: t('journal.supportConfirm'), variant: 'danger', onPress: () => doPost(true) },
+        ],
+      });
     } catch (e) { reportFailure({ title: 'تعذّر الترحيل', e }); }
   };
 
@@ -201,14 +230,17 @@ export default function Journal() {
     // عكس قيدٍ أدخل نقداً يُخرجه من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
     const out = reversalCashOut(db, id);
     const short = cashShortfall(db, out);
+    // وحركة بنكٍ مربوطة بالقيد اليدوي (A2.10) يُخرجها عكسُها من البنك: لا زرّ إن لم يكفِ
+    const bankShorts = bankShortages(db, no, 'reverse');
     dialog({
       title: 'عكس القيد ' + no,
       body: 'سيُرحَّل قيد عاكس بتاريخ اليوم يلغي أثره على الأرصدة، ويبقى القيدان معاً في الدفتر.'
-        + (short > 0 ? '\nالنقد في المحفظة لا يكفي لعكسه (' + fmt(out) + ') · ينقصه ' + fmt(short) : ''),
+        + (short > 0 ? '\nالنقد في المحفظة لا يكفي لعكسه (' + fmt(out) + ') · ينقصه ' + fmt(short) : '')
+        + (bankShorts.length ? '\n' + bankShorts.join('\n') : ''),
       tone: 'normal',
       actions: [
         { label: 'تراجع', variant: 'ghost' },
-        ...(short > 0 ? (canDeposit ? [{ label: 'إيداع المالك · ' + fmt(short), variant: 'primary' as const, onPress: () => setDepositFor(short) }] : []) : [{
+        ...(bankShorts.length ? [] : short > 0 ? (canDeposit ? [{ label: 'إيداع المالك · ' + fmt(short), variant: 'primary' as const, onPress: () => setDepositFor(short) }] : []) : [{
           label: 'عكس القيد', variant: 'primary' as const,
           onPress: () => {
             try {
@@ -241,15 +273,19 @@ export default function Journal() {
   }, [db, bump, toast, dialog]);
 
   const postDraft = useCallback((id: string, no: string) => {
+    // مسودةٌ على حسابٍ مساند (قديمةٌ قبل المنع · A2.10): التنبيه في الحوار نفسه، والزر «على مسؤوليتي»
+    const hits = supportingAccountsIn(db, db.all<{ account: string }>(`SELECT account_code AS account FROM journal_lines WHERE entry_id = ?`, [id]));
     dialog({
       title: t('journal.confirmPostTitle'),
-      body: t('journal.confirmPostBody', { no }),
+      body: t('journal.confirmPostBody', { no }) + (hits.length ? '\n' + t('journal.supportWarn', { list: supportList(hits) }) : ''),
+      tone: hits.length ? 'danger' : undefined,
       actions: [
         { label: t('journal.cancel'), variant: 'ghost' },
         {
-          label: t('journal.postDraft'),
+          label: hits.length ? t('journal.supportConfirm') : t('journal.postDraft'),
+          ...(hits.length ? { variant: 'danger' as const } : {}),
           onPress: () => {
-            try { postDraftEntry(db, id); bump(); toast(t('journal.posted')); } catch (e) { reportFailure({ title: t('journal.postFailed'), e }); }
+            try { postDraftEntry(db, id, hits.length > 0); bump(); toast(t('journal.posted')); } catch (e) { reportFailure({ title: t('journal.postFailed'), e }); }
           },
         },
       ],
@@ -304,10 +340,15 @@ export default function Journal() {
         footer={
           <>
             {/* مسودة العضو لا تمسّ النقد فلا يُشترط لها كفايته */}
-            {manualOk || !owner ? <View style={{ flex: 1 }}><BtnPrimary title={owner ? 'ترحيل القيد' : t('journal.saveDraft')} onPress={post} disabled={!balanced} /></View> : null}
+            {/* والعضو على حسابٍ مساند لا زرّ له: يُسجَّل من شاشته (A2.10) */}
+            {(owner ? manualOk : !supportHits.length) ? <View style={{ flex: 1 }}><BtnPrimary title={owner ? 'ترحيل القيد' : t('journal.saveDraft')} onPress={post} disabled={!balanced} /></View> : null}
           </>
         }>
-        <CashShortNote needed={manualOut} what="صرف النقد في القيد" date={date} />
+        {withBank ? null : <CashShortNote needed={manualOut} what="صرف النقد في القيد" date={date} />}
+        {bankShort ? <Note tone="danger">{bankShort}</Note> : null}
+        {supportHits.length ? <Note tone="danger">{owner
+          ? t('journal.supportWarn', { list: supportList(supportHits) })
+          : t('journal.supportMember', { list: supportList(supportHits) })}</Note> : null}
         <Row>
           <View style={{ flex: 1 }}><Field label="رقم القيد" value={peekJournalNo(db)} disabled ltr /></View>
           <View style={{ flex: 1 }}><DateField label="التاريخ" value={date} onChange={setDate} /></View>
@@ -337,6 +378,12 @@ export default function Journal() {
         ))}
         <BtnGhost small title="+ إضافة سطر"
           onPress={() => setLines((p) => [...p, { account: '', debit: '', credit: '' }])} />
+        {/* سطر النقدية من المحفظة أو من بنك (المالك · A2.10) · بلا بنكٍ أو بلا صافٍ على 1100 لا تظهر الخانة */}
+        {owner && banks.length && cashNet !== 0 ? (
+          <SelectField label={t('journal.bankField')} value={bankId}
+            options={[{ value: '', label: t('journal.bankWallet') }, ...banks.map((b) => ({ value: b.id, label: b.name }))]}
+            onPick={setBankId} />
+        ) : null}
         <View style={{
           marginTop: 12, borderRadius: 8, padding: 11,
           backgroundColor: balanced ? C.emeraldSoft : C.roseSoft, alignItems: 'center',

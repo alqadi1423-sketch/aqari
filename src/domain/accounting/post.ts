@@ -1,6 +1,8 @@
 import type { DB } from '../../db/adapter';
 import { keyMoneyLinesOf, invoiceLinesOf, purchaseLinesOf, depositLinesOf } from '../ledgerCore';
-import { requireCash } from '../cashGuard';
+import { requireCash, requireBankFunds } from '../cashGuard';
+import { requireNoSupportForMember, requireSupportAck } from './manualGuard';
+import { memberDevice } from './orphans';
 import { t } from '../../i18n';
 import { uid, rowId } from '../ids';
 import { today } from '../dates';
@@ -164,10 +166,35 @@ export function manualCashOut(lines: EntryLine[]): number {
   return Math.max(0, net);
 }
 const MANUAL = 'القيد اليدوي';
-export function postManualEntry(db: DB, args: { date: string; memo: string; lines: EntryLine[] }): PostedEntry | null {
-  requireOpenPeriod(db, args.date);
-  requireCash(db, manualCashOut(args.lines), MANUAL, args.date); // بتاريخ القيد: لا تصير المحفظة سالبةً في يومٍ مضى (A2.8)
-  return postEntry(db, { ...args, auto: false });
+/**
+ * ترحيل القيد اليدوي (المالك) · على حسابٍ مساند بتأكيد تنبيهه وحده (ackSupport)، والعضو يُمنع (المراجعة الشاملة 2026-11-13 · A2.10 ·
+ * قرار المالك س٢٠) · وبحسابٍ بنكي (bankId) يستقر صافي سطور النقدية 1100 في البنك بحركةٍ مربوطة برقم القيد لا في المحفظة: سداد ضريبة
+ * الربع أو قسط قرضٍ من البنك · فالكفاية حينها برصيد البنك من تاريخ القيد، وإلا بالمحفظة (A2.8)
+ */
+export function postManualEntry(
+  db: DB,
+  args: { date: string; memo: string; lines: EntryLine[]; bankId?: string | null; ackSupport?: boolean },
+): PostedEntry | null {
+  const { bankId, ackSupport, ...entry } = args;
+  requireOpenPeriod(db, entry.date);
+  if (memberDevice(db)) requireNoSupportForMember(db, entry.lines);
+  else requireSupportAck(db, entry.lines, ackSupport);
+  const cashNet = entry.lines.filter((l) => l.account === CASH).reduce((s, l) => s + (l.debit || 0) - (l.credit || 0), 0);
+  if (bankId) {
+    if (!db.get(`SELECT 1 FROM banks WHERE id = ? AND deleted_at IS NULL`, [bankId])) throw new Error(t('bankStatement.txMissing'));
+    if (!cashNet) throw new Error(t('journal.bankNeedsCash'));
+    requireBankFunds(db, bankId, -cashNet, entry.date);
+  } else {
+    requireCash(db, manualCashOut(entry.lines), MANUAL, entry.date); // بتاريخ القيد: لا تصير المحفظة سالبةً في يومٍ مضى (A2.8)
+  }
+  return db.transaction(() => {
+    const posted = postEntry(db, { ...entry, auto: false });
+    if (bankId && posted) {
+      db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at) VALUES (?,?,?,?,?,1,?,?,?)`,
+        [uid(), bankId, entry.date, entry.memo, cashNet, posted.no, t('journal.manualBankSource', { lng: 'ar' }), new Date().toISOString()]);
+    }
+    return posted;
+  });
 }
 
 /**
@@ -176,11 +203,16 @@ export function postManualEntry(db: DB, args: { date: string; memo: string; line
  */
 export function saveManualDraft(db: DB, args: { date: string; memo: string; lines: EntryLine[] }): PostedEntry | null {
   requireOpenPeriod(db, args.date);
+  // ولا على حسابٍ مساند: يُسجَّل من شاشته (A2.10 · س٢٠)
+  requireNoSupportForMember(db, args.lines);
   return postEntry(db, { ...args, auto: false, draft: true });
 }
 
-/** المالك يرحّل مسودة قيدٍ يدوي (من عضوٍ أو منه) · بكفاية النقد كالترحيل المباشر، والمحفّز يرفض غير المتوازن */
-export function postDraftEntry(db: DB, entryId: string): void {
+/**
+ * المالك يرحّل مسودة قيدٍ يدوي (من عضوٍ أو منه) · بكفاية النقد كالترحيل المباشر، والمحفّز يرفض غير المتوازن · ومسودةٌ على حسابٍ مساند
+ * (قديمةٌ قبل المنع) بتأكيد تنبيهها وحده (A2.10)
+ */
+export function postDraftEntry(db: DB, entryId: string, ackSupport?: boolean): void {
   const e = db.get<{ status: string; src_type: string | null; deleted_at: string | null; date: string }>(
     `SELECT status, src_type, deleted_at, date FROM journal_entries WHERE id = ?`, [entryId]);
   if (!e || e.status !== 'قيد الإنشاء' || e.deleted_at || e.src_type) throw new Error(t('journal.notDraft')); // i18n-exempt: حالة القيد المخزّنة
@@ -188,6 +220,7 @@ export function postDraftEntry(db: DB, entryId: string): void {
   requireOpenPeriod(db, e.date);
   const lines = db.all<{ account: string; debit: number; credit: number }>(
     `SELECT account_code AS account, debit_halalas AS debit, credit_halalas AS credit FROM journal_lines WHERE entry_id = ?`, [entryId]);
+  requireSupportAck(db, lines, ackSupport);
   requireCash(db, manualCashOut(lines), MANUAL, e.date);
   db.run(`UPDATE journal_entries SET status = 'مرحّل' WHERE id = ?`, [entryId]);
 }
