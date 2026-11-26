@@ -82,8 +82,8 @@ function commercialRentParts(db: DB, from: string, to: string): { paid: number; 
  * (المراجعة الشاملة 2026-11-13 · A2.12): الفاتورة أو الإشعار الذي حمل قيده سطر ضريبة مخرجات (2200) خاضعٌ في فترته، فلا يُسقطه إلغاء
  * التسجيل بعده ويطابق البند ١ الدفتر · وما لا قيد له هنا (لم يصل بعد) بتسجيل المنشأة كما كان · والصفري رمزٌ لُقط يوم إصداره
  */
-function invoiceSales(db: DB, from: string, to: string): { S: number; tax: number; Z: number; E: number } {
-  const out = { S: 0, tax: 0, Z: 0, E: 0 };
+function invoiceSales(db: DB, from: string, to: string): { S: number; tax: number; Z: number; E: number; exemptRows: ExemptRow[] } {
+  const out = { S: 0, tax: 0, Z: 0, E: 0, exemptRows: [] as ExemptRow[] };
   const registered = vatRegistered(db);
   // ما يدل أن المنشأة سُجّلت يوماً: مسجّلةٌ الآن، أو بقي لها رقمٌ ضريبي بعد إلغاء تسجيلها · فالمنشأة التي لم تُسجَّل قط تبقى بلا مبيعات
   // خاضعة ولو حملت فواتيرها القديمة ضريبةً بالنسبة الافتراضية (دراسة القائم 2026-10-09)
@@ -96,8 +96,9 @@ function invoiceSales(db: DB, from: string, to: string): { S: number; tax: numbe
     return !r || !Number(r.n) ? null : Number(r.vat) > 0;
   };
   const hasKind = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'kind');
-  const invs = db.all<{ id: string; subtotal_halalas: number; tax_halalas: number; kind: string | null; ref: string | null }>(
-    `SELECT id, subtotal_halalas, tax_halalas, ${hasKind ? 'kind' : 'NULL AS kind'} AS kind, ${hasKind ? 'ref_invoice_id' : 'NULL'} AS ref FROM invoices
+  const invs = db.all<{ id: string; no: string; issue: string; customer: string; subtotal_halalas: number; tax_halalas: number; kind: string | null; ref: string | null }>(
+    `SELECT id, no, issue, customer_name AS customer, subtotal_halalas, tax_halalas, ${hasKind ? 'kind' : 'NULL AS kind'} AS kind,
+            ${hasKind ? 'ref_invoice_id' : 'NULL'} AS ref FROM invoices
      WHERE deleted_at IS NULL AND status != ? AND issue >= ? AND issue <= ?`,
     ['مسودة', from, to]); // i18n-exempt: حالة مخزّنة
   for (const v of invs) {
@@ -124,6 +125,9 @@ function invoiceSales(db: DB, from: string, to: string): { S: number; tax: numbe
       else if (p.code === 'Z') out.Z += p.net;
       else out.E += p.net;
     }
+    // صفّ الكشف المساند ٣ لما فيها من معفى (A2.13): برقمها وعميلها وتاريخ إصدارها، والإشعار الدائن سالباً
+    const exempt = parts.filter((p) => p.code === 'E').reduce((x, p) => x + p.net, 0);
+    if (exempt) out.exemptRows.push({ date: v.issue, tenant: v.customer, contractNo: v.no, unitLabel: '', net: exempt });
   }
   return out;
 }
@@ -236,8 +240,10 @@ export function vatReturnData(db: DB, year: number, quarter: 1 | 2 | 3 | 4): Vat
   )!;
 
   const salesSub = sales.S + keyMoney.net + assetSale.net, salesTax = sales.tax + keyMoney.tax + assetSale.tax, zeroSales = sales.Z;
-  const exemptSales = exemptSalesRows(db, from, to);
-  const rentNet = exemptSales.reduce((s, r) => s + Number(r.net), 0);
+  const rentRows = exemptSalesRows(db, from, to);
+  const rentNet = rentRows.reduce((s, r) => s + Number(r.net), 0);
+  // الكشف المساند ٣ = الإيجار السكني والفواتير المعفاة معاً، فمجموعه البند ٥ (المراجعة الشاملة 2026-11-13 · A2.13)
+  const exemptSales = [...rentRows, ...sales.exemptRows].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const dedSub = Number(ded.sub), dedTax = Number(ded.tax);
   const exemptPurAmt = Number(exemptPur.s), zeroPurAmt = Number(zeroPur.s);
   const totalSales = salesSub + zeroSales + rentNet + sales.E;

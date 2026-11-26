@@ -334,8 +334,9 @@ export async function exportVatReturn(
       { title: `٢ · غير القابلة للخصم (${d.schedules.excludedPurchases.length})`, sum: true,
         header: ['الرقم', 'التاريخ', 'المورد', 'قبل الضريبة', 'الضريبة (ضمن التكلفة)', 'الإجمالي', 'سبب الاستبعاد'],
         rows: d.schedules.excludedPurchases.map((r) => [r.no, dfmtOut(r.date), r.supplier, M(r.subtotal), M(r.tax), M(r.total), r.reason || '']) },
-      { title: `٣ · المبيعات المعفاة · إيرادات الإيجار السكني (${d.schedules.exemptSales.length})`, sum: true,
-        header: ['التاريخ', 'المستأجر', 'العقد', 'الوحدة', 'المحصَّل'],
+      // والفواتير المعفاة برقمها وعميلها، فمجموعه البند ٥ (A2.13)
+      { title: `٣ · المبيعات المعفاة · الإيجار السكني والفواتير المعفاة (${d.schedules.exemptSales.length})`, sum: true,
+        header: ['التاريخ', 'المستأجر أو العميل', 'العقد أو الفاتورة', 'الوحدة', 'المبلغ'],
         rows: d.schedules.exemptSales.map((r) => [dfmtOut(r.date), r.tenant, r.contractNo, r.unitLabel, M(r.net)]) },
       { title: `٤ · بيان الحوالات (${d.schedules.transfers.length})`, sum: true,
         header: ['التاريخ', 'المبلغ', 'الجهة', 'الغرض', 'رقم المرجع البنكي', 'رقم الفاتورة'],
@@ -373,7 +374,7 @@ export async function exportVatReturn(
         ['عدد بنود النموذج', String(d.items.length)],
         ['المشتريات القابلة للخصم', String(d.schedules.deductiblePurchases.length) + ' فاتورة'],
         ['غير القابلة للخصم (مستبعدة من البند ٧)', String(d.schedules.excludedPurchases.length) + ' فاتورة'],
-        ['المبيعات المعفاة · الإيجار السكني', String(d.schedules.exemptSales.length) + ' مقبوض'],
+        ['المبيعات المعفاة · الإيجار السكني والفواتير المعفاة', String(d.schedules.exemptSales.length) + ' صفاً'],
         ['بيان الحوالات', String(d.schedules.transfers.length) + ' حوالة'],
       ], { filed: !!filed })), 'xlsx');
     return;
