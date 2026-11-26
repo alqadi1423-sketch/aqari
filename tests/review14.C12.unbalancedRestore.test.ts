@@ -46,6 +46,8 @@ test('C-12 · قيدٌ مرحّل غير متوازن في نسخة يرفض ا�
   const { archive, manifest, target } = await archiveWith('aq-r14c12-', (db) => forgeEntry(db, 'XZ', 'JE-9001', [['1100', 5000, 0]]));
   // الإنشاء لا يمنع (2026-10-04): فيها ملاحظة تسمّيه
   expect((manifest.notes ?? []).join(' ')).toContain('قيد مرحّل غير متوازن: JE-9001 (الفرق 50.00)');
+  // والنسخة تقول إنها لا تُستعاد حتى يُصلح القيد (المدقق المستقل للمرحلة ٣)
+  expect(manifest.notes ?? []).toContain('هذه النسخة لا تُستعاد حتى يُصلح: قيد مرحّل غير متوازن: JE-9001 (الفرق 50.00)');
   const before = tableCounts(target.db);
   const err = await prepareRestore(target, archive).catch((e: Error) => e);
   expect(err).toBeInstanceOf(RestoreError);

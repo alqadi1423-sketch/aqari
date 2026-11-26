@@ -342,7 +342,8 @@ export async function createBackup(
       review = { blocking: [], restoreBlocking: [], notes: ['تعذّر فحص الدفتر على بنية الإصدار ' + currentSchemaVersion(env.db)] };
     }
     if (review.blocking.length) throw new BackupIntegrityError(review.blocking);
-    notes = review.notes;
+    // قيدٌ مرحّل مختل لا يمنع النسخة ويمنع استعادتها (C-12): تقول النسخة ذلك بنفسها (المدقق المستقل للمرحلة ٣)
+    notes = [...review.notes, ...review.restoreBlocking.map((x) => 'هذه النسخة لا تُستعاد حتى يُصلح: ' + x)]; // i18n-exempt: ملاحظات النسخة بالعربية كبقية فحوصها
   }
   await yieldUi();
   // العدّ والدفتر ثم اللقطة بلا انتظار بينها: كاتبٌ متزامن (المزامنة، وسحب المحادثة كل ثوانٍ) لا يقع بين العدّ واللقطة (تحقق الدمج ف٦)
