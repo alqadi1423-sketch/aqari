@@ -17,9 +17,16 @@ const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
 
 const u32 = (b: Uint8Array, i: number) => ((b[i] << 24) | (b[i + 1] << 16) | (b[i + 2] << 8) | b[i + 3]) >>> 0;
 
+/*
+ * لا Math.* في الحلقات الساخنة (لكل بايتٍ أو بكسل): استدعاءٌ لكل بايت يُبطئ Hermes بلا JIT، وفي سياق jest (vm) يمرّ كل وصولٍ إلى
+ * Math بطريقٍ بطيء · إزالة الترشيح وحدها نزلت من ٨٤٠ إلى ١٢٠ ms (tests/q0_3.qrImage · التشغيل 45828448066 تجاوز الحدّ بـ٢٢٨٩ ms)
+ */
+const abs = (v: number) => (v < 0 ? -v : v);
+const sign = (v: number) => (v > 0 ? 1 : v < 0 ? -1 : v);
+
 function paeth(a: number, b: number, c: number): number {
   const p = a + b - c;
-  const pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+  const pa = abs(p - a), pb = abs(p - b), pc = abs(p - c);
   return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
 }
 
@@ -97,7 +104,7 @@ export function decodePng(bytes: Uint8Array): Rgba {
     if (depth === 16) return raw[row + 2 * k];
     const bit = k * depth;
     const v = (raw[row + (bit >> 3)] >> (8 - depth - (bit & 7))) & ((1 << depth) - 1);
-    return color === 3 ? v : Math.round((v * 255) / ((1 << depth) - 1));
+    return color === 3 ? v : ((v * 255) / ((1 << depth) - 1) + 0.5) | 0;
   };
   for (let y = 0, o = 0; y < height; y++) {
     const row = y * (stride + 1) + 1;
@@ -126,11 +133,11 @@ function maskCode(img: Rgba, data: Uint8ClampedArray, loc: QRCode['location']): 
   const x0 = Math.max(0, Math.floor(Math.min(...q.map((p) => p.x)))), x1 = Math.min(img.width - 1, Math.ceil(Math.max(...q.map((p) => p.x))));
   const y0 = Math.max(0, Math.floor(Math.min(...q.map((p) => p.y)))), y1 = Math.min(img.height - 1, Math.ceil(Math.max(...q.map((p) => p.y))));
   const side = (a: { x: number; y: number }, b: { x: number; y: number }, x: number, y: number) => (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
-  const ref = Math.sign(side(q[0], q[1], cx, cy));
+  const ref = sign(side(q[0], q[1], cx, cy));
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       let inside = true;
-      for (let k = 0; k < 4 && inside; k++) if (Math.sign(side(q[k], q[(k + 1) % 4], x, y)) === -ref) inside = false;
+      for (let k = 0; k < 4 && inside; k++) if (sign(side(q[k], q[(k + 1) % 4], x, y)) === -ref) inside = false;
       if (!inside) continue;
       const o = (y * img.width + x) * 4;
       data[o] = 255; data[o + 1] = 255; data[o + 2] = 255;
@@ -179,7 +186,8 @@ export function noiseLevel(g: Uint8Array, w: number, h: number): number {
   for (let y = 1; y < h - 1; y += 2) {
     for (let x = 1; x < w - 1; x += 2) {
       const i = y * w + x, c = 2 * g[i];
-      const v = Math.min(Math.abs(c - g[i - 1] - g[i + 1]), Math.abs(c - g[i - w] - g[i + w]));
+      const dh = abs(c - g[i - 1] - g[i + 1]), dv = abs(c - g[i - w] - g[i + w]);
+      const v = dh < dv ? dh : dv;
       hist[v > 511 ? 511 : v]++; n++;
     }
   }
