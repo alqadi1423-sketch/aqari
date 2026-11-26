@@ -1486,6 +1486,7 @@ attachments/<sha256>.<ext> …
 - **D-21:** النص العربي من الخطأ أو نصٌ عام، وحفظ المورد بحوار الفشل الموحّد، وتظليل الخانة الناقصة في المستأجر والقيد اليدوي.
 - **D-22:** `sourcePath` مع `routeAllowed`، والصف ليس زراً لمسارٍ ممنوع.
 - **D-23:** قاعدة «تحصيل» في تفاصيل القسط مثل صف الجدول.
+- **D-24:** حُذف الفراغ وحالة `tCredit` الميتة.
 
 ### ١٣.١٧ الإصدارات وسجل التغييرات (التوجيه الرابع ٤ · ٢ · 2026-11-07)
 - **رقمٌ واحد** في `src/version.ts` (`APP_VERSION` بصيغة رئيسي.فرعي.تصحيح، و`APP_BUILD` عددٌ يزيد دائماً)، ويطابقه `app.json` (`version` و`android.versionCode`) و`package.json` و`android/app/build.gradle` (`versionName` و`versionCode`) باختبار `tests/d4.version.test.ts`.

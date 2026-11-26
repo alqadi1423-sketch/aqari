@@ -90,7 +90,6 @@ export default function Tenants() {
   const [tName, setTName] = useState('');
   const [tVat, setTVat] = useState('');
   const [tPhone, setTPhone] = useState('');
-  const [tCredit, setTCredit] = useState('');
   const pager = usePager('tenants');
   const fsheet = useFilterSheet();
   const ready = useDeferredReady();
@@ -186,7 +185,7 @@ export default function Tenants() {
       ]);
       logAudit(db, 'العملاء', 'create', 'مستأجر', tName.trim());
     });
-    setFormOpen(false); setTName(''); setTVat(''); setTPhone(''); setTCredit(''); tf.reset();
+    setFormOpen(false); setTName(''); setTVat(''); setTPhone(''); tf.reset();
     bump();
     toast(`تمت إضافة المستأجر "${tName.trim()}" بنجاح`);
   });
@@ -253,17 +252,7 @@ export default function Tenants() {
         <Field label="اسم المستأجر" value={tName} onChange={setTName} error={tf.missing(tName) || tDup} />
         {tDup ? <Note tone="danger">{'يوجد مستأجر مسجَّل بنفس الاسم أو الرقم الضريبي بالفعل · تحقق من القائمة قبل الإضافة'}</Note> : null}
         <Field label="الرقم الضريبي" value={tVat} onChange={setTVat} keyboard="numeric" ltr />
-        <Row>
-          <View style={{ flex: 1 }}>
-            <Field label="رقم الجوال" value={tPhone} onChange={setTPhone} keyboard="phone-pad" ltr />
-          </View>
-          {/* الرصيد مبلغ من التحصيل · لمن يرى التحصيل وحده */}
-          {seesMoney ? (
-            <View style={{ flex: 1 }}>
-
-            </View>
-          ) : null}
-        </Row>
+        <Field label="رقم الجوال" value={tPhone} onChange={setTPhone} keyboard="phone-pad" ltr />
       </Sheet>
       {profileId && <TenantProfileSheet tenantId={profileId} onClose={() => setProfileId(null)} />}
       {similarOpen && <SimilarTenantsSheet onClose={() => setSimilarOpen(false)} />}
