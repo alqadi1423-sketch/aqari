@@ -10,8 +10,7 @@ import { useLang } from '../i18n';
 import { dfmt } from '../domain/dates';
 import { toHalalas, fmt } from '../domain/money';
 import { scheduleChecks, scheduleSumGap, type EjarExtras } from '../domain/pdf/ejarExtras';
-import { scheduleInstallments } from '../domain/contracts/service';
-import { generateInstallments } from '../domain/contracts/installments';
+import { reviewScheduleRows } from '../domain/contracts/service';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
 
 export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFile, financial, split, onUseComputed }: {
@@ -25,14 +24,10 @@ export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFil
 }) {
   const { t } = useLang();
   const rows = useMemo(() => {
-    if (!start || !end) return null;
     // الأقساط من إجمالي العقد: الإيجار والخدمات والمواقف
     const v = toHalalas(value) + (split?.servicesHalalas ?? 0) + (split?.parkingHalalas ?? 0);
-    const read = scheduleInstallments(schedule ?? null, start, end, v);
-    if (read) return { read: true, rows: read.map((r) => ({ due: r.dueDate, deadline: r.deadline, amount: r.amountHalalas })) };
-    try {
-      return { read: false, rows: generateInstallments(start, end, v, cycle).map((r) => ({ due: r.dueDate, deadline: null as string | null, amount: r.amountHalalas })) };
-    } catch { return null; }
+    // الصفوف نفسها التي يبني منها ملخص المراجعة عدده (A1-10)
+    return reviewScheduleRows({ start, end, totalHalalas: v, cycle, schedule });
   }, [start, end, value, cycle, schedule, split?.servicesHalalas, split?.parkingHalalas]);
   if (!rows || !rows.rows.length) return null;
   return (

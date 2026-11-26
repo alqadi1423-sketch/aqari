@@ -138,6 +138,20 @@ export function scheduleInstallments(schedule: ScheduleRow[] | null | undefined,
   return schedule.map((r) => ({ dueDate: r.dueDate, deadline: dl(r), amountHalalas: Number(r.amountHalalas) }));
 }
 
+/**
+ * صفوف جدول الدفعات قبل الحفظ كما سيُنشئها التوثيق: جدول الملف إن صلح وإلا المحسوب من إجمالي العقد (الإيجار والخدمات والمواقف) ·
+ * منها يُعرض جدول المراجعة وملخصها «عدد الدفعات» معاً (المراجعة الشاملة 2026-11-13 · A1-10: كان الملخص يُحسب بطريقةٍ ثانية)
+ */
+export function reviewScheduleRows(a: { start: string; end: string; totalHalalas: number; cycle: string; schedule?: ScheduleRow[] | null }):
+  { read: boolean; rows: Array<{ due: string; deadline: string | null; amount: number }> } | null {
+  if (!a.start || !a.end) return null;
+  const read = scheduleInstallments(a.schedule ?? null, a.start, a.end, a.totalHalalas);
+  if (read) return { read: true, rows: read.map((r) => ({ due: r.dueDate, deadline: r.deadline, amount: r.amountHalalas })) };
+  try {
+    return { read: false, rows: generateInstallments(a.start, a.end, a.totalHalalas, a.cycle).map((r) => ({ due: r.dueDate, deadline: null, amount: r.amountHalalas })) };
+  } catch { return null; }
+}
+
 /** مبلغا الخدمات والمواقف المحفوظان مع المسودة · يُستعملان حين يأتي النموذج المعاد فتحه بلا قراءة الملف */
 function withStoredSplit(db: DB, input: ContractDraftInput, draftId?: string): ContractDraftInput {
   if (!draftId || input.servicesHalalas !== undefined || input.parkingHalalas !== undefined) return input;

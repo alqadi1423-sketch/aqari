@@ -547,7 +547,7 @@ import { reportFailure } from '../../src/ui/failureDialog';
 import { CostCenterField } from '../../src/ui/CostCenters';
 import { ScheduleReview } from '../../src/ui/ScheduleReview';
 import { RenewEjarRead, type RenewFileRead } from '../../src/ui/RenewEjarRead';
-import { scheduleInstallments } from '../../src/domain/contracts/service';
+import { scheduleInstallments, reviewScheduleRows } from '../../src/domain/contracts/service';
 import { formSplit } from '../../src/ui/contractForm';
 import { LeaseCompare, useLeaseDiffs } from '../../src/ui/LeaseCompare';
 import { applyExtras, type ExtraDiff, type ExtraKey } from '../../src/domain/pdf/ejarExtras';
@@ -562,17 +562,22 @@ function ReviewSheet({
     ? db.get<{ unit_no: string; property_id: string }>(`SELECT unit_no, property_id FROM units WHERE id = ?`, [form.unitId])
     : undefined;
   const p = u ? db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [u.property_id]) : undefined;
+  const { t } = useLang();
   const months = form.start && form.end ? Math.max(1, approxMonths(form.start, form.end)) : 0;
-  const per = ({ 'شهرية': 1, 'ربع سنوية': 3, 'نصف سنوية': 6, 'سنوية': 12 } as Record<string, number>)[form.cycle] || 1;
-  const n = Math.max(1, Math.round(months / per));
-  const each = toHalalas(form.value) / n;
+  // العدد والمبلغ من صفوف جدول المراجعة نفسها وبإجمالي العقد، كما يُنشئها التوثيق (A1-10)
+  const sp = formSplit(form);
+  const sched = reviewScheduleRows({ start: form.start, end: form.end, cycle: form.cycle, schedule: form.schedule,
+    totalHalalas: toHalalas(form.value) + (sp?.servicesHalalas ?? 0) + (sp?.parkingHalalas ?? 0) })?.rows ?? [];
+  const first = sched.length ? sched[0].amount : 0;
+  const last = sched.length ? sched[sched.length - 1].amount : 0;
   const rows: Array<[string, React.ReactNode]> = [
     ['المستأجر', form.tenant], ['الجوال', form.phone], ['الهوية / السجل', form.idNumber],
     ['العقار', p?.name ?? ''], ['الوحدة', u?.unit_no ?? ''],
     ['قيمة العقد', fmt(toHalalas(form.value))], ['الدورية', form.cycle],
     ['البداية', dfmt(form.start)], ['النهاية', dfmt(form.end)],
     ['المدة', months + ' شهراً'],
-    ['عدد الدفعات', n + ' دفعة × ' + fmt(Math.round(each))],
+    ['عدد الدفعات', !sched.length ? '' : first === last ? sched.length + ' دفعة × ' + fmt(first)
+      : t('lease.reviewCountMixed', { n: sched.length, first: fmt(first), last: fmt(last) })],
     ['التأمين', fmt(toHalalas(form.deposit))],
     ['رقم إيجار', form.ejarNo], ['الخدمات المشمولة', form.services],
     ['الأثاث', form.furnished],

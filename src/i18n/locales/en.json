@@ -95,7 +95,8 @@
     "renewFileNoSchedule": "File read but its payment schedule couldn’t be read · dates will be computed and flagged on the contract",
     "renewFileEmpty": "No clear fields could be read from the file",
     "renewFileFailed": "Couldn’t read the file",
-    "computedNote": "Installment dates are computed, not read from the Ejar file’s schedule · match them to the schedule in the file."
+    "computedNote": "Installment dates are computed, not read from the Ejar file’s schedule · match them to the schedule in the file.",
+    "reviewCountMixed": "{{n}} payments · first {{first}}, last {{last}}"
   },
   "dataLabels": {
     "table": {
