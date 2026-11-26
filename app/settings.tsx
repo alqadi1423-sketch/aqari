@@ -61,7 +61,7 @@ import { keptForReview, dismissKeptReview } from '../src/domain/accounting/orpha
 import { SourceCancelSheet } from '../src/ui/SourceCancelSheet';
 import { entrySourceAction } from '../src/domain/accounting/sourceCancel';
 import { EntrySheet } from '../src/ui/EntrySheet';
-import { useLang, langName, resolveLang, type LangPref } from '../src/i18n';
+import { useLang, langName, resolveLang, pickableLangs, type LangPref } from '../src/i18n';
 import { readLangPref, changeLanguage, deviceLocale } from '../src/i18n/device';
 import { CostCentersSheet, DimsBackfillSheet, CostCenterField } from '../src/ui/CostCenters';
 import { costCenters, planDimsBackfill, GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
@@ -140,7 +140,10 @@ export default function Settings() {
   // لغة الواجهة · إعداد هذا الجهاز وحده (المرحلة الأولى من تعدد اللغات)
   const { t } = useLang();
   const [langPref, setLangPref] = useState<LangPref>(() => readLangPref());
-  const LANG_OPTS: Array<[number, LangPref]> = [[0, 'device'], [1, 'ar'], [2, 'en']];
+  // المكتملة وحدها، ولغةٌ واحدة لا اختيار فيها فيُخفى الصف (D-26)
+  const pickLangs = pickableLangs(langPref);
+  const LANG_OPTS: Array<[number, LangPref]> = pickLangs.length > 1
+    ? [[0, 'device'], ...pickLangs.map((c, i) => [i + 1, c] as [number, LangPref])] : [];
   const langLabel = (p: LangPref) => (p === 'device' ? t('language.deviceIs', { name: langName(resolveLang('device', deviceLocale())) }) : langName(p));
   const pickLang = (n: number) => {
     const p = LANG_OPTS.find(([k]) => k === n)?.[1] ?? 'device';
@@ -958,8 +961,8 @@ export default function Settings() {
       {/* العرض · لم يرد في ترتيب المالك فبقي بطاقةً مستقلة حتى يحدّد مكانه */}
       <Card>
         <CardTitle>العرض</CardTitle>
-        <ValueRow icon="chat" title={t('language.title')} value={langLabel(langPref)}
-          onPress={() => openChoice(t('language.pickTitle'), LANG_OPTS.map(([k, p]) => [k, langLabel(p)] as [number, string]), LANG_OPTS.find(([, p]) => p === langPref)?.[0] ?? 0, pickLang)} />
+        {LANG_OPTS.length > 1 ? <ValueRow icon="chat" title={t('language.title')} value={langLabel(langPref)}
+          onPress={() => openChoice(t('language.pickTitle'), LANG_OPTS.map(([k, p]) => [k, langLabel(p)] as [number, string]), LANG_OPTS.find(([, p]) => p === langPref)?.[0] ?? 0, pickLang)} /> : null}
         <ValueRow icon="eye" title="حجم الواجهة والخط" value={uiPct + '٪ · ' + fontPct + '٪'} onPress={() => setDisplayOpen(true)} />      </Card>
 
       {/* ٦ · البيانات والمساحة */}

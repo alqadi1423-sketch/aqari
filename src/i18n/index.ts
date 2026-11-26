@@ -33,6 +33,14 @@ export function resolveLang(pref: LangPref | null | undefined, deviceLocale: str
   return (LANGUAGES.find((x) => x.code === base && x.complete)?.code) ?? DEFAULT_LANG;
 }
 
+/**
+ * اللغات التي تعرضها الإعدادات للاختيار: المكتملة وحدها، فالناقصة «تُخفى حتى تعمل» (س٢٦ · D-26) · ومن اختار ناقصةً
+ * من قبل تبقى له معروضةً مع العربية فيعود منها
+ */
+export function pickableLangs(current: LangPref | null | undefined): Lang[] {
+  return LANGUAGES.filter((l) => l.complete || l.code === current).map((l) => l.code);
+}
+
 export const parseLangPref = (v: string | null | undefined): LangPref =>
   v === 'ar' || v === 'en' ? v : 'device';
 
