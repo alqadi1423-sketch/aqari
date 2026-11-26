@@ -140,6 +140,9 @@ test('كل عملية تكتب ما يجيزه جدول OP_WRITES لقسمها �
   const unit3 = db.get<{ id: string }>(`SELECT id FROM units WHERE property_id = ? AND unit_no = 'B-2'`, [propertyId])!.id;
   const c4 = track('contracts', () => confirmContract(db, { ...input, tenant: 'مستأجر ثالث', phone: '0500000003', idNumber: '1000000025', unitId: unit3, start: addDays(T, -400), end: addDays(T, -35), depositHalalas: 100000 }));
   track('deposits', () => saveDepositSettlement(db, c4, { date: T, deductionHalalas: 20000, deductionReason: 'تنظيف', refundHalalas: 80000, notes: '' }));
+  // تعديلها: المخصوم مقابل قسطٍ متأخر يسدّده بدفعةٍ من التأمين، ثم يعود أضراراً فتُعكس الدفعة وتوسم ملغاة (المراجعة الشاملة 2026-11-13 · A1-2)
+  track('deposits', () => saveDepositSettlement(db, c4, { date: T, deductionHalalas: 20000, deductionReason: 'إيجار متأخر', refundHalalas: 80000, notes: '', arrearsHalalas: 20000 }));
+  track('deposits', () => saveDepositSettlement(db, c4, { date: T, deductionHalalas: 20000, deductionReason: 'تنظيف', refundHalalas: 80000, notes: '', arrearsHalalas: 0 }));
   track('contracts', () => saveTenantRating(db, c4, { onTime: 'ممتاز', paymentCommit: 'ممتاز', contractCommit: 'ممتاز', unitCondition: 'ممتاز', neighborComplaints: 'لا', notes: '' }));
 
   // الفواتير

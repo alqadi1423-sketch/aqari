@@ -139,7 +139,9 @@ test('١ مرآةٌ حقيقية مكررة لا تضاعف أثر العكس: �
   for (const k of ['MD1', 'MD2', 'MD3']) r.inject(memberRev(k, e.id, [['1100', 0, 100000], ['4200', 100000, 0]]));
   await sync(a, r);
   expect(Number(a.get<{ n: number }>(`SELECT COUNT(*) AS n FROM journal_entries WHERE src_type = 'manual_rev' AND status = 'مرحّل'`)!.n)).toBe(1);
-  expect(reasonOf(a, 'MD2') + reasonOf(a, 'MD3')).toMatch(/أكثر من أصولها/);
+  // والمكرَّر من عضوٍ ينتظر أصلاً قد يصل في دفعةٍ بعده (المدقق الخارجي K١ب) ثم يُرفض بطول انتظاره · فلا يدخل ولا يضاعف العكس
+  const parked = (k: string) => !!a.get(`SELECT 1 FROM sync_inbox WHERE pk = ?`, [k]) || /أكثر من أصولها/.test(reasonOf(a, k));
+  expect(parked('MD2') && parked('MD3')).toBe(true);
   a.close();
 });
 

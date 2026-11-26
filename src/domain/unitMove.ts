@@ -6,6 +6,7 @@
  * ويُعاد سحبه بصلاحيته عند أول اتصال (ملاحظة المالك ٢٠٢٦-١٠-٠٥).
  */
 import type { DB } from '../db/adapter';
+import { allIn } from '../db/inList';
 
 /** الطابور يلتقط الكتابات بعد تفعيل المزامنة وحده · وقبله يُبذر كل شيء عند التفعيل */
 function capturing(db: DB): boolean {
@@ -13,7 +14,6 @@ function capturing(db: DB): boolean {
 }
 
 const ids = (db: DB, sql: string, p: unknown[]): string[] => db.all<{ id: string }>(sql, p as never).map((r) => r.id);
-const marks = (n: number) => Array(n).fill('?').join(',');
 
 /** نقل وحدة بانتظار النشر في المنشأة · يقرؤه services/org.publishUnitMoves */
 export interface UnitMove { unit: string; from: string; to: string; at: string }
@@ -56,7 +56,7 @@ export function retagUnitTree(db: DB, unitId: string, oldPropertyId: string, new
     }
   };
   const inList = (table: string, col: string, keys: string[], pk = 'id') =>
-    keys.length ? ids(db, `SELECT ${pk} AS id FROM "${table}" WHERE ${col} IN (${marks(keys.length)})`, keys) : [];
+    allIn<{ id: string }>(db, `SELECT ${pk} AS id FROM "${table}" WHERE ${col} IN (:list)`, keys).map((r) => r.id);
 
   const contracts = ids(db, `SELECT id FROM contracts WHERE unit_id = ?`, [unitId]);
   const rooms = ids(db, `SELECT id FROM unit_rooms WHERE unit_id = ?`, [unitId]);

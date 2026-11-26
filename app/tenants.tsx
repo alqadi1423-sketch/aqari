@@ -5,7 +5,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Pressable, FlatList } from 'react-native';
 import { Screen } from '../src/ui/Screen';
-import { Card, T, Num, Money, EmptyState, Row, SearchBox, BtnPrimary, BtnGhost, Field, Divider } from '../src/ui/components';
+import { Card, T, Num, Money, EmptyState, Row, SearchBox, BtnPrimary, BtnGhost, Field, Divider, Note } from '../src/ui/components';
+import { useSaveAttempt } from '../src/ui/formAttempt';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { TenantProfileSheet, SimilarTenantsSheet } from '../src/ui/TenantProfileSheet';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../src/ui/FilterSheet';
@@ -17,7 +18,6 @@ import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import { allInstallments } from '../src/domain/stats';
 import { today } from '../src/domain/dates';
-import { toHalalas } from '../src/domain/money';
 import { uid } from '../src/domain/ids';
 import { logAudit } from '../src/domain/audit';
 import { usePerm } from '../src/ui/access';
@@ -89,7 +89,6 @@ export default function Tenants() {
   const [tName, setTName] = useState('');
   const [tVat, setTVat] = useState('');
   const [tPhone, setTPhone] = useState('');
-  const [tCredit, setTCredit] = useState('');
   const pager = usePager('tenants');
   const fsheet = useFilterSheet();
   const ready = useDeferredReady();
@@ -167,23 +166,28 @@ export default function Tenants() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, needle, fMoney, fContracts, pager.offset, pager.limit]);
 
-  const saveTenant = () => {
-    if (!tName.trim()) { toast('الرجاء إدخال اسم المستأجر'); return; }
+  // الخانة الناقصة حمراء بعد محاولة الحفظ، والمكرَّر سببه ظاهرٌ في الورقة حتى يُصحَّح · لا تنبيهٌ عابر (D-21)
+  const tf = useSaveAttempt();
+  const tDup = tf.tried && !!tName.trim() && !!db.get(
+    `SELECT id FROM tenants WHERE deleted_at IS NULL AND (TRIM(name) = TRIM(?) OR (? != '' AND TRIM(vat) = TRIM(?)))`,
+    [tName, tVat, tVat]
+  );
+  const saveTenant = () => tf.attempt(!!tName.trim(), () => {
     const dup = db.get(
       `SELECT id FROM tenants WHERE deleted_at IS NULL AND (TRIM(name) = TRIM(?) OR (? != '' AND TRIM(vat) = TRIM(?)))`,
       [tName, tVat, tVat]
     );
-    if (dup) { toast('يوجد مستأجر مسجَّل بنفس الاسم أو الرقم الضريبي بالفعل · تحقق من القائمة قبل الإضافة'); return; }
+    if (dup) { tf.attempt(false, () => {}); return; }
     db.transaction(() => {
       db.run(`INSERT INTO tenants (id, name, vat, phone, credit_halalas, created_at) VALUES (?,?,?,?,?,?)`, [
         uid(), tName.trim(), tVat.trim(), tPhone.trim(), 0, new Date().toISOString(),
       ]);
       logAudit(db, 'العملاء', 'create', 'مستأجر', tName.trim());
     });
-    setFormOpen(false); setTName(''); setTVat(''); setTPhone(''); setTCredit('');
+    setFormOpen(false); setTName(''); setTVat(''); setTPhone(''); tf.reset();
     bump();
     toast(`تمت إضافة المستأجر "${tName.trim()}" بنجاح`);
-  };
+  });
 
   const openProfile = useCallback((id: string) => setProfileId(id), []);
 
@@ -244,19 +248,10 @@ export default function Tenants() {
           </>
         }
       >
-        <Field label="اسم المستأجر" value={tName} onChange={setTName} />
+        <Field label="اسم المستأجر" value={tName} onChange={setTName} error={tf.missing(tName) || tDup} />
+        {tDup ? <Note tone="danger">{'يوجد مستأجر مسجَّل بنفس الاسم أو الرقم الضريبي بالفعل · تحقق من القائمة قبل الإضافة'}</Note> : null}
         <Field label="الرقم الضريبي" value={tVat} onChange={setTVat} keyboard="numeric" ltr />
-        <Row>
-          <View style={{ flex: 1 }}>
-            <Field label="رقم الجوال" value={tPhone} onChange={setTPhone} keyboard="phone-pad" ltr />
-          </View>
-          {/* الرصيد مبلغ من التحصيل · لمن يرى التحصيل وحده */}
-          {seesMoney ? (
-            <View style={{ flex: 1 }}>
-
-            </View>
-          ) : null}
-        </Row>
+        <Field label="رقم الجوال" value={tPhone} onChange={setTPhone} keyboard="phone-pad" ltr />
       </Sheet>
       {profileId && <TenantProfileSheet tenantId={profileId} onClose={() => setProfileId(null)} />}
       {similarOpen && <SimilarTenantsSheet onClose={() => setSimilarOpen(false)} />}

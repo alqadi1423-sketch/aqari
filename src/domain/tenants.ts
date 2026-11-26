@@ -5,11 +5,13 @@
  * المتشابهات تُجمع وتُعرض ليقرّر المستخدم دمجها · لا دمج صامت.
  */
 import type { DB } from '../db/adapter';
+import { allIn } from '../db/inList';
 import { t } from '../i18n';
 import { uid } from './ids';
 import { logAudit } from './audit';
 import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
+import { contractUnitLabelSql } from './contracts/rules';
 
 export const normTenantName = (s: string): string => s.trim().replace(/\s+/g, ' ');
 
@@ -18,8 +20,10 @@ const similarityKey = (name: string): string =>
   normTenantName(name).replace(/\s+/g, '').replace(/^ال/, '').replace(/ال(?=[؀-ۿ]{2,})/g, '');
 
 /**
- * البحث بالهوية أولاً ثم بالاسم المطابق · وُجد فرُبط وحُدّثت بياناته الناقصة،
- * لم يوجد فأُنشئ. يعيد معرّف المستأجر.
+ * البحث بالهوية وحدها · وُجد فرُبط وحُدّثت بياناته الناقصة، لم يوجد فأُنشئ. يعيد معرّف المستأجر.
+ * ولا ربط بالاسم أبداً (المراجعة الشاملة 2026-11-13 · A1-8 · قرار المالك س٨ تطبيقاً لقراره 2026-08-20): عقدٌ بلا هوية باسمٍ يطابق
+ * مستأجراً قائماً كان يُربط به صامتاً، فيجمع ملفٌ واحد شخصين ويسدّد الثاني أقساطه من رصيد الأول الدائن · فيُنشأ له مستأجرٌ جديد
+ * ويظهر مع سميّه في «مستأجرون متشابهون» (similarTenantGroups) ليدمجهما المالك بنفسه إن كانا شخصاً واحداً.
  */
 export function findOrCreateTenant(
   db: DB,
@@ -28,17 +32,10 @@ export function findOrCreateTenant(
   const name = normTenantName(info.name);
   const nat = (info.nationalId ?? '').trim();
   const phone = (info.phone ?? '').trim();
-  let row = nat
+  const row = nat
     ? db.get<{ id: string; name: string; phone: string }>(
         `SELECT id, name, phone FROM tenants WHERE national_id = ? AND deleted_at IS NULL`, [nat])
     : undefined;
-  // بالاسم حين لا هوية يُبحث بها وحده: الهوية مفتاحٌ فريد، فلا يُدمج حاملا هويتين مختلفتين باسمٍ واحد (قرار المالك
-  // 2026-08-20: «ابحث بالهوية أولاً · وُجد فاربط، لم يوجد فأنشئ»، والمتشابهون يُعرضون في «مستأجرون متشابهون»)
-  if (!row && !nat) {
-    row = db.get<{ id: string; name: string; phone: string; national_id: string }>(
-      `SELECT id, name, phone, national_id FROM tenants
-       WHERE TRIM(name) = ? AND deleted_at IS NULL`, [name]) as typeof row;
-  }
   if (row) {
     // إكمال الناقص في مصدره · لا كتابة فوق قائم
     const natRow = db.get<{ national_id: string; phone: string }>(
@@ -88,7 +85,7 @@ export function tenantProfile(db: DB, tenantId: string, today: string): TenantPr
     `SELECT id, name, national_id, phone, notes FROM tenants WHERE id = ?`, [tenantId]);
   if (!tenant) return null;
   const contracts = db.all<TenantProfile['contracts'][number]>(
-    `SELECT id, contract_no, unit_label, start, "end", value_halalas, ${contractTotalSql(db)} AS total_halalas,
+    `SELECT id, contract_no, ${contractUnitLabelSql()} AS unit_label, start, "end", value_halalas, ${contractTotalSql(db)} AS total_halalas,
             ${contractTotalSql(db) === 'value_halalas' ? '0 AS services_halalas, 0 AS parking_halalas' : 'services_halalas, parking_halalas'}, status FROM contracts
      WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY COALESCE(start,'') DESC`, [tenantId]);
   // المتبقي على ما حلّ: القسط ناقص المسدَّد ناقص الخصم، قسطاً قسطاً (القرار ٤.١٠) · ومنه العقد الملغى، فأقساطه
@@ -142,9 +139,8 @@ export function similarTenantGroups(db: DB): SimilarGroup[] {
 
 /** هل في الدمج هويتان مختلفتان (كلٌّ له هوية) · يُطلب له تأكيدٌ صريح (دراسة القائم) */
 export function mergeHasDifferentIds(db: DB, keepId: string, dropIds: string[]): boolean {
-  const ids = db.all<{ n: string }>(
-    `SELECT TRIM(national_id) AS n FROM tenants WHERE id IN (${[keepId, ...dropIds].map(() => '?').join(',')}) AND TRIM(national_id) != ''`,
-    [keepId, ...dropIds]).map((r) => r.n);
+  const ids = allIn<{ n: string }>(db,
+    `SELECT TRIM(national_id) AS n FROM tenants WHERE id IN (:list) AND TRIM(national_id) != ''`, [keepId, ...dropIds]).map((r) => r.n);
   return new Set(ids).size > 1;
 }
 

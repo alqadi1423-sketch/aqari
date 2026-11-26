@@ -41,6 +41,20 @@ export const expoFs: FS = {
     new Directory(norm(from)).moveSync(new Directory(norm(to)));
   },
   size: (p) => new File(norm(p)).size ?? 0,
+  // النسخ في الطبقة الأصلية بلا مرورٍ بذاكرة جافاسكربت (E-9)
+  copy: (from, to) => {
+    const t = new File(norm(to));
+    const dir = new Directory(t.parentDirectory.uri);
+    if (!dir.exists) dir.create({ intermediates: true });
+    new File(norm(from)).copySync(t);
+  },
+  readRange: (p, offset, length) => {
+    const h = new File(norm(p)).open();
+    try {
+      h.offset = offset;
+      return h.readBytes(length);
+    } finally { h.close(); }
+  },
   // الواجهة الجديدة تُبلّغ `File.freeSpace` وهي تعدّ كتل الجذر المحجوزة · القديمة تُبلّغ
   // `StatFs.availableBlocks` وهي ما يبلغه التطبيق فعلاً · قِيس الفرق ١٤٥ م.ب على جهاز واحد
   usableSpace: async () => {

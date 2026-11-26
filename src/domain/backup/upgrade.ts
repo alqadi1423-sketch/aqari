@@ -1,46 +1,27 @@
 /**
- * نسخة كاملة قبل كل ترقية لقاعدةٍ فيها بيانات · فإن فشلت فلا ترقية.
+ * نسخةٌ من البيانات وقائمة الملفات ببصماتها (بلا الملفات نفسها · قرار المالك س٣) قبل كل ترقية لقاعدةٍ فيها بيانات · فإن فشلت فلا ترقية.
  *
  * الترقية تعيد بناء جداول وتضيف محفّزات على بيانات المستخدم كلها، والهجرة في معاملة واحدة
  * فلا تترك حالة وسطى · لكن خطأً في منطق الهجرة نفسها لا تحميه المعاملة، فتُحفظ البيانات
  * كما هي قبلها في نسخة تُستعاد من شاشة النسخ الاحتياطي (والاستعادة ترقّي النسخ الأقدم بنفسها).
- * والنسخة بالتحقق الكامل نفسه الذي في createBackup: إعادة فتح الأرشيف، وبصمة القاعدة وكل
- * مرفق، وintegrity_check، ومطابقة الأعداد · ويُحتفظ بآخر ثلاث ويُحذف ما قبلها.
+ * والنسخة بالتحقق الكامل نفسه الذي في createBackup: إعادة فتح الأرشيف، وبصمة القاعدة،
+ * وintegrity_check، ومطابقة الأعداد · ويُحتفظ بآخر ثلاث ويُحذف ما قبلها.
+ * وهي للبيانات وقائمة الملفات وبصماتها بلا الملفات نفسها (قرار المالك س٣ · المراجعة الشاملة 2026-11-13 · C-2):
+ * الهجرات لا تمسّ ملفات المرفقات، ونسخُها كان يحمل المكتبة كلها في الذاكرة فيُقتل التطبيق عند البوابة مع كل فتح.
  */
 import { isCancelled, type CancelSignal, type ProgressFn } from '../progress';
 import { joinPath } from '../../files/fsAdapter';
 import { currentSchemaVersion, migrate } from '../../db/migrations';
 import { SCHEMA_VERSION } from '../../db/schema';
 import { createBackup, ensureFreeSpace, safetyBackupsDir, PRE_UPGRADE_PREFIX } from './create';
-import type { BackupEnv, BackupManifest } from './types';
+import { NotEnoughSpaceError, type BackupEnv, type BackupManifest } from './types';
 
 /** عدد نسخ ما قبل الترقية المحفوظة · الأحدث فالأقدم */
 export const PRE_UPGRADE_KEEP = 3;
 
-/** جداول تكتبها البذرة والإعداد لا المستخدم · وجود صفوفها وحدها لا يعني بيانات */
-const SYSTEM_TABLES = new Set([
-  'meta', 'settings', 'accounts', 'company', 'message_scripts', 'form_templates',
-  'audit_log', 'scheduled_notifications',
-  // كاتب كل صف (الهجرة ٤٢): بيانات الجهاز عن صفوفه لا صفوفٌ للمستخدم · ويُملأ بكل وارد فلا يجعل الجهاز الجديد «ذا بيانات»
-  'row_by',
-]);
-
-/** في القاعدة بيانات أدخلها المستخدم؟ · أي صف في جدول غير جداول النظام والمزامنة */
-export function hasUserData(db: BackupEnv['db']): boolean {
-  const tables = db.all<{ name: string }>(
-    `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).map((t) => t.name);
-  for (const t of tables) {
-    // المحادثة (chat_) وحدة مستقلة · رسائلها ليست بيانات المنشأة فلا تمنع دعوةً ولا تنضمّ بها
-    if (SYSTEM_TABLES.has(t) || t.startsWith('sync_') || t.startsWith('chat_')) continue;
-    // مركز «عام» تزرعه الهجرة ٢٨ على كل قاعدة · وما أضافه المستخدم بياناته
-    if (t === 'cost_centers') {
-      if (db.get(`SELECT 1 FROM cost_centers WHERE is_default = 0 LIMIT 1`)) return true;
-      continue;
-    }
-    if (db.get(`SELECT 1 FROM "${t}" LIMIT 1`)) return true;
-  }
-  return false;
-}
+// hasUserData في userData.ts (تستعملها نسخة الأمان في create.ts أيضاً، وcreate.ts يستورده هذا الملف) · وتُصدَّر من هنا كما كانت
+import { hasUserData } from './userData';
+export { hasUserData };
 
 export interface UpgradeState {
   from: number;
@@ -57,8 +38,9 @@ export function upgradeState(db: BackupEnv['db']): UpgradeState {
 
 /** فشل نسخة ما قبل الترقية · رسالته عربية تُعرض كما هي ولا ترقية بعدها */
 export class UpgradeBackupError extends Error {
-  constructor(public reason: string) {
-    super('لم تُرقَّ بياناتك لأن حفظ نسخة كاملة منها قبل الترقية لم يكتمل · ' + reason
+  /** السبب أن القرص لا يسع النسخة · فتعرض البوابة حذف أقدم نسخة ترقية (المراجعة الشاملة 2026-11-13 · C-7) */
+  constructor(public reason: string, public space = false) {
+    super('لم تُرقَّ بياناتك لأن حفظ نسخةٍ من بياناتك وقائمة ملفاتها قبل الترقية لم يكتمل · ' + reason
       + ' · بياناتك كما هي لم يتغيّر فيها شيء، فأعد المحاولة بعد معالجة السبب.');
     this.name = 'UpgradeBackupError';
   }
@@ -72,6 +54,17 @@ export function preUpgradeBackups(env: BackupEnv): string[] {
   let names: string[] = [];
   try { names = env.fs.list(dir); } catch { return []; }
   return names.filter((n) => n.startsWith(PRE_UPGRADE_PREFIX + '-') && n.endsWith('.aqbk')).sort().reverse();
+}
+
+/**
+ * «احذف أقدم نسخة ترقية» في البوابة حين لا تسع المساحة نسخةً جديدة (المراجعة الشاملة 2026-11-13 · C-7) · الأقدم وحدها، فتبقى الأحدث
+ * للرجوع · يعيد اسمها، أو null إن لم تكن نسخة ترقية
+ */
+export function deleteOldestPreUpgradeBackup(env: BackupEnv): string | null {
+  const oldest = preUpgradeBackups(env).at(-1);
+  if (!oldest) return null;
+  env.fs.remove(joinPath(safetyBackupsDir(env), oldest));
+  return oldest;
 }
 
 /**
@@ -90,13 +83,14 @@ export async function makePreUpgradeBackup(
   const outPath = joinPath(dir, `${PRE_UPGRADE_PREFIX}-${stamp}-v${from}.aqbk`);
   let manifest: BackupManifest;
   try {
-    await ensureFreeSpace(env);
+    // مساحة القاعدة وحدها · فالمرفقات لا تُنسخ هنا (C-2)
+    await ensureFreeSpace(env, false);
     env.fs.mkdirp(dir);
     manifest = await createBackup(env, outPath, onProgress, { preUpgrade: true, signal });
   } catch (e) {
     if (isCancelled(e)) throw e;
     const m = e instanceof Error ? e.message : '';
-    throw new UpgradeBackupError(ARABIC.test(m) ? m : 'تعذّر إنشاء النسخة أو التحقق منها');
+    throw new UpgradeBackupError(ARABIC.test(m) ? m : 'تعذّر إنشاء النسخة أو التحقق منها', e instanceof NotEnoughSpaceError);
   }
   // السقف بعد نجاح الجديدة · فلا تمرّ لحظة بلا نسخة
   for (const old of preUpgradeBackups(env).slice(PRE_UPGRADE_KEEP)) {
@@ -106,7 +100,7 @@ export async function makePreUpgradeBackup(
 }
 
 /**
- * الترقية المحروسة: نسخة كاملة أولاً إن كانت في القاعدة بيانات، ثم الهجرة.
+ * الترقية المحروسة: نسخة البيانات وقائمة الملفات أولاً إن كانت في القاعدة بيانات، ثم الهجرة.
  * فشل النسخة يرمي قبل أن تُمسّ البنية.
  */
 export async function guardedUpgrade(

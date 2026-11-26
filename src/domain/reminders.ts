@@ -117,8 +117,35 @@ export interface ScheduledReminder {
   kind: string;
   entityId: string;
   fireDate: string; // yyyy-mm-dd
+  /** تاريخ الاستحقاق أو الانتهاء الذي يذكّر به · مفتاح «أُطلق مرةً» لما فات موعده (E-12) */
+  dueDate: string;
   title: string;
   body: string;
+}
+
+/**
+ * ما فات موعد إطلاقه والاستحقاق لم يأتِ (مهلةٌ أطول من المتبقي، أو اليوم بعد التاسعة، أو رفع المهلة) يُطلق بعد دقيقة،
+ * مرةً واحدة (المراجعة الشاملة 2026-11-13 · E-12) · caught: كل ما جُدول بموعده (مفتاحه النوع والسجل والاستحقاق)، تاسعةً كان أو
+ * بعد دقيقة، فالجدولة التالية بعد كل كتابة تُبقي موعده إن لم يحن، ولا تعيده بعد أن حان ولو في يومٍ تالٍ · ويُنسى ما خرج من
+ * القائمة (سُدِّد أو مضى).
+ */
+export function planReminderDelivery(
+  items: ScheduledReminder[], nowMs: number, caught: Record<string, number>,
+): { plan: { item: ScheduledReminder; at: number }[]; caught: Record<string, number> } {
+  const plan: { item: ScheduledReminder; at: number }[] = [];
+  const next: Record<string, number> = {};
+  for (const item of items) {
+    const at9 = new Date(item.fireDate + 'T09:00:00').getTime();
+    const key = item.kind + ':' + item.entityId + ':' + item.dueDate;
+    const prev = caught[key];
+    // أُطلق من قبل (في التاسعة أو بعد دقيقة): لا يُعاد ولو صار موعده المرحَّل اليوم تاسعةً قادمة (المدقق المستقل للمرحلة ٣)
+    if (prev != null && prev <= nowMs) { next[key] = prev; continue; }
+    // تاسعةٌ قادمة، وإلا الإطلاق المنتظر بعد دقيقة إن كان محفوظاً، وإلا بعد دقيقة · وتاسعةٌ محفوظة لموعدٍ أبعد (قبل رفع المهلة) لا تؤخّره
+    const at = at9 > nowMs ? at9 : prev != null && prev <= nowMs + 60_000 ? prev : nowMs + 60_000;
+    next[key] = at;
+    plan.push({ item, at });
+  }
+  return { plan, caught: next };
 }
 
 export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[] {
@@ -141,10 +168,10 @@ export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[
   for (const i of installmentFacts(db)) {
     const st = installmentState(i, T);
     if (st.remaining <= 0 || !st.effectiveDue || st.effectiveDue < T) continue;
+    // الموعد الذي فات والاستحقاق لم يأتِ يُطلق اليوم (E-12)
     const fire = shift(st.effectiveDue, remindPayment);
-    if (fire >= T)
-      out.push({
-        kind: 'payment', entityId: i.id, fireDate: fire,
+    out.push({
+        kind: 'payment', entityId: i.id, fireDate: fire < T ? T : fire, dueDate: st.effectiveDue,
         title: 'دفعة تقترب', body: place(i.unitNo, i.prop, i.contractNo) + ' · تستحق ' + dfmt(st.effectiveDue),
       });
   }
@@ -157,9 +184,8 @@ export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[
   );
   for (const c of cs) {
     const fire = shift(c.end, remindContract);
-    if (fire >= T)
-      out.push({
-        kind: 'contract', entityId: c.id, fireDate: fire,
+    out.push({
+        kind: 'contract', entityId: c.id, fireDate: fire < T ? T : fire, dueDate: c.end,
         title: 'عقد يقارب الانتهاء', body: place(c.unit_no, c.prop, c.contract_no) + ' · ينتهي ' + dfmt(c.end),
       });
   }
@@ -170,18 +196,17 @@ export function computeSchedule(db: DB, T: string = today()): ScheduledReminder[
   );
   for (const x of docs) {
     const fire = shift(x.expiry, remindDoc);
-    if (fire >= T)
-      out.push({
-        kind: 'document', entityId: x.id, fireDate: fire,
+    out.push({
+        kind: 'document', entityId: x.id, fireDate: fire < T ? T : fire, dueDate: x.expiry,
         title: 'مستند ينتهي', body: x.name + ' · ينتهي ' + dfmt(x.expiry),
       });
   }
   const remindWarranty = getSetting(db, 'remindWarranty');
   for (const w of warrantyEnding(db, T, 3650)) {
     const fire = shift(w.warranty_end, remindWarranty);
-    if (fire >= T)
+    if (w.warranty_end >= T)
       out.push({
-        kind: 'warranty', entityId: w.id, fireDate: fire,
+        kind: 'warranty', entityId: w.id, fireDate: fire < T ? T : fire, dueDate: w.warranty_end,
         title: t('assets.ui.warrantyHome'), body: t('assets.ui.warrantyRow', { name: w.name, unit: w.unit_no ?? '', date: dfmt(w.warranty_end) }),
       });
   }

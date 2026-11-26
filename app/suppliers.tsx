@@ -3,15 +3,14 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Pressable, FlatList, type ListRenderItem } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Screen } from '../src/ui/Screen';
-import {
-  Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, BtnIcon, Field,
-} from '../src/ui/components';
+import { Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnIcon, Field } from '../src/ui/components';
 import { Icon, type IconName } from '../src/ui/icons';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { ActionMenuButton } from '../src/ui/ActionMenu';
 import { CollapsibleSection } from '../src/ui/Collapsible';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../src/ui/FilterSheet';
 import { useDialog } from '../src/ui/AppDialog';
+import { reportFailure } from '../src/ui/failureDialog';
 import { useApp } from '../src/ui/store';
 import { AttachStrip } from '../src/ui/AttachStrip';
 import { MeterSheet } from '../src/ui/MeterSheet';
@@ -24,10 +23,8 @@ import { supplierMeters, METER_ICON, UTILITY_KINDS, type LabeledMeter } from '..
 import { saveSupplier } from '../src/domain/suppliers';
 import { t } from '../src/i18n';
 import { TS_DEDUCTIBLE, TS_EXEMPT } from '../src/domain/purchases';
-import { uid } from '../src/domain/ids';
 import { fmt, toHalalas } from '../src/domain/money';
 import { dfmt } from '../src/domain/dates';
-import { logAudit } from '../src/domain/audit';
 import { usePerm } from '../src/ui/access';
 
 interface SupplierRow {
@@ -188,7 +185,7 @@ export default function Suppliers() {
     // الحفظ في المنطق (src/domain/suppliers.ts): تعديل الاسم يتبعه في فواتير شرائه (دراسة القائم)
     try {
       saveSupplier(db, editingId, { name, vat, phone, category, amountHalalas: amount.trim() ? toHalalas(amount) : null, utility });
-    } catch (e) { toast((e as Error).message); return; }
+    } catch (e) { reportFailure({ title: 'تعذّر حفظ المورد', db, e }); return; }
     setFormOpen(false); bump();
     toast(editingId ? 'تم تحديث المورد' : `تمت إضافة المورد "${name.trim()}"`);
   };

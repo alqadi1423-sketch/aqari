@@ -4,7 +4,8 @@
  * على القسط نفسه، آخر التحصيلات.
  */
 import React, { useMemo, useState, useEffect } from 'react';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useNavigation } from 'expo-router';
+import { collectArrival } from '../../src/ui/routeArrival';
 import { View, Pressable, Linking, FlatList } from 'react-native';
 import { Screen } from '../../src/ui/Screen';
 import {
@@ -20,13 +21,14 @@ import { Skeleton } from '../../src/ui/Skeleton';
 import { DateField } from '../../src/ui/DateField';
 import { ActionMenuButton } from '../../src/ui/ActionMenu';
 import { usePerm } from '../../src/ui/access';
+import { paymentsByReceipt } from '../../src/domain/receipts';
 import { useApp } from '../../src/ui/store';
 import { attachPicked, pickFile, type PickedFile } from '../../src/ui/attach';
 import { useToast } from '../../src/ui/Toast';
 import { C } from '../../src/ui/theme';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../../src/ui/FilterSheet';
 import {
-  allInstallments, filterInstallments, collectKpis,
+  allInstallments, filterInstallments, collectKpis, collectPayTarget,
   type CollectFilter, type InstallmentView,
 } from '../../src/domain/stats';
 import { recordRentPayment, paymentForInstallment, applyTenantCredit, tenantCreditOf, type RentPaymentLine, type PayMethod } from '../../src/domain/contracts/service';
@@ -36,7 +38,6 @@ import { today, dfmt, periodLabel } from '../../src/domain/dates';
 import { collectionMessage } from '../../src/domain/templates';
 import { fmt, toHalalas } from '../../src/domain/money';
 import { dialPhone } from '../../src/domain/phone';
-import { rescheduleAllNotifications } from '../../src/services/notifications';
 import { printReceipt } from '../../src/services/print';
 import { reportFailure } from '../../src/ui/failureDialog';
 
@@ -140,22 +141,24 @@ export default function Collect() {
   const [paying, setPaying] = useState<InstallmentView | null>(null);
   const [payRef, setPayRef] = useState('');
   const [payFile, setPayFile] = useState<PickedFile | null>(null);
-  // القدوم من جدول العقد: نفس نافذة السداد لا نافذة ثانية
+  // القدوم من جدول العقد أو الوحدة أو تفاصيل القسط: نفس نافذة السداد لا نافذة ثانية ·
+  // القسط يُقرأ من القاعدة لا من «base» (فارغٌ في أول رسم، والشاشة تُركَّب من جديد حين تأتي من الوحدات)،
+  // ثم يُستهلك المعامل فتعمل الضغطة الثانية على القسط نفسه (المراجعة الشاملة 2026-11-13 · D-1)
   const params = useLocalSearchParams<{ pay?: string; filter?: string; bucket?: string; q?: string }>();
+  const navigation = useNavigation();
   useEffect(() => {
-    if (params.pay && perm.add) {
-      const x = base.all.find((r) => r.installmentId === String(params.pay));
-      if (x) openPayment(x);
-    }
+    if (!params.pay) return;
+    const x = collectPayTarget(db, params.pay, perm.add, T_);
+    if (x) openPayment(x);
+    navigation.setParams({ pay: undefined } as never);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.pay]);
+  // روابط الرئيسية: كل وصولٍ يمسح المرشّحات ثم يطبّق ما جاء، ثم يُستهلك المعامل فتعمل الضغطة الثانية (D-9)
   useEffect(() => {
-    if (params.filter) setFilter(String(params.filter) as CollectFilter);
-    if (params.q) setQ(String(params.q));
-    if (params.bucket) {
-      const b = Number(params.bucket);
-      setFLate(b === 1 ? '1-30' : b === 2 ? '31-60' : b === 3 ? '61-90' : b === 4 ? '90+' : '');
-    }
+    const a = collectArrival(params);
+    if (!a) return;
+    setFilter(a.filter as CollectFilter); setQ(a.q); setFProp(a.fProp); setFLate(a.fLate); setFAmt(a.fAmt);
+    navigation.setParams({ filter: undefined, bucket: undefined, q: undefined } as never);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.filter, params.bucket, params.q]);
   const [payDate, setPayDate] = useState(today());
@@ -202,9 +205,13 @@ export default function Collect() {
     const statusTotal = rows.length;
     const needle = q.trim().toLowerCase();
     if (needle) {
-      rows = rows.filter((x) =>
+      // ورقم سند القبض يجد قسطه ولو كان مسدَّداً خارج المرشِّح (E-10 · س٣٠)
+      const byReceipt = paymentsByReceipt(db, needle);
+      const text = rows.filter((x) =>
         [x.tenant, x.unitNo, x.contractNo ?? '', x.dueDate].some((v) => v && String(v).toLowerCase().includes(needle))
       );
+      const seen = new Set(text.map((x) => x.installmentId));
+      rows = byReceipt.size ? [...text, ...base.all.filter((x) => byReceipt.has(x.installmentId) && !seen.has(x.installmentId))] : text;
     }
     // المرشِّحات تُجمع: العقار ثم مدى التأخير ثم المبلغ
     if (fProp) rows = rows.filter((x) => base.unitProp.get(x.unitId) === fProp);
@@ -230,7 +237,7 @@ export default function Collect() {
     const paged = rows.slice(pager.offset, pager.offset + pager.limit);
     return { ...base, rows: paged, totalRows, statusTotal };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base, filter, q, fProp, fLate, fAmt, pager.offset, pager.limit]);
+  }, [base, filter, q, fProp, fLate, fAmt, pager.offset, pager.limit, db]);
 
   useEffect(() => { pager.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -302,7 +309,6 @@ export default function Collect() {
       }
       setPaying(null);
       bump();
-      rescheduleAllNotifications(db).catch(() => {});
       toast('تم تسجيل السداد وتحديث حالة الدفعة بنجاح');
       // سند القبض · نسخة المستأجر أو المكتب أو كلاهما
       dialog({
@@ -375,11 +381,11 @@ export default function Collect() {
 
   // كل نص يُرسل قالبٌ من الإعدادات · لا نص مكتوباً في الكود
   const [waFor, setWaFor] = useState<{ x: (typeof data.rows)[number]; via: 'wa' | 'sms' } | null>(null);
-  // مراسلة مستأجر: قوالب المستأجرين والعامة فقط · لا قوالب الموردين ولا الموظفين
+  // مراسلة مستأجر: قوالب جمهور المستأجرين وحده · «عام» تصنيفٌ لا جمهور (E-17) · لا قوالب العملاء ولا الموظفين
   const scripts = useMemo(() =>
     db.all<{ id: string; title: string; body: string }>(
       `SELECT id, title, body FROM message_scripts
-       WHERE deleted_at IS NULL AND audience IN ('مستأجرون','عام') ORDER BY title`),
+       WHERE deleted_at IS NULL AND audience = 'مستأجرون' ORDER BY title`),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   // القالب يُملأ بالدالة نفسها التي تعرض المعاينة، فلا يصل رمزٌ إلى المستأجر حرفياً (دراسة القائم)
@@ -406,7 +412,7 @@ export default function Collect() {
       <Row style={{ marginTop: 8, flexWrap: 'wrap' }}>
         <KpiCard label="متأخر" tone="neg" value={<Money halalas={data.kpis.lateSum} size={15} bold />} sub={data.kpis.lateCount + ' دفعة'}
           onPress={() => { setFilter('late'); setFLate(''); }} />
-        <KpiCard label="نسبة التحصيل" value={data.kpis.collectionPct + '%'}
+        <KpiCard label="نسبة التحصيل" value={data.kpis.collectionPct + '٪'}
           onPress={() => setFilter('month')} />
       </Row>
       <View style={{ height: 10 }} />
@@ -599,7 +605,7 @@ export default function Collect() {
             )}
           </View>
         ))}
-        <BtnGhost small title="+ إضافة طريقة سداد أخرى (دفع بأكثر من طريقة)"
+        <BtnGhost small title="+ طريقة سداد أخرى"
           onPress={() => setPayLines((p) => [...p, { method: 'cash', bankId: '', amount: '' }])} />
         <View style={{ height: 10 }} />
         <Field label="الخصم" value={discount} onChange={onDiscountChange} keyboard="numeric" ltr />

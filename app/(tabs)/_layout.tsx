@@ -19,6 +19,9 @@ export default function TabsLayout() {
   const hide = (sec: SectionKey) => (canView(access, sec) ? {} : { href: null });
   return (
     <Tabs
+      // الرجوع يعيد إلى التبويب الذي أتيت منه لا إلى الرئيسية (قرار المالك 2026-08-20 · س١٣ · D-4) ·
+      // والتبويبات المدفوعة من شاشةٍ مكدَّسة (الوحدات) تبدأ تاريخها بالتبويب المقصود فيعود الرجوع إليها مباشرةً
+      backBehavior="history"
       screenOptions={{
         headerShown: false,
         // القياس أثبت أن تجميد التبويب المغادَر يعيد بناء شجرته كاملة عند كل

@@ -15,7 +15,8 @@ function seed() {
   const db = memDb();
   const pid = addProperty(db);
   const uidd = addUnit(db, pid, { unit_no: 'A-1' });
-  const bank = addBank(db, 'بنك التقرير', 0);
+  // برصيدٍ يكفي السداد منه: السداد من البنك لا يُنزله تحت الصفر (سجل القرارات ٥٥)
+  const bank = addBank(db, 'بنك التقرير', 100000);
   const cid = confirmContract(db, contractInput(uidd, {
     tenant: 'مستأجر التقرير', valueHalalas: 1200000, depositHalalas: 0,
     start: '2026-01-01', end: '2026-12-31',
@@ -44,14 +45,14 @@ describe('التقارير المفصلة والسداد المقسَّم', () =
       { method: 'cash', amountHalalas: 15000 },
       { method: 'bank', bankId: bank, amountHalalas: 25000 },
     ], '2026-02-15');
-    expect(bankBalance(db, bank)).toBe(-25000); // الشطر البنكي فقط
+    expect(bankBalance(db, bank)).toBe(75000); // الشطر البنكي فقط
     const p = db.get<{ paid: number; payment_method: string }>(
       `SELECT paid, payment_method FROM purchases WHERE id = ?`, [purId])!;
     expect(Number(p.paid)).toBe(1);
     expect(p.payment_method).toBe('نقداً + تحويل بنكي');
     // التراجع قيد عكسي لا إخفاء: الحركة البنكية الأصلية باقية وتقابلها معاكسة فيصفر الرصيد
     unmarkPurchasePaid(db, purId);
-    expect(bankBalance(db, bank)).toBe(0);
+    expect(bankBalance(db, bank)).toBe(100000);
     const txs = db.all<{ amount_halalas: number; deleted_at: string | null }>(
       `SELECT amount_halalas, deleted_at FROM bank_tx WHERE bank_id = ?`, [bank]);
     expect(txs).toHaveLength(2);

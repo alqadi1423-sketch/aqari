@@ -3,7 +3,7 @@
  * الإصدار يرحّل (1200 / 4100 + 2200)، والعودة لمسودة تعكس القيد.
  */
 import type { DB } from '../db/adapter';
-import { requireCash, reversalCashOut } from './cashGuard';
+import { requireCash, reversalCashOut, requireBanksCover, bankShortages } from './cashGuard';
 import { uid, rowId, withDeterministicIds } from './ids';
 import { ambientCostCenter } from './accounting/dimensions';
 import { postInvoiceToLedger, reverseEntryBySource, reverseEntryById, voidEntryById, postInvoicePayment, postCreditNoteToLedger } from './accounting/post';
@@ -11,7 +11,7 @@ import { t } from '../i18n';
 import { lineTaxCode, type TaxCode } from './taxCode';
 import { remainingByCodeOf, creditNoteAmounts, creditTaxFor, type CodePart, type StoredInvoiceLine } from './creditNote';
 import { lastReversedOf, repostDate } from './accounting/repost';
-import { isFiledDate, requireOpenPeriod } from './vatFilings';
+import { isFiledDate, requireISODate, requireOpenPeriod } from './vatFilings';
 import { mulQty, pctOf } from './money';
 import { logAudit } from './audit';
 import { deviceLetter, ownNumbersSql, withLetter } from './numbering';
@@ -101,7 +101,34 @@ export function nextInvoiceNo(db: DB, issue?: string): string {
  */
 export function checkInvoiceIssue(db: DB, input: Pick<InvoiceInput, 'issue' | 'lines'>): void {
   normalizeInvoiceLines(input.lines);
+  if (input.issue) requireISODate(input.issue); // ولا تاريخٌ بغير صيغته يتجاوز القفل (المراجعة الشاملة 2026-11-13 · D-2)
   if (isFiledDate(db, input.issue)) throw new Error(t('invoice.filedPeriod'));
+}
+
+/**
+ * ختم الفاتورة بوضع المنشأة الضريبي ورقمها ساعة إصدارها (المراجعة الشاملة 2026-11-13 · E-6 · الهجرة ٦٤) · فإعادة طباعتها تُخرج ما صدر
+ * أياً كان مفتاح الضريبة يومها · والإشعار الدائن يرث ختم فاتورته
+ */
+function stampInvoiceVat(db: DB, id: string, from?: string): void {
+  const s = from ? invoiceVatStamp(db, from) : (() => {
+    const co = db.get<{ ven: number; vno: string }>(`SELECT vat_enabled AS ven, vatno AS vno FROM company WHERE id = 1`);
+    const on = !!Number(co?.ven);
+    return { vatRegistered: on, sellerVatNo: on ? (co?.vno ?? '') : '' };
+  })();
+  db.run(`UPDATE invoices SET vat_registered = ?, seller_vatno = ? WHERE id = ?`, [s.vatRegistered ? 1 : 0, s.sellerVatNo, id]);
+}
+
+/**
+ * وضع الفاتورة الضريبي للطباعة: المختوم يوم صدورها · وما لا ختم له (وصل من جهازٍ بإصدارٍ أقدم) ضريبتُه أو نسبة سطرٍ فيه غير صفرية
+ * فمسجّلة، وإلا حال المنشأة اليوم، ورقمها رقم المنشأة اليوم
+ */
+export function invoiceVatStamp(db: DB, id: string): { vatRegistered: boolean; sellerVatNo: string } {
+  const v = db.get<{ r: number | null; n: string | null; tax: number }>(
+    `SELECT vat_registered AS r, seller_vatno AS n, tax_halalas AS tax FROM invoices WHERE id = ?`, [id]);
+  const co = db.get<{ ven: number; vno: string }>(`SELECT vat_enabled AS ven, vatno AS vno FROM company WHERE id = 1`);
+  const registered = v?.r != null ? !!Number(v.r)
+    : Number(v?.tax ?? 0) !== 0 || !!db.get(`SELECT 1 FROM invoice_lines WHERE invoice_id = ? AND tax_pct != 0`, [id]) || !!Number(co?.ven);
+  return { vatRegistered: registered, sellerVatNo: registered ? (v?.n ?? co?.vno ?? '') : '' };
 }
 
 /** حفظ فاتورة (مسودة أو إصدار). التعديل يعكس القيد القديم ويعيد الترحيل. */
@@ -116,6 +143,7 @@ export function saveInvoice(
   // الرمز والنسبة متطابقان قبل أي حساب (البند ٦)
   const input: InvoiceInput = { ...input0, lines: normalizeInvoiceLines(input0.lines) };
   // لا فاتورة تصدر بتاريخٍ في فترةٍ قُدِّم إقرارها: التصحيح في فترة مفتوحة (دراسة القائم · بروح قرار المالك 2026-10-09)
+  if (input.issue) requireISODate(input.issue); // ولا تاريخٌ بغير صيغته ولو في مسودة (D-2)
   if (status !== 'مسودة' && isFiledDate(db, input.issue)) throw new Error(t('invoice.filedPeriod')); // i18n-exempt: حالة مخزّنة
   return db.transaction(() => {
     const { subtotal, tax, total } = invoiceTotals(input.lines);
@@ -186,6 +214,7 @@ export function saveInvoice(
       db.run(`UPDATE invoices SET cost_center_id = ? WHERE id = ?`, [cc, id]);
     }
     if (status !== 'مسودة') {
+      stampInvoiceVat(db, id);
       const entry = postInvoiceToLedger(db, { id, no, customer: input.customer, issue: input.issue, subtotal, tax, total });
       if (entry) db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = ?`, [entry.id, id]);
     }
@@ -243,7 +272,9 @@ export function payInvoice(db: DB, id: string, pay: { method: InvoicePayMethod; 
     // تحصيلٌ قائم يُعكس أولاً فيخرج نقده · بكفاية النقد (التحقق المستقل · قرار المالك 2026-10-05)
     if (v.payment_journal_entry_id) {
       requireCash(db, collectionCashOut(db, id), REVERSE_COLLECTION);
-      reverseInvoicePayment(db, id);
+      // إعادة التحصيل إلى البنك نفسه تُرجع ما يُخرجه العكس منه في المعاملة نفسها، فلا يُفحص عكسها وحده (A2.2)
+      const oldBank = db.get<{ b: string | null }>(`SELECT payment_bank_id AS b FROM invoices WHERE id = ?`, [id])?.b ?? null;
+      reverseInvoicePayment(db, id, false, { skipBankCheck: pay.method !== 'cash' && !!pay.bankId && pay.bankId === oldBank });
     }
     const entryId = postCollection(db, id, v, pay);
     db.run(`UPDATE invoices SET status = 'مدفوعة', paid_date = ?, payment_method = ?, payment_bank_id = ?, payment_journal_entry_id = ? WHERE id = ?`,
@@ -256,10 +287,12 @@ export function payInvoice(db: DB, id: string, pay: { method: InvoicePayMethod; 
  * عكس تحصيل فاتورة · القيد يُعكس وحركة البنك تقابلها حركة معاكسة مرتبطة بقيد العكس (كسداد المشتريات).
  * keepTerms: الحذف إلى السلة يُبقي تاريخ التحصيل وطريقته وبنكه ليعيدها الاسترجاع كما كانت.
  */
-export function reverseInvoicePayment(db: DB, id: string, keepTerms = false): void {
+export function reverseInvoicePayment(db: DB, id: string, keepTerms = false, opts: { skipBankCheck?: boolean } = {}): void {
   const v = db.get<{ no: string; payment_journal_entry_id: string | null }>(`SELECT no, payment_journal_entry_id FROM invoices WHERE id = ?`, [id]);
   if (!v || !v.payment_journal_entry_id) return;
   const je = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [v.payment_journal_entry_id]);
+  // ما دخل البنك يخرج منه بالعكس: لا تحت الصفر (قرار ٥٥ · المراجعة الشاملة · A2.2) · قبل أي كتابة
+  if (je && !opts.skipBankCheck) requireBanksCover(db, je.no, 'reverse');
   const rev = reverseEntryById(db, v.payment_journal_entry_id, 'عكس تحصيل الفاتورة ' + v.no + (je ? ' · القيد ' + je.no : ''));
   if (je && rev) {
     for (const t of db.all<{ bank_id: string; amount_halalas: number }>(
@@ -289,6 +322,8 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
     }>(`SELECT no, customer_name, issue, subtotal_halalas, tax_halalas, total_halalas, journal_entry_id, status
         FROM invoices WHERE id = ?`, [id]);
     if (!v) return;
+    // ولا تصدر مسودةٌ بتاريخٍ بغير صيغته من الحقل القديم (المراجعة الشاملة 2026-11-13 · D2-R11-3)
+    if (newStatus !== 'مسودة' && v.status === 'مسودة' && v.issue) requireISODate(v.issue); // i18n-exempt: حالة مخزّنة
     if (newStatus !== 'مسودة' && v.status === 'مسودة' && isFiledDate(db, v.issue)) throw new Error(t('invoice.filedPeriod')); // i18n-exempt: حالة مخزّنة
     // مسودةٌ برقم مؤقت تصدر الآن: رقمها الحقيقي لحظة إصدارها
     if (newStatus !== 'مسودة' && isTempInvoiceNo(v.no)) {
@@ -303,6 +338,7 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
         voidEntryById(db, v.journal_entry_id);
       db.run(`UPDATE invoices SET status = ?, journal_entry_id = NULL WHERE id = ?`, [newStatus, id]);
     } else if (newStatus !== 'مسودة' && !v.journal_entry_id) {
+      if (v.status === 'مسودة') stampInvoiceVat(db, id); // i18n-exempt: حالة مخزّنة
       const entry = postInvoiceToLedger(db, {
         id, no: v.no, customer: v.customer_name, issue: v.issue,
         subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas), total: Number(v.total_halalas),
@@ -319,6 +355,17 @@ export function setInvoiceStatus(db: DB, id: string, newStatus: 'مسودة' | '
 export function collectionCashOut(db: DB, id: string): number {
   const pj = db.get<{ pj: string | null }>(`SELECT payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [id])?.pj;
   return pj ? reversalCashOut(db, pj) : 0;
+}
+
+/**
+ * ما يمنع عكس تحصيل الفاتورة من البنك: سطرٌ لكل بنكٍ لا يكفي رصيده ما يُخرجه العكس منه، باسمه ورصيده والمبلغ (قرار ٥٥ · A2.2) ·
+ * فارغٌ إن كفى أو كان التحصيل نقداً أو لا تحصيل · ورقة «تغيير حالة الفاتورة» تُخفي به خيارات الرجوع عن «مدفوعة» وتعرض سببها، فلا
+ * تَعرض رجوعاً يرفضه reverseInvoicePayment بعد الضغط (المراجعة ١٢ · R12-UI-2)
+ */
+export function collectionBankShortages(db: DB, id: string): string[] {
+  const pj = db.get<{ pj: string | null }>(`SELECT payment_journal_entry_id AS pj FROM invoices WHERE id = ?`, [id])?.pj;
+  const je = pj ? db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [pj]) : undefined;
+  return je ? bankShortages(db, je.no, 'reverse') : [];
 }
 
 /** حذف ناعم · القيد المرحّل يُعكَس بقيد مرآة ولا يُخفى فالتاريخ لا يُمحى */
@@ -391,7 +438,6 @@ export { reverseEntryBySource };
 
 /* ═══════════ الإشعار الدائن (قرار المالك 2026-10-07 على #30) ═══════════ */
 
-export const KIND_INVOICE = 'invoice';
 export const KIND_CREDIT = 'credit_note';
 
 const hasKind = (db: DB): boolean => db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'kind');
@@ -460,6 +506,7 @@ function creditNoteChecked(db: DB, invoiceId: string, input: CreditNoteInput) {
   const reason = input.reason.trim();
   if (!reason) throw new Error(t('invoice.creditReason'));
   // لا قبل تاريخ فاتورته، ولا في فترةٍ قُدِّم إقرارها فيتغيّر المجمَّد (التحقق المستقل)
+  if (input.date) requireISODate(input.date); // ولا تاريخٌ بغير صيغته يُقارن حرفاً فيتجاوز الحدّين (D-2)
   if (input.date < v.issue) throw new Error(t('invoice.creditBeforeInvoice'));
   if (isFiledDate(db, input.date)) throw new Error(t('invoice.creditFiledPeriod'));
   const sub = Math.round(input.subtotalHalalas);
@@ -476,6 +523,21 @@ function creditNoteChecked(db: DB, invoiceId: string, input: CreditNoteInput) {
  */
 export function checkCreditNote(db: DB, invoiceId: string, input: CreditNoteInput): void {
   creditNoteChecked(db, invoiceId, input);
+}
+
+/**
+ * معاينة الإشعار الدائن في ورقته بالحساب نفسه الذي يحفظ به saveCreditNote (G-11): كانت الورقة تحسب الضريبة بنسبة الفاتورة
+ * المتوسطة (creditTaxFor) والخدمة بالرموز، فتختلفان بهللة في الفاتورة المختلطة · left: ما بقي من صافيها وضريبتها
+ */
+export function creditNotePreview(db: DB, invoiceId: string, sub: number): { tax: number; left: { sub: number; tax: number } } | null {
+  const v = db.get<{ subtotal_halalas: number; tax_halalas: number }>(
+    `SELECT subtotal_halalas, tax_halalas FROM invoices WHERE id = ?`, [invoiceId]);
+  if (!v) return null;
+  const left = creditLeft(db, invoiceId, Number(v.subtotal_halalas), Number(v.tax_halalas));
+  if (sub <= 0 || sub > left.sub) return { tax: 0, left };
+  const { tax } = creditNoteAmounts({ subtotal: Number(v.subtotal_halalas), tax: Number(v.tax_halalas) },
+    remainingByCode(db, invoiceId), left, sub);
+  return { tax, left };
 }
 
 export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput, issuedNo?: string): string {
@@ -504,6 +566,7 @@ export function saveCreditNote(db: DB, invoiceId: string, input: CreditNoteInput
       db.run(`INSERT INTO invoice_lines (id, invoice_id, descr, qty, price_halalas, tax_pct, sort, tax_code) VALUES (?,?,?,?,?,?,?,?)`,
         [uid(), id, reason, 1, l.price, l.pct, i, l.code]);
     });
+    stampInvoiceVat(db, id, invoiceId);
     const entry = postCreditNoteToLedger(db, { id, no, refNo: v.no, customer: v.customer_name, date: input.date, subtotal: sub, tax, total });
     if (entry) db.run(`UPDATE invoices SET journal_entry_id = ? WHERE id = ?`, [entry.id, id]);
     logAudit(db, 'الفواتير', 'create', t('invoice.creditNote', { lng: 'ar' }), no + ' · ' + v.no); // i18n-exempt: سجل العمليات بالعربية

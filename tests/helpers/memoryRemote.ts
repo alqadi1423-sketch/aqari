@@ -31,6 +31,7 @@ export class MemoryRemote implements RemoteStore {
   private allowed(prev: RemoteDoc | undefined, next: RemoteDoc): boolean {
     if (!syncTable(next.t)) return false;                                   // جدول خارج المزامنة
     if (next.lines !== undefined && next.t !== 'journal_entries') return false; // السطور للقيد وحده
+    if (!this.openingKept(prev, next)) return false;
     if (!prev) return true;
     if (prev.t === 'audit_log') return false;
     const posted = prev.t === 'journal_entries' && prev.d?.status === 'مرحّل';
@@ -45,6 +46,22 @@ export class MemoryRemote implements RemoteStore {
     const a = { ...prev.d, reversed_by: null };
     const b = { ...next.d, reversed_by: null };
     return JSON.stringify(a) === JSON.stringify(b) && JSON.stringify(prev.lines) === JSON.stringify(next.lines) && prev.del === next.del;
+  }
+
+  /**
+   * كتابة العضو (op) للبنك والحساب: الافتتاحي كما في النسخة السابقة (صفرٌ للجديد)، والحساب لا يصير نظامياً، والنظامي نوعه ومجموعته
+   * وحذفه كما هي · كقاعدة openingKept في firestore.rules (المدقق الخارجي O٥ وO١)
+   */
+  openingKept(prev: RemoteDoc | undefined, next: RemoteDoc): boolean {
+    if ((next.t !== 'banks' && next.t !== 'accounts') || typeof next.op !== 'string' || next.op === '' || next.del || !next.d) return true;
+    const b: Record<string, unknown> = prev && !prev.del && prev.d ? prev.d : {};
+    const a: Record<string, unknown> = next.d;
+    const g = (o: Record<string, unknown>, k: string, dflt: unknown) => (k in o ? o[k] : dflt);
+    if (Number(g(a, 'opening_halalas', 0)) !== Number(g(b, 'opening_halalas', 0))) return false;
+    if (next.t !== 'accounts') return true;
+    if (Number(g(a, 'is_system', 0)) !== Number(g(b, 'is_system', 0))) return false;
+    return Number(g(b, 'is_system', 0)) !== 1
+      || (g(a, 'type', '') === g(b, 'type', '') && g(a, 'grp', null) === g(b, 'grp', null) && g(a, 'deleted_at', null) === g(b, 'deleted_at', null));
   }
 
   async write(docs: RemoteDoc[]): Promise<WriteResult[]> {

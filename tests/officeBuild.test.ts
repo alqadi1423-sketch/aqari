@@ -232,7 +232,8 @@ describe('إكسل مكتبي · لا أرقاماً مجردة بلا تنسي�
     // القسم لم يضع sum فالافتراضي يغطيه: مجموع عمود المبالغ صيغة لا قيمة ثابتة
     const total = rowXml(sheet, 'الإجمالي');
     expect(total).toMatch(/<f>SUM\(C\d+:C\d+\)<\/f>/);
-    expect(total).not.toContain('<v>2449.73</v>'); // لا قيمة مثبَّتة في خلية الصيغة
+    // الصيغة حيّة ومعها قيمتها المحسوبة مخبأةً لمن لا يحسب (E-19)، وfullCalcOnLoad يعيد حسابها في إكسل · لا قيمة بدل الصيغة
+    expect(total).toMatch(/<f>SUM\(C\d+:C\d+\)<\/f><v>2449\.73<\/v>/);
     const off: ReportBlock = {
       heading: 'بلا مجموع', meta: [],
       sections: [{ title: 'بنود مستقلة', sum: false, header: ['البند', 'المبلغ'],

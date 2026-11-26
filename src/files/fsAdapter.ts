@@ -20,6 +20,12 @@ export interface FS {
    * حرّةً أمرّ الفحصَ على جهازٍ فشل فيه النسخ بـ«لا مساحة» بعد لحظات.
    */
   usableSpace(): Promise<number>;
+  /**
+   * نسخ ملف بلا قراءته في الذاكرة (المراجعة الشاملة 2026-11-13 · E-9) · اختياري: بيئةٌ بلا نسخٍ تقرأ الملف كله كما كانت
+   */
+  copy?(from: string, to: string): void;
+  /** قراءة قطعةٍ من ملف (من offset بطول length) · لبصمة الملف الكبير على قطع · اختياري */
+  readRange?(path: string, offset: number, length: number): Uint8Array;
 }
 
 /** بصمة sha256 (hex صغيرة) · غير متزامنة لتوافق expo-crypto */
@@ -34,6 +40,23 @@ export function joinPath(...parts: string[]): string {
 }
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const B64_INDEX = (() => { const m = new Int16Array(128).fill(-1); for (let i = 0; i < 64; i++) m[B64.charCodeAt(i)] = i; return m; })();
+
+/** فكّ base64 بلا atob (غير مضمون على Hermes) · المسافات والأسطر تُتجاوز، والحشو «=» ينهي القراءة */
+export function fromBase64(s: string): Uint8Array {
+  const out = new Uint8Array(Math.floor((s.length * 3) / 4) + 3);
+  let n = 0, acc = 0, bits = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 61) break; // «=»
+    const v = c < 128 ? B64_INDEX[c] : -1;
+    if (v < 0) continue;
+    acc = (acc << 6) | v;
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out[n++] = (acc >> bits) & 0xff; }
+  }
+  return out.subarray(0, n);
+}
 /** base64 بلا اعتماد على btoa · لبصمة md5 كما يعيدها Storage في md5Hash */
 export function toBase64(bytes: Uint8Array): string {
   let out = '';

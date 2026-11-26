@@ -9,7 +9,7 @@ import { usePerm } from './access';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal, View, FlatList, Pressable, useWindowDimensions,
-  ActivityIndicator, Image, PanResponder, Text, Platform, I18nManager,
+  Image, PanResponder, Text, Platform, I18nManager,
 } from 'react-native';
 import { DirView } from './DirView';
 import { useAppLocked } from './lockState';
@@ -21,7 +21,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
-import { T, Num, BtnGhost, BtnPrimary, Row, Field } from './components';
+import { T, Num, BtnGhost, BtnPrimary, Row, Field, ProgressTrack } from './components';
 import { PickerSheet, Sheet } from './Sheet';
 import { useSaveAttempt } from './formAttempt';
 import { Icon, type IconName } from './icons';
@@ -39,7 +39,7 @@ import { filesCloudOn, openFileNow } from '../services/cloud';
 import { cancelSource, isCancelled, progressView, progressLabel, progressLine, type ProgressInfo } from '../domain/progress';
 import Pdf from 'react-native-pdf';
 import { logAudit } from '../domain/audit';
-import { reportFailure, recordFailure, copyFailureDetails, shareFailureDetails } from './failureDialog';
+import { reportFailure, recordFailure, copyFailureDetails, shareFailureDetails, arabicMessage } from './failureDialog';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from '../services/appLockService';
 
@@ -90,7 +90,7 @@ function RemoteFilePage({ file, onReady }: { file: ViewerFile; onReady: () => vo
     setError(null); setInfo(null); setMsg('جاري تنزيل الملف');
     openFileNow(db, file.sha256, file.ext, (m, i) => { setMsg(m); setInfo(i ?? null); }, src.signal)
       .then(() => onReady())
-      .catch((e) => { if (!isCancelled(e)) setError(e instanceof Error ? e.message : 'تعذّر تنزيل الملف'); });
+      .catch((e) => { if (!isCancelled(e)) setError(arabicMessage(e) || 'تعذّر تنزيل الملف'); });
     return () => src.cancel();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file.sha256, attempt]);
@@ -148,8 +148,9 @@ function ImagePage({ file, width }: { file: ViewerFile; width: number }) {
           style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, opacity: 0.6 }} />
       ) : null}
       {!loaded ? (
-        <ActivityIndicator color={C.gold} size="large"
-          style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }} />
+        <View style={{ position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, alignItems: 'center', justifyContent: 'center' }}>
+          <ProgressTrack color={C.gold} track="rgba(255,255,255,0.25)" />
+        </View>
       ) : null}
       <WebView
         ref={webRef}

@@ -1,0 +1,39 @@
+# measured at 8a9b3de on 2026-11-07
+app files=29 lines=13974
+src/db files=9 lines=2483
+src/domain files=102 lines=20693
+src/repos files=1 lines=62
+src/services files=26 lines=4072
+src/sync files=4 lines=2363
+src/cloud files=8 lines=1305
+src/files files=6 lines=816
+src/chat files=8 lines=2265
+src/ui files=59 lines=8537
+tests files=248 lines=33516
+  1234 firestore.rules
+   715 src/domain/access/rulesGen.ts
+   143 src/domain/access/opWrites.ts
+   222 src/sync/acl.ts
+  1991 src/sync/engine.ts
+   587 src/cloud/firestore.ts
+  1279 src/services/cloud.ts
+   427 src/services/org.ts
+   158 src/domain/accounting/derive.ts
+  1136 src/domain/accounting/deriveSources.ts
+    44 src/domain/accounting/mirror.ts
+   851 src/domain/accounting/post.ts
+  8787 total
+domain SQL call sites: 817
+sync SQL call sites: 176
+app+ui SQL call sites: 299
+app+ui db.run: 22 in 11 files
+dynamic IN placeholder sites: 20
+new Date() in domain: 75; today() in domain: 71; uid(): 67; rowId(): 6
+tables: 60; triggers stmts: 39; indexes: 60
+test files: 240; test lines: 32730; test cases(it/test): 1948
+emulator test files: 27 lines: 5494
+rederive/member tests lines: 4095
+tests referencing sync engine: 60 files
+commits total: 137; touching sync/rules/rederive: 46; deriveSources commits: 29
+domain files importing sync/files/repos: 9
+{"total":321,"writers":119}

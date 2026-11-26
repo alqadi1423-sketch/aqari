@@ -99,6 +99,21 @@ export class FirestoreHttpError extends Error {
   }
 }
 
+/**
+ * ردّ 404 لغياب المستند نفسه، لا لغياب القاعدة أو المشروع أو لمسارٍ لا يعرفه الخادم (المراجعة الشاملة 2026-11-13 · R11-B2-1): الخادم
+ * يرجع NOT_FOUND برسالة «Document "…" not found.» للمستند الغائب، و«The database (default) does not exist…» لقاعدةٍ حُذفت أو لم تُنشأ ·
+ * فما رسالته غير الأولى، أو ليس نصّه خطأً من Firestore (صفحة وسيطٍ مثلاً)، لا يُعدّ غياباً للمستند · وخطأٌ بلا رسالة يُقبل غياباً (محاكاة)
+ */
+export function isDocNotFound(status: number, text: string): boolean {
+  if (status !== 404) return false;
+  let err: { status?: unknown; message?: unknown } | null = null;
+  try { err = (JSON.parse(text) as { error?: { status?: unknown; message?: unknown } } | null)?.error ?? null; } catch { return false; }
+  if (!err || typeof err !== 'object') return false;
+  if (err.status !== undefined && err.status !== 'NOT_FOUND') return false;
+  if (err.message === undefined || err.message === null || err.message === '') return true;
+  return /^Document\b[\s\S]*\bnot found\.?$/i.test(String(err.message).trim());
+}
+
 export interface FirestoreOptions {
   projectId: string;
   uid: string;
@@ -442,6 +457,19 @@ export class FirestoreRemote implements RemoteStore {
     const res = await this.f(`${this.root}/${path}`, { headers: { Authorization: 'Bearer ' + token } });
     if (res.status === 404) return null;
     const text = await res.text();
+    if (!res.ok) throw new FirestoreHttpError(res.status, text);
+    return decodeFields((JSON.parse(text) as { fields?: Record<string, FsValue> }).fields ?? {});
+  }
+
+  /**
+   * قراءة مستندٍ يُبنى على غيابه ما لا رجعة فيه (العضوية · المراجعة الشاملة 2026-11-13 · R11-B2-1): null لغياب المستند نفسه وحده
+   * (isDocNotFound)، وأي 404 سواه (قاعدةٌ أو مشروعٌ غير موجود) يرمي كغيره من أخطاء الاتصال
+   */
+  async getDocStrict(path: string): Promise<Record<string, unknown> | null> {
+    const token = await this.o.idToken();
+    const res = await this.f(`${this.root}/${path}`, { headers: { Authorization: 'Bearer ' + token } });
+    const text = await res.text();
+    if (isDocNotFound(res.status, text)) return null;
     if (!res.ok) throw new FirestoreHttpError(res.status, text);
     return decodeFields((JSON.parse(text) as { fields?: Record<string, FsValue> }).fields ?? {});
   }

@@ -6,7 +6,6 @@ import { retagUnitTree } from './unitMove';
 import { uid } from './ids';
 import { naturalKey } from './sortKey';
 import { replaceMeters, type MeterInput } from './meters';
-import { unitCurrentContract } from './contracts/rules';
 import { assertNoRefs } from './refs';
 import { logAudit } from './audit';
 

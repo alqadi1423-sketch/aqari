@@ -6,6 +6,9 @@ import { integrityChecks, type IntegrityCheck } from '../accounting/integrity';
 import { reviewData } from './checks';
 import { allAccounts, accountBalance } from '../accounting/ledger';
 import { currentSchemaVersion } from '../../db/migrations';
+import { hasUserData } from './userData';
+import { getSetting } from '../../repos/settings';
+import { DEFAULT_SETTINGS } from '../../db/seed';
 import { libSizeLabel } from '../library';
 import type { DB } from '../../db/adapter';
 import {
@@ -27,17 +30,37 @@ const dec = new TextDecoder();
  * وإن لم يُعرف له اسم فأوّل البصمة وامتداده.
  */
 function attachmentLabel(db: DB | null, sha: string, ext?: string): string {
-  try {
-    const r = db?.get<{ n: string | null }>(
-      `SELECT COALESCE(NULLIF(display_name, ''), original_name) AS n FROM attachments
-       WHERE sha256 = ? ORDER BY deleted_at IS NOT NULL, created_at LIMIT 1`, [sha]);
-    if (r?.n) return r.n;
-  } catch { /* القاعدة غير متاحة · يُكتفى بالبصمة */ }
+  // نسخة ما قبل الترقية تقرأ قاعدةً أقدم قد لا تعرف الاسم الظاهر ولا الحذف المؤقت · فيُجرَّب الأحدث ثم الأقدم
+  for (const sql of [
+    `SELECT COALESCE(NULLIF(display_name, ''), original_name) AS n FROM attachments
+     WHERE sha256 = ? ORDER BY deleted_at IS NOT NULL, created_at LIMIT 1`,
+    `SELECT original_name AS n FROM attachments WHERE sha256 = ? ORDER BY created_at LIMIT 1`,
+  ]) {
+    try {
+      const r = db?.get<{ n: string | null }>(sql, [sha]);
+      if (r?.n) return r.n;
+      if (r) break;
+    } catch { /* عمودٌ لا تعرفه هذه البنية، أو القاعدة غير متاحة · التالي ثم البصمة */ }
+  }
   return sha.slice(0, 12) + (ext ? '.' + ext : '');
+}
+
+/**
+ * أسماء الملفات التي لم تدخل نسخة ما قبل الترقية (القرارات المعلّقة البند ٣ · الخيار أ): بالاسم الذي يعرفه المستخدم، أو بأول البصمة إن
+ * لم يكن له اسم · ليُخبَر بها قبل أن تجري الترقية
+ */
+export function missingFileLabels(db: DB | null, missing: readonly string[]): string[] {
+  return missing.map((f) => {
+    const dot = f.indexOf('.');
+    return dot < 0 ? attachmentLabel(db, f) : attachmentLabel(db, f.slice(0, dot), f.slice(dot + 1));
+  });
 }
 
 /** ضعفُ ما تشغله البيانات · القاعدة تُنسخ ثم تُضغط ثم يُفكّ بعضها، فالثلاثة هي الحدّ الآمن */
 const SPACE_FACTOR = 3;
+
+/** وسم نسخة الأمان من قاعدةٍ بلا بيانات في اسمها */
+export const EMPTY_MARK = '-empty';
 
 /** بادئة نسخ ما قبل الترقية في مجلد نسخ الأمان */
 export const PRE_UPGRADE_PREFIX = 'pre-upgrade';
@@ -47,11 +70,80 @@ export function safetyBackupsDir(env: BackupEnv): string {
   return joinPath(env.tmpDir, '..', 'backups');
 }
 
+/* ─── نسخة الأمان قبل المسح تبقى طوال مدة السلة (المراجعة الشاملة 2026-11-13 · C-6 · قرار المالك س٢٣) ───
+ * «امسح كل البيانات» يمسح السحابة معه، فنسختها قبل المسح الطريق الوحيد إلى ما مُسح · وكانت أول استعادةٍ بعدها (والجهاز غير فارغ)
+ * تصنع pre-restore فتحذفها بقاعدة «تبقى الأخيرة وحدها» (2026-09-02) · الآن تبقى آخرها مستقلةً عن نسخة ما قبل الاستعادة مدة السلة
+ * من وقت صنعها (الإعداد ٣٠ أو ٦٠ أو ٩٠ يوماً، تحقيقاً لقرار 2026-08-20 «إمكانية الرجوع من نسخة الأمان طوال مدة الاحتفاظ»)، ثم تعود
+ * إلى القاعدة: تحذفها أول نسخة أمانٍ بعدها، ويكنسها الإقلاع إن سبقتها نسخةٌ أحدث (sweepSafetyBackups) · ومسحٌ آخر بعدها يصنع
+ * نسخته هو فتحلّ محلّها كما كان */
+
+/** نسخة أمانٍ قبل مسحٍ فيها بيانات (لا وسم «فارغة») · ووقتها من اسمها كما يكتبه makeSafetyBackup */
+const PRE_WIPE_NAME = /^pre-wipe-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.aqbk$/;
+const DAY_MS = 86400000;
+
+/** وقت نسخة الأمان (قبل مسحٍ أو استعادة) من اسمها · null لغيرها */
+const safetyAt = (name: string): string | null => {
+  const m = /^pre-(?:wipe|restore)-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.aqbk$/.exec(name);
+  return m ? `${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z` : null;
+};
+
+/** مدة السلة من إعدادات القاعدة الحية · وبلا جدول الإعدادات (بنيةٌ أقدم) افتراضها */
+function trashDays(db: DB): number {
+  const fallback = Number(DEFAULT_SETTINGS.trashRetention) || 30;
+  try {
+    const d = Number(getSetting(db, 'trashRetention'));
+    return d > 0 ? d : fallback;
+  } catch { return fallback; }
+}
+
+export interface KeptPreWipe {
+  name: string;
+  /** وقت صنعها (ISO) */
+  at: string;
+  /** آخر يومٍ تبقى فيه محميّة: وقتها ومدة السلة */
+  until: string;
+}
+
+function listSafety(env: BackupEnv): string[] {
+  const dir = safetyBackupsDir(env);
+  try { return env.fs.exists(dir) ? env.fs.list(dir) : []; } catch { return []; }
+}
+
+/** آخر نسخة أمانٍ قبل مسحٍ فيها بيانات، ما دامت في مدة السلة · وإلا null */
+export function keptPreWipe(env: BackupEnv, now: Date = new Date(), names: string[] = listSafety(env)): KeptPreWipe | null {
+  let best: { name: string; at: string } | null = null;
+  for (const name of names) {
+    if (!PRE_WIPE_NAME.test(name)) continue;
+    const at = safetyAt(name);
+    if (at && !Number.isNaN(Date.parse(at)) && (!best || at > best.at)) best = { name, at };
+  }
+  if (!best) return null;
+  const until = Date.parse(best.at) + trashDays(env.db) * DAY_MS;
+  return now.getTime() < until ? { ...best, until: new Date(until).toISOString() } : null;
+}
+
+/**
+ * كنس الإقلاع: نسخة أمانٍ قبل مسحٍ انقضت مدة حمايتها وبعدها نسخة أمانٍ أحدث فيها بيانات تُحذف، كما كانت ستحذفها تلك النسخة لولا الحماية ·
+ * والوحيدة أو الأحدث تبقى كما كانت · يعيد عدد ما حُذف
+ */
+export function sweepSafetyBackups(env: BackupEnv, now: Date = new Date()): number {
+  const names = listSafety(env);
+  const kept = keptPreWipe(env, now, names)?.name;
+  const newest = names.map((n) => (n.endsWith(EMPTY_MARK + '.aqbk') ? null : safetyAt(n))).filter((x): x is string => !!x).sort().pop();
+  let n = 0;
+  for (const name of names) {
+    const at = safetyAt(name);
+    if (!PRE_WIPE_NAME.test(name) || name === kept || !at || !newest || at >= newest) continue;
+    try { env.fs.remove(joinPath(safetyBackupsDir(env), name)); n++; } catch { /* يُعاد في الإقلاع التالي */ }
+  }
+  return n;
+}
+
 /**
  * نسخة أمان واحدة تبقى · وكل ما قبلها يُحذف.
  * فقد كانت كل محاولةٍ تترك ملفاً بحجم بياناتك كاملة في مجلدٍ لا تعدّه شاشة المساحة
  * ولا تكنسه مكنسة · فتتراكم بلا سقف. والحذف بعد نجاح الجديدة لا قبله، فلا تمرّ
- * لحظة واحدة والقرص بلا نسخة أمان.
+ * لحظة واحدة والقرص بلا نسخة أمان · إلا آخر نسخةٍ قبل المسح في مدة السلة: لا تحذفها نسخة ما قبل الاستعادة (C-6 · س٢٣).
  */
 export async function makeSafetyBackup(
   env: BackupEnv,
@@ -60,12 +152,19 @@ export async function makeSafetyBackup(
 ): Promise<string> {
   const dir = safetyBackupsDir(env);
   env.fs.mkdirp(dir);
-  const keep = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}.aqbk`;
+  // ونسخةٌ من قاعدةٍ بلا بيانات لا تحذف ما قبلها (القاعدة ٩٩ · القرارات المعلّقة القسم ٥ البند ١٦): مسحٌ ثم مسحٌ آخر كان يُبقي نسخة
+  // القاعدة الفارغة وحدها وقد حذف التي فيها البيانات · وتُوسم في اسمها «فارغة» فتبقى آخرها وحدها (المدقق الخارجي B3: كانت تتراكم بلا سقف)،
+  // ولا يختارها زرّ «استعادة» قبل نسخةٍ فيها بيانات (B2) · وأول نسخةٍ من قاعدةٍ فيها بيانات بعدها تعيد «واحدة تبقى»
+  const empty = !hasUserData(env.db);
+  const keep = `${prefix}-${new Date().toISOString().replace(/[:.]/g, '-')}${empty ? EMPTY_MARK : ''}.aqbk`;
   const outPath = joinPath(dir, keep);
-  await createBackup(env, outPath, onProgress);
+  // تُعرف قبل النسخة الجديدة بالقاعدة التي فيها إعداد المدة
+  const kept = prefix === 'pre-restore' ? keptPreWipe(env)?.name : undefined;
+  await createBackup(env, outPath, onProgress, { asIs: true });
   // نسخ ما قبل الترقية لها سقفها في upgrade.ts · لا تحذفها نسخة استعادة ولا مسح
   for (const name of env.fs.list(dir)) {
-    if (name === keep || !name.endsWith('.aqbk') || name.startsWith(PRE_UPGRADE_PREFIX)) continue;
+    if (name === keep || name === kept || !name.endsWith('.aqbk') || name.startsWith(PRE_UPGRADE_PREFIX)) continue;
+    if (empty && !name.endsWith(EMPTY_MARK + '.aqbk')) continue;
     try { env.fs.remove(joinPath(dir, name)); } catch { /* التالي · لا يعطّل */ }
   }
   return outPath;
@@ -112,12 +211,16 @@ export function describeResidue(env: BackupEnv, before: DataFingerprint): string
   return parts.join('. ');
 }
 
-/** ما تشغله بياناتك على القرص الآن · القاعدة بملفّيها الملحقين ومرفقاتها */
-export function dataFootprintBytes(env: BackupEnv): number {
+/**
+ * ما تشغله بياناتك على القرص الآن · القاعدة بملفّيها الملحقين ومرفقاتها ·
+ * وبلا المرفقات لنسخةٍ لا تنسخها (ما قبل الترقية · المراجعة الشاملة 2026-11-13 · C-2)
+ */
+export function dataFootprintBytes(env: BackupEnv, withFiles = true): number {
   let total = 0;
   for (const suffix of ['', '-wal', '-shm']) {
     try { if (env.fs.exists(env.dbPath + suffix)) total += env.fs.size(env.dbPath + suffix); } catch { /* التالي */ }
   }
+  if (!withFiles) return total;
   try {
     for (const name of env.fs.list(env.attachmentsDir)) {
       try { total += env.fs.size(joinPath(env.attachmentsDir, name)); } catch { /* التالي */ }
@@ -129,9 +232,12 @@ export function dataFootprintBytes(env: BackupEnv): number {
 /**
  * لا تبدأ عمليةً لا يسعها القرص · فالبدء ثم الفشل في المنتصف أسوأ من الامتناع.
  * والحدّ ثلاثة أضعاف ما تشغله البيانات: لقطة القاعدة، ثم الأرشيف، ثم ما يُفكّ منه.
+ * ونسخة ما قبل الترقية لا تنسخ المرفقات، فلا تُطلب لها مساحتها (المراجعة الشاملة 2026-11-13 · C-2).
+ * وفي الاستعادة الأكبر من ذلك ومن الملف الوارد × ٣ (C-7 · قرار المالك س١٢): جوالٌ جديد بياناته أقل من ميغا كان يمرّ بالفحص ثم يمتلئ
+ * قرصه في منتصف استعادة نسخةٍ بغيغا.
  */
-export async function ensureFreeSpace(env: BackupEnv): Promise<void> {
-  const needed = dataFootprintBytes(env) * SPACE_FACTOR;
+export async function ensureFreeSpace(env: BackupEnv, withFiles = true, incomingBytes = 0): Promise<void> {
+  const needed = Math.max(dataFootprintBytes(env, withFiles), incomingBytes) * SPACE_FACTOR;
   const usable = await env.fs.usableSpace();
   if (usable >= needed) return;
   throw new NotEnoughSpaceError(
@@ -183,9 +289,18 @@ export interface CreateBackupOptions {
    * فحوص الإصدار الحالي (فالرفض هنا يحبس المستخدم خارج تطبيقه بلا سبيل لإصلاح شيء) ·
    * فنتائج الفحوص تُكتب في البيان ولا تمنع، ومرفقٌ مفقود من القرص أو تالف يُسمّى في
    * missing_files وتُوسم النسخة غير كاملة. وكل ما عدا ذلك من تحقق يبقى مانعاً كما هو:
-   * بصمة القاعدة، وإعادة فتح الأرشيف، وintegrity_check، ومطابقة الأعداد، وبصمة كل مرفق محفوظ.
+   * بصمة القاعدة، وإعادة فتح الأرشيف، وintegrity_check، ومطابقة الأعداد.
+   * والمرفقات لا تدخلها (قرار المالك س٣ · المراجعة الشاملة 2026-11-13 · C-2): الهجرات لا تمسّ ملفاتها، فتُذكر في
+   * local_files ببصماتها وأحجامها · يُقرأ كلٌّ وحده لبصمته ثم يُترك، فلا تحمل البوابةُ المكتبةَ في الذاكرة ويُسمّى التالف
+   * قبل الترقية (C2-R11-1). والتصدير وDrive ونسخ الأمان كاملةٌ بملفاتها.
    */
   preUpgrade?: boolean;
+  /**
+   * نسخة الأمان قبل الاستعادة أو المسح بالحكم نفسه (المدقق الخارجي D٣ · القاعدة ٩٩): نسخةٌ تلقائية تحفظ الحال كما هي لتُرجع إليها،
+   * فلا يمنعها ملفٌ مفقود أو فحصٌ متعذّر (كانت ترفض فتُلغى استعادة نسخة ما قبل الترقية الناقصة) · والنسخة التي يصنعها المستخدم
+   * (التصدير وDrive) ترفض وتسمّي المفقود كما قرر المالك
+   */
+  asIs?: boolean;
   /** الإلغاء بيد المستخدم · يُفحص بين الخطوات ولا يبقى بعده أرشيف جزئي (progress.ts) */
   signal?: CancelSignal;
   /**
@@ -202,6 +317,7 @@ export async function createBackup(
   onProgress?: ProgressFn,
   opts: CreateBackupOptions = {}
 ): Promise<BackupManifest> {
+  const tolerant = !!(opts.preUpgrade || opts.asIs);
   if (!env.hasher) throw new HashingUnavailableError();
   const hasher = env.hasher;
 
@@ -211,22 +327,23 @@ export async function createBackup(
   try {
     integrity = integrityChecks(env.db);
   } catch (e) {
-    if (!opts.preUpgrade) throw e;
+    if (!tolerant) throw e;
     // بنية أقدم من أعمدة الفحوص · يُكتب ذلك في البيان والقاعدة تُحفظ كما هي
     integrity = [{ name: 'فحوص الدفتر', ok: false, value: 'بنية الإصدار ' + currentSchemaVersion(env.db) + ' أقدم من أن تُفحص قبل ترقيتها' }];
   }
   // الحكم نفسه في الاستعادة (checks.ts): التلف يمنع النسخة، والفرق المحاسبي يُكتب فيها «ملاحظات» ولا يمنع حفظ البيانات
   let notes: string[] = [];
-  if (!opts.preUpgrade) {
+  if (!tolerant) {
     let review: ReturnType<typeof reviewData>;
     try {
       review = reviewData(env.db);
     } catch {
       // بنية أقدم من أعمدة الفحوص (نسخة أمان لقاعدة لم تُرقَّ) · تُحفظ كما هي وتُذكر في ملاحظاتها
-      review = { blocking: [], notes: ['تعذّر فحص الدفتر على بنية الإصدار ' + currentSchemaVersion(env.db)] };
+      review = { blocking: [], restoreBlocking: [], notes: ['تعذّر فحص الدفتر على بنية الإصدار ' + currentSchemaVersion(env.db)] };
     }
     if (review.blocking.length) throw new BackupIntegrityError(review.blocking);
-    notes = review.notes;
+    // قيدٌ مرحّل مختل لا يمنع النسخة ويمنع استعادتها (C-12): تقول النسخة ذلك بنفسها (المدقق المستقل للمرحلة ٣)
+    notes = [...review.notes, ...review.restoreBlocking.map((x) => 'هذه النسخة لا تُستعاد حتى يُصلح: ' + x)]; // i18n-exempt: ملاحظات النسخة بالعربية كبقية فحوصها
   }
   await yieldUi();
   // العدّ والدفتر ثم اللقطة بلا انتظار بينها: كاتبٌ متزامن (المزامنة، وسحب المحادثة كل ثوانٍ) لا يقع بين العدّ واللقطة (تحقق الدمج ف٦)
@@ -235,7 +352,7 @@ export async function createBackup(
   try {
     ledger = ledgerTotals(env.db);
   } catch (e) {
-    if (!opts.preUpgrade) throw e;
+    if (!tolerant) throw e;
     ledger = { total_debit_halalas: 0, total_credit_halalas: 0, balances: {} };
   }
   const schemaVersion = currentSchemaVersion(env.db);
@@ -283,6 +400,7 @@ export async function createBackup(
     const files: BackupManifest['files'] = [];
     const missing: string[] = [];
     const remoteFiles: NonNullable<BackupManifest['remote_files']> = [];
+    const localFiles: NonNullable<BackupManifest['local_files']> = [];
     // «البيانات وحدها»: ما رُفع وطابق يُذكر ببصمته ولا يُقرأ · وما لم يُرفع يُنسخ كما هو
     const uploaded = new Set<string>(opts.dataOnly
       ? env.db.all<{ sha256: string }>(`SELECT sha256 FROM file_cache WHERE uploaded = 1`).map((r) => r.sha256)
@@ -304,16 +422,30 @@ export async function createBackup(
       const p = joinPath(env.attachmentsDir, `${b.sha256}.${b.ext}`);
       const label = () => attachmentLabel(env.db, b.sha256, b.ext);
       if (!env.fs.exists(p)) {
-        if (opts.preUpgrade) { missing.push(`${b.sha256}.${b.ext}`); continue; }
+        if (tolerant) { missing.push(`${b.sha256}.${b.ext}`); continue; }
         throw new BackupVerificationError(`الملف «${label()}» مفقود من القرص · يُرفض إنشاء النسخة`);
       }
-      const bytes = env.fs.read(p);
+      // وفي النسخة كما هي (ما قبل الترقية ونسخة الأمان) ملفٌ تعذّرت قراءته أو بصمته يُسمّى مفقوداً ولا يمنعها (المدقق الخارجي F١٠)
+      let bytes: Uint8Array;
       let actual: string;
-      try { actual = await hasher(bytes); }
-      catch { throw new BackupVerificationError(`تعذّر حساب بصمة الملف «${label()}» · يُرفض إنشاء النسخة`); }
+      try {
+        bytes = env.fs.read(p);
+        actual = await hasher(bytes);
+      } catch {
+        if (tolerant) { missing.push(`${b.sha256}.${b.ext}`); continue; }
+        throw new BackupVerificationError(`تعذّر حساب بصمة الملف «${label()}» · يُرفض إنشاء النسخة`);
+      }
       if (actual !== b.sha256) {
-        if (opts.preUpgrade) { missing.push(`${b.sha256}.${b.ext}`); continue; }
+        if (tolerant) { missing.push(`${b.sha256}.${b.ext}`); continue; }
         throw new BackupVerificationError(`بصمة الملف «${label()}» لا تطابق المسجَّلة له · الملف تالف · يُرفض إنشاء النسخة`);
+      }
+      // نسخة ما قبل الترقية: الملف يُذكر ببصمته المحسوبة من القرص وحجمه ولا يدخل الأرشيف، ولا تبقى بايتاته بعد بصمته ·
+      // فأكبر ما في الذاكرة ملفٌ واحد لا المكتبة، والتالف بالحجم نفسه يُسمّى في missing_files كما كان
+      // (قرار المالك س٣ · المراجعة الشاملة 2026-11-13 · C-2 · C2-R11-1)
+      if (opts.preUpgrade) {
+        localFiles.push({ sha256: b.sha256, ext: b.ext, size: bytes.byteLength });
+        if (bi % 8 === 0) await yieldUi();
+        continue;
       }
       // المرفقات تُخزَّن بلا إعادة ضغط · صورها وملفاتها مضغوطة أصلاً
       zipEntries.push({ name: `attachments/${b.sha256}.${b.ext}`, bytes, level: 0 });
@@ -332,6 +464,7 @@ export async function createBackup(
       files,
       missing_files: missing,
       ...(opts.dataOnly ? { remote_files: remoteFiles } : {}),
+      ...(opts.preUpgrade ? { local_files: localFiles } : {}),
       table_counts: counts,
       ledger,
       integrity,

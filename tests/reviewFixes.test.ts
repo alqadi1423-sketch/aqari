@@ -465,6 +465,7 @@ describe('٤.٦ الاستعادة من السلة تعيد القيود كما 
 
   test('فاتورة شراء قابلة للخصم بفرق تقريب ومسدَّدة: تُستعاد بقيدها نفسه وسدادها', async () => {
     const { db, bank } = await base();
+    db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
     const { savePurchase, payPurchaseSplit, deletePurchase, TS_DEDUCTIBLE } = await import('@/domain/purchases');
     const { restoreFromTrash } = await import('@/domain/trash');
     const { bankBalance } = await import('@/domain/accounting/ledger');
@@ -497,8 +498,9 @@ describe('٤.٦ الاستعادة من السلة تعيد القيود كما 
     });
     payPurchaseSplit(db, id, [{ method: 'bank', bankId: bank, amountHalalas: 20000 }], '2026-05-03');
     deletePurchase(db, id);
-    const mid = await balances(db);
     db.run(`UPDATE banks SET deleted_at = ? WHERE id = ?`, ['2026-05-04T00:00:00Z', bank]);
+    // افتتاحي البنك المحذوف يخرج من 1100 و3300 معاً (الهجرة ٦٢ · المراجعة الشاملة 2026-11-13 · A2.4)، فالمرجع بعد حذفه
+    const mid = await balances(db);
     expect(() => restoreFromTrash(db, 'purchases', id)).toThrow(/البنك/);
     expect(await balances(db)).toEqual(mid);
     expect(db.get<{ d: string | null }>(`SELECT deleted_at AS d FROM purchases WHERE id = ?`, [id])!.d).toBeTruthy();
@@ -518,6 +520,9 @@ describe('٤.٦ الاستعادة من السلة تعيد القيود كما 
     payPurchaseSplit(db, pid, [{ method: 'bank', bankId: bank, amountHalalas: 1000 }], '2026-05-03');
     const linked = db.get<{ id: string }>(`SELECT id FROM bank_tx WHERE journal_no != '' AND bank_id = ?`, [bank])!;
     expect(() => deleteBankTx(db, linked.id)).toThrow(/قيد/);
+    // الحركة اليدوية الواردة نقدٌ من المحفظة (المحفظة = نقد 1100 ناقصاً حركات البنوك) · فاستعادتها تحتاجه كحذفها (المدقق الخارجي G٤)
+    const { ownerCashIn } = await import('@/domain/cashOps');
+    ownerCashIn(db, { amountHalalas: 700, date: '2026-05-05' });
     db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, source, created_at) VALUES ('T_manual',?,?,?,?,0,'',?)`,
       [bank, '2026-05-05', 'حركة يدوية', 700, '2026-05-05T00:00:00Z']);
     const b0 = bankBalance(db, bank);
@@ -650,14 +655,16 @@ describe('٤.١٣ المبلغ بالحروف صحيح نحوياً', () => {
     [300000, 'ثلاثمئة ألف ريال فقط لا غير'],
     [103000, 'مئة وثلاثة آلاف ريال فقط لا غير'],
     [1100000, 'مليون ومئة ألف ريال فقط لا غير'],
-    [2000, 'ألفان ريال فقط لا غير'],
+    [2000, 'ألفا ريال فقط لا غير'],
     [3000, 'ثلاثة آلاف ريال فقط لا غير'],
-    [11000, 'أحد عشر ألفاً ريال فقط لا غير'],
-    [115000, 'مئة وخمسة عشر ألفاً ريال فقط لا غير'],
+    [11000, 'أحد عشر ألف ريال فقط لا غير'],
+    [115000, 'مئة وخمسة عشر ألف ريال فقط لا غير'],
     [101000, 'مئة ألف وألف ريال فقط لا غير'],
-    [202000, 'مئتا ألف وألفان ريال فقط لا غير'],
+    [202000, 'مئتا ألف وألفا ريال فقط لا غير'],
     [200000000, 'مئتا مليون ريال فقط لا غير'],
-    [4250, 'أربعة آلاف ومئتان وخمسون ريال فقط لا غير'],
+    // المرتبة الأخيرة مضافةٌ إلى «ريال» (المدقق المستقل للمرحلة ٣ · س١٤): «ألفا ريال · أحد عشر ألف ريال» لا «ألفان ريال · ألفاً ريال»
+    // المعدود بعدده بعد ما ينتهي بعشرة فأكثر: «ريالاً» (س١٤ · E-14)
+    [4250, 'أربعة آلاف ومئتان وخمسون ريالاً فقط لا غير'],
   ])('%i ← %s', async (riyals, words) => {
     const { moneyToArabicWords } = await import('@/domain/numberWords');
     expect(moneyToArabicWords(riyals * 100)).toBe(words);

@@ -1,0 +1,11 @@
+# الجوال الافتراضي · ٠٤ هـ · إقلاعٌ بعد القتل بلا مسح: العقار باقٍ (التوجيه الرابع ٤ · ١)
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- tapOn: "العقارات"
+- assertVisible: "E2E Persist"
+- takeScreenshot: 04-restored

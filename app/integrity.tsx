@@ -10,12 +10,19 @@ import { useAccess } from '../src/ui/access';
 import { useDialog } from '../src/ui/AppDialog';
 import { useToast } from '../src/ui/Toast';
 import { reportFailure } from '../src/ui/failureDialog';
-import { integrityChecks } from '../src/domain/accounting/integrity';
+import { integrityChecks, DEPOSIT_CHECK_NAME } from '../src/domain/accounting/integrity';
+import { carryAfterSettleItems, reverseCarryAfterSettle, type CarryAfterSettleItem } from '../src/domain/contracts/carryRepair';
+import { fmt } from '../src/domain/money';
 import { previewRepairs, applyRepair, type RepairPreview } from '../src/domain/reviewRepairs';
 import { previewEjarSchedules, applyEjarSchedules, contractsWithLease, type EjarScheduleDiff } from '../src/domain/ejarScheduleRepair';
 import { readLeaseText } from '../src/services/contractScan';
 import { dfmt } from '../src/domain/dates';
+import { invoiceSeqGaps } from '../src/domain/invoiceGaps';
+import { fkIntegrityCheck } from '../src/domain/fkCheck';
 import { useLang } from '../src/i18n';
+
+/** ما يُعرض من أرقام الفجوات · والباقي عدداً */
+const GAPS_SHOWN = 60;
 
 export default function Integrity() {
   const { db, version, bump } = useApp();
@@ -23,14 +30,23 @@ export default function Integrity() {
   const dialog = useDialog();
   const toast = useToast();
   const [tick, setTick] = useState(0);
-  const checks = useMemo(() => integrityChecks(db),
+  // ومعها الارتباطات المكسورة بين الجداول (المراجعة الشاملة 2026-11-13 · C-8)
+  const checks = useMemo(() => [...integrityChecks(db), fkIntegrityCheck(db)],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, tick]);
   // المعاينة قراءة فقط · والتطبيق للمالك وحده، فالأداة لا تظهر لغيره
   const repairs = useMemo(() => (access.owner ? previewRepairs(db).filter((r) => r.items.length) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, tick, access.owner]);
+  // ترحيل تأمينٍ سُوّي قبل إصلاح A1-1: يُسرد تحت الفحص الثالث للمالك وحده، والموقوف بسببه بلا زرّ
+  const carries = useMemo(() => (access.owner ? carryAfterSettleItems(db) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version, tick, access.owner]);
   const ok = checks.every((c) => c.ok);
+  // أرقام الفاتورة الضريبية المحجوزة بلا فاتورة (B-7) · للمالك وحده: جهاز العضو لا يحمل كل الفواتير فيظن ما لا يراه فجوة
+  const invGaps = useMemo(() => (access.owner ? invoiceSeqGaps(db) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version, tick, access.owner]);
   // أقساط عقود إيجار مقابل جدول ملفها (قرار المالك ٢٠٢٦-١٠-٠٥) · القراءة من الملفات بطلب لا عند الفتح
   const leaseCount = useMemo(() => (access.owner ? contractsWithLease(db).length : 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -38,6 +54,22 @@ export default function Integrity() {
   const [ejar, setEjar] = useState<EjarScheduleDiff[] | null>(null);
   const { t } = useLang();
   const [reading, setReading] = useState(false);
+
+  const reverseCarry = (x: CarryAfterSettleItem) => dialog({
+    title: t('carryRepair.action'),
+    body: t('carryRepair.confirm', { entry: x.carryNo, carried: fmt(x.carried), from: x.prevNo, to: x.renewalNo,
+      deposit: fmt(x.deposit), target: fmt(x.target), date: dfmt(x.reverseOn) }),
+    actions: [
+      { label: t('common.cancel'), variant: 'ghost' },
+      {
+        label: t('common.confirm'), variant: 'primary',
+        onPress: () => {
+          try { reverseCarryAfterSettle(db, x.renewalId); bump(); toast(t('carryRepair.done', { to: x.renewalNo, target: fmt(x.target) })); }
+          catch (e) { reportFailure({ title: t('common.failed'), e }); }
+        },
+      },
+    ],
+  });
 
   const apply = (r: RepairPreview) => {
     const ready = r.items.filter((i) => !i.blocked).length;
@@ -80,9 +112,35 @@ export default function Integrity() {
               style={{ marginTop: 4, marginStart: 20, textAlign: 'left' }}>
               {c.value}
             </Num>
+            {c.name === DEPOSIT_CHECK_NAME && carries.length ? (
+              <View style={{ marginTop: 8, marginStart: 20 }}>
+                <T size={12.5} bold>{t('carryRepair.title') + ' · ' + carries.length}</T>
+                <T size={11.5} color={C.muted} style={{ marginBottom: 6 }}>{t('carryRepair.explain')}</T>
+                {carries.map((x) => (
+                  <View key={x.renewalId} style={{ paddingVertical: 7, borderTopWidth: 1, borderTopColor: C.line }}>
+                    <T size={12.5}>{t('carryRepair.label', { to: x.renewalNo, from: x.prevNo, tenant: x.tenant })}</T>
+                    <T size={11.5} color={C.muted}>{t('carryRepair.detail', { carried: fmt(x.carried), from: x.prevNo,
+                      date: dfmt(x.settledOn), to: x.renewalNo, deposit: fmt(x.deposit), target: fmt(x.target) })}</T>
+                    {x.blocked ? <T size={11.5} color={C.rose}>{x.blocked}</T> : (
+                      <View style={{ marginTop: 6 }}><BtnGhost title={t('carryRepair.action')} onPress={() => reverseCarry(x)} /></View>
+                    )}
+                  </View>
+                ))}
+              </View>
+            ) : null}
           </View>
         ))}
       </Card>
+      {invGaps.length ? (
+        <Card>
+          <CardTitle>{t('invoiceGaps.title') + ' · ' + invGaps.length}</CardTitle>
+          <T size={12} color={C.muted} style={{ marginBottom: 8 }}>{t('invoiceGaps.detail')}</T>
+          <Num size={12.5} bold color={C.rose} style={{ textAlign: 'left' }}>
+            {invGaps.slice(0, GAPS_SHOWN).join(' · ')}
+          </Num>
+          {invGaps.length > GAPS_SHOWN ? <T size={11.5} color={C.muted}>{t('invoiceGaps.more', { n: invGaps.length - GAPS_SHOWN })}</T> : null}
+        </Card>
+      ) : null}
       {access.owner && leaseCount ? (
         <Card>
           <CardTitle>أقساط عقود إيجار مقابل جدول ملفها</CardTitle>

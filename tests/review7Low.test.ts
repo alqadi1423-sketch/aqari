@@ -214,7 +214,8 @@ test('قرار المالك 2026-10-15 «٢»: «نسيت الرمز» يؤكد 
   expect(lg).toMatch(/const forgotPin = async[^]*?recoverByAccount\(\(\) => whilePrompting\(confirmSameAccount\)[^]*?setResetting\(true\)/);
   expect(lg).toMatch(/const saveNewPin = async[^]*?enablePinLock\(pin1, cfg.delay\);[^]*?onOpen\(\)/);
   expect(lg).toContain("onPress={forgotPin}");
-  expect(lg).toMatch(/disabled=\{!pinShapeOk\(pin1\) \|\| pin1 !== pin2\}/);
+  // زر حفظ الرمز الجديد لا يظهر حتى يصحّ شكله ويتطابق الرمزان (يغيب لا يُعطَّل · D-15)
+  expect(lg).toMatch(/\{pinShapeOk\(pin1\) && pin1 === pin2 \? <BtnPrimary title=\{t\('lock\.saveNewPin'\)\}/);
 });
 
 test('٣٤ عنوان المهمة لا يُملأ من نص الرسالة في مجموعة «من لحظة انضمامه»', () => {

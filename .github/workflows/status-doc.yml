@@ -1,0 +1,55 @@
+# فحص ملف الحال (القاعدة ١٠٣ · التوجيه الرابع 2026-11-07):
+# «فحص في جيت هب يفشل إن تغيّر كود في src/ أو app/ أو android/ بلا تغيير في docs/الحال.md.»
+# يُفحص كل التزامٍ مرفوعٍ وحده (scripts/ci/statusDoc.js) · بلا سرّ وبصلاحية قراءة وحدها.
+# ومعه فحص الأسرار في الأسطر المضافة على المدى نفسه (القاعدة ٤٠ · scripts/ci/secretScan.js).
+name: ملف الحال وفحص الأسرار
+
+on:
+  push:
+    branches-ignore: [ci-results, apk]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  status-doc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: مدى الالتزامات
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          head="$GITHUB_SHA"
+          if [ "$EVENT" = "pull_request" ]; then
+            base="$PR_BASE"; head="$PR_HEAD"
+          elif [ "$EVENT" = "push" ] && [ -n "$BEFORE" ] && ! echo "$BEFORE" | grep -qE '^0+$' && git merge-base --is-ancestor "$BEFORE" "$head" 2>/dev/null; then
+            base="$BEFORE"
+          else
+            # فرعٌ جديد أو تشغيلٌ يدوي أو دفعٌ بعد إعادة كتابة: من نقطة الافتراق عن main
+            base="$(git merge-base origin/main "$head")"
+            if [ "$base" = "$(git rev-parse "$head")" ]; then base="$(git rev-parse "$head~1")"; fi
+          fi
+          echo "BASE=$base" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$head" >> "$GITHUB_ENV"
+
+      - name: كل التزامٍ غيّر الكود حدّث docs/الحال.md
+        run: node scripts/ci/statusDoc.js "$BASE" "$HEAD_SHA"
+
+      - name: لا سرّ في الأسطر المضافة
+        if: always()
+        run: node scripts/ci/secretScan.js "$BASE" "$HEAD_SHA"

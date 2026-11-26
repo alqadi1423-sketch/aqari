@@ -8,23 +8,63 @@ export interface AccountRow {
   name: string;
   type: string;
   grp: string | null;
+  /**
+   * الافتتاحي الفعلي بطبيعة الحساب: المزروع، ومعه افتتاحيات البنوك مدينةً في 1100 ودائنةً في 3300 (المراجعة الشاملة 2026-11-13 · A2.4) ·
+   * للأرصدة والعرض وحدهما، ولا يُكتب في الدليل (نموذج الحساب يعدّل seeded_halalas)
+   */
   opening_halalas: number;
+  /** الافتتاحي المزروع كما في الدليل (accounts.opening_halalas) */
+  seeded_halalas: number;
   is_system: number;
 }
 
+/** النقدية والبنوك · وحساب الأرصدة الافتتاحية الذي يقابل افتتاحيات البنوك (الهجرة ٦٢ · قرار المالك س٢ في المراجعة الشاملة 2026-11-13) */
+export const ACC_CASH_BANKS = '1100';
+export const ACC_OPENING_BALANCES = '3300';
+
+/** نوع حساب الأرصدة الافتتاحية كما يُخزَّن في الدليل */
+const EQUITY_TYPE = 'حقوق ملكية'; // i18n-exempt: نوع الحساب المخزّن
+
+/**
+ * افتتاحيات البنوك في الدفتر: مجموع افتتاحيات البنوك الحية (المؤرشف منها رصيده باقٍ) ما دام 3300 قائماً · وقاعدةٌ قبل الهجرة ٦٢ (نسخةٌ تُفحص
+ * بإصدارها) أو بلا جدول البنوك صفر، فتبقى افتتاحياتها خارجه كما كانت · افتتاحي البنك يضعه المالك وحده وتحرسه المزامنة (openingKept)، فاشتقاقه
+ * هنا يتفق عليه كل جهاز بلا قيدٍ يُرحَّل مرتين (المراجعة الشاملة 2026-11-13 · A2.4)
+ * و3300 حساب النظام وحده (نظاميٌّ من حقوق الملكية): رمزٌ أنشأه المستخدم قبل الهجرة (احتياطيٌّ أو عهدة) لا تُقيَّد عليه افتتاحيات البنوك، فتبقى
+ * خارج الدفتر ظاهرةً في الفرق الافتتاحي كما كانت (المراجعة الشاملة 2026-11-13 · R11-A2.4-1)
+ */
+export function ledgerBankOpenings(db: DB): number {
+  try {
+    return Number(db.get<{ s: number }>(
+      `SELECT COALESCE(SUM(opening_halalas), 0) AS s FROM banks
+       WHERE deleted_at IS NULL AND EXISTS (SELECT 1 FROM accounts WHERE code = ? AND deleted_at IS NULL AND is_system = 1 AND type = ?)`,
+      [ACC_OPENING_BALANCES, EQUITY_TYPE])?.s ?? 0);
+  } catch { return 0; }
+}
+
+type RawAccount = Omit<AccountRow, 'seeded_halalas'>;
+/** الافتتاحي الفعلي: افتتاحيات البنوك مدينةٌ في 1100 ودائنةٌ في 3300 بطبيعة كلٍّ منهما (A2.4) */
+function withBankOpening(a: RawAccount, banks: number): AccountRow {
+  const seeded = Number(a.opening_halalas || 0);
+  const signed = a.code === ACC_CASH_BANKS ? banks : a.code === ACC_OPENING_BALANCES ? -banks : 0; // مدينٌ موجب
+  return { ...a, seeded_halalas: seeded, opening_halalas: seeded + (DEBIT_NORMAL_TYPES.has(a.type) ? signed : -signed) };
+}
+
 export function getAccount(db: DB, code: string): AccountRow | undefined {
-  return db.get<AccountRow>(
+  const a = db.get<RawAccount>(
     `SELECT code, name, type, grp, opening_halalas, is_system FROM accounts
      WHERE code = ? AND deleted_at IS NULL`,
     [code]
   );
+  if (!a) return undefined;
+  return withBankOpening(a, a.code === ACC_CASH_BANKS || a.code === ACC_OPENING_BALANCES ? ledgerBankOpenings(db) : 0);
 }
 
 export function allAccounts(db: DB): AccountRow[] {
-  return db.all<AccountRow>(
+  const banks = ledgerBankOpenings(db);
+  return db.all<RawAccount>(
     `SELECT code, name, type, grp, opening_halalas, is_system FROM accounts
      WHERE deleted_at IS NULL ORDER BY code`
-  );
+  ).map((a) => withBankOpening(a, banks));
 }
 
 /** صافي حركة الدفتر (مدين - دائن) على حساب · للقيود المرحّلة الحية فقط */
@@ -226,14 +266,14 @@ export function monthlyRevenue(db: DB, fromMonth: string, toMonth: string): Map<
 /**
  * المحفظة النقدية: ما في اليد فعلاً = رصيد النقدية 1100 - ما استقر في البنوك.
  * حسابياً: 1100 يستقبل كل المقبوضات ويصرف كل المدفوعات، والبنوك تتتبع حركاتها
- * في bank_tx · ففرقهما هو الكاش الحاضر (الافتتاحيات البنكية ليست في 1100).
+ * في bank_tx · ففرقهما هو الكاش الحاضر · وافتتاحيات البنوك في 1100 منذ الهجرة ٦٢ فتُطرح معها (المراجعة الشاملة 2026-11-13 · A2.4)
  */
 export function walletCashBalance(db: DB): number {
-  const cash = accountBalance(db, '1100');
+  const cash = accountBalance(db, ACC_CASH_BANKS);
   const bankFlow = Number(db.get<{ s: number }>(
     `SELECT COALESCE(SUM(amount_halalas),0) AS s FROM bank_tx WHERE deleted_at IS NULL`
   )!.s);
-  return cash - bankFlow;
+  return cash - bankFlow - ledgerBankOpenings(db);
 }
 
 export function cashOnHand(db: DB): number {
@@ -305,6 +345,87 @@ export function trialBalance(db: DB, from: string | null, to: string | null, dim
       closingHalalas: opening + m.d - m.c,
     };
   });
+}
+
+/** اتجاه طبيعة الحساب: +١ للمدين بطبيعته (أصل، مصروف)، و−١ لغيره · الرصيد الموجب رصيدٌ في طبيعته */
+export const natureSign = (type: string): 1 | -1 => (DEBIT_NORMAL_TYPES.has(type) ? 1 : -1);
+
+/** رصيد الحساب في الفترة باتجاه طبيعته: رصيد أولها · مدينها · دائنها · رصيد آخرها */
+export interface PeriodBalance { opening: number; debit: number; credit: number; closing: number }
+
+/**
+ * أرصدة كل الحسابات في الفترة باتجاه طبيعتها، من ميزان المراجعة نفسه: «الافتتاحي» رصيد أول الفترة (المزروع + حركة ما قبلها) و«الختامي»
+ * رصيد آخرها (لا رصيد كل الزمن) · فيجتمع الصف: الافتتاحي + المدين − الدائن (بالطبيعة) = الختامي (المراجعة الشاملة 2026-11-13 · A2.7)
+ */
+export function accountPeriodBalances(db: DB, from: string | null, to: string | null, dims?: DimFilter | null): Map<string, PeriodBalance> {
+  return new Map(trialBalance(db, from, to, dims).map((r) => {
+    const sg = natureSign(r.type);
+    return [r.code, { opening: sg * r.openingHalalas, debit: r.debitHalalas, credit: r.creditHalalas, closing: sg * r.closingHalalas }];
+  }));
+}
+
+export interface StatementLine {
+  entry_id: string; date: string; memo: string; src_type: string | null; src_id: string | null;
+  d: number; c: number;
+  /** الرصيد الجاري بعد السطر باتجاه طبيعة الحساب */
+  running: number;
+}
+
+export interface AccountStatement {
+  /** رصيد أول الفترة باتجاه الطبيعة: الافتتاحي + حركة ما قبل بدايتها («رصيد منقول» في الصفحة الأولى) */
+  opening: number;
+  /** ما قبل أول سطرٍ معروض: رصيد أول الفترة + سطور الصفحات السابقة */
+  carried: number;
+  /** رصيد آخر الفترة باتجاه الطبيعة · آخر «جاري» في الصفحة الأخيرة يساويه */
+  closing: number;
+  /** عدد سطور الحساب في الفترة كلها */
+  total: number;
+  lines: StatementLine[];
+}
+
+/**
+ * كشف حركة الحساب في فترة بترتيبٍ ثابت (التاريخ ثم الإنشاء ثم السطر)، والرصيد الجاري يبدأ من «رصيد منقول» ويُجمع باتجاه طبيعة الحساب ·
+ * ومع limit وoffset صفحةٌ منه منقولها ما قبلها · وبأبعادٍ لا يدخل الافتتاحي المزروع (بلا أبعاد) كالميزان (المراجعة الشاملة 2026-11-13 · A2.7)
+ */
+export function accountStatement(
+  db: DB, code: string, from: string | null, to: string | null,
+  opts: { dims?: DimFilter | null; limit?: number; offset?: number } = {},
+): AccountStatement {
+  const acc = getAccount(db, code);
+  const sg = natureSign(acc?.type ?? '');
+  const dc = dimConds(opts.dims);
+  // i18n-exempt: حالة القيد المخزّنة
+  const base = [`l.account_code = ?`, `e.status = 'مرحّل'`, `e.deleted_at IS NULL`, ...dc.sql];
+  const baseParams: (string | number)[] = [code, ...dc.params];
+  const netOf = (extra: string[], params: (string | number)[]) => Number(db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas),0) AS s FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+     WHERE ${[...base, ...extra].join(' AND ')}`, [...baseParams, ...params])?.s ?? 0);
+  const seeded = acc && !hasDimFilter(opts.dims) ? Number(acc.opening_halalas || 0) : 0;
+  const opening = seeded + (from ? sg * netOf([`e.date < ?`], [from]) : 0);
+  const period: string[] = []; const periodParams: string[] = [];
+  if (from) { period.push(`e.date >= ?`); periodParams.push(from); }
+  if (to) { period.push(`e.date <= ?`); periodParams.push(to); }
+  const where = [...base, ...period].join(' AND ');
+  const params = [...baseParams, ...periodParams];
+  const order = `ORDER BY e.date, e.created_at, l.id`;
+  const closing = opening + sg * netOf(period, periodParams);
+  const total = Number(db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id WHERE ${where}`, params)?.n ?? 0);
+  const offset = Math.max(0, opts.offset ?? 0);
+  const carried = opening + (offset ? sg * Number(db.get<{ s: number }>(
+    `SELECT COALESCE(SUM(d - c),0) AS s FROM (
+       SELECT l.debit_halalas AS d, l.credit_halalas AS c FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+       WHERE ${where} ${order} LIMIT ?)`, [...params, offset])?.s ?? 0) : 0);
+  const rows = db.all<Omit<StatementLine, 'running'>>(
+    `SELECT e.id AS entry_id, e.date, e.memo, e.src_type, e.src_id, l.debit_halalas AS d, l.credit_halalas AS c
+     FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
+     WHERE ${where} ${order} LIMIT ? OFFSET ?`, [...params, opts.limit ?? -1, offset]);
+  let running = carried;
+  const lines = rows.map((r) => {
+    running += sg * (Number(r.d) - Number(r.c));
+    return { ...r, d: Number(r.d), c: Number(r.c), running };
+  });
+  return { opening, carried, closing, total, lines };
 }
 
 export interface CostCenterRow {

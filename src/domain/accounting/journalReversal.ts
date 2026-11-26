@@ -7,9 +7,12 @@
  * وجده اختبار الثوابت العشوائي (tests/fuzz.test.ts) · فيُرفض هنا بسببه، ويُلغى القيد الآلي من مستنده.
  */
 import type { DB } from '../../db/adapter';
-import { requireCash, reversalCashOut } from '../cashGuard';
+import { requireCash, reversalCashOut, requireBanksCover } from '../cashGuard';
+import { uid } from '../ids';
+import { t } from '../../i18n';
 import { RuleViolation } from '../contracts/service';
 import { reverseEntryById, type PostedEntry } from './post';
+import { correctionDate } from '../vatFilings';
 
 /** سبب منع عكس القيد من الدفتر · فارغ إن جاز */
 export function journalReversalBlock(db: DB, entryId: string): string {
@@ -25,10 +28,34 @@ export function journalReversalBlock(db: DB, entryId: string): string {
   return '';
 }
 
+/**
+ * التاريخ الذي سيُكتب به العكس · الدالة نفسها التي يكتب بها reverseEntryById: تاريخ الأصل، إلا إن قُدِّم إقرار
+ * فترته فاليوم المفتوح · فيقوله الحوار قبل التأكيد ولا يقول «اليوم» وهو يكتب شهراً مضى (D-7)
+ */
+export function journalReversalDate(db: DB, entryId: string): string {
+  const d = db.get<{ date: string }>(`SELECT date FROM journal_entries WHERE id = ?`, [entryId])?.date;
+  return correctionDate(db, d);
+}
+
 /** العكس من شاشة الدفتر · يرمي سبباً عربياً للقيد الآلي ويعكس اليدوي */
 export function reverseFromJournal(db: DB, entryId: string): PostedEntry | null {
   const why = journalReversalBlock(db, entryId);
   if (why) throw new RuleViolation(why);
   requireCash(db, reversalCashOut(db, entryId), 'عكس القيد');
-  return reverseEntryById(db, entryId);
+  // وحركة البنك المربوطة بالقيد اليدوي (خانة البنك · A2.10) تُعكس بمثلها، ولا يُنزل عكسُها البنك تحت الصفر
+  const no = db.get<{ no: string }>(`SELECT no FROM journal_entries WHERE id = ?`, [entryId])?.no ?? '';
+  requireBanksCover(db, no, 'reverse');
+  return db.transaction(() => {
+    const rev = reverseEntryById(db, entryId);
+    if (rev) {
+      const revDate = db.get<{ d: string }>(`SELECT date AS d FROM journal_entries WHERE id = ?`, [rev.id])!.d;
+      for (const x of db.all<{ bank_id: string; amount: number }>(
+        `SELECT bank_id, amount_halalas AS amount FROM bank_tx WHERE journal_no = ? AND deleted_at IS NULL`, [no])) {
+        db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at) VALUES (?,?,?,?,?,1,?,?,?)`,
+          [uid(), x.bank_id, revDate, t('journal.manualBankReversed', { no, lng: 'ar' }), -Number(x.amount), rev.no,
+            t('journal.manualBankSource', { lng: 'ar' }), new Date().toISOString()]);
+      }
+    }
+    return rev;
+  });
 }

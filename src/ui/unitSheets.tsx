@@ -46,12 +46,12 @@ import { GENERAL_COST_CENTER, withCostCenter } from '../domain/accounting/dimens
 import { UnitAssetsSection } from './UnitAssets';
 import { contractTotalSql, contractTotalOf } from '../domain/accounting/rentSplit';
 import { useLang } from '../i18n';
+import { DepositBankField } from './DepositBankField';
 import { propertyMoveLocked } from '../domain/access/access';
 export function UnitFormSheet({
   propertyId, unitId, onClose, onSaved,
 }: { propertyId?: string; unitId?: string; onClose: () => void; onSaved: () => void }) {
   const { db } = useApp();
-  const toast = useToast();
   // من يقرأ الوحدة بلا مبالغها لا يرى الإيجار ولا يكتبه: لا يُرفع منه (المراجعة #17 · الزر غير المسموح لا يظهر)
   const access = useAccess();
   const { t } = useLang();
@@ -149,8 +149,13 @@ export function UnitFormSheet({
 }
 
 export function UnitDetailSheet({
-  unitId, onClose, onEdit, onReserve,
-}: { unitId: string; onClose: () => void; onEdit: () => void; onReserve: () => void }) {
+  unitId, onClose, onEdit, onReserve, onLeave,
+}: {
+  unitId: string; onClose: () => void; onEdit: () => void; onReserve: () => void;
+  /** الانتقال إلى شاشة أخرى: صاحب الورقة يذكرها فتعود حين يرجع إليه (D-4) · وبلا صاحبٍ يذكرها تُغلق */
+  onLeave?: () => void;
+}) {
+  const leave = onLeave ?? onClose;
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
@@ -170,6 +175,10 @@ export function UnitDetailSheet({
   // تسوية عربون حجزٍ انتهى ولم يُسوَّ (المراجعة ٤.٥) · بقرار المالك وتاريخه
   const [settle, setSettle] = useState<{ id: string; name: string; deposit: number } | null>(null);
   const [settleDate, setSettleDate] = useState(today());
+  // ردّ العربون تحويلاً من حساب بنكي، والفارغ نقداً (A1-6 · قرار المالك س١٧)
+  const [settleBank, setSettleBank] = useState('');
+  const banksCount = useMemo(() => Number(db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM banks WHERE deleted_at IS NULL`)?.n ?? 0), [db, version]);
+  const { t } = useLang();
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
   // «إيداع المالك» بالناقص حين لا يكفي النقد لردّ عربون (قرار المالك ٢٠٢٦-١٠-٠٥)
   const [depositFor, setDepositFor] = useState<number | null>(null);
@@ -246,7 +255,8 @@ export function UnitDetailSheet({
       <Row style={{ marginBottom: 10 }}>
         <Badge kind={data.st.key === 'rented' ? 'paid' : data.st.key === 'reserved' ? 'due' : data.st.key === 'maintenance' ? 'overdue' : 'draft'}
           label={data.st.label} />
-        {data.st.key === 'vacant' && rsvPerm.add && <BtnGhost small icon="card" title="حجز بعربون" onPress={onReserve} />}
+        {/* والمؤجَّرة تُحجز لمستأجرٍ قادم بعد خروج الحالي (A1-12) · والخدمة ترفض حجزاً ينتهي قبل خروجه أو يتعارض بعقد */}
+        {(data.st.key === 'vacant' || data.st.key === 'rented') && !rsv && rsvPerm.add && <BtnGhost small icon="card" title="حجز بعربون" onPress={onReserve} />}
         {rsv && rsvPerm.manage && (
           <BtnGhost small danger icon="cancel" title="إلغاء الحجز" onPress={() => {
             const dep = Number(rsv.deposit_halalas);
@@ -271,11 +281,21 @@ export function UnitDetailSheet({
                     } catch (e) { reportFailure({ title: 'تعذّر الإلغاء', e }); }
                   },
                 }]),
+                // والردّ تحويلاً من حساب بنكي في نافذة التسوية بطريقته وتاريخه (A1-6) · بلا حساب بنكي لا يُعرض
+                ...(Number(rsv.deposit_halalas) > 0 && banksCount > 0 ? [{
+                  label: t('depositBank.rsvRefundByBank', { amount: fmt(dep) }),
+                  variant: 'ghost' as const,
+                  onPress: () => { setSettleDate(today()); setSettleBank(''); setSettle({ id: rsv.id, name: rsv.name, deposit: dep }); },
+                }] : []),
                 // بلا عربون لا مصادرة · الزر لا يُعرض أصلاً
                 ...(Number(rsv.deposit_halalas) > 0 ? [{
                   label: `مصادرة العربون (${fmt(Number(rsv.deposit_halalas))})`,
                   variant: 'danger' as const,
-                  onPress: () => { cancelReservation(db, rsv.id, true); bump(); toast('أُلغي الحجز وصودر العربون إيراداً'); },
+                  // يلتقط الرفض كزر الرد بجانبه (A1-12): ربعٌ مقدَّم مثلاً، فيظهر سببه لا يسقط صامتاً
+                  onPress: () => {
+                    try { cancelReservation(db, rsv.id, true); bump(); toast('أُلغي الحجز وصودر العربون إيراداً'); }
+                    catch (e) { reportFailure({ title: t('reservation.forfeitFailed'), e }); }
+                  },
                 }] : []),
               ],
             });
@@ -284,6 +304,9 @@ export function UnitDetailSheet({
         <View style={{ flex: 1 }} />
         {perm.add ? <BtnIcon icon="attach" accessibilityLabel="إضافة مستند أو صورة" onPress={addDoc} /> : null}
       </Row>
+      {rsv && data.st.key === 'rented' ? (
+        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>{t('reservation.afterCurrent', { name: rsv.name, date: dfmt(rsv.expiry_date) })}</T>
+      ) : null}
       {rsvPerm.manage && data.held.map((h) => (
         <Note key={h.id}>
           <T size={12.5} bold>عربون محتجز لحجز منتهٍ: «{h.name}» · {fmt(Number(h.deposit_halalas))}</T>
@@ -292,6 +315,7 @@ export function UnitDetailSheet({
           </T>
           <BtnGhost small title="تسوية العربون" onPress={() => {
             setSettleDate(today());
+            setSettleBank('');
             setSettle({ id: h.id, name: h.name, deposit: Number(h.deposit_halalas) });
           }} />
         </Note>
@@ -301,10 +325,11 @@ export function UnitDetailSheet({
         <Sheet visible onClose={() => setSettle(null)} title={'تسوية عربون «' + settle.name + '»'}>
           <DateField label="تاريخ الرد أو المصادرة" value={settleDate} onChange={setSettleDate} />
           <CostCenterField value={cc} onChange={setCc} />
+          <DepositBankField label={t('depositBank.rsvRefundMethod')} value={settleBank} onChange={setSettleBank} out />
           <View style={{ marginBottom: 8 }}>
-            <CashGate needed={settle.deposit} what="ردّ العربون">
+            <CashGate needed={settleBank ? 0 : settle.deposit} what="ردّ العربون" date={settleDate}>
               <BtnPrimary title={'ردّ العربون لصاحبه (' + fmt(settle.deposit) + ')'} onPress={() => {
-                try { withCostCenter(cc, () => cancelReservation(db, settle.id, false, settleDate)); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
+                try { withCostCenter(cc, () => cancelReservation(db, settle.id, false, settleDate, settleBank || null)); setSettle(null); bump(); toast('رُحّل قيد ردّ العربون'); }
                 catch (e) { reportFailure({ title: 'تعذّرت التسوية', e }); }
               }} />
             </CashGate>
@@ -432,7 +457,7 @@ export function UnitDetailSheet({
            WHERE deleted_at IS NULL AND unit_id = ? ORDER BY date DESC LIMIT ? OFFSET ?`,
           [unitId, page.limit, page.offset]
         ).map((e) => (
-          <Pressable key={e.id} disabled={!openPurchases} onPress={() => { onClose(); router.push(`/purchases?detail=${e.id}`); }}>
+          <Pressable key={e.id} disabled={!openPurchases} onPress={() => { leave(); router.push(`/purchases?detail=${e.id}`); }}>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: C.line }}>
               <T size={TYPE.body}>{e.supplier_name} · {dfmt(e.date)}</T>
               <Money halalas={Number(e.total_halalas)} size={TYPE.body} />
@@ -455,12 +480,12 @@ export function UnitDetailSheet({
       {contractFor ? (
         <ContractQuickSheet contractId={contractFor} onClose={() => setContractFor(null)}
           onOpenInstallment={(iid) => setInstFor(iid)}
-          onOpenFull={() => { const id2 = contractFor; setContractFor(null); onClose(); router.push(`/contracts?detail=${id2}`); }} />
+          onOpenFull={() => { const id2 = contractFor; setContractFor(null); leave(); router.push(`/contracts?detail=${id2}`); }} />
       ) : null}
       {instFor ? (
         <InstallmentSheet installmentId={instFor}
           onClose={() => setInstFor(null)}
-          onCollect={(iid) => { setInstFor(null); setContractFor(null); onClose(); router.push(`/collect?pay=${iid}`); }} />
+          onCollect={(iid) => { setInstFor(null); setContractFor(null); leave(); router.push(`/collect?pay=${iid}`); }} />
       ) : null}
       {handoverFor ? (
         <HandoverSheet contractId={handoverFor} onClose={() => setHandoverFor(null)} onSaved={() => { setHandoverFor(null); bump(); }} />

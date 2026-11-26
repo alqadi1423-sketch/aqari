@@ -20,6 +20,7 @@ import { usePerm } from './access';
 import { reportFailure } from './failureDialog';
 import { useLang } from '../i18n';
 import { fmt, toHalalas } from '../domain/money';
+import { vatRegistered, assetSaleSplit } from '../domain/taxCode';
 import { today, dfmt } from '../domain/dates';
 import { ASSET_CATEGORIES, defaultLife } from '../domain/assets/catalog';
 import { bookValue, runDepreciation, scheduleByYear } from '../domain/assets/depreciation';
@@ -90,7 +91,7 @@ export function NewAssetSheet({ onClose, unitId }: { onClose: () => void; unitId
         <View style={{ flex: 1 }}><Field label={t('assets.ui.model')} value={model} onChange={setModel} /></View>
         <View style={{ flex: 1 }}><Field label={t('assets.ui.serial')} value={serial} onChange={setSerial} ltr /></View>
       </Row>
-      <DateField label={t('assets.ui.warrantyEnd')} value={warranty} onChange={setWarranty} />
+      <DateField label={t('assets.ui.warrantyEnd')} value={warranty} onChange={setWarranty} optional />
       <Field label={t('common.notes')} value={notes} onChange={setNotes} multiline />
     </Sheet>
   );
@@ -289,6 +290,11 @@ function SellSheet({ a, onClose }: { a: AssetRow; onClose: () => void }) {
       footer={amount && date && (method === 'cash' || bank) ? <View style={{ flex: 1 }}><BtnPrimary title={t('common.confirm')} onPress={save} /></View> : undefined}>
       <Note>{t('assets.ui.sellNote')}</Note>
       <Field label={t('assets.ui.saleAmount')} value={amount} onChange={setAmount} keyboard="numeric" ltr />
+      {/* المنشأة المسجّلة: المقبوض شاملٌ ضريبة المخرجات (A2.15 · س٢١) */}
+      {vatRegistered(db) && toHalalas(amount) > 0 ? (() => {
+        const sp = assetSaleSplit(db, toHalalas(amount));
+        return <Note>{t('assets.ui.saleVatNote', { net: fmt(sp.net), tax: fmt(sp.tax) })}</Note>;
+      })() : null}
       <DateField label={t('common.date')} value={date} onChange={setDate} />
       <T size={TYPE.caption} color={C.muted}>{t('assets.ui.method')}</T>
       <ChipGroup<'cash' | 'bank'> options={[['cash', t('common.cash')], ['bank', t('common.bank')]]} value={method} onChange={setMethod} />
@@ -331,7 +337,7 @@ function EditSheet({ a, onClose }: { a: AssetRow; onClose: () => void }) {
         <View style={{ flex: 1 }}><Field label={t('assets.ui.model')} value={model} onChange={setModel} /></View>
         <View style={{ flex: 1 }}><Field label={t('assets.ui.serial')} value={serial} onChange={setSerial} ltr /></View>
       </Row>
-      <DateField label={t('assets.ui.warrantyEnd')} value={warranty} onChange={setWarranty} />
+      <DateField label={t('assets.ui.warrantyEnd')} value={warranty} onChange={setWarranty} optional />
       <Field label={t('common.notes')} value={notes} onChange={setNotes} multiline />
     </Sheet>
   );

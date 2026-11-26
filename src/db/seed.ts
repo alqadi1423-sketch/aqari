@@ -49,6 +49,7 @@ export const MIGRATED_SYSTEM_ACCOUNTS: Array<{ code: string; name: string; type:
   { code: '4400', name: 'أرباح بيع أصول', type: 'إيراد', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
   { code: '5600', name: 'مصروف الإهلاك', type: 'مصروف', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
   { code: '5700', name: 'خسارة استبعاد أصول', type: 'مصروف', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٢٩)
+  { code: '3300', name: 'أرصدة افتتاحية', type: 'حقوق ملكية', grp: null }, // i18n-exempt: حساب نظام مخزّن (الهجرة ٦٢ · A2.4)
 ];
 
 /**

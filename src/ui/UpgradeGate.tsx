@@ -1,5 +1,5 @@
 /**
- * بوابة الترقية · قاعدةٌ أقدم من التطبيق فيها بيانات لا تُرقّى قبل نسخة كاملة منها.
+ * بوابة الترقية · قاعدةٌ أقدم من التطبيق فيها بيانات لا تُرقّى قبل نسخةٍ منها ومن قائمة ملفاتها (قرار المالك س٣).
  *
  * تقرأ الإصدار من القاعدة مفتوحةً بلا هجرة، فإن لزمت نسخة عرضت تقدّمها وحفظتها بالتحقق الكامل
  * ثم أذنت بالهجرة ورسمت التطبيق · وإن فشلت النسخة لم تُرقِّ شيئاً، وعرضت السبب بالعربية
@@ -10,17 +10,24 @@
  * التطبيق عند أول فتح لقاعدة قديمة بـ«AppStateProvider مفقود».
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, Pressable, ActivityIndicator, Share, type TextStyle } from 'react-native';
+import { View, Text, Pressable, Share, type TextStyle } from 'react-native';
+import { ProgressTrack } from './components';
+import { arabicMessage } from './failureDialog';
 import { C, FONT, FONT_BOLD } from './theme';
 import { rawAppDb, clearUpgrade, appDb } from '../db/expoAdapter';
 import { applyScreenSecureFrom } from '../services/screenSecure';
 import { rescheduleAllNotifications } from '../services/notifications';
-import { upgradeState, makePreUpgradeBackup } from '../domain/backup/upgrade';
+import { upgradeState, makePreUpgradeBackup, preUpgradeBackups, deleteOldestPreUpgradeBackup, UpgradeBackupError } from '../domain/backup/upgrade';
+import { missingFileLabels } from '../domain/backup/create';
+import { t } from '../i18n';
 import { appBackupEnv } from '../services/backupService';
 import { redactForReport } from '../domain/redact';
 import { cancelSource, isCancelled, progressView, progressLabel, progressLine, StallWatch, type ProgressInfo } from '../domain/progress';
 
-type Phase = 'ready' | 'backup' | 'failed';
+type Phase = 'ready' | 'backup' | 'missing' | 'failed';
+
+/** ما يُسمّى من الملفات المفقودة على الشاشة · والباقي عددٌ */
+const SHOWN_MISSING = 8;
 
 function initialPhase(): Phase {
   try { return upgradeState(rawAppDb()).needsBackup ? 'backup' : 'ready'; }
@@ -54,6 +61,21 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
   const watch = useRef(new StallWatch());
   const cancelRef = useRef<{ cancel: () => void; retry: boolean } | null>(null);
 
+  const [missing, setMissing] = useState<string[]>([]);
+  // السبب أن القرص لا يسع النسخة (C-7) · فيُعرض حذف أقدم نسخة ترقية إن كانت، والزرّ لا يظهر بلا نسخةٍ يحذفها
+  const [spaceFix, setSpaceFix] = useState(false);
+  const oldest = (() => { try { return spaceFix ? preUpgradeBackups(appBackupEnv(rawAppDb())).length > 0 : false; } catch { return false; } })();
+
+  /** الترقية نفسها بعد أن حُفظت النسخة وتُحقّق منها */
+  const finish = useCallback(() => {
+    clearUpgrade();
+    // ما أجّله الإقلاع لأن القاعدة كانت تنتظر الترقية (المراجعة الشاملة · البند ٢٢): منع لقطة الشاشة الآن، والتنبيهات بعد مهلة
+    // الإقلاع نفسها
+    try { applyScreenSecureFrom(appDb()); } catch { /* يُطبَّق عند الإقلاع التالي */ }
+    setTimeout(() => { try { rescheduleAllNotifications(appDb()).catch(() => {}); } catch { /* الإقلاع التالي */ } }, 6000);
+    setPhase('ready');
+  }, []);
+
   const run = useCallback(async () => {
     const src = cancelSource();
     cancelRef.current = { cancel: src.cancel, retry: false };
@@ -61,25 +83,31 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
     setPhase('backup'); setStalled(false); setInfo(null);
     setMsg('جاري التحضير');
     try {
-      await makePreUpgradeBackup(appBackupEnv(rawAppDb()), (m, i) => {
+      const { manifest } = await makePreUpgradeBackup(appBackupEnv(rawAppDb()), (m, i) => {
         if (watch.current.tick(m, i)) setStalled(false);
         setMsg(m); setInfo(i ?? null);
       }, new Date(), src.signal);
-      clearUpgrade();
-      // ما أجّله الإقلاع لأن القاعدة كانت تنتظر الترقية (المراجعة الشاملة · البند ٢٢): منع لقطة الشاشة الآن، والتنبيهات بعد مهلة
-      // الإقلاع نفسها
-      try { applyScreenSecureFrom(appDb()); } catch { /* يُطبَّق عند الإقلاع التالي */ }
-      setTimeout(() => { try { rescheduleAllNotifications(appDb()).catch(() => {}); } catch { /* الإقلاع التالي */ } }, 6000);
-      setPhase('ready');
+      // مرفقٌ مفقود أو تالف لا يحبس المستخدم، ويُسمّى له قبل الترقية (القرارات المعلّقة البند ٣ · الخيار أ) · والترقية بعد «متابعة»
+      const lost = manifest.missing_files ?? [];
+      if (lost.length) {
+        let names: string[] = [];
+        try { names = missingFileLabels(rawAppDb(), lost); } catch { names = lost.map((f) => f.slice(0, 12)); }
+        setMissing(names);
+        setPhase('missing');
+        return;
+      }
+      finish();
     } catch (e) {
       if (isCancelled(e) && cancelRef.current?.retry) { run(); return; }
       setCancelled(isCancelled(e));
+      setSpaceFix(e instanceof UpgradeBackupError && e.space);
       setReason(isCancelled(e)
-        ? 'بياناتك كما هي، والترقية تنتظر نسخة كاملة منها.'
-        : e instanceof Error ? e.message : 'لم تُرقَّ بياناتك لأن حفظ نسخة منها قبل الترقية لم يكتمل.');
+        ? 'بياناتك كما هي، والترقية تنتظر نسخةً منها ومن قائمة ملفاتها.'
+        // نص الخطأ العربي من الدومين، وإلا الرسالة العامة · لا «Network request failed» (D-21)
+        : arabicMessage(e) || 'لم تُرقَّ بياناتك لأن حفظ نسخة منها قبل الترقية لم يكتمل.');
       setPhase('failed');
     }
-  }, []);
+  }, [finish]);
 
   useEffect(() => {
     if (phase !== 'backup') return;
@@ -99,8 +127,9 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
     <View style={{ flex: 1, backgroundColor: C.paper, alignItems: 'center', justifyContent: 'center', padding: 24 }}>
       {phase === 'backup' ? (
         <>
-          <ActivityIndicator color={C.emerald} size="large" />
-          <Text style={[txt(15, C.ink, true), { marginTop: 18 }]}>نسخة كاملة من بياناتك قبل ترقيتها</Text>
+          {/* النسبة إن عُرفت في شريطها تحت · وقبلها شريطٌ يتحرّك لا دائرة (D-20) */}
+          {progressView(msg, info).pct === null ? <ProgressTrack /> : null}
+          <Text style={[txt(15, C.ink, true), { marginTop: 18 }]}>{t('upgrade.backingUp')}</Text>
           <Text style={[txt(12.5, C.muted), { marginTop: 8 }]}>{progressLabel(msg)}</Text>
           {(() => {
             const v = progressView(msg, info);
@@ -120,12 +149,30 @@ export function UpgradeGate({ children }: { children: React.ReactNode }) {
           </View>
           <Text style={[txt(12, C.muted), { marginTop: 14 }]}>لا تُغلق التطبيق · الترقية تبدأ بعد أن تُحفظ النسخة ويُتحقَّق منها</Text>
         </>
+      ) : phase === 'missing' ? (
+        <View style={{ width: '100%', maxWidth: 420 }}>
+          <Text style={txt(15, C.ink, true)}>{t('upgrade.missingTitle')}</Text>
+          <Text style={[txt(13, C.ink), { marginTop: 12, lineHeight: 22 }]}>{t('upgrade.missingBody', { count: missing.length })}</Text>
+          {missing.slice(0, SHOWN_MISSING).map((n, i) => (
+            <Text key={i} style={[txt(13, C.ink, true), { marginTop: 6 }]}>{'«' + n + '»'}</Text>
+          ))}
+          {missing.length > SHOWN_MISSING
+            ? <Text style={[txt(12.5, C.muted), { marginTop: 6 }]}>{t('upgrade.missingMore', { count: missing.length - SHOWN_MISSING })}</Text> : null}
+          <Text style={[txt(12.5, C.muted), { marginTop: 12, lineHeight: 20 }]}>{t('upgrade.missingNote')}</Text>
+          <View style={{ marginTop: 18, gap: 10 }}>
+            <Btn primary title={t('upgrade.continue')} onPress={finish} />
+          </View>
+        </View>
       ) : (
         <View style={{ width: '100%', maxWidth: 420 }}>
           <Text style={txt(15, cancelled ? C.ink : C.rose, true)}>{cancelled ? 'أُلغي حفظ النسخة' : 'تعذّرت ترقية البيانات'}</Text>
           <Text style={[txt(13, C.ink), { marginTop: 12, lineHeight: 22 }]}>{reason}</Text>
           <View style={{ marginTop: 18, gap: 10 }}>
             <Btn primary title="إعادة المحاولة" onPress={run} />
+            {spaceFix && oldest ? <Btn title={t('upgrade.deleteOldest')} onPress={() => {
+              try { deleteOldestPreUpgradeBackup(appBackupEnv(rawAppDb())); } catch { /* تُعاد المحاولة فتقول المساحة ما بقي */ }
+              run();
+            }} /> : null}
             {/* ما يُشارك خارج الجهاز محجوبةٌ بياناته كتقرير الخطأ (المراجعة الشاملة · البند ١٨) */}
             {cancelled ? null : <Btn title="مشاركة السبب" onPress={() => { Share.share({ message: redactForReport(reason) }).catch(() => {}); }} />}
           </View>

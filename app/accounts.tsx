@@ -5,7 +5,7 @@ import { saveAccount, deleteAccount, deleteBlocker, openingDifference } from '..
 import { View, Pressable, FlatList, type ListRenderItem } from 'react-native';
 import { Screen } from '../src/ui/Screen';
 import { EntrySheet, srcTypeLabel } from '../src/ui/EntrySheet';
-import { Card, T, Num, EmptyState, Row, SearchBox, BtnPrimary, BtnGhost, Field, ChipGroup } from '../src/ui/components';
+import { Card, T, Num, EmptyState, Row, SearchBox, BtnPrimary, Field, ChipGroup } from '../src/ui/components';
 import { Sheet, SelectField } from '../src/ui/Sheet';
 import { ActionMenuButton } from '../src/ui/ActionMenu';
 import { useDialog } from '../src/ui/AppDialog';
@@ -15,12 +15,11 @@ import { Skeleton } from '../src/ui/Skeleton';
 import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, RADIUS, TYPE_TAG_STYLES } from '../src/ui/theme';
-import { allAccounts, allAccountBalances, allAccountMovements } from '../src/domain/accounting/ledger';
+import { allAccounts, accountPeriodBalances, accountStatement, type AccountStatement } from '../src/domain/accounting/ledger';
 import { fmt, toHalalas } from '../src/domain/money';
 import { today, dfmt } from '../src/domain/dates';
-import { logAudit } from '../src/domain/audit';
 import { reportFailure } from '../src/ui/failureDialog';
-import { usePerm } from '../src/ui/access';
+import { usePerm, useAccess } from '../src/ui/access';
 
 const GROUPS = ['أصل', 'خصم', 'حقوق ملكية', 'إيراد', 'مصروف'];
 const GROUP_LABEL: Record<string, string> = {
@@ -32,15 +31,14 @@ type PeriodKey = 'month' | 'quarter' | 'year' | 'all';
 interface AccountItem {
   code: string; name: string; type: string; grp: string | null;
   opening: number; balance: number; debit: number; credit: number;
-}
-
-interface StmtLine {
-  entry_id: string; date: string; memo: string;
-  src_type: string | null; src_id: string | null; d: number; c: number;
+  /** الافتتاحي المزروع في الدليل · يعدّله النموذج (opening معه افتتاحيات البنوك في 1100 و3300 · المراجعة الشاملة 2026-11-13 · A2.4) */
+  seeded: number;
+  /** افتتاحيات البنوك في 1100 و3300 (A2.4) · تلميح النموذج */
+  banks: number;
 }
 
 const EMPTY_ACCOUNTS: AccountItem[] = [];
-const EMPTY_STMT: StmtLine[] = [];
+const EMPTY_STMT: AccountStatement = { opening: 0, carried: 0, closing: 0, total: 0, lines: [] };
 
 /** القائمة المسطّحة: رأس كل مجموعة عنصر مستقل يليه حساباتها */
 type AccListItem =
@@ -106,6 +104,8 @@ export default function Accounts() {
   const toast = useToast();
   const dialog = useDialog();
   const perm = usePerm('ledger');
+  // الرصيد الافتتاحي يضعه المالك وحده (القاعدة ٩٩ · المدقق الخارجي M٧): جهاز المالك يرفض تعديل العضو له
+  const owner = useAccess().owner;
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
   const [period, setPeriod] = useState<PeriodKey>('all');
@@ -141,20 +141,21 @@ export default function Accounts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stmt?.code, from, to]);
 
-  // الأساس الثقيل: كل الحسابات بأرصدتها وحركة الفترة · ثلاثة استعلامات تجميعية فقط
+  // الأساس الثقيل: كل الحسابات برصيد أول الفترة وحركتها ورصيد آخرها باتجاه طبيعتها، من ميزان المراجعة (A2.7) · استعلامان تجميعيان
   const systemCodes = useMemo(() => new Set(db.all<{ code: string }>(`SELECT code FROM accounts WHERE is_system = 1`).map((r) => r.code)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   const base = useMemo<AccountItem[]>(() => {
     if (!ready) return EMPTY_ACCOUNTS;
-    const balances = allAccountBalances(db);
-    const moves = allAccountMovements(db, from, to);
+    const pb = accountPeriodBalances(db, from, to);
     return allAccounts(db).map((a) => {
-      const m = moves.get(a.code) ?? { debit: 0, credit: 0 };
+      const m = pb.get(a.code) ?? { opening: Number(a.opening_halalas || 0), debit: 0, credit: 0, closing: Number(a.opening_halalas || 0) };
       return {
         code: a.code, name: a.name, type: a.type, grp: a.grp,
-        opening: Number(a.opening_halalas || 0),
-        balance: balances.get(a.code) ?? 0,
+        opening: m.opening,
+        seeded: Number(a.seeded_halalas || 0),
+        banks: Math.abs(Number(a.opening_halalas || 0) - Number(a.seeded_halalas || 0)),
+        balance: m.closing,
         debit: m.debit, credit: m.credit,
       };
     });
@@ -179,47 +180,13 @@ export default function Accounts() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [base, needle, filter]);
 
-  // كشف الحساب · صفحة واحدة بترتيب ثابت + رصيد جارٍ يبدأ من مجموع ما قبل الصفحة
-  const { stmtSql, stmtParams } = useMemo(() => {
-    const conds = [`l.account_code = ?`, `e.status = 'مرحّل'`, `e.deleted_at IS NULL`];
-    const params: string[] = [stmt ? stmt.code : ''];
-    if (from) { conds.push(`e.date >= ?`); params.push(from); }
-    if (to) { conds.push(`e.date <= ?`); params.push(to); }
-    return { stmtSql: conds.join(' AND '), stmtParams: params };
-  }, [stmt, from, to]);
-
-  const stmtRows = useMemo(() => {
+  // كشف الحساب · صفحة واحدة بترتيب ثابت + رصيد جارٍ يبدأ من «رصيد منقول» (الافتتاحي + ما قبل الفترة + ما قبل الصفحة) ويُجمع
+  // باتجاه طبيعة الحساب، فآخر «جاري» في الصفحة الأخيرة يساوي «الختامي» في صف الحساب (المراجعة الشاملة 2026-11-13 · A2.7)
+  const stmtData = useMemo(() => {
     if (!ready || !stmt) return EMPTY_STMT;
-    return db.all<StmtLine>(
-      `SELECT e.id AS entry_id, e.date, e.memo, e.src_type, e.src_id,
-              l.debit_halalas AS d, l.credit_halalas AS c
-       FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-       WHERE ${stmtSql} ORDER BY e.date, e.created_at, l.id LIMIT ? OFFSET ?`,
-      [...stmtParams, stmtPager.limit, stmtPager.offset]
-    );
+    return accountStatement(db, stmt.code, from, to, { limit: stmtPager.limit, offset: stmtPager.offset });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, version, stmtSql, stmtParams, stmtPager.limit, stmtPager.offset, ready, stmt]);
-
-  const stmtTotal = useMemo(() => {
-    if (!ready || !stmt) return 0;
-    return db.get<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-       WHERE ${stmtSql}`, stmtParams
-    )?.n ?? 0;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, version, stmtSql, stmtParams, ready, stmt]);
-
-  const stmtCarry = useMemo(() => {
-    if (!ready || !stmt || stmtPager.offset === 0) return 0;
-    return Number(db.get<{ s: number }>(
-      `SELECT COALESCE(SUM(d - c),0) AS s FROM (
-         SELECT l.debit_halalas AS d, l.credit_halalas AS c
-         FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-         WHERE ${stmtSql} ORDER BY e.date, e.created_at, l.id LIMIT ?)`,
-      [...stmtParams, stmtPager.offset]
-    )?.s ?? 0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, version, stmtSql, stmtParams, stmtPager.offset, ready, stmt]);
+  }, [db, version, stmt, from, to, stmtPager.limit, stmtPager.offset, ready]);
 
   // الضغط على سطر الكشف يفتح ورقة تفاصيل قيده · ومنها يُفتح المستند المصدر
   const openEntry = useCallback((entryId: string) => setStmtEntry(entryId), []);
@@ -229,8 +196,12 @@ export default function Accounts() {
     const a = base.find((x) => x.code === accCode);
     if (!a) return;
     setEditingCode(a.code); setName(a.name); setCode(a.code); setType(a.type);
-    setOpening(fmt(a.opening).replace(/,/g, '')); setFormOpen(true);
+    setOpening(fmt(a.seeded).replace(/,/g, '')); setFormOpen(true);
   }, [base]);
+  const editingBanks = useMemo(() => {
+    const a = editingCode ? base.find((x) => x.code === editingCode) : undefined;
+    return a ? a.banks : 0;
+  }, [base, editingCode]);
   const save = () => {
     if (!name.trim() || !code.trim()) { toast('الرجاء تعبئة اسم ورمز الحساب'); return; }
     try {
@@ -310,8 +281,6 @@ export default function Accounts() {
     );
   }, [openStmt, openEdit, doDelete, perm.manage, systemCodes]);
 
-  let running = stmtCarry;
-
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const openingDiff = useMemo(() => openingDifference(db), [db, version]);
   const listHeader = (
@@ -375,15 +344,22 @@ export default function Accounts() {
               : <SelectField label="النوع" value={type} options={GROUPS.map((g) => ({ value: g, label: g }))} onPick={setType} />}
           </View>
         </Row>
-        <Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr />
+        <Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr disabled={!owner} />
+        {/* افتتاحيات البنوك تُضاف إلى 1100 و3300 ولا تُكتب هنا، فلا يُعاد إدخالها فتتضاعف (المراجعة الشاملة 2026-11-13 · A2.4) */}
+        {editingBanks ? <T size={11} color={C.muted}>{t('accounts.bankOpeningHint', { amount: fmt(editingBanks) })}</T> : null}
       </Sheet>
 
       {/* كشف حركة الحساب · كل سطر يفتح ورقة تفاصيل قيده */}
       {stmt && (
         <Sheet visible onClose={() => setStmt(null)} title={stmt.code + ' · ' + stmt.name} tall>
-          {stmtRows.length ? stmtRows.map((l, i) => {
-            running += Number(l.d) - Number(l.c);
-            const bal = running;
+          {stmtData.total ? (
+            <Row style={{ justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
+              <T size={12} med>{t(stmtPager.offset ? 'accounts.stmtCarriedPage' : 'accounts.stmtCarried')}</T>
+              <Num size={11.5} bold>{fmt(stmtData.carried)}</Num>
+            </Row>
+          ) : null}
+          {stmtData.lines.length ? stmtData.lines.map((l, i) => {
+            const bal = l.running;
             return (
               <Pressable key={l.entry_id + ':' + i} onPress={() => openEntry(l.entry_id)}>
                 <View style={{ paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
@@ -402,7 +378,11 @@ export default function Accounts() {
               </Pressable>
             );
           }) : <EmptyState>لا حركة على الحساب خلال المدة</EmptyState>}
-          <Pager pager={stmtPager} total={stmtTotal} />
+          <Row style={{ justifyContent: 'space-between', paddingVertical: 7 }}>
+            <T size={12} med>{t('accounts.stmtClosing')}</T>
+            <Num size={11.5} bold>{fmt(stmtData.closing)}</Num>
+          </Row>
+          <Pager pager={stmtPager} total={stmtData.total} />
           <View style={{ height: 10 }} />
         </Sheet>
       )}

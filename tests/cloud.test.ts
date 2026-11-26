@@ -121,7 +121,7 @@ describe('٤أ · طلبات Firebase Auth', () => {
 });
 
 describe('٤ب · Google Drive', () => {
-  test('النطاق drive.appdata وحده', () => {
+  test('نطاق المجلد المخفي drive.appdata (ومعه drive.file للمجلد الظاهر · tests/d4.driveVisible.test.ts)', () => {
     expect(DRIVE_SCOPE).toBe('https://www.googleapis.com/auth/drive.appdata');
   });
 

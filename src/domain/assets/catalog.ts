@@ -19,24 +19,16 @@ export const ASSET_CATEGORIES: AssetCategory[] = [
 ];
 export const isAssetCategory = (code: string | null | undefined): boolean => ASSET_CATEGORIES.some((c) => c.code === code);
 export const defaultLife = (code: string): number => ASSET_CATEGORIES.find((c) => c.code === code)?.lifeMonths ?? 60;
-export const categoryName = (code: string): string => t('assets.cat.' + code);
 
 export const ACC_ACCUM = '1490';
+/** ضريبة المخرجات في بيع الأصل من منشأةٍ مسجّلة (A2.15) */
+export const ACC_OUTPUT_VAT = '2200';
 export const ACC_DEPRECIATION = '5600';
 export const ACC_DISPOSAL_LOSS = '5700';
 export const ACC_SALE_GAIN = '4400';
 export const ACC_CAPITAL = '3100';
 export const ACC_RETAINED = '3200';
 export const ACC_CASH = '1100';
-
-/** حسابات القسم بأسمائها العربية المخزّنة في الدليل (الهجرة ٢٩) · تتبع اللغة في مرحلة الرموز الثابتة */
-export const ASSET_ACCOUNTS: Array<{ code: string; type: 'asset' | 'expense' | 'revenue' }> = [
-  ...ASSET_CATEGORIES.map((c) => ({ code: c.code, type: 'asset' as const })),
-  { code: ACC_ACCUM, type: 'asset' },
-  { code: ACC_DEPRECIATION, type: 'expense' },
-  { code: ACC_DISPOSAL_LOSS, type: 'expense' },
-  { code: ACC_SALE_GAIN, type: 'revenue' },
-];
 
 export type AssetStatus = 'in_service' | 'maintenance' | 'disposed' | 'sold';
 export type AssetSource = 'manual' | 'purchase' | 'convert' | 'contents';

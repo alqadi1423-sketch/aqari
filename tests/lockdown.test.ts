@@ -315,7 +315,8 @@ describe('د · القيد المرحّل', () => {
     db.close();
   });
 
-  test('استعادة نسخة فيها قيد مرحّل غير متوازن: تمرّ بملاحظة تسمّي القيد · فرقٌ محاسبي لا تلف', async () => {
+  // قرار المالك س١١ (المراجعة الشاملة 2026-11-13 · C-12): يرفض الاستعادة كما ترفضه المزامنة، وكانت تمرّ بملاحظة
+  test('استعادة نسخة فيها قيد مرحّل غير متوازن: تُرفض وتسمّي القيد كما ترفضه المزامنة', async () => {
     const archive = await craftArchive((db) => {
       dropLockTriggers(db);
       db.exec('PRAGMA foreign_keys = OFF');
@@ -324,10 +325,10 @@ describe('د · القيد المرحّل', () => {
     });
     const target = makeBackupEnv(newDir());
     const before = tableCounts(target.db);
-    const plan = await prepareRestore(target, archive);
-    expect(plan.notes.join(' ')).toContain('قيد مرحّل غير متوازن: JE-9001 (الفرق 50.00)');
-    expect(tableCounts(target.db)).toEqual(before); // التجهيز لا يمسّ البيانات الحالية
-    abortRestore(target, plan.stagingDir);
+    const err = await prepareRestore(target, archive).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(RestoreError);
+    expect((err as Error).message).toContain('قيد مرحّل غير متوازن: JE-9001 (الفرق 50.00)');
+    expect(tableCounts(target.db)).toEqual(before); // الرفض لا يمسّ البيانات الحالية
     target.closeLive();
   });
 });

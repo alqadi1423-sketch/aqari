@@ -9,7 +9,7 @@ import type { DB } from '../../db/adapter';
 import { t } from '../../i18n';
 import { rentCollectionLines, type EntryLine } from './post';
 import { rentRevenueLines, RENT_REVENUE_GROUP } from './rentSplit';
-import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, type DiscountKind } from '../contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, CREDIT_METHOD, type DiscountKind } from '../contracts/installments';
 import { unitPastProperties } from '../unitMove';
 
 export interface RentPaymentSrc {
@@ -24,7 +24,7 @@ export interface RentPaymentSrc {
 }
 
 /** طريقة الدفعة المخزّنة للسداد من الرصيد الدائن (applyTenantCredit) · ولا سطور طرق سدادٍ لها */
-export const CREDIT_METHOD = 'من الرصيد الدائن'; // i18n-exempt: طريقة مخزّنة
+export { CREDIT_METHOD } from '../contracts/installments';
 
 /**
  * تخصيص التحصيل الجماعي على الأقساط (المتحقق المستقل، الجولة ٣٥ (أ٥): كان يُجمع كما يرسله العضو فيُقبل الفائض إيراداً) · كل

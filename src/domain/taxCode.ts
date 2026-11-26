@@ -3,6 +3,7 @@
  * الإقرار والفواتير معاً بلا دورة استيراد.
  */
 import type { DB } from '../db/adapter';
+import { vatInclusiveSplit } from './ledgerCore';
 
 export type TaxCode = 'S' | 'Z' | 'E';
 
@@ -22,6 +23,14 @@ export const vatRegistered = (db: DB): boolean =>
  * الصافي = round(المبلغ × 100 ÷ 115) والضريبة الباقي، فيجتمعان إلى المقبوض بلا فرق تقريب.
  */
 export function splitVatInclusive(grossHalalas: number): { net: number; tax: number } {
-  const net = Math.round((grossHalalas * 100) / (100 + STANDARD_VAT_PCT));
-  return { net, tax: grossHalalas - net };
+  // من المنطق النقي (ledgerCore · التوجيه الرابع ٤ · ٥)
+  return vatInclusiveSplit(grossHalalas, STANDARD_VAT_PCT);
+}
+
+/**
+ * مقبوض بيع الأصل ← صافيه وضريبة مخرجاته (المراجعة الشاملة 2026-11-13 · A2.15 · قرار المالك س٢١): بيع أصلٍ مستعمل من منشأةٍ مسجّلة
+ * توريدٌ خاضع، فالمقبوض شاملٌ ضريبة ١٥٪ كعمولة التقبيل · وغير المسجّلة صافيها المقبوض كله بلا ضريبة
+ */
+export function assetSaleSplit(db: DB, grossHalalas: number): { net: number; tax: number } {
+  return vatRegistered(db) && grossHalalas > 0 ? splitVatInclusive(grossHalalas) : { net: grossHalalas, tax: 0 };
 }

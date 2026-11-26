@@ -4,13 +4,10 @@
  * وتفاصيل العقار بوحداته.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { View, Pressable } from 'react-native';
+import { View, Pressable, FlatList } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Screen } from '../../src/ui/Screen';
-import {
-  Card, CardTitle, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, Field, KpiCard,
-  ChipGroup,
-} from '../../src/ui/components';
+import { Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, Field, KpiCard, ChipGroup } from '../../src/ui/components';
 import { Sheet, SelectField } from '../../src/ui/Sheet';
 import { DateField } from '../../src/ui/DateField';
 import { ActionMenuButton } from '../../src/ui/ActionMenu';
@@ -37,6 +34,7 @@ import { ReservationSheet } from '../../src/ui/ReservationSheet';
 import { fmt, toHalalas } from '../../src/domain/money';
 import type { PropertyRow } from '../../src/domain/contracts/rules';
 import { UnitDetailSheet, UnitFormSheet } from '../../src/ui/unitSheets';
+import { useReturnLayer } from '../../src/ui/returnLayer';
 import { attachPicked, pickFile } from '../../src/ui/attach';
 import { LeafletMap } from '../../src/ui/LeafletMap';
 import { useDialog } from '../../src/ui/AppDialog';
@@ -78,6 +76,8 @@ export default function Properties() {
   const [bulkFor, setBulkFor] = useState<{ propertyId: string; count: number } | null>(null);
   const [unitFormFor, setUnitFormFor] = useState<{ propertyId?: string; unitId?: string } | null>(null);
   const [unitDetailId, setUnitDetailId] = useState<string | null>(null);
+  // ورقة الوحدة التي أُغلقت للانتقال تعود حين يرجع التركيز إلى العقارات (D-4)
+  const leaveUnit = useReturnLayer<string>((id) => setUnitDetailId(id));
   const [reserveUnitId, setReserveUnitId] = useState<string | null>(null);
 
   // القدوم من الخريطة: ?detail=<id> يفتح تفاصيل العقار مباشرة
@@ -156,116 +156,130 @@ export default function Properties() {
   [db, version]);
 
   return (
-    <Screen title="العقارات" noBack
+    <Screen title="العقارات" noBack scroll={false}
       actions={
         <Row>
           <BtnGhost small icon="map" title="الخريطة" onPress={() => router.push('/propmap')} />
           {perm.add ? <BtnPrimary small title="+ عقار جديد" onPress={() => { setEditingId(null); setFormOpen(true); }} /> : null}
         </Row>
       }>
-      {/* الإشغال بمقياسيه: أيام الشهر أولاً ثم اللحظة · لا نسبة واحدة تخفي الأخرى */}
-      <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
-        <KpiCard label={'إشغال ' + summary.monthName} value={summary.occ.period.pct + '٪'}
-          sub={`${summary.occ.period.occupiedUnitDays} من ${summary.occ.period.capacityUnitDays} يوم·وحدة`}
-          onPress={() => router.push('/units')} />
-        <KpiCard label="الإشغال الآن" value={summary.occ.now.pct + '٪'}
-          sub={`${summary.occ.now.occupied} من ${summary.occ.now.total} وحدة`}
-          onPress={() => router.push('/units?occ=rented')} />
-      </Row>
-      {seesContracts ? <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
-        <KpiCard label="إجمالي قيمة عقود الإيجار (المحصَّلة)" tone="pos" value={<Money halalas={summary.pf.income} size={14} bold />}
-          onPress={() => router.push('/contracts')} />
-        <KpiCard label="عقود ملغية" tone="neu" value={<Money halalas={summary.pf.cancelledValue} size={14} bold />}
-          sub={summary.pf.cancelledCount + (summary.pf.cancelledCount === 1 ? ' عقد' : ' عقود')}
-          onPress={() => router.push(`/contracts?status=${encodeURIComponent('ملغى')}`)} />
-      </Row> : null}
-      {seesReports || seesPurchasesList ? <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
-        {seesReports ? <KpiCard label="العقار الأعلى دخلاً" tone="pos"
-          value={summary.topRevName}
-          sub={summary.top.topPropRevenue ? fmt(summary.top.topPropRevenue.amount) : undefined}
-          onPress={summary.top.topPropRevenue ? () => setDetailId(summary.top.topPropRevenue!.id) : undefined} /> : null}
-        {seesPurchasesList ? <KpiCard label="العقار الأكثر صرفاً" tone="neg"
-          value={summary.topExpName}
-          sub={summary.top.topPropExpense ? fmt(summary.top.topPropExpense.amount) : undefined}
-          onPress={summary.top.topPropExpense ? () => setDetailId(summary.top.topPropExpense!.id) : undefined} /> : null}
-      </Row> : null}
-
-      <View style={{ marginBottom: 8 }}><SearchBox value={q} onChange={setQ} /></View>
-      {archivedCount > 0 || showArchived ? (
-        <View style={{ marginBottom: 8 }}>
-          <ChipGroup options={[[0, 'القائمة'], [1, `المؤرشفة (${archivedCount})`]]}
-            value={showArchived ? 1 : 0} onChange={(v) => setShowArchived(!!v)} />
-        </View>
-      ) : null}
-      <Pager pager={pager} total={totalRows} />
-
-      {!ready ? <Skeleton rows={5} /> : rows.length ? rows.map((p) => {
-        const st = statsByProp.get(p.id)
-          ?? { total: 0, occupied: 0, vacant: 0, occupancyPct: 0, income: 0, cancelledValue: 0, cancelledCount: 0 };
-        return (
-          <Card key={p.id} style={{ paddingVertical: 10 }}>
-            <Pressable onPress={() => setDetailId(p.id)}>
-              {/* صف العنوان: الاسم يميناً وشاراته ثم ⋮ في أقصى اليسار بمحاذاته */}
-              <Row style={{ justifyContent: 'space-between' }}>
-                <T size={13.5} bold style={{ flex: 1 }}>{p.name}</T>
-                <Row gap={6}>
-                  {p.archived ? <Badge kind="draft" label="مؤرشف" /> : null}
-                  <Badge kind={st.occupancyPct === 100 ? 'paid' : st.occupancyPct === 0 ? 'overdue' : 'due'}
-                    label={`${st.occupied}/${st.total} مؤجَّرة (${st.occupancyPct}٪)`} />
-                  <ActionMenuButton title={p.name} actions={[
-                    { icon: 'eye', label: 'عرض التفاصيل', onPress: () => setDetailId(p.id) },
-                    perm.manage ? { icon: 'edit', label: 'تعديل', onPress: () => { setEditingId(p.id); setFormOpen(true); } } : null,
-                    // لا تُضاف وحدة لعقار مؤرشف · الأرشيف خارج التشغيل
-                    p.archived || !perm.add ? null : { label: '+ إضافة وحدة', onPress: () => setUnitFormFor({ propertyId: p.id }) },
-                    !perm.manage ? null : {
-                      icon: p.archived ? 'undo' : 'archive',
-                      label: p.archived ? 'إلغاء الأرشفة' : 'أرشفة',
-                      onPress: () => {
-                        setPropertyArchived(db, p.id, !p.archived);
-                        bump();
-                        toast(p.archived ? 'أُلغيت الأرشفة' : 'أُرشف العقار · يبقى في الدفتر والتقارير كما هو');
-                      },
-                    },
-                    // الحذف لا يُعرض لعقار له مرتبطات · لا يصح فعله فلا يُعرض ثم يُرفض
-                    linkedProps.has(p.id) || !perm.manage ? null : {
-                      icon: 'trash', label: 'حذف', danger: true,
-                      onPress: () => dialog({
-                        title: 'حذف العقار',
-                        body: `حذف "${p.name}"؟`,
-                        tone: 'danger',
-                        actions: [
-                          { label: 'تراجع', variant: 'ghost' },
-                          {
-                            label: 'حذف', variant: 'danger',
-                            onPress: () => {
-                              try {
-                                deleteProperty(db, p.id);
-                                bump();
-                                toast('تم الحذف · يمكن استعادته من الإعدادات');
-                              } catch (e) { reportFailure({ title: 'تعذّر الحذف', e }); }
-                            },
+      {/* قائمة افتراضية: ما يُرسم ما يظهر وحده، والعدّاد في ذيلها (D-17) */}
+      <FlatList
+        data={ready ? rows : []}
+        keyExtractor={(p) => p.id}
+        renderItem={({ item: p }) => {
+            const st = statsByProp.get(p.id)
+              ?? { total: 0, occupied: 0, vacant: 0, occupancyPct: 0, income: 0, cancelledValue: 0, cancelledCount: 0 };
+            return (
+              <Card key={p.id} style={{ paddingVertical: 10 }}>
+                <Pressable onPress={() => setDetailId(p.id)}>
+                  {/* صف العنوان: الاسم يميناً وشاراته ثم ⋮ في أقصى اليسار بمحاذاته */}
+                  <Row style={{ justifyContent: 'space-between' }}>
+                    <T size={13.5} bold style={{ flex: 1 }}>{p.name}</T>
+                    <Row gap={6}>
+                      {p.archived ? <Badge kind="draft" label="مؤرشف" /> : null}
+                      <Badge kind={st.occupancyPct === 100 ? 'paid' : st.occupancyPct === 0 ? 'overdue' : 'due'}
+                        label={`${st.occupied}/${st.total} مؤجَّرة (${st.occupancyPct}٪)`} />
+                      <ActionMenuButton title={p.name} actions={[
+                        { icon: 'eye', label: 'عرض التفاصيل', onPress: () => setDetailId(p.id) },
+                        perm.manage ? { icon: 'edit', label: 'تعديل', onPress: () => { setEditingId(p.id); setFormOpen(true); } } : null,
+                        // لا تُضاف وحدة لعقار مؤرشف · الأرشيف خارج التشغيل
+                        p.archived || !perm.add ? null : { label: '+ إضافة وحدة', onPress: () => setUnitFormFor({ propertyId: p.id }) },
+                        !perm.manage ? null : {
+                          icon: p.archived ? 'undo' : 'archive',
+                          label: p.archived ? 'إلغاء الأرشفة' : 'أرشفة',
+                          onPress: () => {
+                            setPropertyArchived(db, p.id, !p.archived);
+                            bump();
+                            toast(p.archived ? 'أُلغيت الأرشفة' : 'أُرشف العقار · يبقى في الدفتر والتقارير كما هو');
                           },
-                        ],
-                      }),
-                    },
-                  ]} />
-                </Row>
-              </Row>
-              <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
-                {p.address ? <T size={11.5} color={C.muted}>{p.address}</T> : null}
-              </Row>
-              <Row style={{ marginTop: 6, justifyContent: 'space-between' }}>
-                <Row gap={10}>
-                  {p.ownership ? <Badge kind="draft" label={p.ownership} /> : null}
-                  {p.activity_type ? <Badge kind="draft" label={p.activity_type} /> : null}
-                  {p.activity_subtype ? <Badge kind="draft" label={p.activity_subtype} /> : null}
-                </Row>
-                {seesContracts ? <View><T size={10} color={C.muted}>قيمة العقود</T><Money halalas={st.income} size={12} bold /></View> : null}
-              </Row>
-            </Pressable>
-          </Card>
-        );
-      }) : <Card><EmptyState>لا توجد عقارات مطابقة</EmptyState></Card>}
+                        },
+                        // الحذف لا يُعرض لعقار له مرتبطات · لا يصح فعله فلا يُعرض ثم يُرفض
+                        linkedProps.has(p.id) || !perm.manage ? null : {
+                          icon: 'trash', label: 'حذف', danger: true,
+                          onPress: () => dialog({
+                            title: 'حذف العقار',
+                            body: `حذف "${p.name}"؟`,
+                            tone: 'danger',
+                            actions: [
+                              { label: 'تراجع', variant: 'ghost' },
+                              {
+                                label: 'حذف', variant: 'danger',
+                                onPress: () => {
+                                  try {
+                                    deleteProperty(db, p.id);
+                                    bump();
+                                    toast('تم الحذف · يمكن استعادته من الإعدادات');
+                                  } catch (e) { reportFailure({ title: 'تعذّر الحذف', e }); }
+                                },
+                              },
+                            ],
+                          }),
+                        },
+                      ]} />
+                    </Row>
+                  </Row>
+                  <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
+                    {p.address ? <T size={11.5} color={C.muted}>{p.address}</T> : null}
+                  </Row>
+                  <Row style={{ marginTop: 6, justifyContent: 'space-between' }}>
+                    <Row gap={10}>
+                      {p.ownership ? <Badge kind="draft" label={p.ownership} /> : null}
+                      {p.activity_type ? <Badge kind="draft" label={p.activity_type} /> : null}
+                      {p.activity_subtype ? <Badge kind="draft" label={p.activity_subtype} /> : null}
+                    </Row>
+                    {seesContracts ? <View><T size={10} color={C.muted}>قيمة العقود</T><Money halalas={st.income} size={12} bold /></View> : null}
+                  </Row>
+                </Pressable>
+              </Card>
+            );
+        }}
+        ListHeaderComponent={
+          <View>
+          {/* الإشغال بمقياسيه: أيام الشهر أولاً ثم اللحظة · لا نسبة واحدة تخفي الأخرى */}
+          <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
+            <KpiCard label={'إشغال ' + summary.monthName} value={summary.occ.period.pct + '٪'}
+              sub={`${summary.occ.period.occupiedUnitDays} من ${summary.occ.period.capacityUnitDays} يوم·وحدة`}
+              onPress={() => router.push('/units')} />
+            <KpiCard label="الإشغال الآن" value={summary.occ.now.pct + '٪'}
+              sub={`${summary.occ.now.occupied} من ${summary.occ.now.total} وحدة`}
+              onPress={() => router.push('/units?occ=rented')} />
+          </Row>
+          {seesContracts ? <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
+            <KpiCard label="إجمالي قيمة عقود الإيجار (المحصَّلة)" tone="pos" value={<Money halalas={summary.pf.income} size={14} bold />}
+              onPress={() => router.push('/contracts')} />
+            <KpiCard label="عقود ملغية" tone="neu" value={<Money halalas={summary.pf.cancelledValue} size={14} bold />}
+              sub={summary.pf.cancelledCount + (summary.pf.cancelledCount === 1 ? ' عقد' : ' عقود')}
+              onPress={() => router.push(`/contracts?status=${encodeURIComponent('ملغى')}`)} />
+          </Row> : null}
+          {seesReports || seesPurchasesList ? <Row style={{ flexWrap: 'wrap', marginBottom: 8 }}>
+            {seesReports ? <KpiCard label="العقار الأعلى دخلاً" tone="pos"
+              value={summary.topRevName}
+              sub={summary.top.topPropRevenue ? fmt(summary.top.topPropRevenue.amount) : undefined}
+              onPress={summary.top.topPropRevenue ? () => setDetailId(summary.top.topPropRevenue!.id) : undefined} /> : null}
+            {seesPurchasesList ? <KpiCard label="العقار الأكثر صرفاً" tone="neg"
+              value={summary.topExpName}
+              sub={summary.top.topPropExpense ? fmt(summary.top.topPropExpense.amount) : undefined}
+              onPress={summary.top.topPropExpense ? () => setDetailId(summary.top.topPropExpense!.id) : undefined} /> : null}
+          </Row> : null}
+
+          <View style={{ marginBottom: 8 }}><SearchBox value={q} onChange={setQ} /></View>
+          {archivedCount > 0 || showArchived ? (
+            <View style={{ marginBottom: 8 }}>
+              <ChipGroup options={[[0, 'القائمة'], [1, `المؤرشفة (${archivedCount})`]]}
+                value={showArchived ? 1 : 0} onChange={(v) => setShowArchived(!!v)} />
+            </View>
+          ) : null}
+          </View>
+        }
+        ListFooterComponent={<Pager pager={pager} total={totalRows} />}
+        ListEmptyComponent={ready ? <Card><EmptyState>لا توجد عقارات مطابقة</EmptyState></Card> : <Skeleton rows={5} />}
+        initialNumToRender={6}
+        maxToRenderPerBatch={10}
+        windowSize={5}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      />
 
       {formOpen && (
         <PropertyFormSheet
@@ -312,6 +326,7 @@ export default function Properties() {
         <UnitDetailSheet
           unitId={unitDetailId}
           onClose={() => setUnitDetailId(null)}
+          onLeave={() => { leaveUnit(unitDetailId); setUnitDetailId(null); }}
           onEdit={() => setUnitFormFor({ unitId: unitDetailId })}
           onReserve={() => { setReserveUnitId(unitDetailId); setUnitDetailId(null); }}
         />
@@ -481,8 +496,8 @@ function PropertyFormSheet({
             </View>
           </Row>
           <Row>
-            <View style={{ flex: 1 }}><DateField label="بداية عقد الإيجار" value={leaseStart} onChange={setLeaseStart} /></View>
-            <View style={{ flex: 1 }}><DateField label="نهاية عقد الإيجار" value={leaseEnd} onChange={setLeaseEnd} /></View>
+            <View style={{ flex: 1 }}><DateField label="بداية عقد الإيجار" value={leaseStart} onChange={setLeaseStart} optional /></View>
+            <View style={{ flex: 1 }}><DateField label="نهاية عقد الإيجار" value={leaseEnd} onChange={setLeaseEnd} optional /></View>
           </Row>
           <View style={{ marginBottom: 10 }}>
             <BtnGhost small icon="attach" title={pendingFile ? pendingFile.name : 'ملف عقد الإيجار'}

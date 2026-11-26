@@ -219,10 +219,10 @@ describe('البند ٢٣ · الودجت في أندرويد (فحصٌ ثابت
   test('٢٣ · لوحة التحصيل: كل فرعٍ يضبط ظهور شريط التقدّم · ويُخفيه فرع القفل وحده', () => {
     const body = blockAfter(kt, kt.indexOf('class CollectionPanelWidget'));
     const branches = ifChain(body, body.search(/if \(s\.noCollect\)/));
-    expect(branches).toHaveLength(4);
+    expect(branches).toHaveLength(5);
     const vis = branches.map((b) => /setViewVisibility\(R\.id\.panel_bar, View\.(\w+)\)/.exec(b)?.[1] ?? null);
-    // noCollect ثم empty ثم locked ثم العادي
-    expect(vis).toEqual(['VISIBLE', 'VISIBLE', 'INVISIBLE', 'VISIBLE']);
+    // noCollect ثم empty ثم البائتة (E-3) ثم locked ثم العادي
+    expect(vis).toEqual(['VISIBLE', 'VISIBLE', 'INVISIBLE', 'INVISIBLE', 'VISIBLE']);
   });
 
   test('٢٣ · كل سلسلة وكل معرّف تستعمله كوتلن معرَّفان · والسلاسل بلا شرطات طويلة', () => {

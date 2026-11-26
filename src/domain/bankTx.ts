@@ -31,6 +31,23 @@ export function deleteBankTx(db: DB, id: string): void {
   db.transaction(() => {
     const t = db.get<{ descr: string }>(`SELECT descr FROM bank_tx WHERE id = ?`, [id]);
     db.run(`UPDATE bank_tx SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), id]);
+    // وسطر الكشف المطابَق بها يعود مفتوحاً، فلا يبقى «مطابَقاً» بحركةٍ في السلة (المدقق الخارجي U١٩)
+    db.run(`UPDATE bank_statement_lines SET bank_tx_id = NULL, status = 'open', matched_at = NULL WHERE bank_tx_id = ?`, [id]);
     if (t) logAudit(db, 'الحركات البنكية', 'delete', 'حركة بنكية', t.descr);
   });
+}
+
+/**
+ * استعادة حركةٍ بلا قيدٍ قائم من السلة عكسُ حذفها (المدقق الخارجي G٤): استعادة الوارد تُنقص المحفظة، واستعادة الصادر تُنقص البنك ·
+ * ولا يصير أحدهما سالباً، كما في deleteBankTx
+ */
+export function requireBankTxRestorable(db: DB, id: string): void {
+  if (bankTxEntryNo(db, id)) return;
+  const tx = db.get<{ amount_halalas: number; bank_id: string }>(`SELECT amount_halalas, bank_id FROM bank_tx WHERE id = ? AND deleted_at IS NOT NULL`, [id]);
+  if (!tx) return;
+  const amt = Number(tx.amount_halalas);
+  if (amt > 0) requireCash(db, amt, t('bankTx.restoreWhat', { lng: 'ar' }));
+  if (amt < 0 && -amt > bankBalance(db, tx.bank_id)) {
+    throw new Error(t('bankTx.restoreBankShort', { balance: fmt(bankBalance(db, tx.bank_id)), amount: fmt(-amt) }));
+  }
 }

@@ -13,8 +13,9 @@ import { UiScaleView, useScaledInsets } from './UiScale';
 import { Icon, type IconName } from './icons';
 import { perfMarkNavRender, perfNow, perfScreenShown, perfTouch, perfTouchUp } from '../perf/perf';
 import { useDialog, confirmDiscard } from './AppDialog';
-import { SheetDirtyCtx } from './sheetDirty';
+import { SheetDirtyCtx, sheetNeedsConfirm, useMarkSheetDirty } from './sheetDirty';
 import { useAppLocked } from './lockState';
+import { useLang } from '../i18n';
 
 /**
  * قفل تمرير النافذة السفلية أثناء لمس عنصر يملك إيماءاته (كالخريطة) ·
@@ -63,7 +64,7 @@ type Measurable = {
 };
 
 export function Sheet({
-  visible, onClose, title, children, footer, tall,
+  visible, onClose, title, children, footer, tall, dirty,
 }: {
   visible: boolean;
   onClose: () => void;
@@ -72,9 +73,15 @@ export function Sheet({
   /** التذييل الثابت (أزرار الإجراء) */
   footer?: React.ReactNode;
   tall?: boolean;
+  /**
+   * حكم صاحب النموذج: هل فيه إدخالٌ لم يُحفظ؟ · يُقدَّم على علامة الحقول الداخلية التي تُصفَّر
+   * كلما ظهرت الورقة، فالنموذج العائد من صفحة المراجعة يبقى محروساً (D-3)
+   */
+  dirty?: boolean;
 }) {
   // النافذة المنبثقة فوق غطاء القفل · تختفي ما دام مقفلاً (#51 · ui/lockState.ts)
   const appLocked = useAppLocked();
+  const { t } = useLang();
   const insets = useScaledInsets();
   const fs = useFs();
   const { uiScale } = useApp();
@@ -167,19 +174,19 @@ export function Sheet({
   useEffect(() => { if (visible) dirtyRef.current = false; }, [visible]);
   const dirtyCtx = React.useMemo(() => ({ mark: () => { dirtyRef.current = true; } }), []);
   const requestClose = React.useCallback(() => {
-    if (dirtyRef.current) { confirmDiscard(dialog, onClose); return; }
+    if (sheetNeedsConfirm(dirty, dirtyRef.current)) { confirmDiscard(dialog, onClose); return; }
     onClose();
-  }, [dialog, onClose]);
+  }, [dialog, onClose, dirty]);
 
-  // زر الرجوع في أندرويد يغلق النافذة أولاً · ويستأذن إن كان فيها إدخال
+  // زر الرجوع في أندرويد يغلق النافذة أولاً · ويستأذن إن كان فيها إدخال · والورقة المخفية خلف القفل لا تسمعه (D-27)
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || appLocked) return;
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       requestClose();
       return true;
     });
     return () => sub.remove();
-  }, [visible, requestClose]);
+  }, [visible, appLocked, requestClose]);
 
   // قياس زمن فتح النافذة من اللمسة حتى ظهورها
   useEffect(() => {
@@ -212,7 +219,7 @@ export function Sheet({
               <Text style={{ fontFamily: FONT_BOLD, fontSize: fs(15), color: C.ink, flex: 1, textAlign: 'right' }}>
                 {title}
               </Text>
-              <Pressable onPress={requestClose} style={st.close} hitSlop={8}>
+              <Pressable onPress={requestClose} style={st.close} hitSlop={8} accessibilityRole="button" accessibilityLabel={t('common.close')}>
                 <Icon name="x" size={16} color={C.charcoal} />
               </Pressable>
             </View>
@@ -283,9 +290,11 @@ export function PickerSheet<Tv extends string>({
   const fs = useFs();
   return (
     <Sheet visible={visible} onClose={onClose} title={title}>
-      {options.map((o) => (
+      {options.map((o, i) => (
         <Pressable
           key={o.value}
+          // معرّف الخيار بترتيبه لاختبار الجوال الافتراضي (التوجيه الرابع ٤ · ١) · لا يظهر
+          testID={'option-' + i}
           onPress={() => { onPick(o.value); onClose(); }}
           style={({ pressed }) => [pk.row, pressed && { backgroundColor: C.paper },
             value === o.value && { backgroundColor: C.emeraldSoft }]}
@@ -332,18 +341,23 @@ export function SelectField<Tv extends string>({
 }) {
   const [open, setOpen] = React.useState(false);
   const fs = useFs();
+  // الاختيار إدخالٌ كالكتابة · يعلّم الورقة الحاوية فلا تُغلق بلا استئذان (D-3)
+  const markDirty = useMarkSheetDirty();
   const current = options.find((o) => o.value === value);
   return (
     <View style={{ marginBottom: 12 }}>
       <Text style={{ fontSize: fs(11.5), color: error ? C.rose : C.muted, marginBottom: 5, textAlign: 'right' }}>{label}</Text>
       <Pressable
         onPress={() => setOpen(true)}
+        // معرّف الحقل باسمه لاختبار الجوال الافتراضي كحقل الكتابة (field-) · لا يظهر
+        testID={'select-' + label}
+        accessibilityLabel={label}
         style={{
           borderWidth: error ? 1.6 : 1, borderColor: error ? C.rose : C.line, borderRadius: 8, minHeight: 44,
           paddingHorizontal: 11, justifyContent: 'center', backgroundColor: error ? C.roseSoft : '#FAFAF7',
         }}
       >
-        <Text style={{ fontSize: fs(13), color: current || display ? C.charcoal : '#B9BFC9', textAlign: 'right' }}>
+        <Text style={{ fontSize: fs(13), color: current || display ? C.charcoal : C.placeholder, textAlign: 'right' }}>
           {display ?? current?.label ?? placeholder ?? 'اختر'}
         </Text>
       </Pressable>
@@ -353,7 +367,7 @@ export function SelectField<Tv extends string>({
         title={label}
         options={options}
         value={value ?? undefined}
-        onPick={onPick}
+        onPick={(v) => { if (v !== value) markDirty(); onPick(v); }}
         emptyText={emptyText ?? placeholder}
       />
     </View>

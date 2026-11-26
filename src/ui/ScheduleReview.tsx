@@ -4,33 +4,30 @@
  */
 import React, { useMemo } from 'react';
 import { View } from 'react-native';
-import { Money, Note, Row, T } from './components';
+import { BtnGhost, Money, Note, Row, T } from './components';
 import { C, TYPE } from './theme';
 import { useLang } from '../i18n';
 import { dfmt } from '../domain/dates';
 import { toHalalas, fmt } from '../domain/money';
 import { scheduleChecks, scheduleSumGap, type EjarExtras } from '../domain/pdf/ejarExtras';
-import { scheduleInstallments } from '../domain/contracts/service';
-import { generateInstallments } from '../domain/contracts/installments';
+import { reviewScheduleRows } from '../domain/contracts/service';
 import type { ScheduleRow } from '../domain/pdf/parseEjar';
 
-export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFile, financial, split }: {
+export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFile, financial, split, onUseComputed }: {
   start: string; end: string; value: string; cycle: string; schedule?: ScheduleRow[] | null; fromEjarFile?: boolean;
   /** البيانات المالية المقروءة · لفحص عدد الصفوف والدفعة الدورية والأخيرة */
   financial?: EjarExtras['financial'];
   /** ما في القيمة للخدمات والمواقف · يُعرض تفصيلها */
   split?: { servicesHalalas?: number; parkingHalalas?: number };
+  /** إسقاط جدول الملف المقروء والحساب بالدالة (E-5) · يظهر زرّه حين لا يطابق المجموع إجمالي العقد، ولا يظهر بلا هذه الدالة */
+  onUseComputed?: () => void;
 }) {
   const { t } = useLang();
   const rows = useMemo(() => {
-    if (!start || !end) return null;
     // الأقساط من إجمالي العقد: الإيجار والخدمات والمواقف
     const v = toHalalas(value) + (split?.servicesHalalas ?? 0) + (split?.parkingHalalas ?? 0);
-    const read = scheduleInstallments(schedule ?? null, start, end, v);
-    if (read) return { read: true, rows: read.map((r) => ({ due: r.dueDate, deadline: r.deadline, amount: r.amountHalalas })) };
-    try {
-      return { read: false, rows: generateInstallments(start, end, v, cycle).map((r) => ({ due: r.dueDate, deadline: null as string | null, amount: r.amountHalalas })) };
-    } catch { return null; }
+    // الصفوف نفسها التي يبني منها ملخص المراجعة عدده (A1-10)
+    return reviewScheduleRows({ start, end, totalHalalas: v, cycle, schedule });
   }, [start, end, value, cycle, schedule, split?.servicesHalalas, split?.parkingHalalas]);
   if (!rows || !rows.rows.length) return null;
   return (
@@ -47,6 +44,9 @@ export function ScheduleReview({ start, end, value, cycle, schedule, fromEjarFil
           sum: fmt(rows.rows.reduce((x, r) => x + r.amount, 0)),
           total: fmt(toHalalas(value) + (split?.servicesHalalas ?? 0) + (split?.parkingHalalas ?? 0)),
         })}</Note>
+      ) : null}
+      {rows.read && onUseComputed && scheduleSumGap(schedule, toHalalas(value) + (split?.servicesHalalas ?? 0) + (split?.parkingHalalas ?? 0)) !== 0 ? (
+        <View style={{ marginTop: 6 }}><BtnGhost small title={t('lease.useComputedSchedule')} onPress={onUseComputed} /></View>
       ) : null}
       {rows.read && financial ? scheduleChecks(schedule, financial).map((c) => (
         <Note key={c.code} tone="danger">{t('lease.check.' + c.code, { expected: c.code === 'count' ? c.expected : fmt(c.expected), actual: c.code === 'count' ? c.actual : fmt(c.actual) })}</Note>

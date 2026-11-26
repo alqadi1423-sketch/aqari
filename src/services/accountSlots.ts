@@ -9,7 +9,10 @@ import type { DB } from '../db/adapter';
 import type { FS } from '../files/fsAdapter';
 import { joinPath } from '../files/fsAdapter';
 import { getSyncState } from '../sync/engine';
-import { hasUserData } from '../domain/backup/upgrade';
+import { hasUserData, guardedUpgrade } from '../domain/backup/upgrade';
+import { currentSchemaVersion } from '../db/migrations';
+import { SCHEMA_VERSION } from '../db/schema';
+import type { BackupEnv } from '../domain/backup/types';
 
 /** ما يخص الحساب في جذر بيانات التطبيق · القاعدة نفسها تُنقل بملفاتها الثلاثة */
 const ITEMS = ['attachments', 'thumbs', 'backups'];
@@ -38,6 +41,7 @@ export interface SlotEnv {
   /** القاعدة الحالية · تُغلق قبل النقل وتُفتح بعده على الملف نفسه */
   db(): DB;
   close(): void;
+  /** إعادة الفتح وحدها بلا ترقية: نسخة الحساب العائدة تُرقّى بحراسة upgradeReturned (المراجعة الشاملة 2026-11-13 · C-4) */
   reopen(): void;
   /** تجهيز قاعدة جديدة فارغة بعد فتحها (الهجرات والزرع وهوية الجهاز) */
   prepareFresh(db: DB): void;
@@ -125,4 +129,25 @@ export function switchTo(env: SlotEnv, uid: string): 'ready' | 'switched' | 'unb
   }
   restoreParked(env, uid);
   return 'switched';
+}
+
+/**
+ * ترقية نسخة الحساب العائدة (المراجعة الشاملة 2026-11-13 · C-4 · قرار المالك 2026-10-03 «قبل أي ترحيلة على قاعدة فيها بيانات: نسخة…
+ * إن فشلت النسخة لا تجري الترقية»، والنسخة بالبيانات وقائمة الملفات ببصماتها بقرار س٣): نسخةٌ رُكنت قبل تحديث التطبيق تعود ببنيتها الأقدم،
+ * وبوابة الترقية نسخت يومها قاعدة الحساب النشط وحده · فكانت reopen تُرقّيها مباشرةً بلا نسخة · الآن: لا شيء إن كانت ببنية التطبيق، وإلا
+ * نسخة ما قبل الترقية في مجلد نسخ الحساب (عاد مع قاعدته · ITEMS) ثم الهجرة (guardedUpgrade) · وفشل أيٍّ منهما (النسخة، أو الهجرة،
+ * أو بنيةٌ أحدث من التطبيق) يُعيد النسخة العائدة إلى مركنها كما كانت (parked: عادت من accounts/{uid} في هذا الدخول) ثم يرمي سببه العربي،
+ * فلا يبقى الحساب بين حالين · يعيد مسار نسخة ما قبل الترقية، أو null بلا نسخة
+ */
+export async function upgradeReturned(
+  env: SlotEnv, uid: string, backup: BackupEnv, parked: boolean, onProgress?: (msg: string) => void,
+): Promise<string | null> {
+  if (currentSchemaVersion(env.db()) === SCHEMA_VERSION) return null;
+  try {
+    return (await guardedUpgrade(backup, onProgress)).backupPath;
+  } catch (e) {
+    // الهجرة في معاملةٍ واحدة فالقاعدة كما كانت ببنيتها · وتعذّر الركن لا يُخفي السبب الأول
+    if (parked) { try { parkActive(env, uid); } catch { /* تبقى نشطة ببنيتها، وتُعاد الترقية بحراستها عند الدخول التالي */ } }
+    throw e;
+  }
 }

@@ -3,6 +3,7 @@
  * الضغط على أي حساب يفتح بياناته وكل عملياته بأنواعها، والمحفظة تُحصي الكاش الحاضر.
  */
 import React, { useCallback, useMemo, useState } from 'react';
+import { t } from '../src/i18n';
 import { CashShortNote } from '../src/ui/CashGate';
 import { cashShortfall } from '../src/domain/cashGuard';
 import { View, Pressable, FlatList, type ListRenderItem } from 'react-native';
@@ -53,6 +54,7 @@ const BALANCE_OPTIONS = [{ value: '', label: 'كل الأرصدة' },
 export default function Banks() {
   const { db, version, bump } = useApp();
   const perm = usePerm('banks');
+  const bankAccess = useAccess();
   const toast = useToast();
   const dialog = useDialog();
   const fsheet = useFilterSheet();
@@ -164,7 +166,8 @@ export default function Banks() {
                 bump(); toast(Number(b.archived) ? 'أُلغيت الأرشفة' : 'أُرشف الحساب · حركاته وأرصدته باقية كما هي');
               },
             },
-            Number(b.linked_n) || !perm.manage ? null : { icon: 'trash' as const, label: 'حذف', danger: true, onPress: () => onDelete(b) },
+            // وبنكٌ افتتاحيه غير صفر لا يحذفه إلا المالك: افتتاحيه في 1100 و3300 (المراجعة الشاملة 2026-11-13 · R11-A2.4-2)
+            Number(b.linked_n) || !perm.manage || (!bankAccess.owner && Number(b.opening_halalas)) ? null : { icon: 'trash' as const, label: 'حذف', danger: true, onPress: () => onDelete(b) },
           ]} />
         </Row>
       </Row>
@@ -237,8 +240,9 @@ export default function Banks() {
         <Field label="اسم الحساب" value={name} onChange={setName} />
         <Field label="رقم الآيبان" value={iban} onChange={setIban} ltr />
         <Row>
-          <View style={{ flex: 1 }}><Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr /></View>
-          <View style={{ flex: 1 }}><DateField label="تاريخ الافتتاح" value={openingDate} onChange={setOpeningDate} /></View>
+          {/* الرصيد الافتتاحي يضعه المالك وحده (القاعدة ٩٩ · المدقق الخارجي I١): جهاز المالك يرفض تعديل العضو له */}
+          <View style={{ flex: 1 }}><Field label="الرصيد الافتتاحي" value={opening} onChange={setOpening} keyboard="numeric" ltr disabled={!bankAccess.owner} /></View>
+          {bankAccess.owner ? <View style={{ flex: 1 }}><DateField label="تاريخ الافتتاح" value={openingDate} onChange={setOpeningDate} /></View> : null}
         </Row>
       </Sheet>
 
@@ -312,7 +316,7 @@ function BankDetailSheet({ bankId, onClose, onEdit }: { bankId: string; onClose:
         const cRow = db.get<{ contract_id: string }>(`SELECT contract_id FROM contract_payments WHERE id = ?`, [srcId]);
         if (cRow) return () => { onClose(); router.push(`/contracts?detail=${cRow.contract_id}`); };
       }
-      if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'key_money'].includes(srcType)
+      if (['contract_deposit', 'deposit_refund', 'deposit_carry', 'deposit_deduct', 'deposit_rent', 'key_money'].includes(srcType)
         && routeAllowed(access, '/contracts')) {
         const cRow = db.get<{ id: string }>(`SELECT id FROM contracts WHERE id = ?`, [srcId]);
         if (cRow) return () => { onClose(); router.push(`/contracts?detail=${srcId}`); };
@@ -391,6 +395,8 @@ function BankDetailSheet({ bankId, onClose, onEdit }: { bankId: string; onClose:
         <KpiCard label="الوارد" tone="pos" value={<Money halalas={inflow} />} />
         <KpiCard label="الصادر" tone="neg" value={<Money halalas={-outflow} />} />
       </Row>
+      {/* كشف الحساب والمطابقة (التوجيه الرابع ٦ · ٢) · لمن يرى البنوك */}
+      <BtnGhost small icon="swap" title={t('bankStatement.open')} onPress={() => { onClose(); router.push({ pathname: '/bankStatement', params: { bank: bankId } }); }} />
 
       <CollapsibleSection title="الوارد" count={Number(sums?.in_n ?? 0)} icon="wallet" pageKey="bankIn">
         {(page) => db.all<{ id: string; date: string; descr: string; amount_halalas: number; source: string; journal_no: string }>(
@@ -420,7 +426,6 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
   const { db, version, bump } = useApp();
   const canAdd = usePerm('banks').add;
   const toast = useToast();
-  const dialog = useDialog();
   const [op, setOp] = useState<CashOp | null>(null);
   const [amount, setAmount] = useState('');
   const [bankA, setBankA] = useState('');
@@ -497,7 +502,7 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
     const ready = toHalalas(amount) > 0;
     // ما يُخرج نقداً من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
     const cashOut = op === 'deposit' || op === 'petty' || op === 'ownerOut' ? toHalalas(amount) : 0;
-    const cashOk = cashShortfall(db, cashOut) <= 0;
+    const cashOk = cashShortfall(db, cashOut, opDate) <= 0; // بتاريخ العملية (A2.8)
     return (
       <Sheet visible onClose={() => setOp(null)} title={meta.label}
         footer={
@@ -533,7 +538,7 @@ function WalletSheet({ onClose }: { onClose: () => void }) {
         </Row>
         <CostCenterField value={cc} onChange={setCc} />
         <Field label={op === 'petty' ? 'بيان المصروف' : 'البيان'} value={descr} onChange={setDescr} />
-        <CashShortNote needed={cashOut} what={meta.label} />
+        <CashShortNote needed={cashOut} what={meta.label} date={opDate} />
       </Sheet>
     );
   }

@@ -15,6 +15,7 @@ import { allPropertyStats } from '../src/domain/stats';
 import { today } from '../src/domain/dates';
 import { useAccess, usePerm } from '../src/ui/access';
 import { routeAllowed } from '../src/domain/access/routes';
+import { paymentCashSql } from '../src/domain/contracts/installments';
 
 const LEGEND: Array<[string, string]> = [
   [OCC.high.color, OCC.high.label],
@@ -50,7 +51,7 @@ export default function PropMap() {
     const month = today().slice(0, 7);
     const income = new Map<string, number>();
     for (const r of db.all<{ pid: string; s: number }>(
-      `SELECT u.property_id AS pid, COALESCE(SUM(pm.net_halalas),0) AS s
+      `SELECT u.property_id AS pid, COALESCE(SUM(${paymentCashSql('pm.')}),0) AS s
        FROM contract_payments pm
        JOIN contracts c ON c.id = pm.contract_id
        JOIN units u ON u.id = c.unit_id

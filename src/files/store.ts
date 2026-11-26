@@ -11,6 +11,8 @@ import type { DB } from '../db/adapter';
 import type { FS, Hasher } from './fsAdapter';
 import { joinPath } from './fsAdapter';
 import { uid } from '../domain/ids';
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex } from '@noble/hashes/utils';
 
 export interface FilesEnv {
   db: DB;
@@ -127,47 +129,125 @@ export async function putAttachment(
   }
   const sha = await env.hasher(bytes);
   const ext = extOf(meta.originalName, meta.mime);
-  const now = new Date().toISOString();
   const existing = env.db.get<{ sha256: string; ext: string }>(
     `SELECT sha256, ext FROM blobs WHERE sha256 = ?`, [sha]
   );
   const finalExt = existing ? existing.ext : ext;
   const path = blobPath(env, sha, finalExt);
   // بصمةٌ معروفة وملفها ليس هنا (في الخادم وحده) يُكتب ملفها من البايتات التي بين أيدينا
+  // إلى اسمٍ مؤقت ثم نقلٌ ذرّي، وما كُتب يُحذف عند أي فشل قبل التسجيل (المراجعة الشاملة 2026-11-13 · C-11 · قرار 2026-09-02 «لا يبقى
+  // بعد أي فشل ملفٌ في attachments بلا صفّ في blobs»): امتلاء القرص في منتصف الكتابة كان يترك نصف الملف
+  let wrote = false;
   if (!existing || !env.fs.exists(path)) {
     env.fs.mkdirp(env.attachmentsDir);
-    env.fs.write(path, bytes);
-    // التحقق قبل التسجيل بإعادة القراءة الفعلية · لا نسجّل مرفقاً لملف لم يُنسخ سليماً
-    let writtenLen = -1;
-    try { writtenLen = env.fs.read(path).byteLength; } catch { writtenLen = -1; }
-    if (writtenLen !== bytes.byteLength) {
-      throw new Error(`فشل نسخ الملف إلى مخزن التطبيق (كُتب ${writtenLen} من ${bytes.byteLength} بايت) · لم يُسجَّل المرفق`);
+    const part = path + '.part';
+    try {
+      env.fs.write(part, bytes);
+      // التحقق قبل التسجيل بحجمه عند النظام (E-9: كان يُعاد قراءته كله فيتضاعف الملف الكبير في الذاكرة) · لا نسجّل مرفقاً لملف لم يُنسخ سليماً
+      verifyWritten(env, part, bytes.byteLength);
+      // ملفٌ بالاسم نفسه بلا صفّ (يتيمٌ من قبل) يُستبدل · فالنقل على أندرويد لا يكتب فوق موجود
+      if (env.fs.exists(path)) env.fs.remove(path);
+      env.fs.rename(part, path);
+    } catch (e) {
+      try { env.fs.remove(part); } catch { /* يكنسه «حذف الكل نهائياً» */ }
+      throw e;
     }
+    wrote = !existing;
   }
+  return registerAttachment(env, sha, finalExt, !!existing, bytes.byteLength, path, meta, wrote);
+}
+
+/** الحجم المكتوب يطابق المصدر · وإلا لا يُسجَّل المرفق */
+function verifyWritten(env: FilesEnv, path: string, want: number): void {
+  let writtenLen = -1;
+  try { writtenLen = env.fs.size(path); } catch { writtenLen = -1; }
+  if (writtenLen !== want) {
+    throw new Error(`فشل نسخ الملف إلى مخزن التطبيق (كُتب ${writtenLen} من ${want} بايت) · لم يُسجَّل المرفق`);
+  }
+}
+
+/** قطعة قراءة البصمة للملف الكبير */
+const HASH_CHUNK = 4 * 1024 * 1024;
+
+/**
+ * الرفع من ملفٍ على الجهاز (المراجعة الشاملة 2026-11-13 · E-9): المقطع الكبير لا يُقرأ كله في الذاكرة · بصمته على قطعٍ من ٤ م.ب، ثم يُنسخ
+ * نسخاً إلى مجلد المرفقات ويُتحقق منه بحجمه، وبعدها يُسمّى ببصمته · والصورة ونزع بياناتها الوصفية مفعّل تمرّ بالمسار الواحد putAttachment
+ * (صغيرة، وتُقرأ لتُنزع)، ومثلها بيئةٌ بلا نسخٍ أو قراءة قطع
+ */
+export async function putAttachmentFile(env: FilesEnv, src: string, meta: AttachmentMeta): Promise<AttachmentRow> {
+  const isImage = (meta.mime ?? '').toLowerCase().startsWith('image/');
+  const { copy, readRange } = env.fs;
+  if ((isImage && getSetting(env.db, 'stripExif')) || !copy || !readRange) return putAttachment(env, env.fs.read(src), meta);
+  const size = env.fs.size(src);
+  const h = sha256.create();
+  for (let off = 0; off < size; off += HASH_CHUNK) h.update(readRange(src, off, Math.min(HASH_CHUNK, size - off)));
+  const sha = bytesToHex(h.digest());
+  const existing = env.db.get<{ sha256: string; ext: string }>(`SELECT sha256, ext FROM blobs WHERE sha256 = ?`, [sha]);
+  const finalExt = existing ? existing.ext : extOf(meta.originalName, meta.mime);
+  const path = blobPath(env, sha, finalExt);
+  let wrote = false;
+  if (!existing || !env.fs.exists(path)) {
+    env.fs.mkdirp(env.attachmentsDir);
+    // نسخةٌ جزئية لا تحمل اسم البصمة: تُسمّى به بعد التحقق من حجمها (C-11 كالرفع من البايتات)
+    const part = path + '.part';
+    if (env.fs.exists(part)) env.fs.remove(part);
+    try {
+      copy(src, part);
+      verifyWritten(env, part, size);
+      if (env.fs.exists(path)) env.fs.remove(path);
+      env.fs.rename(part, path);
+    } catch (e) {
+      try { env.fs.remove(part); } catch { /* يكنسه «حذف الكل نهائياً» */ }
+      throw e;
+    }
+    wrote = !existing;
+  }
+  return registerAttachment(env, sha, finalExt, !!existing, size, path, meta, wrote);
+}
+
+/** تسجيل المرفق بعد أن صار ملفه في مكانه · مشتركٌ بين الرفع من البايتات ومن الملف */
+async function registerAttachment(
+  env: FilesEnv, sha: string, finalExt: string, existing: boolean, size: number, path: string, meta: AttachmentMeta,
+  wrote: boolean,
+): Promise<AttachmentRow> {
+  const now = new Date().toISOString();
+  /** فشلٌ بعد الكتابة وقبل التسجيل (C-11): الملف الذي كتبه هذا الإرفاق لبصمةٍ جديدة يُحذف ما لم يسجّلها غيره في الأثناء */
+  const dropWritten = () => {
+    if (!wrote) return;
+    try { if (!env.db.get(`SELECT 1 FROM blobs WHERE sha256 = ?`, [sha])) env.fs.remove(path); } catch { /* يكنسه «حذف الكل نهائياً» */ }
+  };
   const id = uid();
   // مصغّرة البصمة نفسها إن سبقت لها · وإلا تُولَّد مرة (الفشل لا يمنع المرفق)
-  let thumb: string | null = env.db.get<{ t: string }>(
-    `SELECT thumb AS t FROM attachments WHERE sha256 = ? AND thumb IS NOT NULL LIMIT 1`, [sha])?.t ?? null;
+  let thumb: string | null = null;
+  try {
+    thumb = env.db.get<{ t: string }>(
+      `SELECT thumb AS t FROM attachments WHERE sha256 = ? AND thumb IS NOT NULL LIMIT 1`, [sha])?.t ?? null;
+  } catch (e) { dropWritten(); throw e; }
   if (!thumb && env.thumbnailer) {
     try { thumb = await env.thumbnailer(path, finalExt, meta.mime ?? ''); } catch { thumb = null; }
   }
-  env.db.transaction(() => {
-    if (!existing) {
-      env.db.run(`INSERT INTO blobs (sha256, ext, size_bytes, created_at) VALUES (?,?,?,?)`, [
-        sha, finalExt, bytes.byteLength, now,
-      ]);
-    }
-    // الملف هنا ولم يُرفع · فلا يُحذف من الجهاز حتى يُرفع وتطابق بصمته (cloudFiles.ts)
-    env.db.run(
-      `INSERT INTO file_cache (sha256, ext, bytes, uploaded, last_used) VALUES (?,?,?,0,?)
-       ON CONFLICT(sha256) DO UPDATE SET last_used = excluded.last_used`, [sha, finalExt, bytes.byteLength, now]);
-    env.db.run(
-      `INSERT INTO attachments (id, sha256, entity_type, entity_id, kind, original_name, mime, note, display_name, created_at, thumb)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-      [id, sha, meta.entityType, meta.entityId ?? '', meta.kind, meta.originalName ?? '',
-       meta.mime ?? '', meta.note ?? '', meta.originalName ?? '', now, thumb]
-    );
-  });
+  try {
+    env.db.transaction(() => {
+      if (!existing) {
+        env.db.run(`INSERT INTO blobs (sha256, ext, size_bytes, created_at) VALUES (?,?,?,?)`, [
+          sha, finalExt, size, now,
+        ]);
+      }
+      // الملف هنا ولم يُرفع · فلا يُحذف من الجهاز حتى يُرفع وتطابق بصمته (cloudFiles.ts)
+      env.db.run(
+        `INSERT INTO file_cache (sha256, ext, bytes, uploaded, last_used) VALUES (?,?,?,0,?)
+         ON CONFLICT(sha256) DO UPDATE SET last_used = excluded.last_used`, [sha, finalExt, size, now]);
+      env.db.run(
+        `INSERT INTO attachments (id, sha256, entity_type, entity_id, kind, original_name, mime, note, display_name, created_at, thumb)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        [id, sha, meta.entityType, meta.entityId ?? '', meta.kind, meta.originalName ?? '',
+         meta.mime ?? '', meta.note ?? '', meta.originalName ?? '', now, thumb]
+      );
+    });
+  } catch (e) {
+    dropWritten();
+    throw e;
+  }
   return getAttachment(env.db, id)!;
 }
 
@@ -207,14 +287,6 @@ export function attachmentsFor(db: DB, entityType: string, entityId: string, kin
      WHERE ${conds.join(' AND ')} ORDER BY a.created_at DESC`,
     params
   ).map(withBlobFallback);
-}
-
-export function readAttachment(env: FilesEnv, id: string): Uint8Array | null {
-  const att = getAttachment(env.db, id);
-  if (!att) return null;
-  const p = attachmentPath(env, att);
-  if (!env.fs.exists(p)) return null;
-  return env.fs.read(p);
 }
 
 /** حذف ناعم */

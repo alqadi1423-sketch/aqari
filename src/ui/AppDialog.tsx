@@ -11,6 +11,7 @@ import { C, FONT_BOLD } from './theme';
 import { Text } from 'react-native';
 import { useFs } from './store';
 import { useKeyboardHeight } from './Sheet';
+import { t } from '../i18n';
 
 export interface DialogAction {
   label: string;
@@ -66,16 +67,20 @@ export function confirmDiscard(dialog: (spec: DialogSpec) => void, close: () => 
   });
 }
 
-/** يطوي اللوحة بالضغط ثانيةً · ويستأذن إن كان فيها إدخال */
-export function toggleClose(
-  dialog: (spec: DialogSpec) => void, open: boolean, dirty: boolean, set: (v: boolean) => void,
-) {
-  if (!open) { set(true); return; }
-  if (dirty) { confirmDiscard(dialog, () => set(false)); return; }
-  set(false);
-}
 /** ثلاثة خيارات فأكثر لا تسع صفاً واحداً بعرض الهاتف فتُرصّ عمودياً بعرض كامل */
 const STACK_FROM = 3;
+
+/**
+ * زرّ الحوار يستدعي الدومين: رميُه المتزامن ورفضُه غير المتزامن يمرّان كلاهما بحوار الفشل الموحَّد ·
+ * لا يفلت الأول إلى المعالج العام («حدث خطأ غير متوقع» وتقرير عطلٍ زائف) ولا يُبتلع الثاني بصمت (D-10).
+ * الاستيراد متأخر لأن failureDialog يستورد هذا الملف
+ */
+function reportActionFailure(e: unknown): void {
+  try {
+    const { reportFailure } = require('./failureDialog') as typeof import('./failureDialog');
+    reportFailure({ title: t('common.failed'), e }).catch(() => {});
+  } catch { /* حوار الفشل لا يُسقط الحوار */ }
+}
 
 function DialogButton({ a, onDone, fs, vertical }: {
   a: DialogAction; onDone: () => void; fs: (n: number) => number; vertical: boolean;
@@ -85,7 +90,7 @@ function DialogButton({ a, onDone, fs, vertical }: {
   const border = a.variant === 'ghost' || !a.variant ? C.line : bg;
   return (
     <Pressable
-      onPress={() => { onDone(); Promise.resolve(a.onPress?.()).catch(() => {}); }}
+      onPress={() => { onDone(); Promise.resolve().then(() => a.onPress?.()).catch(reportActionFailure); }}
       style={({ pressed }) => ({
         // عمودياً: سطر مستقل بعرض الحوار · أفقياً: يكبر ليملأ الصف وأساسه عرض نصه
         // لا صفر، فلا ينضغط الزر إلى ما دون كلمته

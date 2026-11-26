@@ -1,5 +1,5 @@
 /** فواتير الشراء · التسجيل بالفئات وبنود التأسيس والعدادات، والسداد والتراجع */
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import { CashShortNote } from '../src/ui/CashGate';
 import { cashShortfall } from '../src/domain/cashGuard';
 import { useLocalSearchParams } from 'expo-router';
@@ -23,14 +23,18 @@ import { C, TYPE } from '../src/ui/theme';
 import { Icon } from '../src/ui/icons';
 import {
   savePurchase, payPurchaseSplit, unmarkPurchasePaid, deletePurchase, purchaseTax, priorPaymentCashOut,
-  TAX_STATUSES, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
-  type PurchasePayMethod, type TaxStatus, isVatSettled, isPurchaseFiled, purchaseEditBlock,
+  TAX_STATUSES, taxStatusesFor, EXCLUDE_REASONS, TS_DEDUCTIBLE, TS_EXCLUDED, TS_EXEMPT, TS_ZERO, taxPeriodOf, markVatFiled, markVatRefunded, markVatRejected,
+  type PurchasePayMethod, type TaxStatus, isVatSettled, purchaseEditBlock, purchaseDeleteBlock, purchaseByQrKey, purchaseLookalike,
 } from '../src/domain/purchases';
 import { today as todayFn } from '../src/domain/dates';
-import { metersForPurchase } from '../src/domain/meters';
+import { metersForPurchase, lastMeterReading } from '../src/domain/meters';
 import { today, dfmt, daysBetween, toLocalISODate } from '../src/domain/dates';
 import { fmt, toHalalas } from '../src/domain/money';
-import { attachPicked, pickFile } from '../src/ui/attach';
+import { attachPicked, pickFile, captureWithCamera, pickFromGallery, type PickedFile } from '../src/ui/attach';
+import { readQrFromImage, readQrFromInvoiceFile } from '../src/services/invoiceQr';
+import { pickZatcaQr, zatcaQrKey } from '../src/domain/zatcaQr';
+import { purchaseDraftFromQr } from '../src/domain/purchaseQr';
+import { saveSupplier } from '../src/domain/suppliers';
 import { FileViewer, type ViewerFile } from '../src/ui/FileViewer';
 import { AttachStrip } from '../src/ui/AttachStrip';
 import { reportFailure } from '../src/ui/failureDialog';
@@ -43,7 +47,6 @@ import { PurchaseLinesSection, loadLineDrafts } from '../src/ui/PurchaseLines';
 import { toLineInput, emptyLine, type LineDraft } from '../src/ui/AssetSheets';
 import { GENERAL_COST_CENTER, withCostCenter } from '../src/domain/accounting/dimensions';
 const CATEGORIES = ['كهرباء', 'مياه', 'اتصالات وإنترنت', 'إيجار', 'رواتب', 'تكلفة مبيعات', 'مصروفات تأسيس', 'مصروفات أخرى'];
-const INCORP_ITEMS = ['رسوم حكومية', 'ديكور وتجهيزات', 'معدات', 'تسويق افتتاحي', 'استشارات'];
 
 interface PurchaseRow {
   id: string; no: string; supplier_name: string; date: string; due: string; category: string;
@@ -87,15 +90,18 @@ function statusBadge(p: { paid: number; due: string }) {
  * الضغط على البطاقة يفتح ورقة العرض الشاملة · السداد المسدَّد لا يُعدَّل بل يُتراجع عنه */
 const PurchaseCard = React.memo(function PurchaseCard({
   id, no, supplierName, date, due, category, subtotalHalalas, taxHalalas, totalHalalas,
-  exempt, excludeFromVat, paid, taxStatus, refundStatus, filedLocked, editLocked, hasOriginal, canManage,
+  exempt, excludeFromVat, paid, taxStatus, refundStatus, deleteLocked, editLocked, hasOriginal, canManage,
   onDetail, onPay, onEdit, onUndoPay, onPrint, onDelete, onVatFiled, onVatRefunded, onVatRejected,
 }: {
   id: string; no: string; supplierName: string; date: string; due: string; category: string;
   subtotalHalalas: number; taxHalalas: number; totalHalalas: number;
   exempt: number; excludeFromVat: number; paid: number; taxStatus: string;
   refundStatus: string; hasOriginal: boolean;
-  /** مقدَّمة في إقرار ضريبي: لا تعديل ولا حذف (قرار المالك 2026-10-09) */
-  filedLocked: boolean;
+  /**
+   * ما يرفض به الحذف (purchaseDeleteBlock): الإقرار المقدَّم (قرار المالك 2026-10-09) والضريبة المسترَدة أو المرفوضة
+   * وأصول الفاتورة المحوّلة · فلا يظهر «حذف» يرفضه الدومين (D-10)
+   */
+  deleteLocked: boolean;
   /** ما يرفض به الحفظ التعديل (purchaseEditBlock): السداد والإقرار والضريبة المسترَدة والسلة وأصول الفاتورة */
   editLocked: boolean;
   /** «المشتريات والموردون: كامل» · السداد والتراجع والتعديل والحذف واسترداد الضريبة */
@@ -110,14 +116,14 @@ const PurchaseCard = React.memo(function PurchaseCard({
   onVatRefunded: (id: string) => void;
   onVatRejected: (id: string) => void;
 }) {
+  const { t } = useLang();
   // الضريبة إذا استُردت أو رُفضت فقد انتهت قصتها · لا يُعرض لها فعل استرداد بعدها
   const vatSettled = isVatSettled(refundStatus);
-  const contentLocked = vatSettled || filedLocked;
   const vatActions = canManage && taxStatus === TS_DEDUCTIBLE && !vatSettled ? [
     ...(refundStatus.startsWith('مُقدَّم') ? [] : [
       { icon: 'reload' as const, label: 'الضريبة: مُقدَّمة في الإقرار', onPress: () => onVatFiled(id) },
     ]),
-    { icon: 'cash' as const, label: 'الضريبة: مسترَدة نقداً اليوم', onPress: () => onVatRefunded(id) },
+    { icon: 'cash' as const, label: t('purchase.refundAction'), onPress: () => onVatRefunded(id) },
     { icon: 'cancel' as const, label: 'الضريبة: مرفوضة (تصير تكلفة)', onPress: () => onVatRejected(id) },
   ] : [];
   return (
@@ -136,8 +142,8 @@ const PurchaseCard = React.memo(function PurchaseCard({
               canManage && !editLocked ? { icon: 'edit' as const, label: 'تعديل', onPress: () => onEdit(id) } : null,
               hasOriginal ? { icon: 'print' as const, label: 'الفاتورة الأصلية', onPress: () => onPrint(id, no) } : null,
               ...vatActions,
-              // الضريبة المسترَدة أو المرفوضة تقفل الفاتورة حتى يُلغى قيدها من الدفتر (#32)
-              canManage && !contentLocked ? {
+              // الضريبة المسترَدة أو المرفوضة تقفل الفاتورة حتى يُلغى قيدها من الدفتر (#32) · والمحوّلة إلى أصل (D-10)
+              canManage && !deleteLocked ? {
                 icon: 'trash', label: 'حذف', danger: true,
                 onPress: () => onDelete(id),
               } : null,
@@ -217,6 +223,11 @@ export default function Purchases() {
   // نافذة السداد
   const [payLines, setPayLines] = useState<Array<{ method: PurchasePayMethod; bankId: string; amount: string }>>([]);
   const [payDate, setPayDate] = useState(today());
+  // نافذة استرداد الضريبة · بتاريخٍ وطريقة (نقداً أو إلى بنك) لا نقداً اليوم دائماً (المراجعة الشاملة 2026-11-13 · A2.9)
+  const [refundFor, setRefundFor] = useState<{ id: string; no: string; tax: number } | null>(null);
+  const [refundDate, setRefundDate] = useState(today());
+  const [refundMethod, setRefundMethod] = useState<'bank' | 'cash'>('bank');
+  const [refundBank, setRefundBank] = useState('');
 
   // شرط WHERE الواحد: البحث والمرشِّحات كلها في SQL
   const filter = useMemo(() => {
@@ -327,15 +338,15 @@ export default function Purchases() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version, selectedSupplier, propertyId]
   );
+  const editingNo = useMemo(
+    () => (editingId ? db.get<{ no: string }>(`SELECT no FROM purchases WHERE id = ?`, [editingId])?.no : undefined),
+    [db, editingId]
+  );
+  // من سجل العداد الحيّ (E-7): فاتورةٌ محذوفة لا تُقترح قراءتها، والمعدَّلة لا تُقترح قراءتها هي
   const prevReading = useMemo(
-    () => (meterId
-      ? db.get<{ reading: number | null }>(
-          `SELECT reading FROM meter_readings WHERE meter_id = ? AND reading IS NOT NULL ORDER BY date DESC LIMIT 1`,
-          [meterId]
-        )?.reading ?? null
-      : null),
+    () => (meterId ? lastMeterReading(db, meterId, editingNo) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [db, version, meterId]
+    [db, version, meterId, editingNo]
   );
 
   const deriveAmounts = (patch: Partial<{ base: string; tax: string; total: string }>, mark: 'base' | 'tax' | 'total') => {
@@ -363,25 +374,143 @@ export default function Purchases() {
   // بنود الفاتورة (الهجرة ٢٩) · اختيارية
   const [lines, setLines] = useState<LineDraft[]>([]);
   const openNew = () => {
-    if (!suppliers.length) { toast('أضف مورداً أولاً'); return; }
+    // وبلا موردين يُفتح النموذج أيضاً: «قراءة QR الفاتورة» تضيف المورد من رمزه (المدقق الخارجي N٨ · «رمز QR أولاً»)، والحفظ يطلب مورداً
     setEditingId(null);
-    setSupplier(suppliers[0].name); setDate(today()); setDue(''); setCategory(''); setIncorpItem('');
+    setSupplier(suppliers[0]?.name ?? ''); setDate(today()); setDue(''); setCategory(''); setIncorpItem('');
     setAmortize(false); setAmortizeMonths(''); setPropertyId(''); setUnitSel('');
     setMeterId(''); setMeterReading(''); setSubtotal(''); setTaxStr(''); setTotalStr('');
     setTouched({ base: false, tax: false, total: false });
     setTaxStatus(TS_EXCLUDED); setExcludeReason(EXCLUDE_REASONS[0]); setExcludeOther(''); setConfirmOurs(false);
     setPendingFile(null);
+    setQrKey('');
+    setQrFile(null);
+    qrSeq.current++;
     setLines([]);
     setFormOpen(true);
   };
+  // قراءة QR فاتورة الشراء (التوجيه الرابع ٦ · ١): صورةٌ بالكاميرا أو من المعرض، فتُعبَّأ الفاتورة الجديدة من رمز الهيئة وتُرفق الصورة أصلاً
+  // لها · مسودةٌ يراجعها المستخدم ولا تُحفظ بنفسها، والوضع الضريبي يختاره هو (الرمز لا يحمل المشتري)
+  const [qrBusy, setQrBusy] = useState(false);
+  // مفتاح رمز الفاتورة المقروءة (الهجرة ٥٤): يُحفظ معها فلا تُسجَّل مرتين
+  const [qrKey, setQrKey] = useState('');
+  // صورة الرمز المرفقة أصلاً · مرجعٌ لا حالة: يُقرأ بعد انتظار القراءة فلا يُقارَن بلقطةٍ قديمة (المدقق الخارجي R١٠)
+  const qrFileRef = useRef<PickedFile | null>(null);
+  const setQrFile = (f: PickedFile | null) => { qrFileRef.current = f; };
+  const qrSeq = useRef(0);
+  const fillFromQr = async (img: PickedFile, kind: 'image' | 'file' = 'image') => {
+    // وقراءةٌ بدأت لفاتورةٍ جديدة لا تكتب في نموذجٍ تغيّر أثناءها (تعديل فاتورةٍ أخرى أو إغلاق · المدقق الخارجي N٦)
+    const seq = ++qrSeq.current;
+    setQrBusy(true);
+    try {
+      let values: string[];
+      try { values = kind === 'image' ? await readQrFromImage(img.uri, img) : await readQrFromInvoiceFile(img); }
+      catch (e) {
+        if (seq !== qrSeq.current) return;
+        const m = (e as Error).message;
+        toast(t(m === 'qr-unavailable' ? 'purchaseQr.unavailable' : m === 'qr-credit' ? 'purchaseQr.creditNote' : 'purchaseQr.readFailed'));
+        return;
+      }
+      if (seq !== qrSeq.current) return;
+      const r = pickZatcaQr(values);
+      if (!r.ok) {
+        dialog({ title: t('purchaseQr.notRead'), body: t('purchaseQr.err.' + r.error), actions: [{ label: t('common.ok'), variant: 'primary' }] });
+        return;
+      }
+      // «والمكررة تُرفض»: فاتورةٌ مسجّلة من رمزها لا تُعبَّأ من جديد
+      const key = zatcaQrKey(r.qr);
+      const dup = purchaseByQrKey(db, key);
+      if (dup?.exact) {
+        dialog({ title: t('purchaseQr.notRead'), body: t('purchaseQr.duplicate', { no: dup.no, date: dup.date }), actions: [{ label: t('common.ok'), variant: 'primary' }] });
+        return;
+      }
+      const d = purchaseDraftFromQr(db, r.qr);
+      const apply = (name: string) => {
+        if (seq !== qrSeq.current) return;
+        setQrKey(key);
+        // وتأكيد «الفاتورة باسم المنشأة وبرقمها» لفاتورةٍ قبلها لا يبقى لهذه (المدقق الخارجي T٨)
+        setConfirmOurs(false);
+        // والعدّاد لموردٍ قبله لا يبقى مختاراً كما في الاختيار اليدوي (المدقق الخارجي N٥: كانت تُسجَّل قراءةٌ لغير صاحبه)
+        // و«المبالغ وحدها» والمؤرشف يُفرغان المورد فيختاره المستخدم، لا يبقى موردٌ لم يقله الرمز ولا هو (المدقق الخارجي R٩)
+        if (name) { setSupplier(name); setMeterId(''); } else { setSupplier(''); setMeterId(''); }
+        // وفئته الافتراضية كاختياره يدوياً إن لم تُختر فئة (المدقق الخارجي P٧: كان المصروف يُرحَّل على حسابٍ غير حسابه)
+        const cat = name ? db.get<{ c: string | null }>(
+          `SELECT default_category AS c FROM suppliers WHERE name = ? AND archived = 0 AND deleted_at IS NULL`, [name])?.c : null;
+        if (cat) setCategory((c) => c || cat);
+        setDate(d.date);
+        setSubtotal(fmt(d.subtotalHalalas).replace(/,/g, ''));
+        setTaxStr(fmt(d.taxHalalas).replace(/,/g, ''));
+        setTotalStr(fmt(d.totalHalalas).replace(/,/g, ''));
+        setTouched({ base: true, tax: true, total: true });
+        // والصورة أصلُ هذه الفاتورة: تحلّ محل صورة رمزٍ قُرئ قبلها في النموذج نفسه، لا محل ملفٍ أرفقه المستخدم (المدقق الخارجي J١٠)
+        // (من المرفق الحالي لا من لقطة ما قبل القراءة: ملفٌ أرفقه المستخدم أثناءها يبقى · R١٠)
+        setPendingFile((cur) => (!cur || cur === qrFileRef.current ? (setQrFile(img), img) : cur));
+        dialog({
+          title: t('purchaseQr.filled'),
+          body: [t('purchaseQr.review'), ...d.warnings.map((w) => '• ' + t('purchaseQr.warn.' + w, { name: d.supplier }))].join('\n'),
+          actions: [{ label: t('common.ok'), variant: 'primary' }],
+        });
+      };
+      const choose = () => {
+      if (d.supplierId) { apply(d.supplier); return; }
+      // والمورد المؤرشف يُعاد من الموردين، فتُعبَّأ المبالغ وحدها ويُقال ذلك (المدقق الخارجي L٤)
+      // (والتنبيه يسمّيه: d.supplier · N٧)
+      if (d.warnings.includes('supplierArchived')) { apply(''); return; }
+      dialog({
+        title: t('purchaseQr.newSupplier'),
+        body: t('purchaseQr.newSupplierBody', { name: d.supplier, vat: d.newSupplierVat ?? t('purchaseQr.noVat') }),
+        actions: [
+          { label: t('purchaseQr.addSupplier'), variant: 'primary', onPress: () => {
+            if (seq !== qrSeq.current) return;
+            try {
+              saveSupplier(db, null, { name: d.supplier, vat: d.newSupplierVat ?? '', phone: '', category: '', amountHalalas: null, utility: '' });
+              bump(); apply(d.supplier);
+            } catch (e) { reportFailure({ title: t('common.failed'), e }); }
+          } },
+          { label: t('purchaseQr.keepSupplier'), variant: 'ghost', onPress: () => apply('') },
+        ],
+      });
+      };
+      // وفاتورةٌ بلا مفتاح تشبهها (سُجّلت يدوياً أو قبل الهجرة ٥٤): يُسأل المستخدم قبل التعبئة ولا تُسجَّل مرتين بلا كلمة (المدقق الخارجي R٣)
+      const like = dup ?? purchaseLookalike(db, { vat: r.qr.vatNo, seller: r.qr.sellerName, date: d.date, total: d.totalHalalas, tax: d.taxHalalas });
+      if (like) {
+        dialog({
+          title: t('purchaseQr.maybeDuplicate'), body: t('purchaseQr.maybeDuplicateBody', { no: like.no, date: like.date }),
+          actions: [
+            { label: t('purchaseQr.anotherInvoice'), variant: 'primary', onPress: () => { if (seq === qrSeq.current) choose(); } },
+            { label: t('common.cancel'), variant: 'ghost' },
+          ],
+        });
+        return;
+      }
+      choose();
+    } catch (e) {
+      // وما يرمي بعد القراءة (فكّ الرمز والمسودة) يُقال ولا يبقى وعداً مرفوضاً بلا رسالة (المدقق الخارجي L٥)
+      reportFailure({ title: t('purchaseQr.notRead'), where: t('purchaseQr.read', { lng: 'ar' }), db, e });
+    } finally { setQrBusy(false); }
+  };
+  const startQr = () => dialog({
+    title: t('purchaseQr.from'),
+    actions: [
+      { label: t('purchaseQr.camera'), variant: 'primary', onPress: async () => { const f = await captureWithCamera(['images']); if (f) await fillFromQr(f); } },
+      { label: t('purchaseQr.gallery'), onPress: async () => { const f = await pickFromGallery(['images']); if (f) await fillFromQr(f); } },
+      { label: t('purchaseQr.file'), onPress: async () => {
+        const f = await pickFile(['application/pdf', 'text/xml', 'application/xml']);
+        if (f) await fillFromQr(f, 'file');
+      } },
+      { label: t('common.cancel'), variant: 'ghost' },
+    ],
+  });
   const openEdit = useCallback((id: string) => {
     const p = db.get<{
       supplier_name: string; date: string; due: string; category: string; incorp_item: string;
       amortize: number; amortize_months: number | null; exempt: number; exclude_from_vat: number;
       tax_status: string; exclude_reason: string; supplier_vatno: string;
       unit_id: string | null; property_id: string | null; subtotal_halalas: number;
+      meter_id: string | null; meter_reading: number | null;
     }>(`SELECT * FROM purchases WHERE id = ?`, [id]);
     if (!p) return;
+    // ولا يبقى من فاتورةٍ جديدة لم تُحفظ ملفٌ معلّق أو رمزٌ مقروء (المدقق الخارجي L٦: كان يُرفق صامتاً بالفاتورة المعدّلة)
+    setPendingFile(null); setQrKey(''); setQrFile(null); qrSeq.current++;
     setEditingId(id);
     setSupplier(p.supplier_name); setDate(p.date); setDue(p.due); setCategory(p.category);
     setIncorpItem(p.incorp_item); setAmortize(!!Number(p.amortize));
@@ -389,7 +518,8 @@ export default function Purchases() {
     const u = p.unit_id ? db.get<{ property_id: string }>(`SELECT property_id FROM units WHERE id = ?`, [p.unit_id]) : undefined;
     setPropertyId(p.property_id ?? u?.property_id ?? '');
     setUnitSel(p.unit_id ? 'U:' + p.unit_id : p.property_id ? 'P:' + p.property_id : '');
-    setMeterId(''); setMeterReading('');
+    // العداد وقراءته من الفاتورة، فلا يُفكّ ربطه بحفظ التعديل (E-7)
+    setMeterId(p.meter_id ?? ''); setMeterReading(p.meter_reading != null ? String(p.meter_reading) : '');
     setSubtotal(fmt(Number(p.subtotal_halalas)).replace(/,/g, ''));
     setTaxStr(fmt(Number((p as unknown as { tax_halalas: number }).tax_halalas)).replace(/,/g, ''));
     setTotalStr(fmt(Number((p as unknown as { total_halalas: number }).total_halalas)).replace(/,/g, ''));
@@ -413,7 +543,8 @@ export default function Purchases() {
   // والمبالغ يُدخلها المستخدم، والحفظ بمسار الخدمة وصلاحيتها كما هما
   useEffect(() => {
     if (params.newNote === undefined && params.newProperty === undefined) return;
-    if (!perm.add || !suppliers.length) return;
+    // وبلا موردين يُفتح كما يُفتح من زرّه (المدقق الخارجي P٨: كان يعود صامتاً، والمورد يُضاف من الرمز أو قبل الحفظ)
+    if (!perm.add) return;
     openNew();
     if (params.newNote) setLines([{ ...emptyLine(), descr: String(params.newNote).slice(0, 200) }]);
     if (params.newProperty && properties.some((p) => p.id === String(params.newProperty))) {
@@ -447,11 +578,12 @@ export default function Purchases() {
         meterId: meterId || null,
         meterReading: meterReading.trim() ? parseFloat(meterReading) : null,
         lines: lines.length ? lines.map(toLineInput) : undefined,
+        qrKey: editingId ? undefined : qrKey || undefined,
       }, editingId ?? undefined);
       if (pendingFile) {
         attachPicked(db, pendingFile, 'purchase', savedId, 'purchase').catch((e) => reportFailure({ title: 'تعذّر رفع الملف', e }));
       }
-      setFormOpen(false); bump();
+      qrSeq.current++; setFormOpen(false); bump();
       toast(editingId ? 'تم تحديث الفاتورة وإعادة ترحيلها محاسبياً' : 'تم تسجيل الفاتورة وترحيلها محاسبياً');
     } catch (e) {
       reportFailure({ title: 'تعذّر الحفظ', e });
@@ -491,10 +623,13 @@ export default function Purchases() {
       body: 'سيُعكَس أثره المحاسبي بالكامل.',
       actions: [
         { label: 'تراجع', variant: 'ghost' },
-        { label: 'تأكيد', variant: 'primary', onPress: () => { unmarkPurchasePaid(db, id); bump(); toast('تم التراجع عن السداد'); } },
+        { label: 'تأكيد', variant: 'primary', onPress: () => {
+          try { unmarkPurchasePaid(db, id); bump(); toast('تم التراجع عن السداد'); }
+          catch (e) { reportFailure({ title: t('purchase.undoPayFailed'), e }); }
+        } },
       ],
     });
-  }, [db, bump, toast, dialog]);
+  }, [db, bump, toast, dialog, t]);
   const doDelete = useCallback((id: string) => {
     dialog({
       title: 'حذف الفاتورة',
@@ -502,18 +637,32 @@ export default function Purchases() {
       tone: 'danger',
       actions: [
         { label: 'تراجع', variant: 'ghost' },
-        { label: 'حذف', variant: 'danger', onPress: () => { deletePurchase(db, id); bump(); toast('تم الحذف · يمكن استعادته من الإعدادات'); } },
+        { label: 'حذف', variant: 'danger', onPress: () => {
+          try { deletePurchase(db, id); bump(); toast('تم الحذف · يمكن استعادته من الإعدادات'); }
+          catch (e) { reportFailure({ title: t('purchase.deleteFailed'), e }); }
+        } },
       ],
     });
-  }, [db, bump, toast, dialog]);
+  }, [db, bump, toast, dialog, t]);
   const vatFiled = useCallback((id: string) => {
     try { markVatFiled(db, id); bump(); toast('حُدّثت حالة الاسترداد'); }
     catch (e) { reportFailure({ title: 'تعذّر تحديث حالة الاسترداد', e }); }
   }, [db, bump, toast, dialog]);
   const vatRefunded = useCallback((id: string) => {
-    try { markVatRefunded(db, id, todayFn()); bump(); toast('سُجّل الاسترداد وأُقفل 1270'); }
-    catch (e) { reportFailure({ title: 'تعذّر تسجيل الاسترداد', e }); }
-  }, [db, bump, toast, dialog]);
+    const p = db.get<{ no: string; tax: number }>(`SELECT no, tax_halalas AS tax FROM purchases WHERE id = ?`, [id]);
+    if (!p) return;
+    setRefundFor({ id, no: p.no, tax: Number(p.tax) });
+    setRefundDate(todayFn());
+    setRefundMethod(banks.length ? 'bank' : 'cash');
+    setRefundBank(banks[0]?.id ?? '');
+  }, [db, banks]);
+  const saveRefund = () => {
+    if (!refundFor) return;
+    try {
+      markVatRefunded(db, refundFor.id, refundDate, refundMethod === 'bank' ? refundBank : null);
+      setRefundFor(null); bump(); toast(t('purchase.refundDone'));
+    } catch (e) { reportFailure({ title: 'تعذّر تسجيل الاسترداد', e }); }
+  };
   const vatRejected = useCallback((id: string) => {
     try { markVatRejected(db, id, todayFn()); bump(); toast('حُمّلت الضريبة على المصروف'); }
     catch (e) { reportFailure({ title: 'تعذّر تسجيل الرفض', e }); }
@@ -551,7 +700,7 @@ export default function Purchases() {
       category={item.category} subtotalHalalas={Number(item.subtotal_halalas)} taxHalalas={Number(item.tax_halalas)}
       totalHalalas={Number(item.total_halalas)} exempt={Number(item.exempt)} excludeFromVat={Number(item.exclude_from_vat)}
       paid={Number(item.paid)} taxStatus={item.tax_status ?? ''} refundStatus={item.refund_status ?? ''}
-      hasOriginal={!!Number(item.att_n)} canManage={perm.manage} filedLocked={isPurchaseFiled(db, item.id)}
+      hasOriginal={!!Number(item.att_n)} canManage={perm.manage} deleteLocked={!!purchaseDeleteBlock(db, item.id)}
       editLocked={!!purchaseEditBlock(db, item.id)}
       onDetail={openDetail} onPay={openPay} onEdit={openEdit} onUndoPay={undoPay} onPrint={printOriginal} onDelete={doDelete}
       onVatFiled={vatFiled} onVatRefunded={vatRefunded} onVatRejected={vatRejected}
@@ -562,6 +711,7 @@ export default function Purchases() {
   const [imbalance, setImbalance] = useState<{ bh: number; xh: number; gh: number } | null>(null);
 
   const save = () => {
+    if (!supplier.trim()) { toast('أضف مورداً أولاً'); return; }
     if (taxStatus === TS_DEDUCTIBLE) {
       if (!(selectedSupplier?.vat ?? '').trim()) {
         dialog({
@@ -600,7 +750,7 @@ export default function Purchases() {
   return (
     <Screen title="فواتير الشراء" icon="wrench" scroll={false}
       /* لا مورد فلا فاتورة شراء تُسجَّل · الزر لا يُعرض بدل أن يُعرض ويرفض */
-      actions={suppliers.length && perm.add ? <BtnPrimary small title="+ تسجيل فاتورة شراء" onPress={openNew} /> : undefined}>
+      actions={perm.add ? <BtnPrimary small title="+ تسجيل فاتورة شراء" onPress={openNew} /> : undefined}>
       {!ready ? <Skeleton /> : (
         <FlatList
           data={rows}
@@ -651,13 +801,19 @@ export default function Purchases() {
       </FilterSheet>
 
       {/* نافذة التسجيل */}
-      <Sheet visible={formOpen} onClose={() => setFormOpen(false)}
+      {/* والإغلاق يُبطل قراءةً جارية كما يُبطلها فتح فاتورةٍ أخرى (المدقق الخارجي P٦) */}
+      <Sheet visible={formOpen} onClose={() => { qrSeq.current++; setFormOpen(false); }}
         title={editingId ? 'تعديل فاتورة الشراء' : 'تسجيل فاتورة شراء / التزام'} tall
         footer={
           <>
             <View style={{ flex: 1 }}><BtnPrimary title={editingId ? 'حفظ التعديل' : 'تسجيل الفاتورة'} onPress={save} /></View>
           </>
         }>
+        {!editingId ? (
+          <View style={{ marginBottom: 10 }}>
+            <BtnGhost small icon="invoice" title={qrBusy ? t('purchaseQr.reading') : t('purchaseQr.read')} onPress={qrBusy ? () => undefined : startQr} />
+          </View>
+        ) : null}
         <SelectField label="المورد / الجهة" value={selectedSupplier?.id ?? ''}
           display={supplier || undefined}
           options={suppliers.map((s) => ({ value: s.id, label: s.name, sub: s.utility_type ? 'مورد ' + s.utility_type : undefined }))}
@@ -671,7 +827,7 @@ export default function Purchases() {
           }} />
         <Row>
           <View style={{ flex: 1 }}><DateField label="تاريخ الفاتورة" value={date} onChange={setDate} /></View>
-          <View style={{ flex: 1 }}><DateField label="تاريخ الاستحقاق" value={due} onChange={setDue} /></View>
+          <View style={{ flex: 1 }}><DateField label="تاريخ الاستحقاق" value={due} onChange={setDue} optional /></View>
         </Row>
         <CostCenterField value={cc} onChange={setCc} />
         <Field label="الفئة" value={category} onChange={setCategory} />
@@ -744,7 +900,9 @@ export default function Purchases() {
           </View>
         </Row>
         <SelectField label="الوضع الضريبي" value={taxStatus}
-          options={TAX_STATUSES.map((v) => ({ value: v, label: v }))}
+          // «قابلة للخصم» للمنشأة المسجّلة، أو لفاتورةٍ هي كذلك من زمن التسجيل (القاعدة ٩٩ · القرارات المعلّقة القسم ٥ البند ١٣)
+          options={taxStatusesFor(db, editingId ? db.get<{ s: string }>(`SELECT tax_status AS s FROM purchases WHERE id = ?`, [editingId])?.s : null)
+            .map((v) => ({ value: v, label: v }))}
           onPick={(v) => {
             setTaxStatus(v);
             if (v === TS_EXEMPT || v === TS_ZERO) { setTaxStr('0'); setTotalStr(subtotal); }
@@ -885,7 +1043,7 @@ export default function Purchases() {
         // النقد المطلوب: الطرق النقدية ناقص ما يعيده عكس سدادٍ نقدي سابق · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
         const cashNeed = payLines.filter((l) => l.method === 'cash').reduce((s, l) => s + toHalalas(l.amount), 0)
           - priorPaymentCashOut(db, payFor);
-        const cashOk = cashShortfall(db, cashNeed) <= 0;
+        const cashOk = cashShortfall(db, cashNeed, payDate) <= 0; // بتاريخ السداد (A2.8)
         const doPay = () => {
           try {
             withCostCenter(payCc, () => payPurchaseSplit(db, payFor,
@@ -931,7 +1089,7 @@ export default function Purchases() {
           }>
           <DateField label="تاريخ السداد" value={payDate} onChange={setPayDate} />
           <CostCenterField value={payCc} onChange={setPayCc} />
-          <CashShortNote needed={cashNeed} what="سداد الفاتورة نقداً" />
+          <CashShortNote needed={cashNeed} what="سداد الفاتورة نقداً" date={payDate} />
           {payLines.map((l, i) => (
             <View key={i} style={{ borderWidth: 1, borderColor: C.line, borderRadius: 9, padding: 9, marginBottom: 8 }}>
               <SelectField label="الطريقة" value={l.method}
@@ -956,7 +1114,7 @@ export default function Purchases() {
               )}
             </View>
           ))}
-          <BtnGhost small title="+ إضافة طريقة سداد أخرى (دفع بأكثر من طريقة)"
+          <BtnGhost small title="+ طريقة سداد أخرى"
             onPress={() => setPayLines((p) => [...p, { method: 'cash', bankId: banks[0]?.id ?? '', amount: '' }])} />
           <View style={{
             marginTop: 10, borderRadius: 8, padding: 11, alignItems: 'center',
@@ -969,6 +1127,29 @@ export default function Purchases() {
         </Sheet>
         );
       })()}
+
+      {refundFor && (
+        <Sheet visible onClose={() => setRefundFor(null)} title={t('purchase.refundTitle')}
+          footer={
+            // بنكٌ لم يُختر فلا تسجيل · الزر لا يُعرض بدل أن يُعرض معطَّلاً
+            refundMethod === 'cash' || refundBank ? (
+              <View style={{ flex: 1 }}><BtnPrimary title={t('purchase.refundSave')} onPress={saveRefund} /></View>
+            ) : undefined
+          }>
+          <T size={12.5} style={{ marginBottom: 8 }}>{t('purchase.refundAmount', { amount: fmt(refundFor.tax), no: refundFor.no })}</T>
+          <DateField label={t('purchase.refundDate')} value={refundDate} onChange={setRefundDate} />
+          {/* بلا حساب بنكي فالاسترداد نقداً وحده · فلا يُعرض اختيار الطريقة */}
+          {banks.length ? (
+            <SelectField label={t('purchase.refundMethod')} value={refundMethod}
+              options={[{ value: 'bank', icon: 'bank', label: t('common.bank') }, { value: 'cash', icon: 'cash', label: t('common.cash') }]}
+              onPick={(v) => setRefundMethod(v as 'bank' | 'cash')} />
+          ) : null}
+          {refundMethod === 'bank' && banks.length ? (
+            <SelectField label={t('purchase.refundBank')} value={refundBank}
+              options={banks.map((b) => ({ value: b.id, label: b.name }))} onPick={setRefundBank} />
+          ) : null}
+        </Sheet>
+      )}
     </Screen>
   );
 }

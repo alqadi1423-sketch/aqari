@@ -287,9 +287,6 @@ export async function ensureLocal(
 
 /* ═══════════ الذاكرة المؤقتة ═══════════ */
 
-/** الحدّ الافتراضي للذاكرة المؤقتة · ٥٠٠ م.ب */
-export const DEFAULT_CACHE_LIMIT = 500 * 1024 * 1024;
-
 export interface CacheUsage {
   /** ما رُفع ويُحذف عند الحاجة */
   cachedBytes: number;

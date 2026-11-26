@@ -12,20 +12,21 @@ import { useApp } from './store';
 import { useToast } from './Toast';
 import { usePerm } from './access';
 import { reportFailure } from './failureDialog';
-import { cashShortfall } from '../domain/cashGuard';
+import { cashShortfall, walletLowFrom } from '../domain/cashGuard';
 import { walletCashBalance } from '../domain/accounting/ledger';
 import { ownerCashIn } from '../domain/cashOps';
 import { fmt, toHalalas } from '../domain/money';
-import { today } from '../domain/dates';
+import { today, dfmt } from '../domain/dates';
+import { useLang } from '../i18n';
 
 import { CostCenterField } from './CostCenters';
 import { GENERAL_COST_CENTER, withCostCenter } from '../domain/accounting/dimensions';
-/** نافذة «إيداع المالك» معبّأة بمبلغ */
-export function OwnerCashInSheet({ amountHalalas, onClose }: { amountHalalas: number; onClose: () => void }) {
+/** نافذة «إيداع المالك» معبّأة بمبلغ · وبتاريخ العملية إن سبقت اليوم، فيكفي النقد من يومها (A2.8) */
+export function OwnerCashInSheet({ amountHalalas, onClose, date: opDate }: { amountHalalas: number; onClose: () => void; date?: string | null }) {
   const { db, bump } = useApp();
   const toast = useToast();
   const [amount, setAmount] = useState(fmt(amountHalalas).replace(/,/g, ''));
-  const [date, setDate] = useState(today());
+  const [date, setDate] = useState(opDate && opDate < today() ? opDate : today());
   const [notes, setNotes] = useState('');
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
   const v = toHalalas(amount);
@@ -46,20 +47,28 @@ export function OwnerCashInSheet({ amountHalalas, onClose }: { amountHalalas: nu
   );
 }
 
-/** سبب عدم الكفاية ورابط الإيداع · null إن كفى النقد */
-export function CashShortNote({ needed, what }: { needed: number; what: string }) {
+/**
+ * سبب عدم الكفاية ورابط الإيداع · null إن كفى النقد · وبتاريخ العملية (date): بأدنى رصيدٍ للمحفظة منه فما بعده، والسبب يذكر اليوم الذي
+ * لا يكفي فيه إن كان رصيده دون الرصيد الآن (المراجعة الشاملة 2026-11-13 · A2.8)
+ */
+export function CashShortNote({ needed, what, date }: { needed: number; what: string; date?: string | null }) {
   const { db, version } = useApp();
+  const { t } = useLang();
   const canDeposit = usePerm('banks').add;
   const [open, setOpen] = useState(false);
   void version; // تُعاد القراءة بعد كل كتابة
-  const short = cashShortfall(db, needed);
+  const short = cashShortfall(db, needed, date);
   if (short <= 0) return null;
-  const have = Math.max(0, walletCashBalance(db));
+  const now = walletCashBalance(db);
+  const low = walletLowFrom(db, date);
+  const have = Math.max(0, low.low);
   return (
     <View style={{ marginBottom: 8 }}>
-      <Note tone="danger">{'النقد في المحفظة ' + fmt(have) + ' لا يكفي: ' + what + ' بمبلغ ' + fmt(needed) + ' · ينقصه ' + fmt(short)}</Note>
+      <Note tone="danger">{low.at && low.low < now
+        ? t('bankTx.walletShortOn', { at: dfmt(low.at), available: fmt(have), what, amount: fmt(needed), short: fmt(short) })
+        : 'النقد في المحفظة ' + fmt(have) + ' لا يكفي: ' + what + ' بمبلغ ' + fmt(needed) + ' · ينقصه ' + fmt(short)}</Note>
       {canDeposit ? <BtnGhost small icon="plus" title={'إيداع المالك · ' + fmt(short)} onPress={() => setOpen(true)} /> : null}
-      {open ? <OwnerCashInSheet amountHalalas={short} onClose={() => setOpen(false)} /> : null}
+      {open ? <OwnerCashInSheet amountHalalas={short} date={date} onClose={() => setOpen(false)} /> : null}
     </View>
   );
 }
@@ -78,15 +87,15 @@ export function DepositLink({ amountHalalas }: { amountHalalas: number }) {
 }
 
 /** الزر حين يكفي النقد · وإلا السبب ورابط الإيداع مكانه */
-export function CashGate({ needed, what, children }: { needed: number; what: string; children: React.ReactNode }) {
+export function CashGate({ needed, what, children, date }: { needed: number; what: string; children: React.ReactNode; date?: string | null }) {
   const { db, version } = useApp();
   void version;
-  return cashShortfall(db, needed) > 0 ? <CashShortNote needed={needed} what={what} /> : <>{children}</>;
+  return cashShortfall(db, needed, date) > 0 ? <CashShortNote needed={needed} what={what} date={date} /> : <>{children}</>;
 }
 
-/** هل يكفي النقد · لما يُبنى زرّه في قائمة (حوار أو قائمة إجراءات) */
-export function useCashOk(needed: number): boolean {
+/** هل يكفي النقد · لما يُبنى زرّه في قائمة (حوار أو قائمة إجراءات) · وبتاريخ العملية من يومها فما بعده (A2.8) */
+export function useCashOk(needed: number, date?: string | null): boolean {
   const { db, version } = useApp();
   void version;
-  return cashShortfall(db, needed) <= 0;
+  return cashShortfall(db, needed, date) <= 0;
 }

@@ -13,12 +13,11 @@ import { legalUrls as legalUrlsOf } from '../domain/legal';
 import { useLang } from '../i18n';
 import { inviteChoices } from '../services/org';
 import React, { useEffect, useState } from 'react';
-import { View, Pressable, ActivityIndicator, Linking, ScrollView } from 'react-native';
-import { T, BtnPrimary, BtnGhost, Note } from './components';
+import { View, Pressable, Linking, ScrollView } from 'react-native';
+import { T, BtnPrimary, BtnGhost, Note, StageProgress } from './components';
 import { C, TYPE } from './theme';
 import { useApp } from './store';
 import { reportFailure, copyFailureDetails } from './failureDialog';
-import { t } from '../i18n';
 import { cloudConfig } from '../cloud/config';
 import { signInFailureText } from '../cloud/signInFailure';
 import {
@@ -30,7 +29,7 @@ import { readMembership } from '../services/access';
 import { profileIncomplete } from '../domain/access/profile';
 import { MyProfileForm } from './ProfileForm';
 import { getSyncState } from '../sync/engine';
-import { DecisionSheet } from './DecisionSheet';
+import { DecisionGate } from './DecisionSheet';
 
 /** صفحتا الشروط والخصوصية · لا يظهر رابطاهما قبل نشرهما (src/domain/legal.ts · مراجعة التثبيت #45) */
 export function legalUrls(): { terms: string; privacy: string } | null {
@@ -67,8 +66,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (!cloud.configured) return <>{children}</>;
   const spinner = (msg?: string) => (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: C.paper }}>
-      <ActivityIndicator color={C.emerald} size="large" />
-      {msg ? <T size={TYPE.body} color={C.muted} style={{ marginTop: 12 }}>{msg}</T> : null}
+      <StageProgress label={msg ?? t('common.loading')} />
     </View>
   );
   if (!cloud.restored) return spinner();
@@ -82,7 +80,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   if (cloud.user) {
     const email = cloud.user.email;
-    if (cloud.gate === 'switching' || needsActivation) return spinner('جاري فتح بيانات حساب ' + email);
+    // ونسخة ما قبل الترقية لحسابٍ عاد ببنيةٍ أقدم تظهر خطوتها هنا كبوابة الترقية (C-4)
+    if (cloud.gate === 'switching' || needsActivation) return spinner(cloud.progress ?? 'جاري فتح بيانات حساب ' + email);
     // التحقق من الدعوات لم يتمّ · لا يُفترض الداخل مالكاً ولا تُنشأ له منشأة
     if (cloud.gate === 'retry') {
       return (
@@ -160,7 +159,8 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
         );
       }
       // ما ينتظر قرار المستخدم يظهر فوق التطبيق ولا يُنفَّذ بدونه
-      return <>{children}{cloud.decision ? <DecisionSheet decision={cloud.decision} /> : null}</>;
+      // وحاجز أخطاء حولها يُغلق كـ«لاحقاً»: عطلٌ فيها لا يُسقط التطبيق كله (G-2 · P0-13)
+      return <>{children}{cloud.decision ? <DecisionGate decision={cloud.decision} /> : null}</>;
     }
     return spinner();
   }

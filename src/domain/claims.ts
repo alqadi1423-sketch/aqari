@@ -3,10 +3,11 @@
  */
 import { t } from '../i18n';
 import type { DB } from '../db/adapter';
-import { uid } from './ids';
+import { uid, rowId } from './ids';
 import { today } from './dates';
 import { postClaim, postClaimCollection, reverseEntryBySource } from './accounting/post';
 import { logAudit } from './audit';
+import { REPOSTED_KEY } from './accounting/orphans';
 import { correctionDate, requireOpenPeriod } from './vatFilings';
 import { propertyMoveLocked, type Access } from './access/access';
 
@@ -49,13 +50,15 @@ export function saveClaim(db: DB, input: ClaimInput, existingId?: string, opts: 
       );
       // تعديل مطالبة مفتوحة بمبلغ أو تاريخ أو عقد مختلف: عكس القيد القديم بأبعاده وترحيل الجديد بتاريخه (المراجعة ٤.١٧)
       // بعد تحديثها، فتُشتق أبعاده من عقدها الجديد (#34)
-      if (cl.status === 'مفتوحة' && (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date // i18n-exempt: حالة مخزّنة
-        || prevContract !== input.contractId)) {
+      const reposted = cl.status === 'مفتوحة' && (Number(cl.amount_halalas) !== input.amountHalalas || cl.date !== input.date // i18n-exempt: حالة مخزّنة
+        || prevContract !== input.contractId);
+      if (reposted) {
         reverseEntryBySource(db, 'claim', existingId, 'تعديل مطالبة · عكس القيد السابق');
         // قيد القيم الجديدة قيدُ تصحيح: بتاريخ المطالبة، إلا في فترةٍ قُدِّم إقرارها فاليوم كعكسه (#29)
         postClaim(db, { id: existingId, amount: input.amountHalalas, reason: input.reason, date: correctionDate(db, input.date) });
       }
-      logAudit(db, 'المطالبات', 'update', 'مطالبة', input.reason || existingId);
+      // وتعديلٌ أعاد ترحيل قيدها يسمّيها (REPOSTED_KEY): فعكس قيدها المعلَّم بعد استعادةٍ قبله صار له مستند (orphans.ts)
+      logAudit(db, 'المطالبات', 'update', 'مطالبة', input.reason || existingId, undefined, reposted ? { [REPOSTED_KEY]: existingId } : undefined);
       return existingId;
     }
     const id = uid();
@@ -70,17 +73,29 @@ export function saveClaim(db: DB, input: ClaimInput, existingId?: string, opts: 
   });
 }
 
-/** تحصيل مطالبة مفتوحة */
-export function collectClaim(db: DB, id: string, date: string = today()): void {
+/**
+ * تحصيل مطالبة مفتوحة · نقداً، أو في حسابٍ بنكي (bankId): القيد نفسه (مدين النقدية 1100) وحركة بنكٍ برقمه كتحصيل الإيجار بتحويل
+ * (كشف البنك · قرار المالك 2026-10-09 ج.١: الإيداع يُطابَق بالمطالبة)
+ */
+export function collectClaim(db: DB, id: string, date: string = today(), bankId?: string | null): string | null {
   requireOpenPeriod(db, date); // المراجعة الشاملة · البند ٩: لا ترحيل ولا نقد في ربعٍ قُدِّم إقراره
-  db.transaction(() => {
+  return db.transaction(() => {
     const cl = db.get<{ amount_halalas: number; reason: string; status: string }>(
       `SELECT amount_halalas, reason, status FROM claims WHERE id = ?`, [id]
     );
     if (!cl || cl.status !== 'مفتوحة') throw new Error('المطالبة غير مفتوحة');
-    postClaimCollection(db, { id, amount: Number(cl.amount_halalas), reason: cl.reason }, date);
+    if (bankId && !db.get(`SELECT 1 FROM banks WHERE id = ? AND deleted_at IS NULL`, [bankId])) throw new Error(t('bankStatement.txMissing'));
+    const entry = postClaimCollection(db, { id, amount: Number(cl.amount_halalas), reason: cl.reason }, date);
+    let txId: string | null = null;
+    if (bankId && entry) {
+      txId = rowId();
+      db.run(`INSERT INTO bank_tx (id, bank_id, date, descr, amount_halalas, matched, journal_no, source, created_at) VALUES (?,?,?,?,?,1,?,?,?)`,
+        [txId, bankId, date, t('claims.bankCollectDescr', { reason: cl.reason, lng: 'ar' }), Number(cl.amount_halalas), entry.no,
+          t('claims.bankCollectSource', { lng: 'ar' }), new Date().toISOString()]);
+    }
     db.run(`UPDATE claims SET status = 'محصَّلة', collected_at = ? WHERE id = ?`, [date, id]);
     logAudit(db, 'المطالبات', 'update', 'تحصيل مطالبة', cl.reason || id);
+    return txId;
   });
 }
 
@@ -95,6 +110,8 @@ export function deleteClaim(db: DB, id: string): void {
     if (cl.status !== 'مفتوحة') throw new Error(t('claims.collectedNoDelete')); // i18n-exempt: حالة مخزّنة
     reverseEntryBySource(db, 'claim', id, 'حذف مطالبة · عكس قيدها');
     db.run(`UPDATE claims SET deleted_at = ? WHERE id = ?`, [new Date().toISOString(), id]);
-    logAudit(db, 'المطالبات', 'delete', 'مطالبة', cl.reason || id);
+    // وبمعرّفها (REPOSTED_KEY): الحذف يعكس قيدها الحيّ، فعكس قيدها المعلَّم بعد استعادةٍ ضمّته صار له مستند وتعود المطابقة كاملة
+    // (المراجع المعاكس الرابع على R12-BAK-2: كان يبقى خارجها أبداً ويحمرّ فحص المطالبات بمبلغها)
+    logAudit(db, 'المطالبات', 'delete', 'مطالبة', cl.reason || id, undefined, { [REPOSTED_KEY]: id });
   });
 }

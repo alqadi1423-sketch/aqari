@@ -1,6 +1,7 @@
 /**
- * النسخ على Google Drive · نطاق drive.appdata وحده: مجلد مخفي يخصّ التطبيق، لا يرى غيره
- * من ملفات المستخدم ولا يراه غيره.
+ * النسخ على Google Drive · نطاق drive.appdata: مجلد مخفي يخصّ التطبيق، لا يرى غيره من ملفات المستخدم ولا يراه غيره ·
+ * ومعه نسخةٌ في مجلدٍ ظاهر «عقاري · نسخ احتياطية» في Drive المستخدم (التوجيه الرابع ٤ · ٣ · قرار المالك 2026-11-07 «نسخة في مجلد
+ * ظاهر على Drive») بنطاق drive.file: يرى التطبيق ما أنشأه وحده، فلا يقرأ شيئاً آخر من ملفات المستخدم.
  *
  *  - الرفع: ملف .aqbk نفسه بعد اجتيازه كل تحققات الإنشاء · رفعٌ مستأنَف يبثّ الملف من القرص،
  *    ثم تُقارن بصمة SHA-256 التي حسبها Drive ببصمة الملف المحلي، وعدم التطابق يحذف المرفوع ويرفض.
@@ -8,6 +9,7 @@
  * منطق خالص · النقل الفعلي يُحقن (expo-file-system على الجهاز، ونسخة وهمية في الاختبارات).
  */
 import { throwIfCancelled, type CancelSignal, type ProgressFn } from '../domain/progress';
+import { t } from '../i18n';
 
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
@@ -35,12 +37,17 @@ export interface DriveBackup {
   encrypted?: boolean;
   /** فيها ملاحظات محاسبية (checks.ts) */
   notes?: boolean;
+  /** رُفعت المخفية وتعذّرت النسخة في المجلد الظاهر · سببه بالعربية (المدقق الخارجي D٤) */
+  visibleFailed?: string;
 }
 
 export class DriveError extends Error {
-  constructor(detail: string) {
+  /** رمز HTTP إن جاء من الرد (403 لنطاقٍ لم يُمنح بعد) */
+  status?: number;
+  constructor(detail: string, status?: number) {
     super('Google Drive: ' + detail);
     this.name = 'DriveError';
+    this.status = status;
   }
 }
 
@@ -50,21 +57,34 @@ function auth(token: string, extra: Record<string, string> = {}) {
 
 async function json<T>(res: Response, what: string): Promise<T> {
   const text = await res.text();
-  if (res.status === 401 || res.status === 403) throw new DriveError(`رُفض الوصول أثناء ${what} · سجّل الدخول من جديد`);
+  if (res.status === 401 || res.status === 403) throw new DriveError(`رُفض الوصول أثناء ${what} · سجّل الدخول من جديد`, res.status);
   if (!res.ok) throw new DriveError(`تعذّر ${what} (${res.status})`);
   return (text ? JSON.parse(text) : {}) as T;
 }
 
+/**
+ * قائمة ملفات Drive كلها صفحةً بعد صفحة (المدقق الخارجي H٥ وH٦): عقد files.list يقول إن الصفحة قد تأتي ناقصةً أو فارغةً قبل نهاية القائمة،
+ * فالنهاية غياب nextPageToken وحده · بسقف صفحاتٍ يحمي من حلقة
+ */
+async function listAll<T>(io: DriveIO, token: string, params: Record<string, string>, what: string): Promise<T[]> {
+  const out: T[] = [];
+  let pageToken = '';
+  for (let page = 0; page < 1000; page++) {
+    const q = new URLSearchParams({ ...params, fields: 'nextPageToken,' + params.fields, ...(pageToken ? { pageToken } : {}) });
+    const j = await json<{ files?: T[]; nextPageToken?: string }>(await io.fetch(`${API}/files?${q.toString()}`, { headers: auth(token) }), what);
+    out.push(...(j.files ?? []));
+    if (!j.nextPageToken || j.nextPageToken === pageToken) break;
+    pageToken = j.nextPageToken;
+  }
+  return out;
+}
+
 export async function listDriveBackups(io: DriveIO, token: string): Promise<DriveBackup[]> {
-  const q = new URLSearchParams({
-    spaces: 'appDataFolder',
-    orderBy: 'createdTime desc',
-    pageSize: '50',
-    fields: 'files(id,name,size,createdTime,sha256Checksum,appProperties)',
-  });
-  const res = await io.fetch(`${API}/files?${q.toString()}`, { headers: auth(token) });
-  const j = await json<{ files?: Array<{ id: string; name: string; size?: string; createdTime: string; sha256Checksum?: string; appProperties?: Record<string, string> }> }>(res, 'قراءة النسخ');
-  return (j.files ?? []).map((f) => ({
+  // كل النسخ في المجلد المخفي، لا أول خمسين (H٦: ما قبلها لا يُستعاد من التطبيق، والمجلد المخفي لا يُرى في Drive)
+  const files = await listAll<{ id: string; name: string; size?: string; createdTime: string; sha256Checksum?: string; appProperties?: Record<string, string> }>(
+    io, token, { spaces: 'appDataFolder', orderBy: 'createdTime desc', pageSize: '100', fields: 'files(id,name,size,createdTime,sha256Checksum,appProperties)' },
+    'قراءة النسخ');
+  return files.map((f) => ({
     id: f.id, name: f.name, size: Number(f.size ?? 0), createdTime: f.createdTime,
     sha256: (f.sha256Checksum ?? f.appProperties?.sha256 ?? '').toLowerCase(),
     encrypted: f.appProperties?.encrypted === '1',
@@ -91,7 +111,7 @@ export interface TransferOptions { onProgress?: ProgressFn; signal?: CancelSigna
 
 export async function uploadBackupToDrive(
   io: DriveIO, token: string, path: string, name: string,
-  opts: { encrypted?: boolean; notes?: boolean } & TransferOptions = {},
+  opts: { encrypted?: boolean; notes?: boolean; parents?: string[] } & TransferOptions = {},
 ): Promise<DriveBackup> {
   const local = (await io.sha256OfFile(path)).toLowerCase();
   const size = io.sizeOf(path);
@@ -102,9 +122,9 @@ export async function uploadBackupToDrive(
       'X-Upload-Content-Type': 'application/octet-stream',
       'X-Upload-Content-Length': String(size),
     }),
-    body: JSON.stringify({ name, parents: ['appDataFolder'], appProperties: { app: 'aqari', sha256: local, ...(opts.encrypted ? { encrypted: '1' } : {}), ...(opts.notes ? { notes: '1' } : {}) } }),
+    body: JSON.stringify({ name, parents: opts.parents ?? ['appDataFolder'], appProperties: { app: 'aqari', sha256: local, ...(opts.encrypted ? { encrypted: '1' } : {}), ...(opts.notes ? { notes: '1' } : {}) } }),
   });
-  if (init.status === 401 || init.status === 403) throw new DriveError('رُفض الوصول عند بدء الرفع · سجّل الدخول من جديد');
+  if (init.status === 401 || init.status === 403) throw new DriveError('رُفض الوصول عند بدء الرفع · سجّل الدخول من جديد', init.status);
   const session = init.headers.get('Location') ?? init.headers.get('location');
   if (!init.ok || !session) throw new DriveError(`تعذّر بدء رفع «${name}» (${init.status})`);
   throwIfCancelled(opts.signal);
@@ -123,7 +143,9 @@ export async function uploadBackupToDrive(
     try { await io.fetch(`${API}/files/${f.id}`, { method: 'DELETE', headers: auth(token) }); } catch { /* يبقى بلا قيمة */ }
     throw new DriveError(`بصمة «${name}» على Drive لا تطابق الملف المحلي · حُذف المرفوع ولم تُعتمد النسخة`);
   }
-  return { id: f.id, name: f.name ?? name, size, createdTime: f.createdTime ?? new Date().toISOString(), sha256: sha };
+  // وما رُفع به من وسمٍ يعود معه (المدقق الخارجي F٩: كان «فيها ملاحظات» لا يظهر بعد الرفع)
+  return { id: f.id, name: f.name ?? name, size, createdTime: f.createdTime ?? new Date().toISOString(), sha256: sha,
+    ...(opts.encrypted ? { encrypted: true } : {}), ...(opts.notes ? { notes: true } : {}) };
 }
 
 /** تنزيل نسخة إلى مسار محلي ومطابقة بصمتها · المطابقة شرط قبل أن يبدأ مسار الاستعادة */
@@ -143,15 +165,82 @@ export async function downloadBackupFromDrive(io: DriveIO, token: string, b: Dri
 }
 
 /** «حذف حسابي»: كل ملفات التطبيق في مجلده الخاص على Drive · يعيد عددها */
+const deleteError = (status: number) => new DriveError(`تعذّر حذف نسخة من Drive (${status})`);
+
 export async function deleteAllAppDataFiles(io: DriveIO, token: string): Promise<number> {
   let n = 0;
   for (;;) {
     const list = await listDriveBackups(io, token);
-    if (!list.length) return n;
+    if (!list.length) break;
     for (const b of list) {
       const res = await io.fetch(`${API}/files/${b.id}`, { method: 'DELETE', headers: auth(token) });
-      if (res.status !== 204 && res.status !== 404) throw new DriveError(`تعذّر حذف نسخة من Drive (${res.status})`);
+      if (res.status !== 204 && res.status !== 404) throw deleteError(res.status);
       n++;
     }
   }
+  // ونسخ التطبيق في المجلد الظاهر معها (المدقق الخارجي D٥: «حذف حسابي» يَعِد بحذف نسخ التطبيق على Drive)
+  return n + await deleteVisibleCopies(io, token);
 }
+
+/**
+ * نسخ التطبيق في المجلد الظاهر (بعلامتها) تُحذف · والمجلد يبقى: قد يضع فيه المستخدم غيرها، ونطاق drive.file لا يرى ما لم ينشئه التطبيق ·
+ * وحسابٌ لم يُمنح النطاق (403) لم تُرفع له نسخةٌ ظاهرة أصلاً
+ */
+async function deleteVisibleCopies(io: DriveIO, token: string): Promise<number> {
+  let folders: Array<{ id: string }>;
+  try {
+    folders = await listAll<{ id: string }>(io, token, {
+      q: `mimeType='${FOLDER_MIME}' and trashed=false and appProperties has { key='app' and value='${VISIBLE_FOLDER_TAG}' }`,
+      spaces: 'drive', fields: 'files(id)',
+    }, t('drive.findFolder'));
+  } catch (e) {
+    if (e instanceof DriveError && e.status === 403) return 0;
+    throw e;
+  }
+  let n = 0;
+  for (const f of folders) {
+    // كل نسخ التطبيق فيه صفحةً بعد صفحة إلى غياب الصفحة التالية، ثم تُحذف (F٨ وH٥: صفحةٌ فارغة قبل النهاية كانت توقف الحذف)
+    const files = await listAll<{ id: string }>(io, token, {
+      q: `'${f.id}' in parents and trashed=false and appProperties has { key='app' and value='aqari' }`,
+      spaces: 'drive', fields: 'files(id)', pageSize: '1000',
+    }, t('drive.findFolder'));
+    for (const x of files) {
+      const res = await io.fetch(`${API}/files/${x.id}`, { method: 'DELETE', headers: auth(token) });
+      if (res.status !== 204 && res.status !== 404) throw deleteError(res.status);
+      n++;
+    }
+  }
+  return n;
+}
+
+/** اسم المجلد الظاهر في Drive المستخدم، وعلامته في خصائص التطبيق (يُعرف بها ولو أعاد المستخدم تسميته) */
+export const VISIBLE_FOLDER_NAME = 'عقاري · نسخ احتياطية'; // i18n-exempt: اسم المجلد المخزَّن في Drive المستخدم
+const VISIBLE_FOLDER_TAG = 'aqari-backups';
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+
+/** معرّف المجلد الظاهر: ما أنشأه التطبيق من قبل (بعلامته، غير المحذوف)، وإلا يُنشأ في جذر Drive المستخدم */
+export async function ensureVisibleFolder(io: DriveIO, token: string): Promise<string> {
+  // والبحث صفحةً بعد صفحة: صفحةٌ أولى فارغة كانت تُنشئ مجلداً ظاهراً ثانياً (H٥)
+  const found = await listAll<{ id: string }>(io, token, {
+    q: `mimeType='${FOLDER_MIME}' and trashed=false and appProperties has { key='app' and value='${VISIBLE_FOLDER_TAG}' }`,
+    spaces: 'drive', fields: 'files(id,name)',
+  }, t('drive.findFolder'));
+  if (found.length) return found[0].id;
+  const made = await json<{ id: string }>(await io.fetch(`${API}/files?fields=id`, {
+    method: 'POST',
+    headers: auth(token, { 'Content-Type': 'application/json; charset=UTF-8' }),
+    body: JSON.stringify({ name: VISIBLE_FOLDER_NAME, mimeType: FOLDER_MIME, appProperties: { app: VISIBLE_FOLDER_TAG } }),
+  }), t('drive.makeFolder'));
+  if (!made.id) throw new DriveError(t('drive.makeFolderFailed'));
+  return made.id;
+}
+
+/** نسخةٌ من الملف نفسه (مشفّراً كما رُفع) في المجلد الظاهر، بمطابقة بصمته كالرفع الأول */
+export async function uploadVisibleCopy(
+  io: DriveIO, token: string, path: string, name: string,
+  opts: { encrypted?: boolean; notes?: boolean } & TransferOptions = {},
+): Promise<DriveBackup> {
+  const folder = await ensureVisibleFolder(io, token);
+  return uploadBackupToDrive(io, token, path, name, { ...opts, parents: [folder] });
+}
+

@@ -1,0 +1,71 @@
+# الجوال الافتراضي · ١٠ ب · مسح كل البيانات بكتابة «مسح»، ثم «استعادة» نسخة الأمان من «البيانات والمساحة»، فيعود العقار
+# (التوجيه الرابع ٤ · ١ «نسخ ثم مسح ثم استعادة ومطابقة») · يتبع ١٠ أ بلا مسح للحالة
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- tapOn: "المزيد"
+- scrollUntilVisible:
+    element: "الإعدادات"
+    direction: DOWN
+- tapOn: "الإعدادات"
+- scrollUntilVisible:
+    element: "امسح كل البيانات"
+    direction: DOWN
+# الزر آخر الصفحة، والتمرير يقف حين يظهر كله في حدود الشاشة ولو تحت شريط التنقل · على 2629bb7 وقف على [82,2268][998,2373]
+# وشريط التنقل من 2274، فوقعت النقرة (540, 2320) على زرّ «الرئيسية» وخرج التطبيق · تمريرةٌ أخرى تبلغ آخر الصفحة، وحشوها السفلي
+# (insets.bottom في Screen) يرفع الزر فوق الشريط
+- scroll
+- tapOn: "امسح كل البيانات"
+- tapOn:
+    id: "field-اكتب «مسح» للتأكيد"
+- inputText: "مسح"
+# لا hideKeyboard: يرسل زرّ الرجوع حين لا تُرى لوحة المفاتيح، فيغلق الورقة ويظهر «إغلاق بلا حفظ» (التشغيل 45828448176) ·
+# النقر على نص التحذير (ليس زراً) يُخفي اللوحة، فالورقة keyboardShouldPersistTaps="handled"
+- tapOn: "يُمسح كل شيء.*"
+- tapOn: "تنفيذ المسح"
+- extendedWaitUntil:
+    notVisible: "تنفيذ المسح"
+    timeout: 60000
+- takeScreenshot: 10b-wiped
+# الإعدادات شاشةٌ فوق التبويبات
+- tapOn: "رجوع"
+- tapOn: "العقارات"
+- assertNotVisible: "E2E Backup"
+- tapOn: "المزيد"
+- scrollUntilVisible:
+    element: "الإعدادات"
+    direction: DOWN
+- tapOn: "الإعدادات"
+# والمساحة وزرّ «استعادة» في وسط الصفحة: يُمرَّر حتى صفٍّ بعدهما («الملفات المؤقتة» تحت «بياناتك بالأرقام») فيبقيان فوق
+# شريط التنقل (على d2350af وقف «المساحة» على [817,2178][924,2232] والشريط من 2274)
+- scrollUntilVisible:
+    element: "الملفات المؤقتة"
+    direction: DOWN
+- tapOn: "المساحة"
+- scrollUntilVisible:
+    element: "الملفات المؤقتة"
+    direction: DOWN
+- tapOn: "استعادة"
+- extendedWaitUntil:
+    visible: "النسخة صالحة"
+    timeout: 60000
+- takeScreenshot: 10b-plan
+- tapOn: "متابعة الاستعادة"
+- extendedWaitUntil:
+    notVisible: "متابعة الاستعادة"
+    timeout: 60000
+- tapOn:
+    text: "حسناً"
+    optional: true
+- tapOn:
+    text: "رجوع"
+    optional: true
+- tapOn: "العقارات"
+- extendedWaitUntil:
+    visible: "E2E Backup"
+    timeout: 20000
+- takeScreenshot: 10b-restored

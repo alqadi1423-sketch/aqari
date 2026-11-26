@@ -4,7 +4,6 @@
  */
 import type { DB } from '../db/adapter';
 import { allAccounts, accountPeriodChange, hasDimFilter, dimConds, type DimFilter, allAccountMovements } from './accounting/ledger';
-import { fmt } from './money';
 import { dfmt, addDays } from './dates';
 import type { ReportBlock, Cell } from './officeBuild';
 import { t } from '../i18n';
@@ -21,8 +20,10 @@ export type FinStatement = 'income' | 'balance' | 'cash' | 'equity';
 
 /** قيود الأصول التي لا نقد فيها: الإهلاك وإهلاك ما فات وإعادة التصنيف والاستبعاد والنقل وإثبات التكلفة (الهجرة ٢٩) */
 // وعكسها (_rev) مثلها: عكسُ قيدٍ غير نقدي غير نقدي (التحقق المستقل: عكس إهلاك ما فات ظهر تشغيلياً واستثمارياً)
-const ASSET_ENTRY_TYPES = ['depreciation', 'asset_dep', 'asset_catchup', 'asset_convert', 'asset_dispose', 'asset_sell', 'asset_transfer', 'asset_cost']
-  .flatMap((x) => [x, x + '_rev']);
+// وقيد التراجع عن التحويل (asset_dep_undo · undoConversion) وعكسه: إهلاكٌ يُردّ بلا نقد (المراجعة الشاملة 2026-11-13 · A2.11: كان يظهر
+// تشغيلياً واستثمارياً)
+const ASSET_ENTRY_TYPES = ['depreciation', 'asset_dep', 'asset_catchup', 'asset_convert', 'asset_dispose', 'asset_sell', 'asset_transfer', 'asset_cost',
+  'asset_dep_undo'].flatMap((x) => [x, x + '_rev']);
 const FIXED_ASSET_CODES = ['1400', '1410', '1420', '1430', '1440', '1450', '1460', '1470'];
 /** مجمع الإهلاك (استثماري مع الأصول) · والقروض (تمويلية مع حقوق الملكية) */
 const ACC_ACCUM_DEP = '1490';
@@ -57,8 +58,12 @@ export function cashFlowFigures(db: DB, from: string | null, to: string | null, 
     [`e.src_type IN (${types})`, `a.type IN ('إيراد', 'مصروف')`], ASSET_ENTRY_TYPES); // i18n-exempt: أنواع الحسابات المخزّنة
   const bought = q(`SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS v ${JOIN} WHERE {W}`,
     [`l.account_code IN (${codes})`, `(e.src_type IS NULL OR e.src_type NOT IN (${types}))`], [...FIXED_ASSET_CODES, ...ASSET_ENTRY_TYPES]);
+  // ضريبة المخرجات في قيود الأصول (بيعٌ من منشأةٍ مسجّلة · A2.15): التزامٌ للهيئة في رأس المال العامل، لا متحصّلٌ استثماري
+  const assetVat = q(`SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS v ${JOIN} WHERE {W}`,
+    [`l.account_code = '2200'`, `e.src_type IN (${types})`], ASSET_ENTRY_TYPES);
   const sold = q(`SELECT COALESCE(SUM(l.debit_halalas - l.credit_halalas), 0) AS v ${JOIN} WHERE {W}`,
-    [`l.account_code = '1100'`, `e.src_type = 'asset_sell'`], []);
+    [`l.account_code = '1100'`, `e.src_type = 'asset_sell'`], []) - q(`SELECT COALESCE(SUM(l.credit_halalas - l.debit_halalas), 0) AS v ${JOIN} WHERE {W}`,
+    [`l.account_code = '2200'`, `e.src_type = 'asset_sell'`], []);
   const arChange = accountPeriodChange(db, '1200', from, to, dims);
   const apChange = accountPeriodChange(db, '2100', from, to, dims);
   // حركة كل حساب ميزانية (دائن ناقص مدين) من غير قيود الأصول · ونقد قيود الأصول وحده
@@ -71,10 +76,14 @@ export function cashFlowFigures(db: DB, from: string | null, to: string | null, 
   const isInv = (c: string) => FIXED_ASSET_CODES.includes(c) || c === ACC_ACCUM_DEP;
   const isFin = (m: { code: string; type: string }) => m.type === 'حقوق ملكية' || m.code === ACC_LOANS; // i18n-exempt: نوع الحساب المخزّن
   const line = (m: { code: string; name: string; d: number }) => ({ code: m.code, name: m.name, v: Number(m.d) });
-  const workingCapital = moves.filter((m) => !isInv(m.code) && !isFin(m) && Number(m.d)).map(line);
+  const wcMoves = assetVat ? (moves.some((m) => m.code === '2200')
+    ? moves.map((m) => (m.code === '2200' ? { ...m, d: Number(m.d) + assetVat } : m))
+    : [...moves, { code: '2200', type: 'خصم', name: allAccounts(db).find((a) => a.code === '2200')?.name ?? '2200', d: assetVat }]) // i18n-exempt: نوع الحساب المخزّن
+    : moves;
+  const workingCapital = wcMoves.filter((m) => !isInv(m.code) && !isFin(m) && Number(m.d)).map(line);
   const financingLines = moves.filter((m) => isFin(m) && Number(m.d)).map(line);
   const opCash = net - nonCashPL + workingCapital.reduce((s, l) => s + l.v, 0);
-  const investing = moves.filter((m) => isInv(m.code)).reduce((s, m) => s + Number(m.d), 0) + assetCash;
+  const investing = moves.filter((m) => isInv(m.code)).reduce((s, m) => s + Number(m.d), 0) + assetCash - assetVat;
   const financing = financingLines.reduce((s, l) => s + l.v, 0);
   const cashChange = accountPeriodChange(db, '1100', from, to, dims);
   return { arChange, apChange, nonCash: -nonCashPL, opCash, investing, bought, sold, workingCapital, financingLines, financing,

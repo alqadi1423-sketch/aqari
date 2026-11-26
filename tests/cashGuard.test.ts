@@ -12,8 +12,15 @@ import type { DB } from '@/db/adapter';
 
 const T = '2026-05-10';
 const SHORT = /لا يكفي: .* · ينقصه /;
-/** يفرّغ المحفظة كلها بمسحوبات المالك */
-const emptyWallet = (db: DB) => { const w = walletCashBalance(db); if (w > 0) ownerCashOut(db, { amountHalalas: w, date: T }); };
+/**
+ * يفرّغ المحفظة كلها بمسحوبات المالك · بتاريخ T، أو بتاريخ آخر نقدٍ دخلها إن كان بعده: المسحوبات لا تسبق النقد الذي تسحبه (قرار المالك س١٩ ·
+ * المراجعة الشاملة 2026-11-13 · A2.8: لا يصير النقد سالباً في يومٍ مضى)، وعربون الحجز يُقبض اليوم
+ */
+const emptyWallet = (db: DB) => {
+  const w = walletCashBalance(db);
+  const last = db.get<{ d: string | null }>(`SELECT MAX(e.date) AS d FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id WHERE l.account_code = '1100'`)?.d ?? T;
+  if (w > 0) ownerCashOut(db, { amountHalalas: w, date: last > T ? last : T });
+};
 const purchaseInput = (total: number) => ({
   supplier: 'مورد مصطنع', date: '2026-05-01', due: '2026-05-31', category: 'صيانة', incorpItem: '',
   amortize: false, amortizeMonths: null, exempt: false, excludeFromVat: false,

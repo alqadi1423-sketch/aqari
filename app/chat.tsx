@@ -19,22 +19,14 @@ import {
   chatTaskNow, chatTaskDoneNow, chatCancelTaskNow, chatVoteNow,
   chatReviewCandidatesNow, chatOpenReviewNow, chatCloseReviewNow, chatJoinGroupNow,
 } from '../src/services/cloud';
-import type { RemoteMessage, RemoteThread } from '../src/chat/remote';
+import type { RemoteMessage, RemoteThread } from '../src/chat';
 import { useToast } from '../src/ui/Toast';
 import { sectionDef, SECTION_KEYS, type SectionKey } from '../src/domain/access/sections';
 import { UnitDetailSheet } from '../src/ui/unitSheets';
 import { AssetSheet } from '../src/ui/AssetSheets';
 import { useSaveAttempt } from '../src/ui/formAttempt';
 import { reportFailure } from '../src/ui/failureDialog';
-import {
-  chatMe, canCreateGroup, createGroup, getThread, linkCandidates, linkTarget, listMessages, listPeople, listThreads,
-  markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup,
-  isGroupAdmin, canAppointAdmins, canAddMembers, canSendIn, GROUP_DEFAULTS, type GroupSettings, type GroupChange,
-  mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersOf, readersFrom, setDraft, getDraft, mentionsMe, mentionUser, mentionSection, MENTIONS_MAX,
-  tsDate, acksOf, ackersFrom, searchMessages, latinDigits, CHAT_TAGS, CHAT_BODY_MAX as BODY_MAX, type ChatMessage, type ChatTag,
-  tasksIn, myTasks, pollResults, POLL_MIN, POLL_MAX, type TaskRow, type ChatPoll,
-  type ChatLink, type ChatMe, type ChatPerson, type ChatThread, roleOf, senderDisplay, type ChatRole,
-} from '../src/chat';
+import { chatMe, canCreateGroup, createGroup, getThread, linkCandidates, linkTarget, listMessages, listPeople, listThreads, markRead, onChatSynced, openDirect, sendLocal, CHAT_BODY_MAX, FORMER_MEMBER, canEditGroup, isGroupAdmin, canAppointAdmins, canAddMembers, canSendIn, GROUP_DEFAULTS, type GroupSettings, type GroupChange, mainLine, repliesOf, replyCounts, pinnedIds, readsOf, readersFrom, setDraft, getDraft, mentionsMe, mentionUser, mentionSection, MENTIONS_MAX, tsDate, acksOf, ackersFrom, searchMessages, latinDigits, CHAT_TAGS, CHAT_BODY_MAX as BODY_MAX, type ChatMessage, type ChatTag, tasksIn, myTasks, pollResults, POLL_MIN, POLL_MAX, type TaskRow, type ChatPoll, type ChatLink, type ChatMe, type ChatPerson, type ChatThread, roleOf, senderDisplay, type ChatRole } from '../src/chat';
 
 /** دورة المحادثة كل بضع ثوانٍ ما دامت الشاشة مفتوحة · ومعها تجديد العرض بعد كل دورة */
 function useChatPulse(threadId: string | null): number {
@@ -471,7 +463,7 @@ function ThreadView({ me, id, tick, onBack }: { me: ChatMe; id: string; tick: nu
             <BtnGhost small title={t('chat.mention')} onPress={() => setMenOpen(true)} />
             <BtnGhost small title={t('chat.poll')} onPress={() => setPollOpen(true)} />
             <BtnGhost small icon="attach" title={t('chat.attach')} onPress={() => setLinkOpen(true)} />
-            <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor="#B9BFC9"
+            <TextInput value={text} onChangeText={setText} multiline maxLength={CHAT_BODY_MAX} placeholder={t('chat.typeMessage')} placeholderTextColor={C.placeholder}
               style={{ flex: 1, fontFamily: FONT, fontSize: fs(TYPE.body), minHeight: 44, maxHeight: 120, borderWidth: 1, borderColor: C.line,
                 borderRadius: 10, paddingHorizontal: 10, backgroundColor: '#FAFAF7', textAlign: 'right' }} />
             <BtnPrimary small title={t('chat.send')} onPress={send} />

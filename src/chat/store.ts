@@ -2,7 +2,9 @@
  * مخزن المحادثة على الجهاز (الهجرة ٣٤) · ما يُكتب بلا اتصال يبقى «لم يُرسل» حتى تُرفع · ولا حذف للرسائل.
  */
 import type { DB, SqlValue } from '../db/adapter';
+import { allIn, runIn } from '../db/inList';
 import { uid as newId } from '../domain/ids';
+import { toLatinDigits } from '../domain/money';
 import {
   CHAT_BODY_MAX, CHAT_GROUP_MAX, CHAT_NAME_MAX, MENTIONS_MAX, POLL_MAX, directId, groupSettings, tsGte,
   type ChannelRef, type ChatPoll, type ChatTag, type ChatTask, type GroupSettings,
@@ -74,11 +76,11 @@ export function forgetObserved(db: DB, me: string): number {
       && !db.get(`SELECT 1 FROM chat_messages WHERE thread_id = ? AND sender = ? LIMIT 1`, [t.id, me]))
     .map((t) => t.id);
   if (!ids.length) return 0;
-  const marks = ids.map(() => '?').join(',');
   db.transaction(() => {
     db.run(`DROP TRIGGER IF EXISTS trg_chat_msg_no_delete`);
-    db.run(`DELETE FROM chat_messages WHERE thread_id IN (${marks})`, ids);
-    db.run(`DELETE FROM chat_threads WHERE id IN (${marks})`, ids);
+    // قطعاً (التوجيه الرابع ٣ · ٢): قائمةٌ يكبر طولها بالمحادثات
+    runIn(db, `DELETE FROM chat_messages WHERE thread_id IN (:list)`, ids);
+    runIn(db, `DELETE FROM chat_threads WHERE id IN (:list)`, ids);
     db.run(CHAT_NO_DELETE_TRIGGER);
   });
   return ids.length;
@@ -134,12 +136,6 @@ export function createGroup(db: DB, me: string, name: string, members: string[],
     `INSERT INTO chat_threads (id, kind, name, members, created_by, created_at, pending, meta)
      VALUES (?, 'group', ?, ?, ?, ?, 1, ?)`, [id, n, JSON.stringify(all), me, nowIso(), JSON.stringify(meta)]);
   return id;
-}
-
-/** حقول المحادثة كما تُطبَّق من السحابة · لتعديلٍ محلي بعد نجاحه على الخادم */
-export function getThreadRow(db: DB, id: string): { by: string; at: string | null } {
-  const r = db.get<{ by: string; at: string | null }>(`SELECT created_by AS by, created_at AS at FROM chat_threads WHERE id = ?`, [id]);
-  return r ?? { by: '', at: null };
 }
 
 export function markRead(db: DB, threadId: string): void {
@@ -485,9 +481,8 @@ export function staleEdits(db: DB, threadId: string): string[] {
  * onlyMine للمالك (قائمته محادثاته وحدها)
  */
 export interface ChatSearch { text?: string; sender?: string; from?: string; to?: string; tag?: ChatTag | null }
-const AR_DIGITS = /[٠-٩۰-۹]/g;
-/** الأرقام العربية والفارسية إلى لاتينية · فالتاريخ المكتوب بها يُقرأ */
-export const latinDigits = (s: string) => s.replace(AR_DIGITS, (c) => String((c.charCodeAt(0) & 0xf) % 10));
+/** الأرقام العربية والفارسية إلى لاتينية · فالتاريخ المكتوب بها يُقرأ · بالمحوّل الواحد (G-11) */
+export const latinDigits = toLatinDigits;
 
 export function searchMessages(db: DB, me: string, q: ChatSearch, onlyMine = false, limit = 500): ChatMessage[] {
   const threads = listThreads(db, me, onlyMine).map((t) => t.id);
@@ -505,13 +500,16 @@ export function searchMessages(db: DB, me: string, q: ChatSearch, onlyMine = fal
   };
   const from = bound(q.from, false);
   const to = bound(q.to, true);
-  const where = ['sys IS NULL', `thread_id IN (${threads.map(() => '?').join(',')})`];
-  const args: SqlValue[] = [...threads];
+  const where = ['sys IS NULL', 'thread_id IN (:list)'];
+  const args: SqlValue[] = [];
   if (q.sender) { where.push('sender = ?'); args.push(q.sender); }
   if (from) { where.push('COALESCE(server_ts, local_at) >= ?'); args.push(from); }
   if (to) { where.push('COALESCE(server_ts, local_at) < ?'); args.push(to); }
   if (q.tag) { where.push(`x LIKE ?`); args.push('%"tag":"' + q.tag + '"%'); }
-  return db.all<MsgRow>(`SELECT * FROM chat_messages WHERE ${where.join(' AND ')} ORDER BY COALESCE(server_ts, local_at) DESC`, args).map(msgOf)
+  // قائمة المحادثات قطعاً (التوجيه الرابع ٣ · ٢)، والترتيب بعدها: الأحدث أولاً بوقت الخادم أو وقت الجهاز كما في العبارة الواحدة
+  const at = (m: MsgRow) => m.server_ts ?? m.local_at;
+  return allIn<MsgRow>(db, `SELECT * FROM chat_messages WHERE ${where.join(' AND ')}`, threads, [], args)
+    .sort((a, b) => (at(a) < at(b) ? 1 : at(a) > at(b) ? -1 : 0)).map(msgOf)
     .filter((m) => (!q.tag || m.tag === q.tag)
       && (!text || m.body.toLowerCase().includes(text) || (m.link?.label ?? '').toLowerCase().includes(text)))
     .slice(0, limit);

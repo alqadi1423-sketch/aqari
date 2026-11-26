@@ -12,18 +12,20 @@ import { getAllSettings, setSetting, type AppSettings } from '../repos/settings'
 import { backfillHandovers } from '../domain/handover/service';
 import { refreshContractStatuses } from '../domain/contracts/rules';
 import { sweepCache, ensureAppDirs } from '../services/storageOps';
+import { finishInterruptedRestoreOnBoot, sweepSafetyBackupsOnBoot } from '../services/backupService';
 import { autoDepreciate } from '../domain/assets/auto';
 import { backfillTenantLinks } from '../domain/tenants';
 import { purgeExpiredTrash } from '../domain/trash';
 import { gcBlobs } from '../files/store';
 import { appFilesEnv } from '../services/filesEnv';
 import { writeWidgetSnapshot, scheduleWidgetSnapshot } from '../services/widgetService';
+import { scheduleNotificationsAfterWrite } from '../services/notifications';
 import { perfAttachStorage } from '../perf/perf';
 import { getSetting } from '../repos/settings';
 import { today } from '../domain/dates';
 import { naturalKey } from '../domain/sortKey';
 import { startCloud } from '../services/cloud';
-import { recomputeInstallments } from '../domain/contracts/paid';
+import { recomputePaidOnUpgrade } from '../domain/contracts/paid';
 import { logAudit } from '../domain/audit';
 
 /** هجرة البيانات القائمة: حساب مفتاح الترتيب لكل وحدة بلا مفتاح */
@@ -83,6 +85,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setSettings(getAllSettings(db));
     // لقطة الودجت مجدولة بعد سكون · لا تركب كل bump فتُثقله
     scheduleWidgetSnapshot(db);
+    // والتنبيهات كذلك (E-2): كل كتابة وكل ما يصل بالمزامنة يعيد جدولتها بعد سكون
+    scheduleNotificationsAfterWrite(db);
   }, [db]);
 
   // صيانة الإقلاع كانت متزامنة قبل أول رسم فكانت تجمّد أول الشاشات ثواني ·
@@ -98,23 +102,26 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         if (owner) backfillTenantLinks(db);
         // الإهلاك الشهري الآلي · بلا مزامنةٍ مفعّلة هنا، ومعها بعد دورةٍ نظيفة (services/cloud)
         autoDepreciate(db, today(), { owner, afterSync: false });
-        // المسدَّد يُحسب من الدفعات منذ الهجرة ٢١ · يُعاد حسابه مرة لكل قاعدة رُقّيت إليها
-        if (owner && !db.get(`SELECT 1 FROM meta WHERE key = 'paid_derived_v21'`)) {
-          const changed = recomputeInstallments(db);
-          if (changed.length) logAudit(db, 'البيانات', 'update', 'المسدَّد من الدفعات', changed.length + ' قسط أُعيد حساب مسدَّده من دفعاته وتوزيعها');
-          db.run(`INSERT OR REPLACE INTO meta (key, value) VALUES ('paid_derived_v21', ?)`, [new Date().toISOString()]);
+        // المسدَّد يُحسب من الدفعات منذ الهجرة ٢١، وللقسط الملغى أيضاً منذ A1-5 · يُعاد حسابه مرة لكل ترقية
+        if (owner) {
+          const changed = recomputePaidOnUpgrade(db);
+          if (changed?.length) logAudit(db, 'البيانات', 'update', 'المسدَّد من الدفعات', changed.length + ' قسط أُعيد حساب مسدَّده من دفعاته وتوزيعها');
         }
         writeWidgetSnapshot(db);
         bump();
       } catch { /* لا يعطّل الإقلاع */ }
     }, 700);
     const t2 = setTimeout(() => {
+      // مرفقات استعادةٍ انقطعت بعد التبديل تُنقل إلى مكانها قبل كنس tmp (المراجعة ١٢ · R12-BAK-4)
+      try { finishInterruptedRestoreOnBoot(db); } catch { /* لا يعطّل الإقلاع */ }
       try {
         ensureAppDirs();
         sweepCache();
         purgeExpiredTrash(db).catch(() => {});
         gcBlobs(appFilesEnv(db), getSetting(db, 'trashRetention'));
       } catch { /* لا يعطّل الإقلاع */ }
+      // نسخة الأمان قبل المسح بعد مدة السلة (C-6 · س٢٣)
+      try { sweepSafetyBackupsOnBoot(db); } catch { /* لا يعطّل الإقلاع */ }
     }, 3000);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [db, bump]);

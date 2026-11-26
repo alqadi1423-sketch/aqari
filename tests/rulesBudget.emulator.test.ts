@@ -233,4 +233,57 @@ d('ميزانية القواعد: كتابات الأعضاء الشائعة ت�
       saveManualDraft(env.db, { date: '2026-02-01', memo: 'قيد يدوي مصطنع', lines: [{ account: '1100', debit: 500, credit: 0 }, { account: '3100', debit: 0, credit: 500 }] });
     });
   });
+
+  // المراجعة الشاملة 2026-11-13 · B-1 وB-3: ما يكتبه التطبيق بعد قفل الفاتورة الصادرة وإعداد المالك يمرّ في القواعد وتحت ٨٥٪ من الحد ·
+  // سطور المسودة من «إدخال» (lockedCreateOk يقرأ رأسها)، والإصدار بسطوره والإشعار الدائن ثم تحصيل الباقي في دورةٍ تالية من «كامل»
+  // (lockedUpdateOk على صادرة)، وتعديل اسم المنشأة من «كامل» المنشأة (ownerColsKept)
+  const inv = (lines: Array<{ descr: string; qty: number; priceHalalas: number; taxPct: number }>) => ({
+    customer: 'عميل ميزانية مصطنع', customerVat: '', issue: '2026-03-01', due: '2026-03-31', notes: '', propertyId: 'BP1', lines,
+  });
+  test('الفواتير (إدخال): مسودة فاتورةٍ بسطرين', async () => {
+    await asMember('invoicesEntry', { invoices: 2, props: 1 }, ['BP1'], async (env) => {
+      const { saveInvoice } = await import('@/domain/invoices');
+      saveInvoice(env.db, inv([{ descr: 'خدمة مصطنعة أولى', qty: 1, priceHalalas: 10_000, taxPct: 15 },
+        { descr: 'خدمة مصطنعة ثانية', qty: 2, priceHalalas: 5_000, taxPct: 15 }]), 'مسودة');
+    });
+  });
+
+  test('الفواتير (كامل): فاتورةٌ صادرة بسطورها وإشعارٌ دائن عليها، ثم تحصيل باقيها', async () => {
+    await asMember('invoices', { invoices: 3, props: 1 }, ['BP1'], async (env) => {
+      const { saveInvoice, saveCreditNote, payInvoice } = await import('@/domain/invoices');
+      const { syncOnce } = await import('@/sync/engine');
+      const id = saveInvoice(env.db, inv([{ descr: 'خدمة مصطنعة أولى', qty: 1, priceHalalas: 10_000, taxPct: 15 },
+        { descr: 'خدمة مصطنعة ثانية', qty: 1, priceHalalas: 20_000, taxPct: 15 },
+        { descr: 'خدمة مصطنعة معفاة', qty: 1, priceHalalas: 3_000, taxPct: 0, taxCode: 'E' } as never]), 'مستحقة');
+      saveCreditNote(env.db, id, { date: '2026-03-05', reason: 'تصحيح مصطنع', subtotalHalalas: 5_000 });
+      // الإصدار يُرفع أولاً، فالتحصيل تعديلٌ لفاتورةٍ صادرة في السحابة
+      const r1 = await syncOnce(env.db, deviceRemote(env.db, 'B-INVOICES', 'b-invoices@example.test'), 'dev-B-INVOICES');
+      expect(r1.pushed).toBeGreaterThan(0);
+      payInvoice(env.db, id, { method: 'cash', bankId: null, date: '2026-03-10' });
+    });
+  });
+
+  // المدقق المستقل R11-B1-3: تعديل فاتورة الشراء المرحّلة (عكس قيدها وقيدٌ جديد ورأسها) يمرّ بـpostedPurchaseKept وقراءتيه تحت ٨٥٪ من الحد
+  test('المشتريات (كامل): فاتورة شراء، ثم تعديل مبالغها في دورةٍ تالية', async () => {
+    await asMember('purchases', { purchases: 3 }, 'all', async (env) => {
+      const { savePurchase } = await import('@/domain/purchases');
+      const { syncOnce } = await import('@/sync/engine');
+      const base = {
+        date: '2026-03-02', due: '2026-04-01', incorpItem: '', amortize: false, amortizeMonths: null, exempt: false, excludeFromVat: false,
+        unitId: null, propertyId: null, meterId: null, meterReading: null, supplier: 'مورد ميزانية مصطنع', category: 'صيانة',
+        subtotalHalalas: 10_000, taxHalalas: 1_500, totalHalalas: 11_500,
+      };
+      const id = savePurchase(env.db, base as never);
+      // التسجيل يُرفع أولاً، فالتعديل تعديلٌ لفاتورةٍ مرحّلة في السحابة
+      const r1 = await syncOnce(env.db, deviceRemote(env.db, 'B-PURCHASES', 'b-purchases@example.test'), 'dev-B-PURCHASES');
+      expect(r1.pushed).toBeGreaterThan(0);
+      savePurchase(env.db, { ...base, subtotalHalalas: 20_000, taxHalalas: 3_000, totalHalalas: 23_000 } as never, id);
+    });
+  });
+
+  test('المنشأة (كامل): تعديل اسمها وتسجيل الضريبة كما هو', async () => {
+    await asMember('company', { company: 3 }, 'all', (env) => {
+      env.db.run(`UPDATE company SET name = 'منشأة الميزانية المعدّلة' WHERE id = 1`);
+    });
+  });
 });

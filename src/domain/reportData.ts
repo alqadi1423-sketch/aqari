@@ -3,11 +3,15 @@
  * كلٌّ بمدة قابلة للتحديد (from فارغ = من البداية) وشامل لتفاصيل نوعه،
  * وتُغذّي تصدير PDF وإكسل من مصدر واحد.
  */
-import { INSTALLMENT_DISCOUNT_SQL } from './contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, paymentCash, CREDIT_METHOD } from './contracts/installments';
 import type { DB } from '../db/adapter';
 import { today } from './dates';
 import { contractStatusLabel } from './contracts/rules';
 import { contractTotalSql } from './accounting/rentSplit';
+import { invoiceNoLabel, KIND_CREDIT } from './invoices';
+import { t } from '../i18n';
+
+const INVOICE_DRAFT = 'مسودة'; // i18n-exempt: حالة الفاتورة المخزّنة
 
 /** التاريخ يُضمَّن في SQL بصيغته وحدها (مراجعة التثبيت #24) */
 const ymd = (d: string): string => {
@@ -41,7 +45,7 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
     `SELECT unit_no, floor, type, subtype, rent_monthly_halalas, property_id FROM units WHERE id = ?`, [unitId]
   );
   if (!unit) return null;
-  const propertyName = db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [unit.property_id])?.name ?? 'لا يوجد';
+  const propertyName = db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [unit.property_id])?.name ?? '';
   // حالة العقد في التقرير محسوبة كما تظهر في الشاشات · لا المخزّنة الخام
   const contracts = db.all<UnitReport['contracts'][number]>(
     `SELECT contract_no, tenant_name, start, end, value_halalas, ${contractTotalSql(db)} AS total_halalas,
@@ -51,7 +55,7 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
   const payments = db.all<UnitReport['payments'][number]>(
     `SELECT p.date, p.period, p.method_label, p.net_halalas, c.tenant_name
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
-     WHERE p.cancelled_at IS NULL AND c.unit_id = ?${period('p.date', from, to)}
+     WHERE p.cancelled_at IS NULL AND c.unit_id = ? AND p.method_label IS NOT '${CREDIT_METHOD}'${period('p.date', from, to)}
      ORDER BY p.date DESC`, [unitId]
   );
   const expenses = db.all<UnitReport['expenses'][number]>(
@@ -77,11 +81,11 @@ export function unitReportData(db: DB, unitId: string, from: string | null, to: 
     outstanding: Number(instRow.outstanding),
   };
   const unitMeters = db.all<{ kind: string; number: string; supplier: string }>(
-    `SELECT m.kind, m.number, COALESCE(sp.name,'لا يوجد') AS supplier FROM meters m
+    `SELECT m.kind, m.number, COALESCE(sp.name,'') AS supplier FROM meters m
      LEFT JOIN suppliers sp ON sp.id = m.supplier_id
      WHERE m.owner_type = 'unit' AND m.owner_id = ? AND m.deleted_at IS NULL`, [unitId]
   );
-  const income = payments.reduce((s, p) => s + Number(p.net_halalas), 0);
+  const income = payments.reduce((s, p) => s + paymentCash(p), 0); // A2.1: سداد القسط من الرصيد الدائن لا نقد فيه
   const exp = expenses.reduce((s, e) => s + Number(e.total_halalas), 0);
   return { unit, propertyName, contracts, payments, expenses, handoversCount, installments, meters: unitMeters, totals: { income, expenses: exp, net: income - exp } };
 }
@@ -90,7 +94,7 @@ export interface PropertyReport {
   property: { name: string; address: string; ownership: string; deed_no: string; floors: number | null };
   units: Array<{ unit_no: string; floor: string; type: string; rent_monthly_halalas: number; tenant: string | null }>;
   occupancy: { total: number; occupied: number; pct: number };
-  payments: Array<{ date: string; period: string; net_halalas: number; tenant_name: string; unit_label: string; unit_no: string }>;
+  payments: Array<{ date: string; period: string; method_label: string; net_halalas: number; tenant_name: string; unit_label: string; unit_no: string }>;
   sharedExpenses: Array<{ date: string; supplier_name: string; category: string; total_halalas: number }>;
   unitExpenses: Array<{ date: string; supplier_name: string; category: string; total_halalas: number; unit_no: string }>;
   perUnit: Array<{ unit_no: string; income: number; expenses: number; net: number }>;
@@ -113,10 +117,10 @@ export function propertyReportData(db: DB, propertyId: string, from: string | nu
   );
   const occupied = units.filter((u) => u.tenant).length;
   const payments = db.all<PropertyReport['payments'][number]>(
-    `SELECT p.date, p.period, p.net_halalas, c.tenant_name, c.unit_label, u.unit_no
+    `SELECT p.date, p.period, p.method_label, p.net_halalas, c.tenant_name, c.unit_label, u.unit_no
      FROM contract_payments p JOIN contracts c ON c.id = p.contract_id
      JOIN units u ON u.id = c.unit_id
-     WHERE u.property_id = ? AND p.cancelled_at IS NULL${period('p.date', from, to)}
+     WHERE u.property_id = ? AND p.cancelled_at IS NULL AND p.method_label IS NOT '${CREDIT_METHOD}'${period('p.date', from, to)}
      ORDER BY p.date DESC`, [propertyId]
   );
   const sharedExpenses = db.all<PropertyReport['sharedExpenses'][number]>(
@@ -130,7 +134,7 @@ export function propertyReportData(db: DB, propertyId: string, from: string | nu
      WHERE u.property_id = ? AND pu.deleted_at IS NULL${period('pu.date', from, to)}
      ORDER BY pu.date DESC`, [propertyId]
   );
-  const income = payments.reduce((s, p) => s + Number(p.net_halalas), 0);
+  const income = payments.reduce((s, p) => s + paymentCash(p), 0); // A2.1: سداد القسط من الرصيد الدائن لا نقد فيه
   const shared = sharedExpenses.reduce((s, e) => s + Number(e.total_halalas), 0);
   const unitsExp = unitExpenses.reduce((s, e) => s + Number(e.total_halalas), 0);
   const perUnitMap = new Map<string, { income: number; expenses: number }>();
@@ -138,7 +142,7 @@ export function propertyReportData(db: DB, propertyId: string, from: string | nu
   for (const p2 of payments) {
     const k = p2.unit_no;
     const cur = perUnitMap.get(k) ?? { income: 0, expenses: 0 };
-    cur.income += Number(p2.net_halalas); perUnitMap.set(k, cur);
+    cur.income += paymentCash(p2); perUnitMap.set(k, cur);
   }
   for (const e of unitExpenses) {
     const cur = perUnitMap.get(e.unit_no) ?? { income: 0, expenses: 0 };
@@ -171,8 +175,8 @@ export function supplierReportData(db: DB, supplierId: string, from: string | nu
     `SELECT kind, number, owner_type, owner_id FROM meters WHERE supplier_id = ? AND deleted_at IS NULL`, [supplierId]
   ).map((m) => {
     const label = m.owner_type === 'property'
-      ? (db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [m.owner_id])?.name ?? 'لا يوجد') + ' (مشترك)'
-      : 'وحدة ' + (db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [m.owner_id])?.unit_no ?? 'لا يوجد');
+      ? (db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [m.owner_id])?.name ?? '') + ' (مشترك)'
+      : 'وحدة ' + (db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [m.owner_id])?.unit_no ?? '');
     return { kind: m.kind, number: m.number, label };
   });
   const purchases = db.all<{ no: string; date: string; category: string; total_halalas: number; paid: number; unit_id: string | null; property_id: string | null }>(
@@ -181,10 +185,10 @@ export function supplierReportData(db: DB, supplierId: string, from: string | nu
      ORDER BY date DESC`, [supplierId]
   ).map((p) => {
     const target = p.unit_id
-      ? 'وحدة ' + (db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [p.unit_id])?.unit_no ?? 'لا يوجد')
+      ? 'وحدة ' + (db.get<{ unit_no: string }>(`SELECT unit_no FROM units WHERE id = ?`, [p.unit_id])?.unit_no ?? '')
       : p.property_id
-        ? (db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [p.property_id])?.name ?? 'لا يوجد')
-        : 'لا يوجد';
+        ? (db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [p.property_id])?.name ?? '')
+        : '';
     return { no: p.no, date: p.date, category: p.category, total_halalas: p.total_halalas, paid: p.paid, target };
   });
   const total = purchases.reduce((s, p) => s + Number(p.total_halalas), 0);
@@ -199,17 +203,27 @@ export function supplierReportData(db: DB, supplierId: string, from: string | nu
 }
 
 export interface InvoicesReport {
-  rows: Array<{ no: string; customer_name: string; issue: string; due: string; status: string; total_halalas: number }>;
+  rows: Array<{ no: string; customer_name: string; issue: string; due: string; status: string; total_halalas: number; kind: string | null }>;
   byStatus: Array<{ status: string; count: number; total: number }>;
   byCustomer: Array<{ customer: string; count: number; total: number }>;
   grand: { count: number; total: number };
 }
 
+/** رقم الفاتورة في التقرير: الإشعار الدائن بنوعه، والرقم المؤقت لا يُطبع (A2.14) */
+export function invoiceReportNo(r: { no: string; kind?: string | null }): string {
+  return r.kind === KIND_CREDIT ? t('invoice.creditNote', { lng: 'ar' }) + ' ' + invoiceNoLabel(r.no) : invoiceNoLabel(r.no);
+}
+
+/**
+ * تقرير الفواتير: الصادرة وإشعاراتها الدائنة (سالبةً) وحدها · المسودة برقمها المؤقت خارجه ومجاميعه (المراجعة الشاملة 2026-11-13 · A2.14:
+ * كانت تدخل «الإجمالي العام» ويُطبع رقمها المؤقت)
+ */
 export function invoicesReportData(db: DB, from: string | null, to: string = today()): InvoicesReport {
+  const hasKind = db.all<{ name: string }>(`PRAGMA table_info(invoices)`).some((c) => c.name === 'kind');
   const rows = db.all<InvoicesReport['rows'][number]>(
-    `SELECT no, customer_name, issue, due, status, total_halalas FROM invoices
-     WHERE deleted_at IS NULL${period('issue', from, to)}
-     ORDER BY issue DESC, created_at DESC`
+    `SELECT no, customer_name, issue, due, status, total_halalas, ${hasKind ? 'kind' : 'NULL AS kind'} FROM invoices
+     WHERE deleted_at IS NULL AND status != ?${period('issue', from, to)}
+     ORDER BY issue DESC, created_at DESC`, [INVOICE_DRAFT]
   );
   const map = new Map<string, { count: number; total: number }>();
   for (const r of rows) {

@@ -262,28 +262,6 @@ export function libraryFiles(env: FilesEnv): LibraryFile[] {
 
 export type LibSort = 'new' | 'old' | 'name' | 'size';
 
-export function sortLibrary(rows: LibraryFile[], sort: LibSort): LibraryFile[] {
-  const out = [...rows];
-  out.sort((a, b) =>
-    sort === 'new' ? (a.createdAt < b.createdAt ? 1 : -1)
-    : sort === 'old' ? (a.createdAt > b.createdAt ? 1 : -1)
-    : sort === 'size' ? b.sizeBytes - a.sizeBytes
-    : String(a.name).localeCompare(String(b.name), 'ar')
-  );
-  return out;
-}
-
-/** البحث يتجاوز الشجرة */
-export function searchLibrary(rows: LibraryFile[], q: string): LibraryFile[] {
-  const needle = q.trim().toLowerCase();
-  if (!needle) return rows;
-  return rows.filter((r) =>
-    [r.name, r.link, r.note, libCat(r.cat).label].some(
-      (v) => v && v.toLowerCase().includes(needle)
-    )
-  );
-}
-
 export function libSizeLabel(b: number): string {
   // الصفر قيمة لا غياب · يُعرض رقماً لا «لا يوجد»
   if (!b) return '0 ب';

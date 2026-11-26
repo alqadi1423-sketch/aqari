@@ -2,7 +2,7 @@
  * فتح قاعدة SQLite على مسار مطلق (للتحقق من النسخ المستخرجة داخل التطبيق).
  */
 import * as SQLite from 'expo-sqlite';
-import { applyOpenPragmas, makeTransactionRunner, type DB, type SqlParams } from '../db/adapter';
+import { applyOpenPragmas, driverCall, makeTransactionRunner, type DB, type SqlParams } from '../db/adapter';
 
 export function openNodeDbCompat(absolutePath: string): DB {
   // المسار المطلق يُمرَّر اسماً + مجلداً · تمريره اسماً واحداً كان يفتح قاعدة فارغة
@@ -12,17 +12,19 @@ export function openNodeDbCompat(absolutePath: string): DB {
   const dir = slash > 0 ? clean.slice(0, slash) : clean;
   const name = slash > 0 ? clean.slice(slash + 1) : clean;
   const raw = SQLite.openDatabaseSync(name, undefined, 'file://' + dir);
-  const base = { exec: (sql: string) => raw.execSync(sql) };
+  // عطل القاعدة يوسمه المحوّل بما رماه المشغّل (driverCall · مراجعة إصلاح R12-SYN-1)
+  const base = { exec: (sql: string) => driverCall(() => raw.execSync(sql)), inTransaction: () => raw.isInTransactionSync() };
   const transaction = makeTransactionRunner(base);
   const db: DB = {
     exec: base.exec,
-    run: (sql: string, params: SqlParams = []) => { raw.runSync(sql, params as SQLite.SQLiteBindParams); },
+    run: (sql: string, params: SqlParams = []) => { driverCall(() => raw.runSync(sql, params as SQLite.SQLiteBindParams)); },
     get: <T,>(sql: string, params: SqlParams = []) => {
-      const row = raw.getFirstSync<T>(sql, params as SQLite.SQLiteBindParams);
+      const row = driverCall(() => raw.getFirstSync<T>(sql, params as SQLite.SQLiteBindParams));
       return row === null ? undefined : (row as T);
     },
-    all: <T,>(sql: string, params: SqlParams = []) => raw.getAllSync<T>(sql, params as SQLite.SQLiteBindParams),
+    all: <T,>(sql: string, params: SqlParams = []) => driverCall(() => raw.getAllSync<T>(sql, params as SQLite.SQLiteBindParams)),
     transaction,
+    inTransaction: base.inTransaction,
     close: () => raw.closeSync(),
   };
   applyOpenPragmas(db);

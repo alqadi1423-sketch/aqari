@@ -8,6 +8,9 @@ import { encodeFields, decodeFields, FirestoreHttpError } from '../cloud/firesto
 type FsValue = Parameters<typeof decodeFields>[0][string];
 import { CHAT_LINK_TYPES, CHAT_TAGS, OWNER_JOINED, channelSettings, normTs, type ChannelRef, type ChatKind, type ChatLink, type ChatPerson, type ChatPoll, type ChatTag, type ChatTask, type GroupSettings } from './types';
 export { normTs } from './types';
+import type { ChatTransport, PageAfter, RemoteEdit, RemoteMessage, RemoteState, RemoteThread } from './transport';
+// الأنواع في واجهة الناقل (ق٠-٧) · وتبقى تُستورد من هنا كما كانت
+export type { RemoteThread, RemoteMessage, RemoteEdit, RemoteState, PageAfter } from './transport';
 import { uid as newId } from '../domain/ids';
 
 export interface ChatRemoteOptions {
@@ -18,39 +21,6 @@ export interface ChatRemoteOptions {
   /** للمحاكي في الاختبارات */
   baseUrl?: string;
   fetchImpl?: typeof fetch;
-}
-
-/**
- * المحادثة كما في الخادم · s إعدادات المجموعة، a مسؤولوها المعيَّنون، jt وقت انضمام من أُضيف بعد إنشائها
- * (قرار المالك 2026-10-08T05:31Z) · والأوائل وقت انضمامهم وقت إنشائها
- */
-export interface RemoteThread {
-  id: string; k: ChatKind; p: string[]; name: string; by: string; at: string | null;
-  s?: GroupSettings; a?: string[]; jt?: Record<string, string>;
-  /** القناة (الدفعة ٤) · null للمحادثة العادية */
-  ch?: ChannelRef | null;
-}
-/** sys: سطر نظام لا رسالة · 'join' انضم المالك (قرار المالك 2026-10-08T04:11Z) */
-export interface RemoteMessage {
-  id: string; from: string; name: string; body: string; link: ChatLink | null; ts: string; sys?: string | null;
-  /** الرد في سلسلة: رقم الرسالة الأصل · men الإشارات «u:رقم» و«s:قسم» (الدفعة ٢ · 2026-10-08T05:31Z) */
-  re?: string | null; men?: string[];
-  /** الدفعة ٣: الوسم، والإعلان المهم بتأكيد الاطلاع، وعدد تعديلاتها ووقت آخرها */
-  tag?: ChatTag | null; ack?: boolean; ev?: number; et?: string | null;
-  /** الدفعة ٥: الاستطلاع */
-  poll?: ChatPoll | null;
-}
-
-/** ما قبل تعديلٍ في سجل الرسالة (الدفعة ٣) */
-export interface RemoteEdit { n: number; body: string; tag: ChatTag | null; at: string }
-
-/** حال المحادثة (st): التثبيت p_رقم وقراءة كل عضو r_رقمه · بوقت الخادم ts فتُسحب بمؤشر واحد */
-export interface RemoteState {
-  id: string; k: string; ts: string; on?: boolean; by?: string; at?: string; m?: string; n?: number;
-  /** الدفعة ٥: المهمة (عنوانها ومسؤولها وموعدها وإنجازها) والصوت (أرقام خياراته) */
-  title?: string; as?: string; due?: string; done?: boolean; o?: number[];
-  /** المهمة ملغاة (قرار المالك 2026-10-08T10:24Z) */
-  cx?: boolean;
 }
 
 const tail = (name: string) => name.slice(name.lastIndexOf('/') + 1);
@@ -93,11 +63,10 @@ function msgOf(doc: { name: string; fields: Record<string, FsValue> }): RemoteMe
 /** مسار حقلٍ في خريطة بمفتاحٍ قد يحوي أي حرف (رقم عضو) */
 const mapKey = (field: string, key: string) => field + '.`' + key.replace(/\\/g, '\\\\').replace(/`/g, '\\`') + '`';
 
-/** آخر ما أُخذ من صفحة: وقته في الخادم ورقم مستنده (المراجعة الخارجية ٧ · النتيجة ٤٠) */
-export interface PageAfter { ts: string; id: string }
 const TS_THEN_NAME = [{ field: { fieldPath: 'ts' }, direction: 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }];
 
-export class ChatRemote {
+/** ناقل المحادثة اليوم: Firestore عبر REST (ق٠-٧: خلف ChatTransport بلا تغيير في السلوك) */
+export class ChatRemote implements ChatTransport {
   private docsRoot: string;
   private root: string;
   private f: typeof fetch;
@@ -676,6 +645,16 @@ export class ChatRemote {
   }
   async closeDeletionWindow(): Promise<void> {
     await this.deleteIn('meta/deletion');
+  }
+
+  /** خروج عضوٍ من دليل المحادثة (مستنده chatDir) · لصاحبه والمالك (القواعد) */
+  async removeFromDirectory(uid: string): Promise<void> {
+    await this.deleteIn(`chatDir/${uid}`);
+  }
+
+  /** حذف إشراف عضوٍ بإيميله (مستنده chatRoles) · للمالك (القواعد) */
+  async removeRole(email: string): Promise<void> {
+    await this.deleteIn(`chatRoles/${email.trim().toLowerCase()}`);
   }
 
   /** حذف مستند في المنشأة (دليل أو إشراف) */

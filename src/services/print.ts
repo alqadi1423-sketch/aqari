@@ -9,22 +9,19 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { File, Directory, Paths } from 'expo-file-system';
 import type { DB } from '../db/adapter';
-import { fmt } from '../domain/money';
-import { dfmt, today } from '../domain/dates';
-import {
-  PRINT_CSS, letterhead, esc, type CompanyInfo, type CopyKind,
-  buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc,
-  buildHandoverDoc, buildClaimDoc,
-} from '../domain/printDocs';
+import { dfmtOut } from '../domain/dates';
+import { PRINT_CSS, reportPageCss, printFontFaceCss, esc, shownVatNo, vatReturnVatNo, type CompanyInfo, type CopyKind, buildReceiptDoc, buildInvoiceDoc, buildStatementDoc, buildContractDoc, buildHandoverDoc, buildClaimDoc } from '../domain/printDocs';
 import type { HandoverSection } from '../domain/handover/build';
 import { HANDOVER_LEGAL_FOOTER } from '../domain/handover/build';
 import { putAttachment } from '../files/store';
 import { appFilesEnv } from './filesEnv';
-import { occupantsOf } from '../domain/occupants';
+import { occupantsOf, shownNationalId } from '../domain/occupants';
 import { depositState } from '../domain/contracts/vocab';
 import { contractStatusLabel } from '../domain/contracts/rules';
 import { tenantStatementRows } from '../domain/statement';
-import { isTempInvoiceNo } from '../domain/invoices';
+import { isTempInvoiceNo, invoiceVatStamp } from '../domain/invoices';
+import { receiptNoOf } from '../domain/receipts';
+import { claimNoticeBody } from '../domain/templates';
 import { receiptBlocked } from '../domain/contracts/cancelPayment';
 // منتقي الملفات والكاميرا والمشاركة والطباعة نوافذ يفتحها التطبيق: العودة القصيرة منها لا تُقفله (#51)
 import { whilePrompting } from './appLockService';
@@ -40,21 +37,49 @@ export function companyInfo(db: DB): CompanyInfo {
 }
 
 /** ترويسة التقارير (تستعملها reportExport) · نفس بيانات المنشأة */
-export function companyHeader(db: DB): string {
+export function companyHeader(db: DB, vatReturn?: { filed: boolean }): string {
   const co = companyInfo(db);
-  return `<div><div style="font-weight:800;font-size:16px">${esc(co.name || 'لا يوجد')}</div>
-    ${co.vatno ? `<div style="font-size:11.5px;color:#77808F;margin-top:4px">الرقم الضريبي: <span class="num">${esc(co.vatno)}</span></div>` : ''}</div>`;
+  const vat = vatReturn ? vatReturnVatNo(co, vatReturn.filed) : shownVatNo(co);
+  return `<div><div style="font-weight:800;font-size:16px">${esc(co.name || '')}</div>
+    ${vat !== undefined ? `<div style="font-size:11.5px;color:#77808F;margin-top:4px">الرقم الضريبي: <span class="num">${esc(vat)}</span></div>` : ''}</div>`;
 }
 
 const issuedNow = (): string => {
   const d = new Date();
   const two = (n: number) => String(n).padStart(2, '0');
-  return `${dfmt(`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`)} ${two(d.getHours())}:${two(d.getMinutes())}`;
+  return `${dfmtOut(`${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`)} ${two(d.getHours())}:${two(d.getMinutes())}`;
 };
 
+let printFonts: Promise<string> | null = null;
+/** خط الهوية للطباعة: ملفّا الوزنين Base64 مرةً في الجلسة (E-20) · وتعذّرهما يُبقي خط النظام ولا يوقف الطباعة */
+function printFontCss(): Promise<string> {
+  if (!printFonts) {
+    printFonts = (async () => {
+      try {
+        // expo-asset يُحمَّل عند الطباعة وحدها · وتعذّره (بيئةٌ بلا وحداته الأصلية) يُبقي خط النظام ولا يوقف الطباعة
+        const { Asset } = await import('expo-asset');
+        const read = async (mod: number): Promise<string | null> => {
+          const [a] = await Asset.loadAsync(mod);
+          return a?.localUri ? new File(a.localUri).base64() : null;
+        };
+        const [regular, bold] = await Promise.all([
+          read(require('../../assets/fonts/IBMPlexSansArabic_400Regular.ttf')),
+          read(require('../../assets/fonts/IBMPlexSansArabic_700Bold.ttf')),
+        ]);
+        return printFontFaceCss({ regular, bold });
+      } catch {
+        printFonts = null;
+        return '';
+      }
+    })();
+  }
+  return printFonts;
+}
+
 /** توليد PDF باسم مفهوم · يعيد مساره */
-async function renderPdf(title: string, bodyHtml: string, filename: string): Promise<string> {
-  const html = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>${esc(title)}</title><style>${PRINT_CSS}</style></head><body>${bodyHtml}</body></html>`;
+async function renderPdf(title: string, bodyHtml: string, filename: string, extraCss = ''): Promise<string> {
+  const fonts = await printFontCss();
+  const html = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>${esc(title)}</title><style>${fonts}${PRINT_CSS}${extraCss}</style></head><body>${bodyHtml}</body></html>`;
   const { uri } = await Print.printToFileAsync({ html });
   const dir = new Directory(Paths.cache.uri + 'prints/');
   if (!dir.exists) dir.create({ intermediates: true });
@@ -113,7 +138,8 @@ async function outputPdf(db: DB, uri: string, title: string, filename: string, t
 /** مستند عام (التقارير) · نفس القشرة والهوية */
 export async function printHtmlDoc(title: string, bodyHtml: string, filename?: string): Promise<void> {
   const brand = '<div style="text-align:center;margin-top:22px;font-size:10.5px;color:#9AA1AD">صدر عبر تطبيق عقاري · أحد حلول منصة رِكز · ' + esc(issuedNow()) + '</div>';
-  const uri = await renderPdf(title, bodyHtml + brand, filename || title);
+  // طوله غير معلوم قبل الطباعة: «صفحة X من Y» في هامش كل صفحة بعدّاد المتصفح (E-11)
+  const uri = await renderPdf(title, bodyHtml + brand, filename || title, reportPageCss());
   await sharePdf(uri, title);
 }
 
@@ -132,7 +158,8 @@ export async function printReceipt(db: DB, paymentId: string, copy: CopyKind = '
   if (!p) return;
   const blocked = receiptBlocked(db, paymentId);
   if (blocked) throw new Error(blocked);
-  const no = 'RCP-' + p.id.slice(0, 8).toUpperCase();
+  // رقمه المتسلسل المحفوظ مع الدفعة، وما سُجّل قبل التسلسل برقمه المشتق كما طُبع (E-10 · س٣٠)
+  const no = receiptNoOf(db, p.id);
   const body = buildReceiptDoc(companyInfo(db), {
     no, tenantName: p.tenant_name, contractNo: p.contract_no || '', unitLabel: p.unit_label,
     date: p.date, period: p.period, methodLabel: p.method_label, notes: p.notes,
@@ -166,6 +193,8 @@ export async function printInvoice(db: DB, invoiceId: string): Promise<void> {
     totalHalalas: Number(v.total_halalas),
     lines: lines.map((l) => ({ descr: l.descr, qty: Number(l.qty), priceHalalas: Number(l.price_halalas), taxPct: Number(l.tax_pct) })),
     credit: refNo !== null ? { refNo, reason: v.credit_reason ?? '' } : undefined,
+    // وضعها الضريبي ورقم البائع يوم صدرت (E-6)
+    ...invoiceVatStamp(db, v.id),
   }, issuedNow());
   const filename = 'فاتورة · ' + v.no;
   const uri = await renderPdf('فاتورة ' + v.no, body, filename);
@@ -201,8 +230,8 @@ export async function printContractDoc(db: DB, contractId: string): Promise<void
   const propertyName = c.unit_id
     ? db.get<{ name: string }>(
         `SELECT p.name FROM properties p JOIN units u ON u.property_id = p.id WHERE u.id = ?`, [c.unit_id]
-      )?.name ?? 'لا يوجد'
-    : 'لا يوجد';
+      )?.name ?? ''
+    : '';
   const installments = db.all<{ due_date: string; amount_halalas: number; paid_halalas: number; status: string }>(
     `SELECT due_date, amount_halalas, paid_halalas, status FROM contract_installments
      WHERE contract_id = ? AND status != 'ملغية' ORDER BY due_date`, [contractId]
@@ -217,7 +246,7 @@ export async function printContractDoc(db: DB, contractId: string): Promise<void
       ? depositState(c.deposit_holder, c.deposit_holder_name).label
       : undefined,
     // الحالة في المطبوعة محسوبة كما تظهر في الشاشات · لا الحالة المخزّنة الخام
-    cycle: c.cycle || 'لا يوجد', status: contractStatusLabel(c), installments,
+    cycle: c.cycle || '', status: contractStatusLabel(c), installments,
   }, issuedNow());
   const filename = 'عقد · ' + (c.contract_no || c.tenant_name);
   const uri = await renderPdf('عقد إيجار · ' + c.tenant_name, body, filename);
@@ -234,10 +263,12 @@ export async function printClaim(db: DB, claimId: string): Promise<void> {
     `SELECT contract_no, tenant_name, unit_label FROM contracts WHERE id = ?`, [cl.contract_id]
   );
   const body = buildClaimDoc(companyInfo(db), {
-    contractNo: c?.contract_no || '', tenantName: c?.tenant_name || 'لا يوجد', unitLabel: c?.unit_label || '',
+    contractNo: c?.contract_no || '', tenantName: c?.tenant_name || '', unitLabel: c?.unit_label || '',
     amountHalalas: Number(cl.amount_halalas), reason: cl.reason, date: cl.date,
+    // النص من قالب «مطالبة» في «قوالب الرسائل» (E-18)
+    body: claimNoticeBody(db, cl.contract_id, { amountHalalas: Number(cl.amount_halalas), reason: cl.reason }),
   }, issuedNow());
-  const filename = 'إشعار مطالبة · ' + (c?.contract_no || dfmt(cl.date));
+  const filename = 'إشعار مطالبة · ' + (c?.contract_no || dfmtOut(cl.date));
   const uri = await renderPdf('إشعار مطالبة', body, filename);
   await outputPdf(db, uri, 'إشعار مطالبة', filename, { entityType: 'claim', entityId: cl.id, kind: 'claim' });
 }
@@ -255,7 +286,8 @@ export async function printHandoverDoc(
 ): Promise<void> {
   const occ = h.contractId ? occupantsOf(db, h.contractId)
     .filter((o) => !o.moved_out)
-    .map((o) => ({ name: o.name, relation: o.relation, nationalId: o.national_id })) : [];
+    // وما خُزّن قبل الإصلاح للهوية الغائبة يُطبع خانةً خالية (shownNationalId)
+    .map((o) => ({ name: o.name, relation: o.relation, nationalId: shownNationalId(o.national_id) })) : [];
   const body = buildHandoverDoc(companyInfo(db), { ...h, occupants: occ, legalFooter: HANDOVER_LEGAL_FOOTER }, issuedNow(), copy);
   const filename = 'محضر · ' + h.type + ' · ' + h.tenantName;
   const uri = await renderPdf('محضر ' + h.type + ' · ' + h.tenantName, body, filename);

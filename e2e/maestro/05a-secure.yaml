@@ -1,0 +1,22 @@
+# الجوال الافتراضي · ٠٥ أ · «منع لقطة الشاشة» يُفعَّل من الإعدادات (التوجيه الرابع ٤ · ١ · قرار المالك 2026-10-15 «٣»)
+appId: com.aqari.app
+---
+- launchApp:
+    clearState: true
+- extendedWaitUntil:
+    visible: "الرئيسية"
+    timeout: 120000
+- tapOn: "المزيد"
+- scrollUntilVisible:
+    element: "الإعدادات"
+    direction: DOWN
+- tapOn: "الإعدادات"
+- scrollUntilVisible:
+    element: "منع لقطة الشاشة"
+    direction: DOWN
+- tapOn: "منع لقطة الشاشة"
+- tapOn:
+    id: "option-1"
+- extendedWaitUntil:
+    visible: "مفعّل"
+    timeout: 10000

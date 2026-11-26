@@ -6,23 +6,26 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { otherCurrentOccupants } from '../../src/domain/occupants';
 import { CashShortNote, useCashOk } from '../../src/ui/CashGate';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { contractReviewFigures } from '../../src/ui/contractReview';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { contractsArrival, paramStr } from '../../src/ui/routeArrival';
+import { useReturnLayer } from '../../src/ui/returnLayer';
 import { View, Pressable, FlatList } from 'react-native';
 import { Screen, BackButton } from '../../src/ui/Screen';
 import {
-  Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, Field, Divider, Note,
-  Sar, ChipGroup,
+  Card, T, Num, Money, EmptyState, Row, Badge, SearchBox, BtnPrimary, BtnGhost, Field, Note,
+  ChipGroup,
 } from '../../src/ui/components';
 import { Sheet, SelectField } from '../../src/ui/Sheet';
 import { DateField } from '../../src/ui/DateField';
 import { ActionMenuButton } from '../../src/ui/ActionMenu';
 import { printTenantStatement, printContractDoc, printReceipt } from '../../src/services/print';
 import { paymentForInstallment } from '../../src/domain/contracts/service';
-import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining } from '../../src/domain/contracts/installments';
+import { INSTALLMENT_DISCOUNT_SQL, installmentRemaining, installmentBadge } from '../../src/domain/contracts/installments';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../../src/domain/contracts/vocab';
 import { depositState } from '../../src/domain/contracts/vocab';
 import { InstallmentSheet } from '../../src/ui/InstallmentSheet';
-import { contractRemainingHalalas } from '../../src/domain/stats';
+import { contractRemainingHalalas, contractCollectedValue } from '../../src/domain/stats';
 import { OccupantSheet } from '../../src/ui/OccupantSheet';
 import { usePager, Pager } from '../../src/ui/Pager';
 import { useDeferredReady } from '../../src/ui/useDeferredReady';
@@ -41,38 +44,45 @@ import { C } from '../../src/ui/theme';
 import { useContractForm, ContractFormFields, emptyContractForm, formToInput } from '../../src/ui/contractForm';
 import {
   saveDraft, deleteDraft, confirmContract, cancelContract, renewContract, renewWarnings,
-  saveDepositSettlement, saveTenantRating, tenantRatingOverall, RuleViolation, depositCarried,
+  saveDepositSettlement, saveTenantRating, tenantRatingOverall, RuleViolation, depositCarried, depositSettlementDate,
+  depositArrearsDue, depositArrearsPaid,
 } from '../../src/domain/contracts/service';
 import {
-  contractDisplayId, contractDisplayStatus, contractStatusKind, contractStatusLabel, refreshContractStatuses,
+  contractDisplayId, contractStatusKind, contractStatusLabel,
   canRenewContract, contractEnded, renewBlockReason,
-  type ContractRow, RENEW_WINDOW_DAYS,
+  type ContractRow, contractUnitLabelSql, contractUnitLabel,
 } from '../../src/domain/contracts/rules';
 import { keyMoneyBlockReason } from '../../src/domain/contracts/rules';
 import { recordKeyMoneyDeal } from '../../src/domain/keymoney';
 import { generateInstallments } from '../../src/domain/contracts/installments';
-import { today, dfmt, addDays, approxMonths, periodLabel, daysBetween, contractEndFromDuration, periodBounds } from '../../src/domain/dates';
+import { today, dfmt, addDays, approxMonths, periodLabel, contractEndFromDuration, periodBounds, isISODate } from '../../src/domain/dates';
+import { prepaidUnearned } from '../../src/domain/accrual';
+import { DepositBankField } from '../../src/ui/DepositBankField';
 import { fmt, toHalalas } from '../../src/domain/money';
-import { naturalCompare } from '../../src/domain/sortKey';
-import { rescheduleAllNotifications } from '../../src/services/notifications';
 import { HandoverSheet } from '../../src/ui/HandoverSheet';
 import { attachPicked, pickFile } from '../../src/ui/attach';
 import { attachmentsFor } from '../../src/files/store';
-import { logAudit } from '../../src/domain/audit';
 import { FilterBar, FilterSheet, useFilterSheet, type ActiveChip } from '../../src/ui/FilterSheet';
 import { usePerm, useAccess } from '../../src/ui/access';
-import { rowBy } from '../../src/services/access';
 import { routeAllowed } from '../../src/domain/access/routes';
+
+/** العقد بمعرّفه ومعه اسم وحدته الآن (A1-13) */
+const CONTRACT_BY_ID = `SELECT c.*, ${contractUnitLabelSql('c.')} AS unit_label_now FROM contracts c WHERE c.id = ?`;
 
 type SortKey = 'start' | 'contract_no' | 'value_halalas' | 'tenant_name';
 
 export default function Contracts() {
   const { db, version, bump } = useApp();
   // القدوم من الدفتر أو تقرير: ?detail=<id> يفتح المستند مباشرة والرجوع يعيد من حيث أتيت
+  // وصولٌ بحالة يمسح بقية المرشّحات ثم يطبّقها، ويُستهلك المعامل فيعمل الرابط نفسه ثانيةً بعد إغلاق الورقة (D-9)
   const params = useLocalSearchParams<{ detail?: string; status?: string }>();
+  const navigation = useNavigation();
   useEffect(() => {
-    if (params.detail) setDetailId(String(params.detail));
-    if (params.status) setFStatus(String(params.status));
+    if (!params.detail && !params.status) return;
+    if (params.detail) setDetailId(paramStr(params.detail));
+    const a = contractsArrival(params);
+    if (a) { setFStatus(a.fStatus); setFProp(a.fProp); setFUnit(a.fUnit); setFPeriod(a.fPeriod); setFCycle(a.fCycle); setQ(a.q); }
+    navigation.setParams({ detail: undefined, status: undefined } as never);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.detail, params.status]);
   const toast = useToast();
@@ -89,7 +99,6 @@ export default function Contracts() {
   const [fUnit, setFUnit] = useState('');
   const [fPeriod, setFPeriod] = useState('');
   const [fCycle, setFCycle] = useState('');
-  const [instSheetFor, setInstSheetFor] = useState<string | null>(null);
   const ready = useDeferredReady();
   const pager = usePager('contracts');
   const fsheet = useFilterSheet();
@@ -105,6 +114,8 @@ export default function Contracts() {
   const { t } = useLang();
 
   const [detailId, setDetailId] = useState<string | null>(null);
+  // ورقة العقد التي أُغلقت للانتقال (تحصيل · فاتورة) تعود حين يرجع التركيز إلى العقود (D-4)
+  const leaveDetail = useReturnLayer<string>((id) => setDetailId(id));
   const [renewId, setRenewId] = useState<string | null>(null);
   const [cancelId, setCancelId] = useState<string | null>(null);
   const [handoverFor, setHandoverFor] = useState<string | null>(null);
@@ -114,7 +125,7 @@ export default function Contracts() {
 
   // خيارات المرشِّحات والقائمة المقسّمة · الاستعلام يجلب صفحة واحدة
   const filterOpts = useMemo(() => {
-    if (!ready) return { props: [] as Array<{ id: string; name: string }>, units: [] as Array<{ id: string; unit_no: string }>, wallet1265: new Set<string>() };
+    if (!ready) return { props: [] as { id: string; name: string }[], units: [] as { id: string; unit_no: string }[], wallet1265: new Set<string>() };
     const props = db.all<{ id: string; name: string }>(
       `SELECT id, name FROM properties WHERE deleted_at IS NULL ORDER BY name`);
     const units = fProp
@@ -139,10 +150,10 @@ export default function Contracts() {
     if (!ready) return { rows: [] as ContractRow[], totalRows: 0, allRows: 0 };
     const T0 = today();
     const where: string[] = ['c.deleted_at IS NULL', 'c.archived = ?'];
-    const args: Array<string | number> = [showArchived ? 1 : 0];
+    const args: (string | number)[] = [showArchived ? 1 : 0];
     const needle = q.trim();
     if (needle) {
-      where.push(`(c.contract_no LIKE '%'||?||'%' OR c.tenant_name LIKE '%'||?||'%' OR c.phone LIKE '%'||?||'%' OR c.unit_label LIKE '%'||?||'%' OR c.ejar_no LIKE '%'||?||'%')`);
+      where.push(`(c.contract_no LIKE '%'||?||'%' OR c.tenant_name LIKE '%'||?||'%' OR c.phone LIKE '%'||?||'%' OR ${contractUnitLabelSql('c.')} LIKE '%'||?||'%' OR c.ejar_no LIKE '%'||?||'%')`);
       args.push(needle, needle, needle, needle, needle);
     }
     if (fStatus === 'مسودة' || fStatus === 'ملغى') { where.push('c.status = ?'); args.push(fStatus); }
@@ -170,11 +181,29 @@ export default function Contracts() {
       `SELECT COUNT(*) AS n FROM contracts c WHERE c.deleted_at IS NULL AND c.archived = ?`,
       [showArchived ? 1 : 0])?.n ?? 0);
     const page = db.all<ContractRow>(
-      `SELECT c.* FROM contracts c WHERE ${w} ORDER BY ${order} LIMIT ? OFFSET ?`,
+      `SELECT c.*, ${contractUnitLabelSql('c.')} AS unit_label_now FROM contracts c WHERE ${w} ORDER BY ${order} LIMIT ? OFFSET ?`,
       [...args, pager.limit, pager.offset]);
     return { rows: page, totalRows: total, allRows: all };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, ready, q, sortKey, showArchived, fStatus, fProp, fUnit, fCycle, fPeriod, pager.limit, pager.offset, T60]);
+
+  // ما تحتاجه بطاقات الصفحة يُحسب مرةً لها باستعلامين، لا استعلامان لكل صفٍّ مع كل رسم (D-17)
+  const pageMeta = useMemo(() => {
+    const ids = rows.map((c) => c.id);
+    const by = new Map<string, string>();
+    const hasLease = new Set<string>();
+    if (ids.length) {
+      const ph = ids.map(() => '?').join(',');
+      db.all<{ pk: string; uid: string }>(`SELECT pk, uid FROM row_by WHERE tbl = 'contracts' AND pk IN (${ph})`, ids)
+        .forEach((r) => by.set(r.pk, r.uid));
+      db.all<{ id: string }>(
+        `SELECT DISTINCT entity_id AS id FROM attachments
+         WHERE entity_type = 'contract' AND kind = 'lease' AND deleted_at IS NULL AND entity_id IN (${ph})`, ids)
+        .forEach((r) => hasLease.add(r.id));
+    }
+    return { by, hasLease };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, version, rows]);
 
   useEffect(() => { pager.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -182,7 +211,6 @@ export default function Contracts() {
 
   const afterMutation = (msg?: string) => {
     bump();
-    rescheduleAllNotifications(db).catch(() => {});
     if (msg) toast(msg);
   };
 
@@ -200,6 +228,7 @@ export default function Contracts() {
       deposit: c.deposit_halalas ? fmt(c.deposit_halalas).replace(/,/g, '') : '',
       depositHolder: (c as unknown as { deposit_holder?: string }).deposit_holder ?? 'المكتب',
       depositHolderName: (c as unknown as { deposit_holder_name?: string }).deposit_holder_name ?? '',
+      depositBankId: (c as unknown as { deposit_bank_id?: string | null }).deposit_bank_id ?? '',
       ejarNo: c.ejar_no, services: c.services, furnished: c.furnished,
       typeSpecific: JSON.parse(c.type_specific || '{}'),
       pendingFile: null,
@@ -268,13 +297,8 @@ export default function Contracts() {
           { label: 'لاحقاً', variant: 'ghost' },
           {
             label: 'فتح النموذج', variant: 'primary',
-            onPress: () => {
-              const c = db.get<{ id: string }>(
-                `SELECT id FROM contracts WHERE TRIM(tenant_name)=TRIM(?) ORDER BY created_at DESC LIMIT 1`,
-                [form.state.tenant]
-              );
-              if (c) setHandoverFor(c.id);
-            },
+            // العقد الذي وُثّق الآن بمعرّفه · لا أحدث عقدٍ باسم المستأجر، فالمسودة الموثَّقة تُبقي تاريخ إنشائها (D-8)
+            onPress: () => { setHandoverFor(id); },
           },
         ],
       });
@@ -316,7 +340,7 @@ export default function Contracts() {
   const renderContract = ({ item: c }: { item: ContractRow }) => {
     const draft = c.status === 'مسودة';
     // المسودة يعدّلها ويحذفها كاتبها بإدخال · وما بعدها لصاحب «كامل»
-    const draftEditable = draft && perm.edit({ by: rowBy(db, 'contracts', c.id), draft: true });
+    const draftEditable = draft && perm.edit({ by: pageMeta.by.get(c.id) ?? null, draft: true });
     return (
         <Card style={{ paddingVertical: 10 }}>
           <Pressable onPress={() => setDetailId(c.id)}>
@@ -328,7 +352,7 @@ export default function Contracts() {
                 <ActionMenuButton title={c.tenant_name} actions={[
                   { icon: 'eye', label: 'عرض التفاصيل والدفعات', onPress: () => setDetailId(c.id) },
                   // يظهر فقط إن لم يكن للعقد مستند من نوعه · الرفع بالمسار الواحد نفسه attachPicked
-                  perm.add && attachmentsFor(db, 'contract', c.id, 'lease').length === 0 ? {
+                  perm.add && !pageMeta.hasLease.has(c.id) ? {
                     icon: 'attach', label: 'إرفاق مستند العقد',
                     onPress: async () => {
                       const f = await pickFile(['application/pdf', 'image/*']);
@@ -362,7 +386,7 @@ export default function Contracts() {
               </Row>
             </Row>
             <Row style={{ justifyContent: 'space-between', marginTop: 4 }}>
-              <T size={11.5} color={C.muted}>{c.unit_label} · {c.cycle}</T>
+              <T size={11.5} color={C.muted}>{contractUnitLabel(c)} · {c.cycle}</T>
               {c.status !== 'مسودة' && c.contract_no ? <Num size={11.5} color={C.muted}>{contractDisplayId(c)}</Num> : null}
             </Row>
             <Row style={{ justifyContent: 'space-between', marginTop: 6 }}>
@@ -471,6 +495,8 @@ export default function Contracts() {
         onClose={() => setFormOpen(false)}
         title={editingDraftId ? 'تعديل عقد الإيجار' : 'عقد إيجار جديد'}
         tall
+        // النموذج يحرس نفسه بما فيه لا بعلامة الورقة · فالعائد من المراجعة لا يُغلق بلا استئذان (D-3)
+        dirty={form.dirty}
         footer={
           <>
             <View style={{ flex: 1 }}><BtnGhost title="حفظ كمسودة" onPress={doSaveDraft} /></View>
@@ -485,6 +511,7 @@ export default function Contracts() {
       <ReviewSheet
         visible={reviewOpen}
         form={form.state}
+        onUseComputed={() => form.set('schedule', null)}
         onBack={() => { setReviewOpen(false); setFormOpen(true); }}
         onConfirm={doConfirmCreate}
         cc={cc} onCc={setCc}
@@ -496,6 +523,7 @@ export default function Contracts() {
         <ContractDetailSheet
           contractId={detailId}
           onClose={() => setDetailId(null)}
+          onLeave={() => { leaveDetail(detailId); setDetailId(null); }}
           onOpenRating={() => setRatingId(detailId)}
           onOpenSettlement={() => setSettleId(detailId)}
         />
@@ -536,6 +564,8 @@ import { reportFailure } from '../../src/ui/failureDialog';
 
 import { CostCenterField } from '../../src/ui/CostCenters';
 import { ScheduleReview } from '../../src/ui/ScheduleReview';
+import { RenewEjarRead, type RenewFileRead } from '../../src/ui/RenewEjarRead';
+import { scheduleInstallments, reviewScheduleRows } from '../../src/domain/contracts/service';
 import { formSplit } from '../../src/ui/contractForm';
 import { LeaseCompare, useLeaseDiffs } from '../../src/ui/LeaseCompare';
 import { applyExtras, type ExtraDiff, type ExtraKey } from '../../src/domain/pdf/ejarExtras';
@@ -543,25 +573,33 @@ import { useLang } from '../../src/i18n';
 import { GENERAL_COST_CENTER, withCostCenter } from '../../src/domain/accounting/dimensions';
 import { contractTotalOf, contractTotalSql } from '../../src/domain/accounting/rentSplit';
 function ReviewSheet({
-  visible, form, onBack, onConfirm, db, cc, onCc, leaseDiffs, approved, onApproved,
-}: { visible: boolean; form: ContractFormState; onBack: () => void; onConfirm: () => void; db: DB; cc: string; onCc: (v: string) => void;
+  visible, form, onBack, onConfirm, db, cc, onCc, leaseDiffs, approved, onApproved, onUseComputed,
+}: { visible: boolean; form: ContractFormState; onUseComputed: () => void; onBack: () => void; onConfirm: () => void; db: DB; cc: string; onCc: (v: string) => void;
   leaseDiffs: ExtraDiff[]; approved: Set<ExtraKey>; onApproved: (s: Set<ExtraKey>) => void }) {
   const u = form.unitId
     ? db.get<{ unit_no: string; property_id: string }>(`SELECT unit_no, property_id FROM units WHERE id = ?`, [form.unitId])
     : undefined;
   const p = u ? db.get<{ name: string }>(`SELECT name FROM properties WHERE id = ?`, [u.property_id]) : undefined;
-  const months = form.start && form.end ? Math.max(1, approxMonths(form.start, form.end)) : 0;
-  const per = ({ 'شهرية': 1, 'ربع سنوية': 3, 'نصف سنوية': 6, 'سنوية': 12 } as Record<string, number>)[form.cycle] || 1;
-  const n = Math.max(1, Math.round(months / per));
-  const each = toHalalas(form.value) / n;
-  const rows: Array<[string, React.ReactNode]> = [
+  const { t } = useLang();
+  // الخانة التي لم تُكتب يسقط صفّها بعنوانه · لا «لا يوجد» ولا «0 شهراً» ولا «0.00» لنموذجٍ ناقص (D-14)
+  const f = contractReviewFigures(form, 1);
+  // العدد والمبلغ من صفوف جدول المراجعة نفسها وبإجمالي العقد، كما يُنشئها التوثيق (A1-10)
+  const sp = formSplit(form);
+  const sched = f.months != null && f.value != null
+    ? reviewScheduleRows({ start: form.start, end: form.end, cycle: form.cycle, schedule: form.schedule,
+      totalHalalas: f.value + (sp?.servicesHalalas ?? 0) + (sp?.parkingHalalas ?? 0) })?.rows ?? []
+    : [];
+  const first = sched.length ? sched[0].amount : 0;
+  const last = sched.length ? sched[sched.length - 1].amount : 0;
+  const rows: [string, React.ReactNode][] = [
     ['المستأجر', form.tenant], ['الجوال', form.phone], ['الهوية / السجل', form.idNumber],
     ['العقار', p?.name ?? ''], ['الوحدة', u?.unit_no ?? ''],
-    ['قيمة العقد', fmt(toHalalas(form.value))], ['الدورية', form.cycle],
-    ['البداية', dfmt(form.start)], ['النهاية', dfmt(form.end)],
-    ['المدة', months + ' شهراً'],
-    ['عدد الدفعات', n + ' دفعة × ' + fmt(Math.round(each))],
-    ['التأمين', fmt(toHalalas(form.deposit))],
+    ['قيمة العقد', f.value != null ? fmt(f.value) : ''], ['الدورية', form.cycle],
+    ['البداية', f.start], ['النهاية', f.end],
+    ['المدة', f.months != null ? f.months + ' شهراً' : ''],
+    ['عدد الدفعات', !sched.length ? '' : first === last ? sched.length + ' دفعة × ' + fmt(first)
+      : t('lease.reviewCountMixed', { n: sched.length, first: fmt(first), last: fmt(last) })],
+    ['التأمين', f.deposit != null ? fmt(f.deposit) : ''],
     ['رقم إيجار', form.ejarNo], ['الخدمات المشمولة', form.services],
     ['الأثاث', form.furnished],
   ];
@@ -586,7 +624,7 @@ function ReviewSheet({
         </Row>
       ))}
       <View style={{ marginTop: 12 }}>
-        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} financial={form.extras?.financial} split={formSplit(form)} />
+        <ScheduleReview start={form.start} end={form.end} value={form.value} cycle={form.cycle} schedule={form.schedule} fromEjarFile={form.fromEjarFile} financial={form.extras?.financial} split={formSplit(form)} onUseComputed={onUseComputed} />
         <LeaseCompare extras={form.extras} diffs={leaseDiffs} approved={approved} onChange={onApproved} />
         <CostCenterField value={cc} onChange={onCc} />
         <Note>بعد الإنشاء لا يمكن تعديل العقد أو حذفه · يُلغى فقط.</Note>
@@ -597,8 +635,13 @@ function ReviewSheet({
 
 /* ═══════════ تفاصيل العقد والدفعات ═══════════ */
 function ContractDetailSheet({
-  contractId, onClose, onOpenRating, onOpenSettlement,
-}: { contractId: string; onClose: () => void; onOpenRating: () => void; onOpenSettlement: () => void }) {
+  contractId, onClose, onLeave, onOpenRating, onOpenSettlement,
+}: {
+  contractId: string; onClose: () => void;
+  /** الانتقال إلى شاشة أخرى: تُغلق الورقة وتُذكر فتعود حين يرجع إلى العقود (D-4) */
+  onLeave: () => void;
+  onOpenRating: () => void; onOpenSettlement: () => void;
+}) {
   const { db, version, bump } = useApp();
   const toast = useToast();
   const dialog = useDialog();
@@ -617,7 +660,7 @@ function ContractDetailSheet({
   const onAddOccupant = () => { setOccEditing(null); setOccOpen(true); };
   const onEditOccupant = (o: OccupantRow) => { setOccEditing(o); setOccOpen(true); };
   const c = useMemo(
-    () => db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId]),
+    () => db.get<ContractRow>(CONTRACT_BY_ID, [contractId]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, contractId, version]
   );
@@ -651,9 +694,8 @@ function ContractDetailSheet({
   const rating = db.get<{ on_time: string; payment_commit: string; contract_commit: string; unit_condition: string; neighbor_complaints: string; notes: string }>(
     `SELECT * FROM tenant_ratings WHERE contract_id = ?`, [contractId]
   );
-  const totalPaid = Number(db.get<{ s: number }>(
-    `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`, [contractId]
-  )!.s);
+  // بما سدّدته الدفعات من مستحقات العقد: الفائض الذي صار رصيداً يخرج، والسداد من الرصيد يدخل (R12-DEP-4)
+  const totalPaid = contractCollectedValue(db, contractId);
   const ended = contractEnded(c);
   const overall = rating
     ? tenantRatingOverall({
@@ -661,13 +703,12 @@ function ContractDetailSheet({
         unitCondition: rating.unit_condition, neighborComplaints: rating.neighbor_complaints, notes: rating.notes,
       })
     : null;
+  // بالدالة الواحدة مع شاشة التحصيل (A1-11 · القرار ٤.١٠ و٤.١١): المتأخر «متأخرة N يوماً» هنا كما هناك
+  const T_inst = today();
   const instBadge = (i: (typeof insts)[number]) => {
-    let display = i.status;
-    if (i.status === 'مستحقة' && i.due_date > today()) display = 'قادمة';
-    const map: Record<string, string> = { 'مستحقة': 'due', 'قادمة': 'draft', 'متأخرة': 'overdue', 'مدفوعة': 'paid', 'مدفوعة جزئياً': 'due', 'ملغية': 'draft' };
-    const rem = installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), Number(i.discount));
-    const note = i.status === 'مدفوعة جزئياً' && rem > 0 ? ` (متبقي ${fmt(rem)})` : '';
-    return <Badge kind={map[display] || 'draft'} label={display + note} />;
+    const b = installmentBadge({ dueDate: i.due_date, agreedDate: i.agreed_date, graceUntil: i.grace_until,
+      amount: Number(i.amount_halalas), paid: Number(i.paid_halalas), discount: Number(i.discount), status: i.status }, T_inst);
+    return <Badge kind={b.kind} label={b.label} />;
   };
   // صف قسط واحد · مشترك بين قسمي المستحق والسجل · الضغط يفتح تفاصيل القسط
   const renderInst = (i: (typeof insts)[number]) => {
@@ -690,7 +731,7 @@ function ContractDetailSheet({
           <Row gap={8}>
             <Money halalas={Number(i.amount_halalas)} size={12} bold />
             {payable ? (
-              <BtnPrimary small title="تحصيل" onPress={() => { onClose(); router.push(`/collect?pay=${i.id}`); }} />
+              <BtnPrimary small title="تحصيل" onPress={() => { onLeave(); router.push(`/collect?pay=${i.id}`); }} />
             ) : remaining <= 0 && i.status !== 'ملغية' && receiptIds.has(i.id) ? (
               <BtnGhost small icon="print" title="سند القبض" onPress={() => {
                 const pid = paymentForInstallment(db, i.id);
@@ -706,7 +747,7 @@ function ContractDetailSheet({
   return (
     <Sheet visible onClose={onClose} title={['عقد' + (c.status !== 'مسودة' && c.contract_no ? ' ' + contractDisplayId(c) : ''), c.tenant_name].join(' · ')} tall>
       <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
-        {c.unit_label ? <View><T size={11} color={C.muted}>الوحدة</T><T size={12.5} med>{c.unit_label}</T></View> : null}
+        {contractUnitLabel(c) ? <View><T size={11} color={C.muted}>الوحدة</T><T size={12.5} med>{contractUnitLabel(c)}</T></View> : null}
         <View><T size={11} color={C.muted}>الحالة</T><T size={12.5} med>{contractStatusLabel(c)}</T></View>
       </Row>
       <Row style={{ justifyContent: 'space-between', marginBottom: 6 }}>
@@ -749,10 +790,7 @@ function ContractDetailSheet({
 
       {/* دخل العقد ومصاريفه */}
       {(() => {
-        const income = db.get<{ s: number }>(
-          `SELECT COALESCE(SUM(net_halalas),0) AS s FROM contract_payments WHERE contract_id = ? AND cancelled_at IS NULL`,
-          [contractId]
-        )!.s;
+        const income = contractCollectedValue(db, contractId);
         const expenses = c.unit_id
           ? db.get<{ s: number }>(
               `SELECT COALESCE(SUM(total_halalas),0) AS s FROM purchases
@@ -780,7 +818,7 @@ function ContractDetailSheet({
                  AND (? IS NULL OR date >= ?) AND (? IS NULL OR date <= ?) ORDER BY date DESC`,
               [c.unit_id, c.start, c.start, c.end, c.end]
             ).map((pu) => (
-              <Pressable key={pu.id} disabled={!seesPurchases} onPress={() => { onClose(); router.push(`/purchases?detail=${pu.id}`); }}>
+              <Pressable key={pu.id} disabled={!seesPurchases} onPress={() => { onLeave(); router.push(`/purchases?detail=${pu.id}`); }}>
                 <Row style={{ justifyContent: 'space-between', paddingVertical: 4, paddingStart: 10 }}>
                   <Num size={11} color={C.muted}>{pu.supplier_name} · {dfmt(pu.date)}</Num>
                   <Money halalas={Number(pu.total_halalas)} size={11.5} />
@@ -847,7 +885,7 @@ function ContractDetailSheet({
       {c.status === 'ملغى' && (
         <View style={{ backgroundColor: C.roseSoft, borderRadius: 9, padding: 11, marginTop: 12 }}>
           <T size={13} bold>تفاصيل الإلغاء</T>
-          <T size={12} style={{ marginTop: 4 }}>تاريخ الإنهاء: {dfmt(c.cancel_date)}</T>
+          {c.cancel_date ? <T size={12} style={{ marginTop: 4 }}>تاريخ الإنهاء: {dfmt(c.cancel_date)}</T> : null}
           {c.cancel_reason ? <T size={12}>السبب: {c.cancel_reason}</T> : null}
           {c.cancel_deduction_halalas != null ? (
             <T size={12}>الخصم من التأمين: {fmt(Number(c.cancel_deduction_halalas))} {c.cancel_deduction_reason ? '· ' + c.cancel_deduction_reason : ''}</T>
@@ -911,7 +949,7 @@ function ContractDetailSheet({
       </T>
       {/* عقد قُرئ من ملف إيجار وتعذّر جدول دفعاته: التواريخ محسوبة لا مقروءة (قرار المالك ٢٠٢٦-١٠-٠٥) */}
       {(c as unknown as { installments_source?: string | null }).installments_source === 'محسوبة' ? (
-        <Note>تواريخ الأقساط محسوبة لا مقروءة: تعذّرت قراءة جدول الدفعات من ملف إيجار · طابقها بالجدول في الملف.</Note>
+        <Note>{t('lease.computedNote')}</Note>
       ) : null}
       {dueInsts.length ? dueInsts.map(renderInst) : <T size={12} color={C.muted}>لا دفعات مستحقة</T>}
 
@@ -922,7 +960,7 @@ function ContractDetailSheet({
       {instFor ? (
         <InstallmentSheet installmentId={instFor}
           onClose={() => setInstFor(null)}
-          onCollect={(iid) => { setInstFor(null); onClose(); router.push(`/collect?pay=${iid}`); }} />
+          onCollect={(iid) => { setInstFor(null); onLeave(); router.push(`/collect?pay=${iid}`); }} />
       ) : null}
       <View style={{ height: 16 }} />
     </Sheet>
@@ -969,9 +1007,8 @@ function ContractFileButton({ contractId, linked }: { contractId: string; linked
 /* ═══════════ التجديد ═══════════ */
 function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg?: string) => void }) {
   const { db } = useApp();
-  const toast = useToast();
   const depPerm = usePerm('deposits');
-  const c = db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId])!;
+  const c = db.get<ContractRow>(CONTRACT_BY_ID, [contractId])!;
   const defaultStart = c.end ? addDays(c.end, 1) : today();
   const [start, setStart] = useState(defaultStart);
   const [durMonths, setDurMonths] = useState<string>('12');
@@ -979,12 +1016,17 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const [value, setValue] = useState(fmt(Number(c.value_halalas)).replace(/,/g, ''));
   const [raise, setRaise] = useState('');
   const [cycle, setCycle] = useState(c.cycle || 'سنوية');
-  const [carry, setCarry] = useState(Number(c.deposit_halalas) > 0);
+  // الخانة غير مؤشَّرة كما تفتح، ولا تُعرض لتأمينٍ سُوّي (A1-1 · «الزر الذي لا يصح لا يُعرض»)
+  const settledOn = depositSettlementDate(db, contractId);
+  const [carry, setCarry] = useState(false);
   const [extraDeposit, setExtraDeposit] = useState('');
+  const [extraBank, setExtraBank] = useState('');
   const [services, setServices] = useState(c.services || '');
   const [furnished, setFurnished] = useState(c.furnished || '');
   const [ejar, setEjar] = useState('');
   const [note, setNote] = useState('');
+  // ملف إيجار العقد الجديد إن قُرئ: جدول دفعاته تؤخذ منه التواريخ، وملفه يُرفق بالعقد (A1-9)
+  const [fileRead, setFileRead] = useState<RenewFileRead | null>(null);
   // الخدمات والمواقف تنتقل من العقد السابق وتدخل الأقساط وفصل الإيراد (المراجعة #3)
   const cx = c as ContractRow & { services_halalas?: number; parking_halalas?: number };
   const [servicesAmt, setServicesAmt] = useState(Number(cx.services_halalas ?? 0) ? fmt(Number(cx.services_halalas)).replace(/,/g, '') : '');
@@ -997,8 +1039,20 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const valueH = toHalalas(value);
   const totalDep = (carry ? Number(c.deposit_halalas) : 0) + toHalalas(extraDeposit);
   const totalH = valueH + toHalalas(servicesAmt) + toHalalas(parkingAmt);
-  const ins = start && end && valueH ? generateInstallments(start, end, totalH, cycle) : [];
+  // صفوف الملخص من الجدول الذي سيُنشأ: جدول الملف إن قُرئ وإلا المحسوب (A1-9 · نظير A1-10)
+  const fileRows = fileRead && start && end ? scheduleInstallments(fileRead.schedule, start, end, totalH) : null;
+  const ins = fileRows ?? (start && end && valueH ? generateInstallments(start, end, totalH, cycle) : []);
   const warns = renewWarnings(db, contractId, { start, end, valueHalalas: valueH });
+  const onFileRead = (r: RenewFileRead) => {
+    setFileRead(r);
+    if (r.ejarNo) setEjar(r.ejarNo);
+    if (r.start) setStart(r.start);
+    if (r.end) { setDurMonths('custom'); setCustomEnd(r.end); }
+    if (r.valueHalalas != null) { setValue(fmt(r.valueHalalas).replace(/,/g, '')); setRaise(''); }
+    if (r.cycle) setCycle(r.cycle);
+    setServicesAmt(r.servicesHalalas ? fmt(r.servicesHalalas).replace(/,/g, '') : '');
+    setParkingAmt(r.parkingHalalas ? fmt(r.parkingHalalas).replace(/,/g, '') : '');
+  };
   const block = renewBlockReason(c);
   // المتبقي من الأقساط الحيّة بعد المسدَّد والخصم (المراجعة #8)
   const due = contractRemainingHalalas(db, contractId);
@@ -1016,13 +1070,16 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
   const confirm = (...a: Parameters<typeof confirmIn>) => withCostCenter(cc, () => confirmIn(...a));
   const confirmIn = () => {
     try {
-      renewContract(db, contractId, {
+      const newId = renewContract(db, contractId, {
         occupantsLeft: occLeft === 'yes',
         start, end, valueHalalas: valueH, cycle,
-        carryDeposit: carry, extraDepositHalalas: toHalalas(extraDeposit),
+        carryDeposit: carry, extraDepositHalalas: toHalalas(extraDeposit), extraDepositBankId: extraBank || null,
         services, furnished, ejarNo: ejar, note,
         servicesHalalas: toHalalas(servicesAmt), parkingHalalas: toHalalas(parkingAmt),
+        ...(fileRead ? { schedule: fileRead.schedule, fromEjarFile: true } : {}),
       });
+      // ملف إيجار الجديد يُرفق به كما في إنشاء العقد
+      if (fileRead) attachPicked(db, fileRead.file, 'contract', newId, 'lease').catch((e) => reportFailure({ title: t('lease.renewFileFailed'), e }));
       onClose();
       onDone('جُدِّد العقد بنجاح');
     } catch (e) { reportFailure({ title: 'تعذّر التجديد', e }); }
@@ -1039,27 +1096,28 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
         </>
       }>
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 11, marginBottom: 12 }}>
-        <T size={12.5} bold>{[c.tenant_name, c.unit_label, c.status !== 'مسودة' && c.contract_no ? contractDisplayId(c) : ''].filter(Boolean).join(' · ')}</T>
+        <T size={12.5} bold>{[c.tenant_name, contractUnitLabel(c), c.status !== 'مسودة' && c.contract_no ? contractDisplayId(c) : ''].filter(Boolean).join(' · ')}</T>
         <T size={11.5} color={C.muted} style={{ marginTop: 3 }}>
           العقد الحالي: {dfmt(c.start)} إلى {dfmt(c.end)} · القيمة {fmt(Number(c.value_halalas))} · التأمين {fmt(Number(c.deposit_halalas))}
         </T>
         {due > 0 ? <T size={11.5} bold color={C.rose} style={{ marginTop: 4 }}>متبقٍ غير مسدَّد على العقد الحالي: {fmt(due)}</T> : null}
       </View>
       {block ? <Note tone="danger">{block}</Note> : null}
+      {!block ? <RenewEjarRead onRead={onFileRead} /> : null}
       <DateField label="تاريخ بداية العقد الجديد" value={start} onChange={setStart} />
       <CostCenterField value={cc} onChange={setCc} />
       <SelectField
         label="مدة العقد الجديد" value={durMonths}
         options={[
-          { value: '3', label: '٣ أشهر' }, { value: '6', label: '٦ أشهر' },
+          { value: '3', label: '3 أشهر' }, { value: '6', label: '6 أشهر' },
           { value: '12', label: 'سنة واحدة' }, { value: '24', label: 'سنتان' },
-          { value: '36', label: '٣ سنوات' }, { value: 'custom', label: 'مدة مخصَّصة' },
+          { value: '36', label: '3 سنوات' }, { value: 'custom', label: 'مدة مخصَّصة' },
         ]}
         onPick={setDurMonths}
       />
       {durMonths === 'custom' && <DateField label="تاريخ نهاية العقد الجديد" value={customEnd} onChange={setCustomEnd} />}
       <Row>
-        <View style={{ flex: 1 }}><Field label="قيمة العقد الجديدة" value={value} onChange={setValue} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label="قيمة العقد الجديدة" value={value} onChange={setValue} keyboard="money" ltr /></View>
         <View style={{ flex: 1 }}><Field label="نسبة الزيادة ٪" value={raise} onChange={applyRaise} keyboard="numeric" ltr /></View>
       </Row>
       <Row>
@@ -1069,13 +1127,16 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
             onPick={setCycle} />
         </View>
         {/* استلام التأمين وترحيله من قسم التأمينات · ومن لا يملكه يجدد بالترحيل الافتراضي */}
-        {depPerm.add ? <View style={{ flex: 1 }}><Field label="تأمين إضافي" value={extraDeposit} onChange={setExtraDeposit} keyboard="numeric" ltr /></View> : null}
+        {depPerm.add ? <View style={{ flex: 1 }}><Field label="تأمين إضافي" value={extraDeposit} onChange={setExtraDeposit} keyboard="money" ltr /></View> : null}
       </Row>
+      {depPerm.add && toHalalas(extraDeposit) > 0 && ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب' ? (
+        <DepositBankField label={t('depositBank.extraMethod')} value={extraBank} onChange={setExtraBank} />
+      ) : null}
       <Row>
-        <View style={{ flex: 1 }}><Field label={t('lease.renewServices')} value={servicesAmt} onChange={setServicesAmt} keyboard="numeric" ltr /></View>
-        <View style={{ flex: 1 }}><Field label={t('lease.renewParking')} value={parkingAmt} onChange={setParkingAmt} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label={t('lease.renewServices')} value={servicesAmt} onChange={setServicesAmt} keyboard="money" ltr /></View>
+        <View style={{ flex: 1 }}><Field label={t('lease.renewParking')} value={parkingAmt} onChange={setParkingAmt} keyboard="money" ltr /></View>
       </Row>
-      {depPerm.add && Number(c.deposit_halalas) > 0 && (
+      {depPerm.add && Number(c.deposit_halalas) > 0 && !settledOn && (
         <Pressable onPress={() => setCarry((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>
           <View style={{
             width: 22, height: 22, borderRadius: 5, borderWidth: 2,
@@ -1115,13 +1176,17 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
           ['أول دفعة', ins.length ? fmt(ins[0].amountHalalas) + ' · ' + dfmt(ins[0].dueDate) : ''],
           ['آخر دفعة', ins.length ? fmt(ins[ins.length - 1].amountHalalas) + ' · ' + dfmt(ins[ins.length - 1].dueDate) : ''],
           ['التأمين', fmt(totalDep) + (carry && toHalalas(extraDeposit) ? ' (مرحَّل + إضافي)' : carry ? ' (مرحَّل)' : toHalalas(extraDeposit) ? ' (جديد)' : '')],
-        ] as Array<[string, React.ReactNode]>).filter(([, v]) => v != null && v !== '').map(([k, v]) => (
+        ] as [string, React.ReactNode][]).filter(([, v]) => v != null && v !== '').map(([k, v]) => (
           <Row key={k} style={{ justifyContent: 'space-between', paddingVertical: 4 }}>
             <T size={12} color={C.muted}>{k}</T>
             <Num size={12} bold>{v}</Num>
           </Row>
         ))}
       </View>
+      {fileRead && start && end ? (
+        <ScheduleReview start={start} end={end} value={value} cycle={cycle} schedule={fileRead.schedule} fromEjarFile
+          split={{ servicesHalalas: toHalalas(servicesAmt), parkingHalalas: toHalalas(parkingAmt) }} />
+      ) : null}
       {warns.map((w) => <T key={w} size={11.5} color={C.rose} style={{ marginTop: 6 }}>{w}</T>)}
       <View style={{ height: 12 }} />
     </Sheet>
@@ -1131,7 +1196,6 @@ function RenewSheet({ contractId, onClose, onDone }: { contractId: string; onClo
 /* ═══════════ الإلغاء ═══════════ */
 function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg: string) => void }) {
   const { db } = useApp();
-  const toast = useToast();
   const c = db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId])!;
   const [date, setDate] = useState(today());
   const [reason, setReason] = useState('');
@@ -1146,16 +1210,42 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
   const canSettleHere = !db.get(`SELECT 1 FROM deposit_settlements WHERE contract_id = ?`, [contractId]) && !depositCarried(db, contractId);
   const otherHeld = (c as unknown as { deposit_holder?: string }).deposit_holder === 'طرف آخر';
   const [received, setReceived] = useState(false);
+  const [arrears, setArrears] = useState('');
+  const [refundBank, setRefundBank] = useState('');
+  // ما قُبض عن مدةٍ بعد الإنهاء (A1-4 · قرار المالك س١٦): يُسأل المالك وحده، والافتراضي «يُحتفظ به» · والخيار لا يظهر إن لم يُقبض شيء
+  const owner = useAccess().owner;
+  const prepaid = owner && isISODate(date) ? prepaidUnearned(db, contractId, date) : 0;
+  const [prepaidFate, setPrepaidFate] = useState<'keep' | 'refund'>('keep');
+  const [prepaidAmt, setPrepaidAmt] = useState('');
+  const [prepaidMethod, setPrepaidMethod] = useState<'cash' | 'bank' | ''>('');
+  const [prepaidBank, setPrepaidBank] = useState('');
+  const banks = useMemo(() => db.all<{ id: string; name: string }>(
+    `SELECT id, name FROM banks WHERE deleted_at IS NULL ORDER BY name`), [db]);
+  const prepaidRefund = prepaid > 0 && prepaidFate === 'refund';
+  const prepaidH = prepaidRefund ? (prepaidAmt.trim() ? toHalalas(prepaidAmt) : prepaid) : 0;
+  const prepaidOver = prepaidRefund && prepaidH > prepaid;
+  const prepaidReady = !prepaidRefund || (prepaidH > 0 && !prepaidOver && (prepaidMethod === 'cash' || (prepaidMethod === 'bank' && !!prepaidBank)));
 
   const dedH = toHalalas(deduction);
   const depH = Number(c.deposit_halalas) || 0;
+  // «منها مقابل أقساطٍ متأخرة» (المراجعة الشاملة 2026-11-13 · A1-2): افتراضها الأقل من الخصم ومن المتبقي على ما حلّ بتاريخ الإلغاء
+  // · ولا خصم فلا مقابل: الخانة وخطؤها مخفيان حينئذ فلا يُخفي الزرَّ ما في الخانة بلا سببٍ ظاهر
+  const arrearsDue = settle && !otherHeld ? depositArrearsDue(db, contractId, date) : 0;
+  const arrearsH = arrearsDue > 0 && dedH > 0 ? (arrears.trim() ? toHalalas(arrears) : Math.min(dedH, arrearsDue)) : 0;
+  const arrearsOver = arrearsH > dedH ? t('deposit.arrearsOverDeduction')
+    : arrearsH > arrearsDue ? t('deposit.arrearsOverDue', { due: fmt(arrearsDue) }) : null;
   const excess = dedH > depH ? dedH - depH : 0;
+  // والمطالبة بما زاد على الأقساط وحده: ما لم يسعه التأمين منها يبقى على أقساطه (applyDepositSettlement)
+  const excessClaim = excess - Math.max(0, arrearsH - depH);
   // «الفارق يُحوَّل تلقائياً إلى مطالبة» · والمسترد يُحتسب تلقائياً
   const autoRefund = dedH > depH ? 0 : depH - dedH;
   // ردّ التأمين نقداً حين يقبضه المكتب · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
-  const refundCash = settle && officeHeld ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0;
-  const cashOk = useCashOk(refundCash);
+  // والردّ تحويلاً من بنكٍ لا يمسّ المحفظة (A1-6)
+  const settleRefundH = settle ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0;
+  const refundCash = (settle && officeHeld && !refundBank ? settleRefundH : 0)
+    + (prepaidRefund && prepaidMethod === 'cash' ? prepaidH : 0);
+  const cashOk = useCashOk(refundCash, date); // بتاريخ التسوية (A2.8)
   // «لا مسترد أكبر من الباقي بعد الخصم» (قرار المالك 2026-10-09) · autoRefund هو الباقي نفسه
   const refundOver = settle && refund.trim() !== '' && toHalalas(refund) > autoRefund;
 
@@ -1169,11 +1259,14 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         refundHalalas: settle ? (refund.trim() ? toHalalas(refund) : autoRefund) : 0,
         deductionReason: dedReason,
         deductReceived: otherHeld ? received : undefined,
+        arrearsHalalas: settle ? arrearsH : 0,
+        refundBankId: settle && officeHeld && settleRefundH > 0 ? refundBank || null : null,
+        prepaidRefund: prepaidRefund ? { amountHalalas: prepaidH, method: prepaidMethod as 'cash' | 'bank', bankId: prepaidMethod === 'bank' ? prepaidBank : null } : null,
       });
       onClose();
       onDone(excessClaimCreated
         ? 'تم إلغاء العقد · وأُنشئت مطالبة تلقائياً بالفرق الزائد عن التأمين'
-        : 'تم إلغاء العقد');
+        : prepaidRefund ? t('prepaid.done', { amount: fmt(prepaidH) }) : 'تم إلغاء العقد');
     } catch (e) { reportFailure({ title: 'تعذّر الإلغاء', e }); }
   };
 
@@ -1181,10 +1274,10 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
     <Sheet visible onClose={onClose} title="إلغاء العقد" tall
       footer={
         <>
-          {cashOk && !refundOver ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
+          {cashOk && !refundOver && !arrearsOver && prepaidReady ? <View style={{ flex: 1 }}><BtnPrimary danger title="تأكيد إلغاء العقد" onPress={confirm} /></View> : null}
         </>
       }>
-      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
+      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" date={date} />
       <DateField label="تاريخ إنهاء العقد" value={date} onChange={setDate} />
       <CostCenterField value={cc} onChange={setCc} />
       <Field label="سبب الإلغاء" value={reason} onChange={setReason} />
@@ -1196,6 +1289,30 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         ]}
         onPick={setFate}
       />
+      {prepaid > 0 ? (
+        <>
+          <SelectField<'keep' | 'refund'>
+            label={t('prepaid.fateLabel', { amount: fmt(prepaid) })} value={prepaidFate}
+            options={[{ value: 'keep', label: t('prepaid.keep') }, { value: 'refund', label: t('prepaid.refund') }]}
+            onPick={setPrepaidFate}
+          />
+          {prepaidRefund ? (
+            <>
+              <Field label={t('prepaid.amount')} value={prepaidAmt || fmt(prepaid).replace(/,/g, '')} onChange={setPrepaidAmt} keyboard="money" ltr error={prepaidOver} />
+              {prepaidOver ? <T size={11.5} color={C.rose} style={{ marginBottom: 10 }}>{t('prepaid.over', { amount: fmt(prepaidH), max: fmt(prepaid) })}</T> : null}
+              <SelectField<'cash' | 'bank'>
+                label={t('prepaid.method')} value={prepaidMethod || null}
+                options={[{ value: 'cash', label: t('prepaid.cash') }, ...(banks.length ? [{ value: 'bank' as const, label: t('prepaid.bank') }] : [])]}
+                onPick={setPrepaidMethod}
+              />
+              {prepaidMethod === 'bank' ? (
+                <SelectField label={t('prepaid.bankPick')} value={prepaidBank || null}
+                  options={banks.map((b) => ({ value: b.id, label: b.name }))} onPick={setPrepaidBank} />
+              ) : null}
+            </>
+          ) : null}
+        </>
+      ) : null}
       {/* تسوية التأمين من قسم التأمينات · بلا صلاحيته يُلغى العقد بلا تسوية وتُسوّى لاحقاً */}
       {depPerm.add && canSettleHere ? (
         <Pressable onPress={() => setSettle((v) => !v)} style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, minHeight: 44 }}>
@@ -1213,23 +1330,30 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
         <>
           <Row>
             <View style={{ flex: 1 }}>
-              <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="numeric" ltr />
+              <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="money" ltr />
             </View>
             <View style={{ flex: 1 }}>
-              <Field label="المبلغ المسترَد للمستأجر" value={refund || (dedH ? fmt(autoRefund).replace(/,/g, '') : '')} onChange={setRefund} keyboard="numeric" ltr />
+              <Field label="المبلغ المسترَد للمستأجر" value={refund || (dedH ? fmt(autoRefund).replace(/,/g, '') : '')} onChange={setRefund} keyboard="money" ltr />
             </View>
           </Row>
           {refundOver ? <T size={11.5} color={C.rose} style={{ marginBottom: 10 }}>{t('deposit.refundOverLeft', { left: fmt(autoRefund) })}</T> : null}
+          {officeHeld && settleRefundH > 0 ? <DepositBankField label={t('depositBank.refundMethod')} value={refundBank} onChange={setRefundBank} out /> : null}
           <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
+          {arrearsDue > 0 && dedH > 0 ? (
+            <>
+              <Field label={t('deposit.arrearsLabel')} value={arrears || fmt(arrearsH).replace(/,/g, '')} onChange={setArrears} keyboard="money" ltr error={!!arrearsOver} />
+              <T size={11.5} color={arrearsOver ? C.rose : C.muted} style={{ marginBottom: 10 }}>{arrearsOver ?? t('deposit.arrearsHint', { due: fmt(arrearsDue) })}</T>
+            </>
+          ) : null}
           {/* «طرف آخر»: وصل المخصوم للمكتب فيُسجَّل قبضاً (قرار المالك على #26 · التحقق المستقل N4) */}
           {otherHeld && dedH > 0 ? (
             <SelectField label={t('deposit.received')} value={received ? 'y' : 'n'}
               options={[{ value: 'y', label: t('deposit.received') }, { value: 'n', label: t('deposit.receivedNo') }]}
               onPick={(v) => setReceived(v === 'y')} />
           ) : null}
-          {excess > 0 && (
+          {excessClaim > 0 && (
             <Note tone="danger">
-              مبلغ الخصم ({fmt(dedH)}) أكبر من التأمين المحجوز ({fmt(depH)}) · الفارق {fmt(excess)} سيُحوَّل تلقائياً إلى مطالبة عند تأكيد الإلغاء.
+              مبلغ الخصم ({fmt(dedH)}) أكبر من التأمين المحجوز ({fmt(depH)}) · الفارق {fmt(excessClaim)} سيُحوَّل تلقائياً إلى مطالبة عند تأكيد الإلغاء.
             </Note>
           )}
         </>
@@ -1242,7 +1366,6 @@ function CancelSheet({ contractId, onClose, onDone }: { contractId: string; onCl
 const RATING_OPTS = ['ممتاز', 'جيد', 'متوسط', 'ضعيف'];
 function RatingSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg: string) => void }) {
   const { db } = useApp();
-  const toast = useToast();
   const existing = db.get<{ on_time: string; payment_commit: string; contract_commit: string; unit_condition: string; neighbor_complaints: string; notes: string }>(
     `SELECT * FROM tenant_ratings WHERE contract_id = ?`, [contractId]
   );
@@ -1285,9 +1408,8 @@ function RatingSheet({ contractId, onClose, onDone }: { contractId: string; onCl
 function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; onClose: () => void; onDone: (msg: string) => void }) {
   const { db } = useApp();
   const { t } = useLang();
-  const toast = useToast();
   const c = db.get<ContractRow>(`SELECT * FROM contracts WHERE id = ?`, [contractId])!;
-  const existing = db.get<{ date: string; deduction_halalas: number; deduction_reason: string; refund_halalas: number; notes: string; deduct_destination: string }>(
+  const existing = db.get<{ date: string; deduction_halalas: number; deduction_reason: string; refund_halalas: number; notes: string; deduct_destination: string; refund_bank_id?: string | null }>(
     `SELECT * FROM deposit_settlements WHERE contract_id = ?`, [contractId]
   );
   const [date, setDate] = useState(existing?.date || today());
@@ -1308,14 +1430,26 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
   // «طرف آخر»: وصل المخصوم للمكتب؟ · من قيده إن سُجّل قبضاً سابقاً (قرار المالك على #26)
   const [received, setReceived] = useState<boolean>(
     !!db.get(`SELECT 1 FROM journal_entries WHERE src_type = 'deposit_deduct' AND src_id = ? AND reversed_by IS NULL AND deleted_at IS NULL`, [contractId]));
+  // «منها مقابل أقساطٍ متأخرة» (المراجعة الشاملة 2026-11-13 · A1-2): التسوية القائمة بما سدّده التأمين منها، والجديدة افتراضها الأقل
+  // من الخصم ومن المتبقي على ما حلّ بتاريخ التسوية
+  // بدالةٍ تُحسب مرةً عند الفتح لا مع كل رسمٍ وحرف (المراجع المستقل الخامس على R12-BAK-2)
+  const [arrears, setArrears] = useState(() => (existing ? fmt(depositArrearsPaid(db, contractId)).replace(/,/g, '') : ''));
+  const arrearsDue = otherHeld ? 0 : depositArrearsDue(db, contractId, date);
+  // ولا خصم فلا مقابل (ما في الخانة من تسويةٍ سابقة لا يُخفي الزرَّ والخانة مخفية)
+  const arrearsH = arrearsDue > 0 && toHalalas(deduction) > 0
+    ? (arrears.trim() ? toHalalas(arrears) : Math.min(toHalalas(deduction), arrearsDue)) : 0;
+  const arrearsOver = arrearsH > toHalalas(deduction) ? t('deposit.arrearsOverDeduction')
+    : arrearsH > arrearsDue ? t('deposit.arrearsOverDue', { due: fmt(arrearsDue) }) : null;
   const diff = toHalalas(deduction) + toHalalas(refund) - Number(c.deposit_halalas);
   // «لا مسترد أكبر من الباقي بعد الخصم» (قرار المالك 2026-10-09)
   const refundLeft = Math.max(0, Number(c.deposit_halalas) - toHalalas(deduction));
   const refundOver = toHalalas(refund) > refundLeft;
   // ردّ التأمين نقداً حين يقبضه المكتب · بصافي الفرق عن ردٍّ سابق (قرار المالك ٢٠٢٦-١٠-٠٥)
   const officeHeld = ((c as unknown as { deposit_holder?: string | null }).deposit_holder || 'المكتب') === 'المكتب';
-  const refundCash = officeHeld ? toHalalas(refund) - Number(existing?.refund_halalas ?? 0) : 0;
-  const cashOk = useCashOk(refundCash);
+  // والردّ تحويلاً من بنكٍ لا يمسّ المحفظة، وردٌّ سابقٌ تحويلاً لا يعود إليها (A1-6)
+  const [refundBank, setRefundBank] = useState(existing?.refund_bank_id ?? '');
+  const refundCash = officeHeld ? (refundBank ? 0 : toHalalas(refund)) - (existing?.refund_bank_id ? 0 : Number(existing?.refund_halalas ?? 0)) : 0;
+  const cashOk = useCashOk(refundCash, date); // بتاريخ التسوية (A2.8)
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
   const save = (...a: Parameters<typeof saveIn>) => withCostCenter(cc, () => saveIn(...a));
   const saveIn = () => {
@@ -1325,6 +1459,8 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
         refundHalalas: toHalalas(refund), notes,
         deductDestination: platformHeld ? dest : undefined,
         deductReceived: otherHeld ? received : undefined,
+        arrearsHalalas: arrearsH,
+        refundBankId: officeHeld && toHalalas(refund) > 0 ? refundBank || null : null,
       });
       onClose();
       onDone('تم حفظ تفاصيل التصرف بالتأمين');
@@ -1335,18 +1471,24 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
       footer={
         <>
           {/* النقص عن التأمين لا يُحفظ حتى يُوزَّع (قرار المالك على #27) · فلا يظهر الزر ويظهر سببه */}
-          {cashOk && diff >= 0 && !refundOver ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
+          {cashOk && diff >= 0 && !refundOver && !arrearsOver ? <View style={{ flex: 1 }}><BtnPrimary title="حفظ التسوية" onPress={save} /></View> : null}
         </>
       }>
-      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" />
+      <CashShortNote needed={refundCash} what="ردّ التأمين للمستأجر" date={date} />
       <View style={{ marginBottom: 10 }}>
         <T size={11.5} color={C.muted}>مبلغ التأمين الأصلي</T>
         <Money halalas={Number(c.deposit_halalas)} size={14} bold />
       </View>
       <DateField label="تاريخ التسوية" value={date} onChange={setDate} />
       <CostCenterField value={cc} onChange={setCc} />
-      <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="numeric" ltr />
+      <Field label="مبلغ الخصم من التأمين" value={deduction} onChange={setDeduction} keyboard="money" ltr />
       <Field label="سبب الخصم" value={dedReason} onChange={setDedReason} />
+      {arrearsDue > 0 && toHalalas(deduction) > 0 ? (
+        <>
+          <Field label={t('deposit.arrearsLabel')} value={arrears || fmt(arrearsH).replace(/,/g, '')} onChange={setArrears} keyboard="money" ltr error={!!arrearsOver} />
+          <T size={11.5} color={arrearsOver ? C.rose : C.muted} style={{ marginTop: -4, marginBottom: 10 }}>{arrearsOver ?? t('deposit.arrearsHint', { due: fmt(arrearsDue) })}</T>
+        </>
+      ) : null}
       {platformHeld && toHalalas(deduction) > 0 ? (
         <SelectField label="وجهة المخصوم بعد إقفال محتجزات المنصة" value={dest}
           options={[
@@ -1360,7 +1502,8 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
           options={[{ value: 'y', label: t('deposit.received') }, { value: 'n', label: t('deposit.receivedNo') }]}
           onPick={(v) => setReceived(v === 'y')} />
       ) : null}
-      <Field label="المبلغ المسترَد للمستأجر" value={refund} onChange={setRefund} keyboard="numeric" ltr />
+      <Field label="المبلغ المسترَد للمستأجر" value={refund} onChange={setRefund} keyboard="money" ltr />
+      {officeHeld && toHalalas(refund) > 0 ? <DepositBankField label={t('depositBank.refundMethod')} value={refundBank} onChange={setRefundBank} out /> : null}
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 11, marginBottom: 10 }}>
         <Row style={{ justifyContent: 'space-between' }}>
           <T size={12.5} bold>الفرق (خصم + مسترَد مقابل الأصلي):</T>
@@ -1378,7 +1521,6 @@ function SettlementSheet({ contractId, onClose, onDone }: { contractId: string; 
 /* ═══════════ تسجيل تقبيل ═══════════ */
 function KeyMoneySheet({ contract, onClose, onDone }: { contract: ContractRow; onClose: () => void; onDone: (msg: string) => void }) {
   const { db } = useApp();
-  const toast = useToast();
   const [outgoing, setOutgoing] = useState('');
   const [incoming, setIncoming] = useState('');
   const [amount, setAmount] = useState('');
@@ -1414,18 +1556,18 @@ function KeyMoneySheet({ contract, onClose, onDone }: { contract: ContractRow; o
         </>
       }>
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 10, marginBottom: 10 }}>
-        <T size={12.5} med>الوحدة: {contract.unit_label}</T>
+        <T size={12.5} med>الوحدة: {contractUnitLabel(contract)}</T>
       </View>
       <Row>
         <View style={{ flex: 1 }}><Field label="المتنازل (الطرف الخارج)" value={outgoing} onChange={setOutgoing} /></View>
         <View style={{ flex: 1 }}><Field label="المتنازل له (الطرف الداخل)" value={incoming} onChange={setIncoming} /></View>
       </Row>
       <Row>
-        <View style={{ flex: 1 }}><Field label="مبلغ التقبيل الإجمالي" value={amount} onChange={setAmount} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label="مبلغ التقبيل الإجمالي" value={amount} onChange={setAmount} keyboard="money" ltr /></View>
         <View style={{ flex: 1 }}><DateField label="تاريخ الاتفاق" value={date} onChange={setDate} /></View>
       </Row>
       <CostCenterField value={cc} onChange={setCc} />
-      <Field label="عمولة الشركة/المالك" value={commission} onChange={setCommission} keyboard="numeric" ltr />
+      <Field label="عمولة الشركة/المالك" value={commission} onChange={setCommission} keyboard="money" ltr />
       {toHalalas(commission) > 0 && (
         <>
           <SelectField label="طريقة استلام العمولة" value={method}

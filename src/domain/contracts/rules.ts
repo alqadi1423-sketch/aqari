@@ -3,7 +3,9 @@
  * دوال خالصة تعمل على القاعدة وتعيد رسالة الخطأ العربية أو null عند السلامة.
  */
 import type { DB } from '../../db/adapter';
-import { dfmt, today, daysBetween } from '../dates';
+import { dfmt, today, daysBetween, isISODate } from '../dates';
+import { t } from '../../i18n';
+import { moneyError } from '../moneyGuard';
 import { normalizePhone } from '../phone';
 import { deviceLetter, withLetter, takeNumber } from '../numbering';
 
@@ -17,6 +19,8 @@ export interface ContractRow {
   id_number: string;
   unit_id: string;
   unit_label: string;
+  /** اسم الوحدة الآن من الوحدة وعقارها (contractUnitLabelSql) · حين يختاره الاستعلام · A1-13 */
+  unit_label_now?: string | null;
   unit_type: string | null;
   value_halalas: number;
   cycle: string;
@@ -109,9 +113,6 @@ export function contractDisplayStatus(
   if (c.end && daysBetween(c.end, T) >= 0 && daysBetween(c.end, T) <= 60) return 'ينتهي قريباً';
   return 'سارٍ';
 }
-
-/** سارٍ بمعناه الواسع: يشمل «ينتهي قريباً» · للمرشِّحات والإحصاءات */
-export const isActiveDisplay = (s: ContractDisplayStatus): boolean => s === 'سارٍ' || s === 'ينتهي قريباً';
 
 /**
  * نص الانتهاء بعدد أيامه بالصيغة العربية الصحيحة:
@@ -207,6 +208,17 @@ export function datesOverlap(startA: string, endA: string, startB: string, endB:
   return startA <= endB && startB <= endA;
 }
 
+/**
+ * اسم الوحدة في العقد للعرض والبحث: «اسم العقار · رقم الوحدة» من الوحدة وعقارها الآن، فيتبع نقلها وتغيير رقمها (المراجعة الشاملة
+ * 2026-11-13 · A1-13) · والمحفوظ (unit_label) لعقدٍ بلا وحدةٍ قائمة · alias بادئة جدول العقود في الاستعلام ('c.' أو '')
+ */
+export function contractUnitLabelSql(alias = ''): string {
+  return `COALESCE((SELECT lp.name || ' · ' || lu.unit_no FROM units lu JOIN properties lp ON lp.id = lu.property_id WHERE lu.id = ${alias}unit_id), ${alias}unit_label)`;
+}
+
+/** اسم وحدة العقد المعروض: المشتق إن اختاره الاستعلام، وإلا المحفوظ */
+export const contractUnitLabel = (c: Pick<ContractRow, 'unit_label' | 'unit_label_now'>): string => c.unit_label_now || c.unit_label;
+
 /** القاعدة ٣: منع تعارض العقود على نفس الوحدة زمنياً (المسودة والملغى بعد قصّه لا يتعارضان) */
 export function findContractConflict(
   db: DB,
@@ -292,6 +304,30 @@ export function lastContractErrorField(): ContractField | null {
 }
 
 /**
+ * القاعدة ١: نشاط العقار يقيّد نوع الوحدة، وفئته وفئة الطابق فئتها · رسالة الرفض أو null ·
+ * مشتركة بين التوثيق والتجديد (المراجعة الشاملة 2026-11-13 · A1-9: التجديد كان لا يفحصها)
+ */
+export function unitActivityError(db: DB, u: UnitRow, unitProp: PropertyRow | undefined): string | null {
+  // القاعدة ١أ: نشاط العقار يقيّد نوع الوحدة
+  if (
+    unitProp && unitProp.activity_type && unitProp.activity_type !== 'مختلط' &&
+    u.type && u.type !== unitProp.activity_type
+  ) {
+    return `تعذّر الحفظ · العقار "${unitProp.name}" مخصَّص لنشاط "${unitProp.activity_type}"، والوحدة المختارة من نوع "${u.type}". إمّا عدّل نوع الوحدة، أو اجعل العقار "مختلط" من تعديل بياناته`;
+  }
+  // القاعدة ١ب: فئة العقار
+  if (unitProp && unitProp.activity_subtype && u.subtype && u.subtype !== unitProp.activity_subtype) {
+    return `تعذّر الحفظ · العقار "${unitProp.name}" مخصَّص لفئة "${unitProp.activity_subtype}" فقط، والوحدة المختارة فئتها "${u.subtype}". إمّا عدّل فئة الوحدة، أو أزل تخصيص الفئة عن العقار`;
+  }
+  // القاعدة ١ج: فئة الطابق
+  const floorCat = unitProp ? floorCategory(db, unitProp.id, u.floor) : null;
+  if (floorCat && u.subtype && u.subtype !== floorCat) {
+    return `تعذّر الحفظ · طابق "${u.floor}" بهذا العقار مخصَّص لفئة "${floorCat}" فقط، والوحدة المختارة فئتها "${u.subtype}"`;
+  }
+  return null;
+}
+
+/**
  * التحقق قبل إنشاء عقد موثَّق (غير مسودة) · القواعد ١ و٢ و٣ و٤ بنصوص النموذج.
  * يعيد رسالة الخطأ أو null، ويسجّل الحقل المسبِّب في lastContractErrorField.
  */
@@ -311,6 +347,13 @@ export function validateConfirmedContract(
   if (!start) return fail('start', 'أدخل تاريخ بداية العقد، أو احفظه كمسودة إن لم يكتمل بعد');
   if (!end) return fail('end', 'أدخل تاريخ نهاية العقد، أو احفظه كمسودة إن لم يكتمل بعد');
   if (!valueHalalas) return fail('value', 'أدخل قيمة العقد، أو احفظه كمسودة إن لم يكتمل بعد');
+  // والقيمة السالبة كانت تسقط برسالة المحفّز التقنية «المسدَّد يتجاوز مبلغ القسط أو سالب» (المراجعة الشاملة · A1-7 · قرار المالك 2026-08-19)
+  const valueErr = moneyError('Value', valueHalalas);
+  if (valueErr) return fail('value', valueErr);
+  // والتاريخان بصيغة سنة-شهر-يوم ويومٍ قائم: «2026-1-15» كان يُنشئ عقداً بلا قسطٍ واحد وبرقم «EJ-NaN-001» وتأمينه بتاريخ اليوم
+  // (المراجعة الشاملة 2026-11-13 · D2-R11-4)
+  if (!isISODate(start)) return fail('start', t('dates.invalidValue', { date: start }));
+  if (!isISODate(end)) return fail('end', t('dates.invalidValue', { date: end }));
   if (start > end) return fail('end', `تاريخ البداية (${dfmt(start)}) يجب أن يسبق تاريخ النهاية (${dfmt(end)})`);
   const ph = input.phone.trim();
   if (ph && !normalizePhone(ph)) return fail('phone', `رقم الجوال "${ph}" ليس رقم جوال سعودي صحيح · تُقبل الصيغ: 05XXXXXXXX أو +9665XXXXXXXX أو 009665XXXXXXXX`);
@@ -319,22 +362,9 @@ export function validateConfirmedContract(
   if (!u) return fail('unitId', 'أضف وحدة أولاً من شاشة العقارات');
   const unitProp = getProperty(db, u.property_id);
 
-  // القاعدة ١أ: نشاط العقار يقيّد نوع الوحدة
-  if (
-    unitProp && unitProp.activity_type && unitProp.activity_type !== 'مختلط' &&
-    u.type && u.type !== unitProp.activity_type
-  ) {
-    return fail('unitId', `تعذّر الحفظ · العقار "${unitProp.name}" مخصَّص لنشاط "${unitProp.activity_type}"، والوحدة المختارة من نوع "${u.type}". إمّا عدّل نوع الوحدة، أو اجعل العقار "مختلط" من تعديل بياناته`);
-  }
-  // القاعدة ١ب: فئة العقار
-  if (unitProp && unitProp.activity_subtype && u.subtype && u.subtype !== unitProp.activity_subtype) {
-    return fail('unitId', `تعذّر الحفظ · العقار "${unitProp.name}" مخصَّص لفئة "${unitProp.activity_subtype}" فقط، والوحدة المختارة فئتها "${u.subtype}". إمّا عدّل فئة الوحدة، أو أزل تخصيص الفئة عن العقار`);
-  }
-  // القاعدة ١ج: فئة الطابق
-  const floorCat = unitProp ? floorCategory(db, unitProp.id, u.floor) : null;
-  if (floorCat && u.subtype && u.subtype !== floorCat) {
-    return fail('unitId', `تعذّر الحفظ · طابق "${u.floor}" بهذا العقار مخصَّص لفئة "${floorCat}" فقط، والوحدة المختارة فئتها "${u.subtype}"`);
-  }
+  // القاعدة ١: نشاط العقار وفئته وفئة الطابق تقيّد الوحدة (ومعها التجديد · A1-9)
+  const rule1 = unitActivityError(db, u, unitProp);
+  if (rule1) return fail('unitId', rule1);
   // القاعدة ٢: العقار المستأجَر من الغير
   if (unitProp && unitProp.ownership === 'إيجار' && unitProp.lease_start && unitProp.lease_end) {
     if (start < unitProp.lease_start || end > unitProp.lease_end) {

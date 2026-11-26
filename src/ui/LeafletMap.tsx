@@ -29,9 +29,9 @@ export interface MapMarker {
  * ٧٥٪ فأكثر أخضر · من ٤٠ إلى ٧٤٪ ذهبي · أقل من ٤٠٪ أحمر · وبلا وحدات رمادي.
  */
 export const OCC = {
-  high: { from: 75, color: '#1E6E5C', label: 'إشغال عالٍ · ٧٥٪ فأكثر' },
-  mid: { from: 40, color: '#C9A961', label: 'إشغال متوسط · من ٤٠ إلى ٧٤٪' },
-  low: { from: 0, color: '#AE4438', label: 'إشغال منخفض · أقل من ٤٠٪' },
+  high: { from: 75, color: '#1E6E5C', label: 'إشغال عالٍ · 75٪ فأكثر' },
+  mid: { from: 40, color: '#C9A961', label: 'إشغال متوسط · من 40 إلى 74٪' },
+  low: { from: 0, color: '#AE4438', label: 'إشغال منخفض · أقل من 40٪' },
   none: { color: '#6B7280', label: 'بلا وحدات' },
 } as const;
 
@@ -73,7 +73,7 @@ function buildHtml(opts: {
   html,body,#map{margin:0;padding:0;height:100%;width:100%}
   body{font-family:'Segoe UI',Tahoma,sans-serif;background:#F6F4EE}
   #offline{display:none;height:100%;width:100%;box-sizing:border-box;padding:22px;
-    align-items:center;justify-content:center;text-align:center;color:#77808F;font-size:13px;line-height:2}
+    align-items:center;justify-content:center;text-align:center;color:#5F6775;font-size:13px;line-height:2}
   #banner{display:none;position:absolute;top:8px;right:8px;left:52px;z-index:900;background:#F7E9E6;
     color:#AE4438;border:1px solid #AE4438;border-radius:8px;padding:7px 10px;font-size:12px;text-align:center}
   .pinWrap{display:flex;flex-direction:column;align-items:center}

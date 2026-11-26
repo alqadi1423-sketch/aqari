@@ -3,6 +3,7 @@
  * والحقول الخاصة بنوع الوحدة.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import { DepositBankField } from './DepositBankField';
 import { useAccess } from './access';
 import { propertyMoveLocked } from '../domain/access/access';
 import { View, Share, Animated } from 'react-native';
@@ -11,12 +12,14 @@ import { File } from 'expo-file-system';
 import { Field, Row, T, Num, BtnGhost, BtnPrimary, Note, ChipGroup } from './components';
 import { SuggestField } from './editors';
 import { SelectField, Sheet } from './Sheet';
+import { formChanged } from './sheetDirty';
 import { DateField } from './DateField';
 import { useApp } from './store';
 import { C } from './theme';
 import { fmt, toHalalas } from '../domain/money';
 import { contractEndFromDuration, today, dfmt } from '../domain/dates';
 import { scanContractFile } from '../services/contractScan';
+import { isOcrStopped } from '../services/imageText';
 import { anchorDiagnostics } from '../domain/pdf/parseEjar';
 import { FURNISHED_OPTIONS, CYCLE_OPTIONS } from '../domain/contracts/vocab';
 import { parseEjarExtras, unitByNumber, revenueSplitOf, type EjarExtras } from '../domain/pdf/ejarExtras';
@@ -28,6 +31,8 @@ import type { ScheduleRow } from '../domain/pdf/parseEjar';
 import type { ContractField } from '../domain/contracts/rules';
 import { reportFailure } from './failureDialog';
 import { useLang } from '../i18n';
+
+const OFFICE_HOLDER = 'المكتب'; // i18n-exempt: جهة قبض التأمين المخزّنة
 
 /**
  * تاريخ الحقول: ما كتبه المستخدم في العمود نفسه من قبل، الأحدث أولاً ·
@@ -82,6 +87,8 @@ export interface ContractFormState {
   /** جهة قبض التأمين: المكتب · منصة إيجار · طرف آخر */
   depositHolder: string;
   depositHolderName: string;
+  /** بنك قبض التأمين تحويلاً · الفارغ نقداً (A1-6) */
+  depositBankId?: string;
   ejarNo: string;
   services: string;
   furnished: string;
@@ -120,6 +127,7 @@ export function formToInput(s: ContractFormState): ContractDraftInput {
     tenant: s.tenant, phone: s.phone, idNumber: s.idNumber, unitId: s.unitId,
     valueHalalas: toHalalas(s.value), cycle: s.cycle, start: s.start, end: s.end,
     depositHalalas: toHalalas(s.deposit), depositHolder: s.depositHolder, depositHolderName: s.depositHolderName,
+    depositBankId: s.depositBankId || null,
     ejarNo: s.ejarNo, services: s.services,
     furnished: s.furnished, typeSpecific: s.typeSpecific,
     reservationId: s.reservationId || null,
@@ -138,8 +146,11 @@ export function useContractForm() {
     setState((p) => ({ ...p, [k]: v }));
     setErrorField((f) => ((f as string) === (k as string) ? null : f));
   };
-  const reset = (s: ContractFormState) => { setState(s); setErrorField(null); };
-  return { state, set, reset, errorField, setErrorField };
+  // ما فُتح عليه النموذج آخر مرة · «فيه إدخال» مقارنةٌ به لا علامةٌ تُصفَّر حين تعود الورقة من المراجعة (D-3)
+  const [baseline, setBaseline] = useState<ContractFormState>(state);
+  const reset = (s: ContractFormState) => { setState(s); setBaseline(s); setErrorField(null); };
+  const dirty = formChanged(baseline, state);
+  return { state, set, reset, errorField, setErrorField, dirty };
 }
 
 export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof useContractForm>; draftId?: string | null }) {
@@ -248,10 +259,11 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
       if (n) set('pendingFile', { uri: asset.uri, name: asset.name ?? 'عقد.pdf', mime: asset.mimeType ?? '' });
     } catch (e) {
       const code = e instanceof Error ? e.message : '';
-      const msg = code === 'pdf-encrypted' ? 'الملف محمي بتشفير · أزل الحماية أو صدّر نسخة غير محمية من منصة إيجار'
-        : code === 'pdf-empty' ? 'الملف بلا طبقة نص قابلة للاستخراج · إن كان صورة ممسوحة فالتقطه كصورة بدل PDF'
+      // صورة العقد: قراءة النص من الصور موقوفةٌ الآن (ق٠-٤ · services/imageText.ts)
+      const msg = isOcrStopped(e) ? t('contractScan.ocrStopped')
+        : code === 'pdf-encrypted' ? 'الملف محمي بتشفير · أزل الحماية أو صدّر نسخة غير محمية من منصة إيجار'
+        : code === 'pdf-empty' ? t('contractScan.pdfEmpty')
         : code === 'pdf' ? 'تعذّر فك بنية الملف · تأكد أنه PDF سليم من منصة إيجار'
-        : code === 'ocr' ? 'قارئ الصور غير متاح على هذا البناء · استخدم ملف PDF'
         : '';
       setScanStatus(msg || 'تعذّرت قراءة الملف');
       if (!msg) reportFailure({ title: 'تعذّرت قراءة الملف', where: 'قراءة ملف العقد', e });
@@ -269,7 +281,7 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
     <View>
       <View style={{ backgroundColor: C.paper, borderRadius: 8, padding: 10, marginBottom: 12 }}>
         <T size={11.5} color={C.muted} style={{ marginBottom: 6 }}>قراءة العقد تلقائياً</T>
-        <BtnGhost small icon="contract" title="اختيار ملف العقد (PDF أو صورة)" onPress={scan} disabled={scanning} />
+        <BtnGhost small icon="contract" title={t('contractScan.pick')} onPress={scan} disabled={scanning} />
         {scanning ? <ProgressStripe /> : null}
         {scanStatus ? <T size={11} color={scanStatus.startsWith('قُرئ') ? C.emerald : C.muted} style={{ marginTop: 5 }}>{scanStatus}</T> : null}
         {rawText && !scanning ? (
@@ -368,7 +380,7 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
       ) : null}
       <Row>
         <View style={{ flex: 1 }}>
-          <Field label={t('lease.valueField')} value={state.value} onChange={(v) => set('value', v)} keyboard="numeric" ltr error={form.errorField === 'value'} />
+          <Field label={t('lease.valueField')} value={state.value} onChange={(v) => set('value', v)} keyboard="money" ltr error={form.errorField === 'value'} />
         </View>
         <View style={{ flex: 1 }}>
           <SelectField label="دورية الدفعات" value={state.cycle}
@@ -378,11 +390,11 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
       </Row>
       <Row>
         <View style={{ flex: 1 }}>
-          <Field label={t('lease.renewServices')} keyboard="numeric" ltr value={servicesText}
+          <Field label={t('lease.renewServices')} keyboard="money" ltr value={servicesText}
             onChange={(v) => { setServicesText(v); set('split', { ...formSplit(state), servicesHalalas: toHalalas(v) }); }} />
         </View>
         <View style={{ flex: 1 }}>
-          <Field label={t('lease.renewParking')} keyboard="numeric" ltr value={parkingText}
+          <Field label={t('lease.renewParking')} keyboard="money" ltr value={parkingText}
             onChange={(v) => { setParkingText(v); set('split', { ...formSplit(state), parkingHalalas: toHalalas(v) }); }} />
           {/* ما بقي من إجمالي الملف بعد الإيجار والخدمات والمواقف: فرقٌ يُعرض ولا يُوزَّع (دراسة القائم) */}
           {state.extras && revenueSplitOf(state.extras).otherHalalas
@@ -406,7 +418,7 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
       <DateField label="تاريخ النهاية" value={state.end} onChange={(v) => set('end', v)} error={form.errorField === 'end'} />
       <Row>
         <View style={{ flex: 1 }}>
-          <Field label="مبلغ التأمين" value={state.deposit} onChange={(v) => set('deposit', v)} keyboard="numeric" ltr />
+          <Field label="مبلغ التأمين" value={state.deposit} onChange={(v) => set('deposit', v)} keyboard="money" ltr />
         </View>
         <View style={{ flex: 1 }}>
           <SelectField label="جهة قبض التأمين" value={state.depositHolder}
@@ -414,6 +426,10 @@ export function ContractFormFields({ form, draftId }: { form: ReturnType<typeof 
             onPick={(v) => set('depositHolder', v)} />
         </View>
       </Row>
+      {/* قبض المكتب التأمين نقداً أو تحويلاً لحساب بنكي (A1-6 · قرار المالك س١٧) */}
+      {(state.depositHolder || OFFICE_HOLDER) === OFFICE_HOLDER && toHalalas(state.deposit) > 0 ? (
+        <DepositBankField label={t('depositBank.receiveMethod')} value={state.depositBankId ?? ''} onChange={(v) => set('depositBankId', v)} />
+      ) : null}
       {state.depositHolder === 'طرف آخر' ? (
         <Field label="اسم الطرف القابض للتأمين" value={state.depositHolderName}
           onChange={(v) => set('depositHolderName', v)} />

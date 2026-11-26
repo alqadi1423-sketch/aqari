@@ -47,3 +47,22 @@ export async function passwordForSealing(s: PasswordStore): Promise<string | nul
   if (st === 'lost') throw new BackupPasswordLostError();
   return pw;
 }
+
+/** لا نسخة تخرج من الجهاز بلا تشفير (التوجيه الرابع ٤ · ٣) · فبلا سرٍّ محفوظ يُطلب إنشاء مفتاح الاسترداد أولاً */
+export class RecoveryKeyRequiredError extends Error {
+  constructor() {
+    super(t('backup.keyRequired'));
+    this.name = 'RecoveryKeyRequiredError';
+  }
+}
+
+/**
+ * السرّ الذي تُختم به كل نسخةٍ تُصدَّر أو تُرفع (التوجيه الرابع ٤ · ٣ · قرار المالك 2026-11-07 «تشفير النسخ الاحتياطي إجبارياً مع
+ * مفتاح استرداد يظهر مرة»): مفتاح الاسترداد، أو كلمة المرور القديمة لمن وضعها قبله حتى ينشئ مفتاحه · لا null أبداً: بلا سرٍّ ترمي
+ * RecoveryKeyRequiredError، وسرٌّ وُضع وتعذّرت قراءته يرمي BackupPasswordLostError كما كان
+ */
+export async function secretForSealing(s: PasswordStore): Promise<string> {
+  const pw = await passwordForSealing(s);
+  if (!pw) throw new RecoveryKeyRequiredError();
+  return pw;
+}

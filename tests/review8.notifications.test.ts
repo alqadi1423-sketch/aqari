@@ -19,7 +19,7 @@ jest.mock('expo-notifications', () => ({
   AndroidImportance: { DEFAULT: 3 },
   AndroidNotificationVisibility: { PRIVATE: 0 },
   SchedulableTriggerInputTypes: { DATE: 'date', WEEKLY: 'weekly' },
-}), { virtual: true });
+}));
 
 import { memDb } from './helpers/testDb';
 import { addProperty, addUnit, contractInput } from './helpers/fixtures';

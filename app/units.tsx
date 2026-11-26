@@ -23,6 +23,7 @@ import {
 import { deleteUnit, setUnitArchived, toggleUnitMaintenance } from '../src/domain/propertiesService';
 import { fmt } from '../src/domain/money';
 import { UnitDetailSheet, UnitFormSheet } from '../src/ui/unitSheets';
+import { useReturnLayer } from '../src/ui/returnLayer';
 import { ReservationSheet } from '../src/ui/ReservationSheet';
 import { reportFailure } from '../src/ui/failureDialog';
 import { usePerm } from '../src/ui/access';
@@ -149,6 +150,8 @@ export default function Units() {
   const [q, setQ] = useState('');
   const [formFor, setFormFor] = useState<{ propertyId?: string; unitId?: string } | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
+  // ورقة الوحدة التي أُغلقت للانتقال (تحصيل · عقد · فاتورة) تعود حين يرجع التركيز إلى الوحدات (D-4)
+  const leaveDetail = useReturnLayer<string>((id) => setDetailId(id));
   const [reserveId, setReserveId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [floorF, setFloorF] = useState('');
@@ -215,7 +218,9 @@ export default function Units() {
       const ids: string[] = [];
       base.statuses.forEach((st, id) => { if (st.key === want) ids.push(id); });
       if (ids.length === 0) where.push('1 = 0');
-      else { where.push(`u.id IN (${ids.map(() => '?').join(',')})`); params.push(...ids); }
+      // قائمةٌ واحدة بـ json_each لا متغيّرٌ لكل وحدة (المدقق الخارجي B5: فوق ٣٢٧٦٦ وحدة «too many SQL variables»، والعبارة بـ LIMIT
+      // وOFFSET فلا تُقطَّع)
+      else { where.push(`u.id IN (SELECT value FROM json_each(?))`); params.push(JSON.stringify(ids)); }
     }
     const src = `FROM units u LEFT JOIN properties p ON p.id = u.property_id WHERE ${where.join(' AND ')}`;
     const total = Number(db.get<{ c: number }>(`SELECT COUNT(*) c ${src}`, params)?.c ?? 0);
@@ -345,6 +350,7 @@ export default function Units() {
       {detailId && (
         <UnitDetailSheet unitId={detailId}
           onClose={() => setDetailId(null)}
+          onLeave={() => { leaveDetail(detailId); setDetailId(null); }}
           onEdit={() => { setFormFor({ unitId: detailId }); setDetailId(null); }}
           onReserve={() => { setReserveId(detailId); setDetailId(null); }} />
       )}

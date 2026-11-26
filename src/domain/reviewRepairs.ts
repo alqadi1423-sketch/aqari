@@ -116,7 +116,7 @@ export function previewRepairs(db: DB): RepairPreview[] {
     {
       key: 'installment_drift',
       title: 'أقساط انزلقت عن آخر الشهر',
-      explain: 'عقود تبدأ بعد يوم ٢٨ ولّدت النسخة السابقة أقساطها كلاً من سابقه، فانزلقت أيامها وقد يسقط شهر. '
+      explain: 'عقود تبدأ بعد يوم 28 ولّدت النسخة السابقة أقساطها كلاً من سابقه، فانزلقت أيامها وقد يسقط شهر. '
         + 'التطبيق يعيد تواريخها من تاريخ البداية بتثبيت آخر الشهر، ولا يمسّ جدولاً عُدّل يدوياً، ولا يغيّر مبلغاً.',
       items: drifted(db).map((d) => ({
         id: d.contractId,
@@ -150,7 +150,7 @@ export function applyRepair(db: DB, key: RepairKey): number {
         if (depositRoom(db, x.contractId) < x.amount) continue;
         // بداية العقد في ربعٍ قُدِّم إقراره: التسديد بأول يومٍ مفتوح لا بها (المراجعة الشاملة · البند ٢٧ تتمة): لا يتغيّر إقرارٌ مقدَّم
         const date = correctionDate(db, x.start);
-        reverseEntryById(db, x.entryId, 'تصحيح تحويل العربون (المراجعة ٤.٤) · ' + x.name);
+        reverseEntryById(db, x.entryId, 'تصحيح تحويل العربون (المراجعة 4.4) · ' + x.name);
         allocateDeposit(db, { rsvId: x.rid, amount: x.amount, contractId: x.contractId, contractNo: x.contractNo, tenant: x.tenant, date });
         db.run(`UPDATE reservations SET deposit_outcome = 'محوَّل', deposit_settled_date = ? WHERE id = ?`, [date, x.rid]);
         logAudit(db, 'العقود', 'update', 'تصحيح تحويل عربون', x.name, { entry: x.entryId }, { amount: x.amount, date });

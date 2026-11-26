@@ -61,6 +61,7 @@ describe('المعيار الوحيد: هل الفاتورة باسم المنش
 
   test('الافتراض مستبعدة ما لم يُحدَّد · و«قابلة للخصم» بلا رقم ضريبي تُرفض بجملة', () => {
     const db = seed();
+    db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
     const id = savePurchase(db, {
       ...base, supplier: 'مورد عام', category: 'صيانة',
       subtotalHalalas: 10000, taxHalalas: 1500, totalHalalas: 11500,
@@ -76,6 +77,7 @@ describe('المعيار الوحيد: هل الفاتورة باسم المنش
 
   test('القابلة للخصم: المصروف بالأساس والضريبة في 1270، ثم تقديم واسترداد يُقفلها', () => {
     const db = seed();
+    db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
     const id = savePurchase(db, {
       ...base, supplier: 'مورد عام', category: 'صيانة',
       taxStatus: 'فاتورة ضريبية · قابلة للخصم',
@@ -96,6 +98,7 @@ describe('المعيار الوحيد: هل الفاتورة باسم المنش
 
   test('رفض الاسترداد: الضريبة تصير جزءاً من التكلفة و1270 يُقفل', () => {
     const db = seed();
+    db.run(`UPDATE company SET vat_enabled = 1 WHERE id = 1`); // المنشأة مسجّلة: «قابلة للخصم» لها وحدها (التوجيه الرابع ٣ · ٤ · القاعدة ٩٩)
     const id = savePurchase(db, {
       ...base, supplier: 'مورد عام', category: 'مصروفات أخرى',
       taxStatus: 'فاتورة ضريبية · قابلة للخصم',
@@ -191,75 +194,5 @@ describe('ميزان المراجعة', () => {
     const cashRow = rows.find((r) => r.code === '1100')!;
     expect(cashRow.closingHalalas).toBe(accountBalance(db, '1100'));
     db.close();
-  });
-});
-
-describe('عينات الإقرار للحكم على الحاسوب · ثلاث صيغ لنفس التقرير', () => {
-  test('تُكتب xlsx وdocx وHTML (يُحوَّل PDF) لربع مبذور', async () => {
-    const outDir = process.env.PRINT_SAMPLES_DIR;
-    if (!outDir) { expect(true).toBe(true); return; }
-    const fsN = await import('node:fs');
-    const pathN = await import('node:path');
-    const { buildXlsx, buildDocx, PRINT_CSS_SHIM } = { ...(await import('@/domain/officeBuild')), PRINT_CSS_SHIM: (await import('@/domain/printDocs')).PRINT_CSS };
-    type RB = import('@/domain/officeBuild').ReportBlock;
-    const M = (h: number) => ({ money: h });
-    const db = seed();
-    const pid = addProperty(db);
-    const u = addUnit(db, pid, { unit_no: 'A-1' });
-    const cid = confirmContract(db, contractInput(u, {
-      tenant: 'سلمى كمال بن حامد الفلاني', valueHalalas: 2520000, depositHalalas: 0,
-      start: '2026-01-01', end: '2026-12-31',
-    }));
-    const inst = db.get<{ id: string }>(`SELECT id FROM contract_installments WHERE contract_id = ? ORDER BY due_date LIMIT 1`, [cid])!;
-    recordRentPayment(db, cid, { installmentId: inst.id, date: '2026-02-05', period: 'فبراير', lines: [{ method: 'cash', amountHalalas: 210000 }], discountHalalas: 0, notes: '' });
-    saveInvoice(db, { customer: 'شركة الأمل للتجارة', customerVat: '311111111100003', issue: '2026-02-01', due: '2026-03-01', notes: '', lines: [{ descr: 'إيجار مكتب تجاري', qty: 1, priceHalalas: 500000, taxPct: 15 }] }, 'مستحقة');
-    savePurchase(db, { ...base, supplier: 'مورد عام', category: 'صيانة', taxStatus: 'فاتورة ضريبية · قابلة للخصم', subtotalHalalas: 80000, taxHalalas: 12000, totalHalalas: 92000 });
-    savePurchase(db, { ...base, supplier: 'مورد عام', category: 'كهرباء', taxStatus: 'غير قابلة للخصم', excludeReason: 'الفاتورة باسم المالك', subtotalHalalas: 30000, taxHalalas: 4500, totalHalalas: 34500 });
-    savePurchase(db, { ...base, supplier: 'مورد عام', category: 'مصروفات أخرى', taxStatus: 'غير قابلة للخصم', excludeReason: 'إيصال لا فاتورة ضريبية', subtotalHalalas: 11500, taxHalalas: 0, totalHalalas: 11500 });
-    const d = vatReturnData(db, 2026, 1);
-    db.close();
-    const main: RB = {
-      heading: 'نموذج الإقرار · ' + d.period,
-      meta: [['الفترة', d.from + ' إلى ' + d.to], ['أعمدة الإفصاح الذاتي والتعديل', 'تُملأ يدوياً']],
-      sections: [{ title: 'بنود الإقرار', sum: false,
-        header: ['#', 'البند', 'المبلغ', 'مبلغ الضريبة', 'الإفصاح الذاتي', 'مبلغ التعديل', 'سبب التعديل'],
-        rows: d.items.map((i) => [i.no, i.label + (i.manual ? ' (يدوي)' : ''), M(i.amountHalalas), M(i.taxHalalas), '', '', '']) }],
-      totals: [
-        ['فواتير مستبعدة من الإقرار خلال الفترة (لا تدخل البند ٧)', String(d.excluded.count) + ' فاتورة'],
-        ['مبلغ المستبعدة شاملاً ضريبتها غير المخصومة', M(d.excluded.amountHalalas), true],
-      ],
-    };
-    const sched: RB = {
-      heading: 'الكشوف المساندة', meta: [],
-      sections: [
-        { title: 'المشتريات الخاضعة باسم المنشأة', sum: true, header: ['الرقم', 'التاريخ', 'المورد', 'رقمه الضريبي', 'قبل الضريبة', 'الضريبة', 'الإجمالي'],
-          rows: d.schedules.deductiblePurchases.map((r) => [r.no, r.date, r.supplier, r.supplierVatno, M(r.subtotal), M(r.tax), M(r.total)]) },
-        { title: 'المستبعدة من الإقرار', sum: true, header: ['الرقم', 'التاريخ', 'المورد', 'قبل الضريبة', 'الضريبة (ضمن التكلفة)', 'الإجمالي', 'سبب الاستبعاد'],
-          rows: d.schedules.excludedPurchases.map((r) => [r.no, r.date, r.supplier, M(r.subtotal), M(r.tax), M(r.total), r.reason]) },
-        { title: 'المبيعات المعفاة · الإيجار السكني', sum: true, header: ['التاريخ', 'المستأجر', 'العقد', 'الوحدة', 'المحصَّل'],
-          rows: d.schedules.exemptSales.map((r) => [r.date, r.tenant, r.contractNo, r.unitLabel, M(r.net)]) },
-      ], totals: [],
-    };
-    fsN.mkdirSync(outDir, { recursive: true });
-    fsN.writeFileSync(pathN.join(outDir, 'الإقرار-الضريبي-2026-Q1.xlsx'), buildXlsx([
-      { name: 'الملخص', blocks: [main] }, { name: 'الكشوف المساندة', blocks: [sched] },
-    ]));
-    fsN.writeFileSync(pathN.join(outDir, 'الإقرار-الضريبي-2026-Q1.docx'),
-      buildDocx('الإقرار الضريبي · 2026-Q1', d.from + ' إلى ' + d.to, [main, sched], 'صدر عبر تطبيق عقاري · أحد حلول منصة رِكز', ['المحاسب', 'المدير']));
-    const esc2 = (x: unknown) => String(x ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!));
-    const cellS = (c: unknown) => (typeof c === 'object' && c ? ((c as { money: number }).money / 100).toFixed(2) : String(c ?? ''));
-    const tbl = (h: string[], rows: unknown[][]) => `<table><thead><tr>${h.map((x) => `<th>${esc2(x)}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${(r as unknown[]).map((c) => `<td class="num">${esc2(cellS(c))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
-    const html = `<!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><style>${PRINT_CSS_SHIM}</style></head><body>
-      <div style="position:fixed;top:38%;left:0;right:0;text-align:center;transform:rotate(-28deg);font-size:96px;color:rgba(176,141,61,.14);font-weight:800">مسودة</div>
-      <h2>الإقرار الضريبي · ${d.period} (مسودة)</h2>
-      ${tbl(['#', 'البند', 'المبلغ', 'مبلغ الضريبة'], d.items.map((i) => [i.no, i.label, { money: i.amountHalalas }, { money: i.taxHalalas }]))}
-      <h3>فواتير مستبعدة من الإقرار: ${d.excluded.count} فاتورة بمبلغ ${(d.excluded.amountHalalas / 100).toFixed(2)} — لا تدخل البند ٧</h3>
-      <h3>المشتريات الخاضعة باسم المنشأة (${d.schedules.deductiblePurchases.length})</h3>
-      ${tbl(['الرقم', 'التاريخ', 'المورد', 'الرقم الضريبي', 'قبل الضريبة', 'الضريبة', 'الإجمالي'], d.schedules.deductiblePurchases.map((r) => [r.no, r.date, r.supplier, r.supplierVatno, { money: r.subtotal }, { money: r.tax }, { money: r.total }]))}
-      <h3>المستبعدة (${d.schedules.excludedPurchases.length})</h3>
-      ${tbl(['الرقم', 'التاريخ', 'المورد', 'الإجمالي', 'السبب'], d.schedules.excludedPurchases.map((r) => [r.no, r.date, r.supplier, { money: r.total }, r.reason]))}
-    </body></html>`;
-    fsN.writeFileSync(pathN.join(outDir, 'الإقرار-الضريبي-2026-Q1.html'), html, 'utf8');
-    expect(fsN.existsSync(pathN.join(outDir, 'الإقرار-الضريبي-2026-Q1.xlsx'))).toBe(true);
   });
 });

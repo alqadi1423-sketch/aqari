@@ -13,13 +13,13 @@ import { useToast } from './Toast';
 import { useDialog, confirmDiscard } from './AppDialog';
 import { C } from './theme';
 import { setInstallmentSchedule, paymentForInstallment } from '../domain/contracts/service';
-import { installmentRemaining } from '../domain/contracts/installments';
+import { installmentRemaining, installmentBadge } from '../domain/contracts/installments';
 import { printReceipt } from '../services/print';
-import { dfmt, today, daysBetween, periodLabel } from '../domain/dates';
+import { dfmt, today, periodLabel } from '../domain/dates';
 import { fmt } from '../domain/money';
 import { reportFailure } from './failureDialog';
 import { CancelPaymentSheet } from './CancelPaymentPanel';
-import { paidFromDeposit } from '../domain/contracts/cancelPayment';
+import { paidFromDeposit, paidFromSettlement } from '../domain/contracts/cancelPayment';
 import { usePerm } from './access';
 import { useSaveAttempt } from './formAttempt';
 
@@ -76,29 +76,17 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
          AND NOT EXISTS (SELECT 1 FROM payment_allocations x WHERE x.payment_id = p.id)
        ORDER BY date`,
       [installmentId, installmentId]
-    ).map((p) => ({ ...p, fromDeposit: paidFromDeposit(db, p.id) }));
+    ).map((p) => ({ ...p, fromDeposit: paidFromDeposit(db, p.id) || paidFromSettlement(db, p.id) })); // ودفعة التأمين من تسويته تُعدَّل منها (A1-2)
     // خصم القسط · من دفعاته المباشرة وحدها (التخصيصات الجماعية بلا خصم)
     const discount = pays.reduce((s, p) => s + (p.alloc == null && !p.cancelled_at ? Number(p.discount_halalas) : 0), 0);
     const T_ = today();
-    // العقد الملغى لا يُحصَّل عليه · الخدمة ترفض السداد فلا يُعرض زر التحصيل أصلاً
-    const contractCancelled = db.get<{ status: string }>(
-      `SELECT status FROM contracts WHERE id = ?`, [i.contract_id]
-    )?.status === 'ملغى';
     // سند القبض بلا دفعة في القائمة: يُعرض فقط إن وُجد سند فعلاً
     const fallbackPayment = pays.length ? null : paymentForInstallment(db, i.id);
     const remaining = installmentRemaining(Number(i.amount_halalas), Number(i.paid_halalas), discount);
-    const effectiveDue = i.agreed_date || i.due_date;
-    let daysLate = effectiveDue ? daysBetween(T_, effectiveDue) : 0;
-    if (i.grace_until && T_ <= i.grace_until) daysLate = Math.min(daysLate, 0);
-    let status: string;
-    let kind: string;
-    if (i.status === 'ملغية') { status = 'ملغاة'; kind = 'draft'; }
-    else if (remaining <= 0) { status = 'مدفوعة'; kind = 'paid'; }
-    else if (Number(i.paid_halalas) > 0 && daysLate > 0) { status = `مدفوعة جزئياً · متأخرة ${daysLate} يوماً`; kind = 'overdue'; }
-    else if (Number(i.paid_halalas) > 0) { status = 'مدفوعة جزئياً'; kind = 'due'; }
-    else if (daysLate > 0) { status = `متأخرة ${daysLate} يوماً`; kind = 'overdue'; }
-    else { status = 'مستحقة'; kind = 'due'; }
-    return { i, pays, discount, remaining, status, kind, contractCancelled, fallbackPayment };
+    // الحالة بالدالة الواحدة مع جدول العقد وشاشة التحصيل (A1-11) لا بنسخةٍ ثانية من منطقها
+    const { label: status, kind } = installmentBadge({ dueDate: i.due_date, agreedDate: i.agreed_date, graceUntil: i.grace_until,
+      amount: Number(i.amount_halalas), paid: Number(i.paid_halalas), discount, status: i.status }, T_);
+    return { i, pays, discount, remaining, status, kind, fallbackPayment };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, installmentId]);
 
@@ -117,10 +105,10 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
   const attempt = useSaveAttempt();
 
   if (!data) return null;
-  const { i, pays, discount, remaining, status, kind, contractCancelled, fallbackPayment } = data;
-  // القسط المسدَّد كلياً أو الملغي لا موعد له يُعدَّل · والعقد الملغى لا يُحصَّل
+  const { i, pays, discount, remaining, status, kind, fallbackPayment } = data;
+  // القسط المسدَّد كلياً أو الملغي لا موعد له يُعدَّل · وقسط العقد الملغى القائم يُحصَّل بقسطه كصفّ الجدول (المراجعة ٤.٩ · D-23)
   const scheduleEditable = remaining > 0 && i.status !== 'ملغية' && perm.manage;
-  const collectable = remaining > 0 && i.status !== 'ملغية' && !contractCancelled && perm.add;
+  const collectable = remaining > 0 && i.status !== 'ملغية' && perm.add;
 
   const saveSchedule = () => {
     try {
@@ -166,8 +154,8 @@ function InstallmentBody({ installmentId, onClose, onCollect }: {
       {editOpen ? (
         <Sheet visible onClose={() => setEditOpen(false)} title="تعديل الموعد"
           footer={<View style={{ flex: 1 }}><BtnPrimary title="حفظ" onPress={() => attempt.attempt(!!reason.trim(), saveSchedule)} /></View>}>
-          <DateField label="موعد سداد متفق عليه" value={agreed} onChange={setAgreed} />
-          <DateField label="مهلة سداد حتى" value={grace} onChange={setGrace} />
+          <DateField label="موعد سداد متفق عليه" value={agreed} onChange={setAgreed} optional />
+          <DateField label="مهلة سداد حتى" value={grace} onChange={setGrace} optional />
           <Field label="السبب" value={reason} onChange={setReason} error={attempt.missing(reason)} />
           {/* لا اتفاق قائم فلا شيء يُزال */}
           {i.agreed_date || i.grace_until ? (

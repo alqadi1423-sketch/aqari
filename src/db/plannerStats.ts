@@ -21,6 +21,8 @@ export const PLANNER_STATS: ReadonlyArray<readonly [string, string, string]> = [
   ['contract_payments', 'ix_pay_journal', '20000 1'],
   ['contract_payments', 'ix_pay_contract', '20000 15'],
   ['contract_payments', 'ix_pay_date', '20000 10'],
+  // قيد إلغاء الدفعة (الهجرة ٥٠): لكل قيدٍ دفعةٌ واحدة · فيُفحص «قيدٌ لدفعةٍ واحدة» بالفهرسين معاً لا بمسح الدفعات
+  ['contract_payments', 'ix_pay_cancel_entry', '20000 1'],
   ['contract_installments', 'ix_inst_contract', '20000 12'],
   ['contract_installments', 'ix_inst_contract_due', '20000 12 1'],
   ['contract_installments', 'ix_inst_due', '20000 20'],

@@ -47,7 +47,11 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
     // والموعد المتفق عليه ومهلته من شاشة القسط (مراجعة التثبيت #38: كانت الشاشة تتيحهما والقواعد ترفضهما)
     touch: { ...LINKS_REVERSAL, contract_installments: ['paid_halalas', 'status', 'agreed_date', 'grace_until'], tenants: ['credit_halalas'] },
   },
-  deposits: { own: ['deposit_settlements'], create: [...POSTS, 'bank_tx', 'claims'], touch: LINKS_REVERSAL },
+  // والتسوية تسدّد ما حلّ من الأقساط بدفعاتٍ من التأمين، وتعديلها يعكسها ويسمها ملغاة (المراجعة الشاملة 2026-11-13 · A1-2)
+  deposits: {
+    own: ['deposit_settlements'], create: [...POSTS, 'bank_tx', 'claims', 'contract_payments'],
+    touch: { ...LINKS_REVERSAL, contract_installments: ['paid_halalas', 'status'], contract_payments: ['cancelled_at', 'cancel_reason', 'cancel_entry_id'] },
+  },
   reservations: { own: ['reservations', 'key_money_deals'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   claims: { own: ['claims'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
   invoices: { own: ['invoices', 'invoice_lines'], create: [...POSTS, 'bank_tx'], touch: LINKS_REVERSAL },
@@ -58,7 +62,8 @@ export const OP_WRITES: Partial<Record<SectionKey, OpWrites>> = {
     touch: { ...LINKS_REVERSAL, meters: ['supplier_id'] },
   },
   handover: { own: ['handovers'], create: ['audit_log'] },
-  banks: { own: ['banks', 'bank_tx'], create: POSTS, touch: LINKS_REVERSAL },
+  // وكشف البنك (الهجرة ٥٥ · DESIGN §١٣.٢٢): يقرؤه ويحفظه من يسجّل حركة (٢)، ويطابق ويستبعد من يملك القسم (٣)
+  banks: { own: ['banks', 'bank_tx', 'bank_statements', 'bank_statement_lines'], create: [...POSTS, 'bank_statements', 'bank_statement_lines'], touch: LINKS_REVERSAL },
   ledger: { own: ['journal_entries', 'accounts', 'cost_centers'], create: ['audit_log'] },
   library: { own: [], create: ['audit_log'] },
   assets: {
@@ -103,6 +108,28 @@ export const SELF_AUDIT_AHEAD_DAYS = 2;
  */
 export const LEGACY_NEUTRAL = { table: 'contracts', col: 'original_end', equals: 'end' } as const;
 
+/**
+ * إعداداتٌ للمالك وحده تسكن صفاً في جدولٍ يملكه قسم (المراجعة الشاملة 2026-11-13 · B-3): تسجيل ضريبة القيمة المضافة في «المالية» للمالك
+ * وحده (app/settings.tsx · admin)، وعموده في صفّ المنشأة الذي يعدّله «كامل» المنشأة والقوالب (الاسم والسجل والشعار) · فلا يغيّرها العضو
+ * ولا يُنشئ صفّها ولا يحذفه: القاعدة (rulesGen: ownerColsKept) وجهاز المالك (sync/engine.ts: ownerColsIssue) · ولم يُوجد غيره في الإعدادات
+ */
+export const OWNER_ONLY_COLS: Record<string, string[]> = { company: ['vat_enabled'] };
+
+/**
+ * ما يقرؤه الإقرار ويرحّله قيد فاتورة الشراء من رأسها (vatReturn.ts: البنود ٧ و١٠ و١١ · postPurchaseToLedger) · فلا يتغيّر من عضوٍ في
+ * فاتورةٍ مرحّلة إلا بتعديلها في التطبيق (savePurchase: عكس قيدها القديم وقيدٌ جديد بقيمها) · القاعدة (rulesGen: postedPurchaseKept)
+ * وجهاز المالك (sync/engine.ts: lockedParentIssue) · المراجعة الشاملة 2026-11-13 · المدقق المستقل R11-B1-3
+ */
+export const POSTED_PURCHASE_COLS = ['subtotal_halalas', 'tax_halalas', 'total_halalas', 'tax_status', 'date'];
+
+/**
+ * بنود محضر الاستلام والتسليم كما يكتبها updateHandover ونوعه (src/domain/handover/service.ts) · بعد إقفاله لا تتغيّر (المراجعة الشاملة
+ * 2026-11-13 · E-1 · قرار المالك س٢٩): جهاز المالك يحسم بها التعديل المتأخر (sync/engine.ts: handoverLock)، والقاعدة لا تجيز للعضو
+ * تغييرها ولا فتح القفل ولا الحذف الناعم في محضرٍ مقفلٍ في السحابة (rulesGen: handoverLockKept · المراجعة ١٢)
+ */
+export const HANDOVER_FORM_COLS = ['type', 'employee_name', 'tenant_name', 'id_number', 'phone', 'address', 'unit_floor', 'contract_period',
+  'date', 'other_notes', 'tenant_sign', 'company_sign', 'sections_json'] as const;
+
 export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update' | 'delete', cols: string[] = []): boolean {
   const w = OP_WRITES[op];
   if (!w) return false;
@@ -124,8 +151,8 @@ export function opAllows(op: SectionKey, table: string, kind: 'create' | 'update
 export const OP_JOURNAL_SRC: Partial<Record<SectionKey, string[]>> = {
   contracts: ['contract_deposit', 'deposit_carry', 'reservation_convert'],
   collect: ['rent', 'rent_rev', 'discount_rev', 'rent_payment_rev'],
-  deposits: ['deposit_deduct', 'deposit_deduct_move', 'deposit_refund',
-    'deposit_deduct_rev', 'deposit_deduct_move_rev', 'deposit_refund_rev', 'claim'],
+  deposits: ['deposit_deduct', 'deposit_deduct_move', 'deposit_refund', 'deposit_rent',
+    'deposit_deduct_rev', 'deposit_deduct_move_rev', 'deposit_refund_rev', 'deposit_rent_rev', 'claim'],
   reservations: ['reservation', 'reservation_forfeit', 'reservation_refund', 'key_money'],
   claims: ['claim', 'claim_collect', 'claim_rev'],
   invoices: ['invoice', 'invoice_rev', 'invoice_pay', 'invoice_pay_rev'],

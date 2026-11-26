@@ -2,8 +2,9 @@
  * قوالب الرسائل · الرموز الخمسة عشر وسياقها وحلّها، منقولة من النموذج.
  */
 import type { DB } from '../db/adapter';
-import { today, dfmt } from './dates';
+import { today, dfmtOut } from './dates';
 import { fmt } from './money';
+import { moneyToArabicWords } from './numberWords';
 import { INSTALLMENT_DISCOUNT_SQL, installmentState } from './contracts/installments';
 import { contractTotalSql } from './accounting/rentSplit';
 import { t } from '../i18n';
@@ -16,7 +17,8 @@ export const TEMPLATE_TOKENS: Array<{ k: string; d: string }> = [
   { k: '{رقم_العقد}', d: 'رقم العقد' },
   { k: '{بداية_العقد}', d: 'تاريخ بداية العقد' },
   { k: '{نهاية_العقد}', d: 'تاريخ نهاية العقد' },
-  { k: '{قيمة_العقد}', d: 'القيمة السنوية للعقد' },
+  // كامل قيمة الإيجار للمدة (value_halalas · قرار المالك 2026-10-07) لا السنوية (E-17)
+  { k: '{قيمة_العقد}', d: 'قيمة الإيجار لكامل المدة' },
   { k: '{التأمين}', d: 'مبلغ التأمين' },
   { k: '{المبلغ}', d: 'مبلغ الدفعة المستحقة' },
   { k: '{المتبقي}', d: 'المتبقي غير المسدَّد' },
@@ -28,16 +30,21 @@ export const TEMPLATE_TOKENS: Array<{ k: string; d: string }> = [
   { k: '{إجمالي_العقد}', get d() { return t('templates.tok.total'); } }, // i18n-exempt: رمز قالب مخزَّن
   { k: '{الخدمات}', get d() { return t('templates.tok.services'); } }, // i18n-exempt: رمز قالب مخزَّن
   { k: '{المواقف}', get d() { return t('templates.tok.parking'); } }, // i18n-exempt: رمز قالب مخزَّن
+  // إشعار المطالبة قالبٌ يعدّله المالك (E-18 · س٣١)
+  { k: '{المبلغ_بالحروف}', get d() { return t('templates.tok.amountWords'); } }, // i18n-exempt: رمز قالب مخزَّن
+  { k: '{سبب_المطالبة}', get d() { return t('templates.tok.claimReason'); } }, // i18n-exempt: رمز قالب مخزَّن
 ];
 
-export const SCRIPT_CATEGORIES = ['تذكير بالسداد', 'تأخر السداد', 'تجديد العقد', 'إخلاء', 'صيانة', 'عام'];
+export const SCRIPT_CATEGORIES = ['تذكير بالسداد', 'تأخر السداد', 'تجديد العقد', 'إخلاء', 'صيانة', 'مطالبة', 'عام']; // i18n-exempt: تصنيفات مخزَّنة
+/** تصنيف قالب إشعار المطالبة (E-18) */
+export const CLAIM_CATEGORY = 'مطالبة'; // i18n-exempt: تصنيف مخزَّن
 export const SCRIPT_AUDIENCES = ['مستأجرون', 'عملاء', 'موظفون'];
 
 export function templateContext(db: DB, contractId: string | null, name?: string): Record<string, string> {
   const company = db.get<{ name: string }>(`SELECT name FROM company WHERE id = 1`);
   const ctx: Record<string, string> = {
     '{المنشأة}': company?.name || 'إدارة العقارات',
-    '{اليوم}': dfmt(today()),
+    '{اليوم}': dfmtOut(today()),
     '{المستأجر}': name || '',
   };
   if (!contractId) return ctx;
@@ -81,8 +88,8 @@ export function templateContext(db: DB, contractId: string | null, name?: string
     '{العقار}': p?.name || '',
     '{الوحدة}': u?.unit_no || c.unit_label || '',
     '{رقم_العقد}': c.contract_no || '',
-    '{بداية_العقد}': c.start ? dfmt(c.start) : '',
-    '{نهاية_العقد}': c.end ? dfmt(c.end) : '',
+    '{بداية_العقد}': c.start ? dfmtOut(c.start) : '',
+    '{نهاية_العقد}': c.end ? dfmtOut(c.end) : '',
     '{قيمة_العقد}': fmt(Number(c.value_halalas)),
     '{التأمين}': fmt(Number(c.deposit_halalas)),
     // لا قسط مفتوح: لا مبلغ مستحق (المراجعة #6) · والمتبقي من الأقساط الحيّة
@@ -91,7 +98,7 @@ export function templateContext(db: DB, contractId: string | null, name?: string
     '{إجمالي_العقد}': fmt(Number(c.total_halalas)), // i18n-exempt: رمز قالب
     '{الخدمات}': fmt(Number(c.services_halalas)), // i18n-exempt: رمز قالب
     '{المواقف}': fmt(Number(c.parking_halalas)), // i18n-exempt: رمز قالب
-    '{التاريخ}': st ? dfmt(st.effectiveDue) : c.end ? dfmt(c.end) : 'لا يوجد',
+    '{التاريخ}': st ? dfmtOut(st.effectiveDue) : c.end ? dfmtOut(c.end) : '',
     '{أيام_التأخير}': st ? String(Math.max(0, st.daysLate)) : '0',
   });
   return ctx;
@@ -100,11 +107,32 @@ export function templateContext(db: DB, contractId: string | null, name?: string
 export function resolveTemplateTokens(text: string, ctx: Record<string, string>): string {
   let out = String(text || '');
   for (const k of Object.keys(ctx)) {
-    const v = ctx[k] == null || ctx[k] === '' ? 'لا يوجد' : ctx[k];
+    // الرمز بلا قيمة خانةٌ خالية لا «لا يوجد» (البند ٤ (أ) من القرارات المعلّقة، قرار المالك 2026-11-07)
+    const v = ctx[k] ?? '';
     out = out.split(k).join(v);
     out = out.split(k.replace('{', '[').replace('}', ']')).join(v);
   }
-  return out.replace(/\{الاسم\}|\[الاسم\]/g, ctx['{المستأجر}'] || '');
+  out = out.replace(/\{الاسم\}|\[الاسم\]/g, ctx['{المستأجر}'] || '');
+  // رمزٌ معروف لا قيمة له في هذا السياق (المعاينة بلا عقد) يُفرغ ولا يبقى حرفياً (E-17)
+  for (const { k } of TEMPLATE_TOKENS) {
+    if (k in ctx) continue;
+    out = out.split(k).join('').split(k.replace('{', '[').replace('}', ']')).join('');
+  }
+  return out;
+}
+
+/**
+ * نص إشعار المطالبة (المراجعة الشاملة 2026-11-13 · E-18 · القاعدة ١٢ · ٩ · س٣١): أحدث قالبٍ بتصنيف «مطالبة» في «قوالب الرسائل»،
+ * وبلا قالبٍ النص الافتراضي من ملف الترجمة · والمهلة جزءٌ من النص فيعدّلها المالك بتعديله · يُملأ بسياق العقد ورموز المطالبة
+ */
+export function claimNoticeBody(db: DB, contractId: string | null, cl: { amountHalalas: number; reason: string }): string {
+  const tpl = db.get<{ body: string }>(
+    `SELECT body FROM message_scripts WHERE deleted_at IS NULL AND category = ? ORDER BY created_at DESC LIMIT 1`, [CLAIM_CATEGORY]);
+  const ctx = templateContext(db, contractId);
+  ctx['{المبلغ}'] = fmt(cl.amountHalalas); // i18n-exempt: رمز قالب مخزَّن
+  ctx['{المبلغ_بالحروف}'] = moneyToArabicWords(cl.amountHalalas); // i18n-exempt: رمز قالب مخزَّن
+  ctx['{سبب_المطالبة}'] = cl.reason || ''; // i18n-exempt: رمز قالب مخزَّن
+  return resolveTemplateTokens(tpl?.body || t('claims.noticeDefault', { lng: 'ar' }), ctx);
 }
 
 /**
@@ -124,7 +152,7 @@ export function collectionMessage(
       amount: Number(i.amount_halalas), paid: Number(i.paid_halalas), discount: Number(i.discount), status: i.status,
     }, today());
     ctx['{المبلغ}'] = fmt(st.remaining); // i18n-exempt: رمز قالب مخزَّن
-    ctx['{التاريخ}'] = dfmt(st.effectiveDue); // i18n-exempt: رمز قالب مخزَّن
+    ctx['{التاريخ}'] = dfmtOut(st.effectiveDue); // i18n-exempt: رمز قالب مخزَّن
     ctx['{أيام_التأخير}'] = String(Math.max(0, st.daysLate)); // i18n-exempt: رمز قالب مخزَّن
   }
   if (row.unitNo) ctx['{الوحدة}'] = row.unitNo; // i18n-exempt: رمز قالب مخزَّن

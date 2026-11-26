@@ -11,6 +11,9 @@ import android.view.View
 import android.widget.RemoteViews
 import org.json.JSONObject
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * ودجتات «عقاري».
@@ -27,6 +30,10 @@ import java.io.File
  * فتعرض الودجت الأعداد وحدها و«المبالغ مخفية» · وفرع القفل يسبق كل فرعٍ يعرض مبلغاً فلا يُعرض ولو وُجد.
  * ولا تثق الودجت بـ`locked` وحده: علامة القفل نفسها في المجلد نفسه تُعدّ قفلاً، فلقطةٌ لم تمرّ بالكتابة الأخيرة
  * (نسخة حسابٍ عادت، أو لقطة إصدارٍ سابق قبل أول فتح، أو تعذّر حذفها) لا تُعرض مبالغها والقفل مفعّل.
+ *
+ * واللقطة تحمل جدول الأيام القادمة (المراجعة الشاملة 2026-11-13 · E-3): `ahead` كل يومٍ تتغيّر فيه الأرقام خلال ستين يوماً بأرقامه
+ * منسَّقة، و`validUntil` آخر يومٍ تصحّ له · فتعرض الودجت أرقام يومها (بتاريخ الجهاز المحلي) لا يوم آخر فتح، وبعد `validUntil` تُخفي
+ * الأعداد والمبالغ وتكتب «آخر تحديث … · افتح التطبيق».
  */
 
 private const val SNAPSHOT_FILE = "widget.json"
@@ -57,26 +64,65 @@ internal data class Snapshot(
     val locked: Boolean = false,
     val canCollect: Boolean = true,
     val canInvoices: Boolean = true,
-    val canClaims: Boolean = true
+    val canClaims: Boolean = true,
+    /** تجاوز اليومُ جدول اللقطة (E-3) · لا عدد ولا مبلغ، و«آخر تحديث» بيوم اللقطة */
+    val stale: Boolean = false,
+    /** يوم كتابة اللقطة YYYY-MM-DD */
+    val day: String = ""
 )
+
+/**
+ * موضع يوم الجدول الصالح لـ`today` (E-3) · دالّةٌ خالصة، ومثيلتها pickWidgetDay في src/domain/widgetAhead.ts تُختبر هناك ·
+ * null: تجاوز اليومُ validUntil (أو يوم اللقطة إن خلت منه، كلقطة إصدارٍ سابق) · ‎-1: أرقام اللقطة نفسها ·
+ * وإلا موضع آخر يومٍ في ahead لم يتجاوز اليوم (والمتساويان يُختار آخرهما) · التواريخ YYYY-MM-DD تُقارن نصاً
+ */
+internal fun pickAheadIndex(today: String, day: String, validUntil: String, aheadDays: List<String>): Int? {
+    val until = if (validUntil.isNotBlank()) validUntil else day
+    if (until.isNotBlank() && today > until) return null
+    var best = -1
+    for (i in aheadDays.indices) {
+        val d = aheadDays[i]
+        if (d.isNotBlank() && d <= today && (best < 0 || d >= aheadDays[best])) best = i
+    }
+    return best
+}
+
+/** «28/11» من «2026-11-28» · كـ dfmt بلا سنة، ومثيلتها widgetShortDay */
+internal fun shortDay(iso: String): String =
+    if (iso.length >= 10) iso.substring(8, 10) + "/" + iso.substring(5, 7) else iso
+
+/** اليوم بتاريخ الجهاز المحلي YYYY-MM-DD · كـ today() في التطبيق، وبأرقام لاتينية أياً كانت لغة الجهاز */
+internal fun localToday(): String = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
 
 internal fun readSnapshot(context: Context): Snapshot {
     return try {
         val f = File(context.filesDir, SNAPSHOT_FILE)
         if (!f.exists()) return Snapshot()
         val o = JSONObject(f.readText())
+        val day = o.optString("day", "")
+        val ahead = o.optJSONArray("ahead")
+        val aheadDays = ArrayList<String>()
+        if (ahead != null) {
+            for (i in 0 until ahead.length()) aheadDays.add(ahead.optJSONObject(i)?.optString("day", "") ?: "")
+        }
+        val pick = pickAheadIndex(localToday(), day, o.optString("validUntil", ""), aheadDays)
+        val stale = pick == null
+        // أرقام اليوم: يوم الجدول المختار، أو أرقام اللقطة نفسها · والبائتة بلا أرقام أصلاً
+        val src: JSONObject = if (pick != null && pick >= 0) (ahead?.optJSONObject(pick) ?: o) else o
         Snapshot(
-            lateCount = o.optInt("lateCount", 0),
-            lateSum = o.optString("lateSum", "0.00"),
-            dueThisMonth = o.optString("dueThisMonth", "0.00"),
-            paidThisMonth = o.optString("paidThisMonth", "0.00"),
-            monthPct = o.optInt("monthPct", 0),
+            lateCount = if (stale) 0 else src.optInt("lateCount", 0),
+            lateSum = if (stale) "" else src.optString("lateSum", "0.00"),
+            dueThisMonth = if (stale) "" else src.optString("dueThisMonth", "0.00"),
+            paidThisMonth = if (stale) "" else src.optString("paidThisMonth", "0.00"),
+            monthPct = if (stale) 0 else src.optInt("monthPct", 0),
             empty = o.optBoolean("empty", true),
             noCollect = o.optBoolean("noCollect", false),
             locked = o.optBoolean("locked", false) || lockFlagged(context),
             canCollect = o.optJSONObject("can")?.optBoolean("collect", true) ?: true,
             canInvoices = o.optJSONObject("can")?.optBoolean("invoices", true) ?: true,
-            canClaims = o.optJSONObject("can")?.optBoolean("claims", true) ?: true
+            canClaims = o.optJSONObject("can")?.optBoolean("claims", true) ?: true,
+            stale = stale,
+            day = day
         )
     } catch (e: Exception) {
         Snapshot()
@@ -127,6 +173,10 @@ class TodayStripWidget : AppWidgetProvider() {
             } else if (s.empty) {
                 v.setTextViewText(R.id.strip_title, context.getString(R.string.widget_empty_title))
                 v.setTextViewText(R.id.strip_amount, context.getString(R.string.widget_empty_hint))
+            } else if (s.stale) {
+                // تجاوز اليومُ جدول اللقطة (E-3) · لا عدد قد يكون بائتاً ولا مبلغ، وتاريخ آخر تحديث
+                v.setTextViewText(R.id.strip_title, context.getString(R.string.widget_stale, shortDay(s.day)))
+                v.setTextViewText(R.id.strip_amount, context.getString(R.string.widget_locked_amount))
             } else if (s.locked) {
                 v.setTextViewText(
                     R.id.strip_title,
@@ -196,6 +246,14 @@ class CollectionPanelWidget : AppWidgetProvider() {
                 v.setTextViewText(R.id.panel_late, "")
                 v.setProgressBar(R.id.panel_bar, 100, 0, false)
                 v.setViewVisibility(R.id.panel_bar, View.VISIBLE)
+            } else if (s.stale) {
+                // تجاوز اليومُ جدول اللقطة (E-3) · لا عدد ولا مبلغ ولا نسبة، والشريط يُخفى كحال القفل
+                v.setTextViewText(R.id.panel_amount, context.getString(R.string.widget_locked_amount))
+                v.setTextViewText(R.id.panel_sub, context.getString(R.string.widget_stale, shortDay(s.day)))
+                v.setTextViewText(R.id.panel_pct, "")
+                v.setTextViewText(R.id.panel_late, "")
+                v.setProgressBar(R.id.panel_bar, 100, 0, false)
+                v.setViewVisibility(R.id.panel_bar, View.INVISIBLE)
             } else if (s.locked) {
                 // الشريط يُخفى ويبقى مكانه · فلا يقرأ أحدٌ الصفر نسبةً ولا يتغيّر التخطيط
                 // وكل فرعٍ يضبط ظهوره: RemoteViews يُطبَّق على العرض القائم فيبقى المخفيّ مخفياً في الحال التالية

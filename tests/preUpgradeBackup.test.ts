@@ -82,10 +82,12 @@ test('النسخة قبل الترقية كاملة ومتحقَّق منها ·
   expect(snapshot(env.live())).toEqual(before);
   expect(backupPath).toBeTruthy();
 
-  // الأرشيف يُعاد فتحه ويُتحقَّق منه كاملاً · بإصدار ما قبل الترقية وبمرفقه
+  // الأرشيف يُعاد فتحه ويُتحقَّق منه كاملاً · بإصدار ما قبل الترقية وبمرفقه مذكوراً ببصمته بلا ملفه
+  // (قرار المالك س٣ · المراجعة الشاملة 2026-11-13 · C-2: نسخة ما قبل الترقية للبيانات وقائمة الملفات وبصماتها)
   const { manifest } = await verifyArchiveAt(env, backupPath!);
   expect(manifest.schema_version).toBe(16);
-  expect(manifest.files.map((f) => f.sha256)).toEqual([sha]);
+  expect(manifest.files).toEqual([]);
+  expect(manifest.local_files!.map((f) => f.sha256)).toEqual([sha]);
   expect(manifest.missing_files).toEqual([]);
   expect(manifest.complete).toBe(true);
   expect(manifest.integrity.every((c) => c.ok)).toBe(true);

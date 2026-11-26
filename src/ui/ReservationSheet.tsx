@@ -5,12 +5,15 @@
 import React, { useState } from 'react';
 import { View } from 'react-native';
 import { Sheet } from './Sheet';
-import { Field, Row, BtnGhost, BtnPrimary } from './components';
+import { Field, Row, BtnPrimary } from './components';
 import { DateField } from './DateField';
 import { useApp } from './store';
 import { createReservation } from '../domain/reservations';
 import { toHalalas } from '../domain/money';
+import { today } from '../domain/dates';
 import { reportFailure } from './failureDialog';
+import { DepositBankField } from './DepositBankField';
+import { useLang } from '../i18n';
 
 import { CostCenterField } from './CostCenters';
 import { GENERAL_COST_CENTER, withCostCenter } from '../domain/accounting/dimensions';
@@ -22,6 +25,10 @@ export function ReservationSheet({
   const [phone, setPhone] = useState('');
   const [deposit, setDeposit] = useState('');
   const [expiry, setExpiry] = useState('');
+  // تاريخ قبض العربون · به يُؤرَّخ الحجز وقيده (A1-12)
+  const [paidOn, setPaidOn] = useState(today());
+  const [bank, setBank] = useState('');
+  const { t } = useLang();
   const [cc, setCc] = useState(GENERAL_COST_CENTER);
   return (
     <Sheet visible onClose={onClose} title="حجز الوحدة بعربون"
@@ -30,7 +37,7 @@ export function ReservationSheet({
           <View style={{ flex: 1 }}>
             <BtnPrimary title="تأكيد الحجز" onPress={() => {
               try {
-                withCostCenter(cc, () => createReservation(db, { unitId, name, phone, depositHalalas: toHalalas(deposit), expiryDate: expiry }));
+                withCostCenter(cc, () => createReservation(db, { unitId, name, phone, depositHalalas: toHalalas(deposit), expiryDate: expiry, bankId: bank || null, date: paidOn }));
                 onDone();
               } catch (e) {
                 reportFailure({ title: 'تعذّر الحجز', e });
@@ -42,9 +49,12 @@ export function ReservationSheet({
       <Field label="اسم صاحب الحجز" value={name} onChange={setName} />
       <Field label="رقم الجوال" value={phone} onChange={setPhone} keyboard="phone-pad" ltr />
       <Row>
-        <View style={{ flex: 1 }}><Field label="مبلغ العربون" value={deposit} onChange={setDeposit} keyboard="numeric" ltr /></View>
+        <View style={{ flex: 1 }}><Field label="مبلغ العربون" value={deposit} onChange={setDeposit} keyboard="money" ltr /></View>
         <View style={{ flex: 1 }}><DateField label="الحجز ساري حتى تاريخ" value={expiry} onChange={setExpiry} /></View>
       </Row>
+      <DateField label={t('reservation.dateField')} value={paidOn} onChange={setPaidOn} />
+      {/* قبض العربون نقداً أو تحويلاً لحساب بنكي (A1-6 · قرار المالك س١٧) */}
+      {toHalalas(deposit) > 0 ? <DepositBankField label={t('depositBank.rsvMethod')} value={bank} onChange={setBank} /> : null}
       <CostCenterField value={cc} onChange={setCc} />
     </Sheet>
   );

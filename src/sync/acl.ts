@@ -12,11 +12,11 @@ import { level } from '../domain/access/access';
 import { SECTION_KEYS, type SectionKey } from '../domain/access/sections';
 import { ATTACHMENT_ENTITY_TABLE, CROSS_PROPERTY, MONEY_SECTIONS, crossPublicFields, isMoneyColumn, moneySplit, publicFields, readSectionsOf } from '../domain/access/readSections';
 import { OP_WRITES, OP_JOURNAL_SRC, SELF_OP, SELF_AUDIT_ENTITY, LEGACY_NEUTRAL, journalSrcAllowed } from '../domain/access/opWrites';
+import { CRASH_ENTITY } from '../domain/crashReport';
 import { journalSection } from '../domain/access/readSections';
 
 export const ORG_WIDE = '*';
 export const ANY_PROP = '@';
-export const DRAFT_TABLES = new Set(['contracts', 'invoices', 'journal_entries']);
 
 const one = (db: DB, sql: string, p: unknown[]): string | null =>
   (db.get<{ v: string | null }>(sql, p as never)?.v ?? null);
@@ -185,8 +185,10 @@ export function annotate(db: DB, doc: RemoteDoc, a: Access): AclDocs {
   const { full, pub } = moneySplit(row as Record<string, unknown> | null, readers);
   const extra: Partial<RemoteDoc> = { pids, g: tokensFor(full, pids) };
   if (!a.owner) {
-    const self = doc.t === 'audit_log' && (row as Record<string, unknown> | null)?.entity_type === SELF_AUDIT_ENTITY;
-    const op = chooseOp(a, doc.t, row as Record<string, unknown> | null) ?? (self ? SELF_OP : null);
+    const entity = doc.t === 'audit_log' ? (row as Record<string, unknown> | null)?.entity_type : undefined;
+    const self = entity === SELF_AUDIT_ENTITY;
+    // وتقرير العطل بمسار العضو عن نفسه دائماً، فتحرسه قاعدته بحدّ يومه وحمولته (التوجيه الرابع ٤ · ٤)
+    const op = entity === CRASH_ENTITY ? SELF_OP : chooseOp(a, doc.t, row as Record<string, unknown> | null) ?? (self ? SELF_OP : null);
     if (op) extra.op = op;
   }
   if (!a.owner) {
