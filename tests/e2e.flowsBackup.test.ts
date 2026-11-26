@@ -2,6 +2,7 @@
  * تدفقا الجوال الافتراضي ١٠ أ و١٠ ب (النسخ والمسح والاستعادة) يطابقان شاشة الإعدادات كما هي:
  *  - ١٠ أ سقط في كل تشغيلٍ منذ ق٠-١ (c2380e2): زرّ النسخة صار «مشاركة نسخة» ولم يبقَ «النسخ الاحتياطي» إلا عنواناً، وانتظار
  *    «.*مشاركة.*» يطابق زرّ التطبيق نفسه فلا يثبت نافذة المشاركة.
+ *  - ١٠ ب سقط على 2629bb7: التمرير وقف وزرّ «امسح كل البيانات» تحت شريط التنقل فوقعت النقرة على «الرئيسية».
  * التدفقات نفسها تجري على المحاكي في جيت هب؛ هذا حارسٌ لنصوصها ومواضعها.
  */
 import * as fs from 'node:fs';
@@ -33,5 +34,33 @@ describe('١٠ أ · مفتاح الاسترداد ثم مشاركة نسخة', 
     expect(read('src/services/backupService.ts')).toContain("dialogTitle: 'تصدير النسخة الاحتياطية'");
     expect(re.test('تصدير النسخة الاحتياطية')).toBe(true);
     expect(re.test('Share')).toBe(true);
+  });
+});
+
+describe('١٠ ب · المسح ثم الاستعادة', () => {
+  const flow = read('e2e/maestro/10b-wipe-restore.yaml').replace(/\n#[^\n]*/g, '');
+
+  test('زرّ المسح آخر الصفحة، وتمريرةٌ بعد ظهوره تبلغ آخرها قبل النقر', () => {
+    expect(flow).toMatch(/- scrollUntilVisible:\n\s+element: "امسح كل البيانات"\n\s+direction: DOWN\n- scroll\n- tapOn: "امسح كل البيانات"/);
+    // لا بطاقة بعد بطاقة المسح: التمريرة الزائدة تقف عند آخر الصفحة وحشوها السفلي
+    const iWipe = settings.indexOf('title="امسح كل البيانات"');
+    expect(iWipe).toBeGreaterThan(settings.indexOf('<CardTitle>عن التطبيق</CardTitle>'));
+    expect(settings.slice(iWipe, settings.indexOf('</Card>', iWipe))).not.toMatch(/<Card/);
+    expect(settings.slice(settings.indexOf('</Card>', iWipe), settings.indexOf('</Screen>'))).not.toMatch(/<Card[\s>]/);
+    expect(read('src/ui/Screen.tsx')).toMatch(/paddingBottom: bottomPad/);
+  });
+
+  test('«المساحة» و«استعادة» يُبلغان بالتمرير إلى صفٍّ تحتهما فلا يقعان تحت شريط التنقل', () => {
+    expect(flow).toMatch(/- scrollUntilVisible:\n\s+element: "الملفات المؤقتة"\n\s+direction: DOWN\n- tapOn: "المساحة"/);
+    expect(flow).toMatch(/- scrollUntilVisible:\n\s+element: "الملفات المؤقتة"\n\s+direction: DOWN\n- tapOn: "استعادة"/);
+    // الترتيب في الشاشة: المساحة (وفيها «استعادة») ثم «بياناتك بالأرقام» ثم «الملفات المؤقتة»
+    const iSpace = settings.indexOf('title="المساحة"');
+    const iRestore = settings.indexOf('title="استعادة" onPress={doRestoreSafety}');
+    const iCounts = settings.indexOf('title="بياناتك بالأرقام"');
+    const iTmp = settings.indexOf('title="الملفات المؤقتة"');
+    expect(iSpace).toBeGreaterThan(0);
+    expect(iRestore).toBeGreaterThan(iSpace);
+    expect(iCounts).toBeGreaterThan(iRestore);
+    expect(iTmp).toBeGreaterThan(iCounts);
   });
 });
