@@ -256,7 +256,8 @@ export function UnitDetailSheet({
       <Row style={{ marginBottom: 10 }}>
         <Badge kind={data.st.key === 'rented' ? 'paid' : data.st.key === 'reserved' ? 'due' : data.st.key === 'maintenance' ? 'overdue' : 'draft'}
           label={data.st.label} />
-        {data.st.key === 'vacant' && rsvPerm.add && <BtnGhost small icon="card" title="حجز بعربون" onPress={onReserve} />}
+        {/* والمؤجَّرة تُحجز لمستأجرٍ قادم بعد خروج الحالي (A1-12) · والخدمة ترفض حجزاً ينتهي قبل خروجه أو يتعارض بعقد */}
+        {(data.st.key === 'vacant' || data.st.key === 'rented') && !rsv && rsvPerm.add && <BtnGhost small icon="card" title="حجز بعربون" onPress={onReserve} />}
         {rsv && rsvPerm.manage && (
           <BtnGhost small danger icon="cancel" title="إلغاء الحجز" onPress={() => {
             const dep = Number(rsv.deposit_halalas);
@@ -291,7 +292,11 @@ export function UnitDetailSheet({
                 ...(Number(rsv.deposit_halalas) > 0 ? [{
                   label: `مصادرة العربون (${fmt(Number(rsv.deposit_halalas))})`,
                   variant: 'danger' as const,
-                  onPress: () => { cancelReservation(db, rsv.id, true); bump(); toast('أُلغي الحجز وصودر العربون إيراداً'); },
+                  // يلتقط الرفض كزر الرد بجانبه (A1-12): ربعٌ مقدَّم مثلاً، فيظهر سببه لا يسقط صامتاً
+                  onPress: () => {
+                    try { cancelReservation(db, rsv.id, true); bump(); toast('أُلغي الحجز وصودر العربون إيراداً'); }
+                    catch (e) { reportFailure({ title: t('reservation.forfeitFailed'), e }); }
+                  },
                 }] : []),
               ],
             });
@@ -300,6 +305,9 @@ export function UnitDetailSheet({
         <View style={{ flex: 1 }} />
         {perm.add ? <BtnIcon icon="attach" accessibilityLabel="إضافة مستند أو صورة" onPress={addDoc} /> : null}
       </Row>
+      {rsv && data.st.key === 'rented' ? (
+        <T size={TYPE.caption} color={C.muted} style={{ marginBottom: 8 }}>{t('reservation.afterCurrent', { name: rsv.name, date: dfmt(rsv.expiry_date) })}</T>
+      ) : null}
       {rsvPerm.manage && data.held.map((h) => (
         <Note key={h.id}>
           <T size={12.5} bold>عربون محتجز لحجز منتهٍ: «{h.name}» · {fmt(Number(h.deposit_halalas))}</T>

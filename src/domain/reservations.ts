@@ -8,11 +8,11 @@ import { moneyError } from './moneyGuard';
 import { requireBankFor, linkBankTx, hasDepositBankCols } from './accounting/bankLink';
 import { t } from '../i18n';
 import { uid } from './ids';
-import { today, dfmt } from './dates';
+import { today, dfmt, addDays } from './dates';
 import { postReservationDeposit, postReservationForfeit, postReservationRefund } from './accounting/post';
-import { unitActiveReservation, unitCurrentContract } from './contracts/rules';
+import { unitActiveReservation, unitCurrentContract, findContractConflict } from './contracts/rules';
 import { logAudit } from './audit';
-import { requireOpenPeriod } from './vatFilings';
+import { requireISODate, requireOpenPeriod } from './vatFilings';
 
 export interface ReservationInput {
   unitId: string;
@@ -22,6 +22,8 @@ export interface ReservationInput {
   expiryDate: string;
   /** قبض العربون تحويلاً إلى هذا البنك · الفارغ نقداً في المحفظة (A1-6 · قرار المالك س١٧) */
   bankId?: string | null;
+  /** تاريخ قبض العربون · به يُؤرَّخ الحجز وقيده وحركة بنكه، والغائب اليوم (A1-12) */
+  date?: string;
 }
 
 export function createReservation(db: DB, input: ReservationInput): string {
@@ -30,8 +32,22 @@ export function createReservation(db: DB, input: ReservationInput): string {
   // العربون غير سالب (A1-7): −٥٠٠ كان يُحفظ بلا قيد فيحمرّ فحص عربون الحجوزات
   const depositErr = moneyError('ReservationDeposit', input.depositHalalas);
   if (depositErr) throw new Error(depositErr);
-  if (unitCurrentContract(db, input.unitId))
-    throw new Error('هذه الوحدة مؤجَّرة حالياً بعقد سارٍ · لا يمكن حجزها');
+  // تاريخ القبض بصيغته، لا بعد اليوم ولا في ربعٍ قُدِّم إقراره · والانتهاء بصيغته لا يسبق اليوم ولا القبض (A1-12): انتهاءٌ مضى كان يُقبل
+  // فينتهي الحجز عند أول فحص وعربونه محتجز
+  const T = today();
+  const date = input.date ?? T;
+  requireISODate(date);
+  if (date > T) throw new Error(t('reservation.dateFuture'));
+  requireOpenPeriod(db, date);
+  requireISODate(input.expiryDate);
+  if (input.expiryDate < T || input.expiryDate < date) throw new Error(t('reservation.expiryPast'));
+  // الحجز يبدأ بعد نهاية العقد الساري (أو اليوم للشاغرة) ويُقبل ما دام ينتهي بعدها، فيُحجز لمستأجرٍ قادم قبل خروج الحالي (A1-12) ·
+  // ولا يتعارض بمدته مع عقدٍ موثَّق على الوحدة
+  const current = unitCurrentContract(db, input.unitId);
+  const from = current?.end ? addDays(current.end, 1) : T;
+  if (input.expiryDate < from) throw new Error(t('reservation.beforeVacant', { date: dfmt(current?.end ?? T) }));
+  const clash = findContractConflict(db, input.unitId, from, input.expiryDate, current?.id);
+  if (clash) throw new Error(t('reservation.contractClash', { no: clash.contract_no || '', start: dfmt(clash.start), end: dfmt(clash.end) }));
   const existing = unitActiveReservation(db, input.unitId);
   if (existing)
     throw new Error('يوجد حجز نشط على هذه الوحدة بالفعل حتى ' + dfmt(existing.expiry_date));
@@ -43,13 +59,13 @@ export function createReservation(db: DB, input: ReservationInput): string {
       `INSERT INTO reservations (id, unit_id, name, phone, deposit_halalas, expiry_date, created_date, status)
        VALUES (?,?,?,?,?,?,?,'نشط')`,
       [id, input.unitId, input.name.trim(), input.phone.trim(), input.depositHalalas,
-       input.expiryDate, today()]
+       input.expiryDate, date]
     );
     if (bank) db.run(`UPDATE reservations SET bank_id = ? WHERE id = ?`, [bank, id]);
-    const entry = postReservationDeposit(db, { id, name: input.name, deposit: input.depositHalalas });
+    const entry = postReservationDeposit(db, { id, name: input.name, deposit: input.depositHalalas, date });
     // والعربون المقبوض تحويلاً يدخل البنك لا المحفظة (A1-6)
     if (entry && bank) {
-      linkBankTx(db, { bankId: bank, date: today(), amount: input.depositHalalas, entryNo: entry.no,
+      linkBankTx(db, { bankId: bank, date, amount: input.depositHalalas, entryNo: entry.no,
         descr: t('depositBank.rsvTx', { name: input.name.trim(), bank: bankName, lng: 'ar' }), source: t('depositBank.rsvSrc', { lng: 'ar' }) });
     }
     logAudit(db, 'العقارات', 'create', 'حجز بعربون', input.name);

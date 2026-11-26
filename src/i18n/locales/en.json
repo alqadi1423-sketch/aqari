@@ -1443,5 +1443,14 @@
     "salesInvoice": "sales invoice(s)",
     "handover": "handover form(s)",
     "journalLine": "journal line(s)"
+  },
+  "reservation": {
+    "dateFuture": "The deposit receipt date is after today · enter the day it was actually received",
+    "expiryPast": "The reservation expiry has passed or is before the deposit receipt · choose an upcoming date",
+    "beforeVacant": "The unit is rented until {{date}} · the reservation would end before the current tenant leaves, so set its expiry after that date",
+    "contractClash": "The reservation period conflicts with contract {{no}} on the unit ({{start}} to {{end}}) · it can’t be reserved",
+    "dateField": "Deposit receipt date",
+    "afterCurrent": "Reserved after the current contract for “{{name}}” until {{date}}",
+    "forfeitFailed": "Couldn’t forfeit the deposit"
   }
 }
