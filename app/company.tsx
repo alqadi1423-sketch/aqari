@@ -3,7 +3,6 @@ import React, { useMemo, useState } from 'react';
 import { View, Image } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
-import { File } from 'expo-file-system';
 import { Screen } from '../src/ui/Screen';
 import { Card, CardTitle, T, Num, EmptyState, Row, Badge, BtnPrimary, BtnGhost, Field } from '../src/ui/components';
 import { Sheet } from '../src/ui/Sheet';
@@ -15,7 +14,8 @@ import { C } from '../src/ui/theme';
 import { Icon } from '../src/ui/icons';
 import { ErrorBoundary } from '../src/ui/ErrorBoundary';
 import { appFilesEnv } from '../src/services/filesEnv';
-import { putAttachment, attachmentsFor, attachmentPath, softDeleteAttachment } from '../src/files/store';
+import { attachmentsFor, attachmentPath, softDeleteAttachment } from '../src/files/store';
+import { attachPicked } from '../src/ui/attach';
 import { filesCloudOn, openFileNow } from '../src/services/cloud';
 import { daysBetween, dfmt, today } from '../src/domain/dates';
 import { uid } from '../src/domain/ids';
@@ -83,12 +83,9 @@ function CompanyBody() {
     if (res.canceled || !res.assets?.length) return;
     const a = res.assets[0];
     try {
-      const bytes = new File(a.uri).bytesSync();
+      // المسار الواحد للإرفاق: سؤال الحجم قبل أي قراءة، والنسخ بلا قراءة الملف كله (E-9) · والسابق يُستبدل بعد حفظ الجديد
+      if (!await attachPicked(db, { uri: a.uri, name: a.fileName ?? 'logo.png', mime: a.mimeType ?? 'image/png' }, 'company', '1', 'logo')) return;
       if (logo) softDeleteAttachment(db, logo.id);
-      await putAttachment(env, bytes, {
-        entityType: 'company', entityId: '1', kind: 'logo',
-        originalName: a.fileName ?? 'logo.png', mime: a.mimeType ?? 'image/png',
-      });
       bump();
       toast('تم رفع الشعار');
     } catch (e) { reportFailure({ title: 'تعذّر حفظ الملف', e }); }
@@ -99,13 +96,9 @@ function CompanyBody() {
     if (res.canceled || !res.assets?.length) return;
     const a = res.assets[0];
     try {
-      const bytes = new File(a.uri).bytesSync();
       const prev = attachmentsFor(db, 'company', '1', kind)[0];
+      if (!await attachPicked(db, { uri: a.uri, name: a.name ?? 'ملف', mime: a.mimeType ?? '' }, 'company', '1', kind)) return;
       if (prev) softDeleteAttachment(db, prev.id);
-      await putAttachment(env, bytes, {
-        entityType: 'company', entityId: '1', kind,
-        originalName: a.name ?? 'ملف', mime: a.mimeType ?? '',
-      });
       bump();
       toast('تم رفع الملف');
     } catch (e) { reportFailure({ title: 'تعذّر حفظ الملف', e }); }
@@ -122,11 +115,7 @@ function CompanyBody() {
     });
     if (docFile) {
       try {
-        const bytes = new File(docFile.uri).bytesSync();
-        await putAttachment(env, bytes, {
-          entityType: 'company_doc', entityId: docId, kind: 'company',
-          originalName: docFile.name, mime: docFile.mime,
-        });
+        await attachPicked(db, docFile, 'company_doc', docId, 'company');
       } catch (e) { reportFailure({ title: 'تعذّر حفظ الملف', e }); }
     }
     setDocOpen(false); setDocName(''); setDocExp(''); setDocFile(null);

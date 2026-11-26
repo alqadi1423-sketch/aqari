@@ -18,6 +18,18 @@ export const nodeFs: FS = {
     fs.renameSync(from, to);
   },
   size: (p) => fs.statSync(p).size,
+  copy: (from, to) => {
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
+  },
+  readRange: (p, offset, length) => {
+    const fd = fs.openSync(p, 'r');
+    try {
+      const buf = Buffer.alloc(length);
+      const n = fs.readSync(fd, buf, 0, length, offset);
+      return new Uint8Array(buf.buffer, buf.byteOffset, n);
+    } finally { fs.closeSync(fd); }
+  },
   usableSpace: async () => {
     try {
       const s = fs.statfsSync(process.cwd());

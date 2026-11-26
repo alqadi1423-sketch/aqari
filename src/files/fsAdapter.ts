@@ -20,6 +20,12 @@ export interface FS {
    * حرّةً أمرّ الفحصَ على جهازٍ فشل فيه النسخ بـ«لا مساحة» بعد لحظات.
    */
   usableSpace(): Promise<number>;
+  /**
+   * نسخ ملف بلا قراءته في الذاكرة (المراجعة الشاملة 2026-11-13 · E-9) · اختياري: بيئةٌ بلا نسخٍ تقرأ الملف كله كما كانت
+   */
+  copy?(from: string, to: string): void;
+  /** قراءة قطعةٍ من ملف (من offset بطول length) · لبصمة الملف الكبير على قطع · اختياري */
+  readRange?(path: string, offset: number, length: number): Uint8Array;
 }
 
 /** بصمة sha256 (hex صغيرة) · غير متزامنة لتوافق expo-crypto */
