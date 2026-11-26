@@ -15,6 +15,7 @@ import { perfMarkNavRender, perfNow, perfScreenShown, perfTouch, perfTouchUp } f
 import { useDialog, confirmDiscard } from './AppDialog';
 import { SheetDirtyCtx, sheetNeedsConfirm, useMarkSheetDirty } from './sheetDirty';
 import { useAppLocked } from './lockState';
+import { useLang } from '../i18n';
 
 /**
  * قفل تمرير النافذة السفلية أثناء لمس عنصر يملك إيماءاته (كالخريطة) ·
@@ -80,6 +81,7 @@ export function Sheet({
 }) {
   // النافذة المنبثقة فوق غطاء القفل · تختفي ما دام مقفلاً (#51 · ui/lockState.ts)
   const appLocked = useAppLocked();
+  const { t } = useLang();
   const insets = useScaledInsets();
   const fs = useFs();
   const { uiScale } = useApp();
@@ -217,7 +219,7 @@ export function Sheet({
               <Text style={{ fontFamily: FONT_BOLD, fontSize: fs(15), color: C.ink, flex: 1, textAlign: 'right' }}>
                 {title}
               </Text>
-              <Pressable onPress={requestClose} style={st.close} hitSlop={8}>
+              <Pressable onPress={requestClose} style={st.close} hitSlop={8} accessibilityRole="button" accessibilityLabel={t('common.close')}>
                 <Icon name="x" size={16} color={C.charcoal} />
               </Pressable>
             </View>
@@ -355,7 +357,7 @@ export function SelectField<Tv extends string>({
           paddingHorizontal: 11, justifyContent: 'center', backgroundColor: error ? C.roseSoft : '#FAFAF7',
         }}
       >
-        <Text style={{ fontSize: fs(13), color: current || display ? C.charcoal : '#B9BFC9', textAlign: 'right' }}>
+        <Text style={{ fontSize: fs(13), color: current || display ? C.charcoal : C.placeholder, textAlign: 'right' }}>
           {display ?? current?.label ?? placeholder ?? 'اختر'}
         </Text>
       </Pressable>

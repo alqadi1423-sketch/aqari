@@ -21,11 +21,15 @@ import { useTextAlign } from './DirView';
  * icon أيقونة عارية بلا إطار ولا خلفية للنقاط الثلاث والإغلاق والطباعة ونحوها.
  */
 export const BTN_SIZES = {
-  normal: { minHeight: 40, padV: 5, padH: 12, radius: 8, font: TYPE.body, icon: 13 },
-  small: { minHeight: 30, padV: 3, padH: 10, radius: 7, font: TYPE.caption, icon: 12 },
+  // hitSlop منطقة لمسٍ غير مرئية تكمل ٤٤ نقطة والشكل كما هو (س٢٧ · D-18): ٤٠ + ٢×٢ · ٣٠ + ٢×٧
+  normal: { minHeight: 40, padV: 5, padH: 12, radius: 8, font: TYPE.body, icon: 13, hitSlop: 2 },
+  small: { minHeight: 30, padV: 3, padH: 10, radius: 7, font: TYPE.caption, icon: 12, hitSlop: 7 },
   // ٣٤ نقطة مرئية + ٥ من كل جهة = هدف لمس ٤٤ نقطة تماماً
   icon: { minHeight: 34, minWidth: 34, hitSlop: 5, icon: 17 },
 } as const;
+
+/** الرقيقة ٣٤ نقطة مرئية + ٥ من كل جهة = هدف لمس ٤٤ (D-18) */
+export const CHIP_SIZES = { minHeight: 34, hitSlop: 5 } as const;
 
 /** مقاييس بطاقة الرقم · واحدة لا تتغيّر بين الشاشات */
 export const KPI_SIZES = { height: 76, padV: 8, padH: 10, gap: 4, minWidth: 140 } as const;
@@ -147,6 +151,9 @@ export function BtnPrimary({
     <Pressable
       onPress={onPress}
       disabled={disabled || loading}
+      hitSlop={S.hitSlop}
+      accessibilityRole="button"
+      accessibilityLabel={title}
       style={({ pressed }) => [
         st.btn, { backgroundColor: danger ? C.rose : C.emerald },
         small && st.btnSm, (disabled || loading) && { opacity: 0.45 }, pressed && { opacity: 0.85 },
@@ -174,6 +181,9 @@ export function BtnGhost({
     <Pressable
       onPress={onPress}
       disabled={disabled}
+      hitSlop={S.hitSlop}
+      accessibilityRole="button"
+      accessibilityLabel={title}
       style={({ pressed }) => [
         st.btn, st.btnGhost, danger && { borderColor: C.roseSoft },
         small && st.btnSm, disabled && { opacity: 0.45 }, pressed && { backgroundColor: '#FAF9F5' },
@@ -212,6 +222,9 @@ export function Chip({ label, active, onPress }: { label: string; active?: boole
   return (
     <Pressable
       onPress={onPress}
+      hitSlop={CHIP_SIZES.hitSlop}
+      accessibilityRole="button"
+      accessibilityState={{ selected: !!active }}
       style={[st.chip, active && { backgroundColor: C.ink, borderColor: C.ink }]}
     >
       <Text style={{ fontFamily: FONT_MED, fontSize: fs(TYPE.caption), color: active ? '#fff' : C.muted }}>{label}</Text>
@@ -256,7 +269,7 @@ export function Field({
         value={value}
         onChangeText={(v) => { markDirty(); onChange?.(keyboard === 'money' ? moneyInputText(v) : v); }}
         placeholder={placeholder}
-        placeholderTextColor="#B9BFC9"
+        placeholderTextColor={C.placeholder}
         keyboardType={keyboard === 'numeric' || keyboard === 'money' ? 'decimal-pad' : keyboard === 'phone-pad' ? 'phone-pad' : 'default'}
         multiline={multiline}
         editable={!disabled}
@@ -370,7 +383,7 @@ export function SearchBox({ value, onChange, placeholder }: { value: string; onC
       value={value}
       onChangeText={onChange}
       placeholder={placeholder ?? 'بحث…'}
-      placeholderTextColor="#B9BFC9"
+      placeholderTextColor={C.placeholder}
       style={[st.input, { fontSize: fs(TYPE.body), backgroundColor: '#FAFAF7' }, rtl ? { writingDirection: 'rtl', textAlign: 'right' } : { writingDirection: 'ltr', textAlign: 'left' }]}
     />
   );
@@ -466,7 +479,7 @@ const st = StyleSheet.create({
   },
   chip: {
     paddingVertical: 8, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1,
-    borderColor: C.line, backgroundColor: '#fff', minHeight: 34, justifyContent: 'center',
+    borderColor: C.line, backgroundColor: '#fff', minHeight: CHIP_SIZES.minHeight, justifyContent: 'center',
   },
   chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   field: { marginBottom: 12 },

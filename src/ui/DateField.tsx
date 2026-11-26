@@ -50,7 +50,7 @@ export function DateField({
               // مُسح · واللازم لا يصله الفراغ فيبقى المعتمد: مسحه لكتابة تاريخٍ جديد كان يحفظ تاريخ اليوم بصمت (R12-UI-1)
               if (isISODate(s) || (s === '' && optional)) onChange(s);
             }}
-            placeholderTextColor="#B9BFC9"
+            placeholderTextColor={C.placeholder}
             keyboardType="numbers-and-punctuation"
             autoFocus
             style={{
@@ -72,7 +72,7 @@ export function DateField({
           >
             <Text style={{
               fontFamily: FONT_MED, fontSize: fs(13),
-              color: value ? C.charcoal : '#B9BFC9',
+              color: value ? C.charcoal : C.placeholder,
               writingDirection: 'ltr', textAlign: 'left', fontVariant: ['tabular-nums'],
             }}>
               {value ? dfmt(value) : 'اختر التاريخ'}
@@ -83,6 +83,8 @@ export function DateField({
           // الكتابة تبدأ من القيمة المعتمدة لا من نصٍّ ناقصٍ سابق (D-2)
           onPress={() => { setText(value); setManual((m) => !m); }}
           hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel={t(manual ? 'dates.pickCalendar' : 'dates.typeManually')}
           style={{
             width: 44, height: 44, borderRadius: 8, borderWidth: 1, borderColor: C.line,
             backgroundColor: manual ? C.emeraldSoft : '#fff', alignItems: 'center', justifyContent: 'center',
