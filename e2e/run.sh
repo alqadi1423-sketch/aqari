@@ -24,8 +24,25 @@ for _ in $(seq 30); do adb shell cmd wifi status 2>/dev/null | grep -qi "wifi is
 sleep 3
 # العلامة تحتاج شبكةً قائمة (بلا شبكة لا يخرج سؤال DNS فتغيب العلامة ويفشل الفحص): انتظارٌ حتى دقيقة لشبكةٍ افتراضية ·
 # وحال الشبكة عند كل علامة في net.txt لقراءة الفشل
+has_network() { adb shell dumpsys connectivity 2>/dev/null | grep -q "Active default network: [0-9]"; }
+# بيانات الجوال لا تقوم أحياناً بعد إطفاء Wi-Fi («Active default network: none» على main في التشغيل 45865769363، والتسجيل حزمتان)،
+# فلا علامة ولا حكم · بعد دقيقةٍ بلا شبكة تُعاد البيانات، ثم وضع الطيران إن لزم، ويُكتب ذلك في net.txt
+ensure_network() {
+  local i
+  for i in $(seq "${NET_WAIT:-30}"); do has_network && return 0; sleep "${NET_SLEEP:-2}"; done
+  echo "-- no default network: restarting mobile data" >> "$OUT/net.txt"
+  adb shell svc data disable >/dev/null 2>&1 || true; sleep "${NET_SLEEP:-2}"; adb shell svc data enable >/dev/null 2>&1 || true
+  for i in $(seq "${NET_WAIT:-30}"); do has_network && return 0; sleep "${NET_SLEEP:-2}"; done
+  echo "-- still none: toggling airplane mode" >> "$OUT/net.txt"
+  adb shell cmd connectivity airplane-mode enable >/dev/null 2>&1 || true; sleep "${NET_SLEEP:-2}"
+  adb shell cmd connectivity airplane-mode disable >/dev/null 2>&1 || true
+  adb shell svc wifi disable >/dev/null 2>&1 || true
+  adb shell svc data enable >/dev/null 2>&1 || true
+  for i in $(seq "${NET_WAIT:-30}"); do has_network && return 0; sleep "${NET_SLEEP:-2}"; done
+  return 1
+}
 mark() {
-  for _ in $(seq 30); do adb shell dumpsys connectivity 2>/dev/null | grep -q "Active default network: [0-9]" && break; sleep 2; done
+  ensure_network || true
   { echo "== $1"; adb shell cmd wifi status 2>&1 | head -3
     adb shell dumpsys connectivity 2>&1 | grep -E "Active default network|^  NetworkAgentInfo" | cut -c1-300 | head -8; } >> "$OUT/net.txt"
   for _ in 1 2 3; do adb shell ping -c 1 -W 2 "$1" >/dev/null 2>&1 || true; sleep 1; done

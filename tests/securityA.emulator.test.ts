@@ -100,6 +100,43 @@ d('ثالثاً أ · الصفوف والقيود وسجل العمليات', ()
     expect(await writeRaw(null, ann(null, { ...linked, u: 'rv-3' }))).toMatchObject({ ok: true });
   });
 
+  // بنك المسودة (الهجرة ٦٧) على القيد المرحّل: جهازٌ بإصدارٍ أقدم لا يعرف عموده يربط العاكس بلا الحقل فيُقبل · وتغيير قيمته أو إضافته
+  // لقيدٍ مرحّلٍ بلا بنك مع الربط مرفوضان (المدقق المستقل للمرحلة ٣)
+  test('٣ب ربط العاكس ينزع بنك المسودة وحده ولا يضيفه ولا يغيّره', async () => {
+    const { buildDoc } = await import('@/sync/engine');
+    const { saveManualDraft, postDraftEntry } = await import('@/domain/accounting/post');
+    const { reverseFromJournal } = await import('@/domain/accounting/journalReversal');
+    const { ownerCashIn, depositCashToBank } = await import('@/domain/cashOps');
+    const { addBank } = await import('./helpers/fixtures');
+    const doc = (id: string) => ann(null, buildDoc(db, 'journal_entries', id, 'upsert', new Date().toISOString(), 'dev-owner'));
+    const bank = addBank(db, 'بنك مسودة مصطنع');
+    ownerCashIn(db, { amountHalalas: 300000, date: '2026-05-01' });
+    depositCashToBank(db, { bankId: bank, amountHalalas: 250000, date: '2026-05-01' });
+    const L = (account: string, debit: number, credit: number) => ({ account, debit, credit });
+    const tax = [L('2200', 20000, 0), L('1100', 0, 20000)];
+    const withBank = saveManualDraft(db, { date: '2026-05-20', memo: 'سداد ضريبة مصطنع', lines: tax, bankId: bank })!;
+    const noBank = saveManualDraft(db, { date: '2026-05-21', memo: 'سداد ضريبة مصطنع', lines: tax })!;
+    postDraftEntry(db, withBank.id);
+    postDraftEntry(db, noBank.id);
+    for (const id of [withBank.id, noBank.id]) expect(await writeRaw(null, doc(id))).toMatchObject({ ok: true });
+    const revA = reverseFromJournal(db, withBank.id)!;
+    const revB = reverseFromJournal(db, noBank.id)!;
+    for (const id of [revA.id, revB.id]) expect(await writeRaw(null, doc(id))).toMatchObject({ ok: true });
+    const linkA = doc(withBank.id);
+    const linkB = doc(noBank.id);
+    expect([linkA.d!.draft_bank_id, 'draft_bank_id' in linkB.d!]).toEqual([bank, false]);
+    // تغيير قيمته مع الربط · وإضافته لقيدٍ بلا بنك
+    expect(await writeRaw(null, { ...linkA, u: 'db-1', d: { ...linkA.d!, draft_bank_id: 'بنك آخر' } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    expect(await writeRaw(null, { ...linkB, u: 'db-2', d: { ...linkB.d!, draft_bank_id: bank } })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    // ونزع حقلٍ غيره مع الربط مرفوض
+    const { memo: _m, ...noMemo } = linkA.d!;
+    expect(await writeRaw(null, { ...linkA, u: 'db-3', d: noMemo })).toMatchObject({ ok: false, code: 'PERMISSION_DENIED' });
+    // جهازٌ بإصدارٍ أقدم: ربطه بلا الحقل يُقبل · والقيد بلا بنك يُربط كما كان
+    const { draft_bank_id: _b, ...legacy } = linkA.d!;
+    expect(await writeRaw(null, { ...linkA, u: 'db-4', d: legacy })).toMatchObject({ ok: true });
+    expect(await writeRaw(null, { ...linkB, u: 'db-5' })).toMatchObject({ ok: true });
+  });
+
   test('٤ مصدر القيد عند التعديل كالإنشاء: عضو الدفتر لا يجعل مصدر قيده «إيجار» ولا يرحّله به', async () => {
     const entry = (u: string, d: Record<string, unknown>): RemoteDoc => ({ id: 'journal_entries__SAJ1', t: 'journal_entries', k: 'SAJ1', u, dev: 'dev-led', del: false,
       d: { id: 'SAJ1', no: 'JE-SA1', date: '2026-05-01', memo: 'قيد يدوي تجريبي', status: 'قيد الإنشاء', auto: 0, created_at: '2026-05-01', src_type: null, src_id: null, ...d },

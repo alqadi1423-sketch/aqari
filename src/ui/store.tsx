@@ -18,7 +18,8 @@ import { backfillTenantLinks } from '../domain/tenants';
 import { purgeExpiredTrash } from '../domain/trash';
 import { gcBlobs } from '../files/store';
 import { appFilesEnv } from '../services/filesEnv';
-import { writeWidgetSnapshot, scheduleWidgetSnapshot } from '../services/widgetService';
+import { writeWidgetSnapshot, scheduleWidgetSnapshot, removeWidgetSnapshot } from '../services/widgetService';
+import { WIDGETS_ENABLED } from '../domain/features';
 import { scheduleNotificationsAfterWrite } from '../services/notifications';
 import { perfAttachStorage } from '../perf/perf';
 import { getSetting } from '../repos/settings';
@@ -84,7 +85,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setVersion((v) => v + 1);
     setSettings(getAllSettings(db));
     // لقطة الودجت مجدولة بعد سكون · لا تركب كل bump فتُثقله
-    scheduleWidgetSnapshot(db);
+    // والودجت مخفية بقرار المالك 2026-11-26 (features.ts): لا لقطة
+    if (WIDGETS_ENABLED) scheduleWidgetSnapshot(db);
     // والتنبيهات كذلك (E-2): كل كتابة وكل ما يصل بالمزامنة يعيد جدولتها بعد سكون
     scheduleNotificationsAfterWrite(db);
   }, [db]);
@@ -107,7 +109,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
           const changed = recomputePaidOnUpgrade(db);
           if (changed?.length) logAudit(db, 'البيانات', 'update', 'المسدَّد من الدفعات', changed.length + ' قسط أُعيد حساب مسدَّده من دفعاته وتوزيعها');
         }
-        writeWidgetSnapshot(db);
+        if (WIDGETS_ENABLED) writeWidgetSnapshot(db);
+        else removeWidgetSnapshot();
         bump();
       } catch { /* لا يعطّل الإقلاع */ }
     }, 700);

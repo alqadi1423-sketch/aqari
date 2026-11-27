@@ -20,7 +20,7 @@ import { usePager, Pager } from '../src/ui/Pager';
 import { useDeferredReady } from '../src/ui/useDeferredReady';
 import { Skeleton } from '../src/ui/Skeleton';
 import { supplierMeters, METER_ICON, UTILITY_KINDS, type LabeledMeter } from '../src/domain/meters';
-import { saveSupplier } from '../src/domain/suppliers';
+import { saveSupplier, supplierPurchasesJoin, supplierPurchasesSql } from '../src/domain/suppliers';
 import { t } from '../src/i18n';
 import { TS_DEDUCTIBLE, TS_EXEMPT } from '../src/domain/purchases';
 import { fmt, toHalalas } from '../src/domain/money';
@@ -36,7 +36,7 @@ interface SupplierRow {
 const EMPTY_SUPPLIERS: SupplierRow[] = [];
 
 /** ارتباط حيّ بالمورد · EXISTS تتوقف عند أول سطر · بها يُقرَّر عرض زر الحذف قبل الضغط */
-const LINKED_SQL = `(EXISTS(SELECT 1 FROM purchases WHERE supplier_name = s.name AND deleted_at IS NULL)
+const LINKED_SQL = `(EXISTS(SELECT 1 FROM purchases p WHERE ${supplierPurchasesJoin('p', 's')} AND p.deleted_at IS NULL)
   OR EXISTS(SELECT 1 FROM meters WHERE supplier_id = s.id AND deleted_at IS NULL)
   OR EXISTS(SELECT 1 FROM attachments WHERE entity_type = 'supplier' AND entity_id = s.id AND deleted_at IS NULL))`;
 
@@ -343,7 +343,7 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
     [db, version, supplierId]
   );
 
-  // الملخص المالي · الربط بالاسم: purchases بلا عمود معرّف للمورد (supplier_name فقط في المخطط)
+  // الملخص المالي · فواتيره بمعرّفه، وما لا معرّف له باسمه الحالي (الهجرة ٦٦ · A2.17)
   const fin = useMemo(() => {
     if (!s) return null;
     return db.get<{ cnt: number; billed: number; paid_sum: number; due_sum: number; ded_tax: number; nonded_tax: number }>(
@@ -353,8 +353,8 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
               COALESCE(SUM(CASE WHEN paid = 0 THEN total_halalas ELSE 0 END),0) AS due_sum,
               COALESCE(SUM(CASE WHEN tax_status = ? THEN tax_halalas ELSE 0 END),0) AS ded_tax,
               COALESCE(SUM(CASE WHEN tax_status != ? AND tax_status != ? THEN tax_halalas ELSE 0 END),0) AS nonded_tax
-       FROM purchases WHERE supplier_name = ? AND deleted_at IS NULL`,
-      [TS_DEDUCTIBLE, TS_DEDUCTIBLE, TS_EXEMPT, s.name]
+       FROM purchases WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL`,
+      [TS_DEDUCTIBLE, TS_DEDUCTIBLE, TS_EXEMPT, supplierId, supplierId]
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version, s]);
@@ -364,17 +364,17 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
     if (!s) return { purchases: 0, meters: 0, pays: 0, entries: 0, atts: 0 };
     const one = (sql: string, args: Array<string | number>) => Number(db.get<{ n: number }>(sql, args)?.n ?? 0);
     return {
-      purchases: one(`SELECT COUNT(*) AS n FROM purchases WHERE supplier_name = ? AND deleted_at IS NULL`, [s.name]),
+      purchases: one(`SELECT COUNT(*) AS n FROM purchases WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL`, [supplierId, supplierId]),
       meters: one(`SELECT COUNT(*) AS n FROM meters WHERE supplier_id = ? AND deleted_at IS NULL`, [supplierId]),
-      pays: one(`SELECT COUNT(*) AS n FROM purchases WHERE supplier_name = ? AND deleted_at IS NULL AND paid = 1`, [s.name]),
+      pays: one(`SELECT COUNT(*) AS n FROM purchases WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL AND paid = 1`, [supplierId, supplierId]),
       entries: one(
         `SELECT COUNT(*) AS n FROM journal_entries WHERE deleted_at IS NULL AND id IN (
            SELECT journal_entry_id FROM purchases
-           WHERE supplier_name = ? AND deleted_at IS NULL AND journal_entry_id IS NOT NULL
+           WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL AND journal_entry_id IS NOT NULL
            UNION
            SELECT payment_journal_entry_id FROM purchases
-           WHERE supplier_name = ? AND deleted_at IS NULL AND payment_journal_entry_id IS NOT NULL)`,
-        [s.name, s.name]),
+           WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL AND payment_journal_entry_id IS NOT NULL)`,
+        [supplierId, supplierId, supplierId, supplierId]),
       atts: one(
         `SELECT COUNT(*) AS n FROM attachments WHERE entity_type = 'supplier' AND entity_id = ? AND deleted_at IS NULL`,
         [supplierId]),
@@ -462,9 +462,9 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
       <CollapsibleSection title="فواتيره" count={counts.purchases} icon="invoice" pageKey="supplierPurchases">
         {(page) => db.all<{ id: string; no: string; date: string; total_halalas: number; paid: number }>(
           `SELECT id, no, date, total_halalas, paid FROM purchases
-           WHERE supplier_name = ? AND deleted_at IS NULL
+           WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL
            ORDER BY date DESC, created_at DESC LIMIT ? OFFSET ?`,
-          [s.name, page.limit, page.offset]
+          [supplierId, supplierId, page.limit, page.offset]
         ).map((p) => (
           <Pressable key={p.id} onPress={() => openPurchase(p.id)}>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -499,9 +499,9 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
         {(page) => db.all<{ id: string; no: string; paid_date: string | null; total_halalas: number; bank_name: string | null }>(
           `SELECT p.id, p.no, p.paid_date, p.total_halalas, b.name AS bank_name
            FROM purchases p LEFT JOIN banks b ON b.id = p.payment_bank_id
-           WHERE p.supplier_name = ? AND p.deleted_at IS NULL AND p.paid = 1
+           WHERE ${supplierPurchasesSql('p')} AND p.deleted_at IS NULL AND p.paid = 1
            ORDER BY p.paid_date DESC, p.created_at DESC LIMIT ? OFFSET ?`,
-          [s.name, page.limit, page.offset]
+          [supplierId, supplierId, page.limit, page.offset]
         ).map((p) => (
           <Pressable key={p.id} onPress={() => openPurchase(p.id)}>
             <Row style={{ justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -521,12 +521,12 @@ function SupplierDetail({ supplierId, onClose, onEdit }: {
           `SELECT id, no, date, memo FROM journal_entries
            WHERE deleted_at IS NULL AND id IN (
              SELECT journal_entry_id FROM purchases
-             WHERE supplier_name = ? AND deleted_at IS NULL AND journal_entry_id IS NOT NULL
+             WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL AND journal_entry_id IS NOT NULL
              UNION
              SELECT payment_journal_entry_id FROM purchases
-             WHERE supplier_name = ? AND deleted_at IS NULL AND payment_journal_entry_id IS NOT NULL)
+             WHERE ${supplierPurchasesSql()} AND deleted_at IS NULL AND payment_journal_entry_id IS NOT NULL)
            ORDER BY date DESC, created_at DESC LIMIT ? OFFSET ?`,
-          [s.name, s.name, page.limit, page.offset]
+          [supplierId, supplierId, supplierId, supplierId, page.limit, page.offset]
         ).map((e) => (
           <View key={e.id}>
             <Pressable onPress={() => setEntryFor(entryFor === e.id ? null : e.id)}>

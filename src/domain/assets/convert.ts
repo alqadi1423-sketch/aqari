@@ -14,6 +14,7 @@ import { t } from '../../i18n';
 import { ACC_ACCUM, ACC_DEPRECIATION, defaultLife, ACC_RETAINED } from './catalog';
 import { catchUpLines, expectedThrough, monthEnd, monthIndex, scheduleByYear } from './depreciation';
 import { splitQty, writePurchaseLines, purchaseAssets, type PurchaseLineInput } from './purchaseLines';
+import { supplierPurchasesSql } from '../suppliers';
 
 const fail = (key: string, opts?: Record<string, unknown>): never => { throw new Error(t('assets.err.' + key, opts)); };
 const POSTED = 'مرحّل'; // i18n-exempt: حالة القيد المخزّنة
@@ -37,12 +38,15 @@ function getPurchase(db: DB, id: string): PurchaseRow {
 }
 const converted = (db: DB, id: string) => !!db.get(`SELECT 1 FROM purchase_lines WHERE purchase_id = ? AND deleted_at IS NULL`, [id]);
 
-/** فواتير مسجّلة مصروفاً بلا بنود · مع تصفية الفئة والمورد والتاريخ والبحث بالكلمة */
+/**
+ * فواتير مسجّلة مصروفاً بلا بنود · مع تصفية الفئة والمورد والتاريخ والبحث بالكلمة · والمورد بمعرّفه (supplier: suppliers.id) كسائر
+ * شاشاته (الهجرة ٦٦ · A2.17): لقطة الاسم القديم في فاتورةٍ مقفلة تُرى تحت موردها، ومن يُنشأ بالاسم القديم لا يرثها (المدقق المستقل للمرحلة ٣)
+ */
 export function convertibleInvoices(db: DB, f: { category?: string; supplier?: string; from?: string; to?: string; q?: string } = {}) {
   const w = [`p.deleted_at IS NULL`, `p.journal_entry_id IS NOT NULL`, `NOT EXISTS (SELECT 1 FROM purchase_lines l WHERE l.purchase_id = p.id AND l.deleted_at IS NULL)`];
   const prm: string[] = [];
   if (f.category) { w.push('p.category = ?'); prm.push(f.category); }
-  if (f.supplier) { w.push('p.supplier_name = ?'); prm.push(f.supplier); }
+  if (f.supplier) { w.push(supplierPurchasesSql('p')); prm.push(f.supplier, f.supplier); }
   if (f.from) { w.push('p.date >= ?'); prm.push(f.from); }
   if (f.to) { w.push('p.date <= ?'); prm.push(f.to); }
   if (f.q?.trim()) { w.push(`(p.supplier_name LIKE ? OR p.incorp_item LIKE ? OR p.no LIKE ? OR p.category LIKE ?)`); const q = '%' + f.q.trim() + '%'; prm.push(q, q, q, q); }

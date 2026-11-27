@@ -100,7 +100,6 @@ function ThreadList({ me, tick, onOpen, onReview }: { me: ChatMe; tick: number; 
       )}>
       {/* تنبيه ثابت للأعضاء (قرار المالك 2026-10-08) */}
       {!me.owner ? <Note>{t('chat.ownerSees')}</Note> : null}
-      <Note>{t('chat.attachmentsLater')}</Note>
       {threads.length ? threads.map((th) => (
         <Pressable key={th.id} onPress={() => onOpen(th.id)}
           style={{ paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.line }}>
@@ -562,7 +561,6 @@ function GroupEditSheet({ me, people, thread, onClose }: { me: ChatMe; people: C
       <GroupSettingsPicker value={settings} onChange={setSettings} disabled={!admin} channel={!!thread.channel} />
       <T size={TYPE.cardTitle} bold style={{ marginTop: 6 }}>{t('chat.groupMembers')}</T>
       {/* القناة: أعضاؤها بصلاحياتهم تلقائياً · ويبقى تعيين المسؤولين (الدفعة ٤) */}
-      {thread.channel ? <Note>{t('chat.channelMembersAuto')}</Note> : null}
       {(thread.channel ? others.filter((p) => thread.members.includes(p.uid)) : others).map((p) => (
         <MemberRow key={p.uid} p={p} me={me} member={members.includes(p.uid)} admin={admins.includes(p.uid)} canAppoint={appoint}
           onToggle={() => { if (!thread.channel) toggle(p.uid); }}

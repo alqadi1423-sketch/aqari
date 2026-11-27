@@ -624,17 +624,9 @@ export default function Collect() {
               ]}
               onPick={setDiscountKind}
             />
-            {discountKind === DISCOUNT_AFTER_DUE ? (
-              <T size={11.5} color={C.muted} style={{ marginTop: -6, marginBottom: 10 }}>
-                القسط يبقى بقيمته · يُسجَّل الإيراد بقيمة ما غطّته الدفعة كاملاً، والخصم مصروفاً في حساب الخصومات الممنوحة
-              </T>
-            ) : null}
             {discountKind === DISCOUNT_REDUCES_INSTALLMENT ? (
               <View style={{ marginTop: -6, marginBottom: 10 }}>
-                <T size={11.5} color={C.muted}>
-                  تُخفَّض قيمة القسط نفسه بمبلغ الخصم · يُسجَّل الإيراد بالمقبوض وحده ولا يُسجَّل خصم
-                </T>
-                <T size={11.5} color={C.rose} style={{ marginTop: 4 }}>
+                <T size={11.5} color={C.rose}>
                   تنبيه: تخفيض القسط يخالف قيمة العقد الموثّقة في منصة إيجار
                 </T>
               </View>

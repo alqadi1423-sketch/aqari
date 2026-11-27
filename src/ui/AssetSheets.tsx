@@ -82,7 +82,6 @@ export function NewAssetSheet({ onClose, unitId }: { onClose: () => void; unitId
   return (
     <Sheet visible onClose={onClose} title={t('assets.ui.newTitle')} tall
       footer={ok(name) && category && unit ? <View style={{ flex: 1 }}><BtnPrimary title={t('common.save')} onPress={save} /></View> : undefined}>
-      <Note>{t('assets.ui.newNote')}</Note>
       <Field label={t('assets.ui.name')} value={name} onChange={setName} />
       <SelectField label={t('assets.ui.category')} value={category} options={cats} onPick={setCategory} />
       <SelectField label={t('common.unit')} value={unit} options={units} onPick={setUnit} />
@@ -211,7 +210,6 @@ function CostSheet({ a, onClose }: { a: AssetRow; onClose: () => void }) {
   return (
     <Sheet visible onClose={onClose} title={t('assets.ui.setCost')}
       footer={toHalalas(cost) > 0 && date ? <View style={{ flex: 1 }}><BtnPrimary title={t('common.confirm')} onPress={save} /></View> : undefined}>
-      <Note>{t('assets.ui.setCostNote')}</Note>
       <Field label={t('assets.ui.cost')} value={cost} onChange={setCost} keyboard="numeric" ltr />
       <DateField label={t('assets.ui.purchaseDate')} value={date} onChange={setDate} />
       <Row>
@@ -241,7 +239,6 @@ function TransferSheet({ a, onClose }: { a: AssetRow; onClose: () => void }) {
   return (
     <Sheet visible onClose={onClose} title={t('assets.ui.transferTitle')}
       footer={unit && date ? <View style={{ flex: 1 }}><BtnPrimary title={t('common.confirm')} onPress={save} /></View> : undefined}>
-      {a.cost_halalas != null ? <Note>{t('assets.ui.transferNote')}</Note> : null}
       <SelectField label={t('assets.ui.toUnit')} value={unit} options={units} onPick={setUnit} />
       {moveLocked ? <T size={11.5} color={C.muted} style={{ marginTop: -4, marginBottom: 8 }}>{t('access.moveAllPropsOnly')}</T> : null}
       <Field label={t('common.room')} value={room} onChange={setRoom} />
@@ -263,7 +260,6 @@ function DisposeSheet({ a, onClose }: { a: AssetRow; onClose: () => void }) {
   return (
     <Sheet visible onClose={onClose} title={t('assets.ui.disposeTitle')}
       footer={ok(reason) && date ? <View style={{ flex: 1 }}><BtnPrimary danger title={t('assets.ui.dispose')} onPress={save} /></View> : undefined}>
-      <Note>{t('assets.ui.disposeNote')}</Note>
       <Field label={t('assets.ui.reason')} value={reason} onChange={setReason} />
       <DateField label={t('common.date')} value={date} onChange={setDate} />
     </Sheet>
@@ -288,7 +284,6 @@ function SellSheet({ a, onClose }: { a: AssetRow; onClose: () => void }) {
   return (
     <Sheet visible onClose={onClose} title={t('assets.ui.sellTitle')}
       footer={amount && date && (method === 'cash' || bank) ? <View style={{ flex: 1 }}><BtnPrimary title={t('common.confirm')} onPress={save} /></View> : undefined}>
-      <Note>{t('assets.ui.sellNote')}</Note>
       <Field label={t('assets.ui.saleAmount')} value={amount} onChange={setAmount} keyboard="numeric" ltr />
       {/* المنشأة المسجّلة: المقبوض شاملٌ ضريبة المخرجات (A2.15 · س٢١) */}
       {vatRegistered(db) && toHalalas(amount) > 0 ? (() => {
@@ -490,7 +485,6 @@ export function ContentsSheet({ onClose }: { onClose: () => void }) {
   return (
     <Sheet visible onClose={onClose} title={t('assets.contents.title')} tall
       footer={selected.length ? <View style={{ flex: 1 }}><BtnPrimary title={t('assets.contents.execute', { n: selected.length })} onPress={run} /></View> : undefined}>
-      <Note>{t('assets.contents.note')}</Note>
       {!items.length ? <EmptyState>{t('assets.contents.none')}</EmptyState> : null}
       {items.map((i) => {
         const head = i.propertyName + ' · ' + i.unitNo;

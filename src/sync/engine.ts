@@ -19,7 +19,7 @@ import { SAME_KEY_SQL, sameKeyParams, keepInOrder, lineKeyBase, sameLineKey, sta
 import { isSafeBlobName } from '../files/store';
 import { mirrorIssue } from '../domain/accounting/mirror';
 import { nextJournalNo } from '../domain/accounting/post';
-import { nextPurchaseNo, PAY_LABEL } from '../domain/purchases';
+import { nextPurchaseNo, PAY_LABEL, supplierIdByName } from '../domain/purchases';
 import { postedAccum } from '../domain/assets/depreciation';
 import { t as tr } from '../i18n';
 import { isDbFault, TransactionAbortedError, type DB, type SqlValue } from '../db/adapter';
@@ -229,6 +229,9 @@ export function buildDoc(db: DB, table: string, key: string, op: 'upsert' | 'del
   }
   const doc: RemoteDoc = { ...base, d: stripDerived(table, row), del: false };
   if (table === 'journal_entries') doc.lines = readLines(db, key);
+  // وبنك مسودة القيد اليدوي (الهجرة ٦٧ · A2.10 الباقي) يُرفع حين يُختار وحده: مستند القيد المرحّل كُتب في السحابة قبل العمود، فإضافته فارغاً
+  // في كتابة ربط العاكس تُعدّ تغييراً في حقوله فترفضها القواعد (orgOnlyLinksReversal) · وغيابه في المسودة الواردة «بلا بنك» (applyJournal)
+  if (table === 'journal_entries' && doc.d!.draft_bank_id == null) delete doc.d!.draft_bank_id;
   // والقيد نفسه برقمٍ آخر في السحابة يُرفع برقمه هناك (المدقق الخارجي Y٥: عكسه برقمه هنا كان يُرفض «نهائياً» كل مرة)
   if (table === 'journal_entries' && typeof doc.d!.no === 'string' && doc.d!.no) doc.d!.no = cloudJournalNo(db, doc.d!.no);
   if (table === 'bank_tx' && typeof doc.d!.journal_no === 'string' && doc.d!.journal_no) doc.d!.journal_no = cloudJournalNo(db, doc.d!.journal_no);
@@ -407,6 +410,17 @@ function keepUnknownOriginalEnd(db: DB, id: string, row: RowData, fresh: boolean
   if (row.original_end || (!('original_end' in row) && !fresh)) return;
   db.run(`UPDATE contracts SET original_end = NULL WHERE id = ? AND status = ? AND cancel_date IS NOT NULL AND end = cancel_date
             AND (original_end IS NULL OR original_end = end)`, [id, 'ملغى']); // i18n-exempt: حالة العقد المخزّنة
+}
+
+/**
+ * فاتورة شراءٍ من جهازٍ بإصدارٍ أقدم (بلا supplier_id · الهجرة ٦٦) غيّر موردها: المعرّف هنا لموردها السابق، وإبقاؤه يُريها تحت غير موردها
+ * ويكتب تغييرُ اسم السابق اسمَه عليها · فتُربط بالمورد الحيّ الواحد بالاسم الجديد كما يربطها الحفظ (وإلا بلا معرّف، فتُرى باسمها) ·
+ * والاسم نفسه يُبقي المعرّف: لقطة المقفلة في إقرارٍ مقدَّم تبقى مربوطةً بموردها بعد تغيير اسمه (المدقق المستقل للمرحلة ٣)
+ */
+function legacySupplierId(db: DB, id: string, row: RowData, cols: Set<string>): void {
+  if (!cols.has('supplier_id') || 'supplier_id' in row || typeof row.supplier_name !== 'string') return;
+  const cur = db.get<{ n: string }>(`SELECT supplier_name AS n FROM purchases WHERE id = ?`, [id]);
+  if (cur && cur.n.trim() !== row.supplier_name.trim()) row.supplier_id = supplierIdByName(db, row.supplier_name);
 }
 
 /**
@@ -2231,6 +2245,11 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   if (local?.status === 'مرحّل') {
     // أبعاد سطور القيد المرحّل وحدها تصل (ملء القيود القديمة · الهجرة ٢٨) · ولا يتغير فيه غيرها
     const dimsChanged = cols.l.has('cost_center_id') ? applyLineDims(db, doc.k, doc.lines ?? []) : 0;
+    // وبنك مسودته الغائب من مستنده (نزعه ربطُ عاكسٍ من إصدارٍ أقدم · orgOnlyLinksReversal) يسقط هنا كما في السحابة، فلا ترفع كتابةٌ
+    // لاحقة للقيد حقلاً ليس فيها فتُرفض · ولا يُقرأ بعد الترحيل (الهجرة ٦٧ · المدقق المستقل للمرحلة ٣)
+    if (cols.e.has('draft_bank_id') && !('draft_bank_id' in d)) {
+      db.run(`UPDATE journal_entries SET draft_bank_id = NULL WHERE id = ? AND draft_bank_id IS NOT NULL`, [doc.k]);
+    }
     if (remoteRev && !local.reversed_by) {
       linkReversal(db, doc.k, remoteRev, doc);
       return 'applied';
@@ -2249,6 +2268,10 @@ function applyJournal(db: DB, doc: RemoteDoc, cols: { e: Set<string>; l: Set<str
   if (local) db.run(`DELETE FROM journal_lines WHERE entry_id = ?`, [doc.k]); // مسودة · سطورها تُستبدل
   renumberJoiningCollision(db, 'journal_entries', doc.k, d.no);
   const entry: RowData = { ...d, status: posted ? 'قيد الإنشاء' : d.status, reversed_by: null };
+  // المسودة بلا بنكٍ مختار لا تحمل عموده (buildDoc): فغيابه «بلا بنك» لا «كما كان» (الهجرة ٦٧) · والمرحّل كذلك: مالكٌ بإصدارٍ أقدم
+  // رحّل مسودة البنك من المحفظة فمستنده بلا الحقل، وإبقاؤه هنا يرفعه ربطُ عاكسه من هذا الجهاز والسحابة بلا حقله فترفضه القواعد
+  // (orgOnlyLinksReversal) نهائياً · المدقق المستقل للمرحلة ٣
+  if (cols.e.has('draft_bank_id') && !('draft_bank_id' in entry)) entry.draft_bank_id = null;
   upsertRow(db, 'journal_entries', entry, cols.e);
   for (const l of doc.lines ?? []) {
     const keys = Object.keys(l).filter((c) => cols.l.has(c));
@@ -3227,6 +3250,7 @@ function applyOne(
         const fresh = doc.t === 'contracts' && !db.get(`SELECT 1 FROM contracts WHERE id = ?`, [doc.k]);
         noteViaMember(db, doc, row);
         noteInvoiceIssued(db, doc, row);
+        if (doc.t === 'purchases') legacySupplierId(db, doc.k, row, cols(doc.t));
         upsertRow(db, doc.t, row, cols(doc.t));
         if (doc.t === 'contracts') keepUnknownOriginalEnd(db, doc.k, row, fresh);
         if (deadCarry) noteDeadCarry(db, doc.k, deadCarry.was, deadCarry.want);

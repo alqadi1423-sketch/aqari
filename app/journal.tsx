@@ -1,7 +1,7 @@
 /** القيود اليومية · القائمة وبناء قيد جديد بميزان حي وترحيله */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { CashShortNote, OwnerCashInSheet, useCashOk } from '../src/ui/CashGate';
-import { cashShortfall, reversalCashOut, bankShortages, bankLowFrom } from '../src/domain/cashGuard';
+import { cashShortfall, cashShortMessage, reversalCashOut, bankShortages, bankLowFrom } from '../src/domain/cashGuard';
 import { supportingAccountsIn, supportList } from '../src/domain/accounting/manualGuard';
 import { View, FlatList, Pressable } from 'react-native';
 import { Screen } from '../src/ui/Screen';
@@ -111,7 +111,7 @@ export default function Journal() {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [sourceFor, setSourceFor] = useState<{ id: string; no: string } | null>(null);
   const [builderOpen, setBuilderOpen] = useState(false);
-  const [depositFor, setDepositFor] = useState<number | null>(null);
+  const [depositFor, setDepositFor] = useState<{ n: number; on?: string | null } | null>(null);
   const canDeposit = usePerm('banks').add;
   const [date, setDate] = useState(today());
   const [bankId, setBankId] = useState('');
@@ -170,7 +170,8 @@ export default function Journal() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [db, version]);
   const cashNet = lines.filter((l) => l.account === '1100').reduce((s, l) => s + toHalalas(l.debit) - toHalalas(l.credit), 0);
-  const withBank = owner && !!bankId && cashNet !== 0;
+  // والعضو يختاره لمسودته فيرحّلها المالك منه (الهجرة ٦٧ · A2.10 الباقي) · وكفاية البنك عند الترحيل على جهاز المالك
+  const withBank = !!bankId && cashNet !== 0;
   const walletOk = useCashOk(withBank ? 0 : manualOut, date); // بتاريخ القيد (A2.8)
   const bankLow = withBank && cashNet < 0 ? bankLowFrom(db, bankId, date).low : 0;
   const bankShort = withBank && cashNet < 0 && -cashNet > bankLow
@@ -201,7 +202,7 @@ export default function Journal() {
     try {
       const args = { date, memo: memo.trim() || 'بدون بيان', lines: validLines };
       if (!owner) {
-        saveManualDraft(db, args);
+        saveManualDraft(db, { ...args, bankId: withBank ? bankId : null });
         setBuilderOpen(false); bump();
         toast(t('journal.savedDraft'));
         return;
@@ -234,20 +235,22 @@ export default function Journal() {
     // القيد الآلي يُلغى من عمليته الأصلية بتأكيدها (sourceCancel.ts) · واليدوي يُعكس هنا
     if (journalReversalBlock(db, id)) { setSourceFor({ id, no }); return; }
     // عكس قيدٍ أدخل نقداً يُخرجه من المحفظة · كفاية النقد (قرار المالك ٢٠٢٦-١٠-٠٥)
+    // بتاريخ العاكس: أدنى رصيد المحفظة والبنك منه فما بعده، كما يفحصه reverseFromJournal (A2.8 · العكس والإلغاء)
+    const on = journalReversalDate(db, id);
     const out = reversalCashOut(db, id);
-    const short = cashShortfall(db, out);
+    const short = cashShortfall(db, out, on);
     // وحركة بنكٍ مربوطة بالقيد اليدوي (A2.10) يُخرجها عكسُها من البنك: لا زرّ إن لم يكفِ
-    const bankShorts = bankShortages(db, no, 'reverse');
+    const bankShorts = bankShortages(db, no, 'reverse', on);
     dialog({
       title: 'عكس القيد ' + no,
       // التاريخ الذي سيُكتب فعلاً: تاريخ الأصل، إلا في فترةٍ قُدِّم إقرارها فاليوم (D-7)
       body: t('journal.reverseBody', { date: dfmt(journalReversalDate(db, id)) })
-        + (short > 0 ? '\nالنقد في المحفظة لا يكفي لعكسه (' + fmt(out) + ') · ينقصه ' + fmt(short) : '')
+        + (short > 0 ? '\n' + cashShortMessage(db, out, t('journal.reverseWhat'), on) : '')
         + (bankShorts.length ? '\n' + bankShorts.join('\n') : ''),
       tone: 'normal',
       actions: [
         { label: 'تراجع', variant: 'ghost' },
-        ...(bankShorts.length ? [] : short > 0 ? (canDeposit ? [{ label: 'إيداع المالك · ' + fmt(short), variant: 'primary' as const, onPress: () => setDepositFor(short) }] : []) : [{
+        ...(bankShorts.length ? [] : short > 0 ? (canDeposit ? [{ label: 'إيداع المالك · ' + fmt(short), variant: 'primary' as const, onPress: () => setDepositFor({ n: short, on }) }] : []) : [{
           label: 'عكس القيد', variant: 'primary' as const,
           onPress: () => {
             try {
@@ -284,9 +287,12 @@ export default function Journal() {
   const postDraft = useCallback((id: string, no: string) => {
     // مسودةٌ على حسابٍ مساند (قديمةٌ قبل المنع · A2.10): التنبيه في الحوار نفسه، والزر «على مسؤوليتي»
     const hits = supportingAccountsIn(db, db.all<{ account: string }>(`SELECT account_code AS account FROM journal_lines WHERE entry_id = ?`, [id]));
+    // وبنك سطر النقدية الذي اختاره كاتبها (الهجرة ٦٧): يُرحَّل منه لا من المحفظة
+    const bank = db.get<{ n: string }>(`SELECT b.name AS n FROM journal_entries e JOIN banks b ON b.id = e.draft_bank_id WHERE e.id = ?`, [id])?.n;
     dialog({
       title: t('journal.confirmPostTitle'),
-      body: t('journal.confirmPostBody', { no }) + (hits.length ? '\n' + t('journal.supportWarn', { list: supportList(hits) }) : ''),
+      body: t('journal.confirmPostBody', { no }) + (bank ? '\n' + t('journal.draftBankNote', { bank }) : '')
+        + (hits.length ? '\n' + t('journal.supportWarn', { list: supportList(hits) }) : ''),
       tone: hits.length ? 'danger' : undefined,
       actions: [
         { label: t('journal.cancel'), variant: 'ghost' },
@@ -344,7 +350,7 @@ export default function Journal() {
       {/* القيد الآلي يُلغى من عمليته الأصلية بتأكيدها */}
       {sourceFor ? <SourceCancelSheet entryId={sourceFor.id} entryNo={sourceFor.no} onClose={() => setSourceFor(null)} /> : null}
 
-      {depositFor !== null ? <OwnerCashInSheet amountHalalas={depositFor} onClose={() => setDepositFor(null)} /> : null}
+      {depositFor !== null ? <OwnerCashInSheet amountHalalas={depositFor.n} date={depositFor.on} onClose={() => setDepositFor(null)} /> : null}
       <Sheet visible={builderOpen} onClose={() => setBuilderOpen(false)} title="قيد يومية جديد" tall
         footer={
           <>
@@ -388,8 +394,8 @@ export default function Journal() {
         ))}
         <BtnGhost small title="+ إضافة سطر"
           onPress={() => setLines((p) => [...p, { account: '', debit: '', credit: '' }])} />
-        {/* سطر النقدية من المحفظة أو من بنك (المالك · A2.10) · بلا بنكٍ أو بلا صافٍ على 1100 لا تظهر الخانة */}
-        {owner && banks.length && cashNet !== 0 ? (
+        {/* سطر النقدية من المحفظة أو من بنك (A2.10 · ومسودة العضو تحمله: الهجرة ٦٧) · بلا بنكٍ أو بلا صافٍ على 1100 لا تظهر الخانة */}
+        {banks.length && cashNet !== 0 ? (
           <SelectField label={t('journal.bankField')} value={bankId}
             options={[{ value: '', label: t('journal.bankWallet') }, ...banks.map((b) => ({ value: b.id, label: b.name }))]}
             onPick={setBankId} />

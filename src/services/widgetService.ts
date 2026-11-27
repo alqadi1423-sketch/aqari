@@ -54,6 +54,12 @@ export function writeWidgetSnapshot(db: DB): WidgetSnapshot | null {
   }
 }
 
+/** الودجت مخفية (features.ts): لقطةٌ كُتبت قبل الإخفاء لا تبقى بمبالغها في ملفٍ لا يقرؤه شيء */
+export function removeWidgetSnapshot(): void {
+  if (Platform.OS !== 'android') return;
+  try { expoFs.remove(widgetFilePath()); } catch { /* لا ملف */ }
+}
+
 // تفعيل القفل أو إطفاؤه يعيد كتابة اللقطة فوراً · وما لا يغيّر حاله (محاولة رمز، تغيير المهلة) لا يعيد بناءها
 onLockChange(() => {
   if (lastDb && lockMaybeOn() !== lastLocked) writeWidgetSnapshot(lastDb);

@@ -88,7 +88,6 @@ export function CostCentersSheet({ onClose }: { onClose: () => void }) {
   });
   return (
     <Sheet visible onClose={onClose} title="مراكز التكلفة" tall>
-      <Note>بُعدٌ مستقل فوق العقار والوحدة · كل شاشة تُنشئ قيداً فيها حقله، وافتراضه «عام» الذي لا يُحذف.</Note>
       {list.map((c) => (
         <Row key={c.id} style={{ justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.paperLine }}>
           <T size={TYPE.body} bold={!!c.is_default}>{c.name}{c.is_default ? ' · افتراضي' : ''}</T>

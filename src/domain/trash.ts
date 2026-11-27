@@ -3,7 +3,7 @@
  */
 import type { DB } from '../db/adapter';
 import { allIn, runIn } from '../db/inList';
-import { entryCashEffect } from './cashGuard';
+import { entryCashEffect, walletLowFrom } from './cashGuard';
 import { getSetting } from '../repos/settings';
 import { restoreInvoice } from './invoices';
 import { restorePurchase } from './purchases';
@@ -11,7 +11,7 @@ import { requireBankTxRestorable } from './bankTx';
 import { logAudit } from './audit';
 import { t } from '../i18n';
 import { lastReversedOf, repostBlockers, repostCopy, repostDate } from './accounting/repost';
-import { isFiledDate } from './vatFilings';
+import { isFiledDate, correctionDate } from './vatFilings';
 
 export const TRASH_ENTITY_LABELS: Record<string, string> = {
   suppliers: 'مورد', tenants: 'مستأجر', contracts: 'عقد إيجار',
@@ -137,6 +137,86 @@ export function restoreCashOut(db: DB, table: string, id: string): number {
   if (!p || !Number(p.paid) || !p.pj) return 0;
   const reversed = db.get(`SELECT 1 FROM journal_entries WHERE id = ? AND reversed_by IS NOT NULL`, [p.pj]);
   return reversed ? Math.max(0, -entryCashEffect(db, p.pj)) : 0;
+}
+
+/** تاريخ إعادة الصرف بالاستعادة (repostDate: تاريخ عكس السداد) · به تُفحص كفاية المحفظة من يومه فما بعده (A2.8) · null لغير ذلك */
+export function restoreCashDate(db: DB, table: string, id: string): string | null {
+  if (table !== 'purchases') return null;
+  const pj = db.get<{ pj: string | null }>(`SELECT payment_journal_entry_id AS pj FROM purchases WHERE id = ?`, [id])?.pj;
+  return pj ? repostDate(db, pj) : null;
+}
+
+/** ما يحكم زرّ «استعادة» لعنصرٍ في السلة · محسوبٌ للصفحة كلها مرةً */
+export interface TrashRestoreGate {
+  /** ما تُخرجه الاستعادة من المحفظة (restoreCashOut) */
+  cashOut: number;
+  /** ما ينقص المحفظة لتلك الاستعادة (cashShortfall) · صفرٌ إن كفى */
+  short: number;
+  /** الاستعادة تكتب قيداً في فترةٍ قُدِّم إقرارها (restoreIntoFiledPeriod) */
+  filed: boolean;
+  /** تاريخ إعادة الصرف (restoreCashDate) · به يُفحص النقص من يومه فما بعده (A2.8) */
+  date: string | null;
+}
+
+/** مفتاح العنصر في خريطة الأحكام والقائمة */
+export const trashKey = (it: { table: string; id: string }): string => it.table + ':' + it.id;
+
+/**
+ * أحكام زرّ الاستعادة لصفحةٍ من السلة دفعةً واحدة (المراجعة الشاملة 2026-11-13 · D-17): كان كل صفٍّ يستدعي restoreCashOut مرتين
+ * وcashShortfall وrestoreIntoFiledPeriod مع كل رسم · فصارت عبارةً واحدة لفواتير الشراء في الصفحة (نقد سداد معكوس بالصيغة نفسها
+ * لـ entryCashEffect)، وعبارةً واحدة لصفقات التقبيل (آخر قيدٍ معكوس وتاريخ عكسه)، وقراءةً واحدة للمحفظة · والنتيجة لكل عنصر
+ * مساويةٌ لاستدعاء الدوال الثلاث عليه (tests/review14.D_17.heavyLists.test.ts).
+ */
+export function trashRestoreGates(db: DB, items: readonly { table: string; id: string }[]): Map<string, TrashRestoreGate> {
+  const out = new Map<string, TrashRestoreGate>();
+  for (const it of items) out.set(trashKey(it), { cashOut: 0, short: 0, filed: false, date: null });
+  const idsOf = (table: string) => items.filter((i) => i.table === table).map((i) => i.id);
+
+  const purchases = idsOf('purchases');
+  if (purchases.length) {
+    const rows = allIn<{ id: string; pdate: string; rdate: string | null; eff: number }>(db,
+      `SELECT p.id AS id, e.date AS pdate, (SELECT r.date FROM journal_entries r WHERE r.id = e.reversed_by) AS rdate,
+              COALESCE((SELECT SUM(l.debit_halalas - l.credit_halalas) FROM journal_lines l
+                        WHERE l.entry_id = e.id AND l.account_code = '1100'), 0)
+            - COALESCE((SELECT SUM(b.amount_halalas) FROM bank_tx b
+                        WHERE b.journal_no = e.no AND b.deleted_at IS NULL), 0) AS eff
+       FROM purchases p JOIN journal_entries e ON e.id = p.payment_journal_entry_id AND e.reversed_by IS NOT NULL
+       WHERE p.id IN (:list) AND COALESCE(p.paid, 0) != 0`, purchases);
+    // أدنى رصيد المحفظة من تاريخ إعادة الصرف فما بعده (A2.8)، مرةً لكل تاريخٍ في الصفحة لا لكل صف
+    const lowByDate = new Map<string, number>();
+    for (const r of rows) {
+      const cashOut = Math.max(0, -Number(r.eff));
+      if (!(cashOut > 0)) continue;
+      // repostDate من الصف نفسه: تاريخ العاكس، وإلا تاريخ التصحيح (correctionDate) · بلا عبارةٍ لكل صف
+      const date = r.rdate ?? correctionDate(db, r.pdate);
+      let low = lowByDate.get(date);
+      if (low === undefined) { low = Math.max(0, walletLowFrom(db, date).low); lowByDate.set(date, low); }
+      out.set(trashKey({ table: 'purchases', id: r.id }), { cashOut, short: Math.max(0, cashOut - low), filed: false, date });
+    }
+  }
+
+  const deals = idsOf('key_money_deals');
+  if (deals.length) {
+    const rows = allIn<{ src_id: string; id: string; rdate: string | null }>(db,
+      // i18n-exempt: حالة القيد المخزّنة
+      `SELECT o.src_id AS src_id, o.id AS id, r.date AS rdate
+       FROM journal_entries o LEFT JOIN journal_entries r ON r.id = o.reversed_by
+       WHERE o.src_type = 'key_money' AND o.src_id IN (:list) AND o.status = 'مرحّل'
+         AND o.deleted_at IS NULL AND o.reversed_by IS NOT NULL
+       ORDER BY o.created_at DESC`, deals);
+    // الأحدث أولاً في قطعته، والصفقة كلها في قطعةٍ واحدة · فأول ظهورٍ لها هو lastReversedOf
+    const seen = new Set<string>();
+    const filedByDate = new Map<string, boolean>();
+    for (const r of rows) {
+      if (seen.has(r.src_id)) continue;
+      seen.add(r.src_id);
+      const date = r.rdate ?? repostDate(db, r.id);
+      let filed = filedByDate.get(date);
+      if (filed === undefined) { filed = isFiledDate(db, date); filedByDate.set(date, filed); }
+      out.set(trashKey({ table: 'key_money_deals', id: r.src_id }), { cashOut: 0, short: 0, filed, date: null });
+    }
+  }
+  return out;
 }
 
 /** استعادة عنصر · وما عكسه حذفُه من قيود يُعاد بنسخته، أو تُرفض الاستعادة بسببٍ ظاهر */

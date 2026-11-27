@@ -67,7 +67,31 @@ test('E-12 ما فات موعده يُطلق بعد دقيقة مرةً واحد
   expect(planReminderDelivery([], now, c.caught).caught).toEqual({});
 });
 
+// الساعة مثبّتة: كان الاختبار يقرأ ساعة الجهاز فيسقط قبل التاسعة بتوقيت الرياض (الفائت حينها يُجدول في تاسعة اليوم نفسه، وهو
+// المقصود: لا تنبيه بعد منتصف الليل) · سقط على جيت هب في التشغيل 45898085309 عند ٠٠:٤٤ (فقط Date مزيَّف، والمؤقتات حقيقية)
+const atClock = (iso: string) => jest.useFakeTimers({ now: new Date(iso), doNotFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate', 'clearImmediate', 'nextTick', 'queueMicrotask'] });
+afterEach(() => { jest.useRealTimers(); });
+
+test('E-12 الخدمة قبل التاسعة: الفائت يُجدول في تاسعة اليوم نفسه لا بعد دقيقة', async () => {
+  atClock('2026-03-01T00:44:00');
+  const db = memDb();
+  setSetting(db, 'remindersOn', true);
+  setSetting(db, 'remindPayment', 14);
+  const T = today();
+  expect(T).toBe('2026-03-01');
+  const start = addDays(T, 3);
+  confirmContract(db, contractInput(addUnit(db, addProperty(db, { name: 'عقار مصطنع' }), { unit_no: 'E-12c' }),
+    { start, end: addMonthsClamped(start, 2), depositHalalas: 0 }));
+  const before = Date.now();
+  await rescheduleAllNotifications(db, { ask: false });
+  const nine = new Date('2026-03-01T09:00:00').getTime();
+  expect(mockOs.filter((o) => o.date > before && o.date <= before + 61_000)).toHaveLength(0);
+  expect(mockOs.some((o) => o.date === nine)).toBe(true);
+  db.close();
+});
+
 test('E-12 الخدمة تجدول الفائت بعد دقيقة ولا تكرره بإعادة الجدولة', async () => {
+  atClock('2026-03-01T10:30:00');
   const db = memDb();
   setSetting(db, 'remindersOn', true);
   setSetting(db, 'remindPayment', 14);

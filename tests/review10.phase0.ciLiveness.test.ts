@@ -23,7 +23,9 @@ const SCRIPT = path.join(ROOT, 'scripts', 'ci', 'apkRelease.js');
 test('review10 · نشر خلاصة الاختبارات في ci-results يعيد الدفع عند التعارض (كالجوال الافتراضي)', () => {
   const wf = fs.readFileSync(path.join(ROOT, '.github/workflows/tests.yml'), 'utf8');
   const publish = wf.slice(wf.indexOf('  publish:'));
-  expect(publish).toMatch(/git pull -q --rebase origin ci-results/);
+  // يُبنى الالتزام من جديد فوق آخر ci-results في كل محاولة (إعادة التأسيس تتعارض في latest.txt · التشغيل 45865769363)
+  expect(publish).toMatch(/git fetch -q origin ci-results && git reset -q --hard origin\/ci-results/);
+  expect(publish).not.toMatch(/pull -q --rebase/);
 });
 
 describe('review10 · apkRelease: نتيجةٌ غائبة لمصدرٍ قديم', () => {

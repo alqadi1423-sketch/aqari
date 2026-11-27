@@ -22,6 +22,12 @@ export class CashShortfallError extends Error {
   get shortfall(): number { return this.needed - Math.max(0, this.available); }
 }
 
+/**
+ * يومٌ بصيغته (YYYY-MM-DD) · ما كتبه الحقل القديم بغيرها («2026-3-15») لا يومَ له يُرتَّب به: يُقارن حرفاً فيعلو كل يومٍ صحيح في سنته،
+ * فكان يُعدّ بعد تاريخ العملية ويُخرج من رصيدها · فيُحسب فيما مضى كما هو في الرصيد الآن (المراجعة الشاملة 2026-11-13 · D2-R11-2)
+ */
+const ISO_DAY = "'[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'";
+
 /** أدنى رصيدٍ جارٍ ويومه */
 export interface LowPoint { low: number; at: string | null }
 
@@ -53,10 +59,10 @@ export function walletLowFrom(db: DB, date?: string | null): LowPoint {
     `SELECT d, SUM(n) AS n FROM (
        SELECT substr(e.date, 1, 10) AS d, l.debit_halalas - l.credit_halalas AS n
        FROM journal_lines l JOIN journal_entries e ON e.id = l.entry_id
-       WHERE l.account_code = '1100' AND e.status = 'مرحّل' AND e.deleted_at IS NULL AND substr(e.date, 1, 10) > ?
+       WHERE l.account_code = '1100' AND e.status = 'مرحّل' AND e.deleted_at IS NULL AND substr(e.date, 1, 10) > ? AND substr(e.date, 1, 10) GLOB ${ISO_DAY}
        UNION ALL
        SELECT substr(COALESCE(date, ''), 1, 10) AS d, -amount_halalas AS n FROM bank_tx
-       WHERE deleted_at IS NULL AND substr(COALESCE(date, ''), 1, 10) > ?
+       WHERE deleted_at IS NULL AND substr(COALESCE(date, ''), 1, 10) > ? AND substr(COALESCE(date, ''), 1, 10) GLOB ${ISO_DAY}
      ) GROUP BY d`, [d, d]).map((r) => ({ d: r.d, n: Number(r.n) }));
   return lowFrom(total, d, rows);
 }
@@ -68,7 +74,7 @@ export function bankLowFrom(db: DB, bankId: string, date?: string | null): LowPo
   const d = date.slice(0, 10);
   const rows = db.all<{ d: string; n: number }>(
     `SELECT substr(COALESCE(date, ''), 1, 10) AS d, SUM(amount_halalas) AS n FROM bank_tx
-     WHERE bank_id = ? AND deleted_at IS NULL AND substr(COALESCE(date, ''), 1, 10) > ? GROUP BY 1`, [bankId, d])
+     WHERE bank_id = ? AND deleted_at IS NULL AND substr(COALESCE(date, ''), 1, 10) > ? AND substr(COALESCE(date, ''), 1, 10) GLOB ${ISO_DAY} GROUP BY 1`, [bankId, d])
     .map((r) => ({ d: r.d, n: Number(r.n) }));
   return lowFrom(total, d, rows);
 }
@@ -80,8 +86,19 @@ export function cashShortfall(db: DB, amountHalalas: number, date?: string | nul
 }
 
 /**
+ * رسالة نقص المحفظة عن صرفٍ بمبلغ بتاريخه، كما يرميها requireCash · فارغةٌ إن كفى · للمانع الذي يُعرض قبل التنفيذ (تحت تاريخ الإلغاء
+ * أو في حوار العكس) بالعبارة نفسها التي يرفض بها التنفيذ (المراجعة الشاملة 2026-11-13 · A2.8: العكس والإلغاء)
+ */
+export function cashShortMessage(db: DB, amountHalalas: number, what: string, date?: string | null): string {
+  if (!(amountHalalas > 0)) return '';
+  const { low, at } = walletLowFrom(db, date);
+  return amountHalalas > low
+    ? new CashShortfallError(amountHalalas, low, what, at && low < walletCashBalance(db) ? at : undefined).message : '';
+}
+
+/**
  * يرفض الصرف النقدي إن لم يكفِ النقد · قبل أي كتابة · وبتاريخ العملية: بأدنى رصيدٍ للمحفظة منه فما بعده، فلا تصير سالبةً في يومٍ مضى،
- * والرسالة تذكر ذلك اليوم إن كان رصيده دون الرصيد الآن (A2.8)
+ * والرسالة تذكر ذلك اليوم إن كان رصيده دون الرصيد الآن (A2.8) · والعكس والإلغاء بتاريخ عاكسهما النافذ كذلك
  */
 export function requireCash(db: DB, amountHalalas: number, what: string, date?: string | null): void {
   if (!(amountHalalas > 0)) return;
@@ -90,18 +107,28 @@ export function requireCash(db: DB, amountHalalas: number, what: string, date?: 
 }
 
 /**
+ * رسالة نقص البنك عن مبلغٍ يخرج منه بتاريخه · فارغةٌ إن كفى: بأدنى رصيده من التاريخ فما بعده، والرسالة تذكر ذلك اليوم إن كان رصيده دون
+ * الرصيد الآن (A2.8) · وإلا رسالة المسار نفسه (short) أو الرسالة العامة
+ */
+export function bankShortMessage(db: DB, bankId: string, amountHalalas: number, date?: string | null,
+  short?: (bank: string, balance: number) => string): string {
+  if (!(amountHalalas > 0)) return '';
+  const { low, at } = bankLowFrom(db, bankId, date);
+  if (amountHalalas <= low) return '';
+  const bank = db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ?`, [bankId])?.name ?? '';
+  return at && low < bankBalance(db, bankId)
+    ? t('bankTx.bankShortOn', { bank, at: dfmt(at), balance: fmt(low), amount: fmt(amountHalalas) })
+    : short ? short(bank, low) : t('bankTx.bankShort', { bank, balance: fmt(low), amount: fmt(amountHalalas) });
+}
+
+/**
  * يرفض صرفاً من بنك لا يكفيه رصيده (قرار المالك ٥٥) · وبتاريخ العملية: بأدنى رصيدٍ للبنك منه فما بعده، فلا ينزل تحت الصفر في يومٍ مضى،
  * والرسالة تذكر ذلك اليوم إن كان رصيده دون الرصيد الآن (A2.8) · وإلا رسالة المسار نفسه (short) أو الرسالة العامة
  */
 export function requireBankFunds(db: DB, bankId: string, amountHalalas: number, date?: string | null,
   short?: (bank: string, balance: number) => string): void {
-  if (!(amountHalalas > 0)) return;
-  const { low, at } = bankLowFrom(db, bankId, date);
-  if (amountHalalas <= low) return;
-  const bank = db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ?`, [bankId])?.name ?? '';
-  throw new BankShortfallError(at && low < bankBalance(db, bankId)
-    ? t('bankTx.bankShortOn', { bank, at: dfmt(at), balance: fmt(low), amount: fmt(amountHalalas) })
-    : short ? short(bank, low) : t('bankTx.bankShort', { bank, balance: fmt(low), amount: fmt(amountHalalas) }));
+  const why = bankShortMessage(db, bankId, amountHalalas, date, short);
+  if (why) throw new BankShortfallError(why);
 }
 
 /** أثر القيد على المحفظة: موجب أدخل نقداً، وسالب أخرجه */
@@ -130,23 +157,23 @@ export class BankShortfallError extends Error {
 /**
  * ما يُخرجه من كل بنك عكسُ حركات القيد رقم entryNo (reverse: الوارد يصير صادراً) أو إعادةُ نسخها (repost: الصادر يتكرر)،
  * وما لا يكفيه رصيده · قرار المالك (أ · ٥٥): «السداد من حسابٍ بنكي لا يُنزل رصيده تحت الصفر في كل المسارات»، وحارس المحفظة
- * لا يرى البنك (المراجعة الشاملة 2026-11-13 · A2.2).
+ * لا يرى البنك (المراجعة الشاملة 2026-11-13 · A2.2) · وبتاريخ العاكس أو النسخة (date): بأدنى رصيد البنك منه فما بعده، فلا يُنزله
+ * عكسٌ بتاريخٍ سابق تحت الصفر في يومٍ مضى (قرار المالك س١٩ · A2.8: العكس والإلغاء)
  */
-export function bankShortages(db: DB, entryNo: string, mode: 'reverse' | 'repost'): string[] {
+export function bankShortages(db: DB, entryNo: string, mode: 'reverse' | 'repost', date?: string | null): string[] {
   const out: string[] = [];
-  for (const r of db.all<{ bank_id: string; s: number; name: string | null }>(
-    `SELECT t.bank_id, SUM(t.amount_halalas) AS s, b.name FROM bank_tx t LEFT JOIN banks b ON b.id = t.bank_id
+  for (const r of db.all<{ bank_id: string; s: number }>(
+    `SELECT t.bank_id, SUM(t.amount_halalas) AS s FROM bank_tx t
      WHERE t.journal_no = ? AND t.deleted_at IS NULL GROUP BY t.bank_id`, [entryNo])) {
     const amount = mode === 'reverse' ? Number(r.s) : -Number(r.s);
-    if (!(amount > 0)) continue;
-    const balance = bankBalance(db, r.bank_id);
-    if (balance < amount) out.push(t('bankTx.bankShort', { bank: r.name ?? '', balance: fmt(balance), amount: fmt(amount) }));
+    const why = bankShortMessage(db, r.bank_id, amount, date);
+    if (why) out.push(why);
   }
   return out;
 }
 
-/** يرفض العكس أو الإعادة إن لم يكفِ بنكٌ لما تُخرجه منه · قبل أي كتابة */
-export function requireBanksCover(db: DB, entryNo: string, mode: 'reverse' | 'repost'): void {
-  const short = bankShortages(db, entryNo, mode);
+/** يرفض العكس أو الإعادة إن لم يكفِ بنكٌ لما تُخرجه منه · قبل أي كتابة · وبتاريخ العاكس أو النسخة إن أُعطي (A2.8) */
+export function requireBanksCover(db: DB, entryNo: string, mode: 'reverse' | 'repost', date?: string | null): void {
+  const short = bankShortages(db, entryNo, mode, date);
   if (short.length) throw new BankShortfallError(short[0]);
 }

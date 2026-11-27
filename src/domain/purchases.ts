@@ -20,6 +20,7 @@ import { deviceLetter, ownNumbersSql, withLetter, takeNumber } from './numbering
 import { vatRegistered } from './taxCode';
 
 export interface PurchaseInput {
+  /** اسم المورد كما يُكتب في الفاتورة · ومنه معرّفه (supplier_id · الهجرة ٦٦) إن طابق مورداً حيّاً واحداً */
   supplier: string;
   date: string;
   due: string;
@@ -84,7 +85,8 @@ export function purchaseByQrKey(db: DB, key: string, exceptId = ''): QrDuplicate
 export function purchaseLookalike(db: DB, q: { vat: string; seller: string; date: string; total: number; tax: number }, exceptId = ''): QrDuplicate | null {
   const rows = db.all<{ id: string; no: string; date: string; name: string; card: string | null }>(
     `SELECT p.id, p.no, p.date, p.supplier_name AS name,
-       (SELECT s.vat FROM suppliers s WHERE s.name = p.supplier_name AND s.deleted_at IS NULL ORDER BY s.archived LIMIT 1) AS card
+       COALESCE((SELECT s.vat FROM suppliers s WHERE s.id = p.supplier_id AND s.deleted_at IS NULL),
+         (SELECT s.vat FROM suppliers s WHERE s.name = p.supplier_name AND s.deleted_at IS NULL ORDER BY s.archived LIMIT 1)) AS card
      FROM purchases p WHERE p.deleted_at IS NULL AND p.qr_key = '' AND p.id != ? AND p.total_halalas = ? AND p.tax_halalas = ? AND p.date = ?
      ORDER BY p.created_at`, [exceptId, q.total, q.tax, q.date]);
   const seller = normName(q.seller);
@@ -105,7 +107,8 @@ function rejectDuplicateQr(db: DB, key: string, exceptId = '', restoring = false
 function rejectKeyedTwin(db: DB, id: string): void {
   const p = db.get<{ date: string; total: number; tax: number; name: string; card: string | null }>(
     `SELECT p.date, p.total_halalas AS total, p.tax_halalas AS tax, p.supplier_name AS name,
-       (SELECT s.vat FROM suppliers s WHERE s.name = p.supplier_name AND s.deleted_at IS NULL ORDER BY s.archived LIMIT 1) AS card
+       COALESCE((SELECT s.vat FROM suppliers s WHERE s.id = p.supplier_id AND s.deleted_at IS NULL),
+         (SELECT s.vat FROM suppliers s WHERE s.name = p.supplier_name AND s.deleted_at IS NULL ORDER BY s.archived LIMIT 1)) AS card
      FROM purchases p WHERE p.id = ?`, [id]);
   if (!p) return;
   const rows = db.all<{ id: string; no: string; date: string; k: string; name: string }>(
@@ -165,6 +168,12 @@ export function nextPurchaseNo(db: DB): string {
   return withLetter('PUR-' + String((row ? Number(row.mx) : 0) + 1).padStart(3, '0'), letter);
 }
 
+/** معرّف المورد الحيّ بهذا الاسم (بلا فراغات الطرفين · الهجرة ٦٦ · A2.17) · null إن لم يوجد أو التبس بأكثر من واحد */
+export function supplierIdByName(db: DB, name: string): string | null {
+  const rows = db.all<{ id: string }>(`SELECT id FROM suppliers WHERE deleted_at IS NULL AND TRIM(name) = TRIM(?) LIMIT 2`, [name]);
+  return rows.length === 1 ? rows[0].id : null;
+}
+
 export function savePurchase(db: DB, input: PurchaseInput, existingId?: string): string {
   if (!input.subtotalHalalas && !input.totalHalalas) throw new Error('الرجاء إدخال مبالغ الفاتورة');
   // ولا مبلغ سالب في فاتورة الشراء (المدقق الخارجي R٢: رمزٌ بوسمَي الإجمالي والضريبة مقلوبين كان يحفظ صافياً سالباً، أو يسقط بقيد القاعدة
@@ -184,6 +193,15 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
   return db.transaction(() => {
     // الافتراض مستبعدة ما لم يُثبَت العكس · و«خاضعة باسمنا» تشترط الرقم الضريبي للمورد
     const taxStatus: TaxStatus = input.taxStatus ?? (input.exempt ? TS_EXEMPT : TS_EXCLUDED);
+    // الفاتورة مربوطةٌ بمعرّف موردها (الهجرة ٦٦ · A2.17) · فورقته وتقريره يرونها ولو تغيّر اسمه بعدها · والتعديل باسمها المخزَّن نفسه
+    // يُبقي معرّفها ما دام موردها حيّاً: لقطة الاسم القديم (سُدِّدت في ربعٍ مقدَّم ثم تُرجع سدادها) لا تطابق موردها باسمه الجديد
+    // (المدقق المستقل للمرحلة ٣)
+    const kept = existingId
+      ? db.get<{ n: string; s: string | null }>(
+        `SELECT p.supplier_name AS n, s.id AS s FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id AND s.deleted_at IS NULL
+         WHERE p.id = ?`, [existingId])
+      : undefined;
+    const supplierId = kept?.s && kept.n.trim() === input.supplier.trim() ? kept.s : supplierIdByName(db, input.supplier);
     // الرقم الضريبي يأتي من بطاقة المورد · مصدر واحد للحقيقة، ويُلتقط لقطةً في الفاتورة
     let supplierVat = '';
     // «قابلة للخصم» للمسجّلة وحدها، إلا فاتورةً كانت كذلك قبل إلغاء التسجيل تُعدَّل بوضعها نفسه
@@ -192,8 +210,9 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
       throw new Error('المنشأة غير مسجّلة في ضريبة القيمة المضافة · لا تُخصم ضريبة المدخلات، فاختر «' + TS_EXCLUDED + '»');
     }
     if (taxStatus === TS_DEDUCTIBLE) {
-      supplierVat = (db.get<{ vat: string }>(
-        `SELECT vat FROM suppliers WHERE name = ? AND deleted_at IS NULL`, [input.supplier]
+      supplierVat = (db.get<{ vat: string }>(supplierId
+        ? `SELECT vat FROM suppliers WHERE id = ?`
+        : `SELECT vat FROM suppliers WHERE name = ? AND deleted_at IS NULL`, [supplierId ?? input.supplier]
       )?.vat ?? '').trim();
       if (!supplierVat) {
         throw new Error('المورد «' + input.supplier + '» بلا رقم ضريبي في بطاقته · أضِفه في نافذة المورد أولاً، فالرقم شرط نظامي للخصم');
@@ -238,12 +257,12 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
         `UPDATE purchases SET supplier_name=?, date=?, due=?, category=?, incorp_item=?, amortize=?,
           amortize_months=?, exempt=?, exclude_from_vat=?, unit_id=?, property_id=?,
           subtotal_halalas=?, tax_halalas=?, total_halalas=?,
-          tax_status=?, exclude_reason=?, supplier_vatno=? WHERE id = ?`,
+          tax_status=?, exclude_reason=?, supplier_vatno=?, supplier_id=? WHERE id = ?`,
         [input.supplier, input.date, input.due, input.category, input.incorpItem,
          input.amortize ? 1 : 0, input.amortizeMonths, taxStatus === TS_EXEMPT ? 1 : 0,
          taxStatus === TS_EXCLUDED ? 1 : 0, input.unitId ?? null, input.propertyId ?? null,
          input.subtotalHalalas, tax, total,
-         taxStatus, input.excludeReason ?? '', supplierVat, existingId]
+         taxStatus, input.excludeReason ?? '', supplierVat, supplierId, existingId]
       );
       // والعداد وقراءته يتبعان التعديل، فسجل العداد المشتق منها يتبعه (E-7) · ومدخلٌ بلا حقل العداد لا يمسّه
       if (input.meterId !== undefined) {
@@ -257,13 +276,13 @@ export function savePurchase(db: DB, input: PurchaseInput, existingId?: string):
       db.run(
         `INSERT INTO purchases (id, no, supplier_name, date, due, category, incorp_item, amortize,
           amortize_months, exempt, exclude_from_vat, tax_status, exclude_reason, supplier_vatno, unit_id, property_id,
-          subtotal_halalas, tax_halalas, total_halalas, meter_id, meter_reading, created_at, qr_key)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          subtotal_halalas, tax_halalas, total_halalas, meter_id, meter_reading, created_at, qr_key, supplier_id)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [id, no, input.supplier, input.date, input.due, input.category, input.incorpItem,
          input.amortize ? 1 : 0, input.amortizeMonths, taxStatus === TS_EXEMPT ? 1 : 0,
          taxStatus === TS_EXCLUDED ? 1 : 0, taxStatus, input.excludeReason ?? '', supplierVat, input.unitId ?? null, input.propertyId ?? null,
          input.subtotalHalalas, tax, total, input.meterId ?? null, input.meterReading ?? null,
-         new Date().toISOString(), qrKey]
+         new Date().toISOString(), qrKey, supplierId]
       );
     }
     const deductible = taxStatus === TS_DEDUCTIBLE;

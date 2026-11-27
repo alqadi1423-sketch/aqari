@@ -5,10 +5,10 @@
  * وضغطه يفتح الخيارات في لوحة سفلية بدل أزرار الاختيار المتراصّة.
  */
 import { applyScreenSecure } from '../src/services/screenSecure';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { CashShortNote } from '../src/ui/CashGate';
 import { cashShortfall } from '../src/domain/cashGuard';
-import { View, Pressable } from 'react-native';
+import { View, Pressable, FlatList } from 'react-native';
 import Slider from '@react-native-community/slider';
 import { useRouter } from 'expo-router';
 import { Screen } from '../src/ui/Screen';
@@ -23,7 +23,11 @@ import { useApp } from '../src/ui/store';
 import { useToast } from '../src/ui/Toast';
 import { C, TYPE } from '../src/ui/theme';
 import { exportStatus } from '../src/domain/reminders';
-import { trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash, restoreCashOut, restoreIntoFiledPeriod } from '../src/domain/trash';
+import {
+  trashItems, restoreFromTrash, purgeFromTrash, restoreAllFromTrash, deleteAllFromTrash, trashRestoreGates, trashKey,
+  type TrashItem, type TrashRestoreGate,
+} from '../src/domain/trash';
+import { Pager, usePager } from '../src/ui/Pager';
 import { createAndShareBackup, createAndSaveToFolder, pickAndPrepareRestore, prepareRestoreFromSafety, commitPreparedRestore, abortPreparedRestore, appBackupEnv, listDeviceBackups } from '../src/services/backupService';
 import { fingerprintData, keptPreWipe } from '../src/domain/backup/create';
 import { backupFolder, pickBackupFolder, folderLabel, FolderAccessError, FolderMissingError } from '../src/services/backupFolder';
@@ -78,6 +82,7 @@ import { RecoveryKeyRequiredError } from '../src/domain/backup/passwordGate';
 import * as Clipboard from 'expo-clipboard';
 import { PasswordRequiredError } from '../src/domain/backup/encryption';
 import { pinWidget } from '../src/services/intents';
+import { WIDGETS_ENABLED } from '../src/domain/features';
 import type { DriveBackup } from '../src/cloud/drive';
 import { dfmt, toLocalISODate, today, localDateOf, localTimeOf } from '../src/domain/dates';
 import { APP_VERSION, APP_VERSION_LABEL } from '../src/version';
@@ -124,6 +129,33 @@ function Fold({ icon, title, value, children }: { icon: IconName; title: string;
     </View>
   );
 }
+
+const NO_GATE: TrashRestoreGate = { cashOut: 0, short: 0, filed: false, date: null };
+
+/**
+ * صفّ عنصرٍ في السلة · بذاكرة، وما يحكم أزراره (نقص النقد وفترة الإقرار المقدَّم) يأتيه محسوباً للصفحة فلا يستعلم في رسمه (D-17) ·
+ * استعادةٌ تُعيد صرفاً نقدياً لا تظهر حين لا يكفي النقد · ومكانها السبب والإيداع (قرار المالك ٢٠٢٦-١٠-٠٥) ·
+ * ولا ما تكتب قيداً في فترةٍ قُدِّم إقرارها (المراجعة الشاملة ٨ · البند ١١)
+ */
+const TrashRow = React.memo(function TrashRow({ item, gate, onRestore, onPurge }: {
+  item: TrashItem; gate: TrashRestoreGate; onRestore: (it: TrashItem) => void; onPurge: (it: TrashItem) => void;
+}) {
+  return (
+    <View style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
+      <Row style={{ justifyContent: 'space-between' }}>
+        <T size={TYPE.cardTitle} med style={{ flex: 1 }}>{item.entityLabel}: {item.label}</T>
+        <Badge kind={item.daysLeft <= 5 ? 'overdue' : 'due'} label={item.daysLeft + ' يوم متبقٍ'} />
+      </Row>
+      {gate.short > 0 ? <CashShortNote needed={gate.cashOut} what="إعادة سداد الفاتورة نقداً" date={gate.date} /> : null}
+      <Row style={{ justifyContent: 'flex-end', marginTop: 6 }}>
+        {gate.short <= 0 && !gate.filed ? (
+          <BtnGhost small icon="undo" title="استعادة" onPress={() => onRestore(item)} />
+        ) : null}
+        <BtnGhost small danger title="حذف نهائي" onPress={() => onPurge(item)} />
+      </Row>
+    </View>
+  );
+});
 
 export default function Settings() {
   const { db, version, bump, settings, updateSetting, uiPct, fontPct, previewScale, commitScale } = useApp();
@@ -271,6 +303,43 @@ export default function Settings() {
     return { exp, trash, counts, total };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db, version]);
+
+  // السلة صفحاتٌ في قائمة افتراضية، وما يحكم زرّ الاستعادة يُحسب للصفحة دفعةً لا لكل صفٍّ في رسمه (D-17)
+  const trashPager = usePager('trash');
+  const trashPage = useMemo(() => data.trash.slice(trashPager.offset, trashPager.offset + trashPager.limit),
+    [data.trash, trashPager.offset, trashPager.limit]);
+  const trashGates = useMemo(() => (trashOpen ? trashRestoreGates(db, trashPage) : new Map<string, TrashRestoreGate>()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [db, version, trashPage, trashOpen]);
+  const restoreTrashed = useCallback((it: TrashItem) => {
+    try { restoreFromTrash(db, it.table, it.id); toast('تمت الاستعادة بنجاح'); }
+    catch (e2) {
+      reportFailure({ title: 'تعذّرت الاستعادة', e: e2 });
+    }
+    bump();
+  }, [db, toast, bump]);
+  const purgeTrashed = useCallback((it: TrashItem) => dialog({
+    title: 'حذف نهائي',
+    body: 'حذف نهائي · لا يمكن التراجع عن هذا أبداً. متابعة؟',
+    tone: 'danger',
+    actions: [
+      { label: 'تراجع', variant: 'ghost' },
+      { label: 'حذف نهائي', variant: 'danger', onPress: async () => {
+        try {
+          purgeFromTrash(db, it.table, it.id);
+          setProgress('جاري تحرير المساحة');
+          await reclaimStorage(db);
+          toast('تم الحذف النهائي وتحرير المساحة');
+        } catch (e2) {
+          reportFailure({ title: 'تعذّر الحذف النهائي', e: e2 });
+        }
+        setProgress(null); bump();
+      } },
+    ],
+  }), [db, dialog, toast, bump, setProgress]);
+  const renderTrashRow = useCallback(({ item }: { item: TrashItem }) => (
+    <TrashRow item={item} gate={trashGates.get(trashKey(item)) ?? NO_GATE} onRestore={restoreTrashed} onPurge={purgeTrashed} />
+  ), [trashGates, restoreTrashed, purgeTrashed]);
 
   /** نسخةٌ فيها فروق محاسبية · تُسمّى ويُشار إلى أداة المراجعة */
   const notesDialog = (title: string, notes: string[]) => dialog({
@@ -945,8 +1014,8 @@ export default function Settings() {
         ))}
       </Card>
 
-      {/* ٥ · ودجت الشاشة · أندرويد وحده يثبّتها من داخل التطبيق · أرقامها من التحصيل */}
-      {canView(access, 'collect') ? <Card>
+      {/* ٥ · ودجت الشاشة · أندرويد وحده يثبّتها من داخل التطبيق · أرقامها من التحصيل · مخفية بقرار المالك 2026-11-26 (features.ts) */}
+      {WIDGETS_ENABLED && canView(access, 'collect') ? <Card>
         <CardTitle>ودجت الشاشة</CardTitle>
         {([
           ['strip', 'collect', 'شريط اليوم · كم متأخرة وبكم'],
@@ -1551,9 +1620,13 @@ export default function Settings() {
         ) : null}
       </Sheet>
 
-      <Sheet visible={trashOpen} onClose={() => setTrashOpen(false)} title="سلة المحذوفات" tall>
-        {data.trash.length ? (
-          <>
+      <Sheet visible={trashOpen} onClose={() => setTrashOpen(false)} title="سلة المحذوفات" tall list>
+        {/* قائمة افتراضية بصفحات: ما يُرسم ما يظهر وحده، والعدّاد في ذيلها، وأحكام الأزرار محسوبةٌ للصفحة (D-17) */}
+        <FlatList
+          data={trashPage}
+          keyExtractor={trashKey}
+          renderItem={renderTrashRow}
+          ListHeaderComponent={data.trash.length ? (
             <Row style={{ marginBottom: 10 }}>
               <View style={{ flex: 1 }}>
                 <BtnGhost small icon="undo" title={`استعادة الكل (${data.trash.length})`}
@@ -1600,54 +1673,15 @@ export default function Settings() {
                   })} />
               </View>
             </Row>
-            {data.trash.map((t) => (
-              <View key={t.table + t.id} style={{ paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line }}>
-                <Row style={{ justifyContent: 'space-between' }}>
-                  <T size={TYPE.cardTitle} med style={{ flex: 1 }}>{t.entityLabel}: {t.label}</T>
-                  <Badge kind={t.daysLeft <= 5 ? 'overdue' : 'due'} label={t.daysLeft + ' يوم متبقٍ'} />
-                </Row>
-                {/* استعادةٌ تُعيد صرفاً نقدياً لا تظهر حين لا يكفي النقد · ومكانها السبب والإيداع (قرار المالك ٢٠٢٦-١٠-٠٥) ·
-                    ولا ما تكتب قيداً في فترةٍ قُدِّم إقرارها (المراجعة الشاملة ٨ · البند ١١) */}
-                <CashShortNote needed={restoreCashOut(db, t.table, t.id)} what="إعادة سداد الفاتورة نقداً" />
-                <Row style={{ justifyContent: 'flex-end', marginTop: 6 }}>
-                  {cashShortfall(db, restoreCashOut(db, t.table, t.id)) <= 0 && !restoreIntoFiledPeriod(db, t.table, t.id) ? (
-                  <BtnGhost small icon="undo" title="استعادة"
-                    onPress={() => {
-                      try { restoreFromTrash(db, t.table, t.id); toast('تمت الاستعادة بنجاح'); }
-                      catch (e2) {
-                        reportFailure({ title: 'تعذّرت الاستعادة', e: e2 });
-                      }
-                      bump();
-                    }} />
-                  ) : null}
-                  <BtnGhost small danger title="حذف نهائي"
-                    onPress={() => dialog({
-                      title: 'حذف نهائي',
-                      body: 'حذف نهائي · لا يمكن التراجع عن هذا أبداً. متابعة؟',
-                      tone: 'danger',
-                      actions: [
-                        { label: 'تراجع', variant: 'ghost' },
-                        { label: 'حذف نهائي', variant: 'danger', onPress: async () => {
-                          try {
-                            purgeFromTrash(db, t.table, t.id);
-                            setProgress('جاري تحرير المساحة');
-                            await reclaimStorage(db);
-                            toast('تم الحذف النهائي وتحرير المساحة');
-                          } catch (e2) {
-                            reportFailure({ title: 'تعذّر الحذف النهائي', e: e2 });
-                          }
-                          setProgress(null); bump();
-                        } },
-                      ],
-                    })} />
-                </Row>
-              </View>
-            ))}
-          </>
-        ) : (
-          <EmptyState>سجل الحذف فارغ · أي عنصر تحذفه سيظهر هنا طوال مدة الاحتفاظ قبل حذفه نهائياً</EmptyState>
-        )}
-        <View style={{ height: 12 }} />
+          ) : null}
+          ListFooterComponent={<View><Pager pager={trashPager} total={data.trash.length} /><View style={{ height: 12 }} /></View>}
+          ListEmptyComponent={<EmptyState>سجل الحذف فارغ · أي عنصر تحذفه سيظهر هنا طوال مدة الاحتفاظ قبل حذفه نهائياً</EmptyState>}
+          initialNumToRender={8}
+          maxToRenderPerBatch={10}
+          windowSize={5}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        />
       </Sheet>
 
       {/* تأكيد المسح */}

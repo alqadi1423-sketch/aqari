@@ -15,7 +15,7 @@
  */
 import { t } from '../../i18n';
 import type { DB } from '../../db/adapter';
-import { cashShortfall, reversalCashOut, CashShortfallError, bankShortages } from '../cashGuard';
+import { cashShortfall, cashShortMessage, reversalCashOut, CashShortfallError, bankShortages } from '../cashGuard';
 import { uid } from '../ids';
 import { logAudit } from '../audit';
 import { reverseEntryById } from './post';
@@ -28,7 +28,15 @@ import { paidFromDeposit } from '../contracts/cancelPayment';
 
 export type SourceAction =
   | { kind: 'payment'; paymentId: string }
-  | { kind: 'op'; label: string; effects: string[]; blockers: string[]; cashShort?: number; run: (date: string, reason: string) => void }
+  | {
+    kind: 'op'; label: string; effects: string[]; blockers: string[]; cashShort?: number;
+    /**
+     * المانع بتاريخ الإلغاء الذي يختاره المستخدم · فارغٌ إن جاز: العكس يُخرج من المحفظة أو البنك بتاريخه، فيكفيه أدنى رصيدهما منه فما
+     * بعده (قرار المالك س١٩ · A2.8: العكس والإلغاء) · يُعرض تحت التاريخ ويُصلَح بتغييره، ويرفض به التنفيذ
+     */
+    dateBlock: (date: string) => string;
+    run: (date: string, reason: string) => void;
+  }
   | { kind: 'document' }
   | null;
 
@@ -95,12 +103,21 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
   // عكسُ قيدٍ أدخل نقداً يُخرجه من المحفظة · كفاية النقد لكل عملية إلغاء (قرار المالك ٢٠٢٦-١٠-٠٥)
   const cashOut = reversalCashOut(db, e.id);
   const cashShort = cashShortfall(db, cashOut);
-  const op = (label: string, effects: string[], blockers0: string[], run: (date: string, reason: string) => void): SourceAction => {
+  // banked: العملية تعكس حركات بنك القيد بمثلها (reverseBankTx) فيُفحص ما يُخرجه عكسها من كل بنك · out: ما يُخرجه من المحفظة إن خالف
+  // cashOut (عكس القيد بلا مستند يُبقي حركات بنكه فيُخرج صافي 1100 كله)
+  const op = (label: string, effects: string[], blockers0: string[], run: (date: string, reason: string) => void,
+    o: { banked?: boolean; out?: number } = {}): SourceAction => {
     const blockers = cashShort > 0 && !blockers0.some((b) => b.includes('لا يكفي'))
       ? [...blockers0, new CashShortfallError(cashOut, cashOut - cashShort, label).message] : blockers0;
-    return ({ kind: 'op', label, effects, blockers, cashShort, run: (date, reason) => {
+    const dateBlock = (date: string): string => [cashShortMessage(db, o.out ?? cashOut, label, date),
+      ...(o.banked === false ? [] : bankShortages(db, e.no, 'reverse', date))].filter(Boolean).join(' · ');
+    return ({ kind: 'op', label, effects, blockers, cashShort, dateBlock, run: (date, reason) => {
       if (!reason.trim()) throw new RuleViolation('اكتب سبب الإلغاء');
       if (blockers.length) throw new RuleViolation(blockers.join(' · '));
+      // والتاريخ الممنوع لذاته (عكس التقبيل قبل قيده) سببه أولاً، ثم الكفاية منه فما بعده
+      requireNotBeforeKeyMoney(e, date);
+      const onDate = dateBlock(date);
+      if (onDate) throw new RuleViolation(onDate);
       db.transaction(() => run(date, reason.trim()));
     } });
   };
@@ -111,7 +128,7 @@ export function entrySourceAction(db: DB, entryId: string): SourceAction {
     return op('عكس القيد', ['يُعكس القيد ' + e.no + ' · مستنده ليس في البيانات فلا مستند يُلغى منه'], blockers, (date, reason) => {
       reverse(db, e, date, 'عكس قيد بلا مستند · ' + reason);
       logAudit(db, 'الدفتر', 'update', 'عكس قيد بلا مستند', e.no + ' · ' + reason);
-    });
+    }, { banked: false, out: Math.max(0, cashIn) });
   }
 
   if (e.src_type === DISCOUNT_ENTRY_SRC) {

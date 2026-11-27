@@ -34,7 +34,7 @@ import { attachPicked, pickFile, captureWithCamera, pickFromGallery, type Picked
 import { readQrFromImage, readQrFromInvoiceFile } from '../src/services/invoiceQr';
 import { pickZatcaQr, zatcaQrKey } from '../src/domain/zatcaQr';
 import { purchaseDraftFromQr } from '../src/domain/purchaseQr';
-import { saveSupplier } from '../src/domain/suppliers';
+import { saveSupplier, supplierPurchasesSql } from '../src/domain/suppliers';
 import { FileViewer, type ViewerFile } from '../src/ui/FileViewer';
 import { AttachStrip } from '../src/ui/AttachStrip';
 import { reportFailure } from '../src/ui/failureDialog';
@@ -238,7 +238,8 @@ export default function Purchases() {
       where.push(`(no LIKE '%'||?||'%' OR supplier_name LIKE '%'||?||'%')`);
       args.push(needle, needle);
     }
-    if (fSupplier) { where.push('supplier_name = ?'); args.push(fSupplier); }
+    // بمعرّف المورد، وما لا معرّف له باسمه الحالي (الهجرة ٦٦ · A2.17)
+    if (fSupplier) { where.push(supplierPurchasesSql('')); args.push(fSupplier, fSupplier); }
     if (fCategory) { where.push('TRIM(category) = ?'); args.push(fCategory); }
     if (fTax) {
       where.push(`(CASE WHEN COALESCE(tax_status, '') != '' THEN tax_status WHEN exempt = 1 THEN ? ELSE ? END) = ?`);
@@ -682,14 +683,14 @@ export default function Purchases() {
   // رقاقة واحدة لكل مرشِّح مفعَّل · تسميتها باسم القيمة
   const activeChips = useMemo(() => {
     const chips: ActiveChip[] = [];
-    if (fSupplier) chips.push({ key: 'supplier', label: 'مورد ' + fSupplier, onClear: () => setFSupplier('') });
+    if (fSupplier) chips.push({ key: 'supplier', label: 'مورد ' + (suppliers.find((x) => x.id === fSupplier)?.name ?? ''), onClear: () => setFSupplier('') });
     if (fCategory) chips.push({ key: 'category', label: 'فئة ' + fCategory, onClear: () => setFCategory('') });
     if (fTax) chips.push({ key: 'tax', label: fTax, onClear: () => setFTax('') });
     if (fPaid) chips.push({ key: 'paid', label: fPaid === 'paid' ? 'مسدَّدة' : 'غير مسدَّدة', onClear: () => setFPaid('') });
     if (fPeriod) chips.push({ key: 'period', label: PERIOD_CHIPS.find(([v]) => v === fPeriod)?.[1] ?? fPeriod, onClear: () => setFPeriod('') });
     if (fProperty) chips.push({ key: 'property', label: 'عقار ' + (fPropertyName || 'محدَّد'), onClear: () => setFProperty('') });
     return chips;
-  }, [fSupplier, fCategory, fTax, fPaid, fPeriod, fProperty, fPropertyName]);
+  }, [fSupplier, fCategory, fTax, fPaid, fPeriod, fProperty, fPropertyName, suppliers]);
 
   const openDetail = useCallback((id: string) => setDetailFor(id), []);
 
@@ -775,7 +776,7 @@ export default function Purchases() {
       {/* ورقة التصفية · المرشِّحات الستة */}
       <FilterSheet open={fsheet.open} onClose={fsheet.hide} onClearAll={clearFilters} resultCount={total}>
         <SelectField label="المورد" value={fSupplier}
-          options={[{ value: '', label: 'كل المورّدين' }, ...suppliers.map((s) => ({ value: s.name, label: s.name }))]}
+          options={[{ value: '', label: 'كل المورّدين' }, ...suppliers.map((s) => ({ value: s.id, label: s.name }))]}
           onPick={setFSupplier} />
         <SelectField label="العقار" value={fProperty}
           options={[
@@ -1172,7 +1173,7 @@ function PurchaseDetailSheet({ purchaseId, onClose, onEdit }: {
 
   const data = useMemo(() => {
     const p = db.get<{
-      id: string; no: string; supplier_name: string; supplier_vatno: string; date: string; due: string;
+      id: string; no: string; supplier_name: string; supplier_id: string | null; supplier_vatno: string; date: string; due: string;
       category: string; subtotal_halalas: number; tax_halalas: number; total_halalas: number;
       exempt: number; tax_status: string; exclude_reason: string; refund_status: string;
       paid: number; paid_date: string | null; payment_method: string | null; payment_bank_id: string | null;
@@ -1180,8 +1181,10 @@ function PurchaseDetailSheet({ purchaseId, onClose, onEdit }: {
       meter_id: string | null; meter_reading: number | null;
     }>(`SELECT * FROM purchases WHERE id = ?`, [purchaseId]);
     if (!p) return null;
-    const sup = db.get<{ vat: string }>(
-      `SELECT vat FROM suppliers WHERE name = ? AND deleted_at IS NULL`, [p.supplier_name]);
+    // بطاقة موردها بمعرّفه، وما لا معرّف له باسمه (الهجرة ٦٦ · A2.17)
+    const sup = db.get<{ vat: string }>(p.supplier_id
+      ? `SELECT vat FROM suppliers WHERE id = ? AND deleted_at IS NULL`
+      : `SELECT vat FROM suppliers WHERE name = ? AND deleted_at IS NULL`, [p.supplier_id ?? p.supplier_name]);
     const meter = p.meter_id
       ? db.get<{ kind: string; number: string }>(`SELECT kind, number FROM meters WHERE id = ?`, [p.meter_id])
       : undefined;

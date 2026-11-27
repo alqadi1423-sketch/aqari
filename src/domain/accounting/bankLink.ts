@@ -8,6 +8,7 @@ import { t } from '../../i18n';
 import { uid } from '../ids';
 import { fmt } from '../money';
 import { bankBalance } from './ledger';
+import { requireBankFunds } from '../cashGuard';
 
 /** أعمدة بنك التأمين والعربون (الهجرة ٦٣) · قاعدةٌ أقدم (نسخةٌ تُفحص قبل ترقيتها، واختبارات الهجرات) تبقى نقداً بلا كتابةٍ فيها */
 const bankCols = new WeakMap<object, boolean>();
@@ -22,11 +23,16 @@ export function hasDepositBankCols(db: DB): boolean {
   return v;
 }
 
-/** اسم البنك الحيّ أو رفضٌ برسالة · والخروج منه لا يتجاوز رصيده بعد ما يعود إليه في المعاملة نفسها (back) */
-export function requireBankFor(db: DB, bankId: string, out = 0, back = 0): string {
+/**
+ * اسم البنك الحيّ أو رفضٌ برسالة · والخروج منه لا يتجاوز رصيده بعد ما يعود إليه في المعاملة نفسها (back) · وبتاريخ الخروج (date، ولا
+ * عائد): بأدنى رصيد البنك منه فما بعده، فلا ينزل تحت الصفر في يومٍ مضى (قرار المالك س١٩ · A2.8: ردّ العربون عند إلغاء الحجز)
+ */
+export function requireBankFor(db: DB, bankId: string, out = 0, back = 0, date?: string | null): string {
   const b = db.get<{ name: string }>(`SELECT name FROM banks WHERE id = ? AND deleted_at IS NULL`, [bankId]);
   if (!b) throw new Error(t('depositBank.bankMissing'));
-  if (out > 0) {
+  if (out > 0 && date && !back) {
+    requireBankFunds(db, bankId, out, date, (bank, bal) => t('bank.insufficient', { bank, balance: fmt(bal), amount: fmt(out) }));
+  } else if (out > 0) {
     const bal = bankBalance(db, bankId) + back;
     if (out > bal) throw new Error(t('bank.insufficient', { bank: b.name, balance: fmt(bal), amount: fmt(out) }));
   }

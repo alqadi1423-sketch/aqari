@@ -12,7 +12,7 @@
  */
 import type { DB } from '../../db/adapter';
 import { allIn } from '../../db/inList';
-import { cashShortfall, CashShortfallError } from '../cashGuard';
+import { cashShortfall, cashShortMessage, bankShortMessage, CashShortfallError } from '../cashGuard';
 import { rowId, withDeterministicIds } from '../ids';
 import { fmt } from '../money';
 import { today, dfmt, isISODate } from '../dates';
@@ -49,6 +49,9 @@ export interface CancelPaymentPlan {
   /** ناقص النقد عن إلغائها · لرابط «إيداع المالك» */
   cashShort: number;
 }
+
+/** اسم العملية في رسالة نقص النقد */
+const CANCEL_WHAT = 'إلغاء الدفعة';
 
 // وردّ الإيجار المقدَّم عند الإنهاء المبكر (A1-4) كردّ الفائض: سقفه من الدفعات، فلا تُلغى دفعةٌ تحته قبل إلغائه
 const SURPLUS_SOURCES = ['surplus_refund', 'surplus_credit', 'prepaid_refund'];
@@ -142,7 +145,7 @@ export function planCancelPayment(db: DB, paymentId: string, date?: string): Can
   const c = db.get<{ tenant_name: string; tenant_id: string | null }>(`SELECT tenant_name, tenant_id FROM contracts WHERE id = ?`, [p.contract_id]);
   const blockers: string[] = [];
   const paymentDate = payDay(p);
-  const dateError = cancelDateError(p, date);
+  let dateError = cancelDateError(p, date);
   if (p.cancelled_at) blockers.push('الدفعة ملغاة من قبل');
   else if (paidFromDeposit(db, p.id) || paidFromSettlement(db, p.id)) {
     // منعٌ دائم: المعاينة سببه وحده، فلا أثرٌ يُعرض لإلغاءٍ لن يقع (المتحقق المستقل على البند ٢٧) · ودفعة التأمين من تسويته (A1-2)
@@ -167,7 +170,7 @@ export function planCancelPayment(db: DB, paymentId: string, date?: string): Can
   const cashIn = Number(db.get<{ s: number }>(
     `SELECT COALESCE(SUM(amount_halalas), 0) AS s FROM payment_lines WHERE payment_id = ? AND method = 'cash'`, [p.id])!.s);
   const short = cashShortfall(db, cashIn);
-  if (short > 0 && !p.cancelled_at) blockers.push(new CashShortfallError(cashIn, cashIn - short, 'إلغاء الدفعة').message);
+  if (short > 0 && !p.cancelled_at) blockers.push(new CashShortfallError(cashIn, cashIn - short, CANCEL_WHAT).message);
   const cashShort = p.cancelled_at ? 0 : short;
 
   const instIds = installmentsOfPayment(db, p.id);
@@ -203,6 +206,13 @@ export function planCancelPayment(db: DB, paymentId: string, date?: string): Can
     for (const [bankId, x] of perBank) {
       const balance = bankBalance(db, bankId);
       if (x.amount > 0 && balance < x.amount) blockers.push(t('bankTx.bankShort', { bank: x.name, balance: fmt(balance), amount: fmt(x.amount) }));
+    }
+    // وبتاريخ الإلغاء: أدنى رصيد المحفظة والبنك منه فما بعده (قرار المالك س١٩ · A2.8: العكس والإلغاء) · ما يكفيه الرصيد الآن ولا يكفيه
+    // يومٌ بعد التاريخ سببٌ تحت حقل التاريخ يُصلَح بتغييره (كالتاريخ قبل الدفعة)، لا مانعٌ دائم
+    if (!dateError && !blockers.length) {
+      const why = [cashShortMessage(db, cashIn, CANCEL_WHAT, date),
+        ...[...perBank].map(([bankId, x]) => bankShortMessage(db, bankId, x.amount, date))].filter(Boolean);
+      if (why.length) dateError = why.join(' · ');
     }
   }
 
